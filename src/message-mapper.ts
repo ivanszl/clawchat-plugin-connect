@@ -1,6 +1,16 @@
-import { EVENT, isMessagePayload, type Envelope, type Fragment, type MessagePayload, type NormalizedInboundMessage } from "./protocol.js";
+import {
+  type Envelope,
+  EVENT,
+  type Fragment,
+  isMessagePayload,
+  type MessagePayload,
+  type NormalizedInboundMessage,
+} from "./protocol";
 
-export interface MentionPayloadInput { userId: string; display?: string }
+export interface MentionPayloadInput {
+  userId: string;
+  display?: string;
+}
 export interface BuildTextMessagePayloadOptions {
   mentions?: MentionPayloadInput[];
   replyToMessageId?: string | null;
@@ -8,16 +18,19 @@ export interface BuildTextMessagePayloadOptions {
 }
 
 export function fragmentsToText(fragments: Fragment[]): string {
-  return fragments.map((fragment) => {
-    const record = fragment as Record<string, unknown>;
-    if (fragment.kind === "text") return typeof record.text === "string" ? record.text : "";
-    if (fragment.kind === "mention") {
-      const display = typeof record.display === "string" ? record.display : "";
-      const userId = typeof record.user_id === "string" ? record.user_id : "";
-      return display ? `@${display}` : userId ? `@${userId}` : "@unknown";
-    }
-    return typeof record.name === "string" ? `[${fragment.kind}: ${record.name}]` : `[${fragment.kind}]`;
-  }).filter(Boolean).join("");
+  return fragments
+    .map((fragment) => {
+      const record = fragment as Record<string, unknown>;
+      if (fragment.kind === "text") return typeof record.text === "string" ? record.text : "";
+      if (fragment.kind === "mention") {
+        const display = typeof record.display === "string" ? record.display : "";
+        const userId = typeof record.user_id === "string" ? record.user_id : "";
+        return display ? `@${display}` : userId ? `@${userId}` : "@unknown";
+      }
+      return typeof record.name === "string" ? `[${fragment.kind}: ${record.name}]` : `[${fragment.kind}]`;
+    })
+    .filter(Boolean)
+    .join("");
 }
 
 export function extractMentionIds(fragments: Fragment[], mentions: unknown[]): string[] {
@@ -66,21 +79,30 @@ export function buildTextMessagePayload(text: string, options: BuildTextMessageP
     user_id: mention.userId,
     ...(mention.display ? { display: mention.display } : {}),
   }));
-  const textFragments: Fragment[] = text ? [{ kind: "text", text: mentionFragments.length > 0 ? ` ${text}` : text }] : [];
+  const textFragments: Fragment[] = text
+    ? [{ kind: "text", text: mentionFragments.length > 0 ? ` ${text}` : text }]
+    : [];
   return {
     message_mode: "normal",
     message: {
       body: { fragments: [...mentionFragments, ...textFragments] },
       context: {
-        mentions: (options.mentions ?? []).map((mention) => ({ user_id: mention.userId, ...(mention.display ? { display: mention.display } : {}) })),
-        reply: options.replyToMessageId ? {
-          reply_to_msg_id: options.replyToMessageId,
-          reply_preview: options.replyPreview ? {
-            id: options.replyPreview.id,
-            nick_name: options.replyPreview.nickName,
-            fragments: options.replyPreview.fragments,
-          } : null,
-        } : null,
+        mentions: (options.mentions ?? []).map((mention) => ({
+          user_id: mention.userId,
+          ...(mention.display ? { display: mention.display } : {}),
+        })),
+        reply: options.replyToMessageId
+          ? {
+              reply_to_msg_id: options.replyToMessageId,
+              reply_preview: options.replyPreview
+                ? {
+                    id: options.replyPreview.id,
+                    nick_name: options.replyPreview.nickName,
+                    fragments: options.replyPreview.fragments,
+                  }
+                : null,
+            }
+          : null,
       },
     },
   };

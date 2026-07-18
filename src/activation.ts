@@ -1,9 +1,16 @@
-import { getAgent, loadConfig, saveConfig } from "./config.js";
-import { createStateStore, type ConnectStateStore } from "./state.js";
-import type { ActivationCredentials, ConnectConfig } from "./types.js";
-import { createClawChatApiClient, normalizeActivationResult, type FetchLike } from "./api-client.js";
+import { createClawChatApiClient, type FetchLike, normalizeActivationResult } from "./api-client";
+import { getAgent, loadConfig, saveConfig } from "./config";
+import { type ConnectStateStore, createStateStore } from "./state";
+import type { ActivationCredentials, ConnectConfig } from "./types";
 
-export interface ActivateConnectOptions { agentId: string; code: string; configPath?: string; config?: ConnectConfig; store?: ConnectStateStore; fetchImpl?: FetchLike; }
+export interface ActivateConnectOptions {
+  agentId: string;
+  code: string;
+  configPath?: string;
+  config?: ConnectConfig;
+  store?: ConnectStateStore;
+  fetchImpl?: FetchLike;
+}
 export type ActivateConnectResult = ActivationCredentials;
 
 export async function activateConnect(options: ActivateConnectOptions): Promise<ActivateConnectResult> {
@@ -11,16 +18,21 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
   if (!agentId) throw new Error("agentId is required");
   const code = options.code.trim();
   if (!code) throw new Error("activation code is required");
-  const config = options.config ?? await loadConfig(options.configPath);
+  const config = options.config ?? (await loadConfig(options.configPath));
   getAgent(config, agentId);
   const store = options.store ?? createStateStore({ dbPath: config.stateDbPath });
   const ownsStore = !options.store;
   try {
     const existingUserId = await store.getActivationUserId(agentId);
-    const client = createClawChatApiClient({ baseUrl: config.baseUrl, mediaBaseUrl: config.mediaBaseUrl, fetchImpl: options.fetchImpl });
+    const client = createClawChatApiClient({
+      baseUrl: config.baseUrl,
+      mediaBaseUrl: config.mediaBaseUrl,
+      fetchImpl: options.fetchImpl,
+    });
     const result = normalizeActivationResult(agentId, await client.agentsConnect({ code, existingUserId }));
     await store.upsertActivation(result);
-    if ((result.conversationId || result.serverAgentId) && options.configPath) await saveConfig(config, options.configPath);
+    if ((result.conversationId || result.serverAgentId) && options.configPath)
+      await saveConfig(config, options.configPath);
     return result;
   } finally {
     if (ownsStore) await store.close();

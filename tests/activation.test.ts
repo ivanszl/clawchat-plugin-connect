@@ -1,16 +1,97 @@
 import { mkdtemp } from "node:fs/promises";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { activateConnect } from "../src/activation.js";
-import { defaultConfig, upsertAgent } from "../src/config.js";
-import { createStateStore } from "../src/state.js";
-async function tempDir(): Promise<string> { return await mkdtemp(join(tmpdir(), "clawchat-connect-activation-")); }
-function response(body: unknown): Response { return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }); }
+import { activateConnect } from "../src/activation";
+import { defaultConfig, upsertAgent } from "../src/config";
+import { createStateStore } from "../src/state";
+
+async function tempDir(): Promise<string> {
+  return await mkdtemp(join(tmpdir(), "clawchat-connect-activation-"));
+}
+function response(body: unknown): Response {
+  return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+}
 
 describe("activateConnect", () => {
-  it("exchanges invite code for a named configured agent and persists credentials", async () => { const dir = await tempDir(); const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" }); config.stateDbPath = join(dir, "state.sqlite"); const store = createStateStore({ dbPath: config.stateDbPath }); const fetchImpl = vi.fn(async () => response({ code: 0, msg: "ok", data: { access_token: "token-1", refresh_token: "refresh-1", agent: { id: "agt-1", user_id: "usr-agent", owner_id: "usr-owner" }, conversation: { id: "cnv-1" } } })) as unknown as typeof fetch; const result = await activateConnect({ agentId: "codex", code: "A1B2C3", config, store, fetchImpl }); expect(fetchImpl).toHaveBeenCalledWith("https://app.clawling.com/v1/agents/connect", expect.objectContaining({ method: "POST", headers: expect.objectContaining({ "content-type": "application/json" }), body: JSON.stringify({ code: "A1B2C3", platform: "clawchat-connect", type: "clawbot" }) })); expect(result).toMatchObject({ localAgentId: "codex", accessToken: "token-1", userId: "usr-agent", ownerUserId: "usr-owner", conversationId: "cnv-1" }); await expect(store.getActivation("codex")).resolves.toMatchObject({ accessToken: "token-1", userId: "usr-agent" }); await store.close(); });
-  it("sends stored agent user_id when reactivating the same local agent", async () => { const dir = await tempDir(); const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" }); config.stateDbPath = join(dir, "state.sqlite"); const store = createStateStore({ dbPath: config.stateDbPath }); await store.upsertActivation({ localAgentId: "codex", accessToken: "old", refreshToken: null, serverAgentId: "agt-old", userId: "usr-old", ownerUserId: "usr-owner", conversationId: null }); const fetchImpl = vi.fn(async () => response({ code: 0, data: { access_token: "new", agent: { id: "agt-new", user_id: "usr-old", owner_id: "usr-owner" } } })) as unknown as typeof fetch; await activateConnect({ agentId: "codex", code: "NEWCODE", config, store, fetchImpl }); expect(fetchImpl).toHaveBeenCalledWith("https://app.clawling.com/v1/agents/connect", expect.objectContaining({ body: JSON.stringify({ code: "NEWCODE", platform: "clawchat-connect", type: "clawbot", user_id: "usr-old" }) })); await store.close(); });
-  it("requires the named agent to exist and does not create project or directory state", async () => { const config = defaultConfig(); const fetchImpl = vi.fn(); await expect(activateConnect({ agentId: "codex", code: "A1B2C3", config, fetchImpl })).rejects.toThrow(/Unknown clawchat-connect agent|No clawchat-connect agent/); expect(fetchImpl).not.toHaveBeenCalled(); });
-  it("rejects incomplete activation responses", async () => { const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" }); const fetchImpl = vi.fn(async () => response({ code: 0, data: { agent: {} } })) as unknown as typeof fetch; await expect(activateConnect({ agentId: "codex", code: "A1B2C3", config, fetchImpl })).rejects.toThrow(/access_token/); });
+  it("exchanges invite code for a named configured agent and persists credentials", async () => {
+    const dir = await tempDir();
+    const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
+    config.stateDbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    const fetchImpl = vi.fn(async () =>
+      response({
+        code: 0,
+        msg: "ok",
+        data: {
+          access_token: "token-1",
+          refresh_token: "refresh-1",
+          agent: { id: "agt-1", user_id: "usr-agent", owner_id: "usr-owner" },
+          conversation: { id: "cnv-1" },
+        },
+      }),
+    ) as unknown as typeof fetch;
+    const result = await activateConnect({ agentId: "codex", code: "A1B2C3", config, store, fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://app.clawling.com/v1/agents/connect",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "content-type": "application/json" }),
+        body: JSON.stringify({ code: "A1B2C3", platform: "clawchat-connect", type: "clawbot" }),
+      }),
+    );
+    expect(result).toMatchObject({
+      localAgentId: "codex",
+      accessToken: "token-1",
+      userId: "usr-agent",
+      ownerUserId: "usr-owner",
+      conversationId: "cnv-1",
+    });
+    await expect(store.getActivation("codex")).resolves.toMatchObject({ accessToken: "token-1", userId: "usr-agent" });
+    await store.close();
+  });
+  it("sends stored agent user_id when reactivating the same local agent", async () => {
+    const dir = await tempDir();
+    const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
+    config.stateDbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    await store.upsertActivation({
+      localAgentId: "codex",
+      accessToken: "old",
+      refreshToken: null,
+      serverAgentId: "agt-old",
+      userId: "usr-old",
+      ownerUserId: "usr-owner",
+      conversationId: null,
+    });
+    const fetchImpl = vi.fn(async () =>
+      response({
+        code: 0,
+        data: { access_token: "new", agent: { id: "agt-new", user_id: "usr-old", owner_id: "usr-owner" } },
+      }),
+    ) as unknown as typeof fetch;
+    await activateConnect({ agentId: "codex", code: "NEWCODE", config, store, fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://app.clawling.com/v1/agents/connect",
+      expect.objectContaining({
+        body: JSON.stringify({ code: "NEWCODE", platform: "clawchat-connect", type: "clawbot", user_id: "usr-old" }),
+      }),
+    );
+    await store.close();
+  });
+  it("requires the named agent to exist and does not create project or directory state", async () => {
+    const config = defaultConfig();
+    const fetchImpl = vi.fn();
+    await expect(activateConnect({ agentId: "codex", code: "A1B2C3", config, fetchImpl })).rejects.toThrow(
+      /Unknown clawchat-connect agent|No clawchat-connect agent/,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it("rejects incomplete activation responses", async () => {
+    const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
+    const fetchImpl = vi.fn(async () => response({ code: 0, data: { agent: {} } })) as unknown as typeof fetch;
+    await expect(activateConnect({ agentId: "codex", code: "A1B2C3", config, fetchImpl })).rejects.toThrow(
+      /access_token/,
+    );
+  });
 });

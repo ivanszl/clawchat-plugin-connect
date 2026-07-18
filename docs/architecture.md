@@ -4,49 +4,104 @@
 
 `clawchat-connect` ships one package with separate entrypoints:
 
-    clawchat-connect run
-      ClawChat Protocol v2 WebSocket client
-      inbound message normalization
-      chat command routing
-      ACP runtime dispatch
-      materialized message replies
+```text
+clawchat-connect run
+  ClawChat Protocol v2 WebSocket client
+  inbound message normalization
+  chat command routing
+  runtime adapter dispatch
+  materialized message replies
 
-    clawchat-connect mcp-server --agent <agentId>
-      stdio MCP server spawned by Claude/Codex/OpenCode
-      exposes 26 shared clawchat_* tools
+clawchat-connect mcp-server --agent <agentId>
+  stdio MCP server spawned by Codex or another agent client
+  exposes 26 shared clawchat_* tools
+```
 
-The WebSocket service and MCP server are separate processes because stdio MCP requires clean stdin/stdout JSON-RPC. Logs from the WebSocket service must never share the MCP stdout stream.
+The WebSocket process and MCP server are separate because stdio MCP requires clean stdin/stdout JSON-RPC. Logs from the WebSocket process must never share the MCP stdout stream.
+
+## Runtime adapters
+
+The shared runtime seam lives in `src/runtime/types.ts`.
+
+```text
+ConnectRuntime
+├── Codex adapter → @openai/codex-sdk → bundled Codex CLI
+└── ACP adapter   → @agentclientprotocol/sdk → configured ACP process
+```
+
+- `src/runtime/codex-adapter.ts` is the only `@openai/codex-sdk` import seam.
+- `src/runtime/acp-adapter.ts` is the only `@agentclientprotocol/sdk` import seam.
+- `src/mcp/server.ts` is the only `@modelcontextprotocol/sdk` import seam.
+- Agent configuration uses the `kind: "codex" | "acp"` discriminant.
+- Codex never passes through an ACP translation process.
+
+`ConnectRuntime` owns adapter selection, queueing, output visibility, reply delivery, and persisted runtime IDs. Adapters do not access SQLite directly.
+
+## Codex thread lifecycle
+
+The Codex adapter creates or resumes one SDK thread per logical ClawChat session. The SDK emits `thread.started`; `ConnectRuntime` persists that ID into the matching SQLite session row.
+
+```text
+ClawChat session ID
+      ↓
+SQLite runtime_session_id
+      ↓
+Codex resumeThread(threadId)
+      ↓
+~/.codex/sessions
+```
+
+Closing a live runtime session preserves its thread ID. This allows `/switch` and process restarts to resume it. Changing `/dir` or `/mode` invalidates the thread ID because those values become Codex thread options. Runtime-ID callbacks are accepted only while the originating in-memory session still owns its key, preventing a cancelled or stale turn from repopulating an invalidated ID.
+
+Cancellation uses one `AbortController` per active Codex turn.
+
+## Codex output mapping
+
+`runStreamed()` events are normalized into the existing runtime output kinds:
+
+- completed agent messages → `assistant`; the latest is held for one `final`
+- reasoning → `reasoning`
+- commands, file changes, web searches, and MCP calls → `tool` or `progress`
+- task lists and lifecycle/usage → `progress`
+- SDK failures → visible `final` output
+
+The runtime then applies `minimal`, `normal`, or `full` visibility and sends complete materialized ClawChat `message.reply` frames. Protocol streaming lifecycle events are not used in v1.
 
 ## Layering
 
-    src/cli.ts                  CLI commands and service startup
-    src/ws-client.ts            Protocol v2 WebSocket handshake, ack/error handling
-    src/message-mapper.ts       ClawChat message fragment mapping
-    src/chat-commands.ts        Chat command router
-    src/runtime/acp-adapter.ts  Only @agentclientprotocol/sdk import boundary
-    src/runtime/connect-runtime.ts Session queue + ACP turn dispatch
-    src/tools/schema.ts         26 tool names and zod schemas
-    src/tools/registry.ts       Shared tool handlers and audit
-    src/tools/bridge.ts         Best-effort ACP dynamic tool registration
-    src/mcp/server.ts           Only @modelcontextprotocol/sdk import boundary
-    src/api-client.ts           ClawChat REST/media client
-    src/state.ts                sqlite/sqlite3 operational state
+```text
+src/cli.ts                     CLI commands and process startup
+src/ws-client.ts               Protocol v2 WebSocket handshake, ack/error handling
+src/message-mapper.ts          ClawChat message fragment mapping
+src/chat-commands.ts           Chat command parsing and session intent
+src/runtime/types.ts           Shared runtime seam
+src/runtime/codex-adapter.ts   Official Codex SDK adapter
+src/runtime/acp-adapter.ts     Generic ACP adapter
+src/runtime/connect-runtime.ts Session queue, lifecycle, output, and reply dispatch
+src/tools/schema.ts            26 tool names and Zod schemas
+src/tools/registry.ts          Shared tool handlers and audit
+src/tools/bridge.ts            Best-effort ACP dynamic tool registration
+src/mcp/server.ts              stdio MCP adapter
+src/api-client.ts              ClawChat REST/media client
+src/state.ts                   sqlite/sqlite3 operational state
+```
 
 ## Tool exposure policy
 
 - The tool registry is the source of truth.
-- `src/mcp/server.ts` exposes that registry through `@modelcontextprotocol/sdk` v1 stdio transport.
+- `src/mcp/server.ts` exposes that registry through the MCP SDK's stdio transport.
+- Every Codex adapter injects a session-local `mcp_servers.clawchat_connect` configuration override into the SDK.
+- The override starts this package's compiled `bin.js`, passes the active agent/config, and supplies chat/state context through environment variables.
+- Automatic Codex exposure never writes `~/.codex/config.toml`.
 - `src/tools/bridge.ts` may register tools with ACP runtimes only when the runtime explicitly supports dynamic tools.
-- Unsupported ACP dynamic tool registration is not fatal; the user should configure the stdio MCP server.
+- Unsupported ACP dynamic tool registration is not fatal; the user can configure the stdio MCP server.
 - Skills are documentation/guidance only. They must not be treated as executable tool installation.
 
 ## Agent-only v1
 
-Config contains `agents` and `defaultAgent`. It does not contain `projects` or `defaultProject`. Working directory lives in runtime session state and is set from chat via `/dir` or `/cd`.
+Config contains `agents` and `defaultAgent`. It does not contain `projects` or `defaultProject`. Working directory lives in runtime session state and is set from chat through `/dir` or `/cd`.
 
 ## Output policy
-
-The runtime buffers ACP output into complete materialized ClawChat `message.reply` frames. It does not use Protocol streaming lifecycle events in v1.
 
 Output visibility is resolved in this order:
 
@@ -58,6 +113,12 @@ Required controls always remain visible. In group chats, required controls route
 
 ## Persistence
 
-JSON config is user-editable. SQLite stores credentials, device id, sessions, output visibility, message audit/idempotency, tool audit, and runtime status.
+JSON config is user-editable. SQLite stores credentials, device ID, logical sessions, runtime thread IDs, output visibility, message audit/idempotency, tool audit, and runtime status.
 
 Use `sqlite` + `sqlite3`; do not use `node:sqlite` or `better-sqlite3`.
+
+## Build and quality tooling
+
+Source uses extensionless relative imports with TypeScript bundler resolution. Vitest resolves source modules in tests; tsup emits bundled Node 20 ESM entrypoints under `dist/src`.
+
+Biome owns formatting, import organization, and linting. `tsc --noEmit` remains the independent type check.

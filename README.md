@@ -1,27 +1,86 @@
 # ClawChat Connect
 
-`@clawling/clawchat-plugin-connect` connects ClawChat conversations to local ACP-capable agents such as Claude Code, Codex, and OpenCode.
+`@clawling/clawchat-plugin-connect` connects ClawChat conversations to local coding agents.
+
+- Codex uses the official `@openai/codex-sdk` directly.
+- Other agents can use Agent Client Protocol (ACP) runtimes.
+- All runtimes share the same ClawChat session, output, persistence, and tool behavior.
 
 ## Install
 
-    npm install -g @clawling/clawchat-plugin-connect
+```bash
+npm install -g @clawling/clawchat-plugin-connect
+```
 
-## Configure an agent
+## Configure Codex
 
-    clawchat-connect init --agent codex --command codex
-    clawchat-connect activate codex A1B2C3
-    clawchat-connect run --agent codex
+Codex is a first-party runtime and does not need an ACP command or `codex-acp`:
 
-`init` only creates JSON config. It does not activate, start WebSocket, set a working directory, start an agent, or create/select a project.
+```bash
+clawchat-connect init --agent codex
+clawchat-connect activate codex A1B2C3
+clawchat-connect run --agent codex
+```
 
-## Working directories
+The SDK starts its bundled Codex CLI and uses the normal Codex authentication and session directories. If a specific local Codex executable is required, configure it explicitly:
 
-v1 is agent-only. There are no projects and no `/project` command. Working directory is chat/session state:
+```bash
+clawchat-connect agent add work --kind codex --codex-path /absolute/path/to/codex
+```
 
-    /dir /absolute/path/to/repo
-    /cd /absolute/path/to/repo
+Codex configuration can also be edited in `~/.clawchat-connect/config.json`:
 
-If a session has no directory, Connect replies with `/dir /absolute/path/to/repo` instructions and does not dispatch the turn to ACP.
+```json
+{
+  "defaultAgent": "codex",
+  "agents": {
+    "codex": {
+      "kind": "codex",
+      "model": "gpt-5-codex",
+      "sandboxMode": "workspace-write",
+      "modelReasoningEffort": "high",
+      "approvalPolicy": "never",
+      "webSearchMode": "live",
+      "networkAccessEnabled": true
+    }
+  }
+}
+```
+
+Supported Codex options include `codexPathOverride`, `env`, `model`, `sandboxMode`, `modelReasoningEffort`, `approvalPolicy`, `webSearchMode`, `networkAccessEnabled`, `skipGitRepoCheck`, and `additionalDirectories`.
+
+Legacy agent ID `codex` configurations that launch bare `codex` or `@agentclientprotocol/codex-acp` are normalized to the first-party Codex runtime.
+
+## Configure another ACP agent
+
+Generic ACP agents still use an executable command:
+
+```bash
+clawchat-connect agent add my-agent --kind acp --command my-acp-server
+```
+
+For commands that require arguments, edit the agent's `command` and `args` fields in the JSON configuration.
+
+## Working directories and sessions
+
+v1 is agent-only. There are no projects and no `/project` command. The working directory belongs to the current ClawChat session:
+
+```text
+/dir /absolute/path/to/repo
+/cd /absolute/path/to/repo
+```
+
+If a session has no directory, Connect replies with setup instructions and does not dispatch the turn.
+
+Codex thread IDs are stored with the logical ClawChat session. Connect resumes the thread after a process restart or after switching back to a previous session. `/dir` and `/mode` invalidate the current runtime thread because they change its startup options; `/new` and `/switch` preserve older thread IDs.
+
+Codex accepts these runtime modes:
+
+```text
+/mode read-only
+/mode workspace-write
+/mode danger-full-access
+```
 
 ## Chat commands
 
@@ -36,68 +95,60 @@ If a session has no directory, Connect replies with `/dir /absolute/path/to/repo
 - `/mode <mode>`
 - `/cancel`
 
+## Codex streaming output
+
+The Codex adapter maps official SDK events into ClawChat output kinds:
+
+- agent messages → `assistant` and `final`
+- reasoning → `reasoning`
+- commands, file changes, and MCP calls → `tool`
+- task lists, searches, and turn lifecycle → `progress`
+- failures → visible `final` replies
+
+The latest completed agent message is emitted exactly once as the final reply. `/cancel` aborts the active SDK turn through `AbortSignal`.
+
 ## Tools
 
-Connect implements the shared 26 `clawchat_*` tools once in `src/tools/*` and exposes them through:
+Connect implements the shared 26 `clawchat_*` tools once in `src/tools/*`.
 
-1. `clawchat-connect mcp-server --agent <agentId>` — v1 portable stdio MCP surface.
-2. Best-effort ACP dynamic registration when a runtime supports it.
+### Codex
 
-The MCP server is stdio. Agent clients spawn it as their own subprocess; users normally configure it once and do not manually keep it running.
+Every Codex SDK session receives an in-memory `mcp_servers.clawchat_connect` override. Codex starts:
 
-### Claude Code MCP
+```bash
+clawchat-connect mcp-server --agent <agentId> --config <configPath>
+```
 
-    claude mcp add-json clawchat-connect '{"type":"stdio","command":"clawchat-connect","args":["mcp-server","--agent","claude"]}' --scope user
+The override carries the active ClawChat chat and state paths. Connect does **not** modify `~/.codex/config.toml`.
 
-Project `.mcp.json` equivalent:
+### Other clients
 
-    {
-      "mcpServers": {
-        "clawchat-connect": {
-          "type": "stdio",
-          "command": "clawchat-connect",
-          "args": ["mcp-server", "--agent", "claude"]
-        }
-      }
-    }
+The same registry remains available as a portable stdio MCP server:
 
-### Codex MCP
+```bash
+clawchat-connect mcp-server --agent <agentId>
+```
 
-Add to Codex MCP config:
+ACP runtimes may also receive best-effort dynamic tool registration when they explicitly support it.
 
-    [mcp_servers.clawchat_connect]
-    command = "clawchat-connect"
-    args = ["mcp-server", "--agent", "codex"]
-
-### OpenCode MCP
-
-Add to `opencode.jsonc`:
-
-    {
-      "mcp": {
-        "clawchat-connect": {
-          "type": "local",
-          "command": ["clawchat-connect", "mcp-server", "--agent", "opencode"],
-          "enabled": true
-        }
-      }
-    }
-
-## Skills
-
-Skills are optional guidance, not tool execution. Do not install tools into skill directories. Use MCP for tools.
-
-If a helper skill is added later, install it to the agent's native skill discovery path:
-
-- Claude Code: `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/clawchat/SKILL.md`
-- Codex: `~/.agents/skills/clawchat/SKILL.md`
-- OpenCode: `~/.agents/skills/clawchat/SKILL.md` or `~/.config/opencode/skills/clawchat/SKILL.md`
-
-The helper skill should explain ClawChat context and fallback behavior only.
+Skills are optional guidance, not tool execution. Do not install tools into skill directories.
 
 ## State and config
 
 - Config: `~/.clawchat-connect/config.json`
 - SQLite state: `~/.clawchat-connect/state.sqlite`
+- Codex threads: normal Codex session storage under `~/.codex/sessions`
 
-Invite codes are not persisted. Credentials and operational audit rows are stored in SQLite.
+Invite codes are not persisted. Credentials, runtime thread IDs, operational audit rows, output visibility, and runtime status are stored in SQLite.
+
+## Development
+
+Source files use extensionless relative imports. Vitest resolves them during tests, and tsup bundles them into Node-compatible ESM for publishing.
+
+```bash
+npm run format
+npm run lint
+npm run typecheck
+npm test
+npm run build
+```

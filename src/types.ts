@@ -15,6 +15,28 @@ export interface AcpAgentConfig {
   mode?: string;
 }
 
+export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+export type CodexApprovalPolicy = "never" | "on-request" | "on-failure" | "untrusted";
+export type CodexWebSearchMode = "disabled" | "cached" | "live";
+
+export interface CodexAgentConfig {
+  kind: "codex";
+  codexPathOverride?: string;
+  env?: Record<string, string>;
+  displayName?: string;
+  model?: string;
+  sandboxMode?: CodexSandboxMode;
+  modelReasoningEffort?: CodexReasoningEffort;
+  approvalPolicy?: CodexApprovalPolicy;
+  webSearchMode?: CodexWebSearchMode;
+  networkAccessEnabled?: boolean;
+  skipGitRepoCheck?: boolean;
+  additionalDirectories?: string[];
+}
+
+export type AgentConfig = AcpAgentConfig | CodexAgentConfig;
+
 export interface ConnectConfig {
   baseUrl: string;
   websocketUrl: string;
@@ -22,7 +44,7 @@ export interface ConnectConfig {
   stateDbPath: string;
   defaultAgent: string | null;
   outputVisibility: OutputVisibility;
-  agents: Record<string, AcpAgentConfig>;
+  agents: Record<string, AgentConfig>;
   maxConcurrentTurns?: number;
   maxPendingPerChat?: number;
 }

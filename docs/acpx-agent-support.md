@@ -1,6 +1,6 @@
 # acpx Agent Support Reference
 
-This document records how `openclaw/acpx` maps common coding agents to ACP startup commands. It is reference material for improving ClawChat Connect agent presets and documentation; Connect should borrow the registry and compatibility lessons, not depend on `acpx` as a runtime layer.
+This document records how `openclaw/acpx` maps common coding agents to ACP startup commands. It remains reference material for non-Codex agent presets and compatibility lessons. Connect does not depend on `acpx`; Codex is a deliberate exception to these mappings and uses the official `@openai/codex-sdk` directly.
 
 ## Built-in Agent Mapping
 
@@ -8,7 +8,7 @@ This document records how `openclaw/acpx` maps common coding agents to ACP start
 |---|---|---|---|---|
 | Pi | `acpx pi` | `npx pi-acp` | External ACP adapter | Possible preset if Pi runtime support is desired later. |
 | OpenClaw | `acpx openclaw` | `openclaw acp` | Native ACP bridge | Useful for parity testing, but Connect is not an OpenClaw plugin. |
-| Codex | `acpx codex` | `npx -y @agentclientprotocol/codex-acp` | External ACP adapter | Prefer this over assuming `codex` itself is the ACP server. |
+| Codex | `acpx codex` | `npx -y @agentclientprotocol/codex-acp` | External ACP adapter | Historical reference only. Connect replaces this path with its first-party Codex SDK adapter. |
 | Claude | `acpx claude` | `npx -y @agentclientprotocol/claude-agent-acp` | External ACP adapter | Correct Claude path; do not document `claude` CLI itself as the ACP server. |
 | Gemini | `acpx gemini` | `gemini --acp` | Native ACP | Older versions may require `--experimental-acp`. |
 | Cursor | `acpx cursor` | `cursor-agent acp` | Native ACP | Some installs may expose a different binary; keep override support. |
@@ -29,10 +29,10 @@ This document records how `openclaw/acpx` maps common coding agents to ACP start
 
 | Priority | Pattern | acpx behavior | Connect implication |
 |---|---|---|---|
-| P0 | Agent registry | Maps short names such as `claude`, `codex`, and `opencode` to concrete ACP commands. | Add built-in presets/templates so users do not have to know adapter package names. |
+| P0 | Agent registry | Maps short names such as `claude`, `codex`, and `opencode` to concrete runtime commands. | Keep preset-style configuration for ACP agents; `kind: "codex"` selects the first-party SDK without a command. |
 | P0 | Command plus args model | Splits command lines into executable + args before spawning. | Store `command` and `args` in config, or support a safe raw command parser. |
 | P0 | Correct Claude mapping | Uses `@agentclientprotocol/claude-agent-acp`. | Fix docs/examples to avoid implying Claude Code CLI is directly ACP-native. |
-| P0 | Correct Codex mapping | Uses `@agentclientprotocol/codex-acp`. | Prefer adapter-based Codex examples unless a verified native ACP path is configured. |
+| P0 | Codex exception | acpx uses `@agentclientprotocol/codex-acp`. | Do not copy this mapping into Connect. Use `@openai/codex-sdk`, structured events, persisted thread IDs, and automatic MCP configuration. |
 | P1 | Overrides | Allows config to override built-in agent commands. | Preserve local customization for alternate install paths and versions. |
 | P1 | Startup preflight | Checks some agent CLIs for ACP support or version quirks. | Add clear validation errors for missing commands or unsupported ACP flags. |
 | P1 | Agent compatibility shims | Handles Claude metadata, Gemini flag fallback, Copilot support checks, and Qoder options. | Add only targeted shims where real agent behavior requires them. |
