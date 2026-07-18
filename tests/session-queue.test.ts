@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "bun:test";
 import { SessionQueue } from "../src/runtime/session-queue";
 
 describe("SessionQueue", () => {

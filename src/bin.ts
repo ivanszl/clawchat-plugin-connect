@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { runConnectCli } from "./cli";
 
 runConnectCli(process.argv.slice(2)).then((code) => {

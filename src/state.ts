@@ -1,7 +1,6 @@
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { type Database, open } from "sqlite";
-import sqlite3 from "sqlite3";
 import { defaultStateDbPath } from "./config";
 import {
   type ActivationCredentials,
@@ -15,7 +14,32 @@ import {
 export interface ConnectStateOptions {
   dbPath?: string;
 }
-type SqliteDb = Database<sqlite3.Database, sqlite3.Statement>;
+
+class BunSqliteAdapter {
+  constructor(private readonly database: Database) {}
+
+  async run(sql: string, ...bindings: SQLQueryBindings[]): Promise<{ changes: number }> {
+    return this.database.query<unknown, SQLQueryBindings[]>(sql).run(...bindings);
+  }
+
+  async get<T>(sql: string, ...bindings: SQLQueryBindings[]): Promise<T | undefined> {
+    return this.database.query<T, SQLQueryBindings[]>(sql).get(...bindings) ?? undefined;
+  }
+
+  async all<T>(sql: string, ...bindings: SQLQueryBindings[]): Promise<T> {
+    return this.database.query<unknown, SQLQueryBindings[]>(sql).all(...bindings) as T;
+  }
+
+  async exec(sql: string): Promise<void> {
+    this.database.exec(sql);
+  }
+
+  async close(): Promise<void> {
+    this.database.close();
+  }
+}
+
+type SqliteDb = BunSqliteAdapter;
 export interface MessageInput {
   agentId?: string | null;
   direction: "inbound" | "outbound";
@@ -58,7 +82,7 @@ export class ConnectStateStore {
   async initialize(): Promise<void> {
     if (this.db) return;
     await mkdir(dirname(this.dbPath), { recursive: true, mode: 0o700 });
-    this.db = await open({ filename: this.dbPath, driver: sqlite3.Database });
+    this.db = new BunSqliteAdapter(new Database(this.dbPath, { create: true }));
     await this.db.exec("PRAGMA journal_mode = WAL");
     await this.db.exec("PRAGMA foreign_keys = ON");
     await this.applyMigrations();

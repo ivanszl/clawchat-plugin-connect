@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, mock } from "bun:test";
 import { defaultConfig } from "../src/config";
 import { materializeRuntimeOutput, policyForOutputVisibility, resolveOutputVisibility } from "../src/output-visibility";
 import type { ConnectStateStore } from "../src/state";
@@ -7,7 +7,7 @@ describe("output visibility", () => {
   it("uses chat override before global default", async () => {
     const config = defaultConfig();
     config.outputVisibility = "minimal";
-    const store = { getOutputVisibility: vi.fn(async () => "full") } as unknown as ConnectStateStore;
+    const store = { getOutputVisibility: mock(async () => "full") } as unknown as ConnectStateStore;
     await expect(resolveOutputVisibility({ config, store, chatId: "chat-1" })).resolves.toBe("full");
   });
   it("falls back to global config without project override", async () => {

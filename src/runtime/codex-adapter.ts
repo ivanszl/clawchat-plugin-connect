@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import type { CodexOptions, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions } from "@openai/codex-sdk";
 import type { RuntimeOutputEvent } from "../output-visibility";
 import type { CodexAgentConfig, CodexSandboxMode } from "../types";
@@ -28,7 +27,7 @@ const SANDBOX_MODES: readonly CodexSandboxMode[] = ["read-only", "workspace-writ
 
 export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOptions = {}): ConnectRuntimeAdapter {
   const createCodex = options.createCodex ?? createOfficialCodexClient;
-  const binPath = options.binPath ?? fileURLToPath(new URL("./bin.js", import.meta.url));
+  const binPath = options.binPath ?? Bun.main;
   return {
     async start(agent, context) {
       if (agent.kind !== "codex") throw new Error("Codex runtime adapter requires a Codex agent");

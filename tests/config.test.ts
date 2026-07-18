@@ -1,7 +1,7 @@
+import { describe, expect, it } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
 import { getAgent, loadConfig, normalizeConfig, saveConfig } from "../src/config";
 
 async function tempConfigPath(): Promise<string> {

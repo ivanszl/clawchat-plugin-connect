@@ -1,7 +1,7 @@
+import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
 import { defaultConfig, upsertAgent } from "../src/config";
 import type { RuntimeOutputEvent } from "../src/output-visibility";
 import type { NormalizedInboundMessage } from "../src/protocol";
@@ -34,9 +34,9 @@ function session(
   return {
     toolsAlreadyExposed: true,
     prompt: () => prompt(context),
-    close: vi.fn(async () => undefined),
-    cancel: vi.fn(async () => true),
-    registerTools: vi.fn(async () => true),
+    close: mock(async () => undefined),
+    cancel: mock(async () => true),
+    registerTools: mock(async () => true),
   };
 }
 
@@ -52,7 +52,7 @@ async function runtimeFixture() {
     cwd: "/repo",
     isCurrent: true,
   });
-  const wsClient = { sendMessageEnvelope: vi.fn(async () => ({ payload: {} })) } as unknown as ConnectWsClient;
+  const wsClient = { sendMessageEnvelope: mock(async () => ({ payload: {} })) } as unknown as ConnectWsClient;
   return { config, store, wsClient, configPath: join(directory, "config.json") };
 }
 
@@ -61,7 +61,7 @@ describe("ConnectRuntime Codex sessions", () => {
     const fixture = await runtimeFixture();
     const starts: ConnectRuntimeStartContext[] = [];
     const adapter: ConnectRuntimeAdapter = {
-      start: vi.fn(async (_agent, context) => {
+      start: mock(async (_agent, context) => {
         starts.push(context);
         return session(async function* (startContext) {
           await startContext.onRuntimeSessionId("thread-1");
@@ -106,7 +106,7 @@ describe("ConnectRuntime Codex sessions", () => {
     await fixture.store.setRuntimeSessionId("chat-1", "session-1", "thread-1");
     const createdSessions: ConnectRuntimeSession[] = [];
     const adapter: ConnectRuntimeAdapter = {
-      start: vi.fn(async (_agent, context) => {
+      start: mock(async (_agent, context) => {
         const created = session(async function* () {
           yield { kind: "final", text: "done" };
         }, context);
@@ -131,9 +131,9 @@ describe("ConnectRuntime Codex sessions", () => {
     await runtime.handleInboundMessage(message("resume"));
     await expect(runtime.invalidateSession("chat-1")).resolves.toBe(true);
     await expect(fixture.store.getCurrentRuntimeSession("chat-1")).resolves.toMatchObject({ runtimeSessionId: null });
-    expect(
-      createdSessions.every((created) => (created.close as ReturnType<typeof vi.fn>).mock.calls.length === 1),
-    ).toBe(true);
+    expect(createdSessions.every((created) => (created.close as ReturnType<typeof mock>).mock.calls.length === 1)).toBe(
+      true,
+    );
     await fixture.store.close();
   });
 });

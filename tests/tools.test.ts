@@ -1,7 +1,7 @@
+import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
 import { defaultConfig, upsertAgent } from "../src/config";
 import type { ConnectStateStore } from "../src/state";
 import { registerClawChatToolsBestEffort } from "../src/tools/bridge";
@@ -12,7 +12,7 @@ import type { ConnectWsClient } from "../src/ws-client";
 
 function makeStore(): ConnectStateStore {
   return {
-    getActivation: vi.fn(async () => ({
+    getActivation: mock(async () => ({
       localAgentId: "codex",
       accessToken: "token",
       refreshToken: null,
@@ -21,7 +21,7 @@ function makeStore(): ConnectStateStore {
       ownerUserId: "owner",
       conversationId: "owner-chat",
     })),
-    recordToolCall: vi.fn(async () => undefined),
+    recordToolCall: mock(async () => undefined),
   } as unknown as ConnectStateStore;
 }
 function makeContext(overrides: Record<string, unknown> = {}) {
@@ -63,12 +63,12 @@ const OPENCLAW_26_TOOL_NAMES = [
 
 describe("ClawChat tool registry", () => {
   it("contains exactly the OpenClaw/Hermes shared 26 tool names", () => {
-    expect(CLAWCHAT_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual(OPENCLAW_26_TOOL_NAMES);
+    expect(CLAWCHAT_TOOL_DEFINITIONS.map((tool) => tool.name)).toEqual([...OPENCLAW_26_TOOL_NAMES]);
     expect(CLAWCHAT_TOOL_DEFINITIONS).toHaveLength(26);
     for (const name of OPENCLAW_26_TOOL_NAMES) expect(clawchatToolSchemas[name]).toBeTruthy();
   });
   it("audits successful REST-backed tool calls", async () => {
-    const api = { getMyProfile: vi.fn(async () => ({ id: "me" })) };
+    const api = { getMyProfile: mock(async () => ({ id: "me" })) };
     const stateStore = makeStore();
     const result = await executeClawChatTool("clawchat_get_account_profile", {}, makeContext({ api, stateStore }));
     expect(result).toMatchObject({ status: "ok", data: { id: "me" } });
@@ -86,7 +86,7 @@ describe("ClawChat tool registry", () => {
     expect(result.error?.kind).toBe("validation");
   });
   it("executes mention sends only through the required message port", async () => {
-    const mentionMessage = { sendMentionMessage: vi.fn(async () => ({ message_id: "msg-1" })) };
+    const mentionMessage = { sendMentionMessage: mock(async () => ({ message_id: "msg-1" })) };
     const result = await executeClawChatTool(
       "clawchat_mention_message",
       { chatId: "chat-1", text: "hello", mentions: [{ userId: "usr-1", display: "Colin" }] },
@@ -99,7 +99,7 @@ describe("ClawChat tool registry", () => {
   });
   it("sends mention metadata through the message port", async () => {
     const wsClient = {
-      sendMessageEnvelope: vi.fn(async () => ({ payload: { message_id: "msg-1" } })),
+      sendMessageEnvelope: mock(async () => ({ payload: { message_id: "msg-1" } })),
     } as unknown as ConnectWsClient;
     const port = createMentionMessagePort(wsClient);
     await port.sendMentionMessage({

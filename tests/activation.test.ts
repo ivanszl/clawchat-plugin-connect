@@ -1,7 +1,7 @@
+import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
 import { activateConnect } from "../src/activation";
 import { defaultConfig, upsertAgent } from "../src/config";
 import { createStateStore } from "../src/state";
@@ -19,7 +19,7 @@ describe("activateConnect", () => {
     const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl = mock(async () =>
       response({
         code: 0,
         msg: "ok",
@@ -64,7 +64,7 @@ describe("activateConnect", () => {
       ownerUserId: "usr-owner",
       conversationId: null,
     });
-    const fetchImpl = vi.fn(async () =>
+    const fetchImpl = mock(async () =>
       response({
         code: 0,
         data: { access_token: "new", agent: { id: "agt-new", user_id: "usr-old", owner_id: "usr-owner" } },
@@ -81,7 +81,7 @@ describe("activateConnect", () => {
   });
   it("requires the named agent to exist and does not create project or directory state", async () => {
     const config = defaultConfig();
-    const fetchImpl = vi.fn();
+    const fetchImpl = mock() as unknown as typeof fetch;
     await expect(activateConnect({ agentId: "codex", code: "A1B2C3", config, fetchImpl })).rejects.toThrow(
       /Unknown clawchat-connect agent|No clawchat-connect agent/,
     );
@@ -89,7 +89,7 @@ describe("activateConnect", () => {
   });
   it("rejects incomplete activation responses", async () => {
     const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
-    const fetchImpl = vi.fn(async () => response({ code: 0, data: { agent: {} } })) as unknown as typeof fetch;
+    const fetchImpl = mock(async () => response({ code: 0, data: { agent: {} } })) as unknown as typeof fetch;
     await expect(activateConnect({ agentId: "codex", code: "A1B2C3", config, fetchImpl })).rejects.toThrow(
       /access_token/,
     );

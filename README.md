@@ -1,6 +1,6 @@
 # ClawChat Connect
 
-`@clawling/clawchat-plugin-connect` connects ClawChat conversations to local coding agents.
+`@clawling/clawchat-plugin-connect` is a Bun-native CLI that connects ClawChat conversations to local coding agents. It requires Bun 1.3 or newer.
 
 - Codex uses the official `@openai/codex-sdk` directly.
 - Other agents can use Agent Client Protocol (ACP) runtimes.
@@ -9,7 +9,7 @@
 ## Install
 
 ```bash
-npm install -g @clawling/clawchat-plugin-connect
+bun add --global @clawling/clawchat-plugin-connect
 ```
 
 ## Configure Codex
@@ -22,7 +22,7 @@ clawchat-connect activate codex A1B2C3
 clawchat-connect run --agent codex
 ```
 
-The SDK starts its bundled Codex CLI and uses the normal Codex authentication and session directories. If a specific local Codex executable is required, configure it explicitly:
+The SDK runs under Bun, starts its bundled Codex CLI, and uses the normal Codex authentication and session directories. If a specific local Codex executable is required, configure it explicitly:
 
 ```bash
 clawchat-connect agent add work --kind codex --codex-path /absolute/path/to/codex
@@ -136,19 +136,22 @@ Skills are optional guidance, not tool execution. Do not install tools into skil
 ## State and config
 
 - Config: `~/.clawchat-connect/config.json`
-- SQLite state: `~/.clawchat-connect/state.sqlite`
+- SQLite state: `~/.clawchat-connect/state.sqlite` through Bun's built-in `bun:sqlite`
 - Codex threads: normal Codex session storage under `~/.codex/sessions`
 
 Invite codes are not persisted. Credentials, runtime thread IDs, operational audit rows, output visibility, and runtime status are stored in SQLite.
 
 ## Development
 
-Source files use extensionless relative imports. Vitest resolves them during tests, and tsup bundles them into Node-compatible ESM for publishing.
+Bun owns package installation, runtime execution, testing, and bundling. Source files use extensionless relative imports, `bun:test` runs the test suite, and `bun build --target=bun` creates the publishable CLI and library entrypoints.
 
 ```bash
-npm run format
-npm run lint
-npm run typecheck
-npm test
-npm run build
+bun install
+bun run format
+bun run lint
+bun run typecheck
+bun test
+bun run build
 ```
+
+The runtime uses Bun's built-in WebSocket client and `bun:sqlite`; it does not depend on `ws`, `sqlite`, `sqlite3`, Vitest, or tsup.

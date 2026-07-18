@@ -1,5 +1,5 @@
+import { describe, expect, it, mock } from "bun:test";
 import type { ThreadEvent } from "@openai/codex-sdk";
-import { describe, expect, it, vi } from "vitest";
 import { type CodexClientLike, type CodexThreadLike, createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import type { ConnectRuntimeSession, ConnectRuntimeStartContext } from "../src/runtime/types";
 import type { CodexAgentConfig } from "../src/types";
@@ -24,7 +24,7 @@ function context(overrides: Partial<ConnectRuntimeStartContext> = {}): ConnectRu
     runtimeSessionId: null,
     configPath: "/tmp/connect config.json",
     stateDbPath: "/tmp/connect state.sqlite",
-    onRuntimeSessionId: vi.fn(async () => undefined),
+    onRuntimeSessionId: mock(async () => undefined),
     ...overrides,
   };
 }
@@ -38,11 +38,11 @@ function events(items: ThreadEvent[]): AsyncGenerator<ThreadEvent> {
 function fakeClient(threadEvents: ThreadEvent[], threadId: string | null = null) {
   const thread: CodexThreadLike = {
     id: threadId,
-    runStreamed: vi.fn(async () => ({ events: events(threadEvents) })),
+    runStreamed: mock(async () => ({ events: events(threadEvents) })),
   };
   const client: CodexClientLike = {
-    startThread: vi.fn(() => thread),
-    resumeThread: vi.fn(() => thread),
+    startThread: mock(() => thread),
+    resumeThread: mock(() => thread),
   };
   return { client, thread };
 }
@@ -63,7 +63,7 @@ describe("Codex SDK runtime adapter", () => {
         usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 2, reasoning_output_tokens: 0 },
       },
     ]);
-    const createCodex = vi.fn(async () => client);
+    const createCodex = mock(async () => client);
     const started = context();
     const adapter = createCodexRuntimeAdapter({ createCodex, binPath: "/package/dist/src/bin.js" });
     const session = await adapter.start(agent, started);
@@ -140,7 +140,7 @@ describe("Codex SDK runtime adapter", () => {
         item: {
           id: "c1",
           type: "command_execution",
-          command: "npm test",
+          command: "bun test",
           aggregated_output: "ok",
           exit_code: 0,
           status: "completed",
@@ -162,7 +162,7 @@ describe("Codex SDK runtime adapter", () => {
     const output = await collect(session);
 
     expect(output).toContainEqual({ kind: "reasoning", text: "thinking" });
-    expect(output).toContainEqual(expect.objectContaining({ kind: "tool", text: expect.stringContaining("npm test") }));
+    expect(output).toContainEqual(expect.objectContaining({ kind: "tool", text: expect.stringContaining("bun test") }));
     expect(output).toContainEqual(expect.objectContaining({ kind: "tool", text: expect.stringContaining("src/a.ts") }));
     expect(output).toContainEqual({ kind: "assistant", text: "intermediate" });
     expect(output.filter((event) => event.kind === "final")).toEqual([{ kind: "final", text: "final answer" }]);
@@ -186,7 +186,7 @@ describe("Codex SDK runtime adapter", () => {
     let signal: AbortSignal | undefined;
     const thread: CodexThreadLike = {
       id: null,
-      runStreamed: vi.fn(async (_input, options) => {
+      runStreamed: mock(async (_input, options) => {
         signal = options?.signal;
         return {
           events: (async function* () {

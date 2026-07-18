@@ -1,7 +1,7 @@
+import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
 import { handleChatCommand } from "../src/chat-commands";
 import { runConnectCli } from "../src/cli";
 import { defaultConfig, loadConfig, upsertAgent } from "../src/config";
@@ -95,7 +95,7 @@ describe("runConnectCli", () => {
 
   it("activates through injectable activation action without printing invite code", async () => {
     const output = io();
-    const activateConnect = vi.fn(async () => ({
+    const activateConnect = mock(async () => ({
       localAgentId: "codex",
       accessToken: "token",
       refreshToken: null,
@@ -111,7 +111,7 @@ describe("runConnectCli", () => {
 
   it("runs service through injectable service starter with agent", async () => {
     const output = io();
-    const startService = vi.fn(async () => ({
+    const startService = mock(async () => ({
       connected: true,
       websocketUrl: "wss://example/ws",
       deviceId: "device-1",
@@ -124,7 +124,7 @@ describe("runConnectCli", () => {
 
 describe("handleChatCommand", () => {
   it("persists /clawchat-output overrides", async () => {
-    const store = { setOutputVisibility: vi.fn(async () => undefined) } as unknown as ConnectStateStore;
+    const store = { setOutputVisibility: mock(async () => undefined) } as unknown as ConnectStateStore;
     const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
     await expect(
       handleChatCommand({ message: message("/clawchat-output full"), agentId: "codex", config, stateStore: store }),
@@ -143,16 +143,16 @@ describe("handleChatCommand", () => {
       [key: string]: unknown;
     }> = [];
     const store = {
-      getRuntimeStatus: vi.fn(async () => null),
-      getCurrentRuntimeSession: vi.fn(async () => sessions.find((session) => session.isCurrent) ?? null),
-      upsertRuntimeSession: vi.fn(async (session) => {
+      getRuntimeStatus: mock(async () => null),
+      getCurrentRuntimeSession: mock(async () => sessions.find((session) => session.isCurrent) ?? null),
+      upsertRuntimeSession: mock(async (session) => {
         sessions.forEach((existing) => {
           existing.isCurrent = false;
         });
         sessions.push({ ...session, isCurrent: true });
       }),
-      listRuntimeSessions: vi.fn(async () => sessions),
-      switchRuntimeSession: vi.fn(async (_chatId, id) => {
+      listRuntimeSessions: mock(async () => sessions),
+      switchRuntimeSession: mock(async (_chatId, id) => {
         const found = sessions.find((session) => session.sessionId === id);
         if (!found) return false;
         sessions.forEach((session) => {
@@ -161,7 +161,7 @@ describe("handleChatCommand", () => {
         found.isCurrent = true;
         return true;
       }),
-      setCurrentSessionDirectory: vi.fn(async (_chatId, agentId, cwd) => {
+      setCurrentSessionDirectory: mock(async (_chatId, agentId, cwd) => {
         sessions.forEach((session) => {
           session.isCurrent = false;
         });
@@ -169,8 +169,8 @@ describe("handleChatCommand", () => {
       }),
     } as unknown as ConnectStateStore;
     const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
-    const closeRuntimeSession = vi.fn(async () => true);
-    const invalidateRuntimeSession = vi.fn(async () => true);
+    const closeRuntimeSession = mock(async () => true);
+    const invalidateRuntimeSession = mock(async () => true);
     for (const command of [
       "/status",
       "/new",

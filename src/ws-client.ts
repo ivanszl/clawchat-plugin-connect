@@ -1,5 +1,4 @@
 import { EventEmitter } from "node:events";
-import WebSocket from "ws";
 import { buildTextMessagePayload, normalizeInboundMessage } from "./message-mapper";
 import {
   AckTimeoutError,
@@ -34,10 +33,10 @@ import {
 import type { ConnectStateStore } from "./state";
 
 export interface WebSocketLike {
-  on(event: "open", listener: () => void): void;
-  on(event: "message", listener: (data: WebSocket.RawData) => void): void;
-  on(event: "close", listener: (code: number, reason: Buffer) => void): void;
-  on(event: "error", listener: (error: Error) => void): void;
+  onopen: (() => void) | null;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  onclose: ((event: { code: number; reason: string }) => void) | null;
+  onerror: ((event: { error?: unknown; message?: string }) => void) | null;
   send(data: string): void;
   close(code?: number, reason?: string): void;
 }
@@ -45,7 +44,7 @@ export interface WebSocketLike {
 export type WebSocketConstructor = new (url: string) => WebSocketLike;
 
 export function createWebSocketTransport(
-  WebSocketCtor: WebSocketConstructor = WebSocket as unknown as WebSocketConstructor,
+  WebSocketCtor: WebSocketConstructor = globalThis.WebSocket as unknown as WebSocketConstructor,
 ): Transport {
   let state: TransportState = "closed";
   let socket: WebSocketLike | null = null;
@@ -66,31 +65,35 @@ export function createWebSocketTransport(
           settled = true;
           reject(error);
         };
-        activeSocket.on("open", () => {
+        activeSocket.onopen = () => {
           if (!isCurrent()) return;
           opened = true;
           settled = true;
           state = "open";
           handlers.onOpen();
           resolve();
-        });
-        activeSocket.on("message", (data) => {
+        };
+        activeSocket.onmessage = (event) => {
           if (!isCurrent()) return;
-          handlers.onMessage(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer));
-        });
-        activeSocket.on("close", (code, reason) => {
+          void normalizeWebSocketData(event.data).then(handlers.onMessage).catch(handlers.onError);
+        };
+        activeSocket.onclose = (event) => {
           if (!isCurrent()) return;
           state = "closed";
           socket = null;
-          const text = reason.toString("utf8") || "closed";
-          handlers.onClose(code, text);
-          rejectBeforeOpen(new TransportError(text));
-        });
-        activeSocket.on("error", (error) => {
+          const reason = event.reason || "closed";
+          handlers.onClose(event.code, reason);
+          rejectBeforeOpen(new TransportError(reason));
+        };
+        activeSocket.onerror = (event) => {
           if (!isCurrent()) return;
+          const error =
+            event.error instanceof Error
+              ? event.error
+              : new TransportError(event.message || "websocket transport error");
           handlers.onError(error);
           rejectBeforeOpen(error);
-        });
+        };
       });
     },
     send(data) {
@@ -102,6 +105,14 @@ export function createWebSocketTransport(
       socket?.close(code, reason);
     },
   };
+}
+
+async function normalizeWebSocketData(data: unknown): Promise<string | Buffer> {
+  if (typeof data === "string" || Buffer.isBuffer(data)) return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  if (data instanceof Blob) return Buffer.from(await data.arrayBuffer());
+  throw new TransportError(`unsupported websocket message type: ${typeof data}`);
 }
 
 export interface ConnectWsClientOptions {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, mock } from "bun:test";
 import {
   type Envelope,
   EVENT,
@@ -8,7 +8,12 @@ import {
   type TransportState,
 } from "../src/protocol";
 import type { ConnectStateStore } from "../src/state";
-import { ConnectWsClient } from "../src/ws-client";
+import {
+  ConnectWsClient,
+  createWebSocketTransport,
+  type WebSocketConstructor,
+  type WebSocketLike,
+} from "../src/ws-client";
 
 class MemoryTransport implements Transport {
   state: TransportState = "closed";
@@ -30,12 +35,34 @@ class MemoryTransport implements Transport {
   }
 }
 
+class BunWebSocketFake implements WebSocketLike {
+  static last: BunWebSocketFake | null = null;
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  onclose: ((event: { code: number; reason: string }) => void) | null = null;
+  onerror: ((event: { error?: unknown; message?: string }) => void) | null = null;
+  readonly sent: string[] = [];
+  readonly closeCalls: Array<[number | undefined, string | undefined]> = [];
+
+  constructor(readonly url: string) {
+    BunWebSocketFake.last = this;
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.closeCalls.push([code, reason]);
+  }
+}
+
 function createStore(options: { deviceId?: string; claim?: boolean } = {}): ConnectStateStore {
   return {
-    getDeviceId: vi.fn(async () => options.deviceId ?? null),
-    setDeviceId: vi.fn(async () => undefined),
-    claimMessageOnce: vi.fn(async () => options.claim ?? true),
-    markMessageAcknowledged: vi.fn(async () => true),
+    getDeviceId: mock(async () => options.deviceId ?? null),
+    setDeviceId: mock(async () => undefined),
+    claimMessageOnce: mock(async () => options.claim ?? true),
+    markMessageAcknowledged: mock(async () => true),
   } as unknown as ConnectStateStore;
 }
 
@@ -64,6 +91,30 @@ async function flush(): Promise<void> {
 }
 
 describe("ConnectWsClient", () => {
+  it("uses Bun's browser-style WebSocket client", async () => {
+    const transport = createWebSocketTransport(BunWebSocketFake as WebSocketConstructor);
+    const onOpen = mock();
+    const onMessage = mock();
+    const onClose = mock();
+    const onError = mock();
+    const connecting = transport.connect("ws://example/ws", { onOpen, onMessage, onClose, onError });
+    const socket = BunWebSocketFake.last;
+    if (!socket) throw new Error("WebSocket constructor was not called");
+
+    socket.onopen?.();
+    await connecting;
+    socket.onmessage?.({ data: new TextEncoder().encode("hello").buffer });
+    await Bun.sleep(0);
+    transport.send("outbound");
+    transport.close();
+
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onMessage).toHaveBeenCalledWith(Buffer.from("hello"));
+    expect(onError).not.toHaveBeenCalled();
+    expect(socket.sent).toEqual(["outbound"]);
+    expect(socket.closeCalls).toEqual([[1000, "client close"]]);
+  });
+
   it("performs Protocol v2 challenge handshake and stores device id", async () => {
     const transport = new MemoryTransport();
     const store = createStore();
@@ -196,7 +247,7 @@ describe("ConnectWsClient", () => {
       traceIdFactory: () => "trace",
       heartbeat: { enabled: false },
     });
-    const seen = vi.fn();
+    const seen = mock();
     client.on("message", seen);
     await handshake(client, transport, "trace");
     transport.receive({
