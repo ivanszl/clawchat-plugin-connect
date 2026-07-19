@@ -6,6 +6,7 @@ import { handleChatCommand } from "./chat-commands";
 import { defaultConfig, defaultConfigPath, getAgent, loadConfig, saveConfig, upsertAgent } from "./config";
 import { startMcpStdioServer as startMcpStdioServerDefault } from "./mcp/server";
 import { buildTextMessagePayload } from "./message-mapper";
+import { ProjectCatalog } from "./projects";
 import { EVENT, type NormalizedInboundMessage } from "./protocol";
 import { ConnectRuntime } from "./runtime/connect-runtime";
 import { type ConnectStateStore, createStateStore } from "./state";
@@ -51,7 +52,6 @@ export interface StartServiceOptions {
 
 interface AgentCliOptions {
   kind?: string;
-  command?: string;
   codexPath?: string;
 }
 
@@ -59,8 +59,8 @@ const HELP_TEXT = `${[
   "clawchat-connect <command>",
   "",
   "Commands:",
-  "  init [--agent <id>] [--kind codex|acp] [--command <command>] [--config <path>]",
-  "  agent add <id> [--kind codex|acp] [--command <command>] [--codex-path <path>] [--config <path>]",
+  "  init [--agent <id> --kind codex] [--config <path>]",
+  "  agent add <id> --kind codex [--codex-path <path>] [--config <path>]",
   "  agent list [--config <path>]",
   "  agent remove <id> [--config <path>]",
   "  activate <agentId> <code> [--config <path>]",
@@ -95,30 +95,26 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     .command("init", "Create config")
     .option("--config <path>", "Config path")
     .option("--agent <id>", "Agent id")
-    .option("--kind <kind>", "Agent kind: codex or acp")
-    .option("--command <command>", "ACP command")
+    .option("--kind <kind>", "Agent kind: codex")
     .option("--codex-path <path>", "Codex executable override")
-    .action(
-      async (options: { config?: string; agent?: string; kind?: string; command?: string; codexPath?: string }) => {
-        commandRan = true;
-        let config = defaultConfig();
-        if (options.agent || options.command || options.kind || options.codexPath) {
-          if (!options.agent) throw new Error("init requires --agent when agent options are provided");
-          config = upsertAgent(config, options.agent, agentConfigFromCli(options.agent, options));
-        }
-        io.writeStdout(`Wrote config: ${await saveConfig(config, options.config)}\n`);
-      },
-    );
+    .action(async (options: { config?: string; agent?: string; kind?: string; codexPath?: string }) => {
+      commandRan = true;
+      let config = defaultConfig();
+      if (options.agent || options.kind || options.codexPath) {
+        if (!options.agent) throw new Error("init requires --agent when agent options are provided");
+        config = upsertAgent(config, options.agent, agentConfigFromCli(options));
+      }
+      io.writeStdout(`Wrote config: ${await saveConfig(config, options.config)}\n`);
+    });
 
   cli
     .command("agent add <id>", "Add/update agent")
     .option("--config <path>", "Config path")
-    .option("--kind <kind>", "Agent kind: codex or acp")
-    .option("--command <command>", "ACP command")
+    .option("--kind <kind>", "Agent kind: codex")
     .option("--codex-path <path>", "Codex executable override")
-    .action(async (id: string, options: { config?: string; kind?: string; command?: string; codexPath?: string }) => {
+    .action(async (id: string, options: { config?: string; kind?: string; codexPath?: string }) => {
       commandRan = true;
-      const config = upsertAgent(await loadConfig(options.config), id, agentConfigFromCli(id, options));
+      const config = upsertAgent(await loadConfig(options.config), id, agentConfigFromCli(options));
       io.writeStdout(`Updated agent ${id}: ${await saveConfig(config, options.config)}\n`);
     });
 
@@ -226,12 +222,7 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     .action(async (options: { config?: string }) => {
       commandRan = true;
       const config = await loadConfig(options.config);
-      const problems = [
-        config.defaultAgent ? null : "defaultAgent is not set",
-        ...Object.entries(config.agents).map(([id, agent]) =>
-          agent.kind === "acp" && !agent.command ? `agent ${id} command is not set` : null,
-        ),
-      ].filter(Boolean);
+      const problems = [config.defaultAgent ? null : "defaultAgent is not set"].filter(Boolean);
       io.writeStdout(
         problems.length === 0
           ? "clawchat-connect doctor: ok\n"
@@ -274,11 +265,19 @@ export async function startConnectService(options: StartServiceOptions): Promise
     stateStore: store,
     deviceId,
   });
-  const runtime = new ConnectRuntime({ agentId, config, configPath, stateStore: store, wsClient });
+  const projects = new ProjectCatalog(store);
+  const runtime = new ConnectRuntime({ agentId, config, configPath, stateStore: store, wsClient, projects });
   wsClient.on("message", (message: NormalizedInboundMessage) => {
-    void dispatchInboundMessage({ message, agentId, config, store, wsClient, runtime }).catch((error) =>
-      io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`),
-    );
+    void dispatchInboundMessage({
+      message,
+      agentId,
+      ownerUserId: activation.ownerUserId,
+      config,
+      store,
+      wsClient,
+      runtime,
+      projects,
+    }).catch((error) => io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`));
   });
   await wsClient.connect();
   await store.upsertRuntimeStatus({
@@ -299,21 +298,26 @@ export async function startConnectService(options: StartServiceOptions): Promise
 async function dispatchInboundMessage(params: {
   message: NormalizedInboundMessage;
   agentId: string;
+  ownerUserId: string;
   config: ConnectConfig;
   store: ConnectStateStore;
   wsClient: ConnectWsClient;
   runtime: ConnectRuntime;
+  projects: ProjectCatalog;
 }): Promise<void> {
-  const command = await handleChatCommand({
-    message: params.message,
-    agentId: params.agentId,
-    config: params.config,
-    stateStore: params.store,
-    closeRuntimeSession: (chatId) => params.runtime.closeSession(chatId),
-    invalidateRuntimeSession: (chatId) => params.runtime.invalidateSession(chatId),
-    cancelRuntimeTurn: (chatId) => params.runtime.cancelTurn(chatId),
-  });
-  if (command.handled) {
+  const routeCommand = async (): Promise<boolean> => {
+    const command = await handleChatCommand({
+      message: params.message,
+      agentId: params.agentId,
+      ownerUserId: params.ownerUserId,
+      config: params.config,
+      stateStore: params.store,
+      projects: params.projects,
+      closeRuntimeSession: (chatId) => params.runtime.closeSession(chatId),
+      invalidateRuntimeSession: (chatId) => params.runtime.invalidateSession(chatId),
+      cancelRuntimeTurn: (chatId) => params.runtime.cancelTurn(chatId),
+    });
+    if (!command.handled) return false;
     if (command.text) {
       await params.wsClient.sendMessageEnvelope(
         EVENT.MESSAGE_REPLY,
@@ -322,9 +326,13 @@ async function dispatchInboundMessage(params: {
         { toType: params.message.chatType },
       );
     }
+    return true;
+  };
+  if (params.message.text.trim().split(/\s+/u)[0] === "/cancel") {
+    await routeCommand();
     return;
   }
-  await params.runtime.handleInboundMessage(params.message);
+  await params.runtime.handleInboundMessage(params.message, routeCommand);
 }
 
 async function maybeRunNestedAgentCommand(argv: string[], io: CliIo): Promise<number | null> {
@@ -338,9 +346,8 @@ async function maybeRunNestedAgentCommand(argv: string[], io: CliIo): Promise<nu
       const config = upsertAgent(
         await loadConfig(configPath),
         id,
-        agentConfigFromCli(id, {
+        agentConfigFromCli({
           kind: optionValue(argv, "--kind"),
-          command: optionValue(argv, "--command"),
           codexPath: optionValue(argv, "--codex-path"),
         }),
       );
@@ -371,28 +378,18 @@ async function maybeRunNestedAgentCommand(argv: string[], io: CliIo): Promise<nu
   }
 }
 
-function agentConfigFromCli(agentId: string, options: AgentCliOptions): AgentConfig {
+function agentConfigFromCli(options: AgentCliOptions): AgentConfig {
   const kind = options.kind?.trim().toLowerCase();
-  if (kind && kind !== "codex" && kind !== "acp") throw new Error("--kind must be codex or acp");
-  const command = options.command?.trim();
-  const inferredCodex = !kind && agentId === "codex" && (!command || command === "codex");
-  if (kind === "codex" || inferredCodex) {
-    if (command && command !== "codex") throw new Error("Codex SDK agents use --codex-path instead of --command");
-    return {
-      kind: "codex",
-      ...(options.codexPath?.trim() ? { codexPathOverride: options.codexPath.trim() } : {}),
-    };
-  }
-  if (options.codexPath) throw new Error("--codex-path requires --kind codex");
-  if (!command) throw new Error("ACP agents require --command; use --kind codex for first-party Codex");
-  return { kind: "acp", command };
+  if (kind !== "codex") throw new Error("--kind codex is required");
+  return {
+    kind: "codex",
+    ...(options.codexPath?.trim() ? { codexPathOverride: options.codexPath.trim() } : {}),
+  };
 }
 
 function formatAgentListRow(id: string, agent: AgentConfig, isDefault: boolean): string {
   const selected = isDefault ? " (default)" : "";
-  return agent.kind === "codex"
-    ? `- ${id}${selected}: codex-sdk${agent.codexPathOverride ? ` (${agent.codexPathOverride})` : ""}`
-    : `- ${id}${selected}: ${agent.command}`;
+  return `- ${id}${selected}: codex-sdk${agent.codexPathOverride ? ` (${agent.codexPathOverride})` : ""}`;
 }
 
 function optionValue(argv: string[], name: string): string | undefined {
@@ -465,12 +462,6 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
   if (!agent) throw new Error(`Unknown clawchat-connect agent: ${agentId}`);
   if (field === "displayName") {
     agent.displayName = value;
-    return;
-  }
-  if (agent.kind === "acp") {
-    if (field === "command") agent.command = value;
-    else if (field === "mode") agent.mode = value;
-    else throw new Error(`Unsupported ACP config key: ${key}`);
     return;
   }
   setCodexConfigValue(agent, field, value, key);

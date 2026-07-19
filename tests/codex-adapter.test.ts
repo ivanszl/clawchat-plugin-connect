@@ -2,7 +2,14 @@ import { describe, expect, it, mock } from "bun:test";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import { type CodexClientLike, type CodexThreadLike, createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import type { ConnectRuntimeSession, ConnectRuntimeStartContext } from "../src/runtime/types";
-import type { CodexAgentConfig } from "../src/types";
+import type { CodexAgentConfig, RuntimeWorkspace } from "../src/types";
+
+const workspace: RuntimeWorkspace = {
+  projectId: "project-1",
+  workingDirectory: "/repo",
+  additionalDirectories: ["/project-shared"],
+  skipGitRepoCheck: false,
+};
 
 const agent: CodexAgentConfig = {
   kind: "codex",
@@ -49,7 +56,7 @@ function fakeClient(threadEvents: ThreadEvent[], threadId: string | null = null)
 
 async function collect(session: ConnectRuntimeSession) {
   const output = [];
-  for await (const event of session.prompt({ prompt: "hello", cwd: "/repo" })) output.push(event);
+  for await (const event of session.prompt({ prompt: "hello", workspace })) output.push(event);
   return output;
 }
 
@@ -68,7 +75,6 @@ describe("Codex SDK runtime adapter", () => {
     const adapter = createCodexRuntimeAdapter({ createCodex, binPath: "/package/dist/src/bin.js" });
     const session = await adapter.start(agent, started);
 
-    expect(session.toolsAlreadyExposed).toBe(true);
     await expect(collect(session)).resolves.toContainEqual({ kind: "final", text: "done" });
     expect(client.startThread).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -80,7 +86,7 @@ describe("Codex SDK runtime adapter", () => {
         webSearchMode: "live",
         networkAccessEnabled: true,
         skipGitRepoCheck: true,
-        additionalDirectories: ["/shared"],
+        additionalDirectories: ["/shared", "/project-shared"],
       }),
     );
     expect(started.onRuntimeSessionId).toHaveBeenCalledWith("thread-1");
@@ -175,7 +181,7 @@ describe("Codex SDK runtime adapter", () => {
 
     await expect(
       (async () => {
-        for await (const _event of session.prompt({ prompt: "hello", cwd: "/repo", mode: "plan" })) {
+        for await (const _event of session.prompt({ prompt: "hello", workspace, mode: "plan" })) {
           // Consume the generator.
         }
       })(),
@@ -201,7 +207,7 @@ describe("Codex SDK runtime adapter", () => {
     const client: CodexClientLike = { startThread: () => thread, resumeThread: () => thread };
     const adapter = createCodexRuntimeAdapter({ createCodex: async () => client, binPath: "/bin.js" });
     const session = await adapter.start(agent, context());
-    const iterator = session.prompt({ prompt: "wait", cwd: "/repo" })[Symbol.asyncIterator]();
+    const iterator = session.prompt({ prompt: "wait", workspace })[Symbol.asyncIterator]();
 
     await expect(iterator.next()).resolves.toMatchObject({ value: { kind: "progress" }, done: false });
     await expect(session.cancel?.()).resolves.toBe(true);

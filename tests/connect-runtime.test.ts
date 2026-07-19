@@ -1,12 +1,17 @@
 import { describe, expect, it, mock } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, upsertAgent } from "../src/config";
 import type { RuntimeOutputEvent } from "../src/output-visibility";
 import type { NormalizedInboundMessage } from "../src/protocol";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
-import type { ConnectRuntimeAdapter, ConnectRuntimeSession, ConnectRuntimeStartContext } from "../src/runtime/types";
+import type {
+  ConnectRuntimeAdapter,
+  ConnectRuntimePrompt,
+  ConnectRuntimeSession,
+  ConnectRuntimeStartContext,
+} from "../src/runtime/types";
 import { createStateStore } from "../src/state";
 import type { ConnectWsClient } from "../src/ws-client";
 
@@ -32,11 +37,9 @@ function session(
   context: ConnectRuntimeStartContext,
 ): ConnectRuntimeSession {
   return {
-    toolsAlreadyExposed: true,
     prompt: () => prompt(context),
     close: mock(async () => undefined),
     cancel: mock(async () => true),
-    registerTools: mock(async () => true),
   };
 }
 
@@ -49,7 +52,7 @@ async function runtimeFixture() {
     chatId: "chat-1",
     sessionId: "session-1",
     agentId: "codex",
-    cwd: "/repo",
+    projectId: null,
     isCurrent: true,
   });
   const wsClient = { sendMessageEnvelope: mock(async () => ({ payload: {} })) } as unknown as ConnectWsClient;
@@ -57,6 +60,86 @@ async function runtimeFixture() {
 }
 
 describe("ConnectRuntime Codex sessions", () => {
+  it("starts the first message in a Non-Project Session with an isolated workspace", async () => {
+    const fixture = await runtimeFixture();
+    await fixture.store.deleteRuntimeSession("chat-1", "codex", "session-1");
+    const prompts: ConnectRuntimePrompt[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      start: mock(async () => ({
+        prompt: async function* (input: ConnectRuntimePrompt) {
+          prompts.push(input);
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapter: adapter,
+    });
+
+    await runtime.handleInboundMessage(message());
+
+    await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({ projectId: null });
+    const promptInput = prompts[0];
+    if (!promptInput) throw new Error("expected runtime prompt");
+    expect(promptInput.workspace).toMatchObject({ projectId: null, skipGitRepoCheck: true });
+    expect((await stat(promptInput.workspace.workingDirectory)).isDirectory()).toBe(true);
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("serializes lifecycle commands behind an active turn for the same chat", async () => {
+    const fixture = await runtimeFixture();
+    let releaseTurn: (() => void) | undefined;
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const order: string[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      start: mock(async () => ({
+        prompt: async function* () {
+          order.push("turn-started");
+          markStarted?.();
+          await release;
+          order.push("turn-finished");
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapter: adapter,
+    });
+
+    const turn = runtime.handleInboundMessage(message());
+    await started;
+    const command = runtime.handleInboundMessage(message("/project clear"), async () => {
+      order.push("command");
+      return true;
+    });
+    await Bun.sleep(5);
+    expect(order).toEqual(["turn-started"]);
+    releaseTurn?.();
+    await Promise.all([turn, command]);
+    expect(order).toEqual(["turn-started", "turn-finished", "command"]);
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
   it("persists a Codex thread id and resumes it after runtime restart", async () => {
     const fixture = await runtimeFixture();
     const starts: ConnectRuntimeStartContext[] = [];
@@ -76,10 +159,10 @@ describe("ConnectRuntime Codex sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: { codex: adapter },
+      runtimeAdapter: adapter,
     });
     await first.handleInboundMessage(message());
-    await expect(fixture.store.getCurrentRuntimeSession("chat-1")).resolves.toMatchObject({
+    await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
       runtimeSessionId: "thread-1",
     });
     await first.dispose();
@@ -90,7 +173,7 @@ describe("ConnectRuntime Codex sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: { codex: adapter },
+      runtimeAdapter: adapter,
     });
     await second.handleInboundMessage(message("again"));
 
@@ -103,7 +186,7 @@ describe("ConnectRuntime Codex sessions", () => {
 
   it("preserves a thread when closing and clears it when invalidating", async () => {
     const fixture = await runtimeFixture();
-    await fixture.store.setRuntimeSessionId("chat-1", "session-1", "thread-1");
+    await fixture.store.setRuntimeSessionId("chat-1", "codex", "session-1", "thread-1");
     const createdSessions: ConnectRuntimeSession[] = [];
     const adapter: ConnectRuntimeAdapter = {
       start: mock(async (_agent, context) => {
@@ -120,17 +203,19 @@ describe("ConnectRuntime Codex sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: { codex: adapter },
+      runtimeAdapter: adapter,
     });
 
     await runtime.handleInboundMessage(message());
     await expect(runtime.closeSession("chat-1")).resolves.toBe(true);
-    await expect(fixture.store.getCurrentRuntimeSession("chat-1")).resolves.toMatchObject({
+    await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
       runtimeSessionId: "thread-1",
     });
     await runtime.handleInboundMessage(message("resume"));
     await expect(runtime.invalidateSession("chat-1")).resolves.toBe(true);
-    await expect(fixture.store.getCurrentRuntimeSession("chat-1")).resolves.toMatchObject({ runtimeSessionId: null });
+    await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      runtimeSessionId: null,
+    });
     expect(createdSessions.every((created) => (created.close as ReturnType<typeof mock>).mock.calls.length === 1)).toBe(
       true,
     );

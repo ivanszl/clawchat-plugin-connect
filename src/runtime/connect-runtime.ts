@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { defaultConfigPath, getAgent } from "../config";
 import { buildReplyTextMessagePayload } from "../message-mapper";
 import {
@@ -7,13 +8,11 @@ import {
   policyForOutputVisibility,
   resolveOutputVisibility,
 } from "../output-visibility";
+import { ProjectCatalog } from "../projects";
 import { type ChatType, EVENT, type NormalizedInboundMessage } from "../protocol";
 import type { ConnectStateStore } from "../state";
-import { registerClawChatToolsBestEffort } from "../tools/bridge";
-import { createFileBackedMemoryPort, createMentionMessagePort } from "../tools/ports";
 import type { ConnectConfig, RuntimeSessionRecord } from "../types";
 import type { ConnectWsClient } from "../ws-client";
-import { createAcpRuntimeAdapter } from "./acp-adapter";
 import { createCodexRuntimeAdapter } from "./codex-adapter";
 import { SessionQueue } from "./session-queue";
 import type { ConnectRuntimeAdapter, ConnectRuntimeSession } from "./types";
@@ -24,33 +23,32 @@ export interface ConnectRuntimeOptions {
   configPath?: string;
   stateStore: ConnectStateStore;
   wsClient: ConnectWsClient;
-  /** @deprecated Prefer runtimeAdapters when injecting test adapters. */
+  projects?: ProjectCatalog;
   runtimeAdapter?: ConnectRuntimeAdapter;
-  runtimeAdapters?: Partial<Record<"acp" | "codex", ConnectRuntimeAdapter>>;
 }
 
 export class ConnectRuntime {
-  private readonly runtimeAdapters: Record<"acp" | "codex", ConnectRuntimeAdapter>;
+  private readonly runtimeAdapter: ConnectRuntimeAdapter;
+  private readonly projects: ProjectCatalog;
   private readonly sessions = new Map<string, ConnectRuntimeSession>();
   private readonly queue: SessionQueue;
-  private readonly toolBridgeNotices = new Map<string, string>();
-  private readonly sentToolBridgeNotices = new Set<string>();
 
   constructor(private readonly options: ConnectRuntimeOptions) {
     getAgent(options.config, options.agentId);
-    this.runtimeAdapters = {
-      acp: options.runtimeAdapters?.acp ?? options.runtimeAdapter ?? createAcpRuntimeAdapter(),
-      codex: options.runtimeAdapters?.codex ?? options.runtimeAdapter ?? createCodexRuntimeAdapter(),
-    };
+    this.runtimeAdapter = options.runtimeAdapter ?? createCodexRuntimeAdapter();
+    this.projects = options.projects ?? new ProjectCatalog(options.stateStore);
     this.queue = new SessionQueue({
       maxConcurrentTurns: options.config.maxConcurrentTurns,
       maxPendingPerChat: options.config.maxPendingPerChat,
     });
   }
 
-  async handleInboundMessage(message: NormalizedInboundMessage): Promise<void> {
+  async handleInboundMessage(message: NormalizedInboundMessage, beforeTurn?: () => Promise<boolean>): Promise<void> {
     try {
-      await this.queue.enqueue(message.chatId, async () => this.runTurn(message));
+      await this.queue.enqueue(message.chatId, async () => {
+        if (await beforeTurn?.()) return;
+        await this.runTurn(message);
+      });
     } catch (error) {
       await this.sendVisibleFailure(
         message,
@@ -62,8 +60,6 @@ export class ConnectRuntime {
   async dispose(): Promise<void> {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
-    this.toolBridgeNotices.clear();
-    this.sentToolBridgeNotices.clear();
     for (const session of sessions) await session.close();
   }
 
@@ -75,42 +71,30 @@ export class ConnectRuntime {
     return await this.releaseSession(chatId, true);
   }
 
-  /** @deprecated Use invalidateSession. */
-  async resetSession(chatId: string): Promise<boolean> {
-    return await this.invalidateSession(chatId);
-  }
-
   async cancelTurn(chatId: string): Promise<boolean> {
-    const current = await this.options.stateStore.getCurrentRuntimeSession(chatId);
+    const current = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
     const key = sessionKey(chatId, current?.sessionId ?? "default");
     const session = this.sessions.get(key);
     return (await session?.cancel?.()) ?? false;
   }
 
   private async releaseSession(chatId: string, invalidateRuntimeId: boolean): Promise<boolean> {
-    const current = await this.options.stateStore.getCurrentRuntimeSession(chatId);
+    const current = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
     const key = sessionKey(chatId, current?.sessionId ?? "default");
     const session = this.sessions.get(key);
     this.sessions.delete(key);
-    this.toolBridgeNotices.delete(key);
-    this.sentToolBridgeNotices.delete(key);
     if (session) await session.close();
     if (invalidateRuntimeId && current) {
-      await this.options.stateStore.setRuntimeSessionId(chatId, current.sessionId, null);
+      await this.options.stateStore.setRuntimeSessionId(chatId, this.options.agentId, current.sessionId, null);
     }
     return Boolean(session) || Boolean(current?.runtimeSessionId);
   }
 
   private async runTurn(message: NormalizedInboundMessage): Promise<void> {
-    const current = await this.options.stateStore.getCurrentRuntimeSession(message.chatId);
-    if (!current?.cwd) {
-      await this.sendVisibleFailure(message, "Please set a working directory first:\n\n/dir /absolute/path/to/repo");
-      return;
-    }
+    const current = await this.ensureCurrentSession(message.chatId);
     const activeAgentId = current.agentId || this.options.agentId;
-    const agent = getAgent(this.options.config, activeAgentId);
+    const workspace = await this.projects.resolveWorkspace(current);
     const session = await this.sessionForChat(current, activeAgentId);
-    await this.sendToolBridgeNoticeOnce(message, current.sessionId, activeAgentId);
     const mode = await resolveOutputVisibility({
       config: this.options.config,
       store: this.options.stateStore,
@@ -120,9 +104,14 @@ export class ConnectRuntime {
     const buffered: MaterializedRuntimeReply[] = [];
     for await (const event of session.prompt({
       prompt: renderPrompt(message),
-      cwd: current.cwd,
-      mode: current.mode ?? (agent.kind === "acp" ? agent.mode : undefined),
-      metadata: { chatId: message.chatId, sessionId: current.sessionId, agentId: activeAgentId },
+      workspace,
+      mode: current.mode ?? undefined,
+      metadata: {
+        chatId: message.chatId,
+        sessionId: current.sessionId,
+        agentId: activeAgentId,
+        projectId: current.projectId ?? "none",
+      },
       outputPolicy: { mode: policy.mode, allowedKinds: allowedRuntimeKinds(policy) },
     })) {
       const reply = materializeRuntimeOutput(event, policy);
@@ -140,25 +129,6 @@ export class ConnectRuntime {
       globalQueued: stats.queued,
       recentError: null,
     });
-  }
-
-  private async sendToolBridgeNoticeOnce(
-    message: NormalizedInboundMessage,
-    sessionId: string,
-    agentId: string,
-  ): Promise<void> {
-    const key = sessionKey(message.chatId, sessionId);
-    const reason = this.toolBridgeNotices.get(key);
-    if (!reason || this.sentToolBridgeNotices.has(key)) return;
-    this.sentToolBridgeNotices.add(key);
-    await this.sendReply(
-      message,
-      {
-        text: `ClawChat tools were not dynamically registered with this ACP runtime: ${reason}\n\nIf you need ClawChat tools, configure the stdio MCP server: clawchat-connect mcp-server --agent ${agentId}`,
-        requiredControl: false,
-      },
-      agentId,
-    );
   }
 
   private async sendVisibleFailure(message: NormalizedInboundMessage, text: string): Promise<void> {
@@ -193,13 +163,30 @@ export class ConnectRuntime {
     return { chatId: ownerDirectChatId, chatType: "direct" };
   }
 
+  private async ensureCurrentSession(chatId: string): Promise<RuntimeSessionRecord> {
+    const current = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
+    if (current) return current;
+    const sessionId = randomUUID();
+    await this.options.stateStore.upsertRuntimeSession({
+      chatId,
+      sessionId,
+      agentId: this.options.agentId,
+      runtimeSessionId: null,
+      projectId: null,
+      isCurrent: true,
+    });
+    const created = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
+    if (!created) throw new Error("failed to create a non-Project session");
+    return created;
+  }
+
   private async sessionForChat(current: RuntimeSessionRecord, agentId: string): Promise<ConnectRuntimeSession> {
     const key = sessionKey(current.chatId, current.sessionId);
     const existing = this.sessions.get(key);
     if (existing) return existing;
     const agent = getAgent(this.options.config, agentId);
     let session: ConnectRuntimeSession | null = null;
-    session = await this.runtimeAdapters[agent.kind].start(agent, {
+    session = await this.runtimeAdapter.start(agent, {
       agentId,
       chatId: current.chatId,
       sessionId: current.sessionId,
@@ -208,26 +195,15 @@ export class ConnectRuntime {
       stateDbPath: this.options.config.stateDbPath,
       onRuntimeSessionId: async (runtimeSessionId) => {
         if (!session || this.sessions.get(key) !== session) return;
-        await this.options.stateStore.setRuntimeSessionId(current.chatId, current.sessionId, runtimeSessionId);
+        await this.options.stateStore.setRuntimeSessionId(
+          current.chatId,
+          current.agentId,
+          current.sessionId,
+          runtimeSessionId,
+        );
       },
     });
     this.sessions.set(key, session);
-    if (!session.toolsAlreadyExposed) {
-      const bridge = await registerClawChatToolsBestEffort(session, {
-        agentId,
-        config: this.options.config,
-        stateStore: this.options.stateStore,
-        chatId: current.chatId,
-        mentionMessage: createMentionMessagePort(this.options.wsClient),
-        memory: createFileBackedMemoryPort(this.options.config),
-      }).catch((error) => ({ registered: false, reason: error instanceof Error ? error.message : String(error) }));
-      if (!bridge.registered) {
-        this.toolBridgeNotices.set(
-          key,
-          bridge.reason ?? "runtime declined dynamic tool registration; use the stdio MCP server",
-        );
-      }
-    }
     return session;
   }
 }

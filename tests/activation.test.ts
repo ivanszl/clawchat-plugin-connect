@@ -16,20 +16,22 @@ function response(body: unknown): Response {
 describe("activateConnect", () => {
   it("exchanges invite code for a named configured agent and persists credentials", async () => {
     const dir = await tempDir();
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
+    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
-    const fetchImpl = mock(async () =>
-      response({
-        code: 0,
-        msg: "ok",
-        data: {
-          access_token: "token-1",
-          refresh_token: "refresh-1",
-          agent: { id: "agt-1", user_id: "usr-agent", owner_id: "usr-owner" },
-          conversation: { id: "cnv-1" },
-        },
-      }),
+    const fetchImpl = mock(async (input: string | URL | Request) =>
+      String(input).endsWith("/v1/agents/connect")
+        ? response({
+            code: 0,
+            msg: "ok",
+            data: {
+              access_token: "token-1",
+              refresh_token: "refresh-1",
+              agent: { id: "agt-1", user_id: "usr-agent", owner_id: "usr-owner" },
+              conversation: { id: "cnv-1" },
+            },
+          })
+        : response({ code: 0, data: { nickname: "codex" } }),
     ) as unknown as typeof fetch;
     const result = await activateConnect({ agentId: "codex", code: "A1B2C3", config, store, fetchImpl });
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -38,6 +40,17 @@ describe("activateConnect", () => {
         method: "POST",
         headers: expect.objectContaining({ "content-type": "application/json" }),
         body: JSON.stringify({ code: "A1B2C3", platform: "clawchat-connect", type: "clawbot" }),
+      }),
+    );
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://app.clawling.com/v1/users/me",
+      expect.objectContaining({
+        method: "PATCH",
+        headers: expect.objectContaining({
+          authorization: "Bearer token-1",
+          "content-type": "application/json",
+        }),
+        body: JSON.stringify({ nickname: "codex" }),
       }),
     );
     expect(result).toMatchObject({
@@ -52,7 +65,7 @@ describe("activateConnect", () => {
   });
   it("sends stored agent user_id when reactivating the same local agent", async () => {
     const dir = await tempDir();
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
+    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     await store.upsertActivation({
@@ -64,11 +77,13 @@ describe("activateConnect", () => {
       ownerUserId: "usr-owner",
       conversationId: null,
     });
-    const fetchImpl = mock(async () =>
-      response({
-        code: 0,
-        data: { access_token: "new", agent: { id: "agt-new", user_id: "usr-old", owner_id: "usr-owner" } },
-      }),
+    const fetchImpl = mock(async (input: string | URL | Request) =>
+      String(input).endsWith("/v1/agents/connect")
+        ? response({
+            code: 0,
+            data: { access_token: "new", agent: { id: "agt-new", user_id: "usr-old", owner_id: "usr-owner" } },
+          })
+        : response({ code: 0, data: { nickname: "codex" } }),
     ) as unknown as typeof fetch;
     await activateConnect({ agentId: "codex", code: "NEWCODE", config, store, fetchImpl });
     expect(fetchImpl).toHaveBeenCalledWith(
@@ -79,6 +94,30 @@ describe("activateConnect", () => {
     );
     await store.close();
   });
+  it("keeps activation credentials and reports an actionable error when Profile synchronization fails", async () => {
+    const dir = await tempDir();
+    const config = upsertAgent(defaultConfig(), "work", { kind: "codex" });
+    config.stateDbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    const fetchImpl = mock(async (input: string | URL | Request) =>
+      String(input).endsWith("/v1/agents/connect")
+        ? response({
+            code: 0,
+            data: {
+              access_token: "token-1",
+              agent: { id: "agt-1", user_id: "usr-agent", owner_id: "usr-owner" },
+            },
+          })
+        : response({ code: 500, msg: "profile unavailable" }),
+    ) as unknown as typeof fetch;
+
+    await expect(activateConnect({ agentId: "work", code: "A1B2C3", config, store, fetchImpl })).rejects.toThrow(
+      "credentials were saved",
+    );
+    await expect(store.getActivation("work")).resolves.toMatchObject({ accessToken: "token-1" });
+    await store.close();
+  });
+
   it("requires the named agent to exist and does not create project or directory state", async () => {
     const config = defaultConfig();
     const fetchImpl = mock() as unknown as typeof fetch;
@@ -88,10 +127,14 @@ describe("activateConnect", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
   it("rejects incomplete activation responses", async () => {
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
+    const dir = await tempDir();
+    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
+    config.stateDbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath: config.stateDbPath });
     const fetchImpl = mock(async () => response({ code: 0, data: { agent: {} } })) as unknown as typeof fetch;
-    await expect(activateConnect({ agentId: "codex", code: "A1B2C3", config, fetchImpl })).rejects.toThrow(
+    await expect(activateConnect({ agentId: "codex", code: "A1B2C3", config, store, fetchImpl })).rejects.toThrow(
       /access_token/,
     );
+    await store.close();
   });
 });

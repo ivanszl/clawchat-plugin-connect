@@ -1,6 +1,6 @@
 import type { CodexOptions, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions } from "@openai/codex-sdk";
 import type { RuntimeOutputEvent } from "../output-visibility";
-import type { CodexAgentConfig, CodexSandboxMode } from "../types";
+import type { CodexAgentConfig, CodexSandboxMode, RuntimeWorkspace } from "../types";
 import type {
   ConnectRuntimeAdapter,
   ConnectRuntimePrompt,
@@ -69,10 +69,9 @@ function definedProcessEnvironment(): Record<string, string> {
 }
 
 class CodexRuntimeSession implements ConnectRuntimeSession {
-  readonly toolsAlreadyExposed = true;
   private thread: CodexThreadLike | null = null;
   private activeTurn: AbortController | null = null;
-  private threadCwd: string | null = null;
+  private threadWorkspaceKey: string | null = null;
   private threadSandboxMode: CodexSandboxMode | null = null;
   private runtimeSessionId: string | null;
 
@@ -87,7 +86,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
   async *prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeOutputEvent> {
     if (this.activeTurn) throw new Error("Codex already has an active turn for this session");
     const sandboxMode = resolveSandboxMode(input.mode, this.agent.sandboxMode);
-    const thread = this.ensureThread(input.cwd, sandboxMode);
+    const thread = this.ensureThread(input.workspace, sandboxMode);
     const controller = new AbortController();
     this.activeTurn = controller;
     let emittedFailure = false;
@@ -179,28 +178,36 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     this.activeTurn = null;
   }
 
-  private ensureThread(cwd: string, sandboxMode: CodexSandboxMode): CodexThreadLike {
+  private ensureThread(workspace: RuntimeWorkspace, sandboxMode: CodexSandboxMode): CodexThreadLike {
+    const additionalDirectories = [
+      ...new Set([...(this.agent.additionalDirectories ?? []), ...workspace.additionalDirectories]),
+    ];
+    const workspaceKey = JSON.stringify({
+      workingDirectory: workspace.workingDirectory,
+      additionalDirectories,
+      skipGitRepoCheck: workspace.skipGitRepoCheck || this.agent.skipGitRepoCheck === true,
+    });
     if (this.thread) {
-      if (this.threadCwd !== cwd || this.threadSandboxMode !== sandboxMode) {
+      if (this.threadWorkspaceKey !== workspaceKey || this.threadSandboxMode !== sandboxMode) {
         throw new Error("Codex thread options changed; invalidate the current runtime session before continuing");
       }
       return this.thread;
     }
     const options: ThreadOptions = {
-      workingDirectory: cwd,
+      workingDirectory: workspace.workingDirectory,
       model: this.agent.model,
       sandboxMode,
-      skipGitRepoCheck: this.agent.skipGitRepoCheck,
+      skipGitRepoCheck: workspace.skipGitRepoCheck || this.agent.skipGitRepoCheck === true,
       modelReasoningEffort: this.agent.modelReasoningEffort,
       networkAccessEnabled: this.agent.networkAccessEnabled,
       webSearchMode: this.agent.webSearchMode,
       approvalPolicy: this.agent.approvalPolicy ?? "never",
-      additionalDirectories: this.agent.additionalDirectories,
+      additionalDirectories: additionalDirectories.length > 0 ? additionalDirectories : undefined,
     };
     this.thread = this.runtimeSessionId
       ? this.client.resumeThread(this.runtimeSessionId, options)
       : this.client.startThread(options);
-    this.threadCwd = cwd;
+    this.threadWorkspaceKey = workspaceKey;
     this.threadSandboxMode = sandboxMode;
     return this.thread;
   }

@@ -1,12 +1,13 @@
 import { describe, expect, it, mock } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleChatCommand } from "../src/chat-commands";
 import { runConnectCli } from "../src/cli";
 import { defaultConfig, loadConfig, upsertAgent } from "../src/config";
+import { ProjectCatalog } from "../src/projects";
 import type { NormalizedInboundMessage } from "../src/protocol";
-import type { ConnectStateStore } from "../src/state";
+import { type ConnectStateStore, createStateStore } from "../src/state";
 
 async function tempConfig(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "clawchat-connect-cli-"));
@@ -48,7 +49,7 @@ describe("runConnectCli", () => {
     const path = await tempConfig();
     const output = io();
     await expect(
-      runConnectCli(["init", "--config", path, "--agent", "codex", "--command", "codex"], output.deps),
+      runConnectCli(["init", "--config", path, "--agent", "codex", "--kind", "codex"], output.deps),
     ).resolves.toBe(0);
     const text = await readFile(path, "utf8");
     expect(text).toContain('"defaultAgent": "codex"');
@@ -56,14 +57,11 @@ describe("runConnectCli", () => {
     expect(text).not.toMatch(new RegExp(["work", "Dir"].join(""), "u"));
   });
 
-  it("initializes first-party Codex without an ACP command", async () => {
+  it("requires an explicit runtime kind instead of inferring it from the agent id", async () => {
     const path = await tempConfig();
     const output = io();
-    await expect(runConnectCli(["init", "--config", path, "--agent", "codex"], output.deps)).resolves.toBe(0);
-    await expect(loadConfig(path)).resolves.toMatchObject({
-      defaultAgent: "codex",
-      agents: { codex: { kind: "codex" } },
-    });
+    await expect(runConnectCli(["init", "--config", path, "--agent", "codex"], output.deps)).resolves.toBe(1);
+    expect(output.stderr.join("")).toContain("--kind codex is required");
   });
 
   it("adds an explicitly named first-party Codex agent", async () => {
@@ -81,16 +79,12 @@ describe("runConnectCli", () => {
     });
   });
 
-  it("adds ACP agents without activating them", async () => {
+  it("rejects agent bindings without an explicit supported runtime kind", async () => {
     const path = await tempConfig();
     const output = io();
     await runConnectCli(["init", "--config", path], output.deps);
-    await expect(
-      runConnectCli(["agent", "add", "claude", "--command", "claude-acp", "--config", path], output.deps),
-    ).resolves.toBe(0);
-    await expect(loadConfig(path)).resolves.toMatchObject({
-      agents: { claude: { kind: "acp", command: "claude-acp" } },
-    });
+    await expect(runConnectCli(["agent", "add", "claude", "--config", path], output.deps)).resolves.toBe(1);
+    expect(output.stderr.join("")).toContain("--kind codex is required");
   });
 
   it("activates through injectable activation action without printing invite code", async () => {
@@ -125,49 +119,42 @@ describe("runConnectCli", () => {
 describe("handleChatCommand", () => {
   it("persists /clawchat-output overrides", async () => {
     const store = { setOutputVisibility: mock(async () => undefined) } as unknown as ConnectStateStore;
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
+    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
     await expect(
-      handleChatCommand({ message: message("/clawchat-output full"), agentId: "codex", config, stateStore: store }),
+      handleChatCommand({
+        message: message("/clawchat-output full"),
+        agentId: "codex",
+        config,
+        stateStore: store,
+        projects: {} as ProjectCatalog,
+        ownerUserId: "usr",
+      }),
     ).resolves.toMatchObject({ handled: true });
     expect(store.setOutputVisibility).toHaveBeenCalledWith("chat-1", "full");
   });
 
-  it("handles session and directory commands without unsupported routing leakage", async () => {
-    const sessions: Array<{
-      chatId?: string;
-      sessionId: string;
-      agentId?: string;
-      cwd?: string | null;
-      name?: string | null;
-      isCurrent: boolean;
-      [key: string]: unknown;
-    }> = [];
-    const store = {
-      getRuntimeStatus: mock(async () => null),
-      getCurrentRuntimeSession: mock(async () => sessions.find((session) => session.isCurrent) ?? null),
-      upsertRuntimeSession: mock(async (session) => {
-        sessions.forEach((existing) => {
-          existing.isCurrent = false;
-        });
-        sessions.push({ ...session, isCurrent: true });
-      }),
-      listRuntimeSessions: mock(async () => sessions),
-      switchRuntimeSession: mock(async (_chatId, id) => {
-        const found = sessions.find((session) => session.sessionId === id);
-        if (!found) return false;
-        sessions.forEach((session) => {
-          session.isCurrent = false;
-        });
-        found.isCurrent = true;
-        return true;
-      }),
-      setCurrentSessionDirectory: mock(async (_chatId, agentId, cwd) => {
-        sessions.forEach((session) => {
-          session.isCurrent = false;
-        });
-        sessions.push({ chatId: "chat-1", sessionId: "default", agentId, cwd, isCurrent: true });
-      }),
-    } as unknown as ConnectStateStore;
+  it("rejects control commands from users other than the Agent Binding owner", async () => {
+    const store = {} as ConnectStateStore;
+    const projects = { list: mock(async () => []) } as unknown as ProjectCatalog;
+    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
+    const result = await handleChatCommand({
+      message: message("/project list"),
+      agentId: "codex",
+      ownerUserId: "owner-user",
+      config,
+      stateStore: store,
+      projects,
+    });
+    expect(result).toMatchObject({ handled: true, text: expect.stringContaining("owner") });
+    expect(projects.list).not.toHaveBeenCalled();
+  });
+
+  it("handles Session and Project commands while removing legacy directory commands", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-commands-"));
+    const root = join(directory, "repo");
+    await mkdir(root);
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const projects = new ProjectCatalog(store);
     const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
     const closeRuntimeSession = mock(async () => true);
     const invalidateRuntimeSession = mock(async () => true);
@@ -176,24 +163,90 @@ describe("handleChatCommand", () => {
       "/new",
       "/list",
       "/current",
-      "/dir",
-      "/dir /tmp/repo",
-      "/cd /tmp/other",
+      `/project add repo ${root}`,
+      "/project list",
+      "/project use repo",
+      "/project current",
+      "/project clear",
+      "/project remove repo",
       "/mode read-only",
       "/cancel",
     ]) {
       const result = await handleChatCommand({
         message: message(command, "group"),
         agentId: "codex",
+        ownerUserId: "usr",
         config,
         stateStore: store,
+        projects,
         closeRuntimeSession,
         invalidateRuntimeSession,
       });
       expect(result.handled, command).toBe(true);
       expect(result.text, command).toBeTruthy();
     }
+    for (const command of ["/dir", "/dir /tmp/repo", "/cd /tmp/other"]) {
+      await expect(
+        handleChatCommand({
+          message: message(command),
+          agentId: "codex",
+          ownerUserId: "usr",
+          config,
+          stateStore: store,
+          projects,
+        }),
+      ).resolves.toEqual({ handled: false });
+    }
     expect(closeRuntimeSession).toHaveBeenCalled();
     expect(invalidateRuntimeSession).toHaveBeenCalled();
+    await store.close();
+  });
+
+  it("creates a new Session and Runtime Thread boundary when changing Project", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-project-switch-"));
+    const root = join(directory, "repo");
+    await mkdir(root);
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const projects = new ProjectCatalog(store);
+    const project = await projects.add("repo", root);
+    const config = upsertAgent(defaultConfig(), "work", { kind: "codex" });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "before",
+      agentId: "work",
+      runtimeSessionId: "thread-before",
+      projectId: null,
+    });
+    const closeRuntimeSession = mock(async () => true);
+
+    await handleChatCommand({
+      message: message("/project use repo"),
+      agentId: "work",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      closeRuntimeSession,
+    });
+    const projectSession = await store.getCurrentRuntimeSession("chat-1", "work");
+    expect(projectSession).toMatchObject({ projectId: project.projectId, runtimeSessionId: null });
+    expect(projectSession?.sessionId).not.toBe("before");
+    if (!projectSession) throw new Error("expected Project Session");
+    await store.setRuntimeSessionId("chat-1", "work", projectSession.sessionId, "thread-project");
+
+    await handleChatCommand({
+      message: message("/project clear"),
+      agentId: "work",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      closeRuntimeSession,
+    });
+    const nonProjectSession = await store.getCurrentRuntimeSession("chat-1", "work");
+    expect(nonProjectSession).toMatchObject({ projectId: null, runtimeSessionId: null });
+    expect(nonProjectSession?.sessionId).not.toBe(projectSession.sessionId);
+    expect(closeRuntimeSession).toHaveBeenCalledTimes(2);
+    await store.close();
   });
 });

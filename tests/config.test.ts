@@ -49,53 +49,48 @@ describe("Codex agent configuration", () => {
     await expect(loadConfig(path)).resolves.toEqual(config);
   });
 
-  it("migrates the legacy codex agent to the first-party SDK", () => {
-    const bare = normalizeConfig({
-      defaultAgent: "codex",
-      agents: { codex: { kind: "acp", command: "codex" } },
-    });
-    const bridged = normalizeConfig({
-      defaultAgent: "codex",
-      agents: {
-        codex: {
-          kind: "acp",
-          command: "npx",
-          args: ["-y", "@agentclientprotocol/codex-acp"],
-        },
-      },
-    });
-
-    expect(getAgent(bare, "codex")).toEqual({ kind: "codex" });
-    expect(getAgent(bridged, "codex")).toEqual({ kind: "codex" });
+  it("rejects legacy agent shapes instead of migrating them", () => {
+    expect(() =>
+      normalizeConfig({
+        defaultAgent: "codex",
+        agents: { codex: { command: "codex" } },
+      }),
+    ).toThrow("agent codex kind must be codex");
   });
 
-  it("preserves non-Codex ACP agents", () => {
-    const config = normalizeConfig({
-      defaultAgent: "claude",
-      agents: {
-        claude: {
-          kind: "acp",
-          command: "npx",
-          args: ["-y", "@agentclientprotocol/claude-agent-acp"],
-        },
-      },
-    });
-
-    expect(getAgent(config, "claude")).toEqual({
-      kind: "acp",
-      command: "npx",
-      args: ["-y", "@agentclientprotocol/claude-agent-acp"],
-    });
+  it("rejects unsupported runtime kinds", () => {
+    expect(() =>
+      normalizeConfig({
+        defaultAgent: "other",
+        agents: { other: { kind: "unsupported" } },
+      }),
+    ).toThrow("agent other kind must be codex");
   });
 
-  it("rejects invalid Codex enum values during normalization", () => {
-    const config = normalizeConfig({
-      defaultAgent: "codex",
-      agents: {
-        codex: { kind: "codex", sandboxMode: "unsafe", approvalPolicy: "always" },
-      },
-    });
+  it("rejects invalid security options instead of silently broadening access", () => {
+    expect(() =>
+      normalizeConfig({
+        defaultAgent: "codex",
+        agents: { codex: { kind: "codex", sandboxMode: "unsafe" } },
+      }),
+    ).toThrow("sandboxMode must be one of");
+    expect(() =>
+      normalizeConfig({
+        defaultAgent: "codex",
+        agents: { codex: { kind: "codex", approvalPolicy: "always" } },
+      }),
+    ).toThrow("approvalPolicy must be one of");
+  });
 
-    expect(getAgent(config, "codex")).toEqual({ kind: "codex" });
+  it("rejects legacy fields and relative state paths", () => {
+    expect(() =>
+      normalizeConfig({
+        agents: { codex: { kind: "codex", mode: "read-only" } },
+      }),
+    ).toThrow("legacy agent config field is not supported: mode");
+    expect(() => normalizeConfig({ stateDbPath: "./state.sqlite" })).toThrow("stateDbPath must be an absolute path");
+    expect(() =>
+      normalizeConfig({ agents: { codex: { kind: "codex", additionalDirectories: ["./shared"] } } }),
+    ).toThrow("additionalDirectories[0] must be an absolute path");
   });
 });

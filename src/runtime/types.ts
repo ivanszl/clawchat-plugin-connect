@@ -1,9 +1,9 @@
 import type { RuntimeOutputEvent, RuntimeOutputKind } from "../output-visibility";
-import type { AgentConfig } from "../types";
+import type { AgentConfig, RuntimeWorkspace } from "../types";
 
 export interface ConnectRuntimePrompt {
   prompt: string;
-  cwd: string;
+  workspace: RuntimeWorkspace;
   mode?: string;
   metadata?: Record<string, string>;
   outputPolicy?: {
@@ -23,11 +23,9 @@ export interface ConnectRuntimeStartContext {
 }
 
 export interface ConnectRuntimeSession {
-  readonly toolsAlreadyExposed?: boolean;
   prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeOutputEvent>;
   close(): Promise<void>;
   cancel?(): Promise<boolean>;
-  registerTools?: (tools: unknown, context: unknown) => Promise<boolean> | boolean;
 }
 
 export interface ConnectRuntimeAdapter {

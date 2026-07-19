@@ -4,17 +4,6 @@ export const AGENT_TYPE = "clawbot" as const;
 export type OutputVisibility = "minimal" | "normal" | "full";
 export type ChatType = "direct" | "group";
 
-export interface AcpAgentConfig {
-  kind: "acp";
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-  processCwd?: string;
-  authMethod?: string;
-  displayName?: string;
-  mode?: string;
-}
-
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type CodexApprovalPolicy = "never" | "on-request" | "on-failure" | "untrusted";
@@ -35,7 +24,7 @@ export interface CodexAgentConfig {
   additionalDirectories?: string[];
 }
 
-export type AgentConfig = AcpAgentConfig | CodexAgentConfig;
+export type AgentConfig = CodexAgentConfig;
 
 export interface ConnectConfig {
   baseUrl: string;
@@ -59,14 +48,30 @@ export interface ActivationCredentials {
   conversationId: string | null;
 }
 
+export interface ProjectRecord {
+  projectId: string;
+  name: string;
+  rootPath: string;
+  additionalDirectories: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RuntimeWorkspace {
+  projectId: string | null;
+  workingDirectory: string;
+  additionalDirectories: string[];
+  skipGitRepoCheck: boolean;
+}
+
 export interface RuntimeSessionRecord {
   chatId: string;
   sessionId: string;
   agentId: string;
   runtimeSessionId: string | null;
+  projectId: string | null;
   name: string | null;
   mode: string | null;
-  cwd: string | null;
   isCurrent: boolean;
   updatedAt: number;
 }

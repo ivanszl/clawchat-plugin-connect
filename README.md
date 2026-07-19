@@ -2,9 +2,9 @@
 
 `@clawling/clawchat-plugin-connect` is a Bun-native CLI that connects ClawChat conversations to local coding agents. It requires Bun 1.3 or newer.
 
-- Codex uses the official `@openai/codex-sdk` directly.
-- Other agents can use Agent Client Protocol (ACP) runtimes.
-- All runtimes share the same ClawChat session, output, persistence, and tool behavior.
+- Codex runs directly through the official `@openai/codex-sdk`.
+- Connect Sessions may use a reusable Connect-managed Project or an isolated Non-Project workspace.
+- All 26 `clawchat_*` tools are exposed exclusively through a stdio MCP server.
 
 ## Install
 
@@ -12,17 +12,19 @@
 bun add --global @clawling/clawchat-plugin-connect
 ```
 
-## Configure Codex
+## Configure an Agent Binding
 
-Codex is a first-party runtime and does not need an ACP command or `codex-acp`:
+An Agent Binding ID is an arbitrary local name. Runtime behavior comes from the explicit `kind`, never from the ID:
 
 ```bash
-clawchat-connect init --agent codex
-clawchat-connect activate codex A1B2C3
-clawchat-connect run --agent codex
+clawchat-connect init --agent work --kind codex
+clawchat-connect activate work A1B2C3
+clawchat-connect run --agent work
 ```
 
-The SDK runs under Bun, starts its bundled Codex CLI, and uses the normal Codex authentication and session directories. If a specific local Codex executable is required, configure it explicitly:
+After activation succeeds, Connect sets the ClawChat Profile nickname to the Agent Binding ID (`work` in this example).
+
+Codex runs under Bun, starts its bundled Codex CLI, and uses normal Codex authentication and Session storage. To select a specific Codex executable:
 
 ```bash
 clawchat-connect agent add work --kind codex --codex-path /absolute/path/to/codex
@@ -32,9 +34,9 @@ Codex configuration can also be edited in `~/.clawchat-connect/config.json`:
 
 ```json
 {
-  "defaultAgent": "codex",
+  "defaultAgent": "work",
   "agents": {
-    "codex": {
+    "work": {
       "kind": "codex",
       "model": "gpt-5-codex",
       "sandboxMode": "workspace-write",
@@ -49,32 +51,35 @@ Codex configuration can also be edited in `~/.clawchat-connect/config.json`:
 
 Supported Codex options include `codexPathOverride`, `env`, `model`, `sandboxMode`, `modelReasoningEffort`, `approvalPolicy`, `webSearchMode`, `networkAccessEnabled`, `skipGitRepoCheck`, and `additionalDirectories`.
 
-Legacy agent ID `codex` configurations that launch bare `codex` or `@agentclientprotocol/codex-acp` are normalized to the first-party Codex runtime.
+Only explicit `kind: "codex"` Agent Bindings are supported. Legacy agent shapes and runtime kinds are rejected rather than inferred or migrated.
 
-## Configure another ACP agent
+## Projects and Sessions
 
-Generic ACP agents still use an executable command:
-
-```bash
-clawchat-connect agent add my-agent --kind acp --command my-acp-server
-```
-
-For commands that require arguments, edit the agent's `command` and `args` fields in the JSON configuration.
-
-## Working directories and sessions
-
-v1 is agent-only. There are no projects and no `/project` command. The working directory belongs to the current ClawChat session:
+A Project is a named, reusable Connect workspace. Projects are global and may be used by Sessions from any Agent Binding.
 
 ```text
-/dir /absolute/path/to/repo
-/cd /absolute/path/to/repo
+/project add connect /absolute/path/to/clawchat-plugin-connect
+/project list
+/project use connect
+/project current
+/project clear
+/project remove connect
 ```
 
-If a session has no directory, Connect replies with setup instructions and does not dispatch the turn.
+Rules:
 
-Codex thread IDs are stored with the logical ClawChat session. Connect resumes the thread after a process restart or after switching back to a previous session. `/dir` and `/mode` invalidate the current runtime thread because they change its startup options; `/new` and `/switch` preserve older thread IDs.
+- Sessions are scoped by ClawChat conversation and Agent Binding.
+- A Session has zero or one Project.
+- `/new` starts a new Session using the current Project association.
+- `/project use` starts a new Project Session; it never mutates the existing Session.
+- `/project clear` starts a new Non-Project Session.
+- Every Project change creates a new Session and therefore a new Runtime Thread boundary.
+- `/switch` can return to an earlier Session and resume its persisted Runtime Thread.
+- A Project can only be removed while no Session references it.
 
-Codex accepts these runtime modes:
+A Non-Project Session works immediately. Connect creates a deterministic isolated workspace below `~/.clawchat-connect/workspaces/`; it never falls back to the process working directory. Registered Project roots are explicit trusted workspaces, so Connect enables Codex's Git-repository-check bypass for both Project and Non-Project Sessions.
+
+Codex accepts these Session modes:
 
 ```text
 /mode read-only
@@ -82,20 +87,31 @@ Codex accepts these runtime modes:
 /mode danger-full-access
 ```
 
+Changing mode invalidates the current Runtime Thread because the mode is a Codex thread option.
+
 ## Chat commands
 
+- `/clawchat-help`
 - `/clawchat-output minimal|normal|full`
 - `/status`
 - `/new [name]`
 - `/list`
 - `/switch <session>`
 - `/current`
-- `/dir [path|reset]`
-- `/cd <path>`
+- `/project add <name> <absolute-path>`
+- `/project list`
+- `/project use <name-or-id>`
+- `/project current`
+- `/project clear`
+- `/project remove <name-or-id>`
 - `/mode <mode>`
 - `/cancel`
 
-## Codex streaming output
+Except for help, Connect control commands are restricted to the Agent Binding owner. `/cancel` bypasses the normal per-chat lifecycle queue so it can interrupt an active turn; other commands and turns are serialized per chat.
+
+## Codex Runtime Threads and output
+
+Connect stores the Codex thread ID on its owning logical Session. It resumes that Runtime Thread after a process restart or after `/switch` returns to the Session. A Runtime Thread never crosses a Project boundary.
 
 The Codex adapter maps official SDK events into ClawChat output kinds:
 
@@ -107,39 +123,34 @@ The Codex adapter maps official SDK events into ClawChat output kinds:
 
 The latest completed agent message is emitted exactly once as the final reply. `/cancel` aborts the active SDK turn through `AbortSignal`.
 
-## Tools
+## MCP tools
 
-Connect implements the shared 26 `clawchat_*` tools once in `src/tools/*`.
+`src/tools/registry.ts` is the single implementation of the 26 shared `clawchat_*` tools. `src/mcp/server.ts` is their only external exposure path.
 
-### Codex
-
-Every Codex SDK session receives an in-memory `mcp_servers.clawchat_connect` override. Codex starts:
+Every Codex SDK Session receives an in-memory `mcp_servers.clawchat_connect` override that starts:
 
 ```bash
 clawchat-connect mcp-server --agent <agentId> --config <configPath>
 ```
 
-The override carries the active ClawChat chat and state paths. Connect does **not** modify `~/.codex/config.toml`.
+The override carries active ClawChat chat and state context. Connect does **not** modify `~/.codex/config.toml`.
 
-### Other clients
-
-The same registry remains available as a portable stdio MCP server:
+Other MCP clients can start the same portable stdio server explicitly:
 
 ```bash
 clawchat-connect mcp-server --agent <agentId>
 ```
 
-ACP runtimes may also receive best-effort dynamic tool registration when they explicitly support it.
-
 Skills are optional guidance, not tool execution. Do not install tools into skill directories.
 
-## State and config
+## State
 
 - Config: `~/.clawchat-connect/config.json`
-- SQLite state: `~/.clawchat-connect/state.sqlite` through Bun's built-in `bun:sqlite`
-- Codex threads: normal Codex session storage under `~/.codex/sessions`
+- SQLite state: `~/.clawchat-connect/state.sqlite` through Bun's built-in `bun:sqlite` (must be an absolute path)
+- Non-Project workspaces: `~/.clawchat-connect/workspaces/`
+- Codex Runtime Threads: normal Codex storage under `~/.codex/sessions`
 
-Invite codes are not persisted. Credentials, runtime thread IDs, operational audit rows, output visibility, and runtime status are stored in SQLite.
+Invite codes are not persisted. Credentials, Projects, Session-to-Project associations, Runtime Thread IDs, audit rows, output visibility, and runtime status are stored in SQLite.
 
 ## Development
 
@@ -154,4 +165,4 @@ bun test
 bun run build
 ```
 
-The runtime uses Bun's built-in WebSocket client and `bun:sqlite`; it does not depend on `ws`, `sqlite`, `sqlite3`, Vitest, or tsup.
+The runtime uses Bun's built-in WebSocket client and `bun:sqlite`; it does not depend on `ws`, `sqlite`, `sqlite3`, Vitest, or tsup. Generated `dist/` output remains ignored.

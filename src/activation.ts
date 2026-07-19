@@ -31,6 +31,19 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
     });
     const result = normalizeActivationResult(agentId, await client.agentsConnect({ code, existingUserId }));
     await store.upsertActivation(result);
+    const authenticatedClient = createClawChatApiClient({
+      baseUrl: config.baseUrl,
+      mediaBaseUrl: config.mediaBaseUrl,
+      token: result.accessToken,
+      fetchImpl: options.fetchImpl,
+    });
+    try {
+      await authenticatedClient.updateMyProfile({ nickname: agentId });
+    } catch (error) {
+      throw new Error(
+        `Agent Binding ${agentId} credentials were saved, but ClawChat Profile nickname synchronization failed: ${error instanceof Error ? error.message : String(error)}. Activate again with a fresh code to retry.`,
+      );
+    }
     if ((result.conversationId || result.serverAgentId) && options.configPath)
       await saveConfig(config, options.configPath);
     return result;

@@ -13,7 +13,7 @@ describe("agent-only config", () => {
   it("writes owner-only JSON config without project or directory config", async () => {
     const dir = await tempDir();
     const path = join(dir, "config.json");
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
+    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
     await saveConfig(config, path);
     const text = await readFile(path, "utf8");
     expect(text).toContain('"agents"');
@@ -60,30 +60,60 @@ describe("state store", () => {
     await expect(store.getActivationUserId("claude")).resolves.toBe("usr-claude");
     await store.close();
   });
-  it("stores session directory separately from agent config", async () => {
+  it("stores global Projects and associates a Session with at most one Project", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
-    await expect(store.getCurrentRuntimeSession("chat-1")).resolves.toBeNull();
-    await store.setCurrentSessionDirectory("chat-1", "codex", "/repo");
-    await expect(store.getCurrentRuntimeSession("chat-1")).resolves.toMatchObject({
-      chatId: "chat-1",
-      sessionId: "default",
-      agentId: "codex",
-      cwd: "/repo",
+    const project = await store.insertProject({
+      projectId: "project-1",
+      name: "work",
+      rootPath: "/repo",
+      additionalDirectories: ["/shared"],
     });
-    await store.setCurrentSessionDirectory("chat-1", "codex", null);
-    await expect(store.getCurrentRuntimeSession("chat-1")).resolves.toMatchObject({ cwd: null });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "codex",
+      projectId: project.projectId,
+      isCurrent: true,
+    });
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "codex",
+      projectId: "project-1",
+    });
+    await expect(store.getProject("work")).resolves.toMatchObject({
+      projectId: "project-1",
+      rootPath: "/repo",
+      additionalDirectories: ["/shared"],
+    });
+    await expect(store.countRuntimeSessionsForProject("project-1")).resolves.toBe(1);
     await store.close();
   });
+  it("scopes current Sessions by Agent Binding while keeping Projects global", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await store.upsertRuntimeSession({ chatId: "chat-1", sessionId: "shared-id", agentId: "work" });
+    await store.upsertRuntimeSession({ chatId: "chat-1", sessionId: "shared-id", agentId: "personal" });
+
+    await expect(store.getCurrentRuntimeSession("chat-1", "work")).resolves.toMatchObject({ agentId: "work" });
+    await expect(store.getCurrentRuntimeSession("chat-1", "personal")).resolves.toMatchObject({
+      agentId: "personal",
+    });
+    await expect(store.listRuntimeSessions("chat-1", "work")).resolves.toHaveLength(1);
+    await expect(store.listRuntimeSessions("chat-1", "personal")).resolves.toHaveLength(1);
+    await store.close();
+  });
+
   it("updates the runtime thread id for one logical session", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
     await store.upsertRuntimeSession({ chatId: "chat-1", sessionId: "old", agentId: "codex", isCurrent: false });
     await store.upsertRuntimeSession({ chatId: "chat-1", sessionId: "current", agentId: "codex", isCurrent: true });
 
-    await expect(store.setRuntimeSessionId("chat-1", "old", "thread-old")).resolves.toBe(true);
-    await expect(store.setRuntimeSessionId("chat-1", "missing", "thread-missing")).resolves.toBe(false);
-    await expect(store.listRuntimeSessions("chat-1")).resolves.toEqual(
+    await expect(store.setRuntimeSessionId("chat-1", "codex", "old", "thread-old")).resolves.toBe(true);
+    await expect(store.setRuntimeSessionId("chat-1", "codex", "missing", "thread-missing")).resolves.toBe(false);
+    await expect(store.listRuntimeSessions("chat-1", "codex")).resolves.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ sessionId: "old", runtimeSessionId: "thread-old", isCurrent: false }),
         expect.objectContaining({ sessionId: "current", runtimeSessionId: null, isCurrent: true }),

@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type {
   AgentConfig,
   CodexAgentConfig,
@@ -30,7 +30,10 @@ export function defaultConfigPath(): string {
 }
 
 export function defaultStateDbPath(): string {
-  return process.env.CLAWCHAT_CONNECT_STATE_DB || join(defaultDataDir(), "state.sqlite");
+  return requireAbsolutePath(
+    process.env.CLAWCHAT_CONNECT_STATE_DB || join(defaultDataDir(), "state.sqlite"),
+    "stateDbPath",
+  );
 }
 
 function isOutputVisibility(value: unknown): value is OutputVisibility {
@@ -39,12 +42,6 @@ function isOutputVisibility(value: unknown): value is OutputVisibility {
 
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
-}
-
-function readStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const items = value.map((item) => readString(item)).filter(Boolean);
-  return items.length > 0 ? items : undefined;
 }
 
 function readEnv(value: unknown): Record<string, string> | undefined {
@@ -60,31 +57,26 @@ function readEnv(value: unknown): Record<string, string> | undefined {
 
 function normalizeAgent(agentId: string, raw: unknown): AgentConfig {
   const record = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-  return shouldUseFirstPartyCodex(agentId, record) ? normalizeCodexAgent(record) : normalizeAcpAgent(record);
-}
-
-function normalizeAcpAgent(record: Record<string, unknown>): AgentConfig {
-  const args = readStringArray(record.args);
-  const env = readEnv(record.env);
-  return {
-    kind: "acp",
-    command: readString(record.command),
-    ...(args ? { args } : {}),
-    ...(env ? { env } : {}),
-    ...(readString(record.processCwd) ? { processCwd: resolve(readString(record.processCwd)) } : {}),
-    ...(readString(record.authMethod) ? { authMethod: readString(record.authMethod) } : {}),
-    ...(readString(record.displayName) ? { displayName: readString(record.displayName) } : {}),
-    ...(readString(record.mode) ? { mode: readString(record.mode) } : {}),
-  };
+  if (record.kind !== "codex") throw new Error(`agent ${agentId} kind must be codex`);
+  return normalizeCodexAgent(record);
 }
 
 function normalizeCodexAgent(record: Record<string, unknown>): CodexAgentConfig {
+  for (const field of ["command", "args", "processCwd", "authMethod", "mode"]) {
+    if (field in record) throw new Error(`legacy agent config field is not supported: ${field}`);
+  }
   const env = readEnv(record.env);
-  const additionalDirectories = readStringArray(record.additionalDirectories)?.map((path) => resolve(path));
-  const sandboxMode = readEnum(record.sandboxMode ?? record.mode, CODEX_SANDBOX_MODES);
-  const modelReasoningEffort = readEnum(record.modelReasoningEffort, CODEX_REASONING_EFFORTS);
-  const approvalPolicy = readEnum(record.approvalPolicy, CODEX_APPROVAL_POLICIES);
-  const webSearchMode = readEnum(record.webSearchMode, CODEX_WEB_SEARCH_MODES);
+  const additionalDirectories = readAbsolutePathArray(record.additionalDirectories, "additionalDirectories");
+  const sandboxMode = readOptionalEnum(record.sandboxMode, CODEX_SANDBOX_MODES, "sandboxMode");
+  const modelReasoningEffort = readOptionalEnum(
+    record.modelReasoningEffort,
+    CODEX_REASONING_EFFORTS,
+    "modelReasoningEffort",
+  );
+  const approvalPolicy = readOptionalEnum(record.approvalPolicy, CODEX_APPROVAL_POLICIES, "approvalPolicy");
+  const webSearchMode = readOptionalEnum(record.webSearchMode, CODEX_WEB_SEARCH_MODES, "webSearchMode");
+  const networkAccessEnabled = readOptionalBoolean(record.networkAccessEnabled, "networkAccessEnabled");
+  const skipGitRepoCheck = readOptionalBoolean(record.skipGitRepoCheck, "skipGitRepoCheck");
   return {
     kind: "codex",
     ...(readString(record.codexPathOverride) ? { codexPathOverride: readString(record.codexPathOverride) } : {}),
@@ -95,34 +87,39 @@ function normalizeCodexAgent(record: Record<string, unknown>): CodexAgentConfig 
     ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
     ...(approvalPolicy ? { approvalPolicy } : {}),
     ...(webSearchMode ? { webSearchMode } : {}),
-    ...(typeof record.networkAccessEnabled === "boolean" ? { networkAccessEnabled: record.networkAccessEnabled } : {}),
-    ...(typeof record.skipGitRepoCheck === "boolean" ? { skipGitRepoCheck: record.skipGitRepoCheck } : {}),
+    ...(networkAccessEnabled !== undefined ? { networkAccessEnabled } : {}),
+    ...(skipGitRepoCheck !== undefined ? { skipGitRepoCheck } : {}),
     ...(additionalDirectories ? { additionalDirectories } : {}),
   };
 }
 
-function readEnum<T extends string>(value: unknown, allowed: ReadonlySet<T>): T | undefined {
+function requireAbsolutePath(value: string, label: string): string {
+  if (!isAbsolute(value)) throw new Error(`${label} must be an absolute path`);
+  return value;
+}
+
+function readAbsolutePathArray(value: unknown, label: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array of absolute paths`);
+  const paths = value.map((item, index) => {
+    const path = readString(item);
+    if (!path) throw new Error(`${label}[${index}] must be a non-empty absolute path`);
+    return requireAbsolutePath(path, `${label}[${index}]`);
+  });
+  return paths.length > 0 ? [...new Set(paths)] : undefined;
+}
+
+function readOptionalEnum<T extends string>(value: unknown, allowed: ReadonlySet<T>, label: string): T | undefined {
+  if (value === undefined) return undefined;
   const text = readString(value) as T;
-  return allowed.has(text) ? text : undefined;
+  if (!allowed.has(text)) throw new Error(`${label} must be one of: ${[...allowed].join(", ")}`);
+  return text;
 }
 
-function shouldUseFirstPartyCodex(agentId: string, record: Record<string, unknown>): boolean {
-  if (record.kind === "codex") return true;
-  if (agentId !== "codex" || (record.kind !== undefined && record.kind !== "acp")) return false;
-  const command = readString(record.command);
-  const args = readStringArray(record.args) ?? [];
-  if (!command && args.length === 0) return true;
-  if ((command === "codex" || command === "codex-acp") && args.length === 0) return true;
-  if ((command === "npx" || command === "npx.cmd") && isCodexAcpArgs(args)) return true;
-  return false;
-}
-
-function isCodexAcpArgs(args: string[]): boolean {
-  return (
-    args.length > 0 &&
-    args.every((arg) => arg === "-y" || arg === "--yes" || arg === "@agentclientprotocol/codex-acp") &&
-    args.includes("@agentclientprotocol/codex-acp")
-  );
+function readOptionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+  return value;
 }
 
 export function defaultConfig(): ConnectConfig {
@@ -156,7 +153,7 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
     baseUrl: readString(record.baseUrl) || fallback.baseUrl,
     websocketUrl: readString(record.websocketUrl) || fallback.websocketUrl,
     mediaBaseUrl: readString(record.mediaBaseUrl) || fallback.mediaBaseUrl,
-    stateDbPath: readString(record.stateDbPath) || fallback.stateDbPath,
+    stateDbPath: requireAbsolutePath(readString(record.stateDbPath) || fallback.stateDbPath, "stateDbPath"),
     defaultAgent,
     outputVisibility: isOutputVisibility(record.outputVisibility) ? record.outputVisibility : fallback.outputVisibility,
     agents,
@@ -187,15 +184,10 @@ export async function saveConfig(config: ConnectConfig, path = defaultConfigPath
 
 export function getAgent(config: ConnectConfig, agentId = config.defaultAgent): AgentConfig {
   if (!agentId) {
-    throw new Error(
-      "No clawchat-connect agent is configured; run `clawchat-connect init --agent codex` or `clawchat-connect agent add <id> --command <command>`.",
-    );
+    throw new Error("No clawchat-connect agent is configured; run `clawchat-connect agent add <id> --kind codex`.");
   }
   const agent = config.agents[agentId];
   if (!agent) throw new Error(`Unknown clawchat-connect agent: ${agentId}`);
-  if (agent.kind === "acp" && !agent.command.trim()) {
-    throw new Error(`clawchat-connect ACP agent ${agentId} is missing command`);
-  }
   return agent;
 }
 

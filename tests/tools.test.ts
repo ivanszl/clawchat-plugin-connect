@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, upsertAgent } from "../src/config";
 import type { ConnectStateStore } from "../src/state";
-import { registerClawChatToolsBestEffort } from "../src/tools/bridge";
 import { createFileBackedMemoryPort, createMentionMessagePort } from "../src/tools/ports";
 import { CLAWCHAT_TOOL_DEFINITIONS, executeClawChatTool } from "../src/tools/registry";
 import { clawchatToolSchemas } from "../src/tools/schema";
@@ -27,7 +26,7 @@ function makeStore(): ConnectStateStore {
 function makeContext(overrides: Record<string, unknown> = {}) {
   return {
     agentId: "codex",
-    config: upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" }),
+    config: upsertAgent(defaultConfig(), "codex", { kind: "codex" }),
     stateStore: makeStore(),
     ...overrides,
   };
@@ -131,7 +130,7 @@ describe("ClawChat tool registry", () => {
   });
   it("searches file-backed memory and persists metadata updates", async () => {
     const dir = await mkdtemp(join(tmpdir(), "clawchat-connect-memory-"));
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "acp", command: "codex" });
+    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
     config.stateDbPath = join(dir, "state.sqlite");
     const memory = createFileBackedMemoryPort(config);
     await memory.write({ targetType: "owner", targetId: "owner", mode: "replace", content: "Colin likes cats" });
@@ -142,11 +141,5 @@ describe("ClawChat tool registry", () => {
     await expect(
       memory.metadataSync({ targetType: "owner", targetId: "owner", direction: "pull" }),
     ).resolves.toMatchObject({ metadata: expect.objectContaining({ nickname: "Colin" }) });
-  });
-  it("falls back visibly when ACP dynamic tool registration is unavailable", async () => {
-    await expect(registerClawChatToolsBestEffort({}, makeContext())).resolves.toMatchObject({
-      registered: false,
-      reason: expect.stringContaining("stdio MCP"),
-    });
   });
 });

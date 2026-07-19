@@ -1,11 +1,12 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmod, mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import { defaultStateDbPath } from "./config";
 import {
   type ActivationCredentials,
   type OutputVisibility,
   PLATFORM_ID,
+  type ProjectRecord,
   type RuntimeSessionRecord,
   type RuntimeStatus,
   type ToolCallStatus,
@@ -62,14 +63,20 @@ export interface ToolCallInput {
   startedAt?: number;
   endedAt?: number;
 }
+export interface InsertProjectInput {
+  projectId: string;
+  name: string;
+  rootPath: string;
+  additionalDirectories?: string[];
+}
 export interface UpsertRuntimeSessionInput {
   chatId: string;
   sessionId: string;
   agentId: string;
   runtimeSessionId?: string | null;
+  projectId?: string | null;
   name?: string | null;
   mode?: string | null;
-  cwd?: string | null;
   isCurrent?: boolean;
 }
 
@@ -78,15 +85,22 @@ export class ConnectStateStore {
   private db: SqliteDb | null = null;
   constructor(options: ConnectStateOptions = {}) {
     this.dbPath = options.dbPath ?? defaultStateDbPath();
+    if (!isAbsolute(this.dbPath)) throw new Error("stateDbPath must be an absolute path");
   }
   async initialize(): Promise<void> {
     if (this.db) return;
     await mkdir(dirname(this.dbPath), { recursive: true, mode: 0o700 });
     this.db = new BunSqliteAdapter(new Database(this.dbPath, { create: true }));
-    await this.db.exec("PRAGMA journal_mode = WAL");
-    await this.db.exec("PRAGMA foreign_keys = ON");
-    await this.applyMigrations();
-    await chmod(this.dbPath, 0o600).catch(() => undefined);
+    try {
+      await this.db.exec("PRAGMA journal_mode = WAL");
+      await this.db.exec("PRAGMA foreign_keys = ON");
+      await this.createSchema();
+      await chmod(this.dbPath, 0o600).catch(() => undefined);
+    } catch (error) {
+      await this.db.close();
+      this.db = null;
+      throw error;
+    }
   }
   async close(): Promise<void> {
     await this.db?.close();
@@ -166,82 +180,136 @@ export class ConnectStateStore {
     );
   }
 
+  async insertProject(input: InsertProjectInput): Promise<ProjectRecord> {
+    const now = Date.now();
+    const db = await this.requireDb();
+    await db.run(
+      `INSERT INTO projects(project_id, name, root_path, additional_directories_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      input.projectId,
+      input.name,
+      input.rootPath,
+      JSON.stringify(input.additionalDirectories ?? []),
+      now,
+      now,
+    );
+    const project = await this.getProject(input.projectId);
+    if (!project) throw new Error(`failed to persist project ${input.projectId}`);
+    return project;
+  }
+  async getProject(reference: string): Promise<ProjectRecord | null> {
+    const db = await this.requireDb();
+    const row = await db.get<Record<string, unknown>>(
+      `SELECT * FROM projects WHERE project_id = ? OR name = ? COLLATE NOCASE ORDER BY CASE WHEN project_id = ? THEN 0 ELSE 1 END LIMIT 1`,
+      reference,
+      reference,
+      reference,
+    );
+    return row ? projectFromRow(row) : null;
+  }
+  async listProjects(): Promise<ProjectRecord[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<Record<string, unknown>[]>(`SELECT * FROM projects ORDER BY name COLLATE NOCASE`);
+    return rows.map(projectFromRow);
+  }
+  async countRuntimeSessionsForProject(projectId: string): Promise<number> {
+    const db = await this.requireDb();
+    const row = await db.get<{ count?: number }>(
+      `SELECT COUNT(*) AS count FROM runtime_sessions WHERE project_id = ?`,
+      projectId,
+    );
+    return numberValue(row?.count);
+  }
+  async deleteProject(projectId: string): Promise<boolean> {
+    const db = await this.requireDb();
+    const result = await db.run(`DELETE FROM projects WHERE project_id = ?`, projectId);
+    return result.changes > 0;
+  }
+
   async upsertRuntimeSession(input: UpsertRuntimeSessionInput): Promise<void> {
     const now = Date.now();
     const db = await this.requireDb();
     if (input.isCurrent !== false)
-      await db.run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ?", input.chatId);
+      await db.run(
+        "UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?",
+        input.chatId,
+        input.agentId,
+      );
     await db.run(
-      `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, name, mode, cwd, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, session_id) DO UPDATE SET agent_id = excluded.agent_id, runtime_session_id = excluded.runtime_session_id, name = excluded.name, mode = excluded.mode, cwd = excluded.cwd, is_current = excluded.is_current, updated_at = excluded.updated_at`,
+      `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id, session_id) DO UPDATE SET agent_id = excluded.agent_id, runtime_session_id = excluded.runtime_session_id, project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, is_current = excluded.is_current, updated_at = excluded.updated_at`,
       input.chatId,
       input.sessionId,
       input.agentId,
       input.runtimeSessionId ?? null,
+      input.projectId ?? null,
       input.name ?? null,
       input.mode ?? null,
-      input.cwd ?? null,
       input.isCurrent === false ? 0 : 1,
       now,
       now,
     );
   }
-  async getCurrentRuntimeSession(chatId: string): Promise<RuntimeSessionRecord | null> {
+  async getCurrentRuntimeSession(chatId: string, agentId: string): Promise<RuntimeSessionRecord | null> {
     const db = await this.requireDb();
     const row = await db.get<Record<string, unknown>>(
-      `SELECT * FROM runtime_sessions WHERE chat_id = ? AND is_current = 1 ORDER BY updated_at DESC LIMIT 1`,
+      `SELECT * FROM runtime_sessions WHERE chat_id = ? AND agent_id = ? AND is_current = 1 ORDER BY updated_at DESC LIMIT 1`,
       chatId,
+      agentId,
     );
     return row ? runtimeSessionFromRow(row) : null;
   }
-  async listRuntimeSessions(chatId: string): Promise<RuntimeSessionRecord[]> {
+  async listRuntimeSessions(chatId: string, agentId: string): Promise<RuntimeSessionRecord[]> {
     const db = await this.requireDb();
     const rows = await db.all<Record<string, unknown>[]>(
-      `SELECT * FROM runtime_sessions WHERE chat_id = ? ORDER BY updated_at DESC`,
+      `SELECT * FROM runtime_sessions WHERE chat_id = ? AND agent_id = ? ORDER BY updated_at DESC`,
       chatId,
+      agentId,
     );
     return rows.map(runtimeSessionFromRow);
   }
-  async switchRuntimeSession(chatId: string, sessionId: string): Promise<boolean> {
+  async switchRuntimeSession(chatId: string, agentId: string, sessionId: string): Promise<boolean> {
     const db = await this.requireDb();
-    await db.run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ?", chatId);
+    await db.run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?", chatId, agentId);
     const result = await db.run(
-      "UPDATE runtime_sessions SET is_current = 1, updated_at = ? WHERE chat_id = ? AND session_id = ?",
+      "UPDATE runtime_sessions SET is_current = 1, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
       Date.now(),
       chatId,
+      agentId,
       sessionId,
     );
-    return (result.changes ?? 0) > 0;
+    return result.changes > 0;
   }
-  async setCurrentSessionDirectory(chatId: string, agentId: string, cwd: string | null): Promise<void> {
-    const current = await this.getCurrentRuntimeSession(chatId);
-    await this.upsertRuntimeSession({
-      chatId,
-      sessionId: current?.sessionId ?? "default",
-      agentId: current?.agentId || agentId,
-      runtimeSessionId: current?.runtimeSessionId ?? null,
-      name: current?.name ?? null,
-      mode: current?.mode ?? null,
-      cwd,
-      isCurrent: true,
-    });
-  }
-  async setRuntimeSessionId(chatId: string, sessionId: string, runtimeSessionId: string | null): Promise<boolean> {
+  async setRuntimeSessionId(
+    chatId: string,
+    agentId: string,
+    sessionId: string,
+    runtimeSessionId: string | null,
+  ): Promise<boolean> {
     const db = await this.requireDb();
     const result = await db.run(
-      "UPDATE runtime_sessions SET runtime_session_id = ?, updated_at = ? WHERE chat_id = ? AND session_id = ?",
+      "UPDATE runtime_sessions SET runtime_session_id = ?, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
       runtimeSessionId,
       Date.now(),
       chatId,
+      agentId,
       sessionId,
     );
-    return (result.changes ?? 0) > 0;
+    return result.changes > 0;
   }
-  async deleteRuntimeSession(chatId: string, sessionId?: string): Promise<boolean> {
+  async deleteRuntimeSession(chatId: string, agentId: string, sessionId?: string): Promise<boolean> {
     const db = await this.requireDb();
     const result = sessionId
-      ? await db.run("DELETE FROM runtime_sessions WHERE chat_id = ? AND session_id = ?", chatId, sessionId)
-      : await db.run("DELETE FROM runtime_sessions WHERE chat_id = ? AND is_current = 1", chatId);
-    return (result.changes ?? 0) > 0;
+      ? await db.run(
+          "DELETE FROM runtime_sessions WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
+          chatId,
+          agentId,
+          sessionId,
+        )
+      : await db.run(
+          "DELETE FROM runtime_sessions WHERE chat_id = ? AND agent_id = ? AND is_current = 1",
+          chatId,
+          agentId,
+        );
+    return result.changes > 0;
   }
 
   async claimMessageOnce(input: MessageInput): Promise<boolean> {
@@ -330,10 +398,10 @@ export class ConnectStateStore {
     if (!this.db) throw new Error("clawchat-connect sqlite database is not open");
     return this.db;
   }
-  private async applyMigrations(): Promise<void> {
+  private async createSchema(): Promise<void> {
     const db = await this.requireDb();
     await db.exec(
-      `CREATE TABLE IF NOT EXISTS activations(platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, server_agent_id TEXT, user_id TEXT NOT NULL, owner_user_id TEXT NOT NULL, conversation_id TEXT, activated_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(platform, local_agent_id)); CREATE TABLE IF NOT EXISTS device_state(id INTEGER PRIMARY KEY CHECK(id = 1), device_id TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, name TEXT, mode TEXT, cwd TEXT, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, session_id)); CREATE TABLE IF NOT EXISTS output_visibility(chat_id TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS clawchat_messages(id INTEGER PRIMARY KEY, platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, kind TEXT NOT NULL, direction TEXT NOT NULL, event_type TEXT NOT NULL, trace_id TEXT, chat_id TEXT, message_id TEXT, text TEXT, raw_json TEXT, created_at INTEGER NOT NULL, send_status TEXT, protocol_message_id TEXT, acked_at INTEGER, send_error TEXT); CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique ON clawchat_messages(local_agent_id, direction, kind, message_id) WHERE kind = 'message' AND message_id IS NOT NULL; CREATE TABLE IF NOT EXISTS tool_calls(id INTEGER PRIMARY KEY, platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, tool_name TEXT NOT NULL, args_json TEXT, result_json TEXT, status TEXT NOT NULL, error TEXT, started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runtime_status(id INTEGER PRIMARY KEY CHECK(id = 1), updated_at INTEGER NOT NULL, websocket_connected INTEGER, active_agent TEXT, active_chats INTEGER NOT NULL, global_running INTEGER NOT NULL, global_queued INTEGER NOT NULL, recent_error TEXT);`,
+      `CREATE TABLE IF NOT EXISTS activations(platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, server_agent_id TEXT, user_id TEXT NOT NULL, owner_user_id TEXT NOT NULL, conversation_id TEXT, activated_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(platform, local_agent_id)); CREATE TABLE IF NOT EXISTS device_state(id INTEGER PRIMARY KEY CHECK(id = 1), device_id TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS projects(project_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, root_path TEXT NOT NULL UNIQUE, additional_directories_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT, name TEXT, mode TEXT, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id, session_id)); CREATE TABLE IF NOT EXISTS output_visibility(chat_id TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS clawchat_messages(id INTEGER PRIMARY KEY, platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, kind TEXT NOT NULL, direction TEXT NOT NULL, event_type TEXT NOT NULL, trace_id TEXT, chat_id TEXT, message_id TEXT, text TEXT, raw_json TEXT, created_at INTEGER NOT NULL, send_status TEXT, protocol_message_id TEXT, acked_at INTEGER, send_error TEXT); CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique ON clawchat_messages(local_agent_id, direction, kind, message_id) WHERE kind = 'message' AND message_id IS NOT NULL; CREATE TABLE IF NOT EXISTS tool_calls(id INTEGER PRIMARY KEY, platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, tool_name TEXT NOT NULL, args_json TEXT, result_json TEXT, status TEXT NOT NULL, error TEXT, started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runtime_status(id INTEGER PRIMARY KEY CHECK(id = 1), updated_at INTEGER NOT NULL, websocket_connected INTEGER, active_agent TEXT, active_chats INTEGER NOT NULL, global_running INTEGER NOT NULL, global_queued INTEGER NOT NULL, recent_error TEXT);`,
     );
   }
 }
@@ -358,15 +426,33 @@ function nullableString(value: unknown): string | null {
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : Number(value ?? 0) || 0;
 }
+function projectFromRow(row: Record<string, unknown>): ProjectRecord {
+  return {
+    projectId: stringValue(row.project_id),
+    name: stringValue(row.name),
+    rootPath: stringValue(row.root_path),
+    additionalDirectories: stringArrayFromJson(row.additional_directories_json),
+    createdAt: numberValue(row.created_at),
+    updatedAt: numberValue(row.updated_at),
+  };
+}
+function stringArrayFromJson(value: unknown): string[] {
+  try {
+    const parsed = JSON.parse(stringValue(value)) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
 function runtimeSessionFromRow(row: Record<string, unknown>): RuntimeSessionRecord {
   return {
     chatId: stringValue(row.chat_id),
     sessionId: stringValue(row.session_id),
     agentId: stringValue(row.agent_id),
     runtimeSessionId: nullableString(row.runtime_session_id),
+    projectId: nullableString(row.project_id),
     name: nullableString(row.name),
     mode: nullableString(row.mode),
-    cwd: nullableString(row.cwd),
     isCurrent: Boolean(row.is_current),
     updatedAt: numberValue(row.updated_at),
   };
