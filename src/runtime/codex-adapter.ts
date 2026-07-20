@@ -20,18 +20,16 @@ export interface CodexClientLike {
 
 export interface CreateCodexRuntimeAdapterOptions {
   createCodex?: (options: CodexOptions) => Promise<CodexClientLike>;
-  binPath?: string;
 }
 
 const SANDBOX_MODES: readonly CodexSandboxMode[] = ["read-only", "workspace-write", "danger-full-access"];
 
 export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOptions = {}): ConnectRuntimeAdapter {
   const createCodex = options.createCodex ?? createOfficialCodexClient;
-  const binPath = options.binPath ?? Bun.main;
   return {
     async start(agent, context) {
       if (agent.kind !== "codex") throw new Error("Codex runtime adapter requires a Codex agent");
-      const client = await createCodex(codexOptions(agent, context, binPath));
+      const client = await createCodex(codexOptions(agent));
       return new CodexRuntimeSession(client, agent, context);
     },
   };
@@ -42,23 +40,11 @@ async function createOfficialCodexClient(options: CodexOptions): Promise<CodexCl
   return new Codex(options);
 }
 
-function codexOptions(agent: CodexAgentConfig, context: ConnectRuntimeStartContext, binPath: string): CodexOptions {
+function codexOptions(agent: CodexAgentConfig): CodexOptions {
   const env = agent.env ? { ...definedProcessEnvironment(), ...agent.env } : undefined;
   return {
     ...(agent.codexPathOverride ? { codexPathOverride: agent.codexPathOverride } : {}),
     ...(env ? { env } : {}),
-    config: {
-      mcp_servers: {
-        clawchat_connect: {
-          command: process.execPath,
-          args: [binPath, "mcp-server", "--agent", context.agentId, "--config", context.configPath],
-          env: {
-            CLAWCHAT_CONNECT_CHAT_ID: context.chatId,
-            CLAWCHAT_CONNECT_STATE_DB: context.stateDbPath,
-          },
-        },
-      },
-    },
   };
 }
 

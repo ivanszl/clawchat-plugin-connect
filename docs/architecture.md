@@ -2,7 +2,7 @@
 
 ## Process model
 
-`clawchat-connect` is a Bun-native CLI package with separate WebSocket and MCP entrypoints:
+`clawchat-connect` is a Bun-native CLI package with a WebSocket service entrypoint and host-side management commands:
 
 ```text
 clawchat-connect run --agent <bindingId>
@@ -13,12 +13,11 @@ clawchat-connect run --agent <bindingId>
   direct runtime adapter dispatch
   materialized message replies
 
-clawchat-connect mcp-server --agent <bindingId>
-  clean stdio MCP JSON-RPC process
-  exposes the 26 shared clawchat_* tools
+clawchat-connect profile update --agent <bindingId> [fields]
+  authenticated ClawChat Profile update
 ```
 
-The processes remain separate because stdio MCP requires uncontaminated stdin/stdout. WebSocket logs must never share the MCP stdout stream.
+Connect does not expose tools, run an MCP server, or inject an MCP server into Codex Sessions.
 
 ## Domain model
 
@@ -45,7 +44,6 @@ ConnectRuntime → CodexRuntimeAdapter → @openai/codex-sdk → Codex CLI
 ```
 
 - `src/runtime/codex-adapter.ts` is the only `@openai/codex-sdk` import seam.
-- `src/mcp/server.ts` is the only `@modelcontextprotocol/sdk` import seam.
 - Agent configuration requires the explicit `kind: "codex"` discriminant.
 - `ConnectRuntime` owns queueing, Session lifecycle, workspace resolution, output visibility, reply delivery, and persisted Runtime Thread IDs.
 - Adapters receive a resolved `RuntimeWorkspace` and never access SQLite directly.
@@ -102,23 +100,20 @@ Runtime-ID callbacks are accepted only while the originating in-memory Session s
 
 The runtime applies `minimal`, `normal`, or `full` visibility and sends complete ClawChat `message.reply` frames. Protocol streaming lifecycle events are not used.
 
-## Tool exposure policy
+## External capability policy
 
-- `src/tools/schema.ts` defines the exact 26 tool names and schemas.
-- `src/tools/registry.ts` owns execution, normalization, and audit.
-- `src/mcp/server.ts` is the sole external tool exposure path.
-- Every Codex adapter injects a Session-local `mcp_servers.clawchat_connect` override.
-- The override starts the package's `bin.js` with Bun and supplies Agent Binding, config, chat, and state context.
-- Automatic Codex exposure never writes `~/.codex/config.toml`.
-- Skills are documentation/guidance only, never executable tool installation.
-
-There is no dynamic runtime tool registration or fallback bridge.
+- Connect has no dynamic tool registry, local memory tools, or MCP entrypoint.
+- The Codex adapter does not inject tool or MCP configuration.
+- Profile updates are explicit CLI operations through `src/profile.ts`.
+- The REST client retains only activation and Profile-update operations required by Connect.
+- MCP servers configured independently in the user's Codex environment remain outside Connect's ownership.
 
 ## Layering
 
 ```text
 src/cli.ts                     CLI commands and process startup
 src/activation.ts              Activation and Profile nickname synchronization
+src/profile.ts                 Explicit authenticated Profile updates
 src/ws-client.ts               Protocol v2 over Bun WebSocket
 src/message-mapper.ts          ClawChat message fragment mapping
 src/chat-commands.ts           Session and Project command intent
@@ -126,10 +121,7 @@ src/projects.ts                Project catalog and workspace resolution
 src/runtime/types.ts           Direct runtime seam
 src/runtime/codex-adapter.ts   Official Codex SDK adapter
 src/runtime/connect-runtime.ts Queue, lifecycle, output, and reply dispatch
-src/tools/schema.ts            26 tool names and Zod schemas
-src/tools/registry.ts          Shared tool handlers and audit
-src/mcp/server.ts              Sole stdio MCP exposure adapter
-src/api-client.ts              ClawChat REST/media client
+src/api-client.ts              Minimal activation and Profile REST client
 src/state.ts                   Bun SQLite persistence
 ```
 
@@ -153,7 +145,7 @@ Required controls always remain visible. In group chats, required controls route
 
 JSON configuration stores Agent Bindings and defaults. Project definitions remain operational domain data in SQLite, not config. `stateDbPath` and configured additional directories must be absolute so workspace behavior never depends on the launcher process's current directory.
 
-Bun's built-in `bun:sqlite` stores credentials, device ID, Projects, logical Sessions, Project associations, Runtime Thread IDs, output visibility, message audit/idempotency, tool audit, and runtime status. `ConnectStateStore` presents an asynchronous interface while its internal adapter executes Bun's synchronous native queries.
+Bun's built-in `bun:sqlite` stores credentials, device ID, Projects, logical Sessions, Project associations, Runtime Thread IDs, output visibility, message audit/idempotency, and runtime status. `ConnectStateStore` presents an asynchronous interface while its internal adapter executes Bun's synchronous native queries.
 
 Do not add `sqlite`, `sqlite3`, `node:sqlite`, or `better-sqlite3`.
 

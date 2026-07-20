@@ -26,14 +26,12 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
     const existingUserId = await store.getActivationUserId(agentId);
     const client = createClawChatApiClient({
       baseUrl: config.baseUrl,
-      mediaBaseUrl: config.mediaBaseUrl,
       fetchImpl: options.fetchImpl,
     });
     const result = normalizeActivationResult(agentId, await client.agentsConnect({ code, existingUserId }));
     await store.upsertActivation(result);
     const authenticatedClient = createClawChatApiClient({
       baseUrl: config.baseUrl,
-      mediaBaseUrl: config.mediaBaseUrl,
       token: result.accessToken,
       fetchImpl: options.fetchImpl,
     });

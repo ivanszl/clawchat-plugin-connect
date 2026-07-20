@@ -126,7 +126,6 @@ export function defaultConfig(): ConnectConfig {
   return {
     baseUrl: DEFAULT_BASE_URL,
     websocketUrl: DEFAULT_WEBSOCKET_URL,
-    mediaBaseUrl: DEFAULT_BASE_URL,
     stateDbPath: defaultStateDbPath(),
     defaultAgent: null,
     outputVisibility: "normal",
@@ -152,7 +151,6 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
   return {
     baseUrl: readString(record.baseUrl) || fallback.baseUrl,
     websocketUrl: readString(record.websocketUrl) || fallback.websocketUrl,
-    mediaBaseUrl: readString(record.mediaBaseUrl) || fallback.mediaBaseUrl,
     stateDbPath: requireAbsolutePath(readString(record.stateDbPath) || fallback.stateDbPath, "stateDbPath"),
     defaultAgent,
     outputVisibility: isOutputVisibility(record.outputVisibility) ? record.outputVisibility : fallback.outputVisibility,

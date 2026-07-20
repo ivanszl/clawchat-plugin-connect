@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { handleChatCommand } from "../src/chat-commands";
 import { runConnectCli } from "../src/cli";
 import { defaultConfig, loadConfig, upsertAgent } from "../src/config";
+import type { UpdateAccountProfileResult } from "../src/profile";
 import { ProjectCatalog } from "../src/projects";
 import type { NormalizedInboundMessage } from "../src/protocol";
 import { type ConnectStateStore, createStateStore } from "../src/state";
@@ -113,6 +114,64 @@ describe("runConnectCli", () => {
     }));
     await expect(runConnectCli(["run", "--agent", "codex"], { ...output.deps, startService })).resolves.toBe(0);
     expect(startService).toHaveBeenCalledWith(expect.objectContaining({ agentId: "codex" }));
+  });
+
+  it("updates the connected ClawChat Profile through the CLI", async () => {
+    const output = io();
+    const updateAccountProfile = mock(
+      async (): Promise<UpdateAccountProfileResult> => ({ agentId: "work", profile: { nickname: "Luna" } }),
+    );
+
+    await expect(
+      runConnectCli(
+        [
+          "profile",
+          "update",
+          "--agent",
+          "work",
+          "--nickname",
+          "Luna",
+          "--avatar-url",
+          "https://example.com/luna.png",
+          "--bio",
+          "Local coding agent",
+          "--config",
+          "/tmp/connect.json",
+        ],
+        { ...output.deps, updateAccountProfile },
+      ),
+    ).resolves.toBe(0);
+    expect(updateAccountProfile).toHaveBeenCalledWith({
+      agentId: "work",
+      configPath: "/tmp/connect.json",
+      patch: {
+        nickname: "Luna",
+        avatar_url: "https://example.com/luna.png",
+        bio: "Local coding agent",
+      },
+    });
+    expect(output.stdout.join("")).toContain("Updated ClawChat Profile for work");
+  });
+
+  it("rejects empty Profile updates and no longer exposes an MCP server command", async () => {
+    const output = io();
+    const updateAccountProfile = mock(
+      async (): Promise<UpdateAccountProfileResult> => ({
+        agentId: "work",
+        profile: {},
+      }),
+    );
+
+    await expect(
+      runConnectCli(["profile", "update", "--agent", "work"], { ...output.deps, updateAccountProfile }),
+    ).resolves.toBe(1);
+    expect(output.stderr.join("")).toContain("at least one Profile field");
+    expect(updateAccountProfile).not.toHaveBeenCalled();
+
+    output.stdout.length = 0;
+    output.stderr.length = 0;
+    await expect(runConnectCli(["mcp-server", "--agent", "work"], output.deps)).resolves.toBe(1);
+    expect(output.stdout.join("")).not.toContain("mcp-server");
   });
 });
 

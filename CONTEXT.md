@@ -34,4 +34,5 @@ _Avoid_: Session, Project
 - Changing Project association creates a new Session and a new Runtime Thread boundary.
 - A Non-Project Session receives a deterministic isolated workspace and never inherits `process.cwd()`.
 - Connect control commands are restricted to the Agent Binding owner.
-- ClawChat tools are exposed only through the stdio MCP server.
+- Connect does not expose ClawChat tools or inject a bundled MCP server into Runtime Threads.
+- ClawChat Profile updates are explicit authenticated CLI operations.

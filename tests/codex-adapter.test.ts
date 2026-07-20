@@ -61,7 +61,7 @@ async function collect(session: ConnectRuntimeSession) {
 }
 
 describe("Codex SDK runtime adapter", () => {
-  it("starts a fresh thread with Codex options and automatic MCP exposure", async () => {
+  it("starts a fresh thread without injecting Connect tools or MCP servers", async () => {
     const { client } = fakeClient([
       { type: "thread.started", thread_id: "thread-1" },
       { type: "item.completed", item: { id: "a1", type: "agent_message", text: "done" } },
@@ -72,7 +72,7 @@ describe("Codex SDK runtime adapter", () => {
     ]);
     const createCodex = mock(async () => client);
     const started = context();
-    const adapter = createCodexRuntimeAdapter({ createCodex, binPath: "/package/dist/src/bin.js" });
+    const adapter = createCodexRuntimeAdapter({ createCodex });
     const session = await adapter.start(agent, started);
 
     await expect(collect(session)).resolves.toContainEqual({ kind: "final", text: "done" });
@@ -90,29 +90,7 @@ describe("Codex SDK runtime adapter", () => {
       }),
     );
     expect(started.onRuntimeSessionId).toHaveBeenCalledWith("thread-1");
-    expect(createCodex).toHaveBeenCalledWith(
-      expect.objectContaining({
-        config: {
-          mcp_servers: {
-            clawchat_connect: {
-              command: process.execPath,
-              args: [
-                "/package/dist/src/bin.js",
-                "mcp-server",
-                "--agent",
-                "codex",
-                "--config",
-                "/tmp/connect config.json",
-              ],
-              env: {
-                CLAWCHAT_CONNECT_CHAT_ID: "chat-1",
-                CLAWCHAT_CONNECT_STATE_DB: "/tmp/connect state.sqlite",
-              },
-            },
-          },
-        },
-      }),
-    );
+    expect(createCodex).toHaveBeenCalledWith({});
   });
 
   it("resumes a persisted Codex thread", async () => {
@@ -126,7 +104,7 @@ describe("Codex SDK runtime adapter", () => {
       ],
       "thread-old",
     );
-    const adapter = createCodexRuntimeAdapter({ createCodex: async () => client, binPath: "/bin.js" });
+    const adapter = createCodexRuntimeAdapter({ createCodex: async () => client });
     const session = await adapter.start(agent, context({ runtimeSessionId: "thread-old" }));
 
     await collect(session);
@@ -163,7 +141,7 @@ describe("Codex SDK runtime adapter", () => {
         usage: { input_tokens: 5, cached_input_tokens: 1, output_tokens: 3, reasoning_output_tokens: 2 },
       },
     ]);
-    const adapter = createCodexRuntimeAdapter({ createCodex: async () => client, binPath: "/bin.js" });
+    const adapter = createCodexRuntimeAdapter({ createCodex: async () => client });
     const session = await adapter.start(agent, context());
     const output = await collect(session);
 
@@ -176,7 +154,7 @@ describe("Codex SDK runtime adapter", () => {
 
   it("validates Codex sandbox modes supplied by the chat session", async () => {
     const { client } = fakeClient([]);
-    const adapter = createCodexRuntimeAdapter({ createCodex: async () => client, binPath: "/bin.js" });
+    const adapter = createCodexRuntimeAdapter({ createCodex: async () => client });
     const session = await adapter.start(agent, context());
 
     await expect(
@@ -205,7 +183,7 @@ describe("Codex SDK runtime adapter", () => {
       }),
     };
     const client: CodexClientLike = { startThread: () => thread, resumeThread: () => thread };
-    const adapter = createCodexRuntimeAdapter({ createCodex: async () => client, binPath: "/bin.js" });
+    const adapter = createCodexRuntimeAdapter({ createCodex: async () => client });
     const session = await adapter.start(agent, context());
     const iterator = session.prompt({ prompt: "wait", workspace })[Symbol.asyncIterator]();
 

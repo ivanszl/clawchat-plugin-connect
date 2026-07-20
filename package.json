@@ -1,7 +1,7 @@
 {
   "name": "@clawling/clawchat-plugin-connect",
   "version": "0.1.0",
-  "description": "Bun-native ClawChat host adapter with direct Codex SDK and stdio MCP tools.",
+  "description": "Bun-native ClawChat host adapter with direct Codex SDK integration.",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./src/index.ts",
@@ -29,10 +29,8 @@
     "check": "biome check . && tsc --noEmit && bun test"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
     "@openai/codex-sdk": "0.144.5",
-    "cac": "^6.7.14",
-    "zod": "^3.25.0"
+    "cac": "^6.7.14"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.4",

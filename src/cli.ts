@@ -4,8 +4,8 @@ import { cac } from "cac";
 import { type ActivateConnectResult, activateConnect as activateConnectDefault } from "./activation";
 import { handleChatCommand } from "./chat-commands";
 import { defaultConfig, defaultConfigPath, getAgent, loadConfig, saveConfig, upsertAgent } from "./config";
-import { startMcpStdioServer as startMcpStdioServerDefault } from "./mcp/server";
 import { buildTextMessagePayload } from "./message-mapper";
+import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "./profile";
 import { ProjectCatalog } from "./projects";
 import { EVENT, type NormalizedInboundMessage } from "./protocol";
 import { ConnectRuntime } from "./runtime/connect-runtime";
@@ -36,8 +36,8 @@ export interface StartServiceResult {
 
 export interface ConnectCliDeps extends Partial<CliIo> {
   activateConnect?: typeof activateConnectDefault;
+  updateAccountProfile?: typeof updateAccountProfileDefault;
   startService?: (options: StartServiceOptions) => Promise<StartServiceResult>;
-  startMcpStdioServer?: typeof startMcpStdioServerDefault;
   waitUntilShutdown?: () => Promise<void>;
 }
 
@@ -64,8 +64,8 @@ const HELP_TEXT = `${[
   "  agent list [--config <path>]",
   "  agent remove <id> [--config <path>]",
   "  activate <agentId> <code> [--config <path>]",
+  "  profile update [--agent <id>] [--nickname <text>] [--avatar-url <url>] [--bio <text>] [--config <path>]",
   "  run --agent <agentId> [--config <path>]",
-  "  mcp-server --agent <agentId> [--config <path>]",
   "  status [--agent <agentId>] [--config <path>]",
   "  config get [key] [--config <path>]",
   "  config set <key> <value> [--config <path>]",
@@ -88,6 +88,12 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   }
   const nestedAgentResult = await maybeRunNestedAgentCommand(argv, io);
   if (nestedAgentResult !== null) return nestedAgentResult;
+  const nestedProfileResult = await maybeRunNestedProfileCommand(
+    argv,
+    io,
+    deps.updateAccountProfile ?? updateAccountProfileDefault,
+  );
+  if (nestedProfileResult !== null) return nestedProfileResult;
 
   const cli = cac("clawchat-connect");
   let commandRan = false;
@@ -167,18 +173,6 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
         io,
       });
       io.writeStdout(`Connected ${result.agentId} to ${result.websocketUrl} as ${result.deviceId}\n`);
-    });
-
-  cli
-    .command("mcp-server", "Run stdio MCP server")
-    .option("--config <path>", "Config path")
-    .option("--agent <id>", "Agent id")
-    .action(async (options: { config?: string; agent?: string }) => {
-      commandRan = true;
-      await (deps.startMcpStdioServer ?? startMcpStdioServerDefault)({
-        agentId: options.agent,
-        configPath: options.config,
-      });
     });
 
   cli
@@ -378,6 +372,39 @@ async function maybeRunNestedAgentCommand(argv: string[], io: CliIo): Promise<nu
   }
 }
 
+async function maybeRunNestedProfileCommand(
+  argv: string[],
+  io: CliIo,
+  updateAccountProfile: typeof updateAccountProfileDefault,
+): Promise<number | null> {
+  if (argv[0] !== "profile") return null;
+  if (argv[1] !== "update") {
+    io.writeStdout(HELP_TEXT);
+    return 1;
+  }
+  try {
+    const patch: AccountProfilePatch = {};
+    const nickname = optionValue(argv, "--nickname");
+    const avatarUrl = optionValue(argv, "--avatar-url");
+    const bio = optionValue(argv, "--bio");
+    if (nickname !== undefined) patch.nickname = nickname;
+    if (avatarUrl !== undefined) patch.avatar_url = avatarUrl;
+    if (bio !== undefined) patch.bio = bio;
+    if (Object.keys(patch).length === 0)
+      throw new Error("profile update requires at least one Profile field: nickname, avatar URL, or bio");
+    const result = await updateAccountProfile({
+      agentId: optionValue(argv, "--agent"),
+      configPath: optionValue(argv, "--config"),
+      patch,
+    });
+    io.writeStdout(`Updated ClawChat Profile for ${result.agentId}.\n`);
+    return 0;
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
 function agentConfigFromCli(options: AgentCliOptions): AgentConfig {
   const kind = options.kind?.trim().toLowerCase();
   if (kind !== "codex") throw new Error("--kind codex is required");
@@ -439,10 +466,6 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
   }
   if (key === "websocketUrl") {
     config.websocketUrl = value;
-    return;
-  }
-  if (key === "mediaBaseUrl") {
-    config.mediaBaseUrl = value;
     return;
   }
   if (key === "defaultAgent") {

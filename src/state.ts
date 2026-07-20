@@ -9,7 +9,6 @@ import {
   type ProjectRecord,
   type RuntimeSessionRecord,
   type RuntimeStatus,
-  type ToolCallStatus,
 } from "./types";
 
 export interface ConnectStateOptions {
@@ -52,16 +51,6 @@ export interface MessageInput {
   text?: string | null;
   raw?: unknown;
   createdAt?: number;
-}
-export interface ToolCallInput {
-  agentId?: string | null;
-  toolName: string;
-  args?: unknown;
-  result?: unknown;
-  status: ToolCallStatus;
-  error?: string | null;
-  startedAt?: number;
-  endedAt?: number;
 }
 export interface InsertProjectInput {
   projectId: string;
@@ -345,25 +334,6 @@ export class ConnectStateStore {
     );
     return (result.changes ?? 0) > 0;
   }
-  async recordToolCall(input: ToolCallInput): Promise<void> {
-    const startedAt = input.startedAt ?? Date.now();
-    const endedAt = input.endedAt ?? Date.now();
-    const db = await this.requireDb();
-    await db.run(
-      `INSERT INTO tool_calls(platform, local_agent_id, tool_name, args_json, result_json, status, error, started_at, ended_at, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      PLATFORM_ID,
-      input.agentId ?? "default",
-      input.toolName,
-      toJson(input.args ?? {}),
-      toJson(input.result ?? null),
-      input.status,
-      input.error ?? null,
-      startedAt,
-      endedAt,
-      Math.max(0, endedAt - startedAt),
-      startedAt,
-    );
-  }
   async upsertRuntimeStatus(input: Omit<RuntimeStatus, "updatedAt">): Promise<void> {
     const now = Date.now();
     const db = await this.requireDb();
@@ -401,7 +371,7 @@ export class ConnectStateStore {
   private async createSchema(): Promise<void> {
     const db = await this.requireDb();
     await db.exec(
-      `CREATE TABLE IF NOT EXISTS activations(platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, server_agent_id TEXT, user_id TEXT NOT NULL, owner_user_id TEXT NOT NULL, conversation_id TEXT, activated_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(platform, local_agent_id)); CREATE TABLE IF NOT EXISTS device_state(id INTEGER PRIMARY KEY CHECK(id = 1), device_id TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS projects(project_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, root_path TEXT NOT NULL UNIQUE, additional_directories_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT, name TEXT, mode TEXT, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id, session_id)); CREATE TABLE IF NOT EXISTS output_visibility(chat_id TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS clawchat_messages(id INTEGER PRIMARY KEY, platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, kind TEXT NOT NULL, direction TEXT NOT NULL, event_type TEXT NOT NULL, trace_id TEXT, chat_id TEXT, message_id TEXT, text TEXT, raw_json TEXT, created_at INTEGER NOT NULL, send_status TEXT, protocol_message_id TEXT, acked_at INTEGER, send_error TEXT); CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique ON clawchat_messages(local_agent_id, direction, kind, message_id) WHERE kind = 'message' AND message_id IS NOT NULL; CREATE TABLE IF NOT EXISTS tool_calls(id INTEGER PRIMARY KEY, platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, tool_name TEXT NOT NULL, args_json TEXT, result_json TEXT, status TEXT NOT NULL, error TEXT, started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runtime_status(id INTEGER PRIMARY KEY CHECK(id = 1), updated_at INTEGER NOT NULL, websocket_connected INTEGER, active_agent TEXT, active_chats INTEGER NOT NULL, global_running INTEGER NOT NULL, global_queued INTEGER NOT NULL, recent_error TEXT);`,
+      `CREATE TABLE IF NOT EXISTS activations(platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, server_agent_id TEXT, user_id TEXT NOT NULL, owner_user_id TEXT NOT NULL, conversation_id TEXT, activated_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(platform, local_agent_id)); CREATE TABLE IF NOT EXISTS device_state(id INTEGER PRIMARY KEY CHECK(id = 1), device_id TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS projects(project_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, root_path TEXT NOT NULL UNIQUE, additional_directories_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT, name TEXT, mode TEXT, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id, session_id)); CREATE TABLE IF NOT EXISTS output_visibility(chat_id TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS clawchat_messages(id INTEGER PRIMARY KEY, platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, kind TEXT NOT NULL, direction TEXT NOT NULL, event_type TEXT NOT NULL, trace_id TEXT, chat_id TEXT, message_id TEXT, text TEXT, raw_json TEXT, created_at INTEGER NOT NULL, send_status TEXT, protocol_message_id TEXT, acked_at INTEGER, send_error TEXT); CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique ON clawchat_messages(local_agent_id, direction, kind, message_id) WHERE kind = 'message' AND message_id IS NOT NULL; CREATE TABLE IF NOT EXISTS runtime_status(id INTEGER PRIMARY KEY CHECK(id = 1), updated_at INTEGER NOT NULL, websocket_connected INTEGER, active_agent TEXT, active_chats INTEGER NOT NULL, global_running INTEGER NOT NULL, global_queued INTEGER NOT NULL, recent_error TEXT);`,
     );
   }
 }

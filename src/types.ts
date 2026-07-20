@@ -29,7 +29,6 @@ export type AgentConfig = CodexAgentConfig;
 export interface ConnectConfig {
   baseUrl: string;
   websocketUrl: string;
-  mediaBaseUrl?: string;
   stateDbPath: string;
   defaultAgent: string | null;
   outputVisibility: OutputVisibility;
@@ -85,5 +84,3 @@ export interface RuntimeStatus {
   globalQueued: number;
   recentError: string | null;
 }
-
-export type ToolCallStatus = "ok" | "error";
