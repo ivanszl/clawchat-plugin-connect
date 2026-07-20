@@ -1,7 +1,10 @@
 import { resolve } from "node:path";
 import { cac } from "cac";
 import { type ActivateConnectResult, activateConnect as activateConnectDefault } from "./activation";
-import { handleChatCommand } from "./chat-commands";
+import {
+  type BackgroundServiceAction,
+  manageBackgroundService as manageBackgroundServiceDefault,
+} from "./background-service";
 import {
   defaultConfig,
   defaultConfigPath,
@@ -10,13 +13,8 @@ import {
   saveConfig,
   upsertAgentBinding,
 } from "./config";
-import { buildTextMessagePayload } from "./message-mapper";
+import { startConnectService as startConnectServiceDefault } from "./connect-service";
 import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "./profile";
-import { ProjectCatalog } from "./projects";
-import { EVENT, type NormalizedInboundMessage } from "./protocol";
-import { createCodexRuntimeAdapter } from "./runtime/codex-adapter";
-import { ConnectRuntime } from "./runtime/connect-runtime";
-import { RuntimeAdapterRegistry } from "./runtime/registry";
 import { type ConnectStateStore, createStateStore } from "./state";
 import type {
   AgentBindingConfig,
@@ -28,34 +26,18 @@ import type {
   ConnectConfig,
   OutputVisibility,
 } from "./types";
-import { ConnectWsClient } from "./ws-client";
 
 export interface CliIo {
   writeStdout(value: string): void;
   writeStderr(value: string): void;
 }
 
-export interface StartServiceResult {
-  connected: boolean;
-  websocketUrl: string;
-  deviceId: string;
-  agentId: string;
-}
-
 export interface ConnectCliDeps extends Partial<CliIo> {
   activateConnect?: typeof activateConnectDefault;
   updateAccountProfile?: typeof updateAccountProfileDefault;
-  startService?: (options: StartServiceOptions) => Promise<StartServiceResult>;
+  manageBackgroundService?: typeof manageBackgroundServiceDefault;
+  startConnectService?: typeof startConnectServiceDefault;
   waitUntilShutdown?: () => Promise<void>;
-}
-
-export interface StartServiceOptions {
-  agentId?: string;
-  configPath?: string;
-  config?: ConnectConfig;
-  stateStore?: ConnectStateStore;
-  waitUntilShutdown?: () => Promise<void>;
-  io?: CliIo;
 }
 
 interface AgentCliOptions {
@@ -73,7 +55,9 @@ const HELP_TEXT = `${[
   "  agent remove <id> [--config <path>]",
   "  activate <agentId> <code> [--config <path>]",
   "  profile update [--agent <id>] [--nickname <text>] [--avatar-url <url>] [--bio <text>] [--config <path>]",
-  "  run --agent <agentId> [--config <path>]",
+  "  run [--config <path>]",
+  "  service install|start|stop|restart|status [--config <path>]",
+  "  service logs [--lines <count>] [--follow] [--config <path>]",
   "  status [--agent <agentId>] [--config <path>]",
   "  config get [key] [--config <path>]",
   "  config set <key> <value> [--config <path>]",
@@ -102,6 +86,12 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     deps.updateAccountProfile ?? updateAccountProfileDefault,
   );
   if (nestedProfileResult !== null) return nestedProfileResult;
+  const nestedServiceResult = await maybeRunNestedServiceCommand(
+    argv,
+    io,
+    deps.manageBackgroundService ?? manageBackgroundServiceDefault,
+  );
+  if (nestedServiceResult !== null) return nestedServiceResult;
 
   const cli = cac("clawchat-connect");
   let commandRan = false;
@@ -171,16 +161,14 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   cli
     .command("run", "Run service")
     .option("--config <path>", "Config path")
-    .option("--agent <id>", "Agent id")
-    .action(async (options: { config?: string; agent?: string }) => {
+    .action(async (options: { config?: string }) => {
       commandRan = true;
-      const result = await (deps.startService ?? startConnectService)({
-        agentId: options.agent,
+      await (deps.startConnectService ?? startConnectServiceDefault)({
         configPath: options.config,
         waitUntilShutdown: deps.waitUntilShutdown,
-        io,
+        writeOutput: io.writeStdout,
+        writeError: io.writeStderr,
       });
-      io.writeStdout(`Connected ${result.agentId} to ${result.websocketUrl} as ${result.deviceId}\n`);
     });
 
   cli
@@ -194,7 +182,7 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       if (agentId) getAgentBinding(config, agentId);
       const store = createStateStore({ dbPath: config.stateDbPath });
       const activation = agentId ? await store.getActivation(agentId) : null;
-      const status = await store.getRuntimeStatus();
+      const status = agentId ? await store.getRuntimeStatus(agentId) : null;
       await store.close();
       io.writeStdout(formatStatus(config, agentId, activation !== null, status));
     });
@@ -244,107 +232,6 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
-}
-
-export async function startConnectService(options: StartServiceOptions): Promise<StartServiceResult> {
-  const io = options.io ?? defaultIo;
-  const configPath = resolve(options.configPath ?? defaultConfigPath());
-  const config = options.config ?? (await loadConfig(configPath));
-  const agentId = options.agentId ?? config.defaultAgent;
-  if (!agentId) throw new Error("agent is required; pass --agent or configure defaultAgent");
-  getAgentBinding(config, agentId);
-  const store = options.stateStore ?? createStateStore({ dbPath: config.stateDbPath });
-  const activation = await store.getActivation(agentId);
-  if (!activation)
-    throw new Error(
-      `clawchat-connect agent ${agentId} is not activated; run \`clawchat-connect activate ${agentId} <code>\` first`,
-    );
-  const deviceId = await store.getOrCreateDeviceId();
-  const wsClient = new ConnectWsClient({
-    url: config.websocketUrl,
-    token: activation.accessToken,
-    stateStore: store,
-    deviceId,
-  });
-  const projects = new ProjectCatalog(store);
-  const runtimeAdapters = new RuntimeAdapterRegistry([createCodexRuntimeAdapter()]);
-  const runtime = new ConnectRuntime({
-    agentId,
-    config,
-    configPath,
-    stateStore: store,
-    wsClient,
-    projects,
-    runtimeAdapters,
-  });
-  wsClient.on("message", (message: NormalizedInboundMessage) => {
-    void dispatchInboundMessage({
-      message,
-      agentId,
-      ownerUserId: activation.ownerUserId,
-      config,
-      store,
-      wsClient,
-      runtime,
-      projects,
-    }).catch((error) => io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`));
-  });
-  await wsClient.connect();
-  await store.upsertRuntimeStatus({
-    websocketConnected: true,
-    activeAgent: agentId,
-    activeChats: 0,
-    globalRunning: 0,
-    globalQueued: 0,
-    recentError: null,
-  });
-  await (options.waitUntilShutdown ?? waitForShutdown)();
-  wsClient.close();
-  await runtime.dispose();
-  await store.close();
-  return { connected: true, websocketUrl: config.websocketUrl, deviceId, agentId };
-}
-
-async function dispatchInboundMessage(params: {
-  message: NormalizedInboundMessage;
-  agentId: string;
-  ownerUserId: string;
-  config: ConnectConfig;
-  store: ConnectStateStore;
-  wsClient: ConnectWsClient;
-  runtime: ConnectRuntime;
-  projects: ProjectCatalog;
-}): Promise<void> {
-  const routeCommand = async (): Promise<boolean> => {
-    const command = await handleChatCommand({
-      message: params.message,
-      agentId: params.agentId,
-      ownerUserId: params.ownerUserId,
-      config: params.config,
-      stateStore: params.store,
-      projects: params.projects,
-      closeRuntimeSession: (chatId) => params.runtime.closeSession(chatId),
-      invalidateRuntimeSession: (chatId) => params.runtime.invalidateSession(chatId),
-      cancelRuntimeTurn: (chatId) => params.runtime.cancelTurn(chatId),
-      runtimeModesFor: (binding) => params.runtime.runtimeModesFor(binding),
-      discoverRuntimeThreads: (chatId) => params.runtime.discoverRuntimeThreads(chatId),
-    });
-    if (!command.handled) return false;
-    if (command.text) {
-      await params.wsClient.sendMessageEnvelope(
-        EVENT.MESSAGE_REPLY,
-        params.message.chatId,
-        buildTextMessagePayload(command.text),
-        { toType: params.message.chatType },
-      );
-    }
-    return true;
-  };
-  if (params.message.text.trim().split(/\s+/u)[0] === "/cancel") {
-    await routeCommand();
-    return;
-  }
-  await params.runtime.handleInboundMessage(params.message, routeCommand);
 }
 
 async function maybeRunNestedAgentCommand(argv: string[], io: CliIo): Promise<number | null> {
@@ -421,6 +308,53 @@ async function maybeRunNestedProfileCommand(
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+}
+
+async function maybeRunNestedServiceCommand(
+  argv: string[],
+  io: CliIo,
+  manageBackgroundService: typeof manageBackgroundServiceDefault,
+): Promise<number | null> {
+  if (argv[0] !== "service") return null;
+  try {
+    const action = argv[1];
+    if (!isBackgroundServiceAction(action)) {
+      throw new Error("service action must be one of: install, start, stop, restart, status, logs");
+    }
+    if (argv.includes("--agent")) {
+      throw new Error(
+        "the Connect Service manages all activated Agent Bindings; service commands do not accept --agent",
+      );
+    }
+    const configPath = resolve(optionValue(argv, "--config") ?? defaultConfigPath());
+    if (action === "install" && Object.keys((await loadConfig(configPath)).agents).length === 0) {
+      throw new Error("configure at least one Agent Binding before installing the Connect Service");
+    }
+    const linesValue = optionValue(argv, "--lines");
+    const lines = linesValue === undefined ? undefined : Number(linesValue);
+    const result = await manageBackgroundService({
+      action,
+      configPath,
+      ...(lines !== undefined ? { lines } : {}),
+      ...(argv.includes("--follow") ? { follow: true } : {}),
+    });
+    io.writeStdout(result.message);
+    return 0;
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+function isBackgroundServiceAction(value: string | undefined): value is BackgroundServiceAction {
+  return (
+    value === "install" ||
+    value === "start" ||
+    value === "stop" ||
+    value === "restart" ||
+    value === "status" ||
+    value === "logs"
+  );
 }
 
 function agentBindingFromCli(options: AgentCliOptions): AgentBindingConfig {
@@ -551,11 +485,4 @@ function parseOutputVisibility(value: string): OutputVisibility {
   const mode = value.trim().toLowerCase();
   if (mode === "minimal" || mode === "normal" || mode === "full") return mode;
   throw new Error("outputVisibility must be minimal, normal, or full");
-}
-
-async function waitForShutdown(): Promise<void> {
-  await new Promise<void>((resolveShutdown) => {
-    process.once("SIGINT", resolveShutdown);
-    process.once("SIGTERM", resolveShutdown);
-  });
 }

@@ -21,7 +21,7 @@ Install a specific alpha version or choose another user-writable installation di
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.0
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.1
 ```
 
 The installer downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs `clawchat-connect` to `~/.local/bin` by default. Add that directory to `PATH` if necessary. Connect expects the coding-agent executable selected by its Runtime Adapter to already be installed and available; it does not install coding agents.
@@ -39,7 +39,8 @@ An Agent Binding ID is an arbitrary local name. A Binding owns its activation, r
 ```bash
 clawchat-connect init --agent work --kind codex
 clawchat-connect activate work A1B2C3
-clawchat-connect run --agent work
+# Run every activated Agent Binding in the foreground:
+clawchat-connect run
 ```
 
 After activation succeeds, Connect sets the ClawChat Profile nickname to the Agent Binding ID (`work` in this example).
@@ -79,6 +80,29 @@ Codex configuration can also be edited in `~/.clawchat-connect/config.json`:
 Supported Codex options include `codexPathOverride`, `env`, `model`, `sandboxMode`, `modelReasoningEffort`, `approvalPolicy`, `webSearchMode`, `networkAccessEnabled`, `skipGitRepoCheck`, and `additionalDirectories`.
 
 The first release registers only `kind: "codex"`. Connect's Agent Binding model and runtime seam are not Codex-specific; later releases can register additional Runtime Adapters. Legacy agent shapes and unavailable runtime kinds are rejected rather than inferred or migrated.
+
+## Background service
+
+Connect can install itself as one native per-user background service. That Connect Service starts every activated Agent Binding and selects each Binding's Runtime Adapter independently. macOS uses a LaunchAgent and Linux uses a systemd user service; root access is not required. Install after configuring and activating at least one Agent Binding:
+
+```bash
+clawchat-connect service install
+```
+
+Installation starts Connect immediately, enables it for future user logins, stores the absolute config path, and captures the current `PATH` so Runtime Adapters can find their executables. Re-run `service install` after moving the Connect executable or changing the required `PATH`. Restart the service after adding or activating another Agent Binding.
+
+Manage and inspect the service with:
+
+```bash
+clawchat-connect service start
+clawchat-connect service stop
+clawchat-connect service restart
+clawchat-connect service status
+clawchat-connect service logs
+clawchat-connect service logs --lines 250 --follow
+```
+
+One Connect installation has exactly one service definition; Agent Bindings and Runtime Adapters never own system services. `stop` stops the current background process but retains its installed login configuration; `start` loads it again. Logs are stored below `~/.clawchat-connect/logs/` on macOS and in the user journal on Linux.
 
 ## Projects and Sessions
 
@@ -360,6 +384,6 @@ bun run build
 bun run build:binary
 ```
 
-Pushing a version tag such as `v0.1.0-alpha.0` runs the alpha release workflow. The workflow requires the tag to match `package.json`, runs the complete check suite, builds standalone macOS/Linux binaries for arm64 and x64, and publishes them with `install.sh` and SHA-256 checksums as a GitHub prerelease. Non-alpha tags are not accepted by this workflow.
+Pushing a version tag such as `v0.1.0-alpha.1` runs the alpha release workflow. The workflow requires the tag to match `package.json`, runs the complete check suite, builds standalone macOS/Linux binaries for arm64 and x64, and publishes them with `install.sh` and SHA-256 checksums as a GitHub prerelease. Non-alpha tags are not accepted by this workflow.
 
 The runtime uses Bun's built-in WebSocket client and `bun:sqlite`; it does not depend on `ws`, `sqlite`, `sqlite3`, Vitest, or tsup. Generated `dist/` output remains ignored.

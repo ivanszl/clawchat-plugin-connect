@@ -198,7 +198,10 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
     const turn = runtime.handleInboundMessage(message());
     await started;
-    await expect(fixture.store.getRuntimeStatus()).resolves.toMatchObject({ globalRunning: 1, globalQueued: 0 });
+    await expect(fixture.store.getRuntimeStatus("codex")).resolves.toMatchObject({
+      globalRunning: 1,
+      globalQueued: 0,
+    });
     const command = runtime.handleInboundMessage(message("/project clear"), async () => {
       order.push("command");
       return true;
@@ -208,7 +211,10 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     releaseTurn?.();
     await Promise.all([turn, command]);
     expect(order).toEqual(["turn-started", "turn-finished", "command"]);
-    await expect(fixture.store.getRuntimeStatus()).resolves.toMatchObject({ globalRunning: 0, globalQueued: 0 });
+    await expect(fixture.store.getRuntimeStatus("codex")).resolves.toMatchObject({
+      globalRunning: 0,
+      globalQueued: 0,
+    });
     await runtime.dispose();
     await fixture.store.close();
   });

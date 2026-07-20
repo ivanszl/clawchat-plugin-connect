@@ -265,7 +265,7 @@ describe("state store", () => {
     await store.close();
   });
 
-  it("tracks runtime status by active agent", async () => {
+  it("tracks runtime status independently for every Agent Binding", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
     await store.upsertRuntimeStatus({
@@ -276,7 +276,32 @@ describe("state store", () => {
       globalQueued: 0,
       recentError: null,
     });
-    await expect(store.getRuntimeStatus()).resolves.toMatchObject({ websocketConnected: true, activeAgent: "codex" });
+    await store.upsertRuntimeStatus({
+      websocketConnected: false,
+      activeAgent: "claude",
+      activeChats: 2,
+      globalRunning: 0,
+      globalQueued: 1,
+      recentError: "offline",
+    });
+    await expect(store.getRuntimeStatus("codex")).resolves.toMatchObject({
+      websocketConnected: true,
+      activeAgent: "codex",
+      activeChats: 1,
+    });
+    await store.setRuntimeConnectionStatus("codex", false, "reconnecting");
+    await expect(store.getRuntimeStatus("codex")).resolves.toMatchObject({
+      websocketConnected: false,
+      activeChats: 1,
+      globalRunning: 1,
+      recentError: "reconnecting",
+    });
+    await expect(store.getRuntimeStatus("claude")).resolves.toMatchObject({
+      websocketConnected: false,
+      activeAgent: "claude",
+      activeChats: 2,
+      recentError: "offline",
+    });
     await store.close();
   });
 });

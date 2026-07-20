@@ -12,6 +12,10 @@ _Avoid_: Agent, when referring to the configured association rather than the ext
 A concrete integration that lets Connect start and operate one kind of coding agent runtime. Codex is the first Runtime Adapter, not the definition of Connect or Agent Binding.
 _Avoid_: Agent Binding, Codex, when referring to the adapter role
 
+**Connect Service**:
+The single host-level Connect process that operates every activated Agent Binding, regardless of Runtime Adapter kind.
+_Avoid_: Agent Service, Codex Service, per-agent service
+
 **Project**:
 A named, reusable local code workspace that a Session may use. A Project has a root location, but it is not merely a directory path.
 _Avoid_: Directory, cwd, repository
@@ -43,6 +47,7 @@ _Avoid_: Session, Project
 ## Invariants
 
 - Connect binds and manages multiple Agent Bindings independently of any one runtime kind.
+- A Connect installation has one Connect Service; Agent Bindings and Runtime Adapters do not own background services.
 - Agent Binding IDs are arbitrary; Runtime Adapter selection comes only from the Binding's explicit `kind`.
 - The first release registers only the Codex Runtime Adapter; that is a release scope, not a domain invariant.
 - Successful activation synchronizes the Agent Binding ID to the connected ClawChat Profile nickname.

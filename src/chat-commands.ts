@@ -99,7 +99,7 @@ async function handleOutput(ctx: ChatCommandContext, rawMode: string | undefined
 }
 
 async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult> {
-  const status = await ctx.stateStore.getRuntimeStatus().catch(() => null);
+  const status = await ctx.stateStore.getRuntimeStatus(ctx.agentId).catch(() => null);
   return {
     handled: true,
     text: status

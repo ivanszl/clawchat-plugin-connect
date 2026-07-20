@@ -105,16 +105,43 @@ describe("runConnectCli", () => {
     expect(output.stdout.join("")).not.toContain("A1B2C3");
   });
 
-  it("runs service through injectable service starter with agent", async () => {
+  it("runs the complete Connect Service without selecting one Agent Binding", async () => {
     const output = io();
-    const startService = mock(async () => ({
-      connected: true,
-      websocketUrl: "wss://example/ws",
-      deviceId: "device-1",
-      agentId: "codex",
-    }));
-    await expect(runConnectCli(["run", "--agent", "codex"], { ...output.deps, startService })).resolves.toBe(0);
-    expect(startService).toHaveBeenCalledWith(expect.objectContaining({ agentId: "codex" }));
+    const startConnectService = mock(async () => ({ startedAgentIds: ["codex", "claude"] }));
+    await expect(runConnectCli(["run"], { ...output.deps, startConnectService })).resolves.toBe(0);
+    expect(startConnectService).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configPath: undefined,
+        writeOutput: expect.any(Function),
+        writeError: expect.any(Function),
+      }),
+    );
+  });
+
+  it("manages one native background service for the complete Connect installation", async () => {
+    const path = await tempConfig();
+    const output = io();
+    await runConnectCli(["init", "--config", path, "--agent", "work", "--kind", "codex"], output.deps);
+    const manageBackgroundService = mock(async () => ({ message: "background ok\n", running: true }));
+
+    await expect(
+      runConnectCli(["service", "logs", "--lines", "25", "--follow", "--config", path], {
+        ...output.deps,
+        manageBackgroundService,
+      }),
+    ).resolves.toBe(0);
+    expect(manageBackgroundService).toHaveBeenCalledWith({
+      action: "logs",
+      configPath: path,
+      lines: 25,
+      follow: true,
+    });
+    expect(output.stdout.join("")).toContain("background ok");
+
+    await expect(runConnectCli(["service", "status", "--agent", "work", "--config", path], output.deps)).resolves.toBe(
+      1,
+    );
+    expect(output.stderr.join("")).toContain("manages all activated Agent Bindings");
   });
 
   it("updates the connected ClawChat Profile through the CLI", async () => {

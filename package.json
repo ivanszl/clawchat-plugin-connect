@@ -1,6 +1,6 @@
 {
   "name": "@clawling/clawchat-plugin-connect",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Bun-native bridge from ClawChat Agent Bindings to local coding agent runtimes.",
   "type": "module",
   "main": "./dist/src/index.js",

@@ -10,6 +10,7 @@ import {
 import type { ConnectStateStore } from "../src/state";
 import {
   ConnectWsClient,
+  type ConnectWsClientOptions,
   createWebSocketTransport,
   type WebSocketConstructor,
   type WebSocketLike,
@@ -66,6 +67,10 @@ function createStore(options: { deviceId?: string; claim?: boolean } = {}): Conn
   } as unknown as ConnectStateStore;
 }
 
+function createClient(options: Omit<ConnectWsClientOptions, "agentId">): ConnectWsClient {
+  return new ConnectWsClient({ ...options, agentId: "test-binding" });
+}
+
 async function handshake(client: ConnectWsClient, transport: MemoryTransport, helloTrace = "trace-1"): Promise<void> {
   const ready = client.connect();
   await flush();
@@ -118,7 +123,7 @@ describe("ConnectWsClient", () => {
   it("performs Protocol v2 challenge handshake and stores device id", async () => {
     const transport = new MemoryTransport();
     const store = createStore();
-    const client = new ConnectWsClient({
+    const client = createClient({
       url: "ws://example/ws",
       token: "token-1",
       deviceId: "device-local",
@@ -143,7 +148,7 @@ describe("ConnectWsClient", () => {
 
   it("reuses persisted device id when no explicit device id is supplied", async () => {
     const transport = new MemoryTransport();
-    const client = new ConnectWsClient({
+    const client = createClient({
       url: "ws://example/ws",
       token: "token",
       stateStore: createStore({ deviceId: "device-persisted" }),
@@ -167,7 +172,7 @@ describe("ConnectWsClient", () => {
 
   it("responds to JSON ping with pong preserving trace and emitted_at", async () => {
     const transport = new MemoryTransport();
-    const client = new ConnectWsClient({
+    const client = createClient({
       url: "ws://example/ws",
       token: "token",
       stateStore: createStore(),
@@ -182,7 +187,7 @@ describe("ConnectWsClient", () => {
 
   it("accepts replay completion control events without a correlation trace", async () => {
     const transport = new MemoryTransport();
-    const client = new ConnectWsClient({
+    const client = createClient({
       url: "ws://example/ws",
       token: "token",
       stateStore: createStore(),
@@ -201,7 +206,7 @@ describe("ConnectWsClient", () => {
   it("resolves message ack and marks outbound as acknowledged", async () => {
     const transport = new MemoryTransport();
     const store = createStore();
-    const client = new ConnectWsClient({
+    const client = createClient({
       url: "ws://example/ws",
       token: "token",
       stateStore: store,
@@ -232,7 +237,7 @@ describe("ConnectWsClient", () => {
 
   it("rejects message.error as negative ack", async () => {
     const transport = new MemoryTransport();
-    const client = new ConnectWsClient({
+    const client = createClient({
       url: "ws://example/ws",
       token: "token",
       stateStore: createStore(),
@@ -257,10 +262,11 @@ describe("ConnectWsClient", () => {
 
   it("skips duplicate inbound materialized messages", async () => {
     const transport = new MemoryTransport();
-    const client = new ConnectWsClient({
+    const stateStore = createStore({ claim: false });
+    const client = createClient({
       url: "ws://example/ws",
       token: "token",
-      stateStore: createStore({ claim: false }),
+      stateStore,
       transport,
       traceIdFactory: () => "trace",
       heartbeat: { enabled: false },
@@ -284,11 +290,14 @@ describe("ConnectWsClient", () => {
     });
     await flush();
     expect(seen).not.toHaveBeenCalled();
+    expect(stateStore.claimMessageOnce).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "test-binding", messageId: "msg-1" }),
+    );
   });
 
   it("emits metadata invalidation events when capability is advertised", async () => {
     const transport = new MemoryTransport();
-    const client = new ConnectWsClient({
+    const client = createClient({
       url: "ws://example/ws",
       token: "token",
       stateStore: createStore(),
@@ -310,7 +319,7 @@ describe("ConnectWsClient", () => {
 
   it("rejects malformed hello-ok payloads before marking connected", async () => {
     const transport = new MemoryTransport();
-    const client = new ConnectWsClient({
+    const client = createClient({
       url: "ws://example/ws",
       token: "token",
       stateStore: createStore(),

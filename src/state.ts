@@ -547,28 +547,43 @@ export class ConnectStateStore {
     return (result.changes ?? 0) > 0;
   }
   async upsertRuntimeStatus(input: Omit<RuntimeStatus, "updatedAt">): Promise<void> {
+    if (!input.activeAgent) throw new Error("runtime status requires an Agent Binding id");
     const now = Date.now();
     const db = await this.requireDb();
     await db.run(
-      `INSERT INTO runtime_status(id, updated_at, websocket_connected, active_agent, active_chats, global_running, global_queued, recent_error) VALUES (1, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, websocket_connected = excluded.websocket_connected, active_agent = excluded.active_agent, active_chats = excluded.active_chats, global_running = excluded.global_running, global_queued = excluded.global_queued, recent_error = excluded.recent_error`,
+      `INSERT INTO runtime_statuses(agent_id, updated_at, websocket_connected, active_chats, global_running, global_queued, recent_error) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET updated_at = excluded.updated_at, websocket_connected = excluded.websocket_connected, active_chats = excluded.active_chats, global_running = excluded.global_running, global_queued = excluded.global_queued, recent_error = excluded.recent_error`,
+      input.activeAgent,
       now,
       input.websocketConnected == null ? null : input.websocketConnected ? 1 : 0,
-      input.activeAgent,
       input.activeChats,
       input.globalRunning,
       input.globalQueued,
       input.recentError,
     );
   }
-  async getRuntimeStatus(): Promise<RuntimeStatus | null> {
+  async setRuntimeConnectionStatus(
+    agentId: string,
+    websocketConnected: boolean,
+    recentError: string | null,
+  ): Promise<void> {
     const db = await this.requireDb();
-    const row = await db.get<Record<string, unknown>>("SELECT * FROM runtime_status WHERE id = 1");
+    await db.run(
+      `INSERT INTO runtime_statuses(agent_id, updated_at, websocket_connected, active_chats, global_running, global_queued, recent_error) VALUES (?, ?, ?, 0, 0, 0, ?) ON CONFLICT(agent_id) DO UPDATE SET updated_at = excluded.updated_at, websocket_connected = excluded.websocket_connected, recent_error = excluded.recent_error`,
+      agentId,
+      Date.now(),
+      websocketConnected ? 1 : 0,
+      recentError,
+    );
+  }
+  async getRuntimeStatus(agentId: string): Promise<RuntimeStatus | null> {
+    const db = await this.requireDb();
+    const row = await db.get<Record<string, unknown>>("SELECT * FROM runtime_statuses WHERE agent_id = ?", agentId);
     if (!row) return null;
     const connected = row.websocket_connected;
     return {
       updatedAt: numberValue(row.updated_at),
       websocketConnected: connected == null ? null : Boolean(connected),
-      activeAgent: nullableString(row.active_agent),
+      activeAgent: stringValue(row.agent_id),
       activeChats: numberValue(row.active_chats),
       globalRunning: numberValue(row.global_running),
       globalQueued: numberValue(row.global_queued),
@@ -582,9 +597,105 @@ export class ConnectStateStore {
   }
   private async createSchema(): Promise<void> {
     const db = await this.requireDb();
-    await db.exec(
-      `CREATE TABLE IF NOT EXISTS activations(platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, server_agent_id TEXT, user_id TEXT NOT NULL, owner_user_id TEXT NOT NULL, conversation_id TEXT, activated_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(platform, local_agent_id)); CREATE TABLE IF NOT EXISTS device_state(id INTEGER PRIMARY KEY CHECK(id = 1), device_id TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS projects(project_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, root_path TEXT NOT NULL UNIQUE, additional_directories_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT, name TEXT, mode TEXT, has_messages INTEGER NOT NULL DEFAULT 0, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id, session_id)); CREATE TABLE IF NOT EXISTS session_intents(chat_id TEXT NOT NULL, agent_id TEXT NOT NULL, project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT, name TEXT, mode TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id)); CREATE TABLE IF NOT EXISTS session_refs(session_ref TEXT PRIMARY KEY COLLATE NOCASE CHECK(length(session_ref) = 8), chat_id TEXT NOT NULL, agent_id TEXT NOT NULL, session_id TEXT, runtime_session_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, CHECK(session_id IS NOT NULL OR runtime_session_id IS NOT NULL), UNIQUE(chat_id, agent_id, session_id), UNIQUE(chat_id, agent_id, runtime_session_id)); CREATE TABLE IF NOT EXISTS output_visibility(chat_id TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS clawchat_messages(id INTEGER PRIMARY KEY, platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, kind TEXT NOT NULL, direction TEXT NOT NULL, event_type TEXT NOT NULL, trace_id TEXT, chat_id TEXT, message_id TEXT, text TEXT, raw_json TEXT, created_at INTEGER NOT NULL, send_status TEXT, protocol_message_id TEXT, acked_at INTEGER, send_error TEXT); CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique ON clawchat_messages(local_agent_id, direction, kind, message_id) WHERE kind = 'message' AND message_id IS NOT NULL; CREATE TABLE IF NOT EXISTS runtime_status(id INTEGER PRIMARY KEY CHECK(id = 1), updated_at INTEGER NOT NULL, websocket_connected INTEGER, active_agent TEXT, active_chats INTEGER NOT NULL, global_running INTEGER NOT NULL, global_queued INTEGER NOT NULL, recent_error TEXT);`,
-    );
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS activations(
+        platform TEXT NOT NULL,
+        local_agent_id TEXT NOT NULL,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        server_agent_id TEXT,
+        user_id TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL,
+        conversation_id TEXT,
+        activated_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(platform, local_agent_id)
+      );
+      CREATE TABLE IF NOT EXISTS device_state(
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        device_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS projects(
+        project_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        root_path TEXT NOT NULL UNIQUE,
+        additional_directories_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS runtime_sessions(
+        chat_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        runtime_session_id TEXT,
+        project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT,
+        name TEXT,
+        mode TEXT,
+        has_messages INTEGER NOT NULL DEFAULT 0,
+        is_current INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(chat_id, agent_id, session_id)
+      );
+      CREATE TABLE IF NOT EXISTS session_intents(
+        chat_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT,
+        name TEXT,
+        mode TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(chat_id, agent_id)
+      );
+      CREATE TABLE IF NOT EXISTS session_refs(
+        session_ref TEXT PRIMARY KEY COLLATE NOCASE CHECK(length(session_ref) = 8),
+        chat_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        session_id TEXT,
+        runtime_session_id TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        CHECK(session_id IS NOT NULL OR runtime_session_id IS NOT NULL),
+        UNIQUE(chat_id, agent_id, session_id),
+        UNIQUE(chat_id, agent_id, runtime_session_id)
+      );
+      CREATE TABLE IF NOT EXISTS output_visibility(
+        chat_id TEXT PRIMARY KEY,
+        mode TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS clawchat_messages(
+        id INTEGER PRIMARY KEY,
+        platform TEXT NOT NULL,
+        local_agent_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        trace_id TEXT,
+        chat_id TEXT,
+        message_id TEXT,
+        text TEXT,
+        raw_json TEXT,
+        created_at INTEGER NOT NULL,
+        send_status TEXT,
+        protocol_message_id TEXT,
+        acked_at INTEGER,
+        send_error TEXT
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique
+        ON clawchat_messages(local_agent_id, direction, kind, message_id)
+        WHERE kind = 'message' AND message_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS runtime_statuses(
+        agent_id TEXT PRIMARY KEY,
+        updated_at INTEGER NOT NULL,
+        websocket_connected INTEGER,
+        active_chats INTEGER NOT NULL,
+        global_running INTEGER NOT NULL,
+        global_queued INTEGER NOT NULL,
+        recent_error TEXT
+      );
+    `);
   }
 
   private async migrateSchema(): Promise<void> {

@@ -116,6 +116,7 @@ async function normalizeWebSocketData(data: unknown): Promise<string | Buffer> {
 }
 
 export interface ConnectWsClientOptions {
+  agentId: string;
   url: string;
   token: string;
   stateStore: ConnectStateStore;
@@ -219,6 +220,7 @@ export class ConnectWsClient extends EventEmitter {
       payload,
     };
     await this.options.stateStore.claimMessageOnce({
+      agentId: this.options.agentId,
       direction: "outbound",
       kind: "message",
       eventType: event,
@@ -277,6 +279,7 @@ export class ConnectWsClient extends EventEmitter {
     }
     if (envelope.event === EVENT.MESSAGE_SEND || envelope.event === EVENT.MESSAGE_REPLY) {
       const claimed = await this.options.stateStore.claimMessageOnce({
+        agentId: this.options.agentId,
         direction: "inbound",
         kind: "message",
         eventType: envelope.event,
@@ -289,6 +292,7 @@ export class ConnectWsClient extends EventEmitter {
     } else {
       void this.options.stateStore
         .claimMessageOnce({
+          agentId: this.options.agentId,
           direction: "inbound",
           kind: "message",
           eventType: envelope.event,
