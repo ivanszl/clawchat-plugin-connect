@@ -123,17 +123,27 @@ describe("runConnectCli", () => {
     expect(output.stdout.join("")).not.toContain("A1B2C3");
   });
 
-  it("runs the complete Connect Service without selecting one Agent Binding", async () => {
+  it("reserves process execution for the native background service", async () => {
     const output = io();
     const startConnectService = mock(async () => ({ startedAgentIds: ["codex", "claude"] }));
-    await expect(runConnectCli(["run"], { ...output.deps, startConnectService })).resolves.toBe(0);
+    await expect(
+      runConnectCli(["service", "exec", "--config", "/tmp/connect.json"], {
+        ...output.deps,
+        startConnectService,
+      }),
+    ).resolves.toBe(0);
     expect(startConnectService).toHaveBeenCalledWith(
       expect.objectContaining({
-        configPath: undefined,
+        configPath: "/tmp/connect.json",
         writeOutput: expect.any(Function),
         writeError: expect.any(Function),
       }),
     );
+
+    output.stdout.length = 0;
+    await expect(runConnectCli(["run"], { ...output.deps, startConnectService })).resolves.toBe(1);
+    expect(startConnectService).toHaveBeenCalledTimes(1);
+    expect(output.stdout.join("")).not.toContain("run [--config");
   });
 
   it("manages one native background service for the complete Connect installation", async () => {

@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 import { cac } from "cac";
 import { type ActivateConnectResult, activateConnect as activateConnectDefault } from "./activation";
 import {
+  BACKGROUND_SERVICE_PROCESS_ACTION,
   type BackgroundServiceAction,
   manageBackgroundService as manageBackgroundServiceDefault,
 } from "./background-service";
@@ -55,7 +56,6 @@ const HELP_TEXT = `${[
   "  agent remove <id> [--config <path>]",
   "  activate <agentId> <code> [--config <path>]",
   "  profile update [--agent <id>] [--nickname <text>] [--avatar-url <url>] [--bio <text>] [--config <path>]",
-  "  run [--config <path>]",
   "  service install|start|stop|restart|status [--config <path>]",
   "  service logs [--lines <count>] [--follow] [--config <path>]",
   "  status [--agent <agentId>] [--config <path>]",
@@ -86,6 +86,13 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     deps.updateAccountProfile ?? updateAccountProfileDefault,
   );
   if (nestedProfileResult !== null) return nestedProfileResult;
+  const serviceProcessResult = await maybeRunServiceProcessCommand(
+    argv,
+    io,
+    deps.startConnectService ?? startConnectServiceDefault,
+    deps.waitUntilShutdown,
+  );
+  if (serviceProcessResult !== null) return serviceProcessResult;
   const nestedServiceResult = await maybeRunNestedServiceCommand(
     argv,
     io,
@@ -158,19 +165,6 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
         configPath: options.config,
       });
       io.writeStdout(formatActivation(result));
-    });
-
-  cli
-    .command("run", "Run service")
-    .option("--config <path>", "Config path")
-    .action(async (options: { config?: string }) => {
-      commandRan = true;
-      await (deps.startConnectService ?? startConnectServiceDefault)({
-        configPath: options.config,
-        waitUntilShutdown: deps.waitUntilShutdown,
-        writeOutput: io.writeStdout,
-        writeError: io.writeStderr,
-      });
     });
 
   cli
@@ -286,6 +280,27 @@ async function maybeRunNestedProfileCommand(
       patch,
     });
     io.writeStdout(`Updated ClawChat Profile for ${result.agentId}.\n`);
+    return 0;
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+async function maybeRunServiceProcessCommand(
+  argv: string[],
+  io: CliIo,
+  startConnectService: typeof startConnectServiceDefault,
+  waitUntilShutdown?: () => Promise<void>,
+): Promise<number | null> {
+  if (argv[0] !== "service" || argv[1] !== BACKGROUND_SERVICE_PROCESS_ACTION) return null;
+  try {
+    await startConnectService({
+      configPath: optionValue(argv, "--config"),
+      waitUntilShutdown,
+      writeOutput: io.writeStdout,
+      writeError: io.writeStderr,
+    });
     return 0;
   } catch (error) {
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);

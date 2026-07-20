@@ -2,20 +2,24 @@
 
 ## Process model
 
-`clawchat-connect` is a Bun-native CLI package with a WebSocket service entrypoint and host-side management commands:
+`clawchat-connect` is a Bun-native CLI package whose public lifecycle interface is the native per-user background service:
 
 ```text
-clawchat-connect run --agent <bindingId>
-  ClawChat Protocol v2 WebSocket client
-  inbound message normalization
-  chat command routing
-  Project/Session workspace resolution
-  direct runtime adapter dispatch
-  materialized message replies
+clawchat-connect service install|start|stop|restart|status|logs
+  launchd / systemd user service
+    every activated Agent Binding
+      ClawChat Protocol v2 WebSocket client
+      inbound message normalization
+      chat command routing
+      Project/Session workspace resolution
+      direct runtime adapter dispatch
+      materialized message replies
 
 clawchat-connect profile update --agent <bindingId> [fields]
   authenticated ClawChat Profile update
 ```
+
+The generated native service definition owns the internal process entry. Connect does not expose a foreground run command.
 
 Connect does not expose tools, run an MCP server, or inject an MCP server into Codex Sessions.
 

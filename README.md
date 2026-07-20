@@ -21,7 +21,7 @@ Install a specific alpha version or choose another user-writable installation di
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.2
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.3
 ```
 
 The installer downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs `clawchat-connect` to `~/.local/bin` by default. Add that directory to `PATH` if necessary. Connect expects the coding-agent executable selected by its Runtime Adapter to already be installed and available; it does not install coding agents.
@@ -39,11 +39,9 @@ An Agent Binding ID is an arbitrary local name. A Binding owns its activation, r
 ```bash
 clawchat-connect init --agent work --kind codex
 clawchat-connect activate work A1B2C3
-# Run every activated Agent Binding in the foreground:
-clawchat-connect run
 ```
 
-After activation succeeds, Connect sets the ClawChat Profile nickname to the Agent Binding ID (`work` in this example).
+After activation succeeds, Connect sets the ClawChat Profile nickname to the Agent Binding ID (`work` in this example). Install the native background service described below to start Connect; there is no foreground run command.
 
 The activated account Profile can later be updated from the CLI. At least one field is required:
 
@@ -384,6 +382,6 @@ bun run build
 bun run build:binary
 ```
 
-Pushing a version tag such as `v0.1.0-alpha.2` runs the alpha release workflow. The workflow requires the tag to match `package.json`, runs the complete check suite, builds standalone macOS/Linux binaries for arm64 and x64, and publishes them with `install.sh` and SHA-256 checksums as a GitHub prerelease. Non-alpha tags are not accepted by this workflow.
+Pushing a version tag such as `v0.1.0-alpha.3` runs the alpha release workflow. The workflow requires the tag to match `package.json`, runs the complete check suite, builds standalone macOS/Linux binaries for arm64 and x64, and publishes them with `install.sh` and SHA-256 checksums as a GitHub prerelease. Non-alpha tags are not accepted by this workflow.
 
 The runtime uses Bun's built-in WebSocket client and `bun:sqlite`; it does not depend on `ws`, `sqlite`, `sqlite3`, Vitest, or tsup. Generated `dist/` output remains ignored.

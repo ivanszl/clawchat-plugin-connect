@@ -34,7 +34,9 @@ describe("background service manager", () => {
     const plist = await readFile(plistPath, "utf8");
     expect(plist).toContain("/Applications/Claw &amp; Chat/clawchat-connect");
     expect(plist).toContain(`<string>${configPath}</string>`);
-    expect(plist).toContain("<string>run</string>");
+    expect(plist).toContain("<string>service</string>");
+    expect(plist).toContain("<string>exec</string>");
+    expect(plist).not.toContain("<string>run</string>");
     expect(plist).not.toContain("--agent");
     expect(plist).toContain("<key>KeepAlive</key>");
     expect(commands.map((command) => command.slice(0, 3))).toEqual([
@@ -90,7 +92,7 @@ describe("background service manager", () => {
     const installed = await manageBackgroundService({ action: "install", ...base }, dependencies);
     expect(installed).toMatchObject({ running: true, message: expect.stringContaining("systemd") });
     const unit = await readFile(join(homeDirectory, ".config", "systemd", "user", "clawchat-connect.service"), "utf8");
-    expect(unit).toContain(`ExecStart="/opt/Claw Chat/clawchat-connect" "run" "--config" "${configPath}"`);
+    expect(unit).toContain(`ExecStart="/opt/Claw Chat/clawchat-connect" "service" "exec" "--config" "${configPath}"`);
     expect(unit).not.toContain("--agent");
     expect(unit).toContain('Environment="PATH=/opt/codex/bin:/usr/bin"');
     expect(unit).toContain("Restart=on-failure");

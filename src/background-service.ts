@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 export type BackgroundServiceAction = "install" | "start" | "stop" | "restart" | "status" | "logs";
+export const BACKGROUND_SERVICE_PROCESS_ACTION = "exec" as const;
 
 export interface BackgroundServiceRequest {
   action: BackgroundServiceAction;
@@ -85,7 +86,7 @@ function createServiceDefinition(request: BackgroundServiceRequest, homeDirector
   if (command.length === 0) throw new Error("background service command is required");
   const logsDirectory = join(homeDirectory, ".clawchat-connect", "logs");
   return {
-    command: [...command, "run", "--config", configPath],
+    command: [...command, "service", BACKGROUND_SERVICE_PROCESS_ACTION, "--config", configPath],
     label: "com.clawchat.connect",
     unitName: "clawchat-connect.service",
     launchAgentPath: join(homeDirectory, "Library", "LaunchAgents", "com.clawchat.connect.plist"),
