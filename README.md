@@ -100,23 +100,203 @@ Changing mode invalidates the current Runtime Thread because the mode is a Codex
 
 ## Chat commands
 
-- `/clawchat-help`
-- `/clawchat-output minimal|normal|full`
-- `/status`
-- `/new [name]`
-- `/list`
-- `/switch <name-or-ref>`
-- `/current`
-- `/project add <name> <absolute-path>`
-- `/project list`
-- `/project use <name-or-id>`
-- `/project current`
-- `/project clear`
-- `/project remove <name-or-id>`
-- `/mode <mode>`
-- `/cancel`
+Send Connect commands as standalone messages in the ClawChat conversation bound to the agent.
 
-Except for help, Connect control commands are restricted to the Agent Binding owner. `/cancel` bypasses the normal per-chat lifecycle queue so it can interrupt an active turn; other commands and turns are serialized per chat.
+Command rules:
+
+- `/help` is the single Connect help command and is never forwarded to a Runtime Adapter.
+- Except for `/help`, control commands can only be used by the Agent Binding owner.
+- Commands and ordinary turns are serialized per conversation. `/cancel` bypasses that queue so it can interrupt the active turn.
+- Session state is scoped by ClawChat conversation and Agent Binding. Project definitions are global to the Connect installation.
+- An unknown `/clawchat-*` command returns Connect help. Other unrecognized slash commands are forwarded to the coding agent.
+
+### Help, status, and output
+
+#### `/help`
+
+Shows the Connect command summary. This command is available to every participant and does not create a Session.
+
+#### `/status` and `/clawchat-status`
+
+Shows the active Agent Binding, WebSocket connection state, active conversations, running turns, and queued turns. Both forms are equivalent.
+
+```text
+/status
+```
+
+#### `/clawchat-output minimal|normal|full`
+
+Sets the persisted output visibility for the current ClawChat conversation:
+
+| Mode | Visible output |
+| --- | --- |
+| `minimal` | Final answer only |
+| `normal` | Final answer and assistant-visible output |
+| `full` | All runtime, tool, progress, reasoning, and final output |
+
+```text
+/clawchat-output normal
+```
+
+Required control messages and runtime failures remain visible regardless of this setting.
+
+### Session commands
+
+Connect separates three pieces of state:
+
+- A **Session Intent** is the pending name, Project, and mode for the next Session. It has no Session Ref or Runtime Thread.
+- A **Session** is Connect's logical conversation and owns a stable eight-character Session Ref.
+- A **Runtime Thread** is the coding agent's resumable conversation ID owned by a materialized Session.
+
+#### `/new [name]`
+
+Prepares a new Session Intent using the currently selected Project and mode. It does not create an empty Session. The first subsequent ordinary message materializes the Session and starts its Runtime Thread.
+
+```text
+/new
+/new Fix login flow
+```
+
+If no name is supplied, Connect can derive one from the Runtime Thread's first user message. The previous Session remains resumable through `/list` and `/switch`.
+
+#### `/current`
+
+Shows one of the following:
+
+- `Next Session (not started)` with the pending name, Project, and mode;
+- the current materialized Session with its name, Ref, Project, and mode; or
+- that no Session or pending selection exists.
+
+```text
+/current
+```
+
+#### `/list`
+
+Lists materialized Connect Sessions and unclaimed resumable Runtime Threads for the selected workspace.
+
+```text
+/list
+```
+
+The output uses these markers:
+
+- `(current)` identifies the current Connect Session.
+- `(available) — Runtime Thread` identifies a discovered Runtime Thread that Connect has not adopted.
+- Project selections list only Sessions and Runtime Threads from that Project root.
+- A pending Non-Project selection lists no old Non-Project Sessions; a current Non-Project Session lists only itself.
+
+Each entry has a Connect-owned eight-character Ref. Refs are stable selectors and do not expose or derive from internal UUIDs.
+
+#### `/switch <name-or-ref>`
+
+Switches to a materialized Connect Session or adopts an available Runtime Thread from the selected workspace.
+
+```text
+/switch WATT9U2E
+/switch Fix login flow
+```
+
+Names and Refs must match exactly, ignoring letter case. If a name matches more than one item, Connect asks for the unambiguous Ref. Switching to an existing Session preserves its Runtime Thread. Adopting an available Runtime Thread immediately creates a materialized Connect Session because that thread already contains messages.
+
+### Project commands
+
+A Project is a named reusable workspace. Its root is passed to the Runtime Adapter as the working directory.
+
+#### `/project add <name> <absolute-path>`
+
+Registers a Project globally.
+
+```text
+/project add connect /Volumes/SAMSUNG/Projects/clawchat-plugin-connect
+```
+
+The root must be an existing absolute directory. Project names are case-insensitively unique, and the same canonical root cannot be registered twice. Project names cannot contain spaces.
+
+#### `/project list`
+
+Lists every registered Project with its ID and canonical root.
+
+```text
+/project list
+```
+
+#### `/project use <name-or-id>`
+
+Selects a Project for the next Session. This creates or replaces a Session Intent; it does not create a Session or Runtime Thread.
+
+```text
+/project use connect
+```
+
+The selected name and mode are retained. Use `/new [name]` to choose a different Session name before sending the first ordinary message.
+
+#### `/project current`
+
+Shows the current Session's Project or the Project selected for the next Session.
+
+```text
+/project current
+```
+
+#### `/project clear`
+
+Selects a deterministic isolated Non-Project workspace for the next Session. It creates or replaces a Session Intent without materializing a Session.
+
+```text
+/project clear
+```
+
+The isolated workspace is stored below `~/.clawchat-connect/workspaces/`; Connect never substitutes the service process's current directory.
+
+#### `/project remove <name-or-id>`
+
+Removes an unused Project definition.
+
+```text
+/project remove connect
+```
+
+Removal is rejected while any materialized Session or Session Intent references the Project. Removing a Project never deletes its directory or files.
+
+### Runtime mode and cancellation
+
+#### `/mode <mode>`
+
+Sets the Runtime Adapter mode. The first-release Codex adapter accepts:
+
+```text
+/mode read-only
+/mode workspace-write
+/mode danger-full-access
+```
+
+For a Session Intent, the command only changes the pending mode. For a materialized Session, it keeps the Connect Session and Ref but invalidates the existing Runtime Thread because the sandbox mode is a thread startup option. The next ordinary message starts a new Runtime Thread with the selected mode.
+
+#### `/cancel`
+
+Attempts to abort the active turn for the current conversation.
+
+```text
+/cancel
+```
+
+If the Runtime Adapter supports cancellation, Connect aborts the active turn and confirms it. If no cancellable turn exists, Connect reports that without changing Session state.
+
+### Example workflow
+
+```text
+/project add connect /Volumes/SAMSUNG/Projects/clawchat-plugin-connect
+/project use connect
+/new Review authentication
+/mode workspace-write
+Review the authentication implementation and report any security issues.
+/current
+/list
+/switch WATT9U2E
+```
+
+The first four control commands only prepare the Session. The review request is the first ordinary message, so it materializes the Session and starts the Runtime Thread.
 
 ## Codex Runtime Threads and output
 

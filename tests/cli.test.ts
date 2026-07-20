@@ -177,6 +177,25 @@ describe("runConnectCli", () => {
 });
 
 describe("handleChatCommand", () => {
+  it("uses /help as the only Connect help command", async () => {
+    const context = {
+      agentId: "codex",
+      ownerUserId: "someone-else",
+      config: upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" }),
+      stateStore: {} as ConnectStateStore,
+      projects: {} as ProjectCatalog,
+    };
+
+    await expect(handleChatCommand({ ...context, message: message("/help") })).resolves.toMatchObject({
+      handled: true,
+      text: expect.stringContaining("ClawChat Connect commands"),
+    });
+    await expect(handleChatCommand({ ...context, message: message("/clawchat-help") })).resolves.toMatchObject({
+      handled: true,
+      text: expect.stringContaining("Unknown ClawChat command: /clawchat-help"),
+    });
+  });
+
   it("persists /clawchat-output overrides", async () => {
     const store = { setOutputVisibility: mock(async () => undefined) } as unknown as ConnectStateStore;
     const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });

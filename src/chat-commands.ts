@@ -47,7 +47,7 @@ const CONTROL_COMMANDS = new Set([
 const HELP = [
   "**ClawChat Connect commands**",
   "",
-  "- `/clawchat-help` — show this help.",
+  "- `/help` — show this help.",
   "- `/clawchat-status` or `/status` — show runtime status.",
   "- `/clawchat-output minimal|normal|full` — set output visibility.",
   "- `/new [name]` — prepare a new Session for the next message using the selected Project.",
@@ -68,7 +68,7 @@ export async function handleChatCommand(ctx: ChatCommandContext): Promise<ChatCo
   const text = ctx.message.text.trim();
   if (!text.startsWith("/")) return { handled: false };
   const [command = "", ...args] = text.split(/\s+/u);
-  if (command === "/clawchat-help") return { handled: true, text: HELP };
+  if (command === "/help") return { handled: true, text: HELP };
   if (CONTROL_COMMANDS.has(command) && ctx.message.sender.id !== ctx.ownerUserId) {
     return { handled: true, text: "Only the Agent Binding owner can run ClawChat Connect control commands." };
   }
