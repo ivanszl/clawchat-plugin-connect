@@ -64,6 +64,14 @@ async function collect(session: ConnectRuntimeSession) {
 }
 
 describe("Codex SDK runtime adapter", () => {
+  it("requires the user-installed Codex executable to be available to the adapter", async () => {
+    const adapter = createCodexRuntimeAdapter();
+
+    await expect(adapter.start({ ...agent, env: { PATH: "" } }, context())).rejects.toThrow(
+      /Codex executable was not found in PATH/u,
+    );
+  });
+
   it("discovers named persisted Codex threads for the selected workspace", async () => {
     const codexHome = await mkdtemp(join(tmpdir(), "clawchat-connect-codex-home-"));
     const sessions = join(codexHome, "sessions", "2026", "07", "20");

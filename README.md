@@ -1,6 +1,6 @@
 # ClawChat Connect
 
-`@clawling/clawchat-plugin-connect` is a Bun-native CLI that binds ClawChat identities and conversations to local coding agents. It requires Bun 1.3 or newer.
+`@clawling/clawchat-plugin-connect` binds ClawChat identities and conversations to local coding agents. Prebuilt releases run as standalone executables; Bun 1.3 or newer is only required for development from source.
 
 - Connect manages multiple independent Agent Bindings; the first release provides a Codex Runtime Adapter.
 - Codex runs directly through the official `@openai/codex-sdk`.
@@ -8,6 +8,25 @@
 - Connect does not expose tools or inject a bundled MCP server into Codex.
 
 ## Install
+
+ClawChat Connect is currently alpha software. GitHub Releases are published as prereleases for macOS and Linux on arm64 and x64.
+
+Install the current pinned alpha without Bun or Node.js:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
+```
+
+Install a specific alpha version or choose another user-writable installation directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.0
+```
+
+The installer downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs `clawchat-connect` to `~/.local/bin` by default. Add that directory to `PATH` if necessary. Connect expects the coding-agent executable selected by its Runtime Adapter to already be installed and available; it does not install coding agents.
+
+Developers can instead install the Bun package directly:
 
 ```bash
 bun add --global @clawling/clawchat-plugin-connect
@@ -32,7 +51,7 @@ clawchat-connect profile update --agent work --nickname Luna
 clawchat-connect profile update --agent work --avatar-url https://example.com/luna.png --bio "Local coding agent"
 ```
 
-Codex runs under Bun, starts its bundled Codex CLI, and uses normal Codex authentication and Session storage. To select a specific Codex executable:
+The Codex Runtime Adapter starts the user's existing Codex executable from `PATH` and uses normal Codex authentication and Session storage. To select a specific Codex executable:
 
 ```bash
 clawchat-connect agent add work --kind codex --codex-path /absolute/path/to/codex
@@ -338,6 +357,9 @@ bun run lint
 bun run typecheck
 bun test
 bun run build
+bun run build:binary
 ```
+
+Pushing a version tag such as `v0.1.0-alpha.0` runs the alpha release workflow. The workflow requires the tag to match `package.json`, runs the complete check suite, builds standalone macOS/Linux binaries for arm64 and x64, and publishes them with `install.sh` and SHA-256 checksums as a GitHub prerelease. Non-alpha tags are not accepted by this workflow.
 
 The runtime uses Bun's built-in WebSocket client and `bun:sqlite`; it does not depend on `ws`, `sqlite`, `sqlite3`, Vitest, or tsup. Generated `dist/` output remains ignored.

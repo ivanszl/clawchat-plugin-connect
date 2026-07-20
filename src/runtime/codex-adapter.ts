@@ -131,7 +131,13 @@ function normalizeThreadName(value: string): string | null {
 
 async function createOfficialCodexClient(options: CodexOptions): Promise<CodexClientLike> {
   const { Codex } = await import("@openai/codex-sdk");
-  return new Codex(options);
+  const codexPathOverride = options.codexPathOverride ?? Bun.which("codex", { PATH: options.env?.PATH });
+  if (!codexPathOverride) {
+    throw new Error(
+      "Codex executable was not found in PATH; install Codex or configure the Agent Binding with --codex-path",
+    );
+  }
+  return new Codex({ ...options, codexPathOverride });
 }
 
 function codexOptions(binding: CodexAgentBindingConfig): CodexOptions {
