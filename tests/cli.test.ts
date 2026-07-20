@@ -259,7 +259,7 @@ describe("handleChatCommand", () => {
       ).resolves.toEqual({ handled: false });
     }
     expect(closeRuntimeSession).toHaveBeenCalled();
-    expect(invalidateRuntimeSession).toHaveBeenCalled();
+    expect(invalidateRuntimeSession).not.toHaveBeenCalled();
 
     await expect(
       handleChatCommand({
@@ -275,13 +275,13 @@ describe("handleChatCommand", () => {
     await store.close();
   });
 
-  it("creates a new Session and Runtime Thread boundary when changing Project", async () => {
+  it("records Project changes without creating a Session before the first message", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-project-switch-"));
     const root = join(directory, "repo");
     await mkdir(root);
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    const project = await projects.add("repo", root);
+    await projects.add("repo", root);
     const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
     await store.upsertRuntimeSession({
       chatId: "chat-1",
@@ -292,7 +292,7 @@ describe("handleChatCommand", () => {
     });
     const closeRuntimeSession = mock(async () => true);
 
-    await handleChatCommand({
+    const selected = await handleChatCommand({
       message: message("/project use repo"),
       agentId: "work",
       ownerUserId: "usr",
@@ -301,13 +301,34 @@ describe("handleChatCommand", () => {
       projects,
       closeRuntimeSession,
     });
-    const projectSession = await store.getCurrentRuntimeSession("chat-1", "work");
-    expect(projectSession).toMatchObject({ projectId: project.projectId, runtimeSessionId: null });
-    expect(projectSession?.sessionId).not.toBe("before");
-    if (!projectSession) throw new Error("expected Project Session");
-    await store.setRuntimeSessionId("chat-1", "work", projectSession.sessionId, "thread-project");
+    expect(selected.text).toContain("next message");
+    expect(await store.getCurrentRuntimeSession("chat-1", "work")).toBeNull();
+    expect(await store.listRuntimeSessions("chat-1", "work")).toHaveLength(1);
+    await expect(store.getSessionIntent("chat-1", "work")).resolves.toMatchObject({
+      projectId: expect.any(String),
+    });
+    await expect(
+      handleChatCommand({
+        message: message("/current"),
+        agentId: "work",
+        ownerUserId: "usr",
+        config,
+        stateStore: store,
+        projects,
+      }),
+    ).resolves.toMatchObject({ text: expect.stringContaining("Next Session (not started)") });
+    const selectedList = await handleChatCommand({
+      message: message("/list"),
+      agentId: "work",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+    });
+    expect(selectedList.text).toContain("No Sessions in the selected workspace");
+    expect(selectedList.text).not.toContain("thread-before");
 
-    await handleChatCommand({
+    const cleared = await handleChatCommand({
       message: message("/project clear"),
       agentId: "work",
       ownerUserId: "usr",
@@ -316,10 +337,43 @@ describe("handleChatCommand", () => {
       projects,
       closeRuntimeSession,
     });
-    const nonProjectSession = await store.getCurrentRuntimeSession("chat-1", "work");
-    expect(nonProjectSession).toMatchObject({ projectId: null, runtimeSessionId: null });
-    expect(nonProjectSession?.sessionId).not.toBe(projectSession.sessionId);
+    expect(cleared.text).toContain("next message");
+    expect(await store.getCurrentRuntimeSession("chat-1", "work")).toBeNull();
+    expect(await store.listRuntimeSessions("chat-1", "work")).toHaveLength(1);
+    await expect(store.getSessionIntent("chat-1", "work")).resolves.toMatchObject({ projectId: null });
     expect(closeRuntimeSession).toHaveBeenCalledTimes(2);
+    await store.close();
+  });
+
+  it("records /new without creating an empty Session", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-new-intent-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const projects = new ProjectCatalog(store);
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-existing",
+      agentId: "codex",
+      name: "Existing work",
+    });
+
+    const result = await handleChatCommand({
+      message: message("/new Planned work"),
+      agentId: "codex",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      closeRuntimeSession: mock(async () => true),
+    });
+
+    expect(result.text).toContain("next message");
+    expect(await store.getCurrentRuntimeSession("chat-1", "codex")).toBeNull();
+    expect(await store.listRuntimeSessions("chat-1", "codex")).toHaveLength(1);
+    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
+      name: "Planned work",
+      projectId: null,
+    });
     await store.close();
   });
 
@@ -347,6 +401,15 @@ describe("handleChatCommand", () => {
       projectId: project.projectId,
       name: "Release prep",
       runtimeSessionId: "thread-release",
+      isCurrent: false,
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-non-project",
+      agentId: "codex",
+      projectId: null,
+      name: "Unrelated Non-Project work",
+      runtimeSessionId: "thread-non-project",
       isCurrent: false,
     });
     const discovered: SelectableRuntimeThread[] = [
@@ -377,6 +440,7 @@ describe("handleChatCommand", () => {
     expect(listed.text).toContain("Release prep");
     expect(listed.text).toContain("Fix login flow");
     expect(listed.text).toContain("(available)");
+    expect(listed.text).not.toContain("Unrelated Non-Project work");
     expect(listed.text).not.toContain("session-release");
     expect(listed.text).not.toContain("thread-external");
 
@@ -424,6 +488,39 @@ describe("handleChatCommand", () => {
       sessionRef: discovered[0].sessionRef,
       projectId: project.projectId,
     });
+    await store.close();
+  });
+
+  it("lists only the current Session in a Non-Project workspace", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-non-project-list-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const projects = new ProjectCatalog(store);
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-old",
+      agentId: "codex",
+      name: "Old isolated work",
+      isCurrent: false,
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-current",
+      agentId: "codex",
+      name: "Current isolated work",
+      isCurrent: true,
+    });
+
+    const listed = await handleChatCommand({
+      message: message("/list"),
+      agentId: "codex",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+    });
+    expect(listed.text).toContain("Current isolated work");
+    expect(listed.text).not.toContain("Old isolated work");
     await store.close();
   });
 });

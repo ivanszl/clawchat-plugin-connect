@@ -78,13 +78,13 @@ Rules:
 
 - Sessions are scoped by ClawChat conversation and Agent Binding.
 - A Session has zero or one Project.
-- `/new` starts a new Session using the current Project association.
-- `/project use` starts a new Project Session; it never mutates the existing Session.
-- `/project clear` starts a new Non-Project Session.
-- Every Project change creates a new Session and therefore a new Runtime Thread boundary.
-- `/list` shows Connect Sessions and resumable Codex Runtime Threads by name plus a stable eight-character Session Ref.
+- `/new`, `/project use`, and `/project clear` prepare the next Session without creating an empty Session.
+- The first ordinary message consumes that pending selection and creates the Session; adopting an existing Runtime Thread with `/switch` creates one immediately because that thread already contains messages.
+- Every Project change prepares a new Session and therefore a new Runtime Thread boundary once work begins.
+- `/current` distinguishes a pending next Session from a current Session.
+- `/list` shows Connect Sessions and resumable Codex Runtime Threads only for the selected workspace, by name plus a stable eight-character Session Ref.
 - `/switch <name-or-ref>` returns to a Connect Session or explicitly imports a discovered Runtime Thread.
-- A Project can only be removed while no Session references it.
+- A Project can only be removed while no Session or pending Session selection references it.
 
 A Non-Project Session works immediately. Connect creates a deterministic isolated workspace below `~/.clawchat-connect/workspaces/`; it never falls back to the process working directory. Registered Project roots are explicit trusted workspaces, so Connect enables Codex's Git-repository-check bypass for both Project and Non-Project Sessions.
 
@@ -96,7 +96,7 @@ Codex accepts these Session modes:
 /mode danger-full-access
 ```
 
-Changing mode invalidates the current Runtime Thread because the mode is a Codex thread option.
+Changing mode invalidates the current Runtime Thread because the mode is a Codex thread option. Before a Session starts, `/mode` only updates the pending selection.
 
 ## Chat commands
 
@@ -122,6 +122,8 @@ Except for help, Connect control commands are restricted to the Agent Binding ow
 
 Connect stores the Codex thread ID on its owning logical Session. It resumes that Runtime Thread after a process restart or after `/switch` returns to the Session. For the current workspace, `/list` reads Codex's persisted history under `CODEX_HOME` (or `~/.codex`) and shows unclaimed Runtime Threads by their first user-message title and Session Ref. `/switch <name-or-ref>` explicitly adopts one into a new Connect Session while preserving that Ref. Refs are random Connect-owned Base32 handles, not prefixes of internal UUIDs. A Runtime Thread never crosses a Project boundary.
 
+The official Codex SDK creates non-interactive Threads, which Codex omits from its default resume picker. To include them, run `codex resume --include-non-interactive` directly.
+
 The Codex adapter maps official SDK events into ClawChat output kinds:
 
 - agent messages → `assistant` and `final`
@@ -143,7 +145,7 @@ Connect does not register ClawChat tools, run an MCP server, or inject MCP confi
 - Non-Project workspaces: `~/.clawchat-connect/workspaces/`
 - Codex Runtime Threads: normal Codex storage under `~/.codex/sessions`
 
-Invite codes are not persisted. Credentials, Projects, Session-to-Project associations, Runtime Thread IDs, message audit rows, output visibility, and runtime status are stored in SQLite.
+Invite codes are not persisted. Credentials, Projects, pending Session selections, Session-to-Project associations, Runtime Thread IDs, message audit rows, output visibility, and runtime status are stored in SQLite.
 
 ## Development
 

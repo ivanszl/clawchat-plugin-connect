@@ -106,6 +106,52 @@ describe("state store", () => {
     await store.close();
   });
 
+  it("keeps a Session Intent mutually exclusive with the current Session", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    const project = await store.insertProject({
+      projectId: "project-1",
+      name: "work",
+      rootPath: "/repo",
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-before",
+      agentId: "codex",
+    });
+
+    await store.setSessionIntent({
+      chatId: "chat-1",
+      agentId: "codex",
+      projectId: project.projectId,
+      name: "Planned work",
+      mode: "read-only",
+    });
+
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toBeNull();
+    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
+      projectId: "project-1",
+      name: "Planned work",
+      mode: "read-only",
+    });
+
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-after",
+      agentId: "codex",
+      projectId: project.projectId,
+      name: "Planned work",
+      mode: "read-only",
+    });
+
+    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toBeNull();
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      sessionId: "session-after",
+      hasMessages: true,
+    });
+    await store.close();
+  });
+
   it("updates the runtime thread id for one logical session", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
@@ -188,7 +234,34 @@ describe("state store", () => {
     const store = createStateStore({ dbPath });
     const current = await store.getCurrentRuntimeSession("chat-1", "codex");
     expect(current).toMatchObject({ name: "Legacy Session", runtimeSessionId: "thread-1" });
+    expect(current?.hasMessages).toBe(true);
     expect(current?.sessionRef).toMatch(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/u);
+    await store.close();
+  });
+
+  it("migrates the current legacy empty Session to an Intent and removes empty history", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const legacy = new Database(dbPath, { create: true });
+    legacy.exec(
+      "CREATE TABLE runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, project_id TEXT, name TEXT, mode TEXT, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id, session_id)); INSERT INTO runtime_sessions VALUES ('chat-1', 'materialized', 'codex', 'thread-1', NULL, 'Existing work', NULL, 0, 1, 1); INSERT INTO runtime_sessions VALUES ('chat-1', 'empty-history', 'codex', NULL, NULL, NULL, NULL, 0, 2, 2); INSERT INTO runtime_sessions VALUES ('chat-1', 'empty-current', 'codex', NULL, NULL, 'Planned work', 'read-only', 1, 3, 3);",
+    );
+    legacy.close();
+
+    const store = createStateStore({ dbPath });
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toBeNull();
+    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
+      name: "Planned work",
+      mode: "read-only",
+      projectId: null,
+    });
+    await expect(store.listRuntimeSessions("chat-1", "codex")).resolves.toEqual([
+      expect.objectContaining({
+        sessionId: "materialized",
+        runtimeSessionId: "thread-1",
+        hasMessages: true,
+      }),
+    ]);
     await store.close();
   });
 

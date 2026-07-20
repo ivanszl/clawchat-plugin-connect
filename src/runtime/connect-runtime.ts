@@ -92,10 +92,17 @@ export class ConnectRuntime {
   }
 
   async discoverRuntimeThreads(chatId: string): Promise<SelectableRuntimeThread[]> {
+    const intent = await this.options.stateStore.getSessionIntent(chatId, this.options.agentId);
     const current = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
-    if (!current) return [];
-    const binding = getAgentBinding(this.options.config, current.agentId || this.options.agentId);
-    const workspace = await this.projects.resolveWorkspace(current);
+    if (!intent && !current) return [];
+    if (intent && !intent.projectId) return [];
+    const binding = getAgentBinding(this.options.config, current?.agentId || intent?.agentId || this.options.agentId);
+    const workspace = intent?.projectId
+      ? await this.projects.resolveProjectWorkspace(intent.projectId)
+      : current
+        ? await this.projects.resolveWorkspace(current)
+        : null;
+    if (!workspace) return [];
     const sessions = await this.options.stateStore.listRuntimeSessions(chatId, this.options.agentId);
     const discovered = await this.runtimeAdapters.discoverThreads(binding, workspace);
     const discoveriesById = new Map(discovered.map((thread) => [thread.runtimeThreadId, thread]));
@@ -212,6 +219,24 @@ export class ConnectRuntime {
   }
 
   private async ensureCurrentSession(chatId: string): Promise<RuntimeSessionRecord> {
+    const intent = await this.options.stateStore.getSessionIntent(chatId, this.options.agentId);
+    if (intent) {
+      const sessionId = randomUUID();
+      await this.options.stateStore.upsertRuntimeSession({
+        chatId,
+        sessionId,
+        agentId: intent.agentId,
+        runtimeSessionId: null,
+        projectId: intent.projectId,
+        name: intent.name,
+        mode: intent.mode,
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const created = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
+      if (!created) throw new Error("failed to materialize Session Intent");
+      return created;
+    }
     const current = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
     if (current) return current;
     const sessionId = randomUUID();
@@ -221,6 +246,7 @@ export class ConnectRuntime {
       agentId: this.options.agentId,
       runtimeSessionId: null,
       projectId: null,
+      hasMessages: true,
       isCurrent: true,
     });
     const created = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);

@@ -72,7 +72,17 @@ export interface RuntimeSessionRecord {
   projectId: string | null;
   name: string | null;
   mode: string | null;
+  hasMessages: boolean;
   isCurrent: boolean;
+  updatedAt: number;
+}
+
+export interface SessionIntentRecord {
+  chatId: string;
+  agentId: string;
+  projectId: string | null;
+  name: string | null;
+  mode: string | null;
   updatedAt: number;
 }
 

@@ -1,9 +1,10 @@
 import { describe, expect, it, mock } from "bun:test";
-import { mkdtemp, stat } from "node:fs/promises";
+import { mkdtemp, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import type { RuntimeOutputEvent } from "../src/output-visibility";
+import { ProjectCatalog } from "../src/projects";
 import type { NormalizedInboundMessage } from "../src/protocol";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
@@ -92,6 +93,71 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     if (!promptInput) throw new Error("expected runtime prompt");
     expect(promptInput.workspace).toMatchObject({ projectId: null, skipGitRepoCheck: true });
     expect((await stat(promptInput.workspace.workingDirectory)).isDirectory()).toBe(true);
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("discovers within a pending Project and materializes its Session on the first message", async () => {
+    const fixture = await runtimeFixture();
+    const projects = new ProjectCatalog(fixture.store);
+    const projectRoot = await mkdtemp(join(tmpdir(), "clawchat-connect-selected-project-"));
+    const canonicalProjectRoot = await realpath(projectRoot);
+    const project = await projects.add("selected", projectRoot);
+    await fixture.store.setSessionIntent({
+      chatId: "chat-1",
+      agentId: "codex",
+      projectId: project.projectId,
+      name: "Planned work",
+      mode: "read-only",
+    });
+    const discoveredWorkspaces: string[] = [];
+    const prompts: ConnectRuntimePrompt[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["read-only", "workspace-write", "danger-full-access"],
+      discoverThreads: mock(async (_agent, workspace) => {
+        discoveredWorkspaces.push(workspace.workingDirectory);
+        return [{ runtimeThreadId: "thread-existing", name: "Existing thread", updatedAt: 1 }];
+      }),
+      start: mock(async () => ({
+        prompt: async function* (input: ConnectRuntimePrompt) {
+          prompts.push(input);
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      projects,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toBeNull();
+    await expect(runtime.discoverRuntimeThreads("chat-1")).resolves.toEqual([
+      expect.objectContaining({ runtimeThreadId: "thread-existing", name: "Existing thread" }),
+    ]);
+    expect(discoveredWorkspaces).toEqual([canonicalProjectRoot]);
+    await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toBeNull();
+
+    await runtime.handleInboundMessage(message("start planned work"));
+
+    await expect(fixture.store.getSessionIntent("chat-1", "codex")).resolves.toBeNull();
+    await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      projectId: project.projectId,
+      name: "Planned work",
+      mode: "read-only",
+      hasMessages: true,
+    });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({
+      workspace: { projectId: project.projectId, workingDirectory: canonicalProjectRoot },
+      mode: "read-only",
+    });
     await runtime.dispose();
     await fixture.store.close();
   });

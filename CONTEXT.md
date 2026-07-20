@@ -20,6 +20,10 @@ _Avoid_: Directory, cwd, repository
 A continuous Connect conversation using one Agent Binding and optionally one Project. A Session owns conversation continuity, not project identity.
 _Avoid_: Project, Runtime Thread
 
+**Session Intent**:
+The pending Project, mode, and optional name selected for the next Session. It is not a Session and is consumed when the first ordinary message creates that Session.
+_Avoid_: Session, Draft Session
+
 **Session Name**:
 An optional human-readable label used to display and select a Session. It is not identity; ambiguous names require a Session Ref.
 _Avoid_: Session ID, Runtime Thread ID
@@ -45,8 +49,9 @@ _Avoid_: Session, Project
 - Projects are global and reusable across Agent Bindings.
 - Sessions are scoped by ClawChat conversation and Agent Binding.
 - A Session has zero or one Project.
-- Changing Project association creates a new Session and a new Runtime Thread boundary.
-- Runtime Thread discovery is scoped to the Session's resolved workspace; an external Runtime Thread is adopted only through an explicit switch.
+- Control commands create or replace a Session Intent; only an ordinary message or adoption of an existing Runtime Thread creates a Session.
+- Changing Project association creates a Session Intent whose eventual Session starts a new Runtime Thread boundary.
+- Session listing and Runtime Thread discovery are scoped to the selected workspace from the Session Intent or current Session; an external Runtime Thread is adopted only through an explicit switch.
 - Session names are display and selection labels; Session Refs are stable unambiguous selectors, while internal Session and Runtime Thread IDs remain hidden.
 - A Non-Project Session receives a deterministic isolated workspace and never inherits `process.cwd()`.
 - Connect control commands are restricted to the Agent Binding owner.

@@ -23,8 +23,8 @@ Connect does not expose tools, run an MCP server, or inject an MCP server into C
 
 ```text
 Agent Binding ─────┐
-                   ├── Session ── Runtime Thread
-Project (0 or 1) ──┘
+Project (0 or 1) ──┼── Session Intent ── first ordinary message ── Session ── Runtime Thread
+                   └───────────────────────────────────────────────┘
 
 Agent Binding.kind ── Runtime Adapter Registry ── Runtime Adapter
 ```
@@ -32,12 +32,13 @@ Agent Binding.kind ── Runtime Adapter Registry ── Runtime Adapter
 - An **Agent Binding** is a locally named association between Connect and one configured coding agent runtime. Its ID has no runtime semantics. Activation synchronizes that ID to the connected ClawChat Profile nickname.
 - A **Runtime Adapter** is a concrete integration for one runtime kind. The first release registers only Codex, while Connect continues to manage multiple Agent Bindings independently of that release scope.
 - A **Project** is a global, reusable Connect workspace with a canonical root and optional additional directories.
+- A **Session Intent** is the pending Project, mode, and optional name for the next Session. It has no Session Ref or Runtime Thread and is consumed by the first ordinary message.
 - A **Session** owns Connect conversation continuity, is scoped by ClawChat conversation plus Agent Binding, references zero or one Project, may have a human-readable Session Name, and has a stable eight-character Session Ref.
 - A **Non-Project Session** receives a deterministic isolated workspace under the directory beside the state database.
 - A **Runtime Thread** is the external runtime's resumable conversation ID persisted on one Session.
 - A **Session Ref** is the Connect-owned user-facing selector for a Session or discovered Runtime Thread; internal IDs are not displayed or derived into Refs.
 
-Changing Project association always creates a new Session. No Runtime Thread crosses a Project boundary.
+`/new`, `/project use`, and `/project clear` create or replace a Session Intent, not an empty Session. The first ordinary message materializes the intent as a Session. Explicitly adopting a discovered Runtime Thread also creates a Session immediately because the external thread already contains conversation history. No Runtime Thread crosses a Project boundary.
 
 ## Direct runtime adapter
 
@@ -75,7 +76,7 @@ For Non-Project Sessions it:
 
 The runtime never uses `process.cwd()` as an implicit workspace.
 
-Projects are global across Agent Bindings. Project names are case-insensitively unique, roots are unique, and deletion is rejected while any Session still references the Project.
+Projects are global across Agent Bindings. Project names are case-insensitively unique, roots are unique, and deletion is rejected while any Session or Session Intent still references the Project.
 
 ## Runtime Thread lifecycle
 
@@ -94,9 +95,9 @@ Session Ref (display/select) → Connect Session ID (internal)
                               ~/.codex/sessions
 ```
 
-`ThreadOptions.workingDirectory` and `additionalDirectories` come from the resolved workspace plus Agent Binding configuration. Project changes create a new Session with a null `runtime_session_id`. `/switch` and process restarts preserve and resume the existing ID. `/mode` invalidates the ID because sandbox mode is also a thread startup option.
+`ThreadOptions.workingDirectory` and `additionalDirectories` come from the resolved workspace plus Agent Binding configuration. Project changes create a Session Intent; its first ordinary message creates a Session with a null `runtime_session_id`. `/switch` and process restarts preserve and resume the existing ID. `/mode` updates a pending intent or invalidates a current Session's ID because sandbox mode is also a thread startup option.
 
-The Codex adapter scans persisted JSONL metadata under `CODEX_HOME/sessions` (falling back to `~/.codex/sessions`), filters by the resolved workspace, and derives a Session Name from the first user message. `ConnectRuntime` removes Runtime Threads already claimed by the current conversation and asks the state module for a stable Session Ref for every available result. `/list` presents the remaining threads as available; `/switch <name-or-ref>` explicitly creates a Connect Session that owns the selected Runtime Thread and preserves its Ref. Ambiguous names require a Ref.
+The Codex adapter scans persisted JSONL metadata under `CODEX_HOME/sessions` (falling back to `~/.codex/sessions`), filters by the selected workspace from the Session Intent or current Session, and derives a Session Name from the first user message. `ConnectRuntime` removes Runtime Threads already claimed by the current conversation and asks the state module for a stable Session Ref for every available result. `/list` presents only Connect Sessions from that workspace plus the remaining Runtime Threads as available; `/switch <name-or-ref>` explicitly creates a Connect Session that owns the selected Runtime Thread and preserves its Ref. Ambiguous names require a Ref.
 
 Session Refs use eight characters from an unambiguous Base32 alphabet and contain 40 random bits. SQLite enforces global Ref uniqueness and stores mappings to both Connect Sessions and Runtime Threads. Existing databases are backfilled on startup. When a discovered Runtime Thread is adopted, its mapping is attached to the new Session; when a Session invalidates its Runtime Thread, the Session keeps its Ref and a later rediscovery of the old thread receives a different Ref.
 
@@ -160,7 +161,7 @@ Required controls always remain visible. In group chats, required controls route
 
 JSON configuration stores Agent Bindings and defaults. Project definitions remain operational domain data in SQLite, not config. `stateDbPath` and configured additional directories must be absolute so workspace behavior never depends on the launcher process's current directory.
 
-Bun's built-in `bun:sqlite` stores credentials, device ID, Projects, logical Sessions, Project associations, Runtime Thread IDs, output visibility, message audit/idempotency, and runtime status. `ConnectStateStore` presents an asynchronous interface while its internal adapter executes Bun's synchronous native queries.
+Bun's built-in `bun:sqlite` stores credentials, device ID, Projects, Session Intents, logical Sessions, Project associations, Runtime Thread IDs, output visibility, message audit/idempotency, and runtime status. Session Intent and current Session state are mutually exclusive for one ClawChat conversation plus Agent Binding. On upgrade, legacy empty Sessions are removed and a current empty Session is migrated to an intent. `ConnectStateStore` presents an asynchronous interface while its internal adapter executes Bun's synchronous native queries.
 
 Do not add `sqlite`, `sqlite3`, `node:sqlite`, or `better-sqlite3`.
 

@@ -23,6 +23,7 @@ function session(overrides: Partial<RuntimeSessionRecord> = {}): RuntimeSessionR
     projectId: null,
     name: null,
     mode: null,
+    hasMessages: true,
     isCurrent: true,
     updatedAt: 1,
     ...overrides,
@@ -73,19 +74,31 @@ describe("ProjectCatalog", () => {
     const { directory, store, projects } = await fixture();
     const unusedRoot = await mkdtemp(join(directory, "unused-"));
     const usedRoot = await mkdtemp(join(directory, "used-"));
+    const pendingRoot = await mkdtemp(join(directory, "pending-"));
     const unused = await projects.add("unused", unusedRoot);
     const used = await projects.add("used", usedRoot);
+    const pending = await projects.add("pending", pendingRoot);
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-1",
       agentId: "work",
       projectId: used.projectId,
     });
+    await store.setSessionIntent({
+      chatId: "chat-2",
+      agentId: "work",
+      projectId: pending.projectId,
+    });
 
     await expect(projects.remove(unused.projectId)).resolves.toMatchObject({ removed: true });
     await expect(projects.remove(used.projectId)).resolves.toMatchObject({
       removed: false,
       referencedSessions: 1,
+    });
+    await expect(projects.remove(pending.projectId)).resolves.toMatchObject({
+      removed: false,
+      referencedSessions: 0,
+      pendingIntents: 1,
     });
     await store.close();
   });

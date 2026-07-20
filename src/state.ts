@@ -10,6 +10,7 @@ import {
   type ProjectRecord,
   type RuntimeSessionRecord,
   type RuntimeStatus,
+  type SessionIntentRecord,
 } from "./types";
 
 export interface ConnectStateOptions {
@@ -75,7 +76,15 @@ export interface UpsertRuntimeSessionInput {
   projectId?: string | null;
   name?: string | null;
   mode?: string | null;
+  hasMessages?: boolean;
   isCurrent?: boolean;
+}
+export interface SetSessionIntentInput {
+  chatId: string;
+  agentId: string;
+  projectId: string | null;
+  name?: string | null;
+  mode?: string | null;
 }
 
 export class ConnectStateStore {
@@ -95,6 +104,7 @@ export class ConnectStateStore {
       await this.db.exec("PRAGMA journal_mode = WAL");
       await this.db.exec("PRAGMA foreign_keys = ON");
       await this.createSchema();
+      await this.migrateSchema();
       await this.backfillSessionRefs();
       await chmod(this.dbPath, 0o600).catch(() => undefined);
     } catch (error) {
@@ -227,6 +237,14 @@ export class ConnectStateStore {
     );
     return numberValue(row?.count);
   }
+  async countSessionIntentsForProject(projectId: string): Promise<number> {
+    const db = await this.requireDb();
+    const row = await db.get<{ count?: number }>(
+      `SELECT COUNT(*) AS count FROM session_intents WHERE project_id = ?`,
+      projectId,
+    );
+    return numberValue(row?.count);
+  }
   async deleteProject(projectId: string): Promise<boolean> {
     const db = await this.requireDb();
     const result = await db.run(`DELETE FROM projects WHERE project_id = ?`, projectId);
@@ -236,14 +254,16 @@ export class ConnectStateStore {
   async upsertRuntimeSession(input: UpsertRuntimeSessionInput): Promise<void> {
     const now = Date.now();
     const db = await this.requireDb();
-    if (input.isCurrent !== false)
+    if (input.isCurrent !== false) {
       await db.run(
         "UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?",
         input.chatId,
         input.agentId,
       );
+      await db.run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
+    }
     await db.run(
-      `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id, session_id) DO UPDATE SET agent_id = excluded.agent_id, runtime_session_id = excluded.runtime_session_id, project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, is_current = excluded.is_current, updated_at = excluded.updated_at`,
+      `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id, session_id) DO UPDATE SET agent_id = excluded.agent_id, runtime_session_id = excluded.runtime_session_id, project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, has_messages = CASE WHEN runtime_sessions.has_messages = 1 OR excluded.has_messages = 1 THEN 1 ELSE 0 END, is_current = excluded.is_current, updated_at = excluded.updated_at`,
       input.chatId,
       input.sessionId,
       input.agentId,
@@ -251,6 +271,7 @@ export class ConnectStateStore {
       input.projectId ?? null,
       input.name ?? null,
       input.mode ?? null,
+      input.hasMessages === false ? 0 : 1,
       input.isCurrent === false ? 0 : 1,
       now,
       now,
@@ -267,6 +288,40 @@ export class ConnectStateStore {
         Date.now(),
         sessionRef,
       );
+  }
+
+  async setSessionIntent(input: SetSessionIntentInput): Promise<void> {
+    const now = Date.now();
+    const db = await this.requireDb();
+    await db.run(
+      "UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?",
+      input.chatId,
+      input.agentId,
+    );
+    await db.run(
+      `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, updated_at = excluded.updated_at`,
+      input.chatId,
+      input.agentId,
+      input.projectId,
+      input.name ?? null,
+      input.mode ?? null,
+      now,
+      now,
+    );
+  }
+  async getSessionIntent(chatId: string, agentId: string): Promise<SessionIntentRecord | null> {
+    const db = await this.requireDb();
+    const row = await db.get<Record<string, unknown>>(
+      "SELECT * FROM session_intents WHERE chat_id = ? AND agent_id = ?",
+      chatId,
+      agentId,
+    );
+    return row ? sessionIntentFromRow(row) : null;
+  }
+  async clearSessionIntent(chatId: string, agentId: string): Promise<boolean> {
+    const db = await this.requireDb();
+    const result = await db.run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", chatId, agentId);
+    return result.changes > 0;
   }
   async getCurrentRuntimeSession(chatId: string, agentId: string): Promise<RuntimeSessionRecord | null> {
     const db = await this.requireDb();
@@ -296,6 +351,8 @@ export class ConnectStateStore {
       agentId,
       sessionId,
     );
+    if (result.changes > 0)
+      await db.run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", chatId, agentId);
     return result.changes > 0;
   }
   async setRuntimeSessionId(
@@ -526,8 +583,28 @@ export class ConnectStateStore {
   private async createSchema(): Promise<void> {
     const db = await this.requireDb();
     await db.exec(
-      `CREATE TABLE IF NOT EXISTS activations(platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, server_agent_id TEXT, user_id TEXT NOT NULL, owner_user_id TEXT NOT NULL, conversation_id TEXT, activated_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(platform, local_agent_id)); CREATE TABLE IF NOT EXISTS device_state(id INTEGER PRIMARY KEY CHECK(id = 1), device_id TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS projects(project_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, root_path TEXT NOT NULL UNIQUE, additional_directories_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT, name TEXT, mode TEXT, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id, session_id)); CREATE TABLE IF NOT EXISTS session_refs(session_ref TEXT PRIMARY KEY COLLATE NOCASE CHECK(length(session_ref) = 8), chat_id TEXT NOT NULL, agent_id TEXT NOT NULL, session_id TEXT, runtime_session_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, CHECK(session_id IS NOT NULL OR runtime_session_id IS NOT NULL), UNIQUE(chat_id, agent_id, session_id), UNIQUE(chat_id, agent_id, runtime_session_id)); CREATE TABLE IF NOT EXISTS output_visibility(chat_id TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS clawchat_messages(id INTEGER PRIMARY KEY, platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, kind TEXT NOT NULL, direction TEXT NOT NULL, event_type TEXT NOT NULL, trace_id TEXT, chat_id TEXT, message_id TEXT, text TEXT, raw_json TEXT, created_at INTEGER NOT NULL, send_status TEXT, protocol_message_id TEXT, acked_at INTEGER, send_error TEXT); CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique ON clawchat_messages(local_agent_id, direction, kind, message_id) WHERE kind = 'message' AND message_id IS NOT NULL; CREATE TABLE IF NOT EXISTS runtime_status(id INTEGER PRIMARY KEY CHECK(id = 1), updated_at INTEGER NOT NULL, websocket_connected INTEGER, active_agent TEXT, active_chats INTEGER NOT NULL, global_running INTEGER NOT NULL, global_queued INTEGER NOT NULL, recent_error TEXT);`,
+      `CREATE TABLE IF NOT EXISTS activations(platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, server_agent_id TEXT, user_id TEXT NOT NULL, owner_user_id TEXT NOT NULL, conversation_id TEXT, activated_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(platform, local_agent_id)); CREATE TABLE IF NOT EXISTS device_state(id INTEGER PRIMARY KEY CHECK(id = 1), device_id TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS projects(project_id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, root_path TEXT NOT NULL UNIQUE, additional_directories_json TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT, name TEXT, mode TEXT, has_messages INTEGER NOT NULL DEFAULT 0, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id, session_id)); CREATE TABLE IF NOT EXISTS session_intents(chat_id TEXT NOT NULL, agent_id TEXT NOT NULL, project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT, name TEXT, mode TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id)); CREATE TABLE IF NOT EXISTS session_refs(session_ref TEXT PRIMARY KEY COLLATE NOCASE CHECK(length(session_ref) = 8), chat_id TEXT NOT NULL, agent_id TEXT NOT NULL, session_id TEXT, runtime_session_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, CHECK(session_id IS NOT NULL OR runtime_session_id IS NOT NULL), UNIQUE(chat_id, agent_id, session_id), UNIQUE(chat_id, agent_id, runtime_session_id)); CREATE TABLE IF NOT EXISTS output_visibility(chat_id TEXT PRIMARY KEY, mode TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS clawchat_messages(id INTEGER PRIMARY KEY, platform TEXT NOT NULL, local_agent_id TEXT NOT NULL, kind TEXT NOT NULL, direction TEXT NOT NULL, event_type TEXT NOT NULL, trace_id TEXT, chat_id TEXT, message_id TEXT, text TEXT, raw_json TEXT, created_at INTEGER NOT NULL, send_status TEXT, protocol_message_id TEXT, acked_at INTEGER, send_error TEXT); CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique ON clawchat_messages(local_agent_id, direction, kind, message_id) WHERE kind = 'message' AND message_id IS NOT NULL; CREATE TABLE IF NOT EXISTS runtime_status(id INTEGER PRIMARY KEY CHECK(id = 1), updated_at INTEGER NOT NULL, websocket_connected INTEGER, active_agent TEXT, active_chats INTEGER NOT NULL, global_running INTEGER NOT NULL, global_queued INTEGER NOT NULL, recent_error TEXT);`,
     );
+  }
+
+  private async migrateSchema(): Promise<void> {
+    const db = await this.requireDb();
+    const columns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_sessions)");
+    if (!columns.some((column) => column.name === "has_messages"))
+      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN has_messages INTEGER NOT NULL DEFAULT 0");
+    await db.run(
+      `UPDATE runtime_sessions AS rs SET has_messages = 1 WHERE has_messages = 0 AND (runtime_session_id IS NOT NULL OR EXISTS (SELECT 1 FROM clawchat_messages AS message WHERE message.local_agent_id = rs.agent_id AND message.chat_id = rs.chat_id AND message.direction = 'inbound' AND message.kind = 'message' AND COALESCE(message.text, '') NOT LIKE '/%' AND message.created_at >= rs.created_at AND NOT EXISTS (SELECT 1 FROM runtime_sessions AS newer WHERE newer.chat_id = rs.chat_id AND newer.agent_id = rs.agent_id AND newer.created_at > rs.created_at AND newer.created_at <= message.created_at)))`,
+    );
+    const now = Date.now();
+    await db.run(
+      `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, created_at, updated_at) SELECT chat_id, agent_id, project_id, name, mode, ?, ? FROM runtime_sessions WHERE is_current = 1 AND has_messages = 0 ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, updated_at = excluded.updated_at`,
+      now,
+      now,
+    );
+    await db.run(
+      `DELETE FROM session_refs WHERE runtime_session_id IS NULL AND EXISTS (SELECT 1 FROM runtime_sessions AS session WHERE session.chat_id = session_refs.chat_id AND session.agent_id = session_refs.agent_id AND session.session_id = session_refs.session_id AND session.has_messages = 0)`,
+    );
+    await db.run("DELETE FROM runtime_sessions WHERE has_messages = 0 AND runtime_session_id IS NULL");
   }
 
   private async backfillSessionRefs(): Promise<void> {
@@ -594,7 +671,19 @@ function runtimeSessionFromRow(row: Record<string, unknown>): RuntimeSessionReco
     projectId: nullableString(row.project_id),
     name: nullableString(row.name),
     mode: nullableString(row.mode),
+    hasMessages: Boolean(row.has_messages),
     isCurrent: Boolean(row.is_current),
+    updatedAt: numberValue(row.updated_at),
+  };
+}
+
+function sessionIntentFromRow(row: Record<string, unknown>): SessionIntentRecord {
+  return {
+    chatId: stringValue(row.chat_id),
+    agentId: stringValue(row.agent_id),
+    projectId: nullableString(row.project_id),
+    name: nullableString(row.name),
+    mode: nullableString(row.mode),
     updatedAt: numberValue(row.updated_at),
   };
 }

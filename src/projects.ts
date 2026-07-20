@@ -12,6 +12,7 @@ export interface RemoveProjectResult {
   removed: boolean;
   project: ProjectRecord;
   referencedSessions: number;
+  pendingIntents: number;
 }
 
 export class ProjectCatalog {
@@ -64,28 +65,20 @@ export class ProjectCatalog {
   async remove(reference: string): Promise<RemoveProjectResult> {
     const project = await this.require(reference);
     const referencedSessions = await this.stateStore.countRuntimeSessionsForProject(project.projectId);
-    if (referencedSessions > 0) return { removed: false, project, referencedSessions };
+    const pendingIntents = await this.stateStore.countSessionIntentsForProject(project.projectId);
+    if (referencedSessions > 0 || pendingIntents > 0)
+      return { removed: false, project, referencedSessions, pendingIntents };
     return {
       removed: await this.stateStore.deleteProject(project.projectId),
       project,
       referencedSessions: 0,
+      pendingIntents: 0,
     };
   }
 
   async resolveWorkspace(session: RuntimeSessionRecord): Promise<RuntimeWorkspace> {
     if (session.projectId) {
-      const project = await this.stateStore.getProject(session.projectId);
-      if (!project) throw new Error(`session project ${session.projectId} no longer exists`);
-      const workingDirectory = await existingDirectory(project.rootPath, `project ${project.name} root`);
-      const additionalDirectories = await Promise.all(
-        project.additionalDirectories.map((path) => existingDirectory(path, `project ${project.name} directory`)),
-      );
-      return {
-        projectId: project.projectId,
-        workingDirectory,
-        additionalDirectories,
-        skipGitRepoCheck: true,
-      };
+      return await this.resolveProjectWorkspace(session.projectId);
     }
     const workingDirectory = join(
       this.workspaceRoot,
@@ -98,6 +91,21 @@ export class ProjectCatalog {
       projectId: null,
       workingDirectory,
       additionalDirectories: [],
+      skipGitRepoCheck: true,
+    };
+  }
+
+  async resolveProjectWorkspace(projectId: string): Promise<RuntimeWorkspace> {
+    const project = await this.stateStore.getProject(projectId);
+    if (!project) throw new Error(`project ${projectId} no longer exists`);
+    const workingDirectory = await existingDirectory(project.rootPath, `project ${project.name} root`);
+    const additionalDirectories = await Promise.all(
+      project.additionalDirectories.map((path) => existingDirectory(path, `project ${project.name} directory`)),
+    );
+    return {
+      projectId: project.projectId,
+      workingDirectory,
+      additionalDirectories,
       skipGitRepoCheck: true,
     };
   }
