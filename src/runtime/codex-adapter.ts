@@ -1,3 +1,8 @@
+import { createReadStream } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import type { CodexOptions, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions } from "@openai/codex-sdk";
 import type { RuntimeOutputEvent } from "../output-visibility";
 import type { CodexAgentBindingConfig, CodexSandboxMode, RuntimeWorkspace } from "../types";
@@ -6,6 +11,7 @@ import type {
   ConnectRuntimePrompt,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
+  RuntimeThreadSummary,
 } from "./types";
 
 export interface CodexThreadLike {
@@ -29,12 +35,98 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
   return {
     kind: "codex",
     modes: SANDBOX_MODES,
+    async discoverThreads(binding, workspace) {
+      if (binding.kind !== "codex") throw new Error("Codex Runtime Adapter requires a Codex Agent Binding");
+      return await discoverCodexThreads(binding, workspace.workingDirectory);
+    },
     async start(binding, context) {
       if (binding.kind !== "codex") throw new Error("Codex Runtime Adapter requires a Codex Agent Binding");
       const client = await createCodex(codexOptions(binding));
       return new CodexRuntimeSession(client, binding, context);
     },
   };
+}
+
+async function discoverCodexThreads(
+  binding: CodexAgentBindingConfig,
+  workingDirectory: string,
+): Promise<RuntimeThreadSummary[]> {
+  const configuredHome = binding.env?.CODEX_HOME ?? process.env.CODEX_HOME;
+  const sessionsRoot = join(resolve(configuredHome || join(homedir(), ".codex")), "sessions");
+  const files = await listSessionFiles(sessionsRoot);
+  const target = resolve(workingDirectory);
+  const summaries = await Promise.all(files.map(async (path) => await readCodexThread(path, target)));
+  return summaries
+    .filter((summary): summary is RuntimeThreadSummary => summary !== null)
+    .sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+async function listSessionFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+  const nested = await Promise.all(
+    entries.map(async (entry) => {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) return await listSessionFiles(path);
+      return entry.isFile() && entry.name.endsWith(".jsonl") ? [path] : [];
+    }),
+  );
+  return nested.flat();
+}
+
+async function readCodexThread(path: string, targetDirectory: string): Promise<RuntimeThreadSummary | null> {
+  const lines = createInterface({ input: createReadStream(path), crlfDelay: Number.POSITIVE_INFINITY });
+  let runtimeThreadId = "";
+  let updatedAt = 0;
+  let name: string | null = null;
+  try {
+    for await (const line of lines) {
+      const record = parseRecord(line);
+      if (!record) continue;
+      const payload = asRecord(record.payload);
+      if (record.type === "session_meta" && payload) {
+        const directory = stringField(payload.cwd);
+        if (!directory || resolve(directory) !== targetDirectory) return null;
+        runtimeThreadId = stringField(payload.id) || stringField(payload.session_id);
+        updatedAt = Date.parse(stringField(payload.timestamp));
+        if (!Number.isFinite(updatedAt)) updatedAt = 0;
+        continue;
+      }
+      if (record.type === "event_msg" && payload?.type === "user_message" && !name) {
+        name = normalizeThreadName(stringField(payload.message));
+        if (runtimeThreadId) break;
+      }
+    }
+  } catch {
+    return null;
+  } finally {
+    lines.close();
+  }
+  return runtimeThreadId ? { runtimeThreadId, name, updatedAt } : null;
+}
+
+function parseRecord(line: string): Record<string, unknown> | null {
+  try {
+    return asRecord(JSON.parse(line));
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeThreadName(value: string): string | null {
+  const normalized = value
+    .replace(/^ClawChat (?:direct|group) message from [^:]+:\s*/u, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (!normalized) return null;
+  return normalized.length <= 100 ? normalized : `${normalized.slice(0, 99).trimEnd()}…`;
 }
 
 async function createOfficialCodexClient(options: CodexOptions): Promise<CodexClientLike> {

@@ -34,11 +34,14 @@ describe("activateConnect", () => {
         : response({ code: 0, data: { nickname: "codex" } }),
     ) as unknown as typeof fetch;
     const result = await activateConnect({ agentId: "codex", code: "A1B2C3", config, store, fetchImpl });
+    const deviceId = await store.getDeviceId();
+    expect(deviceId).toBeString();
+    expect(deviceId).not.toBe("");
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://app.clawling.com/v1/agents/connect",
       expect.objectContaining({
         method: "POST",
-        headers: expect.objectContaining({ "content-type": "application/json" }),
+        headers: expect.objectContaining({ "content-type": "application/json", "x-device-id": deviceId }),
         body: JSON.stringify({ code: "A1B2C3", platform: "clawchat-connect", type: "clawbot" }),
       }),
     );

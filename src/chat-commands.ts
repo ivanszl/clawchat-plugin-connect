@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getAgentBinding } from "./config";
 import type { ProjectCatalog } from "./projects";
 import type { NormalizedInboundMessage } from "./protocol";
+import type { SelectableRuntimeThread } from "./runtime/types";
 import type { ConnectStateStore } from "./state";
 import type { AgentBindingConfig, ConnectConfig, OutputVisibility, ProjectRecord, RuntimeSessionRecord } from "./types";
 
@@ -16,6 +17,7 @@ export interface ChatCommandContext {
   invalidateRuntimeSession?: (chatId: string) => Promise<boolean>;
   cancelRuntimeTurn?: (chatId: string) => Promise<boolean>;
   runtimeModesFor?: (binding: AgentBindingConfig) => readonly string[];
+  discoverRuntimeThreads?: (chatId: string) => Promise<SelectableRuntimeThread[]>;
 }
 
 export interface ChatCommandResult {
@@ -43,7 +45,7 @@ const HELP = [
   "- `/clawchat-output minimal|normal|full` — set output visibility.",
   "- `/new [name]` — start a new Session using the current Project.",
   "- `/list` — list Sessions.",
-  "- `/switch <session>` — switch Session.",
+  "- `/switch <name-or-ref>` — switch or import a Session by name or 8-character Ref.",
   "- `/current` — show the current Session.",
   "- `/project add <name> <absolute-path>` — register a Project.",
   "- `/project list` — list Projects.",
@@ -67,7 +69,7 @@ export async function handleChatCommand(ctx: ChatCommandContext): Promise<ChatCo
   if (command === "/clawchat-status" || command === "/status") return await handleStatus(ctx);
   if (command === "/new") return await handleNew(ctx, args.join(" "));
   if (command === "/list") return await handleList(ctx);
-  if (command === "/switch") return await handleSwitch(ctx, args[0]);
+  if (command === "/switch") return await handleSwitch(ctx, args.join(" "));
   if (command === "/current") return await handleCurrent(ctx);
   if (command === "/project") return await handleProject(ctx, args);
   if (command === "/mode") return await handleMode(ctx, args[0]);
@@ -116,41 +118,68 @@ async function handleNew(ctx: ChatCommandContext, name: string): Promise<ChatCom
   });
   return {
     handled: true,
-    text: `Started new ClawChat Connect Session \`${session.sessionId}\`${session.name ? ` (${session.name})` : ""}.`,
+    text: `Started new ClawChat Connect Session \`${sessionLabel(session)}\` (\`${session.sessionRef}\`).`,
   };
 }
 
 async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
+  const discovered = (await ctx.discoverRuntimeThreads?.(ctx.message.chatId)) ?? [];
   const sessions = await ctx.stateStore.listRuntimeSessions(ctx.message.chatId, ctx.agentId);
-  if (sessions.length === 0) return { handled: true, text: "No ClawChat Connect Sessions yet. Use /new to start one." };
+  if (sessions.length === 0 && discovered.length === 0)
+    return { handled: true, text: "No ClawChat Connect Sessions yet. Use /new to start one." };
   const projects = new Map((await ctx.projects.list()).map((project) => [project.projectId, project]));
   return {
     handled: true,
     text: [
       "**ClawChat Connect Sessions**",
       "",
-      ...sessions.map((session) => {
-        const project = session.projectId ? projects.get(session.projectId) : null;
-        const projectText = project ? `Project ${project.name}` : "Non-Project";
-        return `- ${session.sessionId}${session.isCurrent ? " (current)" : ""}${session.name ? ` — ${session.name}` : ""} — ${projectText}`;
-      }),
+      ...sessions.map((session) => formatSession(session, session.projectId ? projects.get(session.projectId) : null)),
+      ...discovered.map(
+        (thread) => `- ${runtimeThreadLabel(thread)} · \`${thread.sessionRef}\` (available) — Runtime Thread`,
+      ),
     ].join("\n"),
   };
 }
 
-async function handleSwitch(ctx: ChatCommandContext, sessionId: string | undefined): Promise<ChatCommandResult> {
-  if (!sessionId) return { handled: true, text: "Usage: /switch <session>" };
+async function handleSwitch(ctx: ChatCommandContext, rawReference: string | undefined): Promise<ChatCommandResult> {
+  const reference = rawReference?.trim() ?? "";
+  if (!reference) return { handled: true, text: "Usage: /switch <name-or-ref>" };
+  const discovered = (await ctx.discoverRuntimeThreads?.(ctx.message.chatId)) ?? [];
   const sessions = await ctx.stateStore.listRuntimeSessions(ctx.message.chatId, ctx.agentId);
-  if (!sessions.some((session) => session.sessionId === sessionId)) {
-    return { handled: true, text: `Unknown Session \`${sessionId}\`. Use /list to see Sessions.` };
+  const matches = matchingSessions(sessions, reference);
+  if (matches.length > 1) return { handled: true, text: ambiguousSessionText(reference, matches) };
+  const matched = matches[0];
+  if (matched) {
+    await closeRuntimeSession(ctx);
+    const switched = await ctx.stateStore.switchRuntimeSession(ctx.message.chatId, ctx.agentId, matched.sessionId);
+    return {
+      handled: true,
+      text: switched
+        ? `Switched to Session \`${sessionLabel(matched)}\` (\`${matched.sessionRef}\`).`
+        : `Unknown Session \`${reference}\`. Use /list to see Sessions.`,
+    };
   }
+
+  const threadMatches = matchingRuntimeThreads(discovered, reference);
+  if (threadMatches.length > 1) return { handled: true, text: ambiguousRuntimeThreadText(reference, threadMatches) };
+  const thread = threadMatches[0];
+  if (!thread) return { handled: true, text: `Unknown Session \`${reference}\`. Use /list to see Sessions.` };
+  const current = await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId);
+  if (!current) return { handled: true, text: "Start or select a Project Session before importing a Runtime Thread." };
   await closeRuntimeSession(ctx);
-  const switched = await ctx.stateStore.switchRuntimeSession(ctx.message.chatId, ctx.agentId, sessionId);
+  await ctx.stateStore.upsertRuntimeSession({
+    chatId: ctx.message.chatId,
+    sessionId: randomUUID(),
+    agentId: ctx.agentId,
+    runtimeSessionId: thread.runtimeThreadId,
+    projectId: current.projectId,
+    name: thread.name,
+    mode: current.mode,
+    isCurrent: true,
+  });
   return {
     handled: true,
-    text: switched
-      ? `Switched to Session \`${sessionId}\`.`
-      : `Unknown Session \`${sessionId}\`. Use /list to see Sessions.`,
+    text: `Imported and switched to Runtime Thread \`${runtimeThreadLabel(thread)}\` (\`${thread.sessionRef}\`).`,
   };
 }
 
@@ -162,7 +191,8 @@ async function handleCurrent(ctx: ChatCommandContext): Promise<ChatCommandResult
     handled: true,
     text: [
       "**Current ClawChat Connect Session**",
-      `- id: \`${current.sessionId}\``,
+      `- session: \`${sessionLabel(current)}\``,
+      `- ref: \`${current.sessionRef}\``,
       `- agent: \`${current.agentId}\``,
       `- project: ${project ? `\`${project.name}\` (${project.rootPath})` : "none (isolated workspace)"}`,
       `- mode: ${current.mode ? `\`${current.mode}\`` : "default"}`,
@@ -302,6 +332,45 @@ async function createSession(
 
 function formatProject(project: ProjectRecord): string {
   return `- ${project.name} (${project.projectId}) — ${project.rootPath}`;
+}
+
+function formatSession(session: RuntimeSessionRecord, project: ProjectRecord | null | undefined): string {
+  const projectText = project ? `Project ${project.name}` : "Non-Project";
+  return `- ${sessionLabel(session)} · \`${session.sessionRef}\`${session.isCurrent ? " (current)" : ""} — ${projectText}`;
+}
+
+function sessionLabel(session: RuntimeSessionRecord): string {
+  return session.name?.trim() || "Unnamed Session";
+}
+
+function runtimeThreadLabel(thread: SelectableRuntimeThread): string {
+  return thread.name?.trim() || "Unnamed Runtime Thread";
+}
+
+function matchingSessions(sessions: RuntimeSessionRecord[], reference: string): RuntimeSessionRecord[] {
+  const normalized = reference.toLowerCase();
+  const exact = sessions.filter(
+    (session) => session.sessionRef.toLowerCase() === normalized || session.name?.trim().toLowerCase() === normalized,
+  );
+  return exact;
+}
+
+function matchingRuntimeThreads(threads: SelectableRuntimeThread[], reference: string): SelectableRuntimeThread[] {
+  const normalized = reference.toLowerCase();
+  const exact = threads.filter(
+    (thread) => thread.sessionRef.toLowerCase() === normalized || thread.name?.trim().toLowerCase() === normalized,
+  );
+  return exact;
+}
+
+function ambiguousSessionText(reference: string, sessions: RuntimeSessionRecord[]): string {
+  return `Session \`${reference}\` is ambiguous. Use a Ref: ${sessions.map((session) => session.sessionRef).join(", ")}`;
+}
+
+function ambiguousRuntimeThreadText(reference: string, threads: SelectableRuntimeThread[]): string {
+  return `Runtime Thread \`${reference}\` is ambiguous. Use a Ref: ${threads
+    .map((thread) => thread.sessionRef)
+    .join(", ")}`;
 }
 
 async function closeRuntimeSession(ctx: ChatCommandContext): Promise<boolean> {

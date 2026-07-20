@@ -32,9 +32,10 @@ Agent Binding.kind ── Runtime Adapter Registry ── Runtime Adapter
 - An **Agent Binding** is a locally named association between Connect and one configured coding agent runtime. Its ID has no runtime semantics. Activation synchronizes that ID to the connected ClawChat Profile nickname.
 - A **Runtime Adapter** is a concrete integration for one runtime kind. The first release registers only Codex, while Connect continues to manage multiple Agent Bindings independently of that release scope.
 - A **Project** is a global, reusable Connect workspace with a canonical root and optional additional directories.
-- A **Session** owns Connect conversation continuity, is scoped by ClawChat conversation plus Agent Binding, and references zero or one Project.
+- A **Session** owns Connect conversation continuity, is scoped by ClawChat conversation plus Agent Binding, references zero or one Project, may have a human-readable Session Name, and has a stable eight-character Session Ref.
 - A **Non-Project Session** receives a deterministic isolated workspace under the directory beside the state database.
 - A **Runtime Thread** is the external runtime's resumable conversation ID persisted on one Session.
+- A **Session Ref** is the Connect-owned user-facing selector for a Session or discovered Runtime Thread; internal IDs are not displayed or derived into Refs.
 
 Changing Project association always creates a new Session. No Runtime Thread crosses a Project boundary.
 
@@ -52,7 +53,7 @@ RuntimeAdapterRegistry → CodexRuntimeAdapter → @openai/codex-sdk → Codex C
 - `src/runtime/codex-adapter.ts` is the only `@openai/codex-sdk` import seam.
 - The CLI composition root registers the Codex Runtime Adapter for the first release; `ConnectRuntime` has no Codex dependency.
 - `ConnectRuntime` owns queueing, Session lifecycle, workspace resolution, output visibility, reply delivery, and persisted Runtime Thread IDs.
-- Adapters receive a resolved `RuntimeWorkspace` and never access SQLite directly.
+- Adapters receive a resolved `RuntimeWorkspace` and never access SQLite directly. They may discover resumable Runtime Threads scoped to that workspace through the same seam.
 
 Future coding clients should add direct Runtime Adapters behind the same seam rather than changing Agent Binding or `ConnectRuntime` semantics.
 
@@ -81,16 +82,23 @@ Projects are global across Agent Bindings. Project names are case-insensitively 
 The Codex adapter creates or resumes one SDK thread per logical Connect Session:
 
 ```text
-Connect Session ID
-      ↓
-SQLite runtime_session_id
-      ↓
-Codex resumeThread(threadId, workspace options)
-      ↓
-~/.codex/sessions
+Session Ref (display/select) → Connect Session ID (internal)
+                                      │
+                                      ▼
+                           SQLite runtime_session_id
+                                      │
+                                      ▼
+                  Codex resumeThread(threadId, workspace options)
+                                      │
+                                      ▼
+                              ~/.codex/sessions
 ```
 
 `ThreadOptions.workingDirectory` and `additionalDirectories` come from the resolved workspace plus Agent Binding configuration. Project changes create a new Session with a null `runtime_session_id`. `/switch` and process restarts preserve and resume the existing ID. `/mode` invalidates the ID because sandbox mode is also a thread startup option.
+
+The Codex adapter scans persisted JSONL metadata under `CODEX_HOME/sessions` (falling back to `~/.codex/sessions`), filters by the resolved workspace, and derives a Session Name from the first user message. `ConnectRuntime` removes Runtime Threads already claimed by the current conversation and asks the state module for a stable Session Ref for every available result. `/list` presents the remaining threads as available; `/switch <name-or-ref>` explicitly creates a Connect Session that owns the selected Runtime Thread and preserves its Ref. Ambiguous names require a Ref.
+
+Session Refs use eight characters from an unambiguous Base32 alphabet and contain 40 random bits. SQLite enforces global Ref uniqueness and stores mappings to both Connect Sessions and Runtime Threads. Existing databases are backfilled on startup. When a discovered Runtime Thread is adopted, its mapping is attached to the new Session; when a Session invalidates its Runtime Thread, the Session keeps its Ref and a later rediscovery of the old thread receives a different Ref.
 
 Runtime-ID callbacks are accepted only while the originating in-memory Session still owns its key, preventing a cancelled or stale turn from repopulating an invalidated ID. Cancellation uses one `AbortController` per active Codex turn.
 
@@ -127,7 +135,7 @@ src/projects.ts                Project catalog and workspace resolution
 src/runtime/types.ts           Direct runtime seam
 src/runtime/registry.ts        Runtime Adapter selection by Binding kind
 src/runtime/codex-adapter.ts   Official Codex SDK adapter
-src/runtime/connect-runtime.ts Queue, lifecycle, output, and reply dispatch
+src/runtime/connect-runtime.ts Queue, lifecycle, discovery, output, and reply dispatch
 src/api-client.ts              Minimal activation and Profile REST client
 src/state.ts                   Bun SQLite persistence
 ```
@@ -136,7 +144,7 @@ src/state.ts                   Bun SQLite persistence
 
 All Connect control commands except help require `message.sender.id` to match the activated Agent Binding's `ownerUserId`. This prevents other direct or group participants from enumerating host paths, changing Sessions or Projects, or broadening Codex mode.
 
-Lifecycle commands and runtime turns share the same per-chat queue. `/cancel` is the deliberate exception: it bypasses that queue so it can abort the active turn.
+Lifecycle commands and runtime turns share the same per-chat queue. `/cancel` is the deliberate exception: it bypasses that queue so it can abort the active turn. Runtime status is persisted when a queued item starts and after it fully leaves the queue; only actual runtime turns contribute to `globalRunning`, not control commands.
 
 ## Output policy
 

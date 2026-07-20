@@ -12,6 +12,7 @@ function adapter(kind = "codex"): ConnectRuntimeAdapter {
   return {
     kind,
     modes: ["read-only", "workspace-write"],
+    discoverThreads: mock(async () => [{ runtimeThreadId: "thread-1", name: "Existing thread", updatedAt: 1 }]),
     start: mock(async () => session),
   };
 }
@@ -34,6 +35,14 @@ describe("RuntimeAdapterRegistry", () => {
     await expect(registry.start(binding, context)).resolves.toBe(session);
     expect(codex.start).toHaveBeenCalledWith(binding, context);
     expect(registry.modesFor(binding)).toEqual(["read-only", "workspace-write"]);
+    await expect(
+      registry.discoverThreads(binding, {
+        projectId: "project-1",
+        workingDirectory: "/repo",
+        additionalDirectories: [],
+        skipGitRepoCheck: true,
+      }),
+    ).resolves.toEqual([{ runtimeThreadId: "thread-1", name: "Existing thread", updatedAt: 1 }]);
   });
 
   it("rejects duplicate and unregistered Runtime Adapter kinds", async () => {

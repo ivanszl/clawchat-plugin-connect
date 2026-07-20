@@ -180,6 +180,24 @@ describe("ConnectWsClient", () => {
     expect(transport.sent.at(-1)).toMatchObject({ event: EVENT.PONG, trace_id: "ping-1", emitted_at: 10, payload: {} });
   });
 
+  it("accepts replay completion control events without a correlation trace", async () => {
+    const transport = new MemoryTransport();
+    const client = new ConnectWsClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport,
+      traceIdFactory: () => "trace",
+      heartbeat: { enabled: false },
+    });
+    const errors = mock();
+    client.on("error", errors);
+    await handshake(client, transport, "trace");
+    transport.receive({ version: "2", event: EVENT.REPLAY_DONE, trace_id: "", emitted_at: 11, payload: {} });
+    await flush();
+    expect(errors).not.toHaveBeenCalled();
+  });
+
   it("resolves message ack and marks outbound as acknowledged", async () => {
     const transport = new MemoryTransport();
     const store = createStore();

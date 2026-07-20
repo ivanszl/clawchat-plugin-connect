@@ -17,6 +17,7 @@ function session(overrides: Partial<RuntimeSessionRecord> = {}): RuntimeSessionR
   return {
     chatId: "chat-1",
     sessionId: "session-1",
+    sessionRef: "ABCDEFGH",
     agentId: "work",
     runtimeSessionId: null,
     projectId: null,

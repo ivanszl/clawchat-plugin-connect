@@ -1,5 +1,10 @@
-import type { AgentBindingConfig } from "../types";
-import type { ConnectRuntimeAdapter, ConnectRuntimeSession, ConnectRuntimeStartContext } from "./types";
+import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
+import type {
+  ConnectRuntimeAdapter,
+  ConnectRuntimeSession,
+  ConnectRuntimeStartContext,
+  RuntimeThreadSummary,
+} from "./types";
 
 export class RuntimeAdapterRegistry {
   private readonly adapters = new Map<string, ConnectRuntimeAdapter>();
@@ -19,6 +24,10 @@ export class RuntimeAdapterRegistry {
 
   modesFor(binding: AgentBindingConfig): readonly string[] {
     return this.require(binding.kind).modes;
+  }
+
+  async discoverThreads(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]> {
+    return (await this.require(binding.kind).discoverThreads?.(binding, workspace)) ?? [];
   }
 
   private require(kind: string): ConnectRuntimeAdapter {

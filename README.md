@@ -82,7 +82,8 @@ Rules:
 - `/project use` starts a new Project Session; it never mutates the existing Session.
 - `/project clear` starts a new Non-Project Session.
 - Every Project change creates a new Session and therefore a new Runtime Thread boundary.
-- `/switch` can return to an earlier Session and resume its persisted Runtime Thread.
+- `/list` shows Connect Sessions and resumable Codex Runtime Threads by name plus a stable eight-character Session Ref.
+- `/switch <name-or-ref>` returns to a Connect Session or explicitly imports a discovered Runtime Thread.
 - A Project can only be removed while no Session references it.
 
 A Non-Project Session works immediately. Connect creates a deterministic isolated workspace below `~/.clawchat-connect/workspaces/`; it never falls back to the process working directory. Registered Project roots are explicit trusted workspaces, so Connect enables Codex's Git-repository-check bypass for both Project and Non-Project Sessions.
@@ -104,7 +105,7 @@ Changing mode invalidates the current Runtime Thread because the mode is a Codex
 - `/status`
 - `/new [name]`
 - `/list`
-- `/switch <session>`
+- `/switch <name-or-ref>`
 - `/current`
 - `/project add <name> <absolute-path>`
 - `/project list`
@@ -119,7 +120,7 @@ Except for help, Connect control commands are restricted to the Agent Binding ow
 
 ## Codex Runtime Threads and output
 
-Connect stores the Codex thread ID on its owning logical Session. It resumes that Runtime Thread after a process restart or after `/switch` returns to the Session. A Runtime Thread never crosses a Project boundary.
+Connect stores the Codex thread ID on its owning logical Session. It resumes that Runtime Thread after a process restart or after `/switch` returns to the Session. For the current workspace, `/list` reads Codex's persisted history under `CODEX_HOME` (or `~/.codex`) and shows unclaimed Runtime Threads by their first user-message title and Session Ref. `/switch <name-or-ref>` explicitly adopts one into a new Connect Session while preserving that Ref. Refs are random Connect-owned Base32 handles, not prefixes of internal UUIDs. A Runtime Thread never crosses a Project boundary.
 
 The Codex adapter maps official SDK events into ClawChat output kinds:
 

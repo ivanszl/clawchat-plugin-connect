@@ -24,13 +24,20 @@ export interface ClawChatApiClient {
 
 export function createClawChatApiClient(options: {
   baseUrl: string;
+  deviceId: string;
   token?: string | null;
   fetchImpl?: FetchLike;
 }): ClawChatApiClient {
   const baseUrl = normalizeBaseUrl(options.baseUrl, "baseUrl");
+  const deviceId = options.deviceId.trim();
+  if (!deviceId) throw new ClawChatApiError("validation", "deviceId is required");
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-    return { ...extra, ...(options.token ? { authorization: `Bearer ${options.token}` } : {}) };
+    return {
+      ...extra,
+      "x-device-id": deviceId,
+      ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
+    };
   }
   async function readEnvelope<T>(response: Response, path: string): Promise<T> {
     if (response.status === 401) throw new ClawChatApiError("auth", "unauthorized", { path });

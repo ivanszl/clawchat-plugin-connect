@@ -1,4 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import { type CodexClientLike, type CodexThreadLike, createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import type { ConnectRuntimeSession, ConnectRuntimeStartContext } from "../src/runtime/types";
@@ -61,6 +64,44 @@ async function collect(session: ConnectRuntimeSession) {
 }
 
 describe("Codex SDK runtime adapter", () => {
+  it("discovers named persisted Codex threads for the selected workspace", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "clawchat-connect-codex-home-"));
+    const sessions = join(codexHome, "sessions", "2026", "07", "20");
+    await mkdir(sessions, { recursive: true });
+    await writeFile(
+      join(sessions, "rollout-current.jsonl"),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "thread-current", timestamp: "2026-07-20T05:21:56.682Z", cwd: "/repo" },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          payload: { type: "user_message", message: "Fix the session discovery flow" },
+        }),
+      ].join("\n"),
+    );
+    await writeFile(
+      join(sessions, "rollout-other.jsonl"),
+      [
+        JSON.stringify({
+          type: "session_meta",
+          payload: { id: "thread-other", timestamp: "2026-07-20T05:22:56.682Z", cwd: "/other" },
+        }),
+        JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "Ignore me" } }),
+      ].join("\n"),
+    );
+    const adapter = createCodexRuntimeAdapter();
+
+    await expect(adapter.discoverThreads?.({ ...agent, env: { CODEX_HOME: codexHome } }, workspace)).resolves.toEqual([
+      {
+        runtimeThreadId: "thread-current",
+        name: "Fix the session discovery flow",
+        updatedAt: Date.parse("2026-07-20T05:21:56.682Z"),
+      },
+    ]);
+  });
+
   it("starts a fresh thread without injecting Connect tools or MCP servers", async () => {
     const { client } = fakeClient([
       { type: "thread.started", thread_id: "thread-1" },

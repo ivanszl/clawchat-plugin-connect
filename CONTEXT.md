@@ -20,6 +20,14 @@ _Avoid_: Directory, cwd, repository
 A continuous Connect conversation using one Agent Binding and optionally one Project. A Session owns conversation continuity, not project identity.
 _Avoid_: Project, Runtime Thread
 
+**Session Name**:
+An optional human-readable label used to display and select a Session. It is not identity; ambiguous names require a Session Ref.
+_Avoid_: Session ID, Runtime Thread ID
+
+**Session Ref**:
+A stable Connect-owned eight-character handle used to display and select a Session or a discovered Runtime Thread. Connect generates and persists it; adopting a Runtime Thread preserves its Ref. It is not the underlying Session or Runtime Thread identity.
+_Avoid_: Session ID prefix, Runtime Thread ID prefix
+
 **Non-Project Session**:
 A Session that is not associated with a Project. It supports ordinary agent conversation without requiring an existing code workspace.
 _Avoid_: Directoryless Session
@@ -38,6 +46,8 @@ _Avoid_: Session, Project
 - Sessions are scoped by ClawChat conversation and Agent Binding.
 - A Session has zero or one Project.
 - Changing Project association creates a new Session and a new Runtime Thread boundary.
+- Runtime Thread discovery is scoped to the Session's resolved workspace; an external Runtime Thread is adopted only through an explicit switch.
+- Session names are display and selection labels; Session Refs are stable unambiguous selectors, while internal Session and Runtime Thread IDs remain hidden.
 - A Non-Project Session receives a deterministic isolated workspace and never inherits `process.cwd()`.
 - Connect control commands are restricted to the Agent Binding owner.
 - Connect does not expose ClawChat tools or inject a bundled MCP server into Runtime Threads.

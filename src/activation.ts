@@ -23,15 +23,18 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
   const store = options.store ?? createStateStore({ dbPath: config.stateDbPath });
   const ownsStore = !options.store;
   try {
+    const deviceId = await store.getOrCreateDeviceId();
     const existingUserId = await store.getActivationUserId(agentId);
     const client = createClawChatApiClient({
       baseUrl: config.baseUrl,
+      deviceId,
       fetchImpl: options.fetchImpl,
     });
     const result = normalizeActivationResult(agentId, await client.agentsConnect({ code, existingUserId }));
     await store.upsertActivation(result);
     const authenticatedClient = createClawChatApiClient({
       baseUrl: config.baseUrl,
+      deviceId,
       token: result.accessToken,
       fetchImpl: options.fetchImpl,
     });

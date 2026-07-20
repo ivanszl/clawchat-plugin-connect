@@ -6,6 +6,7 @@ export interface QueueStats {
 export interface SessionQueueOptions {
   maxConcurrentTurns?: number;
   maxPendingPerChat?: number;
+  onStatsChange?: (stats: QueueStats) => Promise<void> | void;
 }
 interface QueueItem {
   run: () => Promise<void>;
@@ -15,12 +16,14 @@ interface QueueItem {
 export class SessionQueue {
   private readonly maxConcurrentTurns: number;
   private readonly maxPendingPerChat: number;
+  private readonly onStatsChange?: (stats: QueueStats) => Promise<void> | void;
   private readonly queues = new Map<string, QueueItem[]>();
   private readonly runningChats = new Set<string>();
   private running = 0;
   constructor(options: SessionQueueOptions = {}) {
     this.maxConcurrentTurns = options.maxConcurrentTurns ?? 4;
     this.maxPendingPerChat = options.maxPendingPerChat ?? 20;
+    this.onStatsChange = options.onStatsChange;
   }
   async enqueue(chatId: string, run: () => Promise<void>): Promise<void> {
     const queue = this.queues.get(chatId) ?? [];
@@ -48,15 +51,29 @@ export class SessionQueue {
       }
       this.running += 1;
       this.runningChats.add(chatId);
-      void item
-        .run()
-        .then(item.resolve, item.reject)
-        .finally(() => {
-          this.running -= 1;
-          this.runningChats.delete(chatId);
-          if ((this.queues.get(chatId)?.length ?? 0) === 0) this.queues.delete(chatId);
-          this.pump();
-        });
+      void this.runItem(chatId, item);
     }
+  }
+
+  private async runItem(chatId: string, item: QueueItem): Promise<void> {
+    let failure: Error | null = null;
+    try {
+      await this.notifyStats();
+      await item.run();
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error(String(error));
+    } finally {
+      this.running -= 1;
+      this.runningChats.delete(chatId);
+      if ((this.queues.get(chatId)?.length ?? 0) === 0) this.queues.delete(chatId);
+      await this.notifyStats().catch(() => undefined);
+      this.pump();
+    }
+    if (failure) item.reject(failure);
+    else item.resolve();
+  }
+
+  private async notifyStats(): Promise<void> {
+    await this.onStatsChange?.(this.stats());
   }
 }

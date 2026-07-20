@@ -16,6 +16,7 @@ describe("updateAccountProfile", () => {
     const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
     config.stateDbPath = join(directory, "state.sqlite");
     const stateStore = createStateStore({ dbPath: config.stateDbPath });
+    await stateStore.setDeviceId("device-local");
     await stateStore.upsertActivation({
       localAgentId: "work",
       accessToken: "secret-token",
@@ -43,6 +44,7 @@ describe("updateAccountProfile", () => {
         headers: expect.objectContaining({
           authorization: "Bearer secret-token",
           "content-type": "application/json",
+          "x-device-id": "device-local",
         }),
         body: JSON.stringify({ nickname: "Luna", bio: "Coding agent" }),
       }),

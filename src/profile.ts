@@ -37,8 +37,10 @@ export async function updateAccountProfile(options: UpdateAccountProfileOptions)
       throw new Error(
         `clawchat-connect agent ${agentId} is not activated; run \`clawchat-connect activate ${agentId} <code>\` first`,
       );
+    const deviceId = await stateStore.getOrCreateDeviceId();
     const profile = await createClawChatApiClient({
       baseUrl: config.baseUrl,
+      deviceId,
       token: activation.accessToken,
       fetchImpl: options.fetchImpl,
     }).updateMyProfile(patch);

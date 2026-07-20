@@ -8,6 +8,7 @@ import { defaultConfig, loadConfig, upsertAgentBinding } from "../src/config";
 import type { UpdateAccountProfileResult } from "../src/profile";
 import { ProjectCatalog } from "../src/projects";
 import type { NormalizedInboundMessage } from "../src/protocol";
+import type { SelectableRuntimeThread } from "../src/runtime/types";
 import { type ConnectStateStore, createStateStore } from "../src/state";
 
 async function tempConfig(): Promise<string> {
@@ -319,6 +320,110 @@ describe("handleChatCommand", () => {
     expect(nonProjectSession).toMatchObject({ projectId: null, runtimeSessionId: null });
     expect(nonProjectSession?.sessionId).not.toBe(projectSession.sessionId);
     expect(closeRuntimeSession).toHaveBeenCalledTimes(2);
+    await store.close();
+  });
+
+  it("lists Session names and switches existing or discovered Runtime Threads by name", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-named-sessions-"));
+    const root = join(directory, "repo");
+    await mkdir(root);
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const projects = new ProjectCatalog(store);
+    const project = await projects.add("repo", root);
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-current",
+      agentId: "codex",
+      projectId: project.projectId,
+      name: "Current work",
+      runtimeSessionId: "thread-current",
+      isCurrent: true,
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-release",
+      agentId: "codex",
+      projectId: project.projectId,
+      name: "Release prep",
+      runtimeSessionId: "thread-release",
+      isCurrent: false,
+    });
+    const discovered: SelectableRuntimeThread[] = [
+      {
+        runtimeThreadId: "thread-external",
+        name: "Fix login flow",
+        updatedAt: 2,
+        sessionRef: await store.getOrCreateSessionRef({
+          chatId: "chat-1",
+          agentId: "codex",
+          runtimeSessionId: "thread-external",
+        }),
+      },
+    ];
+    const base = {
+      agentId: "codex",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      closeRuntimeSession: mock(async () => true),
+      discoverRuntimeThreads: mock(async () => discovered),
+    };
+
+    const listed = await handleChatCommand({ ...base, message: message("/list") });
+    expect(listed.text).toContain("Current work");
+    expect(listed.text).toContain("(current)");
+    expect(listed.text).toContain("Release prep");
+    expect(listed.text).toContain("Fix login flow");
+    expect(listed.text).toContain("(available)");
+    expect(listed.text).not.toContain("session-release");
+    expect(listed.text).not.toContain("thread-external");
+
+    const release = (await store.listRuntimeSessions("chat-1", "codex")).find(
+      (session) => session.name === "Release prep",
+    );
+    if (!release) throw new Error("expected release Session");
+    expect(listed.text).toContain(release.sessionRef);
+    expect(listed.text).toContain(discovered[0].sessionRef);
+    await expect(
+      handleChatCommand({ ...base, message: message(`/switch ${release.sessionRef.toLowerCase()}`) }),
+    ).resolves.toMatchObject({
+      text: `Switched to Session \`Release prep\` (\`${release.sessionRef}\`).`,
+    });
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      sessionId: "session-release",
+    });
+
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-release-duplicate",
+      agentId: "codex",
+      projectId: project.projectId,
+      name: "Release prep",
+      runtimeSessionId: "thread-release-duplicate",
+      isCurrent: false,
+    });
+    const duplicate = (await store.listRuntimeSessions("chat-1", "codex")).find(
+      (session) => session.sessionId === "session-release-duplicate",
+    );
+    if (!duplicate) throw new Error("expected duplicate named Session");
+    const ambiguous = await handleChatCommand({ ...base, message: message("/switch Release prep") });
+    expect(ambiguous.text).toContain(release.sessionRef);
+    expect(ambiguous.text).toContain(duplicate.sessionRef);
+    expect(ambiguous.text).not.toContain("session-release");
+
+    await expect(
+      handleChatCommand({ ...base, message: message(`/switch ${discovered[0].sessionRef}`) }),
+    ).resolves.toMatchObject({
+      text: `Imported and switched to Runtime Thread \`Fix login flow\` (\`${discovered[0].sessionRef}\`).`,
+    });
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      name: "Fix login flow",
+      runtimeSessionId: "thread-external",
+      sessionRef: discovered[0].sessionRef,
+      projectId: project.projectId,
+    });
     await store.close();
   });
 });

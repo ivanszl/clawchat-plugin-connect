@@ -132,6 +132,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
     const turn = runtime.handleInboundMessage(message());
     await started;
+    await expect(fixture.store.getRuntimeStatus()).resolves.toMatchObject({ globalRunning: 1, globalQueued: 0 });
     const command = runtime.handleInboundMessage(message("/project clear"), async () => {
       order.push("command");
       return true;
@@ -141,6 +142,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     releaseTurn?.();
     await Promise.all([turn, command]);
     expect(order).toEqual(["turn-started", "turn-finished", "command"]);
+    await expect(fixture.store.getRuntimeStatus()).resolves.toMatchObject({ globalRunning: 0, globalQueued: 0 });
     await runtime.dispose();
     await fixture.store.close();
   });
@@ -188,6 +190,43 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     expect(starts[0]).toMatchObject({ runtimeSessionId: null, configPath: fixture.configPath });
     expect(starts[1]).toMatchObject({ runtimeSessionId: "thread-1", configPath: fixture.configPath });
     await second.dispose();
+    await fixture.store.close();
+  });
+
+  it("backfills names for managed Runtime Threads and returns only unclaimed discoveries", async () => {
+    const fixture = await runtimeFixture();
+    await fixture.store.setRuntimeSessionId("chat-1", "codex", "session-1", "thread-managed");
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["read-only", "workspace-write", "danger-full-access"],
+      discoverThreads: mock(async () => [
+        { runtimeThreadId: "thread-managed", name: "Managed history", updatedAt: 2 },
+        { runtimeThreadId: "thread-external", name: "External history", updatedAt: 1 },
+      ]),
+      start: mock(async () => session(async function* () {}, {} as ConnectRuntimeStartContext)),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    const discovered = await runtime.discoverRuntimeThreads("chat-1");
+    expect(discovered).toEqual([
+      {
+        runtimeThreadId: "thread-external",
+        name: "External history",
+        updatedAt: 1,
+        sessionRef: expect.stringMatching(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/u),
+      },
+    ]);
+    await expect(runtime.discoverRuntimeThreads("chat-1")).resolves.toEqual(discovered);
+    await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      name: "Managed history",
+    });
     await fixture.store.close();
   });
 

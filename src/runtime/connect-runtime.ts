@@ -14,8 +14,8 @@ import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig, RuntimeSessionRecord } from "../types";
 import type { ConnectWsClient } from "../ws-client";
 import type { RuntimeAdapterRegistry } from "./registry";
-import { SessionQueue } from "./session-queue";
-import type { ConnectRuntimeSession } from "./types";
+import { type QueueStats, SessionQueue } from "./session-queue";
+import type { ConnectRuntimeSession, SelectableRuntimeThread } from "./types";
 
 export interface ConnectRuntimeOptions {
   agentId: string;
@@ -31,6 +31,7 @@ export class ConnectRuntime {
   private readonly runtimeAdapters: RuntimeAdapterRegistry;
   private readonly projects: ProjectCatalog;
   private readonly sessions = new Map<string, ConnectRuntimeSession>();
+  private readonly activeTurnChats = new Set<string>();
   private readonly queue: SessionQueue;
 
   constructor(private readonly options: ConnectRuntimeOptions) {
@@ -40,6 +41,7 @@ export class ConnectRuntime {
     this.queue = new SessionQueue({
       maxConcurrentTurns: options.config.maxConcurrentTurns,
       maxPendingPerChat: options.config.maxPendingPerChat,
+      onStatsChange: async (stats) => await this.recordRuntimeStatus(stats),
     });
   }
 
@@ -47,7 +49,14 @@ export class ConnectRuntime {
     try {
       await this.queue.enqueue(message.chatId, async () => {
         if (await beforeTurn?.()) return;
-        await this.runTurn(message);
+        this.activeTurnChats.add(message.chatId);
+        await this.recordRuntimeStatus(this.queue.stats());
+        try {
+          await this.runTurn(message);
+        } finally {
+          this.activeTurnChats.delete(message.chatId);
+          await this.recordRuntimeStatus(this.queue.stats());
+        }
       });
     } catch (error) {
       await this.sendVisibleFailure(
@@ -80,6 +89,39 @@ export class ConnectRuntime {
 
   runtimeModesFor(binding: AgentBindingConfig): readonly string[] {
     return this.runtimeAdapters.modesFor(binding);
+  }
+
+  async discoverRuntimeThreads(chatId: string): Promise<SelectableRuntimeThread[]> {
+    const current = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
+    if (!current) return [];
+    const binding = getAgentBinding(this.options.config, current.agentId || this.options.agentId);
+    const workspace = await this.projects.resolveWorkspace(current);
+    const sessions = await this.options.stateStore.listRuntimeSessions(chatId, this.options.agentId);
+    const discovered = await this.runtimeAdapters.discoverThreads(binding, workspace);
+    const discoveriesById = new Map(discovered.map((thread) => [thread.runtimeThreadId, thread]));
+    await Promise.all(
+      sessions.map(async (session) => {
+        if (session.name || !session.runtimeSessionId) return;
+        const name = discoveriesById.get(session.runtimeSessionId)?.name;
+        if (name)
+          await this.options.stateStore.setRuntimeSessionName(chatId, this.options.agentId, session.sessionId, name);
+      }),
+    );
+    const managed = new Set(
+      sessions.map((session) => session.runtimeSessionId).filter((id): id is string => Boolean(id)),
+    );
+    return await Promise.all(
+      discovered
+        .filter((thread) => !managed.has(thread.runtimeThreadId))
+        .map(async (thread) => ({
+          ...thread,
+          sessionRef: await this.options.stateStore.getOrCreateSessionRef({
+            chatId,
+            agentId: this.options.agentId,
+            runtimeSessionId: thread.runtimeThreadId,
+          }),
+        })),
+    );
   }
 
   private async releaseSession(chatId: string, invalidateRuntimeId: boolean): Promise<boolean> {
@@ -124,12 +166,14 @@ export class ConnectRuntime {
       else buffered.push(reply);
     }
     for (const reply of buffered) await this.sendReply(message, reply, activeAgentId);
-    const stats = this.queue.stats();
+  }
+
+  private async recordRuntimeStatus(stats: QueueStats): Promise<void> {
     await this.options.stateStore.upsertRuntimeStatus({
       websocketConnected: true,
-      activeAgent: activeAgentId,
+      activeAgent: this.options.agentId,
       activeChats: this.sessions.size,
-      globalRunning: stats.running,
+      globalRunning: this.activeTurnChats.size,
       globalQueued: stats.queued,
       recentError: null,
     });

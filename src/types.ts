@@ -66,6 +66,7 @@ export interface RuntimeWorkspace {
 export interface RuntimeSessionRecord {
   chatId: string;
   sessionId: string;
+  sessionRef: string;
   agentId: string;
   runtimeSessionId: string | null;
   projectId: string | null;

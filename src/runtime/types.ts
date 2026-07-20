@@ -22,6 +22,16 @@ export interface ConnectRuntimeStartContext {
   onRuntimeSessionId(runtimeSessionId: string): Promise<void>;
 }
 
+export interface RuntimeThreadSummary {
+  runtimeThreadId: string;
+  name: string | null;
+  updatedAt: number;
+}
+
+export interface SelectableRuntimeThread extends RuntimeThreadSummary {
+  sessionRef: string;
+}
+
 export interface ConnectRuntimeSession {
   prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeOutputEvent>;
   close(): Promise<void>;
@@ -31,5 +41,6 @@ export interface ConnectRuntimeSession {
 export interface ConnectRuntimeAdapter {
   readonly kind: string;
   readonly modes: readonly string[];
+  discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   start(binding: AgentBindingConfig, context: ConnectRuntimeStartContext): Promise<ConnectRuntimeSession>;
 }

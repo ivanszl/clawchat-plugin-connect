@@ -20,6 +20,7 @@ export const EVENT = {
   OFFLINE_BATCH: "offline.batch",
   OFFLINE_ACK: "offline.ack",
   OFFLINE_DONE: "offline.done",
+  REPLAY_DONE: "replay.done",
   PING: "ping",
   PONG: "pong",
 } as const;
@@ -191,7 +192,8 @@ export function parseEnvelope(data: string | Buffer): Envelope {
   const record = parsed as Record<string, unknown>;
   if (record.version !== "2") throw new ProtocolError("unsupported protocol version");
   if (typeof record.event !== "string" || !record.event) throw new ProtocolError("missing event");
-  if (typeof record.trace_id !== "string" || !record.trace_id) throw new ProtocolError("missing trace_id");
+  if (typeof record.trace_id !== "string" || (!record.trace_id && record.event !== EVENT.REPLAY_DONE))
+    throw new ProtocolError("missing trace_id");
   if (typeof record.emitted_at !== "number" || !Number.isFinite(record.emitted_at))
     throw new ProtocolError("missing emitted_at");
   if (!record.payload || typeof record.payload !== "object" || Array.isArray(record.payload))

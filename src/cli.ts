@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { cac } from "cac";
 import { type ActivateConnectResult, activateConnect as activateConnectDefault } from "./activation";
@@ -260,8 +259,7 @@ export async function startConnectService(options: StartServiceOptions): Promise
     throw new Error(
       `clawchat-connect agent ${agentId} is not activated; run \`clawchat-connect activate ${agentId} <code>\` first`,
     );
-  const deviceId = (await store.getDeviceId()) ?? randomUUID();
-  await store.setDeviceId(deviceId);
+  const deviceId = await store.getOrCreateDeviceId();
   const wsClient = new ConnectWsClient({
     url: config.websocketUrl,
     token: activation.accessToken,
@@ -329,6 +327,7 @@ async function dispatchInboundMessage(params: {
       invalidateRuntimeSession: (chatId) => params.runtime.invalidateSession(chatId),
       cancelRuntimeTurn: (chatId) => params.runtime.cancelTurn(chatId),
       runtimeModesFor: (binding) => params.runtime.runtimeModesFor(binding),
+      discoverRuntimeThreads: (chatId) => params.runtime.discoverRuntimeThreads(chatId),
     });
     if (!command.handled) return false;
     if (command.text) {

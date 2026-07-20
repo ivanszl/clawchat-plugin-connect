@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -119,6 +120,75 @@ describe("state store", () => {
         expect.objectContaining({ sessionId: "current", runtimeSessionId: null, isCurrent: true }),
       ]),
     );
+    await store.close();
+  });
+
+  it("allocates stable 8-character Session Refs and preserves a discovered Ref when adopting its thread", async () => {
+    const dir = await tempDir();
+    const generated = ["23456789", "23456789", "ABCDEFGH", "JKLMNPQR"];
+    const store = createStateStore({
+      dbPath: join(dir, "state.sqlite"),
+      sessionRefFactory: () => generated.shift() ?? "STUVWXYZ",
+    });
+
+    const discoveredRef = await store.getOrCreateSessionRef({
+      chatId: "chat-1",
+      agentId: "codex",
+      runtimeSessionId: "thread-discovered",
+    });
+    const otherRef = await store.getOrCreateSessionRef({
+      chatId: "chat-1",
+      agentId: "codex",
+      runtimeSessionId: "thread-other",
+    });
+    expect(discoveredRef).toBe("23456789");
+    expect(otherRef).toBe("ABCDEFGH");
+
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-imported",
+      agentId: "codex",
+      runtimeSessionId: "thread-discovered",
+    });
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      sessionRef: discoveredRef,
+      runtimeSessionId: "thread-discovered",
+    });
+
+    await store.setRuntimeSessionId("chat-1", "codex", "session-imported", null);
+    await expect(
+      store.getOrCreateSessionRef({
+        chatId: "chat-1",
+        agentId: "codex",
+        runtimeSessionId: "thread-discovered",
+      }),
+    ).resolves.toBe("JKLMNPQR");
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      sessionRef: discoveredRef,
+      runtimeSessionId: null,
+    });
+
+    await store.close();
+    const reopened = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await expect(reopened.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      sessionRef: discoveredRef,
+    });
+    await reopened.close();
+  });
+
+  it("backfills Session Refs when opening a database created by an earlier version", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const legacy = new Database(dbPath, { create: true });
+    legacy.exec(
+      "CREATE TABLE runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, project_id TEXT, name TEXT, mode TEXT, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id, session_id)); INSERT INTO runtime_sessions VALUES ('chat-1', 'session-1', 'codex', 'thread-1', NULL, 'Legacy Session', NULL, 1, 1, 1);",
+    );
+    legacy.close();
+
+    const store = createStateStore({ dbPath });
+    const current = await store.getCurrentRuntimeSession("chat-1", "codex");
+    expect(current).toMatchObject({ name: "Legacy Session", runtimeSessionId: "thread-1" });
+    expect(current?.sessionRef).toMatch(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/u);
     await store.close();
   });
 
