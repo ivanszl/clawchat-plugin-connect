@@ -3,7 +3,7 @@
 set -eu
 
 repository="${CLAWCHAT_CONNECT_REPOSITORY:-XMethues/clawchat-plugin-connect}"
-default_version="v0.1.0-alpha.1"
+default_version="v0.1.0-alpha.2"
 version="${1:-${CLAWCHAT_CONNECT_VERSION:-$default_version}}"
 install_dir="${CLAWCHAT_CONNECT_INSTALL_DIR:-${HOME}/.local/bin}"
 
@@ -21,7 +21,7 @@ case "$version" in
 esac
 
 printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$' ||
-  fail "only alpha versions are available (for example: v0.1.0-alpha.1)"
+  fail "only alpha versions are available (for example: v0.1.0-alpha.2)"
 
 case "$(uname -s)" in
   Darwin) os="darwin" ;;

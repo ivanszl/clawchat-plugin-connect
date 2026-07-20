@@ -92,6 +92,8 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     deps.manageBackgroundService ?? manageBackgroundServiceDefault,
   );
   if (nestedServiceResult !== null) return nestedServiceResult;
+  const nestedConfigResult = await maybeRunNestedConfigCommand(argv, io);
+  if (nestedConfigResult !== null) return nestedConfigResult;
 
   const cli = cac("clawchat-connect");
   let commandRan = false;
@@ -185,25 +187,6 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       const status = agentId ? await store.getRuntimeStatus(agentId) : null;
       await store.close();
       io.writeStdout(formatStatus(config, agentId, activation !== null, status));
-    });
-
-  cli
-    .command("config get [key]", "Read config")
-    .option("--config <path>", "Config path")
-    .action(async (key: string | undefined, options: { config?: string }) => {
-      commandRan = true;
-      const config = await loadConfig(options.config);
-      io.writeStdout(`${JSON.stringify(key ? readConfigValue(config, key) : config, null, 2)}\n`);
-    });
-
-  cli
-    .command("config set <key> <value>", "Set config")
-    .option("--config <path>", "Config path")
-    .action(async (key: string, value: string, options: { config?: string }) => {
-      commandRan = true;
-      const config = await loadConfig(options.config);
-      setConfigValue(config, key, value);
-      io.writeStdout(`Updated config: ${await saveConfig(config, options.config)}\n`);
     });
 
   cli
@@ -346,6 +329,33 @@ async function maybeRunNestedServiceCommand(
   }
 }
 
+async function maybeRunNestedConfigCommand(argv: string[], io: CliIo): Promise<number | null> {
+  if (argv[0] !== "config") return null;
+  const action = argv[1];
+  const configPath = optionValue(argv, "--config");
+  try {
+    if (action === "get") {
+      const key = argv[2]?.startsWith("--") ? undefined : argv[2];
+      const config = await loadConfig(configPath);
+      io.writeStdout(`${JSON.stringify(key ? readConfigValue(config, key) : config, null, 2)}\n`);
+      return 0;
+    }
+    if (action === "set") {
+      const key = argv[2];
+      const value = argv[3];
+      if (!key || value === undefined) throw new Error("config set requires a key and value");
+      const config = await loadConfig(configPath);
+      setConfigValue(config, key, value);
+      io.writeStdout(`Updated config: ${await saveConfig(config, configPath)}\n`);
+      return 0;
+    }
+    throw new Error("config action must be one of: get, set");
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
 function isBackgroundServiceAction(value: string | undefined): value is BackgroundServiceAction {
   return (
     value === "install" ||
@@ -418,6 +428,10 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
   }
   if (key === "websocketUrl") {
     config.websocketUrl = value;
+    return;
+  }
+  if (key === "stateDbPath") {
+    config.stateDbPath = value;
     return;
   }
   if (key === "defaultAgent") {

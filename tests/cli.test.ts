@@ -89,6 +89,24 @@ describe("runConnectCli", () => {
     expect(output.stderr.join("")).toContain("--kind codex is required");
   });
 
+  it("reads and updates config through the config subcommands", async () => {
+    const path = await tempConfig();
+    const stateDbPath = `${path}.sqlite`;
+    const output = io();
+    await runConnectCli(["init", "--config", path, "--agent", "codex", "--kind", "codex"], output.deps);
+
+    output.stdout.length = 0;
+    await expect(
+      runConnectCli(["config", "set", "stateDbPath", stateDbPath, "--config", path], output.deps),
+    ).resolves.toBe(0);
+    await expect(loadConfig(path)).resolves.toMatchObject({ stateDbPath });
+    expect(output.stdout.join("")).toContain("Updated config:");
+
+    output.stdout.length = 0;
+    await expect(runConnectCli(["config", "get", "stateDbPath", "--config", path], output.deps)).resolves.toBe(0);
+    expect(output.stdout).toEqual([`${JSON.stringify(stateDbPath)}\n`]);
+  });
+
   it("activates through injectable activation action without printing invite code", async () => {
     const output = io();
     const activateConnect = mock(async () => ({
