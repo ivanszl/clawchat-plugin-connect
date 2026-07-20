@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleChatCommand } from "../src/chat-commands";
 import { runConnectCli } from "../src/cli";
-import { defaultConfig, loadConfig, upsertAgent } from "../src/config";
+import { defaultConfig, loadConfig, upsertAgentBinding } from "../src/config";
 import type { UpdateAccountProfileResult } from "../src/profile";
 import { ProjectCatalog } from "../src/projects";
 import type { NormalizedInboundMessage } from "../src/protocol";
@@ -178,7 +178,7 @@ describe("runConnectCli", () => {
 describe("handleChatCommand", () => {
   it("persists /clawchat-output overrides", async () => {
     const store = { setOutputVisibility: mock(async () => undefined) } as unknown as ConnectStateStore;
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     await expect(
       handleChatCommand({
         message: message("/clawchat-output full"),
@@ -195,7 +195,7 @@ describe("handleChatCommand", () => {
   it("rejects control commands from users other than the Agent Binding owner", async () => {
     const store = {} as ConnectStateStore;
     const projects = { list: mock(async () => []) } as unknown as ProjectCatalog;
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     const result = await handleChatCommand({
       message: message("/project list"),
       agentId: "codex",
@@ -214,7 +214,7 @@ describe("handleChatCommand", () => {
     await mkdir(root);
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     const closeRuntimeSession = mock(async () => true);
     const invalidateRuntimeSession = mock(async () => true);
     for (const command of [
@@ -240,6 +240,7 @@ describe("handleChatCommand", () => {
         projects,
         closeRuntimeSession,
         invalidateRuntimeSession,
+        runtimeModesFor: () => ["read-only", "workspace-write", "danger-full-access"],
       });
       expect(result.handled, command).toBe(true);
       expect(result.text, command).toBeTruthy();
@@ -258,6 +259,18 @@ describe("handleChatCommand", () => {
     }
     expect(closeRuntimeSession).toHaveBeenCalled();
     expect(invalidateRuntimeSession).toHaveBeenCalled();
+
+    await expect(
+      handleChatCommand({
+        message: message("/mode unsupported"),
+        agentId: "codex",
+        ownerUserId: "usr",
+        config,
+        stateStore: store,
+        projects,
+        runtimeModesFor: () => ["read-only", "workspace-write", "danger-full-access"],
+      }),
+    ).resolves.toMatchObject({ handled: true, text: expect.stringContaining("Usage for codex") });
     await store.close();
   });
 
@@ -268,7 +281,7 @@ describe("handleChatCommand", () => {
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
     const project = await projects.add("repo", root);
-    const config = upsertAgent(defaultConfig(), "work", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "before",

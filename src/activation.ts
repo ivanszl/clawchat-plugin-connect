@@ -1,5 +1,5 @@
 import { createClawChatApiClient, type FetchLike, normalizeActivationResult } from "./api-client";
-import { getAgent, loadConfig, saveConfig } from "./config";
+import { getAgentBinding, loadConfig, saveConfig } from "./config";
 import { type ConnectStateStore, createStateStore } from "./state";
 import type { ActivationCredentials, ConnectConfig } from "./types";
 
@@ -19,7 +19,7 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
   const code = options.code.trim();
   if (!code) throw new Error("activation code is required");
   const config = options.config ?? (await loadConfig(options.configPath));
-  getAgent(config, agentId);
+  getAgentBinding(config, agentId);
   const store = options.store ?? createStateStore({ dbPath: config.stateDbPath });
   const ownsStore = !options.store;
   try {

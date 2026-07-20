@@ -8,6 +8,10 @@ ClawChat Connect binds ClawChat conversations to local agent runtimes while keep
 A named association between Connect and one configured local agent runtime. Multiple Agent Bindings may use the same runtime kind with different configuration.
 _Avoid_: Agent, when referring to the configured association rather than the external agent itself
 
+**Runtime Adapter**:
+A concrete integration that lets Connect start and operate one kind of coding agent runtime. Codex is the first Runtime Adapter, not the definition of Connect or Agent Binding.
+_Avoid_: Agent Binding, Codex, when referring to the adapter role
+
 **Project**:
 A named, reusable local code workspace that a Session may use. A Project has a root location, but it is not merely a directory path.
 _Avoid_: Directory, cwd, repository
@@ -26,7 +30,9 @@ _Avoid_: Session, Project
 
 ## Invariants
 
-- Agent Binding IDs are arbitrary; runtime behavior comes only from explicit configuration such as `kind: "codex"`.
+- Connect binds and manages multiple Agent Bindings independently of any one runtime kind.
+- Agent Binding IDs are arbitrary; Runtime Adapter selection comes only from the Binding's explicit `kind`.
+- The first release registers only the Codex Runtime Adapter; that is a release scope, not a domain invariant.
 - Successful activation synchronizes the Agent Binding ID to the connected ClawChat Profile nickname.
 - Projects are global and reusable across Agent Bindings.
 - Sessions are scoped by ClawChat conversation and Agent Binding.

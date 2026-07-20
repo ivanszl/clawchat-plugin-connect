@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { activateConnect } from "../src/activation";
-import { defaultConfig, upsertAgent } from "../src/config";
+import { defaultConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/state";
 
 async function tempDir(): Promise<string> {
@@ -16,7 +16,7 @@ function response(body: unknown): Response {
 describe("activateConnect", () => {
   it("exchanges invite code for a named configured agent and persists credentials", async () => {
     const dir = await tempDir();
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     const fetchImpl = mock(async (input: string | URL | Request) =>
@@ -65,7 +65,7 @@ describe("activateConnect", () => {
   });
   it("sends stored agent user_id when reactivating the same local agent", async () => {
     const dir = await tempDir();
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     await store.upsertActivation({
@@ -96,7 +96,7 @@ describe("activateConnect", () => {
   });
   it("keeps activation credentials and reports an actionable error when Profile synchronization fails", async () => {
     const dir = await tempDir();
-    const config = upsertAgent(defaultConfig(), "work", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     const fetchImpl = mock(async (input: string | URL | Request) =>
@@ -128,7 +128,7 @@ describe("activateConnect", () => {
   });
   it("rejects incomplete activation responses", async () => {
     const dir = await tempDir();
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     const fetchImpl = mock(async () => response({ code: 0, data: { agent: {} } })) as unknown as typeof fetch;

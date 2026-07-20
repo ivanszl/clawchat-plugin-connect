@@ -1,5 +1,5 @@
 import { createClawChatApiClient, type FetchLike } from "./api-client";
-import { getAgent, loadConfig } from "./config";
+import { getAgentBinding, loadConfig } from "./config";
 import { type ConnectStateStore, createStateStore } from "./state";
 import type { ConnectConfig } from "./types";
 
@@ -27,7 +27,7 @@ export async function updateAccountProfile(options: UpdateAccountProfileOptions)
   const config = options.config ?? (await loadConfig(options.configPath));
   const agentId = options.agentId?.trim() || config.defaultAgent;
   if (!agentId) throw new Error("agent is required; pass --agent or configure defaultAgent");
-  getAgent(config, agentId);
+  getAgentBinding(config, agentId);
   const patch = normalizeAccountProfilePatch(options.patch);
   const stateStore = options.stateStore ?? createStateStore({ dbPath: config.stateDbPath });
   const ownsStateStore = !options.stateStore;

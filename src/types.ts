@@ -9,7 +9,7 @@ export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhig
 export type CodexApprovalPolicy = "never" | "on-request" | "on-failure" | "untrusted";
 export type CodexWebSearchMode = "disabled" | "cached" | "live";
 
-export interface CodexAgentConfig {
+export interface CodexAgentBindingConfig {
   kind: "codex";
   codexPathOverride?: string;
   env?: Record<string, string>;
@@ -24,7 +24,7 @@ export interface CodexAgentConfig {
   additionalDirectories?: string[];
 }
 
-export type AgentConfig = CodexAgentConfig;
+export type AgentBindingConfig = CodexAgentBindingConfig;
 
 export interface ConnectConfig {
   baseUrl: string;
@@ -32,7 +32,7 @@ export interface ConnectConfig {
   stateDbPath: string;
   defaultAgent: string | null;
   outputVisibility: OutputVisibility;
-  agents: Record<string, AgentConfig>;
+  agents: Record<string, AgentBindingConfig>;
   maxConcurrentTurns?: number;
   maxPendingPerChat?: number;
 }

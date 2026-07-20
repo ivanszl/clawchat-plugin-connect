@@ -1,7 +1,8 @@
 # ClawChat Connect
 
-`@clawling/clawchat-plugin-connect` is a Bun-native CLI that connects ClawChat conversations to local coding agents. It requires Bun 1.3 or newer.
+`@clawling/clawchat-plugin-connect` is a Bun-native CLI that binds ClawChat identities and conversations to local coding agents. It requires Bun 1.3 or newer.
 
+- Connect manages multiple independent Agent Bindings; the first release provides a Codex Runtime Adapter.
 - Codex runs directly through the official `@openai/codex-sdk`.
 - Connect Sessions may use a reusable Connect-managed Project or an isolated Non-Project workspace.
 - Connect does not expose tools or inject a bundled MCP server into Codex.
@@ -14,7 +15,7 @@ bun add --global @clawling/clawchat-plugin-connect
 
 ## Configure an Agent Binding
 
-An Agent Binding ID is an arbitrary local name. Runtime behavior comes from the explicit `kind`, never from the ID:
+An Agent Binding ID is an arbitrary local name. A Binding owns its activation, runtime configuration, Sessions, and Runtime Threads. Runtime Adapter selection comes from the explicit `kind`, never from the ID:
 
 ```bash
 clawchat-connect init --agent work --kind codex
@@ -58,7 +59,7 @@ Codex configuration can also be edited in `~/.clawchat-connect/config.json`:
 
 Supported Codex options include `codexPathOverride`, `env`, `model`, `sandboxMode`, `modelReasoningEffort`, `approvalPolicy`, `webSearchMode`, `networkAccessEnabled`, `skipGitRepoCheck`, and `additionalDirectories`.
 
-Only explicit `kind: "codex"` Agent Bindings are supported. Legacy agent shapes and runtime kinds are rejected rather than inferred or migrated.
+The first release registers only `kind: "codex"`. Connect's Agent Binding model and runtime seam are not Codex-specific; later releases can register additional Runtime Adapters. Legacy agent shapes and unavailable runtime kinds are rejected rather than inferred or migrated.
 
 ## Projects and Sessions
 

@@ -2,10 +2,11 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultConfig, upsertAgent } from "../src/config";
+import { defaultConfig, upsertAgentBinding } from "../src/config";
 import type { RuntimeOutputEvent } from "../src/output-visibility";
 import type { NormalizedInboundMessage } from "../src/protocol";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
+import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type {
   ConnectRuntimeAdapter,
   ConnectRuntimePrompt,
@@ -45,7 +46,7 @@ function session(
 
 async function runtimeFixture() {
   const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-runtime-"));
-  const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
+  const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
   config.stateDbPath = join(directory, "state.sqlite");
   const store = createStateStore({ dbPath: config.stateDbPath });
   await store.upsertRuntimeSession({
@@ -59,12 +60,14 @@ async function runtimeFixture() {
   return { config, store, wsClient, configPath: join(directory, "config.json") };
 }
 
-describe("ConnectRuntime Codex sessions", () => {
+describe("ConnectRuntime Agent Binding sessions", () => {
   it("starts the first message in a Non-Project Session with an isolated workspace", async () => {
     const fixture = await runtimeFixture();
     await fixture.store.deleteRuntimeSession("chat-1", "codex", "session-1");
     const prompts: ConnectRuntimePrompt[] = [];
     const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["read-only", "workspace-write", "danger-full-access"],
       start: mock(async () => ({
         prompt: async function* (input: ConnectRuntimePrompt) {
           prompts.push(input);
@@ -79,7 +82,7 @@ describe("ConnectRuntime Codex sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapter: adapter,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
     });
 
     await runtime.handleInboundMessage(message());
@@ -105,6 +108,8 @@ describe("ConnectRuntime Codex sessions", () => {
     });
     const order: string[] = [];
     const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["read-only", "workspace-write", "danger-full-access"],
       start: mock(async () => ({
         prompt: async function* () {
           order.push("turn-started");
@@ -122,7 +127,7 @@ describe("ConnectRuntime Codex sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapter: adapter,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
     });
 
     const turn = runtime.handleInboundMessage(message());
@@ -144,6 +149,8 @@ describe("ConnectRuntime Codex sessions", () => {
     const fixture = await runtimeFixture();
     const starts: ConnectRuntimeStartContext[] = [];
     const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["read-only", "workspace-write", "danger-full-access"],
       start: mock(async (_agent, context) => {
         starts.push(context);
         return session(async function* (startContext) {
@@ -159,7 +166,7 @@ describe("ConnectRuntime Codex sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapter: adapter,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
     });
     await first.handleInboundMessage(message());
     await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
@@ -173,7 +180,7 @@ describe("ConnectRuntime Codex sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapter: adapter,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
     });
     await second.handleInboundMessage(message("again"));
 
@@ -189,6 +196,8 @@ describe("ConnectRuntime Codex sessions", () => {
     await fixture.store.setRuntimeSessionId("chat-1", "codex", "session-1", "thread-1");
     const createdSessions: ConnectRuntimeSession[] = [];
     const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["read-only", "workspace-write", "danger-full-access"],
       start: mock(async (_agent, context) => {
         const created = session(async function* () {
           yield { kind: "final", text: "done" };
@@ -203,7 +212,7 @@ describe("ConnectRuntime Codex sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapter: adapter,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
     });
 
     await runtime.handleInboundMessage(message());

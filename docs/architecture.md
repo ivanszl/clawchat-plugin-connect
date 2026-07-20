@@ -25,9 +25,12 @@ Connect does not expose tools, run an MCP server, or inject an MCP server into C
 Agent Binding ─────┐
                    ├── Session ── Runtime Thread
 Project (0 or 1) ──┘
+
+Agent Binding.kind ── Runtime Adapter Registry ── Runtime Adapter
 ```
 
-- An **Agent Binding** is a locally named, explicitly typed runtime configuration. Its ID has no runtime semantics. Activation synchronizes that ID to the connected ClawChat Profile nickname.
+- An **Agent Binding** is a locally named association between Connect and one configured coding agent runtime. Its ID has no runtime semantics. Activation synchronizes that ID to the connected ClawChat Profile nickname.
+- A **Runtime Adapter** is a concrete integration for one runtime kind. The first release registers only Codex, while Connect continues to manage multiple Agent Bindings independently of that release scope.
 - A **Project** is a global, reusable Connect workspace with a canonical root and optional additional directories.
 - A **Session** owns Connect conversation continuity, is scoped by ClawChat conversation plus Agent Binding, and references zero or one Project.
 - A **Non-Project Session** receives a deterministic isolated workspace under the directory beside the state database.
@@ -40,15 +43,18 @@ Changing Project association always creates a new Session. No Runtime Thread cro
 The shared runtime seam lives in `src/runtime/types.ts`:
 
 ```text
-ConnectRuntime → CodexRuntimeAdapter → @openai/codex-sdk → Codex CLI
+Agent Binding
+      ↓ kind
+RuntimeAdapterRegistry → CodexRuntimeAdapter → @openai/codex-sdk → Codex CLI
 ```
 
+- `src/runtime/registry.ts` selects a Runtime Adapter from the Agent Binding's explicit `kind`.
 - `src/runtime/codex-adapter.ts` is the only `@openai/codex-sdk` import seam.
-- Agent configuration requires the explicit `kind: "codex"` discriminant.
+- The CLI composition root registers the Codex Runtime Adapter for the first release; `ConnectRuntime` has no Codex dependency.
 - `ConnectRuntime` owns queueing, Session lifecycle, workspace resolution, output visibility, reply delivery, and persisted Runtime Thread IDs.
 - Adapters receive a resolved `RuntimeWorkspace` and never access SQLite directly.
 
-Future runtimes should receive direct adapters behind the same seam rather than a protocol compatibility adapter.
+Future coding clients should add direct Runtime Adapters behind the same seam rather than changing Agent Binding or `ConnectRuntime` semantics.
 
 ## Project and workspace resolution
 
@@ -119,6 +125,7 @@ src/message-mapper.ts          ClawChat message fragment mapping
 src/chat-commands.ts           Session and Project command intent
 src/projects.ts                Project catalog and workspace resolution
 src/runtime/types.ts           Direct runtime seam
+src/runtime/registry.ts        Runtime Adapter selection by Binding kind
 src/runtime/codex-adapter.ts   Official Codex SDK adapter
 src/runtime/connect-runtime.ts Queue, lifecycle, output, and reply dispatch
 src/api-client.ts              Minimal activation and Profile REST client

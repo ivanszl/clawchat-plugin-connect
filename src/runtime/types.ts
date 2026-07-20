@@ -1,5 +1,5 @@
 import type { RuntimeOutputEvent, RuntimeOutputKind } from "../output-visibility";
-import type { AgentConfig, RuntimeWorkspace } from "../types";
+import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 
 export interface ConnectRuntimePrompt {
   prompt: string;
@@ -29,5 +29,7 @@ export interface ConnectRuntimeSession {
 }
 
 export interface ConnectRuntimeAdapter {
-  start(agent: AgentConfig, context: ConnectRuntimeStartContext): Promise<ConnectRuntimeSession>;
+  readonly kind: string;
+  readonly modes: readonly string[];
+  start(binding: AgentBindingConfig, context: ConnectRuntimeStartContext): Promise<ConnectRuntimeSession>;
 }

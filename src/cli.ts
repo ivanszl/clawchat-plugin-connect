@@ -3,16 +3,25 @@ import { resolve } from "node:path";
 import { cac } from "cac";
 import { type ActivateConnectResult, activateConnect as activateConnectDefault } from "./activation";
 import { handleChatCommand } from "./chat-commands";
-import { defaultConfig, defaultConfigPath, getAgent, loadConfig, saveConfig, upsertAgent } from "./config";
+import {
+  defaultConfig,
+  defaultConfigPath,
+  getAgentBinding,
+  loadConfig,
+  saveConfig,
+  upsertAgentBinding,
+} from "./config";
 import { buildTextMessagePayload } from "./message-mapper";
 import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "./profile";
 import { ProjectCatalog } from "./projects";
 import { EVENT, type NormalizedInboundMessage } from "./protocol";
+import { createCodexRuntimeAdapter } from "./runtime/codex-adapter";
 import { ConnectRuntime } from "./runtime/connect-runtime";
+import { RuntimeAdapterRegistry } from "./runtime/registry";
 import { type ConnectStateStore, createStateStore } from "./state";
 import type {
-  AgentConfig,
-  CodexAgentConfig,
+  AgentBindingConfig,
+  CodexAgentBindingConfig,
   CodexApprovalPolicy,
   CodexReasoningEffort,
   CodexSandboxMode,
@@ -108,7 +117,7 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       let config = defaultConfig();
       if (options.agent || options.kind || options.codexPath) {
         if (!options.agent) throw new Error("init requires --agent when agent options are provided");
-        config = upsertAgent(config, options.agent, agentConfigFromCli(options));
+        config = upsertAgentBinding(config, options.agent, agentBindingFromCli(options));
       }
       io.writeStdout(`Wrote config: ${await saveConfig(config, options.config)}\n`);
     });
@@ -120,7 +129,7 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     .option("--codex-path <path>", "Codex executable override")
     .action(async (id: string, options: { config?: string; kind?: string; codexPath?: string }) => {
       commandRan = true;
-      const config = upsertAgent(await loadConfig(options.config), id, agentConfigFromCli(options));
+      const config = upsertAgentBinding(await loadConfig(options.config), id, agentBindingFromCli(options));
       io.writeStdout(`Updated agent ${id}: ${await saveConfig(config, options.config)}\n`);
     });
 
@@ -183,7 +192,7 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       commandRan = true;
       const config = await loadConfig(options.config);
       const agentId = options.agent ?? config.defaultAgent;
-      if (agentId) getAgent(config, agentId);
+      if (agentId) getAgentBinding(config, agentId);
       const store = createStateStore({ dbPath: config.stateDbPath });
       const activation = agentId ? await store.getActivation(agentId) : null;
       const status = await store.getRuntimeStatus();
@@ -244,7 +253,7 @@ export async function startConnectService(options: StartServiceOptions): Promise
   const config = options.config ?? (await loadConfig(configPath));
   const agentId = options.agentId ?? config.defaultAgent;
   if (!agentId) throw new Error("agent is required; pass --agent or configure defaultAgent");
-  getAgent(config, agentId);
+  getAgentBinding(config, agentId);
   const store = options.stateStore ?? createStateStore({ dbPath: config.stateDbPath });
   const activation = await store.getActivation(agentId);
   if (!activation)
@@ -260,7 +269,16 @@ export async function startConnectService(options: StartServiceOptions): Promise
     deviceId,
   });
   const projects = new ProjectCatalog(store);
-  const runtime = new ConnectRuntime({ agentId, config, configPath, stateStore: store, wsClient, projects });
+  const runtimeAdapters = new RuntimeAdapterRegistry([createCodexRuntimeAdapter()]);
+  const runtime = new ConnectRuntime({
+    agentId,
+    config,
+    configPath,
+    stateStore: store,
+    wsClient,
+    projects,
+    runtimeAdapters,
+  });
   wsClient.on("message", (message: NormalizedInboundMessage) => {
     void dispatchInboundMessage({
       message,
@@ -310,6 +328,7 @@ async function dispatchInboundMessage(params: {
       closeRuntimeSession: (chatId) => params.runtime.closeSession(chatId),
       invalidateRuntimeSession: (chatId) => params.runtime.invalidateSession(chatId),
       cancelRuntimeTurn: (chatId) => params.runtime.cancelTurn(chatId),
+      runtimeModesFor: (binding) => params.runtime.runtimeModesFor(binding),
     });
     if (!command.handled) return false;
     if (command.text) {
@@ -337,10 +356,10 @@ async function maybeRunNestedAgentCommand(argv: string[], io: CliIo): Promise<nu
   try {
     if (action === "add") {
       if (!id) throw new Error("agent id is required");
-      const config = upsertAgent(
+      const config = upsertAgentBinding(
         await loadConfig(configPath),
         id,
-        agentConfigFromCli({
+        agentBindingFromCli({
           kind: optionValue(argv, "--kind"),
           codexPath: optionValue(argv, "--codex-path"),
         }),
@@ -405,7 +424,7 @@ async function maybeRunNestedProfileCommand(
   }
 }
 
-function agentConfigFromCli(options: AgentCliOptions): AgentConfig {
+function agentBindingFromCli(options: AgentCliOptions): AgentBindingConfig {
   const kind = options.kind?.trim().toLowerCase();
   if (kind !== "codex") throw new Error("--kind codex is required");
   return {
@@ -414,9 +433,9 @@ function agentConfigFromCli(options: AgentCliOptions): AgentConfig {
   };
 }
 
-function formatAgentListRow(id: string, agent: AgentConfig, isDefault: boolean): string {
+function formatAgentListRow(id: string, binding: AgentBindingConfig, isDefault: boolean): string {
   const selected = isDefault ? " (default)" : "";
-  return `- ${id}${selected}: codex-sdk${agent.codexPathOverride ? ` (${agent.codexPathOverride})` : ""}`;
+  return `- ${id}${selected}: ${binding.kind}${binding.codexPathOverride ? ` (${binding.codexPathOverride})` : ""}`;
 }
 
 function optionValue(argv: string[], name: string): string | undefined {
@@ -481,40 +500,40 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
   const agentId = match[1];
   const field = match[2];
   if (!agentId || !field) throw new Error(`Unsupported config key: ${key}`);
-  const agent = config.agents[agentId];
-  if (!agent) throw new Error(`Unknown clawchat-connect agent: ${agentId}`);
+  const binding = config.agents[agentId];
+  if (!binding) throw new Error(`Unknown clawchat-connect agent: ${agentId}`);
   if (field === "displayName") {
-    agent.displayName = value;
+    binding.displayName = value;
     return;
   }
-  setCodexConfigValue(agent, field, value, key);
+  setCodexConfigValue(binding, field, value, key);
 }
 
-function setCodexConfigValue(agent: CodexAgentConfig, field: string, value: string, key: string): void {
-  if (field === "codexPathOverride") agent.codexPathOverride = value;
-  else if (field === "model") agent.model = value;
+function setCodexConfigValue(binding: CodexAgentBindingConfig, field: string, value: string, key: string): void {
+  if (field === "codexPathOverride") binding.codexPathOverride = value;
+  else if (field === "model") binding.model = value;
   else if (field === "sandboxMode")
-    agent.sandboxMode = parseCodexEnum<CodexSandboxMode>(
+    binding.sandboxMode = parseCodexEnum<CodexSandboxMode>(
       value,
       ["read-only", "workspace-write", "danger-full-access"],
       field,
     );
   else if (field === "modelReasoningEffort")
-    agent.modelReasoningEffort = parseCodexEnum<CodexReasoningEffort>(
+    binding.modelReasoningEffort = parseCodexEnum<CodexReasoningEffort>(
       value,
       ["minimal", "low", "medium", "high", "xhigh"],
       field,
     );
   else if (field === "approvalPolicy")
-    agent.approvalPolicy = parseCodexEnum<CodexApprovalPolicy>(
+    binding.approvalPolicy = parseCodexEnum<CodexApprovalPolicy>(
       value,
       ["never", "on-request", "on-failure", "untrusted"],
       field,
     );
   else if (field === "webSearchMode")
-    agent.webSearchMode = parseCodexEnum<CodexWebSearchMode>(value, ["disabled", "cached", "live"], field);
-  else if (field === "networkAccessEnabled") agent.networkAccessEnabled = parseBoolean(value, field);
-  else if (field === "skipGitRepoCheck") agent.skipGitRepoCheck = parseBoolean(value, field);
+    binding.webSearchMode = parseCodexEnum<CodexWebSearchMode>(value, ["disabled", "cached", "live"], field);
+  else if (field === "networkAccessEnabled") binding.networkAccessEnabled = parseBoolean(value, field);
+  else if (field === "skipGitRepoCheck") binding.skipGitRepoCheck = parseBoolean(value, field);
   else throw new Error(`Unsupported Codex config key: ${key}`);
 }
 

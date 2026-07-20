@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultConfig, loadConfig, saveConfig, upsertAgent } from "../src/config";
+import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/state";
 
 async function tempDir(): Promise<string> {
@@ -13,7 +13,7 @@ describe("agent-only config", () => {
   it("writes owner-only JSON config without project or directory config", async () => {
     const dir = await tempDir();
     const path = join(dir, "config.json");
-    const config = upsertAgent(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     await saveConfig(config, path);
     const text = await readFile(path, "utf8");
     expect(text).toContain('"agents"');

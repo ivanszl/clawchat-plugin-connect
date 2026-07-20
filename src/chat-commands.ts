@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { getAgent } from "./config";
+import { getAgentBinding } from "./config";
 import type { ProjectCatalog } from "./projects";
 import type { NormalizedInboundMessage } from "./protocol";
 import type { ConnectStateStore } from "./state";
-import type { ConnectConfig, OutputVisibility, ProjectRecord, RuntimeSessionRecord } from "./types";
+import type { AgentBindingConfig, ConnectConfig, OutputVisibility, ProjectRecord, RuntimeSessionRecord } from "./types";
 
 export interface ChatCommandContext {
   message: NormalizedInboundMessage;
@@ -15,6 +15,7 @@ export interface ChatCommandContext {
   closeRuntimeSession?: (chatId: string) => Promise<boolean>;
   invalidateRuntimeSession?: (chatId: string) => Promise<boolean>;
   cancelRuntimeTurn?: (chatId: string) => Promise<boolean>;
+  runtimeModesFor?: (binding: AgentBindingConfig) => readonly string[];
 }
 
 export interface ChatCommandResult {
@@ -22,7 +23,6 @@ export interface ChatCommandResult {
   text?: string;
 }
 
-const CODEX_MODES = ["read-only", "workspace-write", "danger-full-access"] as const;
 const CONTROL_COMMANDS = new Set([
   "/clawchat-output",
   "/clawchat-status",
@@ -247,9 +247,14 @@ async function handleProject(ctx: ChatCommandContext, args: string[]): Promise<C
 async function handleMode(ctx: ChatCommandContext, mode: string | undefined): Promise<ChatCommandResult> {
   if (!mode) return { handled: true, text: "Usage: /mode <mode>" };
   const current = await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId);
-  const agent = getAgent(ctx.config, current?.agentId || ctx.agentId);
-  if (agent.kind === "codex" && !CODEX_MODES.includes(mode as (typeof CODEX_MODES)[number])) {
-    return { handled: true, text: `Usage for Codex: /mode ${CODEX_MODES.join("|")}` };
+  const binding = getAgentBinding(ctx.config, current?.agentId || ctx.agentId);
+  if (ctx.runtimeModesFor) {
+    const modes = ctx.runtimeModesFor(binding);
+    if (modes.length === 0)
+      return { handled: true, text: `Runtime ${binding.kind} does not support configurable modes.` };
+    if (!modes.includes(mode)) {
+      return { handled: true, text: `Usage for ${binding.kind}: /mode ${modes.join("|")}` };
+    }
   }
   await ctx.stateStore.upsertRuntimeSession({
     chatId: ctx.message.chatId,

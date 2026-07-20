@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { defaultConfigPath, getAgent } from "../config";
+import { defaultConfigPath, getAgentBinding } from "../config";
 import { buildReplyTextMessagePayload } from "../message-mapper";
 import {
   allowedRuntimeKinds,
@@ -11,11 +11,11 @@ import {
 import { ProjectCatalog } from "../projects";
 import { type ChatType, EVENT, type NormalizedInboundMessage } from "../protocol";
 import type { ConnectStateStore } from "../state";
-import type { ConnectConfig, RuntimeSessionRecord } from "../types";
+import type { AgentBindingConfig, ConnectConfig, RuntimeSessionRecord } from "../types";
 import type { ConnectWsClient } from "../ws-client";
-import { createCodexRuntimeAdapter } from "./codex-adapter";
+import type { RuntimeAdapterRegistry } from "./registry";
 import { SessionQueue } from "./session-queue";
-import type { ConnectRuntimeAdapter, ConnectRuntimeSession } from "./types";
+import type { ConnectRuntimeSession } from "./types";
 
 export interface ConnectRuntimeOptions {
   agentId: string;
@@ -24,18 +24,18 @@ export interface ConnectRuntimeOptions {
   stateStore: ConnectStateStore;
   wsClient: ConnectWsClient;
   projects?: ProjectCatalog;
-  runtimeAdapter?: ConnectRuntimeAdapter;
+  runtimeAdapters: RuntimeAdapterRegistry;
 }
 
 export class ConnectRuntime {
-  private readonly runtimeAdapter: ConnectRuntimeAdapter;
+  private readonly runtimeAdapters: RuntimeAdapterRegistry;
   private readonly projects: ProjectCatalog;
   private readonly sessions = new Map<string, ConnectRuntimeSession>();
   private readonly queue: SessionQueue;
 
   constructor(private readonly options: ConnectRuntimeOptions) {
-    getAgent(options.config, options.agentId);
-    this.runtimeAdapter = options.runtimeAdapter ?? createCodexRuntimeAdapter();
+    getAgentBinding(options.config, options.agentId);
+    this.runtimeAdapters = options.runtimeAdapters;
     this.projects = options.projects ?? new ProjectCatalog(options.stateStore);
     this.queue = new SessionQueue({
       maxConcurrentTurns: options.config.maxConcurrentTurns,
@@ -76,6 +76,10 @@ export class ConnectRuntime {
     const key = sessionKey(chatId, current?.sessionId ?? "default");
     const session = this.sessions.get(key);
     return (await session?.cancel?.()) ?? false;
+  }
+
+  runtimeModesFor(binding: AgentBindingConfig): readonly string[] {
+    return this.runtimeAdapters.modesFor(binding);
   }
 
   private async releaseSession(chatId: string, invalidateRuntimeId: boolean): Promise<boolean> {
@@ -184,9 +188,9 @@ export class ConnectRuntime {
     const key = sessionKey(current.chatId, current.sessionId);
     const existing = this.sessions.get(key);
     if (existing) return existing;
-    const agent = getAgent(this.options.config, agentId);
+    const binding = getAgentBinding(this.options.config, agentId);
     let session: ConnectRuntimeSession | null = null;
-    session = await this.runtimeAdapter.start(agent, {
+    session = await this.runtimeAdapters.start(binding, {
       agentId,
       chatId: current.chatId,
       sessionId: current.sessionId,

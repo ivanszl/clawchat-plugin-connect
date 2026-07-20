@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import type { ThreadEvent } from "@openai/codex-sdk";
 import { type CodexClientLike, type CodexThreadLike, createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import type { ConnectRuntimeSession, ConnectRuntimeStartContext } from "../src/runtime/types";
-import type { CodexAgentConfig, RuntimeWorkspace } from "../src/types";
+import type { CodexAgentBindingConfig, RuntimeWorkspace } from "../src/types";
 
 const workspace: RuntimeWorkspace = {
   projectId: "project-1",
@@ -11,7 +11,7 @@ const workspace: RuntimeWorkspace = {
   skipGitRepoCheck: false,
 };
 
-const agent: CodexAgentConfig = {
+const agent: CodexAgentBindingConfig = {
   kind: "codex",
   model: "gpt-5-codex",
   sandboxMode: "workspace-write",

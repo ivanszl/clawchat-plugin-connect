@@ -3,8 +3,8 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type {
-  AgentConfig,
-  CodexAgentConfig,
+  AgentBindingConfig,
+  CodexAgentBindingConfig,
   CodexApprovalPolicy,
   CodexReasoningEffort,
   CodexSandboxMode,
@@ -55,13 +55,16 @@ function readEnv(value: unknown): Record<string, string> | undefined {
   return Object.keys(env).length > 0 ? env : undefined;
 }
 
-function normalizeAgent(agentId: string, raw: unknown): AgentConfig {
+function normalizeAgentBinding(agentId: string, raw: unknown): AgentBindingConfig {
   const record = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-  if (record.kind !== "codex") throw new Error(`agent ${agentId} kind must be codex`);
-  return normalizeCodexAgent(record);
+  if (record.kind !== "codex")
+    throw new Error(
+      `Agent Binding ${agentId} Runtime kind is not supported in this release: ${readString(record.kind) || "(missing)"}`,
+    );
+  return normalizeCodexAgentBinding(record);
 }
 
-function normalizeCodexAgent(record: Record<string, unknown>): CodexAgentConfig {
+function normalizeCodexAgentBinding(record: Record<string, unknown>): CodexAgentBindingConfig {
   for (const field of ["command", "args", "processCwd", "authMethod", "mode"]) {
     if (field in record) throw new Error(`legacy agent config field is not supported: ${field}`);
   }
@@ -140,10 +143,10 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
     record.agents && typeof record.agents === "object" && !Array.isArray(record.agents)
       ? (record.agents as Record<string, unknown>)
       : {};
-  const agents: Record<string, AgentConfig> = {};
+  const agents: Record<string, AgentBindingConfig> = {};
   for (const [agentId, value] of Object.entries(rawAgents)) {
     const id = agentId.trim();
-    if (id) agents[id] = normalizeAgent(id, value);
+    if (id) agents[id] = normalizeAgentBinding(id, value);
   }
   const firstAgent = Object.keys(agents)[0] ?? null;
   const requestedDefault = readString(record.defaultAgent) || null;
@@ -180,7 +183,7 @@ export async function saveConfig(config: ConnectConfig, path = defaultConfigPath
   return path;
 }
 
-export function getAgent(config: ConnectConfig, agentId = config.defaultAgent): AgentConfig {
+export function getAgentBinding(config: ConnectConfig, agentId = config.defaultAgent): AgentBindingConfig {
   if (!agentId) {
     throw new Error("No clawchat-connect agent is configured; run `clawchat-connect agent add <id> --kind codex`.");
   }
@@ -189,10 +192,10 @@ export function getAgent(config: ConnectConfig, agentId = config.defaultAgent): 
   return agent;
 }
 
-export function upsertAgent(config: ConnectConfig, agentId: string, agent: AgentConfig): ConnectConfig {
+export function upsertAgentBinding(config: ConnectConfig, agentId: string, binding: AgentBindingConfig): ConnectConfig {
   const id = agentId.trim();
   if (!id) throw new Error("agent id is required");
-  config.agents[id] = normalizeAgent(id, agent);
+  config.agents[id] = normalizeAgentBinding(id, binding);
   if (!config.defaultAgent) config.defaultAgent = id;
   return normalizeConfig(config);
 }

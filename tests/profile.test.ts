@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultConfig, upsertAgent } from "../src/config";
+import { defaultConfig, upsertAgentBinding } from "../src/config";
 import { updateAccountProfile } from "../src/profile";
 import { createStateStore } from "../src/state";
 
@@ -13,7 +13,7 @@ function response(body: unknown): Response {
 describe("updateAccountProfile", () => {
   it("updates the activated account with its stored access token", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-profile-"));
-    const config = upsertAgent(defaultConfig(), "work", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
     config.stateDbPath = join(directory, "state.sqlite");
     const stateStore = createStateStore({ dbPath: config.stateDbPath });
     await stateStore.upsertActivation({
@@ -52,7 +52,7 @@ describe("updateAccountProfile", () => {
 
   it("requires an activated Agent Binding and a non-empty patch", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-profile-"));
-    const config = upsertAgent(defaultConfig(), "work", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
     config.stateDbPath = join(directory, "state.sqlite");
     const stateStore = createStateStore({ dbPath: config.stateDbPath });
 

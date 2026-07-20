@@ -1,6 +1,6 @@
 import type { CodexOptions, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions } from "@openai/codex-sdk";
 import type { RuntimeOutputEvent } from "../output-visibility";
-import type { CodexAgentConfig, CodexSandboxMode, RuntimeWorkspace } from "../types";
+import type { CodexAgentBindingConfig, CodexSandboxMode, RuntimeWorkspace } from "../types";
 import type {
   ConnectRuntimeAdapter,
   ConnectRuntimePrompt,
@@ -27,10 +27,12 @@ const SANDBOX_MODES: readonly CodexSandboxMode[] = ["read-only", "workspace-writ
 export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOptions = {}): ConnectRuntimeAdapter {
   const createCodex = options.createCodex ?? createOfficialCodexClient;
   return {
-    async start(agent, context) {
-      if (agent.kind !== "codex") throw new Error("Codex runtime adapter requires a Codex agent");
-      const client = await createCodex(codexOptions(agent));
-      return new CodexRuntimeSession(client, agent, context);
+    kind: "codex",
+    modes: SANDBOX_MODES,
+    async start(binding, context) {
+      if (binding.kind !== "codex") throw new Error("Codex Runtime Adapter requires a Codex Agent Binding");
+      const client = await createCodex(codexOptions(binding));
+      return new CodexRuntimeSession(client, binding, context);
     },
   };
 }
@@ -40,10 +42,10 @@ async function createOfficialCodexClient(options: CodexOptions): Promise<CodexCl
   return new Codex(options);
 }
 
-function codexOptions(agent: CodexAgentConfig): CodexOptions {
-  const env = agent.env ? { ...definedProcessEnvironment(), ...agent.env } : undefined;
+function codexOptions(binding: CodexAgentBindingConfig): CodexOptions {
+  const env = binding.env ? { ...definedProcessEnvironment(), ...binding.env } : undefined;
   return {
-    ...(agent.codexPathOverride ? { codexPathOverride: agent.codexPathOverride } : {}),
+    ...(binding.codexPathOverride ? { codexPathOverride: binding.codexPathOverride } : {}),
     ...(env ? { env } : {}),
   };
 }
@@ -63,7 +65,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
 
   constructor(
     private readonly client: CodexClientLike,
-    private readonly agent: CodexAgentConfig,
+    private readonly binding: CodexAgentBindingConfig,
     private readonly context: ConnectRuntimeStartContext,
   ) {
     this.runtimeSessionId = context.runtimeSessionId;
@@ -71,7 +73,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
 
   async *prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeOutputEvent> {
     if (this.activeTurn) throw new Error("Codex already has an active turn for this session");
-    const sandboxMode = resolveSandboxMode(input.mode, this.agent.sandboxMode);
+    const sandboxMode = resolveSandboxMode(input.mode, this.binding.sandboxMode);
     const thread = this.ensureThread(input.workspace, sandboxMode);
     const controller = new AbortController();
     this.activeTurn = controller;
@@ -166,12 +168,12 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
 
   private ensureThread(workspace: RuntimeWorkspace, sandboxMode: CodexSandboxMode): CodexThreadLike {
     const additionalDirectories = [
-      ...new Set([...(this.agent.additionalDirectories ?? []), ...workspace.additionalDirectories]),
+      ...new Set([...(this.binding.additionalDirectories ?? []), ...workspace.additionalDirectories]),
     ];
     const workspaceKey = JSON.stringify({
       workingDirectory: workspace.workingDirectory,
       additionalDirectories,
-      skipGitRepoCheck: workspace.skipGitRepoCheck || this.agent.skipGitRepoCheck === true,
+      skipGitRepoCheck: workspace.skipGitRepoCheck || this.binding.skipGitRepoCheck === true,
     });
     if (this.thread) {
       if (this.threadWorkspaceKey !== workspaceKey || this.threadSandboxMode !== sandboxMode) {
@@ -181,13 +183,13 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     }
     const options: ThreadOptions = {
       workingDirectory: workspace.workingDirectory,
-      model: this.agent.model,
+      model: this.binding.model,
       sandboxMode,
-      skipGitRepoCheck: workspace.skipGitRepoCheck || this.agent.skipGitRepoCheck === true,
-      modelReasoningEffort: this.agent.modelReasoningEffort,
-      networkAccessEnabled: this.agent.networkAccessEnabled,
-      webSearchMode: this.agent.webSearchMode,
-      approvalPolicy: this.agent.approvalPolicy ?? "never",
+      skipGitRepoCheck: workspace.skipGitRepoCheck || this.binding.skipGitRepoCheck === true,
+      modelReasoningEffort: this.binding.modelReasoningEffort,
+      networkAccessEnabled: this.binding.networkAccessEnabled,
+      webSearchMode: this.binding.webSearchMode,
+      approvalPolicy: this.binding.approvalPolicy ?? "never",
       additionalDirectories: additionalDirectories.length > 0 ? additionalDirectories : undefined,
     };
     this.thread = this.runtimeSessionId

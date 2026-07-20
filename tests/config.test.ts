@@ -2,14 +2,14 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getAgent, loadConfig, normalizeConfig, saveConfig } from "../src/config";
+import { getAgentBinding, loadConfig, normalizeConfig, saveConfig } from "../src/config";
 
 async function tempConfigPath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "clawchat-connect-config-")), "config.json");
 }
 
-describe("Codex agent configuration", () => {
-  it("normalizes and persists first-party Codex options", async () => {
+describe("Agent Binding configuration", () => {
+  it("normalizes and persists a Codex Runtime configuration without making the Binding ID semantic", async () => {
     const config = normalizeConfig({
       defaultAgent: "work",
       agents: {
@@ -29,7 +29,7 @@ describe("Codex agent configuration", () => {
       },
     });
 
-    expect(getAgent(config, "work")).toEqual(
+    expect(getAgentBinding(config, "work")).toEqual(
       expect.objectContaining({
         kind: "codex",
         codexPathOverride: "/opt/codex",
@@ -55,16 +55,16 @@ describe("Codex agent configuration", () => {
         defaultAgent: "codex",
         agents: { codex: { command: "codex" } },
       }),
-    ).toThrow("agent codex kind must be codex");
+    ).toThrow("Agent Binding codex Runtime kind is not supported in this release: (missing)");
   });
 
-  it("rejects unsupported runtime kinds", () => {
+  it("rejects Runtime kinds without a released Adapter", () => {
     expect(() =>
       normalizeConfig({
         defaultAgent: "other",
         agents: { other: { kind: "unsupported" } },
       }),
-    ).toThrow("agent other kind must be codex");
+    ).toThrow("Agent Binding other Runtime kind is not supported in this release: unsupported");
   });
 
   it("rejects invalid security options instead of silently broadening access", () => {

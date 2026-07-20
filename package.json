@@ -1,7 +1,7 @@
 {
   "name": "@clawling/clawchat-plugin-connect",
   "version": "0.1.0",
-  "description": "Bun-native ClawChat host adapter with direct Codex SDK integration.",
+  "description": "Bun-native bridge from ClawChat Agent Bindings to local coding agent runtimes.",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./src/index.ts",
