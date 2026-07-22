@@ -12,7 +12,7 @@ describe("Connect Client Session lifecycle", () => {
     expect(source).toContain('lifecycle.mutate("archive")');
     expect(source).toContain('lifecycle.mutate("unarchive")');
     expect(source).toContain('lifecycle.mutate("delete"');
-    expect(source).toContain("SubAgent Thread 不会被 Connect 额外级联删除");
+    expect(source).toContain("子 Thread 不会被 Connect 额外级联删除");
     expect(source).not.toContain("window.confirm");
   });
 

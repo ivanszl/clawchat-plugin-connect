@@ -22,10 +22,10 @@ Install a specific alpha version or choose another user-writable installation di
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.3
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.4
 ```
 
-The installer downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs `clawchat-connect` plus its prebuilt `clawchat-connect-client` assets to `~/.local/bin` by default. Add that directory to `PATH` if necessary. Connect expects the coding-agent executable selected by its Runtime Adapter to already be installed and available; it does not install coding agents.
+The installer downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs `clawchat-connect`, its prebuilt `clawchat-connect-client` assets, and license notices below `~/.local/bin` by default. Add that directory to `PATH` if necessary. Connect expects the coding-agent executable selected by its Runtime Adapter to already be installed and available; it does not install coding agents.
 
 Developers can instead install the Bun package directly:
 
@@ -77,6 +77,8 @@ Codex configuration can also be edited in `~/.clawchat-connect/config.json`:
 ```
 
 Supported Codex options include `codexPathOverride`, `env`, `model`, `sandboxMode`, `modelReasoningEffort`, `approvalPolicy`, `webSearchMode`, `networkAccessEnabled`, and `additionalDirectories`. App-server accepts non-Git working directories directly, so the former SDK-only `skipGitRepoCheck` option is not supported.
+
+For a self-hosted ClawChat deployment, `mediaUploadUrl` defaults to `/media/upload` on the configured `baseUrl`; it never independently falls back to the hosted ClawChat endpoint. An explicitly configured upload URL remains supported.
 
 The first release registers only `kind: "codex"`. Connect's Agent Binding model and runtime seam are not Codex-specific; later releases can register additional Runtime Adapters. Legacy agent shapes and unavailable runtime kinds are rejected rather than inferred or migrated.
 
@@ -393,8 +395,15 @@ Connect does not register ClawChat tools, run an MCP server, or inject MCP confi
 - SQLite state: `~/.clawchat-connect/state.sqlite` through Bun's built-in `bun:sqlite` (must be an absolute path)
 - Non-Project workspaces: `~/.clawchat-connect/workspaces/`
 - Codex Runtime Threads: normal Codex storage under `~/.codex/sessions`
+- Media cache: `~/.clawchat-connect/media-cache/`, capped at 512 MiB with a 15-day idle expiry
 
 Invite codes are not persisted. Credentials, Projects, pending Session selections, Session-to-Project associations, Runtime Thread IDs, message audit rows, output visibility, and runtime status are stored in SQLite.
+
+Incoming media downloads reject local/private network destinations and revalidate every redirect. The configured API and media-upload origins are explicitly trusted so private self-hosted deployments continue to work; other media hosts must resolve to public addresses and use HTTPS.
+
+Codex may return a local Markdown image to ClawChat. Connect uploads it only when the canonical path is inside the media cache or resolved Runtime Workspace and both its extension and file signature identify PNG, JPEG, GIF, or WebP content. Other paths remain ordinary reply text and are not read or uploaded.
+
+See [`SECURITY.md`](SECURITY.md) for private vulnerability reporting.
 
 ## Development
 
@@ -402,15 +411,19 @@ Bun owns package installation, runtime execution, testing, and bundling. Source 
 
 ```bash
 bun install
+bun run clean
 bun run format
 bun run lint
 bun run typecheck
 bun test
+bun run test:integration:codex
 bun run build
 bun run build:binary
 bun run preview:web
 ```
 
-Pushing a version tag such as `v0.1.0-alpha.3` runs the alpha release workflow. The workflow requires the tag to match `package.json`, runs the complete check suite, builds standalone macOS/Linux binaries for arm64 and x64, and publishes them with `install.sh` and SHA-256 checksums as a GitHub prerelease. Non-alpha tags are not accepted by this workflow.
+Set `CODEX_INTEGRATION_PATH=/absolute/path/to/codex` when the matching executable is not the first `codex` on `PATH`.
+
+Pushing a version tag such as `v0.1.0-alpha.4` runs the alpha release workflow. The workflow requires the tag to match `package.json`, runs the complete check suite, builds standalone macOS/Linux binaries for arm64 and x64, and publishes them with `install.sh` and SHA-256 checksums as a GitHub prerelease. Non-alpha tags are not accepted by this workflow.
 
 The runtime uses Bun's built-in WebSocket client and `bun:sqlite`; it does not ship `ws`, `sqlite`, `sqlite3`, or tsup. The Web build uses Vite while the current backend suite continues to run with `bun:test`. Generated `dist/` output remains ignored.

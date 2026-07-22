@@ -1,7 +1,15 @@
 {
   "name": "@clawling/clawchat-plugin-connect",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "Bun-native bridge from ClawChat Agent Bindings to local coding agent runtimes.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/XMethues/clawchat-plugin-connect.git"
+  },
+  "homepage": "https://github.com/XMethues/clawchat-plugin-connect#readme",
+  "bugs": {
+    "url": "https://github.com/XMethues/clawchat-plugin-connect/issues"
+  },
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./src/index.ts",
@@ -12,10 +20,15 @@
     }
   },
   "files": [
-    "dist",
+    "dist/src",
+    "dist/client",
     "src",
     "README.md",
-    "docs"
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md",
+    "docs",
+    "LICENSE"
   ],
   "scripts": {
     "dev": "bun src/bin.ts",
@@ -25,8 +38,10 @@
     "build:service": "bun build ./src/bin.ts ./src/index.ts --target=bun --outdir=dist/src --packages=external --sourcemap=linked",
     "build:web": "vite build --config vite.config.ts",
     "build:binary": "bun run build:web && bun build ./src/bin.ts --compile --minify --outfile=dist/clawchat-connect",
-    "prepack": "bun run build",
+    "clean": "bun -e 'import { rm } from \"node:fs/promises\"; await rm(\"dist\", { recursive: true, force: true })'",
+    "prepack": "bun run clean && bun run build",
     "test": "bun test",
+    "test:integration:codex": "bun tests/integration/codex-app-server.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
     "format": "biome format --write .",
     "format:check": "biome format .",

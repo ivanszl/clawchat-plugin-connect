@@ -24,7 +24,7 @@ import type {
 
 export interface CreateCodexRuntimeAdapterOptions {
   createAppServer?: (binding: CodexAgentBindingConfig) => Promise<CodexAppServerClient>;
-  cacheMedia?: (media: ConnectRuntimeMedia, stateDbPath: string) => Promise<string>;
+  cacheMedia?: (media: ConnectRuntimeMedia, stateDbPath: string, trustedOrigins?: readonly string[]) => Promise<string>;
 }
 
 const SANDBOX_MODES: readonly CodexSandboxMode[] = ["read-only", "workspace-write", "danger-full-access"];
@@ -43,7 +43,10 @@ const THREAD_SOURCE_KINDS = [
 
 export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOptions = {}): ConnectRuntimeAdapter {
   const createAppServer = options.createAppServer ?? createCodexAppServerClient;
-  const cacheMedia = options.cacheMedia ?? cacheRuntimeMedia;
+  const cacheMedia =
+    options.cacheMedia ??
+    (async (media: ConnectRuntimeMedia, stateDbPath: string, trustedOrigins?: readonly string[]) =>
+      await cacheRuntimeMedia(media, stateDbPath, { trustedOrigins }));
   let bindingIdentity: string | null = null;
   let clientPromise: Promise<CodexAppServerClient> | null = null;
 
@@ -358,7 +361,11 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     private readonly client: CodexAppServerClient,
     private readonly binding: CodexAgentBindingConfig,
     private readonly context: ConnectRuntimeStartContext,
-    private readonly cacheMedia: (media: ConnectRuntimeMedia, stateDbPath: string) => Promise<string>,
+    private readonly cacheMedia: (
+      media: ConnectRuntimeMedia,
+      stateDbPath: string,
+      trustedOrigins?: readonly string[],
+    ) => Promise<string>,
   ) {
     this.runtimeSessionId = context.runtimeSessionId;
   }
@@ -432,7 +439,9 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
   private async buildTurnInput(input: ConnectRuntimePrompt): Promise<CodexUserInput[]> {
     const turnInput: CodexUserInput[] = [{ type: "text", text: input.prompt, text_elements: [] }];
     for (const media of input.media ?? []) {
-      const path = await this.cacheMedia(media, this.context.stateDbPath);
+      const path = input.trustedMediaOrigins
+        ? await this.cacheMedia(media, this.context.stateDbPath, input.trustedMediaOrigins)
+        : await this.cacheMedia(media, this.context.stateDbPath);
       if (media.kind === "image") {
         turnInput.push({ type: "localImage", path });
         continue;

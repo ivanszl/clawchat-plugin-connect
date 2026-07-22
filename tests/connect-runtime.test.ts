@@ -174,7 +174,8 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     const fixture = await runtimeFixture();
     const imagePath = join(dirname(fixture.config.stateDbPath), "media-cache", "cached-image", "00-TheFool.jpg");
     await mkdir(dirname(imagePath), { recursive: true });
-    await writeFile(imagePath, "image-bytes");
+    const imageBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]);
+    await writeFile(imagePath, imageBytes);
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["read-only", "workspace-write", "danger-full-access"],
@@ -199,7 +200,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     expect(fixture.uploadMedia).toHaveBeenCalledTimes(1);
     const [uploadedFile, uploadOptions] = fixture.uploadMedia.mock.calls[0] ?? [];
     expect(uploadOptions).toEqual({ filename: "00-TheFool.jpg" });
-    expect(await uploadedFile?.text()).toBe("image-bytes");
+    expect(Buffer.from(await uploadedFile?.arrayBuffer())).toEqual(imageBytes);
     expect(fixture.sendMessageEnvelope).toHaveBeenCalledWith(
       "message.reply",
       "chat-1",
@@ -218,6 +219,48 @@ describe("ConnectRuntime Agent Binding sessions", () => {
           },
           context: expect.any(Object),
         },
+      }),
+      { toType: "direct" },
+    );
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("does not turn a non-image workspace file into an outbound media Fragment", async () => {
+    const fixture = await runtimeFixture();
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!current) throw new Error("test session was not created");
+    const workspace = await new ProjectCatalog(fixture.store).resolveWorkspace(current);
+    const secretPath = join(workspace.workingDirectory, ".env");
+    await writeFile(secretPath, "SECRET_TOKEN=do-not-upload\n");
+    const markdown = `![result](${secretPath})`;
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: mock(async () => ({
+        prompt: async function* () {
+          yield { kind: "final", text: markdown } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    await runtime.handleInboundMessage(message("send the result"));
+
+    expect(fixture.uploadMedia).not.toHaveBeenCalled();
+    expect(fixture.sendMessageEnvelope).toHaveBeenCalledWith(
+      "message.reply",
+      "chat-1",
+      expect.objectContaining({
+        message: expect.objectContaining({ body: { fragments: [{ kind: "text", text: markdown }] } }),
       }),
       { toType: "direct" },
     );

@@ -1,7 +1,7 @@
 import { handleChatCommand } from "./chat-commands";
 import type { TranscriptProjection } from "./client-interface/transcript-projection";
 import { getAgentBinding } from "./config";
-import { buildTextMessagePayload } from "./message-mapper";
+import { buildTextMessagePayload, normalizeInboundMessage } from "./message-mapper";
 import type { ProjectCatalog } from "./projects";
 import { type Envelope, EVENT, type NormalizedInboundMessage, type Transport } from "./protocol";
 import { ConnectRuntime } from "./runtime/connect-runtime";
@@ -61,7 +61,10 @@ export interface BindingRuntimeHandle {
 
 export async function startBindingRuntime(options: BindingRuntimeOptions): Promise<BindingRuntimeHandle> {
   const binding = getAgentBinding(options.config, options.agentId);
-  const wsClient = new ConnectWsClient({
+  let runtime: ConnectRuntime;
+  let inboundMessages: InboundMessageProcessor;
+  let wsClient: ConnectWsClient;
+  wsClient = new ConnectWsClient({
     agentId: options.agentId,
     url: options.config.websocketUrl,
     mediaUploadUrl: options.config.mediaUploadUrl,
@@ -71,6 +74,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     stateStore: options.stateStore,
     deviceId: options.deviceId,
     transport: options.wsTransport,
+    messageHandler: (message) => inboundMessages.accept(message),
     protocolEventHandler: async (type, envelope) => await dispatchProtocolEventHandler(options, type, envelope),
     capabilities: {
       chatMetadataEvents: Boolean(options.protocolEventHandlers?.metadata_invalidated),
@@ -79,7 +83,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       historySync: Boolean(options.protocolEventHandlers?.history_transit),
     },
   });
-  const runtime = new ConnectRuntime({
+  runtime = new ConnectRuntime({
     agentId: options.agentId,
     config: options.config,
     configPath: options.configPath,
@@ -89,11 +93,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     runtimeAdapters: options.runtimeAdapters,
     transcriptProjection: options.transcriptProjection,
   });
-  wsClient.on("message", (message: NormalizedInboundMessage) => {
-    void dispatchInboundMessage({ ...options, message, wsClient, runtime }).catch((error) =>
-      options.writeError(`${options.agentId}: ${error instanceof Error ? error.message : String(error)}\n`),
-    );
-  });
+  inboundMessages = new InboundMessageProcessor(options, wsClient, runtime);
   wireQuarantineEvents(wsClient, options);
   wsClient.on("error", (error: unknown) => {
     const detail = error instanceof Error ? error.message : String(error);
@@ -101,12 +101,21 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     void recordConnectionStatus(options, false, detail).catch(() => undefined);
   });
   wsClient.on("state", (state: string) => {
-    if (state === "connected") void recordConnectionStatus(options, true, null).catch(() => undefined);
-    else if (state === "disconnected") void recordConnectionStatus(options, false, null).catch(() => undefined);
+    if (state === "connected") {
+      void recordConnectionStatus(options, true, null).catch(() => undefined);
+      void inboundMessages
+        .recover()
+        .catch((error) =>
+          options.writeError(
+            `${options.agentId}: inbound recovery failed: ${error instanceof Error ? error.message : String(error)}\n`,
+          ),
+        );
+    } else if (state === "disconnected") void recordConnectionStatus(options, false, null).catch(() => undefined);
   });
   try {
     await options.runtimeAdapters.prepare(binding);
     await wsClient.connect();
+    await inboundMessages.recover();
     await recordConnectionStatus(options, true, null);
   } catch (error) {
     wsClient.close();
@@ -121,11 +130,74 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     enqueueClientTurn: async (sessionRef, prompt) => await runtime.enqueueClientTurn(sessionRef, prompt),
     cancelClientTurn: async (sessionRef) => await runtime.cancelClientTurn(sessionRef),
     async close() {
+      await inboundMessages.close();
       wsClient.close();
       await runtime.dispose();
       await recordConnectionStatus(options, false, null);
     },
   };
+}
+
+class InboundMessageProcessor {
+  private readonly pending = new Map<string, Promise<void>>();
+  private recovery: Promise<void> | null = null;
+  private accepting = true;
+
+  constructor(
+    private readonly options: BindingRuntimeOptions,
+    private readonly wsClient: ConnectWsClient,
+    private readonly runtime: ConnectRuntime,
+  ) {}
+
+  accept(message: NormalizedInboundMessage): "accepted" {
+    if (!this.accepting) throw new Error("inbound message processor is closing");
+    const key = inboundHandlingKey(message);
+    if (this.pending.has(key)) return "accepted";
+    const work = dispatchInboundMessage({ ...this.options, message, wsClient: this.wsClient, runtime: this.runtime })
+      .then(
+        async () =>
+          await this.options.stateStore.markInboundMessageHandled(this.options.agentId, message.messageId, message.raw),
+      )
+      .catch((error) =>
+        this.options.writeError(
+          `${this.options.agentId}: inbound message remains pending: ${error instanceof Error ? error.message : String(error)}\n`,
+        ),
+      )
+      .finally(() => this.pending.delete(key));
+    this.pending.set(key, work);
+    return "accepted";
+  }
+
+  recover(): Promise<void> {
+    if (this.recovery) return this.recovery;
+    this.recovery = this.recoverOnce().finally(() => {
+      this.recovery = null;
+    });
+    return this.recovery;
+  }
+
+  private async recoverOnce(): Promise<void> {
+    for (const raw of await this.options.stateStore.listUnhandledInboundMessages(this.options.agentId)) {
+      const message = normalizeStoredInboundMessage(raw);
+      if (message) this.accept(message);
+    }
+  }
+
+  async close(): Promise<void> {
+    this.accepting = false;
+    await Promise.allSettled(this.pending.values());
+  }
+}
+
+function normalizeStoredInboundMessage(raw: unknown): NormalizedInboundMessage | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return normalizeInboundMessage(raw as Envelope);
+}
+
+function inboundHandlingKey(message: NormalizedInboundMessage): string {
+  const content = { ...message.raw } as Record<string, unknown>;
+  for (const field of ["dseq", "emitted_at", "trace_id"]) delete content[field];
+  return `${message.messageId}:${JSON.stringify(content)}`;
 }
 
 async function dispatchProtocolEventHandler(

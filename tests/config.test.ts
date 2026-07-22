@@ -51,6 +51,24 @@ describe("Agent Binding configuration", () => {
     await expect(loadConfig(path)).resolves.toEqual(config);
   });
 
+  it("derives a missing media upload endpoint from a custom API base URL", () => {
+    const config = normalizeConfig({
+      baseUrl: "https://self-hosted.example/connect",
+      websocketUrl: "wss://self-hosted.example/ws",
+      agents: { codex: { kind: "codex" } },
+    });
+
+    expect(config.mediaUploadUrl).toBe("https://self-hosted.example/media/upload");
+
+    const migrated = normalizeConfig({
+      baseUrl: "https://self-hosted.example/connect",
+      websocketUrl: "wss://self-hosted.example/ws",
+      mediaUploadUrl: "https://app.clawling.com/media/upload",
+      agents: { codex: { kind: "codex" } },
+    });
+    expect(migrated.mediaUploadUrl).toBe("https://self-hosted.example/media/upload");
+  });
+
   it("rejects legacy agent shapes instead of migrating them", () => {
     expect(() =>
       normalizeConfig({

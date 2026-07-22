@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { open, realpath, stat } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TranscriptProjection } from "../client-interface/transcript-projection";
 import { defaultConfigPath, getAgentBinding } from "../config";
@@ -53,11 +53,7 @@ export class ConnectRuntime {
 
   async handleInboundMessage(message: NormalizedInboundMessage, beforeTurn?: () => Promise<boolean>): Promise<void> {
     try {
-      const queuedSession = await this.options.stateStore.getCurrentRuntimeSession(
-        message.chatId,
-        this.options.agentId,
-      );
-      const queueKey = queuedSession ? sessionKey(queuedSession.chatId, queuedSession.sessionId) : message.chatId;
+      const queueKey = message.chatId;
       await this.queue.enqueue(queueKey, async () => {
         if (await beforeTurn?.()) return;
         this.activeTurnChats.add(queueKey);
@@ -83,7 +79,7 @@ export class ConnectRuntime {
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
     if (!current || current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
     const turnId = randomUUID();
-    const key = sessionKey(current.chatId, current.sessionId);
+    const key = current.chatId;
     void this.queue
       .enqueue(key, async () => {
         this.activeTurnChats.add(key);
@@ -212,6 +208,7 @@ export class ConnectRuntime {
     for await (const event of session.prompt({
       prompt: renderPrompt(message),
       media: runtimeMedia(message),
+      trustedMediaOrigins: configuredMediaOrigins(this.options.config),
       workspace,
       mode: current.mode ?? undefined,
       metadata: {
@@ -406,6 +403,8 @@ async function resolveLocalReplyMedia(
     result += text.slice(cursor, index);
     if (!path) {
       result += match[0];
+    } else if (!(await isSupportedImageFile(path))) {
+      result += match[0];
     } else if (!seen.has(path)) {
       const metadata = await stat(path);
       if (!metadata.isFile() || metadata.size <= 0) throw new Error(`Runtime media file is empty or invalid: ${path}`);
@@ -419,6 +418,50 @@ async function resolveLocalReplyMedia(
   }
   result += text.slice(cursor);
   return { text: result.trim(), files };
+}
+
+async function isSupportedImageFile(path: string): Promise<boolean> {
+  const extension = extname(path).toLowerCase();
+  const handle = await open(path, "r");
+  try {
+    const header = Buffer.alloc(16);
+    const { bytesRead } = await handle.read(header, 0, header.length, 0);
+    const bytes = header.subarray(0, bytesRead);
+    if (extension === ".png") {
+      return (
+        bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      );
+    }
+    if (extension === ".jpg" || extension === ".jpeg") {
+      return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    }
+    if (extension === ".gif") {
+      const signature = bytes.subarray(0, 6).toString("ascii");
+      return signature === "GIF87a" || signature === "GIF89a";
+    }
+    if (extension === ".webp") {
+      return (
+        bytes.length >= 12 &&
+        bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
+        bytes.subarray(8, 12).toString("ascii") === "WEBP"
+      );
+    }
+    return false;
+  } finally {
+    await handle.close();
+  }
+}
+
+function configuredMediaOrigins(config: ConnectConfig): string[] {
+  const origins = new Set<string>();
+  for (const value of [config.baseUrl, config.mediaUploadUrl]) {
+    try {
+      origins.add(new URL(value).origin);
+    } catch {
+      // Endpoint validation reports malformed URLs at their owning transport boundary.
+    }
+  }
+  return [...origins];
 }
 
 async function resolveSafeLocalMediaPath(

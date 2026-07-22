@@ -207,6 +207,150 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     }
   });
 
+  it("acknowledges durable handoff promptly and recovers unfinished messages after restart", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-recovery-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    const recoveredEnvelope: Envelope = {
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "recovered-message",
+      emitted_at: 1,
+      chat_id: "chat-recovery",
+      chat_type: "direct",
+      sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
+      payload: {
+        message_id: "msg-recovered",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "recover me" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    };
+    await stateStore.upsertInboundMessage({
+      agentId: "codex",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: recoveredEnvelope.trace_id,
+      chatId: recoveredEnvelope.chat_id,
+      messageId: "msg-recovered",
+      text: "recover me",
+      raw: recoveredEnvelope,
+    });
+
+    const prompts: ConnectRuntimePrompt[] = [];
+    let releaseFirstPrompt: (() => void) | undefined;
+    const firstPromptGate = new Promise<void>((resolve) => {
+      releaseFirstPrompt = resolve;
+    });
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      {
+        kind: "codex",
+        modes: ["read-only"],
+        start: async () => ({
+          prompt: async function* (input: ConnectRuntimePrompt) {
+            prompts.push(input);
+            if (prompts.length === 1) await firstPromptGate;
+            yield { kind: "progress", text: "processed" } as const;
+          },
+          close: mock(async () => undefined),
+        }),
+      },
+    ]);
+    const transport = new MemoryTransport();
+    const errors: string[] = [];
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      writeError: (message) => errors.push(message),
+    });
+    await flush();
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 2,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 3,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AB" },
+    });
+    const handle = await starting;
+
+    for (let attempt = 0; attempt < 50 && prompts.length === 0; attempt += 1) await Bun.sleep(2);
+    expect(prompts[0]?.prompt).toContain("recover me");
+
+    const liveEnvelope: Envelope = {
+      ...recoveredEnvelope,
+      trace_id: "live-message",
+      emitted_at: 4,
+      dseq: 1,
+      payload: {
+        message_id: "msg-live",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "live message" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    };
+    transport.receive(liveEnvelope);
+
+    try {
+      await Bun.sleep(220);
+      expect(prompts).toHaveLength(1);
+      expect(transport.sent.at(-1)).toMatchObject({ event: EVENT.MESSAGE_SYNC_ACK, payload: { dseq: 1 } });
+
+      releaseFirstPrompt?.();
+      for (let attempt = 0; attempt < 50 && prompts.length < 2; attempt += 1) await Bun.sleep(2);
+      expect(prompts[1]?.prompt).toContain("live message");
+      for (
+        let attempt = 0;
+        attempt < 50 && !(await stateStore.hasHandledInboundMessage("codex", "msg-live", liveEnvelope));
+        attempt += 1
+      )
+        await Bun.sleep(2);
+      await expect(stateStore.hasHandledInboundMessage("codex", "msg-recovered", recoveredEnvelope)).resolves.toBe(
+        true,
+      );
+      await expect(stateStore.hasHandledInboundMessage("codex", "msg-live", liveEnvelope)).resolves.toBe(true);
+      expect(errors).toEqual([]);
+    } finally {
+      releaseFirstPrompt?.();
+      await handle.close();
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
   it("delivers inbound WS media fragments to the production Runtime Adapter", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-media-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });

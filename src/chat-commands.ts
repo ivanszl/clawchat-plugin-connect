@@ -60,7 +60,7 @@ const HELP = [
   "- `/project current` — show the current Project.",
   "- `/project clear` — select an isolated workspace for the next Session.",
   "- `/project remove <name-or-id>` — remove an unused Project.",
-  "- `/mode <mode>` — set the runtime mode; Codex accepts read-only, workspace-write, or danger-full-access.",
+  "- `/mode <mode>` — set one of the modes exposed by the selected Runtime Adapter.",
   "- `/cancel` — cancel an active turn when supported.",
 ].join("\n");
 

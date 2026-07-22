@@ -3,9 +3,10 @@
 set -eu
 
 repository="${CLAWCHAT_CONNECT_REPOSITORY:-XMethues/clawchat-plugin-connect}"
-default_version="v0.1.0-alpha.3"
+default_version="v0.1.0-alpha.4"
 version="${1:-${CLAWCHAT_CONNECT_VERSION:-$default_version}}"
 install_dir="${CLAWCHAT_CONNECT_INSTALL_DIR:-${HOME}/.local/bin}"
+license_dir="${CLAWCHAT_CONNECT_LICENSE_DIR:-${install_dir}/clawchat-connect-licenses}"
 
 fail() {
   printf 'clawchat-connect installer: %s\n' "$1" >&2
@@ -21,7 +22,7 @@ case "$version" in
 esac
 
 printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$' ||
-  fail "only alpha versions are available (for example: v0.1.0-alpha.3)"
+  fail "only alpha versions are available (for example: v0.1.0-alpha.4)"
 
 case "$(uname -s)" in
   Darwin) os="darwin" ;;
@@ -59,9 +60,12 @@ fi
 
 [ "$actual_checksum" = "$expected_checksum" ] || fail "checksum verification failed for $asset"
 
-tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" clawchat-connect clawchat-connect-client
+tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" \
+  clawchat-connect clawchat-connect-client LICENSE THIRD_PARTY_NOTICES.md
 [ -f "$tmp_dir/clawchat-connect" ] || fail "release archive does not contain clawchat-connect"
 [ -f "$tmp_dir/clawchat-connect-client/index.html" ] || fail "release archive does not contain Connect Client"
+[ -f "$tmp_dir/LICENSE" ] || fail "release archive does not contain LICENSE"
+[ -f "$tmp_dir/THIRD_PARTY_NOTICES.md" ] || fail "release archive does not contain third-party notices"
 
 mkdir -p "$install_dir"
 if command -v install >/dev/null 2>&1; then
@@ -72,11 +76,14 @@ else
 fi
 mkdir -p "$install_dir/clawchat-connect-client"
 cp -R "$tmp_dir/clawchat-connect-client/." "$install_dir/clawchat-connect-client/"
+mkdir -p "$license_dir"
+cp "$tmp_dir/LICENSE" "$tmp_dir/THIRD_PARTY_NOTICES.md" "$license_dir/"
 
 "$install_dir/clawchat-connect" --help >/dev/null
 
 printf 'Installed clawchat-connect to %s/clawchat-connect\n' "$install_dir"
 printf 'Installed Connect Client assets to %s/clawchat-connect-client\n' "$install_dir"
+printf 'Installed license notices to %s\n' "$license_dir"
 case ":${PATH}:" in
   *":${install_dir}:"*) ;;
   *) printf 'Add %s to PATH before running clawchat-connect.\n' "$install_dir" ;;

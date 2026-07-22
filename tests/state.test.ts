@@ -136,7 +136,18 @@ describe("state store", () => {
     });
     await expect(store.upsertInboundMessage(message("draft"))).resolves.toBe("inserted");
     await expect(store.upsertInboundMessage(message("draft"))).resolves.toBe("duplicate");
+    await expect(store.hasHandledInboundMessage("codex", "msg-1", message("draft").raw)).resolves.toBe(false);
+    await expect(store.listUnhandledInboundMessages("codex")).resolves.toEqual([message("draft").raw]);
+    await store.markInboundMessageHandled("codex", "msg-1", message("draft").raw);
+    await expect(store.hasHandledInboundMessage("codex", "msg-1", message("draft").raw)).resolves.toBe(true);
+    await expect(store.listUnhandledInboundMessages("codex")).resolves.toEqual([]);
     await expect(store.upsertInboundMessage(message("final"))).resolves.toBe("updated");
+    await expect(store.hasHandledInboundMessage("codex", "msg-1", message("final").raw)).resolves.toBe(false);
+    await expect(store.listUnhandledInboundMessages("codex")).resolves.toEqual([message("final").raw]);
+    await store.markInboundMessageHandled("codex", "msg-1", message("final").raw);
+    await store.markInboundMessageHandled("codex", "msg-1", message("draft").raw);
+    await expect(store.hasHandledInboundMessage("codex", "msg-1", message("final").raw)).resolves.toBe(true);
+    await expect(store.listUnhandledInboundMessages("codex")).resolves.toEqual([]);
     await expect(store.hasProtocolEvent("codex", "event-1")).resolves.toBe(false);
     await expect(store.claimProtocolEvent("codex", "event-1")).resolves.toBe(true);
     await expect(store.hasProtocolEvent("codex", "event-1")).resolves.toBe(true);

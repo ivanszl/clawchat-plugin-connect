@@ -5,6 +5,8 @@ import { basename, join } from "node:path";
 import { cacheRuntimeMedia } from "../src/runtime/media-cache";
 
 describe("Runtime media cache", () => {
+  const trustedMediaOrigin = { trustedOrigins: ["https://media.example"] } as const;
+
   it("downloads an opaque media URL once and reuses the cached file", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-media-cache-"));
     const stateDbPath = join(directory, "state.sqlite");
@@ -19,8 +21,8 @@ describe("Runtime media cache", () => {
       size: 8,
     };
 
-    const first = await cacheRuntimeMedia(media, stateDbPath, { fetch: fetchMedia });
-    const second = await cacheRuntimeMedia(media, stateDbPath, { fetch: fetchMedia });
+    const first = await cacheRuntimeMedia(media, stateDbPath, { fetch: fetchMedia, ...trustedMediaOrigin });
+    const second = await cacheRuntimeMedia(media, stateDbPath, { fetch: fetchMedia, ...trustedMediaOrigin });
 
     expect(first).toBe(second);
     expect(basename(first)).toBe("report.pdf");
@@ -40,13 +42,17 @@ describe("Runtime media cache", () => {
     };
     const fetchMedia = mock(async (_input: RequestInfo | URL) => new Response("12345"));
 
-    await expect(cacheRuntimeMedia(media, stateDbPath, { fetch: fetchMedia, maxBytes: 4 })).rejects.toThrow(
-      /exceeds the 4-byte download limit/u,
-    );
+    await expect(
+      cacheRuntimeMedia(media, stateDbPath, { fetch: fetchMedia, maxBytes: 4, ...trustedMediaOrigin }),
+    ).rejects.toThrow(/exceeds the 4-byte download limit/u);
     expect(fetchMedia).not.toHaveBeenCalled();
 
     await expect(
-      cacheRuntimeMedia({ ...media, size: undefined }, stateDbPath, { fetch: fetchMedia, maxBytes: 4 }),
+      cacheRuntimeMedia({ ...media, size: undefined }, stateDbPath, {
+        fetch: fetchMedia,
+        maxBytes: 4,
+        ...trustedMediaOrigin,
+      }),
     ).rejects.toThrow(/exceeds the 4-byte download limit/u);
     const cacheRoot = join(directory, "media-cache");
     const cacheDirectories = await readdir(cacheRoot);
@@ -68,8 +74,55 @@ describe("Runtime media cache", () => {
     await expect(
       cacheRuntimeMedia({ kind: "file", url: "https://media.example/private" }, stateDbPath, {
         fetch: fetchMedia,
+        ...trustedMediaOrigin,
       }),
     ).rejects.toThrow(/HTTP 403/u);
+  });
+
+  it("rejects private network targets and revalidates redirect destinations", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-media-ssrf-"));
+    const stateDbPath = join(directory, "state.sqlite");
+    const fetchMedia = mock(async () => new Response("private"));
+
+    await expect(
+      cacheRuntimeMedia({ kind: "image", url: "http://127.0.0.1/admin" }, stateDbPath, { fetch: fetchMedia }),
+    ).rejects.toThrow(/private or local address/u);
+    expect(fetchMedia).not.toHaveBeenCalled();
+
+    await expect(
+      cacheRuntimeMedia({ kind: "image", url: "https://internal.example/admin" }, stateDbPath, {
+        fetch: fetchMedia,
+        resolveHostname: async () => ["10.0.0.8"],
+      }),
+    ).rejects.toThrow(/private or local address/u);
+    expect(fetchMedia).not.toHaveBeenCalled();
+
+    const redirectingFetch = mock(
+      async () => new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data" } }),
+    );
+    await expect(
+      cacheRuntimeMedia({ kind: "image", url: "https://media.example/photo.png" }, stateDbPath, {
+        fetch: redirectingFetch,
+        ...trustedMediaOrigin,
+      }),
+    ).rejects.toThrow(/private or local address/u);
+    expect(redirectingFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("revalidates the source URL before reusing a cached media file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-media-cache-policy-"));
+    const stateDbPath = join(directory, "state.sqlite");
+    const media = { kind: "image" as const, url: "http://127.0.0.1/private.png", name: "private.png" };
+    const fetchMedia = mock(async () => new Response("cached"));
+
+    await cacheRuntimeMedia(media, stateDbPath, {
+      fetch: fetchMedia,
+      trustedOrigins: ["http://127.0.0.1"],
+    });
+    await expect(cacheRuntimeMedia(media, stateDbPath, { fetch: fetchMedia })).rejects.toThrow(
+      /private or local address/u,
+    );
+    expect(fetchMedia).toHaveBeenCalledTimes(1);
   });
 
   it("bounds total cache size by evicting the least recently used file", async () => {
@@ -84,6 +137,7 @@ describe("Runtime media cache", () => {
         fetch: fetchMedia,
         maxTotalBytes: 8,
         now: () => now,
+        ...trustedMediaOrigin,
       });
 
     const first = await cache("https://media.example/first", "first.bin");
@@ -101,7 +155,7 @@ describe("Runtime media cache", () => {
     let now = 20_000;
     const fetchMedia = mock(async () => new Response("fresh"));
     const media = { kind: "file" as const, url: "https://media.example/expiring", name: "expiring.bin" };
-    const options = { fetch: fetchMedia, ttlMs: 1_000, now: () => now };
+    const options = { fetch: fetchMedia, ttlMs: 1_000, now: () => now, ...trustedMediaOrigin };
 
     const first = await cacheRuntimeMedia(media, stateDbPath, options);
     await utimes(first, new Date(now), new Date(now));

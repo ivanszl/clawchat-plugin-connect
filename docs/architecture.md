@@ -63,7 +63,7 @@ RuntimeAdapterRegistry → CodexRuntimeAdapter → private JSONL JSON-RPC client
 - The Connect Service composition root registers and closes one shared Runtime Adapter registry. Binding runtimes close only their own Sessions, so stopping one Binding cannot tear down adapters used by another runtime kind.
 - The first release registers the Codex Runtime Adapter; `ConnectRuntime` has no Codex dependency.
 - `ConnectRuntime` owns queueing, Session lifecycle, workspace resolution, output visibility, reply delivery, and persisted Runtime Thread IDs.
-- ClawChat media fragments remain structured across `ConnectRuntimePrompt`: the Codex Adapter downloads every media URL unchanged into the Connect-owned cache, submits images and audio as native local app-server inputs, and submits files and videos as local file mentions. Downloads accept only HTTP(S), are capped at 100 MiB, and use path-safe cached names. The cache is bounded to 512 MiB, refreshes access time on reuse, evicts least-recently-used files when full, and expires files after 15 days without access.
+- ClawChat media fragments remain structured across `ConnectRuntimePrompt`: the Codex Adapter downloads media into the Connect-owned cache, submits images and audio as native local app-server inputs, and submits files and videos as local file mentions. Configured API/media origins are trusted for private self-hosting; other URLs require HTTPS and public DNS answers. Every redirect is revalidated. Downloads are capped at 100 MiB and use path-safe cached names. The cache is bounded to 512 MiB, refreshes access time on reuse, evicts least-recently-used files when full, and expires files after 15 days without access.
 - Adapters receive a resolved `RuntimeWorkspace` and never access SQLite directly. They may discover resumable Runtime Threads scoped to that workspace through the same seam.
 
 Future coding clients should add direct Runtime Adapters behind the same seam rather than changing Agent Binding or `ConnectRuntime` semantics.
@@ -152,6 +152,12 @@ Stable app-server turn/item notifications are normalized into runtime output kin
 
 The runtime applies `minimal`, `normal`, or `full` visibility and sends complete ClawChat `message.reply` frames. Protocol streaming lifecycle events are not used.
 
+Local Markdown images become outbound media only when their canonical path is inside the media cache or resolved Runtime Workspace and their extension plus binary signature identify PNG, JPEG, GIF, or WebP content. Arbitrary Markdown file references remain text.
+
+## Reliable inbound processing
+
+Protocol v2 frames and materialized messages are recorded before dispatch. Once a materialized message has been durably handed to the recoverable inbound processor, Connect may advance the live ACK without waiting for a long command or Runtime turn. The processor stores a content-specific completion marker after processing and scans persisted rows without a matching marker at startup and after reconnect. An exact completed replay is skipped, while a coalesced message update is dispatched as new content. Delivery is therefore at least once: a process failure after an external side effect but before its completion marker can repeat that side effect after restart.
+
 ## External capability policy
 
 - Connect has no dynamic tool registry, local memory tools, or MCP entrypoint.
@@ -167,6 +173,7 @@ src/cli.ts                     CLI commands and process startup
 src/activation.ts              Activation and Profile nickname synchronization
 src/profile.ts                 Explicit authenticated Profile updates
 src/ws-client.ts               Protocol v2 over Bun WebSocket
+src/media-api-client.ts        Authenticated ClawChat media upload client
 src/message-mapper.ts          ClawChat message fragment mapping
 src/chat-commands.ts           Session and Project command intent
 src/projects.ts                Project catalog and workspace resolution

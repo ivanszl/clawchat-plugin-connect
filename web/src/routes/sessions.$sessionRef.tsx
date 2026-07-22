@@ -166,7 +166,7 @@ function SessionPage() {
         isOpen={deleteOpen}
         onOpenChange={setDeleteOpen}
         title="永久删除这个 Session？"
-        description="这会删除 Codex Thread 以及 Connect 保存的本地消息投影，且无法恢复。SubAgent Thread 不会被 Connect 额外级联删除。"
+        description="这会删除原生 Runtime Thread 以及 Connect 保存的本地消息投影，且无法恢复。子 Thread 不会被 Connect 额外级联删除。"
         cancelLabel="取消"
         actionLabel="永久删除"
         isActionLoading={lifecycle.isPending}

@@ -145,6 +145,7 @@ export function defaultConfig(): ConnectConfig {
 export function normalizeConfig(raw: unknown): ConnectConfig {
   const fallback = defaultConfig();
   const record = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const baseUrl = readString(record.baseUrl) || fallback.baseUrl;
   const rawAgents =
     record.agents && typeof record.agents === "object" && !Array.isArray(record.agents)
       ? (record.agents as Record<string, unknown>)
@@ -167,10 +168,15 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
   const firstAgent = Object.keys(agents)[0] ?? null;
   const requestedDefault = readString(record.defaultAgent) || null;
   const defaultAgent = requestedDefault && agents[requestedDefault] ? requestedDefault : firstAgent;
+  const configuredMediaUploadUrl = readString(record.mediaUploadUrl);
+  const mediaUploadUrl =
+    !configuredMediaUploadUrl || (configuredMediaUploadUrl === fallback.mediaUploadUrl && baseUrl !== fallback.baseUrl)
+      ? new URL("/media/upload", baseUrl).toString()
+      : configuredMediaUploadUrl;
   return {
-    baseUrl: readString(record.baseUrl) || fallback.baseUrl,
+    baseUrl,
     websocketUrl: readString(record.websocketUrl) || fallback.websocketUrl,
-    mediaUploadUrl: readString(record.mediaUploadUrl) || fallback.mediaUploadUrl,
+    mediaUploadUrl,
     stateDbPath: requireAbsolutePath(readString(record.stateDbPath) || fallback.stateDbPath, "stateDbPath"),
     defaultAgent,
     outputVisibility: isOutputVisibility(record.outputVisibility) ? record.outputVisibility : fallback.outputVisibility,

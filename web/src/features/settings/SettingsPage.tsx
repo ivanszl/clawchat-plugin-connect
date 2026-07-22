@@ -83,7 +83,7 @@ function BindingSettings({
         <TextInput label="显示名称" value={displayName} onChange={setDisplayName} width="100%" />
         <TextInput
           label="模型"
-          description="留空时使用 Codex 的本地默认值。"
+          description="留空时使用 Runtime Adapter 的本地默认值。"
           value={model}
           onChange={setModel}
           placeholder="默认模型"

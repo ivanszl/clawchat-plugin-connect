@@ -62,11 +62,25 @@ class BunWebSocketFake implements WebSocketLike {
 }
 
 function createStore(options: { deviceId?: string; claim?: boolean } = {}): ConnectStateStore {
+  const handledMessages = new Map<string, string>();
+  const handledContent = (raw: unknown): string => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return JSON.stringify(raw);
+    const content = { ...(raw as Record<string, unknown>) };
+    for (const field of ["dseq", "emitted_at", "trace_id"]) delete content[field];
+    return JSON.stringify(content);
+  };
   return {
     getDeviceId: mock(async () => options.deviceId ?? null),
     setDeviceId: mock(async () => undefined),
     claimMessageOnce: mock(async () => options.claim ?? true),
     upsertInboundMessage: mock(async () => "inserted" as const),
+    hasHandledInboundMessage: mock(
+      async (agentId: string, messageId: string, raw: unknown) =>
+        handledMessages.get(`${agentId}:${messageId}`) === handledContent(raw),
+    ),
+    markInboundMessageHandled: mock(async (agentId: string, messageId: string, raw: unknown) => {
+      handledMessages.set(`${agentId}:${messageId}`, handledContent(raw));
+    }),
     hasProtocolEvent: mock(async () => false),
     claimProtocolEvent: mock(async () => true),
     markMessageAcknowledged: mock(async () => true),
@@ -707,6 +721,7 @@ describe("ConnectWsClient", () => {
     const transport = new MemoryTransport();
     const stateStore = createStore({ claim: false });
     stateStore.upsertInboundMessage = mock(async () => "duplicate" as const);
+    stateStore.hasHandledInboundMessage = mock(async () => true);
     const client = createClient({
       url: "ws://example/ws",
       token: "token",
@@ -742,6 +757,103 @@ describe("ConnectWsClient", () => {
     expect(stateStore.upsertInboundMessage).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "test-binding", messageId: "msg-1" }),
     );
+  });
+
+  it("does not acknowledge a reliable message before its durable handoff accepts it", async () => {
+    const transport = new MemoryTransport();
+    const stateStore = createStore();
+    let handlerStarted = false;
+    let releaseHandler: (() => void) | undefined;
+    const handlerGate = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore,
+      transport,
+      traceIdFactory: () => "trace-handler",
+      heartbeat: { enabled: false },
+      reliability: { ackDebounceMs: 0, ackResendMs: 0 },
+      messageHandler: async () => {
+        handlerStarted = true;
+        await handlerGate;
+        return "accepted" as const;
+      },
+    });
+    await handshake(client, transport, "trace-handler");
+    transport.receive({
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "message-handler",
+      emitted_at: 5,
+      dseq: 1,
+      chat_id: "chat-1",
+      chat_type: "direct",
+      sender: { id: "usr-1", type: "direct", nick_name: "User" },
+      payload: {
+        message_id: "msg-handler",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "hi" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    });
+    await flush();
+
+    expect(handlerStarted).toBe(true);
+    expect(transport.sent.some((event) => event.event === EVENT.MESSAGE_SYNC_ACK)).toBe(false);
+    releaseHandler?.();
+    await Bun.sleep(5);
+    expect(stateStore.markInboundMessageHandled).not.toHaveBeenCalled();
+    expect(transport.sent.at(-1)).toMatchObject({ event: EVENT.MESSAGE_SYNC_ACK, payload: { dseq: 1 } });
+    client.close();
+  });
+
+  it("retries an audited message whose production handler did not finish", async () => {
+    const transport = new MemoryTransport();
+    const stateStore = createStore();
+    stateStore.upsertInboundMessage = mock(async () => "duplicate" as const);
+    stateStore.hasHandledInboundMessage = mock(async () => false);
+    const messageHandler = mock(async () => "handled" as const);
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore,
+      transport,
+      traceIdFactory: () => "trace-retry",
+      heartbeat: { enabled: false },
+      reliability: { ackDebounceMs: 0, ackResendMs: 0 },
+      messageHandler,
+    });
+    await handshake(client, transport, "trace-retry");
+    transport.receive({
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "message-retry",
+      emitted_at: 5,
+      dseq: 1,
+      chat_id: "chat-1",
+      chat_type: "direct",
+      sender: { id: "usr-1", type: "direct", nick_name: "User" },
+      payload: {
+        message_id: "msg-retry",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "retry me" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    });
+    await Bun.sleep(5);
+
+    expect(messageHandler).toHaveBeenCalledTimes(1);
+    expect(stateStore.markInboundMessageHandled).toHaveBeenCalled();
+    expect(transport.sent.at(-1)).toMatchObject({ event: EVENT.MESSAGE_SYNC_ACK, payload: { dseq: 1 } });
+    client.close();
   });
 
   it("re-dispatches coalesced message updates but skips exact reliable duplicates", async () => {

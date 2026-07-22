@@ -4,6 +4,7 @@ import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 export interface ConnectRuntimePrompt {
   prompt: string;
   media?: ConnectRuntimeMedia[];
+  trustedMediaOrigins?: string[];
   workspace: RuntimeWorkspace;
   mode?: string;
   metadata?: Record<string, string>;

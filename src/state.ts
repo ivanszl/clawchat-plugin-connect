@@ -882,7 +882,8 @@ export class ConnectStateStore {
     if (protocolDeliveryContentJson(existing.raw_json) === protocolDeliveryContentJson(input.raw)) return "duplicate";
     await db.run(
       `UPDATE clawchat_messages
-       SET event_type = ?, trace_id = ?, chat_id = ?, text = ?, raw_json = ?, created_at = ?
+       SET event_type = ?, trace_id = ?, chat_id = ?, text = ?, raw_json = ?, created_at = ?,
+           handled_content_json = NULL, handled_at = NULL
        WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?`,
       input.eventType,
       input.traceId ?? null,
@@ -894,6 +895,56 @@ export class ConnectStateStore {
       messageId,
     );
     return "updated";
+  }
+  async hasHandledInboundMessage(agentId: string, messageId: string, raw: unknown): Promise<boolean> {
+    const db = await this.requireDb();
+    const row = await db.get<{ handled_content_json?: string | null }>(
+      `SELECT handled_content_json FROM clawchat_messages
+       WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?`,
+      requireStateString(agentId, "agentId"),
+      requireStateString(messageId, "messageId"),
+    );
+    return row?.handled_content_json === protocolDeliveryContentJson(raw);
+  }
+  async markInboundMessageHandled(agentId: string, messageId: string, raw: unknown): Promise<void> {
+    const db = await this.requireDb();
+    const normalizedAgentId = requireStateString(agentId, "agentId");
+    const normalizedMessageId = requireStateString(messageId, "messageId");
+    const current = await db.get<{ raw_json?: string }>(
+      `SELECT raw_json FROM clawchat_messages
+       WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?`,
+      normalizedAgentId,
+      normalizedMessageId,
+    );
+    if (!current) throw new Error(`inbound message was not persisted before handling: ${messageId}`);
+    if (protocolDeliveryContentJson(current.raw_json) !== protocolDeliveryContentJson(raw)) return;
+    const result = await db.run(
+      `UPDATE clawchat_messages
+       SET handled_content_json = ?, handled_at = ?
+       WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?
+         AND raw_json = ?`,
+      protocolDeliveryContentJson(raw),
+      Date.now(),
+      normalizedAgentId,
+      normalizedMessageId,
+      current.raw_json ?? null,
+    );
+    // A concurrent coalesced update deliberately wins. Its own handler will
+    // write the completion marker for the newer content.
+    if ((result.changes ?? 0) === 0) return;
+  }
+  async listUnhandledInboundMessages(agentId: string): Promise<unknown[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<Array<{ raw_json?: string; handled_content_json?: string | null }>>(
+      `SELECT raw_json, handled_content_json FROM clawchat_messages
+       WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND handled_content_json IS NULL
+       ORDER BY created_at, id`,
+      requireStateString(agentId, "agentId"),
+    );
+    return rows.flatMap((row) => {
+      const raw = parseJsonValue(row.raw_json);
+      return row.handled_content_json === protocolDeliveryContentJson(raw) ? [] : [raw];
+    });
   }
   async claimProtocolEvent(agentId: string, eventId: string): Promise<boolean> {
     const db = await this.requireDb();
@@ -1347,7 +1398,9 @@ export class ConnectStateStore {
         protocol_message_id TEXT,
         acked_at INTEGER,
         rejected_at INTEGER,
-        send_error TEXT
+        send_error TEXT,
+        handled_content_json TEXT,
+        handled_at INTEGER
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique
         ON clawchat_messages(local_agent_id, direction, kind, message_id)
@@ -1446,6 +1499,10 @@ export class ConnectStateStore {
     const messageColumns = await db.all<{ name: string }[]>("PRAGMA table_info(clawchat_messages)");
     if (!messageColumns.some((column) => column.name === "rejected_at"))
       await db.exec("ALTER TABLE clawchat_messages ADD COLUMN rejected_at INTEGER");
+    if (!messageColumns.some((column) => column.name === "handled_content_json"))
+      await db.exec("ALTER TABLE clawchat_messages ADD COLUMN handled_content_json TEXT");
+    if (!messageColumns.some((column) => column.name === "handled_at"))
+      await db.exec("ALTER TABLE clawchat_messages ADD COLUMN handled_at INTEGER");
     await db.run(
       `UPDATE runtime_sessions AS rs SET has_messages = 1 WHERE has_messages = 0 AND (runtime_session_id IS NOT NULL OR EXISTS (SELECT 1 FROM clawchat_messages AS message WHERE message.local_agent_id = rs.agent_id AND message.chat_id = rs.chat_id AND message.direction = 'inbound' AND message.kind = 'message' AND COALESCE(message.text, '') NOT LIKE '/%' AND message.created_at >= rs.created_at AND NOT EXISTS (SELECT 1 FROM runtime_sessions AS newer WHERE newer.chat_id = rs.chat_id AND newer.agent_id = rs.agent_id AND newer.created_at > rs.created_at AND newer.created_at <= message.created_at)))`,
     );
