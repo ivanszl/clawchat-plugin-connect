@@ -35,7 +35,7 @@ export interface ConnectConfig {
   outputVisibility: OutputVisibility;
   agents: Record<string, AgentBindingConfig>;
   maxConcurrentTurns?: number;
-  maxPendingPerChat?: number;
+  maxPendingPerSession?: number;
   clientHost: ClientHost;
   clientPort: number;
 }
@@ -75,6 +75,8 @@ export interface RuntimeSessionRecord {
   projectId: string | null;
   name: string | null;
   mode: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
   hasMessages: boolean;
   isCurrent: boolean;
   updatedAt: number;
@@ -86,6 +88,8 @@ export interface SessionIntentRecord {
   projectId: string | null;
   name: string | null;
   mode: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
   updatedAt: number;
 }
 

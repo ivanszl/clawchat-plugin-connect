@@ -23,6 +23,8 @@ function session(overrides: Partial<RuntimeSessionRecord> = {}): RuntimeSessionR
     projectId: null,
     name: null,
     mode: null,
+    model: null,
+    reasoningEffort: null,
     hasMessages: true,
     isCurrent: true,
     updatedAt: 1,

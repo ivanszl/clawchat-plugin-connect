@@ -8,6 +8,7 @@ import type {
 } from "../client-contract";
 import { getAgentBinding } from "../config";
 import { ProjectCatalog } from "../projects";
+import { resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { RuntimeThreadSummary } from "../runtime/types";
 import type { ConnectStateStore } from "../state";
@@ -58,6 +59,28 @@ export class SessionCatalog {
     const session = await this.options.stateStore.getRuntimeSessionByRef(normalized);
     const target = session ? null : await this.options.stateStore.getSessionRefTarget(normalized);
     const runtimeThreadAvailable = Boolean(session?.runtimeSessionId || target?.runtimeSessionId);
+    const binding = getAgentBinding(this.options.config, entry.bindingId);
+    const advertisedModels = await this.options.runtimeAdapters.listModels(binding);
+    const modelOptions = advertisedModels ?? [];
+    let modelAvailable = true;
+    let effectiveModel: string | null = null;
+    let effectiveReasoningEffort: string | null = null;
+    let modelSource: SessionView["modelSource"] = "runtime";
+    try {
+      const effective = resolveModelSelection(
+        binding,
+        session ?? { model: null, reasoningEffort: null },
+        advertisedModels,
+      );
+      effectiveModel = effective.model ?? null;
+      effectiveReasoningEffort = effective.reasoningEffort ?? null;
+      modelSource = effective.source;
+    } catch {
+      modelAvailable = false;
+      effectiveModel = session?.model ?? binding.model ?? null;
+      effectiveReasoningEffort = session?.reasoningEffort ?? binding.modelReasoningEffort ?? null;
+      modelSource = session?.model ? "session" : binding.model ? "binding" : "runtime";
+    }
     return {
       revision: Math.max(1, Date.parse(entry.updatedAt) || 1),
       sessionRef: normalized,
@@ -69,6 +92,13 @@ export class SessionCatalog {
       name: entry.name,
       isArchived: entry.isArchived,
       mode: session?.mode ?? null,
+      model: session?.model ?? null,
+      reasoningEffort: session?.reasoningEffort ?? null,
+      effectiveModel,
+      effectiveReasoningEffort,
+      modelSource,
+      modelAvailable,
+      modelOptions,
       status: entry.status,
       runtimeThreadAvailable,
       activeTurnId: null,
@@ -104,6 +134,8 @@ export class SessionCatalog {
         projectId: entry.projectId,
         name: entry.name,
         mode: null,
+        model: null,
+        reasoningEffort: null,
         hasMessages: true,
         isCurrent: false,
         updatedAt: Date.parse(entry.updatedAt) || Date.now(),
@@ -163,6 +195,8 @@ export class SessionCatalog {
         projectId: target.session.projectId,
         name: target.session.name,
         mode: target.session.mode,
+        model: target.session.model,
+        reasoningEffort: target.session.reasoningEffort,
       });
     }
     this.invalidate();
@@ -188,6 +222,8 @@ export class SessionCatalog {
         projectId: target.session.projectId,
         name: target.session.name,
         mode: target.session.mode,
+        model: target.session.model,
+        reasoningEffort: target.session.reasoningEffort,
       });
     }
     const deleted = await this.options.stateStore.deleteSessionByRef(target.entry.sessionRef);

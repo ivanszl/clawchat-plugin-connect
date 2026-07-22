@@ -186,6 +186,13 @@ export interface SessionView {
   name: string;
   isArchived: boolean;
   mode: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
+  effectiveModel: string | null;
+  effectiveReasoningEffort: string | null;
+  modelSource: "session" | "binding" | "runtime";
+  modelAvailable: boolean;
+  modelOptions: RuntimeModelOptionView[];
   status: "idle" | "running" | "queued" | "offline" | "error";
   runtimeThreadAvailable: boolean;
   activeTurnId: string | null;
@@ -195,11 +202,30 @@ export interface SessionView {
   updatedAt: string;
 }
 
+export interface RuntimeModelOptionView {
+  id: string;
+  displayName: string;
+  description: string;
+  isDefault: boolean;
+  defaultReasoningEffort: string;
+  supportedReasoningEfforts: string[];
+  inputModalities: Array<"text" | "image" | "audio">;
+}
+
+export interface ProjectView {
+  projectId: string;
+  name: string;
+  rootPath: string;
+  additionalDirectories: string[];
+}
+
 export interface BindingPreferenceView {
   bindingId: string;
   displayName: string;
   model: string | null;
   modelReasoningEffort: string | null;
+  modelOptions: RuntimeModelOptionView[];
+  modeOptions: string[];
 }
 
 export interface BootstrapView {
@@ -252,6 +278,17 @@ export interface StartTurnRequest {
   prompt: string;
 }
 
+export interface CreateSessionRequest {
+  requestId: string;
+  prompt: string;
+  bindingId: string;
+  projectId: string | null;
+  name: string | null;
+  mode: string | null;
+  model: string | null;
+  reasoningEffort: string | null;
+}
+
 export interface StartTurnResponse {
   accepted: true;
   turnId: string;
@@ -271,6 +308,19 @@ export interface SessionMutationRequest {
   requestId: string;
 }
 
+export interface UpdateSessionPreferencesRequest {
+  requestId: string;
+  model: string | null;
+  reasoningEffort: string | null;
+}
+
+export interface AddProjectRequest {
+  requestId: string;
+  name: string;
+  rootPath: string;
+  additionalDirectories: string[];
+}
+
 export interface SessionArchiveResponse {
   sessionRef: string;
   archived: boolean;
@@ -285,7 +335,7 @@ export interface UpdateBindingPreferencesRequest {
   requestId: string;
   displayName?: string;
   model?: string | null;
-  modelReasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | null;
+  modelReasoningEffort?: string | null;
   outputVisibility?: "minimal" | "normal" | "full";
 }
 

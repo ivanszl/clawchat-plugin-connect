@@ -18,9 +18,10 @@ import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig, RuntimeSessionRecord, RuntimeWorkspace } from "../types";
 import type { ConnectWsClient } from "../ws-client";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
+import { resolveModelSelection } from "./model-selection";
 import type { RuntimeAdapterRegistry } from "./registry";
 import { type QueueStats, SessionQueue } from "./session-queue";
-import type { ConnectRuntimeMedia, ConnectRuntimeSession, SelectableRuntimeThread } from "./types";
+import type { ConnectRuntimeMedia, ConnectRuntimeSession, RuntimeModelOption, SelectableRuntimeThread } from "./types";
 
 export interface ConnectRuntimeOptions {
   agentId: string;
@@ -37,7 +38,8 @@ export class ConnectRuntime {
   private readonly runtimeAdapters: RuntimeAdapterRegistry;
   private readonly projects: ProjectCatalog;
   private readonly sessions = new Map<string, ConnectRuntimeSession>();
-  private readonly activeTurnChats = new Set<string>();
+  private readonly activeTurnSessionChats = new Map<string, string>();
+  private readonly routingTails = new Map<string, Promise<void>>();
   private readonly queue: SessionQueue;
 
   constructor(private readonly options: ConnectRuntimeOptions) {
@@ -46,25 +48,60 @@ export class ConnectRuntime {
     this.projects = options.projects ?? new ProjectCatalog(options.stateStore);
     this.queue = new SessionQueue({
       maxConcurrentTurns: options.config.maxConcurrentTurns,
-      maxPendingPerChat: options.config.maxPendingPerChat,
+      maxPendingPerSession: options.config.maxPendingPerSession,
       onStatsChange: async (stats) => await this.recordRuntimeStatus(stats),
     });
   }
 
-  async handleInboundMessage(message: NormalizedInboundMessage, beforeTurn?: () => Promise<boolean>): Promise<void> {
+  async handleInboundMessage(
+    message: NormalizedInboundMessage,
+    beforeTurn?: () => Promise<boolean>,
+    orderedControl = false,
+  ): Promise<void> {
     try {
-      const queueKey = message.chatId;
-      await this.queue.enqueue(queueKey, async () => {
-        if (await beforeTurn?.()) return;
-        this.activeTurnChats.add(queueKey);
-        await this.recordRuntimeStatus(this.queue.stats());
-        try {
-          await this.runTurn(message);
-        } finally {
-          this.activeTurnChats.delete(queueKey);
-          await this.recordRuntimeStatus(this.queue.stats());
-        }
+      if (orderedControl) {
+        await this.withRoutingGate(message.chatId, async () => {
+          const selected = await this.options.stateStore.getCurrentRuntimeSession(message.chatId, this.options.agentId);
+          const controlIdentity = selected
+            ? sessionKey(selected.chatId, selected.sessionId)
+            : pendingIntentKey(message.chatId, this.options.agentId);
+          let handled = false;
+          await this.queue.enqueue(
+            controlIdentity,
+            async () => {
+              handled = (await beforeTurn?.()) ?? false;
+            },
+            selected ? `Session ${selected.sessionRef}` : "pending Session Intent",
+          );
+          if (!handled) {
+            const current = await this.materializeCurrentSession(message.chatId);
+            await this.queue.enqueue(
+              sessionKey(current.chatId, current.sessionId),
+              async () => {
+                await this.runTrackedTurn(message, current);
+              },
+              `Session ${current.sessionRef}`,
+            );
+          }
+        });
+        return;
+      }
+
+      let completion: Promise<void> | null = null;
+      await this.withRoutingGate(message.chatId, async () => {
+        const current = await this.materializeCurrentSession(message.chatId);
+        const key = sessionKey(current.chatId, current.sessionId);
+        completion = this.queue.enqueue(
+          key,
+          async () => {
+            if (await beforeTurn?.()) return;
+            await this.runTrackedTurn(message, current);
+          },
+          `Session ${current.sessionRef}`,
+        );
       });
+      if (!completion) throw new Error("failed to enqueue Session turn");
+      await completion;
     } catch (error) {
       await this.sendVisibleFailure(
         message,
@@ -79,18 +116,22 @@ export class ConnectRuntime {
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
     if (!current || current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
     const turnId = randomUUID();
-    const key = current.chatId;
+    const key = sessionKey(current.chatId, current.sessionId);
     void this.queue
-      .enqueue(key, async () => {
-        this.activeTurnChats.add(key);
-        await this.recordRuntimeStatus(this.queue.stats());
-        try {
-          await this.runClientTurn(current, text, turnId);
-        } finally {
-          this.activeTurnChats.delete(key);
+      .enqueue(
+        key,
+        async () => {
+          this.activeTurnSessionChats.set(key, current.chatId);
           await this.recordRuntimeStatus(this.queue.stats());
-        }
-      })
+          try {
+            await this.runClientTurn(current, text, turnId);
+          } finally {
+            this.activeTurnSessionChats.delete(key);
+            await this.recordRuntimeStatus(this.queue.stats());
+          }
+        },
+        `Session ${current.sessionRef}`,
+      )
       .catch(async (error) => {
         await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, {
           kind: "final",
@@ -132,6 +173,10 @@ export class ConnectRuntime {
 
   runtimeModesFor(binding: AgentBindingConfig): readonly string[] {
     return this.runtimeAdapters.modesFor(binding);
+  }
+
+  async listRuntimeModels(binding: AgentBindingConfig): Promise<RuntimeModelOption[] | null> {
+    return await this.runtimeAdapters.listModels(binding);
   }
 
   async discoverRuntimeThreads(chatId: string): Promise<SelectableRuntimeThread[]> {
@@ -186,10 +231,10 @@ export class ConnectRuntime {
     return Boolean(session) || Boolean(current?.runtimeSessionId);
   }
 
-  private async runTurn(message: NormalizedInboundMessage): Promise<void> {
-    const current = await this.ensureCurrentSession(message.chatId);
+  private async runTurn(message: NormalizedInboundMessage, current: RuntimeSessionRecord): Promise<void> {
     const activeAgentId = current.agentId || this.options.agentId;
     const workspace = await this.projects.resolveWorkspace(current);
+    const model = await this.modelFor(current, activeAgentId);
     const session = await this.sessionForChat(current, activeAgentId);
     const mode = await resolveOutputVisibility({
       config: this.options.config,
@@ -211,6 +256,8 @@ export class ConnectRuntime {
       trustedMediaOrigins: configuredMediaOrigins(this.options.config),
       workspace,
       mode: current.mode ?? undefined,
+      model: model.model,
+      reasoningEffort: model.reasoningEffort,
       metadata: {
         chatId: message.chatId,
         sessionId: current.sessionId,
@@ -231,6 +278,7 @@ export class ConnectRuntime {
   private async runClientTurn(current: RuntimeSessionRecord, prompt: string, turnId: string): Promise<void> {
     const activeAgentId = current.agentId || this.options.agentId;
     const workspace = await this.projects.resolveWorkspace(current);
+    const model = await this.modelFor(current, activeAgentId);
     const session = await this.sessionForChat(current, activeAgentId);
     await this.options.transcriptProjection?.appendUserMessage({
       sessionRef: current.sessionRef,
@@ -243,6 +291,8 @@ export class ConnectRuntime {
       prompt,
       workspace,
       mode: current.mode ?? undefined,
+      model: model.model,
+      reasoningEffort: model.reasoningEffort,
       metadata: {
         origin: "client",
         turnId,
@@ -264,8 +314,8 @@ export class ConnectRuntime {
     await this.options.stateStore.upsertRuntimeStatus({
       websocketConnected: true,
       activeAgent: this.options.agentId,
-      activeChats: this.sessions.size,
-      globalRunning: this.activeTurnChats.size,
+      activeChats: new Set(this.activeTurnSessionChats.values()).size,
+      globalRunning: this.activeTurnSessionChats.size,
       globalQueued: stats.queued,
       recentError: null,
     });
@@ -311,40 +361,41 @@ export class ConnectRuntime {
     return { chatId: ownerDirectChatId, chatType: "direct" };
   }
 
-  private async ensureCurrentSession(chatId: string): Promise<RuntimeSessionRecord> {
-    const intent = await this.options.stateStore.getSessionIntent(chatId, this.options.agentId);
-    if (intent) {
-      const sessionId = randomUUID();
-      await this.options.stateStore.upsertRuntimeSession({
-        chatId,
-        sessionId,
-        agentId: intent.agentId,
-        runtimeSessionId: null,
-        projectId: intent.projectId,
-        name: intent.name,
-        mode: intent.mode,
-        hasMessages: true,
-        isCurrent: true,
-      });
-      const created = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
-      if (!created) throw new Error("failed to materialize Session Intent");
-      return created;
-    }
-    const current = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
-    if (current) return current;
-    const sessionId = randomUUID();
-    await this.options.stateStore.upsertRuntimeSession({
+  private async materializeCurrentSession(chatId: string): Promise<RuntimeSessionRecord> {
+    return await this.options.stateStore.resolveOrMaterializeRuntimeSession({
       chatId,
-      sessionId,
       agentId: this.options.agentId,
-      runtimeSessionId: null,
-      projectId: null,
-      hasMessages: true,
-      isCurrent: true,
+      sessionId: randomUUID(),
     });
-    const created = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
-    if (!created) throw new Error("failed to create a non-Project session");
-    return created;
+  }
+
+  private async runTrackedTurn(message: NormalizedInboundMessage, current: RuntimeSessionRecord): Promise<void> {
+    const key = sessionKey(current.chatId, current.sessionId);
+    this.activeTurnSessionChats.set(key, current.chatId);
+    await this.recordRuntimeStatus(this.queue.stats());
+    try {
+      await this.runTurn(message, current);
+    } finally {
+      this.activeTurnSessionChats.delete(key);
+      await this.recordRuntimeStatus(this.queue.stats());
+    }
+  }
+
+  private async withRoutingGate<T>(chatId: string, run: () => Promise<T>): Promise<T> {
+    const previous = this.routingTails.get(chatId) ?? Promise.resolve();
+    let release: (() => void) | undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.catch(() => undefined).then(async () => await current);
+    this.routingTails.set(chatId, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await run();
+    } finally {
+      release?.();
+      if (this.routingTails.get(chatId) === tail) this.routingTails.delete(chatId);
+    }
   }
 
   private async sessionForChat(current: RuntimeSessionRecord, agentId: string): Promise<ConnectRuntimeSession> {
@@ -372,6 +423,11 @@ export class ConnectRuntime {
     });
     this.sessions.set(key, session);
     return session;
+  }
+
+  private async modelFor(current: RuntimeSessionRecord, agentId: string) {
+    const binding = getAgentBinding(this.options.config, agentId);
+    return resolveModelSelection(binding, current, await this.runtimeAdapters.listModels(binding));
   }
 }
 
@@ -489,6 +545,10 @@ function pathIsWithin(candidate: string, root: string): boolean {
 
 function sessionKey(chatId: string, sessionId: string): string {
   return `${chatId}:${sessionId}`;
+}
+
+function pendingIntentKey(chatId: string, agentId: string): string {
+  return `pending:${chatId}:${agentId}`;
 }
 
 function renderPrompt(message: NormalizedInboundMessage): string {

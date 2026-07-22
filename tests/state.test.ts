@@ -308,6 +308,75 @@ describe("state store", () => {
     await store.close();
   });
 
+  it("persists model selection from Session Intent into a materialized Session", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath });
+
+    await store.setSessionIntent({
+      chatId: "chat-model",
+      agentId: "codex",
+      projectId: null,
+      name: "Deep review",
+      mode: "workspace-write",
+      model: "gpt-5.2-codex",
+      reasoningEffort: "high",
+    });
+    await expect(store.getSessionIntent("chat-model", "codex")).resolves.toMatchObject({
+      model: "gpt-5.2-codex",
+      reasoningEffort: "high",
+    });
+
+    await store.upsertRuntimeSession({
+      chatId: "chat-model",
+      sessionId: "session-model",
+      agentId: "codex",
+      projectId: null,
+      name: "Deep review",
+      mode: "workspace-write",
+      model: "gpt-5.2-codex",
+      reasoningEffort: "high",
+    });
+    await store.close();
+
+    const reopened = createStateStore({ dbPath });
+    await expect(reopened.getCurrentRuntimeSession("chat-model", "codex")).resolves.toMatchObject({
+      model: "gpt-5.2-codex",
+      reasoningEffort: "high",
+    });
+    await reopened.close();
+  });
+
+  it("atomically materializes one Session for concurrent first messages", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await store.setSessionIntent({
+      chatId: "chat-race",
+      agentId: "codex",
+      projectId: null,
+      name: "Planned",
+      mode: "read-only",
+      model: "gpt-planned",
+      reasoningEffort: "high",
+    });
+
+    const [first, second] = await Promise.all([
+      store.resolveOrMaterializeRuntimeSession({ chatId: "chat-race", agentId: "codex", sessionId: "first" }),
+      store.resolveOrMaterializeRuntimeSession({ chatId: "chat-race", agentId: "codex", sessionId: "second" }),
+    ]);
+
+    expect(first.sessionId).toBe(second.sessionId);
+    expect(first).toMatchObject({
+      name: "Planned",
+      mode: "read-only",
+      model: "gpt-planned",
+      reasoningEffort: "high",
+    });
+    await expect(store.listRuntimeSessions("chat-race", "codex")).resolves.toHaveLength(1);
+    await expect(store.getSessionIntent("chat-race", "codex")).resolves.toBeNull();
+    await store.close();
+  });
+
   it("updates the runtime thread id for one logical session", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
@@ -322,6 +391,29 @@ describe("state store", () => {
         expect.objectContaining({ sessionId: "current", runtimeSessionId: null, isCurrent: true }),
       ]),
     );
+    await store.close();
+  });
+
+  it("updates Session model fields without overwriting a concurrently assigned Runtime Thread", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await store.upsertRuntimeSession({
+      chatId: "chat-model-update",
+      sessionId: "session-model-update",
+      agentId: "codex",
+      model: "gpt-old",
+      reasoningEffort: "medium",
+    });
+    await store.setRuntimeSessionId("chat-model-update", "codex", "session-model-update", "thread-concurrent");
+
+    await expect(
+      store.setRuntimeSessionModelSelection("chat-model-update", "codex", "session-model-update", "gpt-new", "high"),
+    ).resolves.toBe(true);
+    await expect(store.getCurrentRuntimeSession("chat-model-update", "codex")).resolves.toMatchObject({
+      runtimeSessionId: "thread-concurrent",
+      model: "gpt-new",
+      reasoningEffort: "high",
+    });
     await store.close();
   });
 

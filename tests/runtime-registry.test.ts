@@ -39,6 +39,7 @@ describe("RuntimeAdapterRegistry", () => {
     await expect(registry.start(binding, context)).resolves.toBe(session);
     expect(codex.start).toHaveBeenCalledWith(binding, context);
     expect(registry.modesFor(binding)).toEqual(["read-only", "workspace-write"]);
+    await expect(registry.listModels(binding)).resolves.toBeNull();
     await expect(
       registry.discoverThreads(binding, {
         projectId: "project-1",

@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdir, mkdtemp, realpath, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { handleChatCommand } from "../src/chat-commands";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import type { RuntimeOutputEvent } from "../src/output-visibility";
 import { ProjectCatalog } from "../src/projects";
@@ -105,6 +106,84 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     await fixture.store.close();
   });
 
+  it("routes concurrent first messages through one materialized Session in arrival order", async () => {
+    const fixture = await runtimeFixture();
+    await fixture.store.deleteRuntimeSession("chat-1", "codex", "session-1");
+    await fixture.store.setSessionIntent({
+      chatId: "chat-1",
+      agentId: "codex",
+      projectId: null,
+      model: "gpt-session",
+      reasoningEffort: "high",
+    });
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let markFirstStarted: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const prompts: ConnectRuntimePrompt[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      listModels: async () => [
+        {
+          id: "gpt-session",
+          displayName: "Session model",
+          description: "Session selection",
+          isDefault: true,
+          defaultReasoningEffort: "high",
+          supportedReasoningEfforts: ["high"],
+          inputModalities: ["text"],
+        },
+      ],
+      start: mock(async () => ({
+        prompt: async function* (input: ConnectRuntimePrompt) {
+          prompts.push(input);
+          if (prompts.length === 1) {
+            markFirstStarted?.();
+            await firstGate;
+          }
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+    const firstMessage = message("first");
+    firstMessage.messageId = "message-1";
+    const secondMessage = message("second");
+    secondMessage.messageId = "message-2";
+
+    const first = runtime.handleInboundMessage(firstMessage);
+    await firstStarted;
+    const second = runtime.handleInboundMessage(secondMessage);
+    await Bun.sleep(5);
+    expect(prompts).toHaveLength(1);
+    releaseFirst?.();
+    await Promise.all([first, second]);
+
+    const sessions = await fixture.store.listRuntimeSessions("chat-1", "codex");
+    expect(sessions).toHaveLength(1);
+    expect(await fixture.store.getSessionIntent("chat-1", "codex")).toBeNull();
+    expect(prompts.map((input) => input.metadata?.sessionId)).toEqual([sessions[0]?.sessionId, sessions[0]?.sessionId]);
+    expect(prompts.map((input) => [input.model, input.reasoningEffort])).toEqual([
+      ["gpt-session", "high"],
+      ["gpt-session", "high"],
+    ]);
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
   it("preserves inbound ClawChat media for the Runtime Adapter", async () => {
     const fixture = await runtimeFixture();
     const prompts: ConnectRuntimePrompt[] = [];
@@ -166,6 +245,216 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         },
       ],
     });
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("resolves Session model selection before the Agent Binding default", async () => {
+    const fixture = await runtimeFixture();
+    fixture.config.agents.codex = {
+      kind: "codex",
+      model: "gpt-binding",
+      modelReasoningEffort: "low",
+    };
+    await fixture.store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "codex",
+      model: "gpt-session",
+      reasoningEffort: "high",
+    });
+    const prompts: ConnectRuntimePrompt[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      listModels: async () => [
+        {
+          id: "gpt-session",
+          displayName: "Session model",
+          description: "Session choice",
+          isDefault: false,
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: ["medium", "high"],
+          inputModalities: ["text", "image"],
+        },
+        {
+          id: "gpt-binding",
+          displayName: "Binding model",
+          description: "Binding default",
+          isDefault: true,
+          defaultReasoningEffort: "low",
+          supportedReasoningEfforts: ["low", "medium"],
+          inputModalities: ["text"],
+        },
+      ],
+      start: mock(async () => ({
+        prompt: async function* (input: ConnectRuntimePrompt) {
+          prompts.push(input);
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    await runtime.handleInboundMessage(message("use the session choice"));
+
+    expect(prompts[0]).toMatchObject({ model: "gpt-session", reasoningEffort: "high" });
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("applies an ordered /model change to the next turn without replacing its Runtime Thread", async () => {
+    const fixture = await runtimeFixture();
+    let releaseFirst: (() => void) | undefined;
+    let markFirstStarted: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const prompts: ConnectRuntimePrompt[] = [];
+    const models = [
+      {
+        id: "gpt-default",
+        displayName: "Default model",
+        description: "Runtime default",
+        isDefault: true,
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: ["medium"],
+        inputModalities: ["text" as const],
+      },
+      {
+        id: "gpt-deep",
+        displayName: "Deep model",
+        description: "Deep work",
+        isDefault: false,
+        defaultReasoningEffort: "high",
+        supportedReasoningEfforts: ["high", "xhigh"],
+        inputModalities: ["text" as const],
+      },
+    ];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      listModels: async () => models,
+      start: mock(async (_binding, startContext) => ({
+        prompt: async function* (input: ConnectRuntimePrompt) {
+          prompts.push(input);
+          if (prompts.length === 1) {
+            await startContext.onRuntimeSessionId("thread-stable");
+            markFirstStarted?.();
+            await firstGate;
+          }
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const projects = new ProjectCatalog(fixture.store);
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      projects,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    const first = runtime.handleInboundMessage(message("first turn"));
+    await firstStarted;
+    const controlMessage = message("/model gpt-deep xhigh");
+    controlMessage.messageId = "model-control";
+    const control = runtime.handleInboundMessage(
+      controlMessage,
+      async () =>
+        (
+          await handleChatCommand({
+            message: controlMessage,
+            agentId: "codex",
+            ownerUserId: "user-1",
+            config: fixture.config,
+            stateStore: fixture.store,
+            projects,
+            listRuntimeModels: async () => models,
+          })
+        ).handled,
+      true,
+    );
+    const followingMessage = message("next turn");
+    followingMessage.messageId = "message-after-model";
+    const following = runtime.handleInboundMessage(followingMessage);
+    await Bun.sleep(5);
+    expect(prompts).toHaveLength(1);
+
+    releaseFirst?.();
+    await Promise.all([first, control, following]);
+
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]).toMatchObject({ model: "gpt-default", reasoningEffort: "medium" });
+    expect(prompts[1]).toMatchObject({ model: "gpt-deep", reasoningEffort: "xhigh" });
+    await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      runtimeSessionId: "thread-stable",
+      model: "gpt-deep",
+      reasoningEffort: "xhigh",
+    });
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("reports an unavailable persisted Session model without silently falling back", async () => {
+    const fixture = await runtimeFixture();
+    await fixture.store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "codex",
+      model: "gpt-removed",
+      reasoningEffort: "high",
+    });
+    const start = mock(async () => ({
+      prompt: async function* () {
+        yield { kind: "final", text: "must not run" } as const;
+      },
+      close: mock(async () => undefined),
+    }));
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      listModels: async () => [
+        {
+          id: "gpt-current",
+          displayName: "Current model",
+          description: "Still available",
+          isDefault: true,
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: ["medium", "high"],
+          inputModalities: ["text"],
+        },
+      ],
+      start,
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    await runtime.handleInboundMessage(message("do not fall back"));
+
+    expect(start).not.toHaveBeenCalled();
+    expect(JSON.stringify(fixture.sendMessageEnvelope.mock.calls)).toContain("Model is not available: gpt-removed");
     await runtime.dispose();
     await fixture.store.close();
   });
@@ -322,12 +611,25 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       projectId: project.projectId,
       name: "Planned work",
       mode: "read-only",
+      model: "gpt-planned",
+      reasoningEffort: "medium",
     });
     const discoveredWorkspaces: string[] = [];
     const prompts: ConnectRuntimePrompt[] = [];
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["read-only", "workspace-write", "danger-full-access"],
+      listModels: async () => [
+        {
+          id: "gpt-planned",
+          displayName: "Planned model",
+          description: "For planned work",
+          isDefault: true,
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: ["medium"],
+          inputModalities: ["text"],
+        },
+      ],
       discoverThreads: mock(async (_agent, workspace) => {
         discoveredWorkspaces.push(workspace.workingDirectory);
         return [{ runtimeThreadId: "thread-existing", name: "Existing thread", updatedAt: 1 }];
@@ -364,12 +666,16 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       projectId: project.projectId,
       name: "Planned work",
       mode: "read-only",
+      model: "gpt-planned",
+      reasoningEffort: "medium",
       hasMessages: true,
     });
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toMatchObject({
       workspace: { projectId: project.projectId, workingDirectory: canonicalProjectRoot },
       mode: "read-only",
+      model: "gpt-planned",
+      reasoningEffort: "medium",
     });
     await runtime.dispose();
     await fixture.store.close();
@@ -415,10 +721,14 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       globalRunning: 1,
       globalQueued: 0,
     });
-    const command = runtime.handleInboundMessage(message("/project clear"), async () => {
-      order.push("command");
-      return true;
-    });
+    const command = runtime.handleInboundMessage(
+      message("/project none"),
+      async () => {
+        order.push("command");
+        return true;
+      },
+      true,
+    );
     await Bun.sleep(5);
     expect(order).toEqual(["turn-started"]);
     releaseTurn?.();
@@ -430,6 +740,171 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     });
     await runtime.dispose();
     await fixture.store.close();
+  });
+
+  it("routes the message after /new to the newly selected Session", async () => {
+    const fixture = await runtimeFixture();
+    let releaseFirst: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let markFirstStarted: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const promptedSessionIds: string[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: mock(async () => ({
+        prompt: async function* (input: ConnectRuntimePrompt) {
+          promptedSessionIds.push(input.metadata?.sessionId ?? "missing");
+          if (promptedSessionIds.length === 1) {
+            markFirstStarted?.();
+            await gate;
+          }
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const projects = new ProjectCatalog(fixture.store);
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      projects,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    const first = runtime.handleInboundMessage(message("first turn"));
+    await firstStarted;
+    const controlMessage = message("/new Planned");
+    const control = runtime.handleInboundMessage(
+      controlMessage,
+      async () =>
+        (
+          await handleChatCommand({
+            message: controlMessage,
+            agentId: "codex",
+            ownerUserId: "user-1",
+            config: fixture.config,
+            stateStore: fixture.store,
+            projects,
+            closeRuntimeSession: async (chatId) => await runtime.closeSession(chatId),
+          })
+        ).handled,
+      true,
+    );
+    const followingMessage = message("after new");
+    followingMessage.messageId = "message-after-new";
+    const following = runtime.handleInboundMessage(followingMessage);
+    await Bun.sleep(5);
+    expect(promptedSessionIds).toEqual(["session-1"]);
+    releaseFirst?.();
+    await Promise.all([first, control, following]);
+
+    const sessions = await fixture.store.listRuntimeSessions("chat-1", "codex");
+    const planned = sessions.find((session) => session.name === "Planned");
+    if (!planned) throw new Error("expected the planned Session to materialize");
+    expect(promptedSessionIds).toEqual(["session-1", planned.sessionId]);
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("routes following messages after ordered /project and /switch controls", async () => {
+    for (const scenario of ["project", "switch"] as const) {
+      const fixture = await runtimeFixture();
+      const projects = new ProjectCatalog(fixture.store);
+      const projectRoot = join(dirname(fixture.configPath), `repo-${scenario}`);
+      await mkdir(projectRoot);
+      const project = await projects.add(`repo-${scenario}`, projectRoot);
+      if (scenario === "switch") {
+        await fixture.store.upsertRuntimeSession({
+          chatId: "chat-1",
+          sessionId: "session-target",
+          agentId: "codex",
+          projectId: project.projectId,
+          name: "Target Session",
+          isCurrent: false,
+        });
+      }
+      let releaseFirst: (() => void) | undefined;
+      let markFirstStarted: (() => void) | undefined;
+      const firstStarted = new Promise<void>((resolve) => {
+        markFirstStarted = resolve;
+      });
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const prompted: Array<{ sessionId: string; projectId: string }> = [];
+      const adapter: ConnectRuntimeAdapter = {
+        kind: "codex",
+        modes: ["workspace-write"],
+        start: mock(async () => ({
+          prompt: async function* (input: ConnectRuntimePrompt) {
+            prompted.push({
+              sessionId: input.metadata?.sessionId ?? "missing",
+              projectId: input.metadata?.projectId ?? "missing",
+            });
+            if (prompted.length === 1) {
+              markFirstStarted?.();
+              await firstGate;
+            }
+            yield { kind: "final", text: "done" } as const;
+          },
+          close: mock(async () => undefined),
+        })),
+      };
+      const runtime = new ConnectRuntime({
+        agentId: "codex",
+        config: fixture.config,
+        configPath: fixture.configPath,
+        stateStore: fixture.store,
+        wsClient: fixture.wsClient,
+        projects,
+        runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      });
+
+      const first = runtime.handleInboundMessage(message("first turn"));
+      await firstStarted;
+      const controlMessage = message(scenario === "project" ? `/project ${project.name}` : "/switch Target Session");
+      controlMessage.messageId = `${scenario}-control`;
+      const control = runtime.handleInboundMessage(
+        controlMessage,
+        async () =>
+          (
+            await handleChatCommand({
+              message: controlMessage,
+              agentId: "codex",
+              ownerUserId: "user-1",
+              config: fixture.config,
+              stateStore: fixture.store,
+              projects,
+              closeRuntimeSession: async (chatId) => await runtime.closeSession(chatId),
+              discoverRuntimeThreads: async (chatId) => await runtime.discoverRuntimeThreads(chatId),
+            })
+          ).handled,
+        true,
+      );
+      const followingMessage = message(`after ${scenario}`);
+      followingMessage.messageId = `${scenario}-following`;
+      const following = runtime.handleInboundMessage(followingMessage);
+      await Bun.sleep(5);
+      expect(prompted).toEqual([{ sessionId: "session-1", projectId: "none" }]);
+
+      releaseFirst?.();
+      await Promise.all([first, control, following]);
+
+      expect(prompted).toHaveLength(2);
+      expect(prompted[1]?.projectId).toBe(project.projectId);
+      if (scenario === "switch") expect(prompted[1]?.sessionId).toBe("session-target");
+      else expect(prompted[1]?.sessionId).not.toBe("session-1");
+      await runtime.dispose();
+      await fixture.store.close();
+    }
   });
 
   it("serializes ClawChat and Client turns on the same logical Session", async () => {
@@ -485,6 +960,166 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     releaseClawChat?.();
     await Promise.all([clawChatTurn, clientFinished]);
     expect(order).toEqual(["clawchat-started", "clawchat-finished", "client-started", "client-finished"]);
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("cancels the selected Session immediately while its turn is active", async () => {
+    const fixture = await runtimeFixture();
+    let releaseTurn: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const cancel = mock(async () => true);
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: mock(async () => ({
+        prompt: async function* () {
+          markStarted?.();
+          await gate;
+          yield { kind: "final", text: "done" } as const;
+        },
+        cancel,
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    const turn = runtime.handleInboundMessage(message("long turn"));
+    await started;
+    await expect(runtime.cancelTurn("chat-1")).resolves.toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    releaseTurn?.();
+    await turn;
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("reports a Session Ref when that Session exceeds its pending-turn limit", async () => {
+    const fixture = await runtimeFixture();
+    fixture.config.maxConcurrentTurns = 1;
+    fixture.config.maxPendingPerSession = 1;
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!current) throw new Error("test session was not created");
+    let releaseFirst: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let promptCount = 0;
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: mock(async () => ({
+        prompt: async function* () {
+          promptCount += 1;
+          if (promptCount === 1) {
+            markStarted?.();
+            await gate;
+          }
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+    const firstMessage = message("first");
+    const secondMessage = message("second");
+    secondMessage.messageId = "message-2";
+    const thirdMessage = message("third");
+    thirdMessage.messageId = "message-3";
+
+    const first = runtime.handleInboundMessage(firstMessage);
+    await started;
+    const second = runtime.handleInboundMessage(secondMessage);
+    await Bun.sleep(5);
+    await runtime.handleInboundMessage(thirdMessage);
+    const replies = JSON.stringify(fixture.sendMessageEnvelope.mock.calls);
+    expect(replies).toContain(`too many pending turns for Session ${current.sessionRef}`);
+    expect(replies).not.toContain("pending turns for chat");
+    releaseFirst?.();
+    await Promise.all([first, second]);
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("runs two Sessions in one ClawChat conversation concurrently", async () => {
+    const fixture = await runtimeFixture();
+    await fixture.store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-2",
+      agentId: "codex",
+      projectId: null,
+      isCurrent: false,
+    });
+    const sessions = await fixture.store.listRuntimeSessions("chat-1", "codex");
+    const refs = sessions.map((entry) => entry.sessionRef);
+    expect(refs).toHaveLength(2);
+    let releaseTurns: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseTurns = resolve;
+    });
+    let started = 0;
+    let markBothStarted: (() => void) | undefined;
+    const bothStarted = new Promise<void>((resolve) => {
+      markBothStarted = resolve;
+    });
+    let finished = 0;
+    let markBothFinished: (() => void) | undefined;
+    const bothFinished = new Promise<void>((resolve) => {
+      markBothFinished = resolve;
+    });
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: mock(async () => ({
+        prompt: async function* () {
+          started += 1;
+          if (started === 2) markBothStarted?.();
+          await gate;
+          finished += 1;
+          if (finished === 2) markBothFinished?.();
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    await Promise.all(refs.map(async (sessionRef) => await runtime.enqueueClientTurn(sessionRef, sessionRef)));
+    const concurrency = await Promise.race([bothStarted.then(() => true), Bun.sleep(50).then(() => false)]);
+    expect(concurrency).toBe(true);
+    releaseTurns?.();
+    await bothFinished;
     await runtime.dispose();
     await fixture.store.close();
   });

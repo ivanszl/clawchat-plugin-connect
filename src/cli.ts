@@ -16,6 +16,7 @@ import {
 } from "./config";
 import { startConnectService as startConnectServiceDefault } from "./connect-service";
 import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "./profile";
+import { ProjectCatalog } from "./projects";
 import { type ConnectStateStore, createStateStore } from "./state";
 import type {
   AgentBindingConfig,
@@ -55,6 +56,9 @@ const HELP_TEXT = `${[
   "  agent add <id> --kind codex [--codex-path <path>] [--config <path>]",
   "  agent list [--config <path>]",
   "  agent remove <id> [--config <path>]",
+  "  project add <name> <absolute-path> [--additional-directory <absolute-path>] [--config <path>]",
+  "  project list [--config <path>]",
+  "  project remove <name-or-id> [--config <path>]",
   "  activate <agentId> <code> [--config <path>]",
   "  profile update [--agent <id>] [--nickname <text>] [--avatar-url <url>] [--bio <text>] [--config <path>]",
   "  service install|start|stop|restart|status [--config <path>]",
@@ -82,6 +86,8 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   }
   const nestedAgentResult = await maybeRunNestedAgentCommand(argv, io);
   if (nestedAgentResult !== null) return nestedAgentResult;
+  const nestedProjectResult = await maybeRunNestedProjectCommand(argv, io);
+  if (nestedProjectResult !== null) return nestedProjectResult;
   const nestedProfileResult = await maybeRunNestedProfileCommand(
     argv,
     io,
@@ -212,6 +218,52 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   } catch (error) {
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
+  }
+}
+
+async function maybeRunNestedProjectCommand(argv: string[], io: CliIo): Promise<number | null> {
+  if (argv[0] !== "project") return null;
+  const action = argv[1];
+  const configPath = optionValue(argv, "--config");
+  let store: ConnectStateStore | null = null;
+  try {
+    const config = await loadConfig(configPath);
+    store = createStateStore({ dbPath: config.stateDbPath });
+    const projects = new ProjectCatalog(store);
+    if (action === "add") {
+      const name = argv[2];
+      const rootPath = argv[3];
+      if (!name || !rootPath || name.startsWith("--") || rootPath.startsWith("--"))
+        throw new Error("project add requires a name and absolute path");
+      const project = await projects.add(name, rootPath, optionValues(argv, "--additional-directory"));
+      io.writeStdout(`Registered Project ${project.name} at ${project.rootPath}.\n`);
+      return 0;
+    }
+    if (action === "list") {
+      const rows = (await projects.list()).map(
+        (project) =>
+          `- ${project.name} (${project.projectId}): ${project.rootPath}${project.additionalDirectories.length > 0 ? `; additional: ${project.additionalDirectories.join(", ")}` : ""}`,
+      );
+      io.writeStdout(rows.length > 0 ? `${rows.join("\n")}\n` : "No Projects registered.\n");
+      return 0;
+    }
+    if (action === "remove") {
+      const reference = argv[2];
+      if (!reference || reference.startsWith("--")) throw new Error("project remove requires a name or id");
+      const result = await projects.remove(reference);
+      if (!result.removed)
+        throw new Error(
+          `Cannot remove Project ${result.project.name}: ${result.referencedSessions} Session(s) and ${result.pendingIntents} Session Intent(s) still reference it`,
+        );
+      io.writeStdout(`Removed Project ${result.project.name}.\n`);
+      return 0;
+    }
+    throw new Error("project action must be one of: add, list, remove");
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  } finally {
+    await store?.close();
   }
 }
 
@@ -439,6 +491,16 @@ function formatAgentListRow(id: string, binding: AgentBindingConfig, isDefault: 
 function optionValue(argv: string[], name: string): string | undefined {
   const index = argv.indexOf(name);
   return index >= 0 ? argv[index + 1] : undefined;
+}
+
+function optionValues(argv: string[], name: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== name) continue;
+    const value = argv[index + 1];
+    if (value !== undefined && !value.startsWith("--")) values.push(value);
+  }
+  return values;
 }
 
 function formatActivation(result: ActivateConnectResult): string {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindingRuntimeHandle } from "../src/binding-runtime";
@@ -24,7 +24,11 @@ describe("Connect Client Interface", () => {
     const assetsPath = join(directory, "assets");
     await mkdir(assetsPath);
     await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect test</title>");
-    const store = createStateStore({ dbPath: join(directory, "state.sqlite"), sessionRefFactory: () => "ABCDEFGH" });
+    const sessionRefs = ["ABCDEFGH", "BCDEFGHJ"];
+    const store = createStateStore({
+      dbPath: join(directory, "state.sqlite"),
+      sessionRefFactory: () => sessionRefs.shift() ?? "CDEFGHJK",
+    });
     openStores.push(store);
     await store.upsertRuntimeSession({
       chatId: "chat-1",
@@ -44,6 +48,26 @@ describe("Connect Client Interface", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
+      listModels: async () => [
+        {
+          id: "gpt-default",
+          displayName: "Default model",
+          description: "Runtime default",
+          isDefault: true,
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: ["medium", "high"],
+          inputModalities: ["text", "image"],
+        },
+        {
+          id: "gpt-deep",
+          displayName: "Deep model",
+          description: "Long tasks",
+          isDefault: false,
+          defaultReasoningEffort: "high",
+          supportedReasoningEfforts: ["high", "xhigh"],
+          inputModalities: ["text", "image"],
+        },
+      ],
       discoverAllThreads: async () => (!isArchived && !isDeleted ? [summary] : []),
       discoverArchivedThreads: async () => (isArchived && !isDeleted ? [{ ...summary, isArchived: true }] : []),
       archiveThread: async (_binding, threadId) => {
@@ -122,6 +146,43 @@ describe("Connect Client Interface", () => {
       bindings: [{ bindingId: "codex", displayName: "Codex" }],
       capabilities: { localTurns: true, runtimeInteractions: false },
     });
+    const invalidBindingModel = await localRequest(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/bindings/codex/preferences",
+      {
+        method: "PATCH",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({
+          requestId: "binding_invalid_model_request",
+          model: "missing-model",
+          modelReasoningEffort: "high",
+        }),
+      },
+    );
+    expect(invalidBindingModel.status).toBe(400);
+    expect(config.agents.codex).toMatchObject({ kind: "codex", displayName: "Codex" });
+    expect(config.agents.codex.model).toBeUndefined();
+
+    const bindingEffortOnly = await localRequest(fetchHandler, handle.origin, "/client/v1/bindings/codex/preferences", {
+      method: "PATCH",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({ requestId: "binding_effort_only_request", modelReasoningEffort: "high" }),
+    });
+    expect(bindingEffortOnly.status).toBe(200);
+    expect(config.agents.codex).toMatchObject({ modelReasoningEffort: "high" });
+    expect(config.agents.codex.model).toBeUndefined();
+    const clearBindingEffort = await localRequest(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/bindings/codex/preferences",
+      {
+        method: "PATCH",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "binding_effort_clear_request", modelReasoningEffort: null }),
+      },
+    );
+    expect(clearBindingEffort.status).toBe(200);
 
     const sessionResponse = await localRequest(
       fetchHandler,
@@ -129,6 +190,162 @@ describe("Connect Client Interface", () => {
       `/client/v1/sessions/${session.sessionRef}`,
     );
     expect(sessionResponse.status).toBe(200);
+    await expect(sessionResponse.json()).resolves.toMatchObject({
+      model: null,
+      effectiveModel: "gpt-default",
+      effectiveReasoningEffort: "medium",
+      modelSource: "runtime",
+      modelAvailable: true,
+      modelOptions: [
+        { id: "gpt-default", supportedReasoningEfforts: ["medium", "high"] },
+        { id: "gpt-deep", supportedReasoningEfforts: ["high", "xhigh"] },
+      ],
+    });
+    const invalidModelPreference = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/preferences`,
+      {
+        method: "PATCH",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({
+          requestId: "session_invalid_model_request",
+          model: "missing-model",
+          reasoningEffort: "high",
+        }),
+      },
+    );
+    expect(invalidModelPreference.status).toBe(400);
+    await expect(store.getRuntimeSessionByRef(session.sessionRef)).resolves.toMatchObject({
+      model: null,
+      reasoningEffort: null,
+      runtimeSessionId: "thread-1",
+    });
+    const modelPreference = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/preferences`,
+      {
+        method: "PATCH",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "model_request", model: "gpt-deep", reasoningEffort: "xhigh" }),
+      },
+    );
+    expect(modelPreference.status).toBe(200);
+    await expect(modelPreference.json()).resolves.toMatchObject({
+      sessionRef: session.sessionRef,
+      model: "gpt-deep",
+      reasoningEffort: "xhigh",
+      effectiveModel: "gpt-deep",
+      modelSource: "session",
+    });
+    await expect(store.getRuntimeSessionByRef(session.sessionRef)).resolves.toMatchObject({
+      runtimeSessionId: "thread-1",
+      model: "gpt-deep",
+      reasoningEffort: "xhigh",
+    });
+    const projectRoot = join(directory, "project-root");
+    await mkdir(projectRoot);
+    const registeredProject = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", {
+      method: "POST",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "project_add_request",
+        name: "connect",
+        rootPath: projectRoot,
+        additionalDirectories: [],
+      }),
+    });
+    expect(registeredProject.status).toBe(201);
+    const registeredProjectView = (await registeredProject.json()) as { projectId: string };
+    const projects = await localRequest(fetchHandler, handle.origin, "/client/v1/projects");
+    const projectViews = (await projects.json()) as Array<{ projectId: string; name: string; rootPath: string }>;
+    expect(projectViews).toHaveLength(1);
+    expect(projectViews[0]).toMatchObject({ projectId: registeredProjectView.projectId, name: "connect" });
+    expect(projectViews[0]?.rootPath).toBe(await realpath(projectRoot));
+    const removedProject = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/projects/${registeredProjectView.projectId}`,
+      {
+        method: "DELETE",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "project_remove_request" }),
+      },
+    );
+    expect(removedProject.status).toBe(200);
+    await expect(removedProject.json()).resolves.toEqual({
+      projectId: registeredProjectView.projectId,
+      removed: true,
+    });
+    const sessionProjectRoot = join(directory, "session-project-root");
+    await mkdir(sessionProjectRoot);
+    const sessionProjectResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", {
+      method: "POST",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "session_project_add_request",
+        name: "session-project",
+        rootPath: sessionProjectRoot,
+        additionalDirectories: [],
+      }),
+    });
+    const sessionProject = (await sessionProjectResponse.json()) as { projectId: string };
+    const sessionsBeforeInvalidCreate = await store.listAllRuntimeSessions();
+    const invalidCreatedSession = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
+      method: "POST",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "session_invalid_create_request",
+        prompt: "This must not run",
+        bindingId: "codex",
+        projectId: sessionProject.projectId,
+        name: "Invalid model",
+        mode: "workspace-write",
+        model: "missing-model",
+        reasoningEffort: "high",
+      }),
+    });
+    expect(invalidCreatedSession.status).toBe(400);
+    expect(await store.listAllRuntimeSessions()).toHaveLength(sessionsBeforeInvalidCreate.length);
+    const createdSession = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
+      method: "POST",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "session_create_request",
+        prompt: "First planned task",
+        bindingId: "codex",
+        projectId: sessionProject.projectId,
+        name: "Planned from Client",
+        mode: "workspace-write",
+        model: "gpt-deep",
+        reasoningEffort: "xhigh",
+      }),
+    });
+    expect(createdSession.status).toBe(201);
+    const createdSessionView = (await createdSession.json()) as {
+      sessionRef: string;
+      projectId: string;
+      mode: string;
+      model: string;
+      reasoningEffort: string;
+      runtimeThreadAvailable: boolean;
+    };
+    expect(createdSessionView).toMatchObject({
+      projectId: sessionProject.projectId,
+      mode: "workspace-write",
+      model: "gpt-deep",
+      reasoningEffort: "xhigh",
+      runtimeThreadAvailable: false,
+    });
+    await expect(store.getRuntimeSessionByRef(createdSessionView.sessionRef)).resolves.toMatchObject({
+      projectId: sessionProject.projectId,
+      mode: "workspace-write",
+      model: "gpt-deep",
+      reasoningEffort: "xhigh",
+      runtimeSessionId: null,
+    });
+    expect(enqueueClientTurn).toHaveBeenCalledWith(createdSessionView.sessionRef, "First planned task");
     const transcript = await localRequest(
       fetchHandler,
       handle.origin,
@@ -179,7 +396,7 @@ describe("Connect Client Interface", () => {
       },
     );
     expect(replayedTurn.status).toBe(202);
-    expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
+    expect(enqueueClientTurn).toHaveBeenCalledTimes(2);
 
     const conflictingRequestId = await localRequest(
       fetchHandler,
@@ -245,6 +462,97 @@ describe("Connect Client Interface", () => {
     await expect(deleted.json()).resolves.toEqual({ sessionRef: session.sessionRef, deleted: true });
     expect(lifecycleCalls).toEqual(["archive:thread-1", "unarchive:thread-1", "delete:thread-1"]);
     await expect(store.getSessionRefTarget(session.sessionRef)).resolves.toBeNull();
+  });
+
+  it("rolls back a Session before enqueue when its response view cannot be built", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-create-retry-"));
+    const assetsPath = join(directory, "assets");
+    await mkdir(assetsPath);
+    await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect test</title>");
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    openStores.push(store);
+    const config = defaultConfig();
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.defaultAgent = "codex";
+    let catalogUnavailable = true;
+    const registry = new RuntimeAdapterRegistry([
+      {
+        kind: "codex",
+        modes: ["workspace-write"],
+        listModels: async () => {
+          if (catalogUnavailable) throw new Error("catalog temporarily unavailable");
+          return [
+            {
+              id: "gpt-default",
+              displayName: "Default model",
+              description: "Runtime default",
+              isDefault: true,
+              defaultReasoningEffort: "medium",
+              supportedReasoningEfforts: ["medium", "high"],
+              inputModalities: ["text"],
+            },
+          ];
+        },
+        start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+      },
+    ]);
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const enqueueClientTurn = mock(async (sessionRef: string) => ({ turnId: "turn-created", sessionRef }));
+    let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
+    const port = 47_895;
+    const handle = await startClientInterface({
+      config,
+      configPath: join(directory, "config.json"),
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      runtimes: [
+        {
+          agentId: "codex",
+          websocketUrl: config.websocketUrl,
+          deviceId: "device-retry",
+          enqueueClientTurn,
+          close: async () => undefined,
+        },
+      ],
+      assetsPath,
+      port,
+      serverFactory: (options) => {
+        fetchHandler = options.fetch;
+        return { stop: async () => undefined };
+      },
+    });
+    openHandles.push(handle);
+    if (!fetchHandler) throw new Error("test Client Interface did not expose a request handler");
+    const request = {
+      requestId: "session_retry_request",
+      prompt: "Run exactly once",
+      bindingId: "codex",
+      projectId: null,
+      name: "Retry safely",
+      mode: "workspace-write",
+      model: null,
+      reasoningEffort: null,
+    };
+
+    const failed = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
+      method: "POST",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    expect(failed.status).toBe(503);
+    expect(enqueueClientTurn).not.toHaveBeenCalled();
+    await expect(store.listAllRuntimeSessions()).resolves.toHaveLength(0);
+
+    catalogUnavailable = false;
+    const retried = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
+      method: "POST",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify(request),
+    });
+    expect(retried.status).toBe(201);
+    expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
+    await expect(store.listAllRuntimeSessions()).resolves.toHaveLength(1);
   });
 
   it("serves documents directly and rejects invalid Host headers", async () => {

@@ -7,11 +7,23 @@ export interface ConnectRuntimePrompt {
   trustedMediaOrigins?: string[];
   workspace: RuntimeWorkspace;
   mode?: string;
+  model?: string;
+  reasoningEffort?: string;
   metadata?: Record<string, string>;
   outputPolicy?: {
     mode: string;
     allowedKinds: RuntimeOutputKind[];
   };
+}
+
+export interface RuntimeModelOption {
+  id: string;
+  displayName: string;
+  description: string;
+  isDefault: boolean;
+  defaultReasoningEffort: string;
+  supportedReasoningEfforts: string[];
+  inputModalities: Array<"text" | "image" | "audio">;
 }
 
 export interface ConnectRuntimeMedia {
@@ -77,6 +89,7 @@ export interface ConnectRuntimeAdapter {
   readonly kind: string;
   readonly modes: readonly string[];
   prepare?(binding: AgentBindingConfig): Promise<void>;
+  listModels?(binding: AgentBindingConfig): Promise<RuntimeModelOption[]>;
   discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;

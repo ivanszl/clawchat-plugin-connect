@@ -1,11 +1,14 @@
 import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
+import { Button } from "@astryxdesign/core/Button";
 import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
+import { Selector } from "@astryxdesign/core/Selector";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { SessionView } from "../../../src/client-contract";
 import {
   archiveSession,
   catalogQueryOptions,
@@ -14,6 +17,7 @@ import {
   sessionQueryOptions,
   transcriptQueryOptions,
   unarchiveSession,
+  updateSessionPreferences,
 } from "../client-interface/query-options";
 import { MoreIcon } from "../components/icons";
 import { SessionComposer } from "../features/composer/SessionComposer";
@@ -75,6 +79,7 @@ function SessionPage() {
           <h1>{view.name}</h1>
         </div>
         <div className="session-meta">
+          <SessionModelControls view={view} />
           <Badge label={view.bindingKind} variant="neutral" />
           {view.isArchived ? <Badge label="已归档" variant="neutral" /> : null}
           <Badge
@@ -173,6 +178,68 @@ function SessionPage() {
         onAction={() => lifecycle.mutate("delete", { onSuccess: () => setDeleteOpen(false) })}
       />
     </section>
+  );
+}
+
+function SessionModelControls({ view }: { view: SessionView }) {
+  const queryClient = useQueryClient();
+  const [model, setModel] = useState(view.model ?? "default");
+  const [effort, setEffort] = useState(view.reasoningEffort ?? view.effectiveReasoningEffort ?? "default");
+  useEffect(() => {
+    setModel(view.model ?? "default");
+    setEffort(view.reasoningEffort ?? view.effectiveReasoningEffort ?? "default");
+  }, [view]);
+  const selectedModel = view.modelOptions.find((option) => option.id === model);
+  const unavailableModel =
+    view.model && !view.modelOptions.some((option) => option.id === view.model) ? view.model : null;
+  const modelOptions = [
+    { value: "default", label: "继承 Agent Binding / Runtime 默认值" },
+    ...(unavailableModel ? [{ value: unavailableModel, label: `${unavailableModel}（不可用）` }] : []),
+    ...view.modelOptions.map((option) => ({
+      value: option.id,
+      label: `${option.displayName} (${option.id})`,
+    })),
+  ];
+  const save = useMutation({
+    mutationFn: async () =>
+      await updateSessionPreferences(
+        view.sessionRef,
+        model === "default" ? null : model,
+        model === "default" ? null : effort,
+      ),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(clientKeys.session(view.sessionRef), updated);
+    },
+  });
+  return (
+    <div className="session-model-controls">
+      <p className="session-model-summary">
+        生效：{view.effectiveModel ?? "runtime default"} · {view.effectiveReasoningEffort ?? "default"}（
+        {{ session: "Session", binding: "Agent Binding", runtime: "Runtime" }[view.modelSource]}）
+      </p>
+      <Selector
+        label="Session 模型"
+        options={modelOptions}
+        value={model}
+        onChange={(value) => {
+          const option = view.modelOptions.find((candidate) => candidate.id === value);
+          setModel(value);
+          setEffort(option?.defaultReasoningEffort ?? view.effectiveReasoningEffort ?? "default");
+        }}
+        isDisabled={view.modelOptions.length === 0 && !unavailableModel}
+        disabledMessage="Runtime Adapter 不支持模型选择。"
+      />
+      <Selector
+        label="推理强度"
+        options={selectedModel?.supportedReasoningEfforts ?? [effort]}
+        value={effort}
+        onChange={setEffort}
+        isDisabled={model === "default"}
+      />
+      <Button label="应用" size="sm" isLoading={save.isPending} onClick={() => save.mutate()} />
+      {!view.modelAvailable ? <Badge label="模型不可用" variant="error" /> : null}
+      {save.isError ? <span className="form-error">{save.error.message}</span> : null}
+    </div>
   );
 }
 

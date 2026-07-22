@@ -7,14 +7,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type { BindingPreferenceView, BootstrapView } from "../../../../src/client-contract";
 import {
+  addProject,
   bootstrapQueryOptions,
   catalogQueryOptions,
   clientKeys,
+  projectsQueryOptions,
+  removeProject,
   updateBindingPreferences,
 } from "../../client-interface/query-options";
 
 export function SettingsPage() {
   const bootstrap = useQuery(bootstrapQueryOptions);
+  const projects = useQuery(projectsQueryOptions);
   if (!bootstrap.data) return null;
   return (
     <section className="settings-page">
@@ -31,6 +35,7 @@ export function SettingsPage() {
             outputVisibility={bootstrap.data.outputVisibility}
           />
         ))}
+        <ProjectSettings projects={projects.data ?? []} />
       </div>
     </section>
   );
@@ -48,6 +53,11 @@ function BindingSettings({
   const [model, setModel] = useState(binding.model ?? "");
   const [effort, setEffort] = useState(binding.modelReasoningEffort ?? "default");
   const [visibility, setVisibility] = useState(outputVisibility);
+  const selectedModel =
+    binding.modelOptions.find((option) => option.id === model) ??
+    binding.modelOptions.find((option) => option.isDefault) ??
+    binding.modelOptions[0];
+  const effortOptions = ["default", ...(selectedModel?.supportedReasoningEfforts ?? [])];
   useEffect(() => {
     setDisplayName(binding.displayName);
     setModel(binding.model ?? "");
@@ -58,7 +68,7 @@ function BindingSettings({
       await updateBindingPreferences(binding.bindingId, {
         displayName,
         model: model.trim() || null,
-        modelReasoningEffort: effort === "default" ? null : (effort as "minimal" | "low" | "medium" | "high" | "xhigh"),
+        modelReasoningEffort: effort === "default" ? null : effort,
         outputVisibility: visibility,
       }),
     onSuccess: () => {
@@ -81,20 +91,33 @@ function BindingSettings({
       ) : null}
       <div className="settings-fields">
         <TextInput label="显示名称" value={displayName} onChange={setDisplayName} width="100%" />
-        <TextInput
+        <Selector
           label="模型"
-          description="留空时使用 Runtime Adapter 的本地默认值。"
-          value={model}
-          onChange={setModel}
-          placeholder="默认模型"
-          isOptional
+          description="默认值会跟随 Runtime Adapter；Session 仍可单独覆盖。"
+          options={[
+            { value: "default", label: "Runtime 默认值" },
+            ...binding.modelOptions.map((option) => ({
+              value: option.id,
+              label: `${option.displayName} (${option.id})`,
+            })),
+          ]}
+          value={model || "default"}
+          onChange={(value) => {
+            const option = binding.modelOptions.find((candidate) => candidate.id === value);
+            setModel(value === "default" ? "" : value);
+            setEffort(option?.defaultReasoningEffort ?? "default");
+          }}
+          isDisabled={binding.modelOptions.length === 0}
+          disabledMessage="Runtime Adapter 不支持模型选择。"
           width="100%"
         />
         <Selector
           label="推理强度"
-          options={["default", "minimal", "low", "medium", "high", "xhigh"]}
+          options={effortOptions}
           value={effort}
           onChange={setEffort}
+          isDisabled={!selectedModel}
+          disabledMessage="Runtime Adapter 未提供可用模型。"
           width="100%"
         />
         <Selector
@@ -105,6 +128,90 @@ function BindingSettings({
           onChange={(value) => setVisibility(value as BootstrapView["outputVisibility"])}
           width="100%"
         />
+      </div>
+    </Card>
+  );
+}
+
+function ProjectSettings({ projects }: { projects: Array<{ projectId: string; name: string; rootPath: string }> }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [rootPath, setRootPath] = useState("");
+  const [additionalDirectories, setAdditionalDirectories] = useState("");
+  const add = useMutation({
+    mutationFn: async () =>
+      await addProject(
+        name,
+        rootPath,
+        additionalDirectories
+          .split(/[\n,]/u)
+          .map((path) => path.trim())
+          .filter(Boolean),
+      ),
+    onSuccess: () => {
+      setName("");
+      setRootPath("");
+      setAdditionalDirectories("");
+      void queryClient.invalidateQueries({ queryKey: clientKeys.projects });
+      void queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
+    },
+  });
+  const remove = useMutation({
+    mutationFn: removeProject,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: clientKeys.projects });
+      void queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
+    },
+  });
+  return (
+    <Card className="settings-card project-settings-card">
+      <div className="settings-card-heading">
+        <div>
+          <h2>Projects</h2>
+          <p>Project 路径只在本机管理，不会发送到 ClawChat。</p>
+        </div>
+        <Button
+          label="添加 Project"
+          variant="primary"
+          isLoading={add.isPending}
+          isDisabled={!name.trim() || !rootPath.trim()}
+          onClick={() => add.mutate()}
+        />
+      </div>
+      {add.isError ? (
+        <Banner status="error" title="添加失败" description={add.error.message} container="section" />
+      ) : null}
+      {remove.isError ? (
+        <Banner status="error" title="移除失败" description={remove.error.message} container="section" />
+      ) : null}
+      <div className="settings-fields">
+        <TextInput label="名称" value={name} onChange={setName} width="100%" />
+        <TextInput label="根目录绝对路径" value={rootPath} onChange={setRootPath} width="100%" />
+        <TextInput
+          label="附加目录"
+          description="可选；用逗号分隔多个绝对路径。"
+          value={additionalDirectories}
+          onChange={setAdditionalDirectories}
+          isOptional
+          width="100%"
+        />
+      </div>
+      <div className="project-settings-list">
+        {projects.length === 0 ? <p>尚未注册 Project。</p> : null}
+        {projects.map((project) => (
+          <div className="project-settings-row" key={project.projectId}>
+            <div>
+              <strong>{project.name}</strong>
+              <code>{project.rootPath}</code>
+            </div>
+            <Button
+              label="移除"
+              size="sm"
+              isLoading={remove.isPending && remove.variables === project.projectId}
+              onClick={() => remove.mutate(project.projectId)}
+            />
+          </div>
+        ))}
       </div>
     </Card>
   );

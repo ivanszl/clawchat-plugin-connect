@@ -3,6 +3,8 @@ import type {
   BindingPreferenceView,
   BootstrapView,
   CancelTurnResponse,
+  CreateSessionRequest,
+  ProjectView,
   SessionArchiveResponse,
   SessionCatalogView,
   SessionDeleteResponse,
@@ -19,6 +21,7 @@ export const clientKeys = {
   catalog: ["client", "session-catalog"] as const,
   session: (sessionRef: string) => ["client", "session", sessionRef] as const,
   transcript: (sessionRef: string) => ["client", "transcript", sessionRef] as const,
+  projects: ["client", "projects"] as const,
 };
 
 export const bootstrapQueryOptions = queryOptions({
@@ -41,6 +44,11 @@ export function sessionQueryOptions(sessionRef: string) {
   });
 }
 
+export const projectsQueryOptions = queryOptions({
+  queryKey: clientKeys.projects,
+  queryFn: async () => await clientFetch<ProjectView[]>(`${CLIENT_API_PREFIX}/projects`),
+});
+
 export function transcriptQueryOptions(sessionRef: string) {
   return infiniteQueryOptions({
     queryKey: clientKeys.transcript(sessionRef),
@@ -60,6 +68,13 @@ export async function startTurn(sessionRef: string, prompt: string): Promise<Sta
   return await clientFetch<StartTurnResponse>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}/turns`, {
     method: "POST",
     body: JSON.stringify({ requestId: requestId(), prompt }),
+  });
+}
+
+export async function createSession(input: Omit<CreateSessionRequest, "requestId">): Promise<SessionView> {
+  return await clientFetch<SessionView>(`${CLIENT_API_PREFIX}/sessions`, {
+    method: "POST",
+    body: JSON.stringify({ requestId: requestId(), ...input }),
   });
 }
 
@@ -86,6 +101,35 @@ export async function unarchiveSession(sessionRef: string): Promise<SessionArchi
 
 export async function deleteSession(sessionRef: string): Promise<SessionDeleteResponse> {
   return await clientFetch<SessionDeleteResponse>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}`, {
+    method: "DELETE",
+    body: JSON.stringify({ requestId: requestId() }),
+  });
+}
+
+export async function updateSessionPreferences(
+  sessionRef: string,
+  model: string | null,
+  reasoningEffort: string | null,
+): Promise<SessionView> {
+  return await clientFetch<SessionView>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}/preferences`, {
+    method: "PATCH",
+    body: JSON.stringify({ requestId: requestId(), model, reasoningEffort }),
+  });
+}
+
+export async function addProject(
+  name: string,
+  rootPath: string,
+  additionalDirectories: string[],
+): Promise<ProjectView> {
+  return await clientFetch<ProjectView>(`${CLIENT_API_PREFIX}/projects`, {
+    method: "POST",
+    body: JSON.stringify({ requestId: requestId(), name, rootPath, additionalDirectories }),
+  });
+}
+
+export async function removeProject(projectId: string): Promise<{ projectId: string; removed: true }> {
+  return await clientFetch(`${CLIENT_API_PREFIX}/projects/${encodeURIComponent(projectId)}`, {
     method: "DELETE",
     body: JSON.stringify({ requestId: requestId() }),
   });

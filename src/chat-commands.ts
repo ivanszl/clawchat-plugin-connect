@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { getAgentBinding } from "./config";
 import type { ProjectCatalog } from "./projects";
 import type { NormalizedInboundMessage } from "./protocol";
-import type { SelectableRuntimeThread } from "./runtime/types";
+import { requireModel, resolveEffort, resolveModelSelection } from "./runtime/model-selection";
+import type { RuntimeModelOption, SelectableRuntimeThread } from "./runtime/types";
 import type { ConnectStateStore } from "./state";
 import type {
   AgentBindingConfig,
@@ -24,6 +25,7 @@ export interface ChatCommandContext {
   invalidateRuntimeSession?: (chatId: string) => Promise<boolean>;
   cancelRuntimeTurn?: (chatId: string) => Promise<boolean>;
   runtimeModesFor?: (binding: AgentBindingConfig) => readonly string[];
+  listRuntimeModels?: (binding: AgentBindingConfig) => Promise<RuntimeModelOption[] | null>;
   discoverRuntimeThreads?: (chatId: string) => Promise<SelectableRuntimeThread[]>;
 }
 
@@ -34,35 +36,53 @@ export interface ChatCommandResult {
 
 const CONTROL_COMMANDS = new Set([
   "/clawchat-output",
-  "/clawchat-status",
   "/status",
   "/new",
-  "/list",
+  "/sessions",
   "/switch",
-  "/current",
   "/project",
   "/mode",
+  "/model",
   "/cancel",
 ]);
+const REMOVED_COMMANDS = new Set(["/clawchat-status", "/list", "/current"]);
 const HELP = [
   "**ClawChat Connect commands**",
   "",
   "- `/help` — show this help.",
-  "- `/clawchat-status` or `/status` — show runtime status.",
+  "- `/status` — show runtime and current Session status.",
   "- `/clawchat-output minimal|normal|full` — set output visibility.",
   "- `/new [name]` — prepare a new Session for the next message using the selected Project.",
-  "- `/list` — list Sessions.",
+  "- `/sessions` — list Sessions in the selected workspace.",
   "- `/switch <name-or-ref>` — switch or import a Session by name or 8-character Ref.",
-  "- `/current` — show the current Session.",
-  "- `/project add <name> <absolute-path>` — register a Project.",
-  "- `/project list` — list Projects.",
-  "- `/project use <name-or-id>` — select a Project for the next Session.",
-  "- `/project current` — show the current Project.",
-  "- `/project clear` — select an isolated workspace for the next Session.",
-  "- `/project remove <name-or-id>` — remove an unused Project.",
-  "- `/mode <mode>` — set one of the modes exposed by the selected Runtime Adapter.",
+  "- `/project [name-or-id|none]` — inspect or select the next Session workspace.",
+  "- `/model [model-id [reasoning-effort]|default]` — inspect or select the Session model.",
+  "- `/mode [mode|default]` — inspect or select the Session runtime mode.",
   "- `/cancel` — cancel an active turn when supported.",
 ].join("\n");
+
+export function isConnectControlMessage(text: string): boolean {
+  const [command = ""] = text.trim().split(/\s+/u);
+  return (
+    command === "/help" ||
+    CONTROL_COMMANDS.has(command) ||
+    REMOVED_COMMANDS.has(command) ||
+    command.startsWith("/clawchat-")
+  );
+}
+
+/** Commands that change which Session or turn settings a following message observes. */
+export function requiresOrderedSessionControl(text: string): boolean {
+  const [command = "", ...args] = text.trim().split(/\s+/u);
+  if (command === "/new") return true;
+  if (command === "/switch") return args.length > 0;
+  if (command === "/project") {
+    const legacyAction = args[0]?.toLowerCase();
+    return args.length > 0 && !["add", "list", "use", "current", "clear", "remove"].includes(legacyAction ?? "");
+  }
+  if (command === "/model" || command === "/mode") return args.length > 0;
+  return false;
+}
 
 export async function handleChatCommand(ctx: ChatCommandContext): Promise<ChatCommandResult> {
   const text = ctx.message.text.trim();
@@ -73,14 +93,15 @@ export async function handleChatCommand(ctx: ChatCommandContext): Promise<ChatCo
     return { handled: true, text: "Only the Agent Binding owner can run ClawChat Connect control commands." };
   }
   if (command === "/clawchat-output") return await handleOutput(ctx, args[0]);
-  if (command === "/clawchat-status" || command === "/status") return await handleStatus(ctx);
+  if (command === "/status") return await handleStatus(ctx);
   if (command === "/new") return await handleNew(ctx, args.join(" "));
-  if (command === "/list") return await handleList(ctx);
+  if (command === "/sessions") return await handleList(ctx);
   if (command === "/switch") return await handleSwitch(ctx, args.join(" "));
-  if (command === "/current") return await handleCurrent(ctx);
   if (command === "/project") return await handleProject(ctx, args);
   if (command === "/mode") return await handleMode(ctx, args[0]);
+  if (command === "/model") return await handleModel(ctx, args);
   if (command === "/cancel") return await handleCancel(ctx);
+  if (REMOVED_COMMANDS.has(command)) return { handled: true, text: `Unknown Connect command: ${command}\n\n${HELP}` };
   if (command.startsWith("/clawchat-"))
     return { handled: true, text: `Unknown ClawChat command: ${command}\n\n${HELP}` };
   return { handled: false };
@@ -100,18 +121,39 @@ async function handleOutput(ctx: ChatCommandContext, rawMode: string | undefined
 
 async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult> {
   const status = await ctx.stateStore.getRuntimeStatus(ctx.agentId).catch(() => null);
+  const selected = await selectedSessionContext(ctx);
+  const project = selected?.projectId ? await ctx.projects.get(selected.projectId) : null;
+  const binding = getAgentBinding(ctx.config, selected?.agentId ?? ctx.agentId);
+  const models = (await ctx.listRuntimeModels?.(binding).catch(() => null)) ?? null;
+  let modelText = binding.model ?? "runtime default";
+  let effortText = binding.modelReasoningEffort ?? "runtime default";
+  let source = binding.model ? "binding" : "runtime";
+  try {
+    if (selected) {
+      const effective = resolveModelSelection(binding, selected, models);
+      modelText = effective.model ?? "runtime default";
+      effortText = effective.reasoningEffort ?? "runtime default";
+      source = effective.source;
+    }
+  } catch (error) {
+    modelText = `${selected?.model ?? binding.model ?? "unknown"} (unavailable: ${error instanceof Error ? error.message : String(error)})`;
+    effortText = selected?.reasoningEffort ?? binding.modelReasoningEffort ?? "unknown";
+    source = selected?.model ? "session" : "binding";
+  }
   return {
     handled: true,
-    text: status
-      ? [
-          "**ClawChat Connect status**",
-          `- agent: \`${status.activeAgent ?? ctx.agentId}\``,
-          `- websocket: \`${status.websocketConnected === true ? "connected" : status.websocketConnected === false ? "disconnected" : "unknown"}\``,
-          `- active chats: \`${status.activeChats}\``,
-          `- running turns: \`${status.globalRunning}\``,
-          `- queued turns: \`${status.globalQueued}\``,
-        ].join("\n")
-      : `ClawChat Connect agent \`${ctx.agentId}\` is configured, but runtime status has not been recorded yet.`,
+    text: [
+      "**ClawChat Connect status**",
+      `- agent: \`${status?.activeAgent ?? ctx.agentId}\``,
+      `- websocket: \`${status?.websocketConnected === true ? "connected" : status?.websocketConnected === false ? "disconnected" : "unknown"}\``,
+      `- session: ${selected ? `${"sessionRef" in selected ? `\`${selected.sessionRef}\`` : "next Session (not started)"}${selected.name ? ` · ${selected.name}` : ""}` : "none"}`,
+      `- project: ${project ? `\`${project.name}\`` : "none (isolated workspace)"}`,
+      `- mode: \`${selected?.mode ?? binding.sandboxMode ?? "runtime default"}\``,
+      `- model: \`${modelText}\` · effort \`${effortText}\` (${source})`,
+      `- active chats: \`${status?.activeChats ?? 0}\``,
+      `- running turns: \`${status?.globalRunning ?? 0}\``,
+      `- queued turns: \`${status?.globalQueued ?? 0}\``,
+    ].join("\n"),
   };
 }
 
@@ -123,6 +165,8 @@ async function handleNew(ctx: ChatCommandContext, name: string): Promise<ChatCom
     agentId: ctx.agentId,
     projectId: selected?.projectId ?? null,
     mode: selected?.mode ?? null,
+    model: selected?.model ?? null,
+    reasoningEffort: selected?.reasoningEffort ?? null,
     name: name.trim() || null,
   });
   return {
@@ -138,18 +182,26 @@ async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
     await ctx.stateStore.listRuntimeSessions(ctx.message.chatId, ctx.agentId),
     intent,
   );
-  if (sessions.length === 0 && discovered.length === 0)
+  if (sessions.length === 0 && discovered.length === 0) {
+    const current = intent ?? (await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId));
+    const project = current?.projectId ? await ctx.projects.get(current.projectId) : null;
     return {
       handled: true,
-      text: intent
-        ? "No Sessions in the selected workspace. Send a message to start one."
-        : "No ClawChat Connect Sessions yet. Send a message to start one.",
+      text: `No Sessions in ${project ? `Project \`${project.name}\`` : "the Non-Project workspace"}. Send a message to start one.`,
     };
+  }
   const projects = new Map((await ctx.projects.list()).map((project) => [project.projectId, project]));
   return {
     handled: true,
     text: [
       "**ClawChat Connect Sessions**",
+      intent?.projectId
+        ? `Workspace: Project \`${(await ctx.projects.get(intent.projectId))?.name ?? "unknown"}\``
+        : intent
+          ? "Workspace: Non-Project (next Session)"
+          : sessions[0]?.projectId
+            ? `Workspace: Project \`${(await ctx.projects.get(sessions[0].projectId))?.name ?? "unknown"}\``
+            : "Workspace: Non-Project",
       "",
       ...sessions.map((session) => formatSession(session, session.projectId ? projects.get(session.projectId) : null)),
       ...discovered.map(
@@ -174,14 +226,14 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
       handled: true,
       text: switched
         ? `Switched to Session \`${sessionLabel(matched)}\` (\`${matched.sessionRef}\`).`
-        : `Unknown Session \`${reference}\`. Use /list to see Sessions.`,
+        : `Unknown Session \`${reference}\`. Use /sessions to see Sessions.`,
     };
   }
 
   const threadMatches = matchingRuntimeThreads(discovered, reference);
   if (threadMatches.length > 1) return { handled: true, text: ambiguousRuntimeThreadText(reference, threadMatches) };
   const thread = threadMatches[0];
-  if (!thread) return { handled: true, text: `Unknown Session \`${reference}\`. Use /list to see Sessions.` };
+  if (!thread) return { handled: true, text: `Unknown Session \`${reference}\`. Use /sessions to see Sessions.` };
   const selected = await selectedSessionContext(ctx);
   if (!selected) return { handled: true, text: "Select a Project before importing a Runtime Thread." };
   await closeRuntimeSession(ctx);
@@ -193,6 +245,8 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
     projectId: selected.projectId,
     name: thread.name,
     mode: selected.mode,
+    model: selected.model,
+    reasoningEffort: selected.reasoningEffort,
     hasMessages: true,
     isCurrent: true,
   });
@@ -202,150 +256,66 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
   };
 }
 
-async function handleCurrent(ctx: ChatCommandContext): Promise<ChatCommandResult> {
-  const intent = await ctx.stateStore.getSessionIntent(ctx.message.chatId, ctx.agentId);
-  if (intent) {
-    const project = intent.projectId ? await ctx.projects.get(intent.projectId) : null;
+async function handleProject(ctx: ChatCommandContext, args: string[]): Promise<ChatCommandResult> {
+  const reference = args.join(" ").trim();
+  try {
+    if (!reference) {
+      const projects = await ctx.projects.list();
+      const selected = await selectedSessionContext(ctx);
+      const current = selected?.projectId ? await ctx.projects.get(selected.projectId) : null;
+      return {
+        handled: true,
+        text: [
+          "**ClawChat Connect Projects**",
+          `Current: ${current ? `\`${current.name}\`` : "none (isolated workspace)"}`,
+          "",
+          ...(projects.length > 0
+            ? projects.map((project) => `- \`${project.name}\` (${project.projectId})`)
+            : ["No Projects registered. Add one in Connect Client or with the local CLI."]),
+        ].join("\n"),
+      };
+    }
+    if (["add", "list", "use", "current", "clear", "remove"].includes(args[0]?.toLowerCase() ?? ""))
+      return { handled: true, text: "This Project command was removed. Use `/help` for the supported commands." };
+    const selected = await selectedSessionContext(ctx);
+    const project = reference.toLowerCase() === "none" ? null : await ctx.projects.require(reference);
+    await closeRuntimeSession(ctx);
+    await ctx.stateStore.setSessionIntent({
+      chatId: ctx.message.chatId,
+      agentId: ctx.agentId,
+      projectId: project?.projectId ?? null,
+      name: selected?.name ?? null,
+      mode: selected?.mode ?? null,
+      model: selected?.model ?? null,
+      reasoningEffort: selected?.reasoningEffort ?? null,
+    });
     return {
       handled: true,
-      text: [
-        "**Next Session (not started)**",
-        `- name: ${intent.name ? `\`${intent.name}\`` : "automatic from the first message"}`,
-        `- agent: \`${intent.agentId}\``,
-        `- project: ${project ? `\`${project.name}\` (${project.rootPath})` : "none (isolated workspace)"}`,
-        `- mode: ${intent.mode ? `\`${intent.mode}\`` : "default"}`,
-      ].join("\n"),
+      text: project
+        ? `Selected Project \`${project.name}\`; the next message will start a Session.`
+        : "Selected an isolated Non-Project workspace; the next message will start a Session.",
     };
-  }
-  const current = await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId);
-  if (!current) return { handled: true, text: "No current Session. Send a message to start one." };
-  const project = current.projectId ? await ctx.projects.get(current.projectId) : null;
-  return {
-    handled: true,
-    text: [
-      "**Current ClawChat Connect Session**",
-      `- session: \`${sessionLabel(current)}\``,
-      `- ref: \`${current.sessionRef}\``,
-      `- agent: \`${current.agentId}\``,
-      `- project: ${project ? `\`${project.name}\` (${project.rootPath})` : "none (isolated workspace)"}`,
-      `- mode: ${current.mode ? `\`${current.mode}\`` : "default"}`,
-    ].join("\n"),
-  };
-}
-
-async function handleProject(ctx: ChatCommandContext, args: string[]): Promise<ChatCommandResult> {
-  const action = args[0]?.toLowerCase();
-  try {
-    if (action === "add") {
-      const name = args[1] ?? "";
-      const rootPath = args.slice(2).join(" ");
-      if (!name || !rootPath) return { handled: true, text: "Usage: /project add <name> <absolute-path>" };
-      const project = await ctx.projects.add(name, rootPath);
-      return {
-        handled: true,
-        text: `Registered Project \`${project.name}\` (${project.projectId}) at \`${project.rootPath}\`.`,
-      };
-    }
-    if (action === "list") {
-      const projects = await ctx.projects.list();
-      return {
-        handled: true,
-        text:
-          projects.length > 0
-            ? ["**ClawChat Connect Projects**", "", ...projects.map(formatProject)].join("\n")
-            : "No Projects registered. Use /project add <name> <absolute-path>.",
-      };
-    }
-    if (action === "use") {
-      const reference = args.slice(1).join(" ").trim();
-      if (!reference) return { handled: true, text: "Usage: /project use <name-or-id>" };
-      const project = await ctx.projects.require(reference);
-      const selected = await selectedSessionContext(ctx);
-      await closeRuntimeSession(ctx);
-      await ctx.stateStore.setSessionIntent({
-        chatId: ctx.message.chatId,
-        agentId: ctx.agentId,
-        projectId: project.projectId,
-        name: selected?.name ?? null,
-        mode: selected?.mode ?? null,
-      });
-      return {
-        handled: true,
-        text: `Selected Project \`${project.name}\` at \`${project.rootPath}\`; the next message will start a Session.`,
-      };
-    }
-    if (action === "current") {
-      const intent = await ctx.stateStore.getSessionIntent(ctx.message.chatId, ctx.agentId);
-      if (intent) {
-        const project = intent.projectId ? await ctx.projects.get(intent.projectId) : null;
-        return {
-          handled: true,
-          text: project
-            ? `Next Session Project: \`${project.name}\` (${project.projectId}) at \`${project.rootPath}\`.`
-            : "Next Session will use an isolated Non-Project workspace.",
-        };
-      }
-      const current = await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId);
-      if (!current) {
-        return {
-          handled: true,
-          text: "No current Session or pending Project selection. Send a message to start a Non-Project Session.",
-        };
-      }
-      const project = current?.projectId ? await ctx.projects.get(current.projectId) : null;
-      return {
-        handled: true,
-        text: project
-          ? `Current Project: \`${project.name}\` (${project.projectId}) at \`${project.rootPath}\`.`
-          : "Current Session is a Non-Project Session with an isolated workspace.",
-      };
-    }
-    if (action === "clear") {
-      const selected = await selectedSessionContext(ctx);
-      await closeRuntimeSession(ctx);
-      await ctx.stateStore.setSessionIntent({
-        chatId: ctx.message.chatId,
-        agentId: ctx.agentId,
-        projectId: null,
-        name: selected?.name ?? null,
-        mode: selected?.mode ?? null,
-      });
-      return {
-        handled: true,
-        text: "Selected an isolated Non-Project workspace; the next message will start a Session.",
-      };
-    }
-    if (action === "remove") {
-      const reference = args.slice(1).join(" ").trim();
-      if (!reference) return { handled: true, text: "Usage: /project remove <name-or-id>" };
-      const result = await ctx.projects.remove(reference);
-      return {
-        handled: true,
-        text: result.removed
-          ? `Removed Project \`${result.project.name}\`.`
-          : `Cannot remove Project \`${result.project.name}\`: ${result.referencedSessions} Session(s) and ${result.pendingIntents} Session Intent(s) still reference it.`,
-      };
-    }
   } catch (error) {
     return { handled: true, text: `Project command failed: ${error instanceof Error ? error.message : String(error)}` };
   }
-  return {
-    handled: true,
-    text: "Usage: /project add|list|use|current|clear|remove",
-  };
 }
 
 async function handleMode(ctx: ChatCommandContext, mode: string | undefined): Promise<ChatCommandResult> {
-  if (!mode) return { handled: true, text: "Usage: /mode <mode>" };
   const intent = await ctx.stateStore.getSessionIntent(ctx.message.chatId, ctx.agentId);
   const current = await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId);
   const binding = getAgentBinding(ctx.config, current?.agentId || intent?.agentId || ctx.agentId);
+  const modes = ctx.runtimeModesFor?.(binding) ?? [];
+  if (!mode)
+    return {
+      handled: true,
+      text: `Current mode: \`${intent?.mode ?? current?.mode ?? binding.sandboxMode ?? "runtime default"}\`. Available: ${modes.join(", ") || "none"}.`,
+    };
+  const selectedMode = mode === "default" ? null : mode;
   if (ctx.runtimeModesFor) {
-    const modes = ctx.runtimeModesFor(binding);
     if (modes.length === 0)
       return { handled: true, text: `Runtime ${binding.kind} does not support configurable modes.` };
-    if (!modes.includes(mode)) {
-      return { handled: true, text: `Usage for ${binding.kind}: /mode ${modes.join("|")}` };
+    if (selectedMode && !modes.includes(selectedMode)) {
+      return { handled: true, text: `Usage for ${binding.kind}: /mode ${modes.join("|")}|default` };
     }
   }
   if (intent || !current) {
@@ -354,9 +324,11 @@ async function handleMode(ctx: ChatCommandContext, mode: string | undefined): Pr
       agentId: intent?.agentId || ctx.agentId,
       projectId: intent?.projectId ?? null,
       name: intent?.name ?? null,
-      mode,
+      mode: selectedMode,
+      model: intent?.model ?? null,
+      reasoningEffort: intent?.reasoningEffort ?? null,
     });
-    return { handled: true, text: `Next Session mode set to \`${mode}\`.` };
+    return { handled: true, text: `Next Session mode set to \`${selectedMode ?? "default"}\`.` };
   }
   await ctx.stateStore.upsertRuntimeSession({
     chatId: ctx.message.chatId,
@@ -365,12 +337,89 @@ async function handleMode(ctx: ChatCommandContext, mode: string | undefined): Pr
     runtimeSessionId: current?.runtimeSessionId ?? null,
     projectId: current?.projectId ?? null,
     name: current?.name ?? null,
-    mode,
+    mode: selectedMode,
+    model: current?.model ?? null,
+    reasoningEffort: current?.reasoningEffort ?? null,
     hasMessages: current?.hasMessages ?? true,
     isCurrent: true,
   });
   await invalidateRuntimeSession(ctx);
-  return { handled: true, text: `Current Session mode set to \`${mode}\`.` };
+  return {
+    handled: true,
+    text: `Current Session mode set to \`${selectedMode ?? "default"}\`; the next turn starts a new Runtime Thread boundary.`,
+  };
+}
+
+async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<ChatCommandResult> {
+  const intent = await ctx.stateStore.getSessionIntent(ctx.message.chatId, ctx.agentId);
+  const current = await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId);
+  const selected = intent ?? current ?? { model: null, reasoningEffort: null };
+  const binding = getAgentBinding(ctx.config, intent?.agentId || current?.agentId || ctx.agentId);
+  const modelReference = args[0]?.trim();
+  if (modelReference?.toLowerCase() === "default") {
+    await persistModelSelection(ctx, intent, current, null, null);
+    return { handled: true, text: "Session model now inherits the Agent Binding or runtime default." };
+  }
+
+  const models = (await ctx.listRuntimeModels?.(binding)) ?? null;
+  if (!models) return { handled: true, text: `Runtime ${binding.kind} does not support model selection.` };
+
+  if (!modelReference) {
+    const effective = resolveModelSelection(binding, selected, models);
+    return {
+      handled: true,
+      text: [
+        `**Available ${binding.kind} models**`,
+        `Current: \`${effective.model ?? "runtime default"}\`${effective.reasoningEffort ? ` · \`${effective.reasoningEffort}\`` : ""} (${effective.source})`,
+        "",
+        ...models.map(
+          (model) =>
+            `- \`${model.id}\` — ${model.displayName}; efforts: ${model.supportedReasoningEfforts.join(", ")}${model.isDefault ? " (runtime default)" : ""}`,
+        ),
+      ].join("\n"),
+    };
+  }
+
+  try {
+    const model = requireModel(models, modelReference);
+    const reasoningEffort = resolveEffort(model, args[1], true);
+    await persistModelSelection(ctx, intent, current, model.id, reasoningEffort);
+    return {
+      handled: true,
+      text: `${intent || !current ? "Next Session" : "Current Session"} model set to \`${model.id}\` with \`${reasoningEffort}\` reasoning.`,
+    };
+  } catch (error) {
+    return { handled: true, text: `Model selection failed: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+async function persistModelSelection(
+  ctx: ChatCommandContext,
+  intent: SessionIntentRecord | null,
+  current: RuntimeSessionRecord | null,
+  model: string | null,
+  reasoningEffort: string | null,
+): Promise<void> {
+  if (intent || !current) {
+    await ctx.stateStore.setSessionIntent({
+      chatId: ctx.message.chatId,
+      agentId: intent?.agentId ?? ctx.agentId,
+      projectId: intent?.projectId ?? null,
+      name: intent?.name ?? null,
+      mode: intent?.mode ?? null,
+      model,
+      reasoningEffort,
+    });
+    return;
+  }
+  const updated = await ctx.stateStore.setRuntimeSessionModelSelection(
+    current.chatId,
+    current.agentId,
+    current.sessionId,
+    model,
+    reasoningEffort,
+  );
+  if (!updated) throw new Error(`Session ${current.sessionRef} no longer exists`);
 }
 
 async function handleCancel(ctx: ChatCommandContext): Promise<ChatCommandResult> {
@@ -381,10 +430,6 @@ async function handleCancel(ctx: ChatCommandContext): Promise<ChatCommandResult>
       ? "Cancelled the active ClawChat Connect turn."
       : "No active cancellable ClawChat Connect turn was found.",
   };
-}
-
-function formatProject(project: ProjectRecord): string {
-  return `- ${project.name} (${project.projectId}) — ${project.rootPath}`;
 }
 
 function formatSession(session: RuntimeSessionRecord, project: ProjectRecord | null | undefined): string {

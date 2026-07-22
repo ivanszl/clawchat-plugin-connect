@@ -1,429 +1,389 @@
 # ClawChat Connect
 
-`@clawling/clawchat-plugin-connect` binds ClawChat identities and conversations to local coding agents. Prebuilt releases run as standalone executables; Bun 1.3 or newer is only required for development from source.
+ClawChat Connect lets a ClawChat conversation use a coding agent running on your own computer.
 
-- Connect manages multiple independent Agent Bindings; the first release provides a Codex Runtime Adapter.
-- Codex runs through one Connect-owned `codex app-server` process shared by every Codex Session.
-- Connect Client is a local React application that talks only to Connect Service, never directly to a local agent; it uses loopback by default and has an explicit trusted-LAN Host mode.
-- Connect Sessions may use a reusable Connect-managed Project or an isolated Non-Project workspace.
-- Connect does not expose tools or inject a bundled MCP server into Codex.
+The current alpha release supports:
 
-## Install
+- Codex CLI through `codex app-server`;
+- macOS and Linux on arm64 and x64;
+- persistent Sessions and reusable Project workspaces;
+- image, audio, file, and video input from ClawChat;
+- image replies from local Codex output;
+- a local browser client for viewing Sessions and sending private local turns.
 
-ClawChat Connect is currently alpha software. GitHub Releases are published as prereleases for macOS and Linux on arm64 and x64.
+Only the Codex Runtime Adapter is included today, so a current installation can have one Codex Agent Binding. The runtime interface is adapter-based, but other coding agents are not yet released.
 
-Install the current pinned alpha without Bun or Node.js:
+## Requirements
+
+Before installing Connect, you need:
+
+1. A ClawChat account and an Agent invite code.
+2. `codex-cli 0.145.0` installed and authenticated on the same computer.
+3. macOS or Linux. Windows is not currently packaged.
+
+Check the Codex version:
+
+```bash
+codex --version
+```
+
+Connect requires exactly `codex-cli 0.145.0`. It uses your existing Codex login, configuration, MCP servers, and `~/.codex/sessions` storage. Connect does not install or reconfigure Codex.
+
+## Quick start
+
+### 1. Install Connect
+
+The standalone installer does not require Bun or Node.js:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
 ```
 
-Install a specific alpha version or choose another user-writable installation directory:
+The default executable location is `~/.local/bin`. If it is not already on `PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+To install a specific release or choose another directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
   CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.4
 ```
 
-The installer downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs `clawchat-connect`, its prebuilt `clawchat-connect-client` assets, and license notices below `~/.local/bin` by default. Add that directory to `PATH` if necessary. Connect expects the coding-agent executable selected by its Runtime Adapter to already be installed and available; it does not install coding agents.
-
-Developers can instead install the Bun package directly:
+Developers may install the Bun package instead:
 
 ```bash
 bun add --global @clawling/clawchat-plugin-connect
 ```
 
-## Configure an Agent Binding
+### 2. Create the first Agent Binding
 
-An Agent Binding ID is an arbitrary local name. A Binding owns its activation, runtime configuration, Sessions, and Runtime Threads. Runtime Adapter selection comes from the explicit `kind`, never from the ID:
+`work` is a local name; choose any short name you want:
 
 ```bash
 clawchat-connect init --agent work --kind codex
-clawchat-connect activate work A1B2C3
 ```
 
-After activation succeeds, Connect sets the ClawChat Profile nickname to the Agent Binding ID (`work` in this example). Install the native background service described below to start Connect; there is no foreground run command.
+If `codex` is not the executable you want Connect to launch:
 
-The activated account Profile can later be updated from the CLI. At least one field is required:
+```bash
+clawchat-connect init --agent work --kind codex --codex-path /absolute/path/to/codex
+```
+
+`init` creates a new configuration. On an existing installation, use `agent add` to update a Binding instead of running `init` again:
+
+```bash
+clawchat-connect agent add work --kind codex --codex-path /absolute/path/to/codex
+```
+
+### 3. Activate the Binding
+
+Use the invite code issued by ClawChat:
+
+```bash
+clawchat-connect activate work YOUR_INVITE_CODE
+```
+
+Connect stores the returned credentials, not the invite code, and updates the ClawChat Profile nickname to the Binding ID (`work` in this example).
+
+### 4. Install the background service
+
+```bash
+clawchat-connect service install
+clawchat-connect service status
+```
+
+Installation starts Connect immediately and enables it for future logins. Connect runs as a native per-user LaunchAgent on macOS or systemd user service on Linux; root access is not required.
+
+There is no foreground `run` command. The background service owns the ClawChat WebSocket connection, Codex app-server process, and browser client.
+
+### 5. Send a message
+
+Open the activated Agent conversation in ClawChat and send an ordinary message. Without a selected Project, Connect creates an isolated workspace under `~/.clawchat-connect/workspaces/` and starts a persistent Codex Session automatically.
+
+For example:
+
+```text
+Explain what this repository does and suggest the first improvement.
+```
+
+## Working with a repository
+
+Project paths are local-machine administration, so register them in the terminal or Connect Client—not in ClawChat:
+
+```bash
+clawchat-connect project add connect /absolute/path/to/clawchat-plugin-connect
+clawchat-connect project list
+```
+
+Use `--additional-directory /absolute/path` more than once when a Project needs other trusted writable roots. Then select the Project and Session options in ClawChat:
+
+```text
+/project connect
+/new Review authentication
+/mode workspace-write
+/model
+/model MODEL_ID high
+Review the authentication implementation and report any security issues.
+```
+
+`/project`, `/new`, `/mode`, and `/model` prepare a Session Intent. The first ordinary message atomically creates the Session and starts its Codex Runtime Thread. `/model` with no argument lists the models and reasoning efforts advertised by the installed Runtime Adapter.
+
+Local Project administration:
+
+| Command | Purpose |
+| --- | --- |
+| `clawchat-connect project add <name> <absolute-path> [--additional-directory <path>]` | Register a Project and optional trusted additional directories. |
+| `clawchat-connect project list` | List Projects with their local paths. |
+| `clawchat-connect project remove <name-or-id>` | Remove an unused Project definition; files are never deleted. |
+
+A Project cannot be removed while a Session or pending Session selection references it.
+
+## Sessions and chat commands
+
+Connect keeps one current Session per ClawChat conversation and Agent Binding. A Session owns a stable eight-character Ref and, once started, a resumable Codex Runtime Thread.
+
+Send these as standalone ClawChat messages:
+
+| Command | Purpose |
+| --- | --- |
+| `/help` | Show the command summary. |
+| `/status` | Show the current/pending Session, effective options, connection, and turn status. |
+| `/new [name]` | Prepare a new Session for the next ordinary message. |
+| `/sessions` | List Sessions and available Runtime Threads in the selected workspace. |
+| `/switch <name-or-ref>` | Resume a Session or adopt an available Runtime Thread. |
+| `/project [name-or-id\|none]` | Show registered Project names, select one, or select an isolated Non-Project workspace. |
+| `/model [model-id [reasoning-effort]\|default]` | Show or set the Session model and effort; `default` restores inheritance. |
+| `/mode [mode\|default]` | Show or set `read-only`, `workspace-write`, or `danger-full-access`; `default` restores inheritance. |
+| `/cancel` | Interrupt the active Codex turn when possible. |
+| `/clawchat-output <mode>` | Set ClawChat output to `minimal`, `normal`, or `full`. |
+
+`/help` is available to every participant. Other Connect control commands require the Agent Binding owner. Removed forms such as `/list`, `/current`, `/clawchat-status`, and `/project add|list|use|current|clear|remove` fail with a pointer to `/help`; they are not forwarded to the coding agent. Unknown `/clawchat-*` commands show Connect help, while unrelated slash commands are passed through.
+
+The effective model is resolved for every turn: Session override → Agent Binding default → Runtime Adapter default. Reasoning effort resolves separately: Session override → a valid Agent Binding effort → the model's advertised default. An unavailable saved Session selection fails visibly instead of silently falling back; an invalid Binding effort falls back to the advertised default because it is only a default. Changing a model keeps the same Runtime Thread; changing the mode of a materialized Session starts a new Runtime Thread boundary.
+
+Output modes:
+
+| Mode | ClawChat receives |
+| --- | --- |
+| `minimal` | Final answer only. |
+| `normal` | Final answer and assistant-visible output. |
+| `full` | Tool, progress, reasoning, assistant, and final output. |
+
+Failures and required control messages remain visible in every mode.
+
+## Connect Client
+
+The service exposes a browser client at `http://127.0.0.1:47823/` by default:
+
+```bash
+clawchat-connect web
+```
+
+Use `--no-open` to print the URL without opening a browser:
+
+```bash
+clawchat-connect web --no-open
+```
+
+The browser client can create a Session by choosing its Project, mode, model, reasoning effort, and first task together. It can also inspect Sessions, read native Codex transcripts, change Session model options, manage Projects, and send more turns. Browser-originated turns stay local to Connect and are not posted into ClawChat.
+
+Browser and ClawChat turns targeting the same Session are strictly ordered. Different Sessions may run concurrently, including two Sessions associated with one ClawChat conversation, up to `maxConcurrentTurns`.
+
+### Trusted LAN access
+
+To make the browser client reachable from another device on a trusted private network:
+
+```bash
+clawchat-connect config set clientHost 0.0.0.0
+clawchat-connect service restart
+```
+
+Then open `http://<computer-LAN-IP>:47823/`.
+
+LAN mode has no authentication or TLS. Anyone who can reach the port can read Sessions, manage Project paths and model preferences, and submit local Codex turns with the modes exposed by the Runtime Adapter. Never expose it to the internet. Return to loopback mode with:
+
+```bash
+clawchat-connect config set clientHost 127.0.0.1
+clawchat-connect service restart
+```
+
+Set a different port with `clawchat-connect config set clientPort 47824` (allowed range: 1024–65535).
+
+## Media support
+
+Incoming ClawChat media remains structured:
+
+- images and audio are downloaded to the Connect-owned cache and submitted to Codex as native local inputs;
+- files and videos are downloaded and included as local file references in the Codex prompt;
+- each download is limited to 100 MiB;
+- the cache is limited to 512 MiB and expires files after 15 days without access.
+
+When Codex returns a local Markdown image, Connect uploads it to ClawChat if:
+
+- it is inside the resolved Project workspace, an allowed additional directory, or the Connect media cache; and
+- its extension and file signature identify PNG, JPEG, GIF, or WebP content.
+
+Other local paths remain text and are not uploaded.
+
+Untrusted media URLs must use HTTPS and resolve to public addresses. Redirects are revalidated. The configured ClawChat API and media origins are trusted explicitly so private self-hosted deployments continue to work.
+
+## Configuration
+
+The default configuration file is `~/.clawchat-connect/config.json`. Inspect it with:
+
+```bash
+clawchat-connect config get
+clawchat-connect config get agents.work.sandboxMode
+```
+
+Common settings can be changed from the CLI:
+
+```bash
+clawchat-connect config set agents.work.model YOUR_MODEL_ID
+clawchat-connect config set agents.work.sandboxMode workspace-write
+clawchat-connect config set agents.work.modelReasoningEffort high
+clawchat-connect config set agents.work.approvalPolicy on-request
+clawchat-connect config set agents.work.webSearchMode live
+clawchat-connect config set agents.work.networkAccessEnabled true
+clawchat-connect service restart
+```
+
+Supported Codex values:
+
+| Setting | Values |
+| --- | --- |
+| `sandboxMode` | `read-only`, `workspace-write`, `danger-full-access` |
+| `modelReasoningEffort` | `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `approvalPolicy` | `never`, `on-request`, `untrusted` |
+| `webSearchMode` | `disabled`, `cached`, `live` |
+| `networkAccessEnabled` | `true`, `false` |
+
+Edit JSON directly for `env` and `additionalDirectories`, which are intentionally not exposed by `config set`:
+
+```json
+{
+  "defaultAgent": "work",
+  "maxConcurrentTurns": 4,
+  "maxPendingPerSession": 20,
+  "agents": {
+    "work": {
+      "kind": "codex",
+      "displayName": "Work Codex",
+      "codexPathOverride": "/absolute/path/to/codex",
+      "sandboxMode": "workspace-write",
+      "modelReasoningEffort": "high",
+      "approvalPolicy": "on-request",
+      "webSearchMode": "live",
+      "networkAccessEnabled": true,
+      "additionalDirectories": ["/absolute/path/to/shared-library"],
+      "env": {
+        "EXAMPLE_VARIABLE": "value"
+      }
+    }
+  }
+}
+```
+
+Restart the service after changing runtime or endpoint configuration.
+
+### Self-hosted ClawChat
+
+Configure the HTTP and WebSocket endpoints before activation:
+
+```bash
+clawchat-connect config set baseUrl https://clawchat.example.com
+clawchat-connect config set websocketUrl wss://clawchat.example.com/ws
+```
+
+`mediaUploadUrl` defaults to `/media/upload` on `baseUrl`. Override it only when media is served separately:
+
+```bash
+clawchat-connect config set mediaUploadUrl https://media.example.com/media/upload
+```
+
+## Service and account commands
+
+| Command | Purpose |
+| --- | --- |
+| `clawchat-connect status [--agent <id>]` | Show activation and runtime status. |
+| `clawchat-connect doctor` | Check basic configuration. |
+| `clawchat-connect agent list` | List configured Agent Bindings. |
+| `clawchat-connect agent remove <id>` | Remove a local Binding configuration. |
+| `clawchat-connect service start` | Start the installed service. |
+| `clawchat-connect service stop` | Stop it without uninstalling it. |
+| `clawchat-connect service restart` | Restart after configuration changes. |
+| `clawchat-connect service status` | Show native service status. |
+| `clawchat-connect service logs` | Show recent logs. |
+| `clawchat-connect service logs --lines 250 --follow` | Follow service logs. |
+
+Update the activated ClawChat Profile with at least one field:
 
 ```bash
 clawchat-connect profile update --agent work --nickname Luna
 clawchat-connect profile update --agent work --avatar-url https://example.com/luna.png --bio "Local coding agent"
 ```
 
-The Codex Runtime Adapter starts the user's existing Codex executable from `PATH` and uses normal Codex authentication and Session storage. This release requires exactly `codex-cli 0.145.0`; Connect checks the version before opening the ClawChat connection and does not fall back to the SDK or older protocols. To select a specific Codex executable:
+`service install` captures the current executable path and `PATH`. Run it again after moving Connect or changing the `PATH` needed to find Codex.
+
+## Troubleshooting
+
+Start with:
 
 ```bash
-clawchat-connect agent add work --kind codex --codex-path /absolute/path/to/codex
-```
-
-Codex configuration can also be edited in `~/.clawchat-connect/config.json`:
-
-```json
-{
-  "defaultAgent": "work",
-  "agents": {
-    "work": {
-      "kind": "codex",
-      "model": "gpt-5-codex",
-      "sandboxMode": "workspace-write",
-      "modelReasoningEffort": "high",
-      "approvalPolicy": "never",
-      "webSearchMode": "live",
-      "networkAccessEnabled": true
-    }
-  }
-}
-```
-
-Supported Codex options include `codexPathOverride`, `env`, `model`, `sandboxMode`, `modelReasoningEffort`, `approvalPolicy`, `webSearchMode`, `networkAccessEnabled`, and `additionalDirectories`. App-server accepts non-Git working directories directly, so the former SDK-only `skipGitRepoCheck` option is not supported.
-
-For a self-hosted ClawChat deployment, `mediaUploadUrl` defaults to `/media/upload` on the configured `baseUrl`; it never independently falls back to the hosted ClawChat endpoint. An explicitly configured upload URL remains supported.
-
-The first release registers only `kind: "codex"`. Connect's Agent Binding model and runtime seam are not Codex-specific; later releases can register additional Runtime Adapters. Legacy agent shapes and unavailable runtime kinds are rejected rather than inferred or migrated.
-
-## Background service
-
-Connect can install itself as one native per-user background service. That Connect Service starts every activated Agent Binding and selects each Binding's Runtime Adapter independently. macOS uses a LaunchAgent and Linux uses a systemd user service; root access is not required. Install after configuring and activating at least one Agent Binding:
-
-```bash
-clawchat-connect service install
-```
-
-Installation starts Connect immediately, enables it for future user logins, stores the absolute config path, and captures the current `PATH` so Runtime Adapters can find their executables. Re-run `service install` after moving the Connect executable or changing the required `PATH`. Restart the service after adding or activating another Agent Binding.
-
-Manage and inspect the service with:
-
-```bash
-clawchat-connect service start
-clawchat-connect service stop
-clawchat-connect service restart
+clawchat-connect doctor
+clawchat-connect status
 clawchat-connect service status
-clawchat-connect service logs
-clawchat-connect service logs --lines 250 --follow
+clawchat-connect service logs --lines 250
 ```
 
-One Connect installation has exactly one service definition; Agent Bindings and Runtime Adapters never own system services. `stop` stops the current background process but retains its installed login configuration; `start` loads it again. Logs are stored below `~/.clawchat-connect/logs/` on macOS and in the user journal on Linux.
+Common causes:
 
-## Connect Client Web
+- **Codex version rejected:** install exactly `codex-cli 0.145.0`, or set `agents.<id>.codexPathOverride` to the correct executable.
+- **Codex works in a terminal but not in Connect:** reinstall the service so it captures the current `PATH`.
+- **Configuration changed but behavior did not:** restart the service.
+- **Browser client does not open:** confirm the service is running, then use `clawchat-connect web --no-open` and open the printed URL.
+- **A Project cannot be removed:** switch away from it and remove any pending/current Session references first.
 
-The background service also serves Connect Client directly on `127.0.0.1` (port `47823` by default):
+## Local data and security
 
-```bash
-clawchat-connect web
-clawchat-connect web --no-open
-```
-
-Both commands use the local URL `http://127.0.0.1:47823/`; the first opens the browser and `--no-open` only prints it. There is no local login, launch token, or browser session. In the default loopback mode, the Client Interface enforces the exact loopback Host. Every mode requires mutation requests to use the request Host's exact same Origin, compatible Fetch Metadata, and a production CSP that forbids inline scripts and style elements. Astryx's runtime layout primitives require style attributes, so that single CSP surface is allowed explicitly while script attributes remain blocked.
-
-To expose Connect Client to trusted devices on the same LAN, explicitly enable wildcard IPv4 Host mode and restart the service:
-
-```bash
-clawchat-connect config set clientHost 0.0.0.0
-clawchat-connect service restart
-clawchat-connect web --no-open
-```
-
-Then open `http://<this-computer-LAN-IP>:47823/` from another device. LAN Host mode has no authentication or TLS: anyone who can reach that port can read Sessions and submit local agent turns. Use it only on a trusted private network, do not forward the port to the internet, and return to loopback with `clawchat-connect config set clientHost 127.0.0.1` when remote access is no longer needed. Host mode accepts only IPv4-literal request Hosts and rejects hostname-based DNS rebinding.
-
-Connect Client discovers all Sessions and native Runtime Threads available to every configured Agent Binding. Project Sessions are grouped below collapsible Project nodes; Non-Project Sessions remain direct navigation items. Opening a native thread reads its persisted transcript through the Runtime Adapter. For Codex, `thread/read` is the context and history authority while SQLite holds the Connect-owned presentation projection, provenance, cursors, and reconnect stream.
-
-Web-originated messages are local to Connect: they run on the selected Session's existing Runtime Thread and are never published to ClawChat. ClawChat-originated messages and agent output are projected into the Client in real time. Connect serializes both origins on the same Session queue so two surfaces cannot overlap turns on one Runtime Thread.
-
-The browser has no app-server, filesystem, process, or local-agent access. It uses versioned same-origin HTTP snapshots and commands plus one Server-Sent Events stream per tab. Settings deliberately expose only safe presentation/runtime preferences; sandbox, approval, executable, environment, and directory trust remain local configuration.
-
-`clientHost` accepts only `127.0.0.1` and `0.0.0.0`. To use a different port, set `clientPort` in `~/.clawchat-connect/config.json` and restart the service.
-
-## Projects and Sessions
-
-A Project is a named, reusable Connect workspace. Projects are global and may be used by Sessions from any Agent Binding.
-
-```text
-/project add connect /absolute/path/to/clawchat-plugin-connect
-/project list
-/project use connect
-/project current
-/project clear
-/project remove connect
-```
-
-Rules:
-
-- Sessions are scoped by ClawChat conversation and Agent Binding.
-- A Session has zero or one Project.
-- `/new`, `/project use`, and `/project clear` prepare the next Session without creating an empty Session.
-- The first ordinary message consumes that pending selection and creates the Session; adopting an existing Runtime Thread with `/switch` creates one immediately because that thread already contains messages.
-- Every Project change prepares a new Session and therefore a new Runtime Thread boundary once work begins.
-- `/current` distinguishes a pending next Session from a current Session.
-- `/list` shows Connect Sessions and resumable Codex Runtime Threads only for the selected workspace, by name plus a stable eight-character Session Ref.
-- `/switch <name-or-ref>` returns to a Connect Session or explicitly imports a discovered Runtime Thread.
-- A Project can only be removed while no Session or pending Session selection references it.
-
-A Non-Project Session works immediately. Connect creates a deterministic isolated workspace below `~/.clawchat-connect/workspaces/`; it never falls back to the process working directory. App-server accepts both registered Project roots and isolated Non-Project directories directly, without the former SDK command's Git-repository preflight.
-
-Codex accepts these Session modes:
-
-```text
-/mode read-only
-/mode workspace-write
-/mode danger-full-access
-```
-
-Changing mode invalidates the current Runtime Thread because the mode is a Codex thread option. Before a Session starts, `/mode` only updates the pending selection.
-
-## Chat commands
-
-Send Connect commands as standalone messages in the ClawChat conversation bound to the agent.
-
-Command rules:
-
-- `/help` is the single Connect help command and is never forwarded to a Runtime Adapter.
-- Except for `/help`, control commands can only be used by the Agent Binding owner.
-- Commands and ordinary turns are serialized per conversation. `/cancel` bypasses that queue so it can interrupt the active turn.
-- Session state is scoped by ClawChat conversation and Agent Binding. Project definitions are global to the Connect installation.
-- An unknown `/clawchat-*` command returns Connect help. Other unrecognized slash commands are forwarded to the coding agent.
-
-### Help, status, and output
-
-#### `/help`
-
-Shows the Connect command summary. This command is available to every participant and does not create a Session.
-
-#### `/status` and `/clawchat-status`
-
-Shows the active Agent Binding, WebSocket connection state, active conversations, running turns, and queued turns. Both forms are equivalent.
-
-```text
-/status
-```
-
-#### `/clawchat-output minimal|normal|full`
-
-Sets the persisted output visibility for the current ClawChat conversation:
-
-| Mode | Visible output |
+| Data | Default location |
 | --- | --- |
-| `minimal` | Final answer only |
-| `normal` | Final answer and assistant-visible output |
-| `full` | All runtime, tool, progress, reasoning, and final output |
-
-```text
-/clawchat-output normal
-```
-
-Required control messages and runtime failures remain visible regardless of this setting.
-
-### Session commands
-
-Connect separates three pieces of state:
-
-- A **Session Intent** is the pending name, Project, and mode for the next Session. It has no Session Ref or Runtime Thread.
-- A **Session** is Connect's logical conversation and owns a stable eight-character Session Ref.
-- A **Runtime Thread** is the coding agent's resumable conversation ID owned by a materialized Session.
-
-#### `/new [name]`
-
-Prepares a new Session Intent using the currently selected Project and mode. It does not create an empty Session. The first subsequent ordinary message materializes the Session and starts its Runtime Thread.
-
-```text
-/new
-/new Fix login flow
-```
-
-If no name is supplied, Connect can derive one from the Runtime Thread's first user message. The previous Session remains resumable through `/list` and `/switch`.
-
-#### `/current`
-
-Shows one of the following:
-
-- `Next Session (not started)` with the pending name, Project, and mode;
-- the current materialized Session with its name, Ref, Project, and mode; or
-- that no Session or pending selection exists.
-
-```text
-/current
-```
-
-#### `/list`
-
-Lists materialized Connect Sessions and unclaimed resumable Runtime Threads for the selected workspace.
-
-```text
-/list
-```
-
-The output uses these markers:
-
-- `(current)` identifies the current Connect Session.
-- `(available) — Runtime Thread` identifies a discovered Runtime Thread that Connect has not adopted.
-- Project selections list only Sessions and Runtime Threads from that Project root.
-- A pending Non-Project selection lists no old Non-Project Sessions; a current Non-Project Session lists only itself.
-
-Each entry has a Connect-owned eight-character Ref. Refs are stable selectors and do not expose or derive from internal UUIDs.
-
-#### `/switch <name-or-ref>`
-
-Switches to a materialized Connect Session or adopts an available Runtime Thread from the selected workspace.
-
-```text
-/switch WATT9U2E
-/switch Fix login flow
-```
-
-Names and Refs must match exactly, ignoring letter case. If a name matches more than one item, Connect asks for the unambiguous Ref. Switching to an existing Session preserves its Runtime Thread. Adopting an available Runtime Thread immediately creates a materialized Connect Session because that thread already contains messages.
-
-### Project commands
-
-A Project is a named reusable workspace. Its root is passed to the Runtime Adapter as the working directory.
-
-#### `/project add <name> <absolute-path>`
-
-Registers a Project globally.
-
-```text
-/project add connect /Volumes/SAMSUNG/Projects/clawchat-plugin-connect
-```
-
-The root must be an existing absolute directory. Project names are case-insensitively unique, and the same canonical root cannot be registered twice. Project names cannot contain spaces.
-
-#### `/project list`
-
-Lists every registered Project with its ID and canonical root.
-
-```text
-/project list
-```
-
-#### `/project use <name-or-id>`
-
-Selects a Project for the next Session. This creates or replaces a Session Intent; it does not create a Session or Runtime Thread.
-
-```text
-/project use connect
-```
-
-The selected name and mode are retained. Use `/new [name]` to choose a different Session name before sending the first ordinary message.
-
-#### `/project current`
-
-Shows the current Session's Project or the Project selected for the next Session.
-
-```text
-/project current
-```
-
-#### `/project clear`
-
-Selects a deterministic isolated Non-Project workspace for the next Session. It creates or replaces a Session Intent without materializing a Session.
-
-```text
-/project clear
-```
-
-The isolated workspace is stored below `~/.clawchat-connect/workspaces/`; Connect never substitutes the service process's current directory.
-
-#### `/project remove <name-or-id>`
-
-Removes an unused Project definition.
-
-```text
-/project remove connect
-```
-
-Removal is rejected while any materialized Session or Session Intent references the Project. Removing a Project never deletes its directory or files.
-
-### Runtime mode and cancellation
-
-#### `/mode <mode>`
-
-Sets the Runtime Adapter mode. The first-release Codex adapter accepts:
-
-```text
-/mode read-only
-/mode workspace-write
-/mode danger-full-access
-```
-
-For a Session Intent, the command only changes the pending mode. For a materialized Session, it keeps the Connect Session and Ref but invalidates the existing Runtime Thread because the sandbox mode is a thread startup option. The next ordinary message starts a new Runtime Thread with the selected mode.
-
-#### `/cancel`
-
-Attempts to abort the active turn for the current conversation.
-
-```text
-/cancel
-```
-
-If the Runtime Adapter supports cancellation, Connect aborts the active turn and confirms it. If no cancellable turn exists, Connect reports that without changing Session state.
-
-### Example workflow
-
-```text
-/project add connect /Volumes/SAMSUNG/Projects/clawchat-plugin-connect
-/project use connect
-/new Review authentication
-/mode workspace-write
-Review the authentication implementation and report any security issues.
-/current
-/list
-/switch WATT9U2E
-```
-
-The first four control commands only prepare the Session. The review request is the first ordinary message, so it materializes the Session and starts the Runtime Thread.
-
-## Codex Runtime Threads and output
-
-Connect stores the Codex thread ID on its owning logical Session. It resumes that Runtime Thread after a process restart or after `/switch` returns to the Session. For the current workspace, `/list` calls app-server `thread/list` across every Codex source kind and shows unclaimed Runtime Threads by title and Session Ref. `/switch <name-or-ref>` explicitly adopts one into a new Connect Session while preserving that Ref. Refs are random Connect-owned Base32 handles, not prefixes of internal UUIDs. A Runtime Thread never crosses a Project boundary.
-
-The Codex adapter maps stable app-server notifications into ClawChat output kinds:
-
-- agent messages → `assistant` and `final`
-- reasoning → `reasoning`
-- commands, file changes, and MCP calls → `tool`
-- task lists, searches, and turn lifecycle → `progress`
-- failures → visible `final` replies
-
-The latest completed agent message is emitted exactly once as the final reply. `/cancel` interrupts the active app-server turn through `turn/interrupt`. The shared child process is closed only after Connect has closed its Runtime Sessions.
-
-## External tools and MCP
-
-Connect does not register ClawChat tools, run an MCP server, or inject MCP configuration into Codex. Profile mutation is an explicit host-side CLI operation backed by the activated Agent Binding credentials. Any MCP servers configured independently in the user's normal Codex environment remain outside Connect's ownership.
-
-## State
-
-- Config: `~/.clawchat-connect/config.json`
-- SQLite state: `~/.clawchat-connect/state.sqlite` through Bun's built-in `bun:sqlite` (must be an absolute path)
-- Non-Project workspaces: `~/.clawchat-connect/workspaces/`
-- Codex Runtime Threads: normal Codex storage under `~/.codex/sessions`
-- Media cache: `~/.clawchat-connect/media-cache/`, capped at 512 MiB with a 15-day idle expiry
-
-Invite codes are not persisted. Credentials, Projects, pending Session selections, Session-to-Project associations, Runtime Thread IDs, message audit rows, output visibility, and runtime status are stored in SQLite.
-
-Incoming media downloads reject local/private network destinations and revalidate every redirect. The configured API and media-upload origins are explicitly trusted so private self-hosted deployments continue to work; other media hosts must resolve to public addresses and use HTTPS.
-
-Codex may return a local Markdown image to ClawChat. Connect uploads it only when the canonical path is inside the media cache or resolved Runtime Workspace and both its extension and file signature identify PNG, JPEG, GIF, or WebP content. Other paths remain ordinary reply text and are not read or uploaded.
-
-See [`SECURITY.md`](SECURITY.md) for private vulnerability reporting.
+| Configuration | `~/.clawchat-connect/config.json` |
+| SQLite state and credentials | `~/.clawchat-connect/state.sqlite` |
+| Service logs on macOS | `~/.clawchat-connect/logs/` |
+| Isolated Non-Project workspaces | `~/.clawchat-connect/workspaces/` |
+| Downloaded media cache | `~/.clawchat-connect/media-cache/` |
+| Codex Runtime Threads | `~/.codex/sessions/` |
+
+Invite codes are not persisted. Connect does not expose tools, run an MCP server, or inject MCP configuration into Codex. MCP servers already configured in the user's Codex environment remain under Codex's ownership.
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting and LAN/media security guidance. See [docs/architecture.md](docs/architecture.md) for protocol, reliability, and module design details.
 
 ## Development
 
-Bun owns package installation, runtime execution, testing, and bundling. Source files use extensionless relative imports, `bun:test` runs the test suite, and `bun build --target=bun` creates the publishable CLI and library entrypoints.
+Development requires the Bun version pinned in `package.json`:
 
 ```bash
-bun install
-bun run clean
-bun run format
-bun run lint
-bun run typecheck
-bun test
-bun run test:integration:codex
-bun run build
-bun run build:binary
-bun run preview:web
+bun install --frozen-lockfile
+bun run check
+bun run clean && bun run build
 ```
 
-Set `CODEX_INTEGRATION_PATH=/absolute/path/to/codex` when the matching executable is not the first `codex` on `PATH`.
+`bun run check` includes a headless Connect Client interaction test. It automatically uses Brave or Chrome when installed; set `BRAVE_PATH` or `CHROMIUM_PATH` for a nonstandard executable location. CI installs Playwright Chromium.
 
-Pushing a version tag such as `v0.1.0-alpha.4` runs the alpha release workflow. The workflow requires the tag to match `package.json`, runs the complete check suite, builds standalone macOS/Linux binaries for arm64 and x64, and publishes them with `install.sh` and SHA-256 checksums as a GitHub prerelease. Non-alpha tags are not accepted by this workflow.
+Run the real Codex model-catalog and same-Runtime-Thread model-switch test with:
 
-The runtime uses Bun's built-in WebSocket client and `bun:sqlite`; it does not ship `ws`, `sqlite`, `sqlite3`, or tsup. The Web build uses Vite while the current backend suite continues to run with `bun:test`. Generated `dist/` output remains ignored.
+```bash
+CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
+```
+
+Create a standalone binary with `bun run build:binary`. Preview the browser client with `bun run preview:web`.
+
+Version tags such as `v0.1.0-alpha.4` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, builds macOS/Linux archives, and publishes checksums and license notices as a GitHub prerelease.
+
+## License
+
+ClawChat Connect is available under the [MIT License](LICENSE). Bundled dependency notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

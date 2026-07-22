@@ -69,6 +69,13 @@ describe("Agent Binding configuration", () => {
     expect(migrated.mediaUploadUrl).toBe("https://self-hosted.example/media/upload");
   });
 
+  it("uses a Session-named pending-turn limit without accepting the removed conversation setting", () => {
+    expect(normalizeConfig({ maxPendingPerSession: 7 }).maxPendingPerSession).toBe(7);
+    const legacy = normalizeConfig({ maxPendingPerChat: 3 });
+    expect(legacy.maxPendingPerSession).toBeUndefined();
+    expect("maxPendingPerChat" in legacy).toBe(false);
+  });
+
   it("rejects legacy agent shapes instead of migrating them", () => {
     expect(() =>
       normalizeConfig({

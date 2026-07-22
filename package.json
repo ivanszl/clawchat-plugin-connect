@@ -41,12 +41,13 @@
     "clean": "bun -e 'import { rm } from \"node:fs/promises\"; await rm(\"dist\", { recursive: true, force: true })'",
     "prepack": "bun run clean && bun run build",
     "test": "bun test",
+    "test:client-web": "bun run build:web && bun tests/integration/client-web.ts",
     "test:integration:codex": "bun tests/integration/codex-app-server.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
-    "check": "biome check . && bun run typecheck && bun test"
+    "check": "biome check . && bun run typecheck && bun test && bun run test:client-web"
   },
   "dependencies": {
     "@astryxdesign/core": "0.1.7",

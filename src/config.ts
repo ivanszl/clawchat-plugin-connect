@@ -192,8 +192,8 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
     ...(typeof record.maxConcurrentTurns === "number" && Number.isFinite(record.maxConcurrentTurns)
       ? { maxConcurrentTurns: Math.max(1, Math.trunc(record.maxConcurrentTurns)) }
       : {}),
-    ...(typeof record.maxPendingPerChat === "number" && Number.isFinite(record.maxPendingPerChat)
-      ? { maxPendingPerChat: Math.max(1, Math.trunc(record.maxPendingPerChat)) }
+    ...(typeof record.maxPendingPerSession === "number" && Number.isFinite(record.maxPendingPerSession)
+      ? { maxPendingPerSession: Math.max(1, Math.trunc(record.maxPendingPerSession)) }
       : {}),
   };
 }

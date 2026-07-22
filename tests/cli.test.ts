@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { handleChatCommand } from "../src/chat-commands";
+import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "../src/chat-commands";
 import { runConnectCli } from "../src/cli";
 import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import type { UpdateAccountProfileResult } from "../src/profile";
@@ -120,6 +120,34 @@ describe("runConnectCli", () => {
     output.stdout.length = 0;
     await expect(runConnectCli(["config", "get", "stateDbPath", "--config", path], output.deps)).resolves.toBe(0);
     expect(output.stdout).toEqual([`${JSON.stringify(stateDbPath)}\n`]);
+  });
+
+  it("manages Projects only through the local CLI", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-project-cli-"));
+    const configPath = join(directory, "config.json");
+    const root = join(directory, "repo");
+    const shared = join(directory, "shared");
+    await mkdir(root);
+    await mkdir(shared);
+    const config = defaultConfig();
+    config.stateDbPath = join(directory, "state.sqlite");
+    await saveConfig(config, configPath);
+    const output = io();
+
+    await expect(
+      runConnectCli(
+        ["project", "add", "connect", root, "--additional-directory", shared, "--config", configPath],
+        output.deps,
+      ),
+    ).resolves.toBe(0);
+    output.stdout.length = 0;
+    await expect(runConnectCli(["project", "list", "--config", configPath], output.deps)).resolves.toBe(0);
+    expect(output.stdout.join("")).toContain(`connect`);
+    expect(output.stdout.join("")).toContain(root);
+
+    output.stdout.length = 0;
+    await expect(runConnectCli(["project", "remove", "connect", "--config", configPath], output.deps)).resolves.toBe(0);
+    expect(output.stdout.join("")).toContain("Removed Project connect");
   });
 
   it("activates through injectable activation action without printing invite code", async () => {
@@ -271,6 +299,25 @@ describe("runConnectCli", () => {
 });
 
 describe("handleChatCommand", () => {
+  it("orders only controls that change Session routing or turn settings", () => {
+    for (const text of ["/new", "/new Plan", "/switch ABCDEFGH", "/project none", "/model default", "/mode read-only"])
+      expect(requiresOrderedSessionControl(text)).toBe(true);
+    for (const text of [
+      "/help",
+      "/status",
+      "/sessions",
+      "/switch",
+      "/project",
+      "/project add repo /tmp/repo",
+      "/model",
+      "/mode",
+      "/clawchat-output full",
+    ])
+      expect(requiresOrderedSessionControl(text)).toBe(false);
+    expect(isConnectControlMessage("/status")).toBe(true);
+    expect(isConnectControlMessage("ordinary work")).toBe(false);
+  });
+
   it("uses /help as the only Connect help command", async () => {
     const context = {
       agentId: "codex",
@@ -280,13 +327,20 @@ describe("handleChatCommand", () => {
       projects: {} as ProjectCatalog,
     };
 
-    await expect(handleChatCommand({ ...context, message: message("/help") })).resolves.toMatchObject({
-      handled: true,
-      text: expect.stringContaining("ClawChat Connect commands"),
-    });
+    const help = await handleChatCommand({ ...context, message: message("/help") });
+    const helpText = help.text ?? "";
+    expect(help.handled).toBe(true);
+    expect(helpText.includes("/sessions")).toBe(true);
+    expect(helpText.includes("/model")).toBe(true);
+    expect(helpText.includes("/project add")).toBe(false);
+    expect(helpText.includes("/current")).toBe(false);
     await expect(handleChatCommand({ ...context, message: message("/clawchat-help") })).resolves.toMatchObject({
       handled: true,
       text: expect.stringContaining("Unknown ClawChat command: /clawchat-help"),
+    });
+    await expect(handleChatCommand({ ...context, message: message("/list") })).resolves.toMatchObject({
+      handled: true,
+      text: expect.stringContaining("Unknown Connect command: /list"),
     });
   });
 
@@ -311,7 +365,7 @@ describe("handleChatCommand", () => {
     const projects = { list: mock(async () => []) } as unknown as ProjectCatalog;
     const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     const result = await handleChatCommand({
-      message: message("/project list"),
+      message: message("/project"),
       agentId: "codex",
       ownerUserId: "owner-user",
       config,
@@ -328,20 +382,17 @@ describe("handleChatCommand", () => {
     await mkdir(root);
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
+    await projects.add("repo", root);
     const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     const closeRuntimeSession = mock(async () => true);
     const invalidateRuntimeSession = mock(async () => true);
     for (const command of [
       "/status",
       "/new",
-      "/list",
-      "/current",
-      `/project add repo ${root}`,
-      "/project list",
-      "/project use repo",
-      "/project current",
-      "/project clear",
-      "/project remove repo",
+      "/sessions",
+      "/project",
+      "/project repo",
+      "/project none",
       "/mode read-only",
       "/cancel",
     ]) {
@@ -406,7 +457,7 @@ describe("handleChatCommand", () => {
     const closeRuntimeSession = mock(async () => true);
 
     const selected = await handleChatCommand({
-      message: message("/project use repo"),
+      message: message("/project repo"),
       agentId: "work",
       ownerUserId: "usr",
       config,
@@ -422,27 +473,27 @@ describe("handleChatCommand", () => {
     });
     await expect(
       handleChatCommand({
-        message: message("/current"),
+        message: message("/status"),
         agentId: "work",
         ownerUserId: "usr",
         config,
         stateStore: store,
         projects,
       }),
-    ).resolves.toMatchObject({ text: expect.stringContaining("Next Session (not started)") });
+    ).resolves.toMatchObject({ text: expect.stringContaining("next Session (not started)") });
     const selectedList = await handleChatCommand({
-      message: message("/list"),
+      message: message("/sessions"),
       agentId: "work",
       ownerUserId: "usr",
       config,
       stateStore: store,
       projects,
     });
-    expect(selectedList.text).toContain("No Sessions in the selected workspace");
+    expect(selectedList.text).toContain("No Sessions in Project `repo`");
     expect(selectedList.text).not.toContain("thread-before");
 
     const cleared = await handleChatCommand({
-      message: message("/project clear"),
+      message: message("/project none"),
       agentId: "work",
       ownerUserId: "usr",
       config,
@@ -487,6 +538,122 @@ describe("handleChatCommand", () => {
       name: "Planned work",
       projectId: null,
     });
+    await store.close();
+  });
+
+  it("selects and clears a validated model without replacing the Runtime Thread", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-model-command-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const projects = new ProjectCatalog(store);
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex", model: "gpt-default" });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-model",
+      agentId: "codex",
+      runtimeSessionId: "thread-stable",
+    });
+    const context = {
+      agentId: "codex",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      listRuntimeModels: async () => [
+        {
+          id: "gpt-default",
+          displayName: "Default",
+          description: "Default model",
+          isDefault: true,
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: ["medium"],
+          inputModalities: ["text" as const],
+        },
+        {
+          id: "gpt-deep",
+          displayName: "Deep",
+          description: "Deep model",
+          isDefault: false,
+          defaultReasoningEffort: "high",
+          supportedReasoningEfforts: ["high", "xhigh"],
+          inputModalities: ["text" as const, "image" as const],
+        },
+      ],
+    };
+
+    await expect(handleChatCommand({ ...context, message: message("/model gpt-deep xhigh") })).resolves.toMatchObject({
+      text: expect.stringContaining("gpt-deep"),
+    });
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      runtimeSessionId: "thread-stable",
+      model: "gpt-deep",
+      reasoningEffort: "xhigh",
+    });
+
+    await handleChatCommand({
+      ...context,
+      listRuntimeModels: async () => {
+        throw new Error("catalog temporarily unavailable");
+      },
+      message: message("/model default"),
+    });
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      runtimeSessionId: "thread-stable",
+      model: null,
+      reasoningEffort: null,
+    });
+    await store.close();
+  });
+
+  it("validates a pending Session model atomically and preserves it through /new", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-model-intent-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const projects = new ProjectCatalog(store);
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const models = async () => [
+      {
+        id: "gpt-deep",
+        displayName: "Deep",
+        description: "Deep model",
+        isDefault: true,
+        defaultReasoningEffort: "high",
+        supportedReasoningEfforts: ["high", "xhigh"],
+        inputModalities: ["text" as const],
+      },
+    ];
+    const context = {
+      agentId: "codex",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      listRuntimeModels: models,
+    };
+
+    await handleChatCommand({ ...context, message: message("/model gpt-deep") });
+    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
+      model: "gpt-deep",
+      reasoningEffort: "high",
+    });
+    await expect(handleChatCommand({ ...context, message: message("/model gpt-deep low") })).resolves.toMatchObject({
+      text: expect.stringContaining("not supported"),
+    });
+    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
+      model: "gpt-deep",
+      reasoningEffort: "high",
+    });
+    await handleChatCommand({ ...context, message: message("/new Continue") });
+    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
+      name: "Continue",
+      model: "gpt-deep",
+      reasoningEffort: "high",
+    });
+    await expect(
+      handleChatCommand({
+        ...context,
+        listRuntimeModels: undefined,
+        message: message("/model gpt-deep"),
+      }),
+    ).resolves.toMatchObject({ text: expect.stringContaining("does not support model selection") });
     await store.close();
   });
 
@@ -547,7 +714,7 @@ describe("handleChatCommand", () => {
       discoverRuntimeThreads: mock(async () => discovered),
     };
 
-    const listed = await handleChatCommand({ ...base, message: message("/list") });
+    const listed = await handleChatCommand({ ...base, message: message("/sessions") });
     expect(listed.text).toContain("Current work");
     expect(listed.text).toContain("(current)");
     expect(listed.text).toContain("Release prep");
@@ -625,7 +792,7 @@ describe("handleChatCommand", () => {
     });
 
     const listed = await handleChatCommand({
-      message: message("/list"),
+      message: message("/sessions"),
       agentId: "codex",
       ownerUserId: "usr",
       config,

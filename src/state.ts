@@ -59,10 +59,15 @@ class BunSqliteAdapter {
   transaction<T>(
     callback: (
       run: (sql: string, ...bindings: SQLQueryBindings[]) => { changes: number; lastInsertRowid: number | bigint },
+      get: <Row>(sql: string, ...bindings: SQLQueryBindings[]) => Row | null,
     ) => T,
   ): T {
     return this.database.transaction(() =>
-      callback((sql, ...bindings) => this.database.query<unknown, SQLQueryBindings[]>(sql).run(...bindings)),
+      callback(
+        (sql, ...bindings) => this.database.query<unknown, SQLQueryBindings[]>(sql).run(...bindings),
+        <Row>(sql: string, ...bindings: SQLQueryBindings[]) =>
+          this.database.query<Row, SQLQueryBindings[]>(sql).get(...bindings),
+      ),
     )();
   }
 
@@ -132,6 +137,8 @@ export interface UpsertRuntimeSessionInput {
   projectId?: string | null;
   name?: string | null;
   mode?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
   hasMessages?: boolean;
   isCurrent?: boolean;
 }
@@ -141,6 +148,14 @@ export interface SetSessionIntentInput {
   projectId: string | null;
   name?: string | null;
   mode?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
+}
+
+export interface ResolveOrMaterializeRuntimeSessionInput {
+  chatId: string;
+  agentId: string;
+  sessionId: string;
 }
 
 export interface StoredClientEvent {
@@ -514,7 +529,7 @@ export class ConnectStateStore {
       await db.run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
     }
     await db.run(
-      `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id, session_id) DO UPDATE SET agent_id = excluded.agent_id, runtime_session_id = excluded.runtime_session_id, project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, has_messages = CASE WHEN runtime_sessions.has_messages = 1 OR excluded.has_messages = 1 THEN 1 ELSE 0 END, is_current = excluded.is_current, updated_at = excluded.updated_at`,
+      `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id, session_id) DO UPDATE SET agent_id = excluded.agent_id, runtime_session_id = excluded.runtime_session_id, project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, has_messages = CASE WHEN runtime_sessions.has_messages = 1 OR excluded.has_messages = 1 THEN 1 ELSE 0 END, is_current = excluded.is_current, updated_at = excluded.updated_at`,
       input.chatId,
       input.sessionId,
       input.agentId,
@@ -522,6 +537,8 @@ export class ConnectStateStore {
       input.projectId ?? null,
       input.name ?? null,
       input.mode ?? null,
+      input.model ?? null,
+      input.reasoningEffort ?? null,
       input.hasMessages === false ? 0 : 1,
       input.isCurrent === false ? 0 : 1,
       now,
@@ -541,6 +558,26 @@ export class ConnectStateStore {
       );
   }
 
+  async setRuntimeSessionModelSelection(
+    chatId: string,
+    agentId: string,
+    sessionId: string,
+    model: string | null,
+    reasoningEffort: string | null,
+  ): Promise<boolean> {
+    const db = await this.requireDb();
+    const result = await db.run(
+      "UPDATE runtime_sessions SET model = ?, reasoning_effort = ?, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
+      model,
+      reasoningEffort,
+      Date.now(),
+      chatId,
+      agentId,
+      sessionId,
+    );
+    return result.changes > 0;
+  }
+
   async setSessionIntent(input: SetSessionIntentInput): Promise<void> {
     const now = Date.now();
     const db = await this.requireDb();
@@ -550,12 +587,14 @@ export class ConnectStateStore {
       input.agentId,
     );
     await db.run(
-      `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, updated_at = excluded.updated_at`,
+      `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, model, reasoning_effort, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, updated_at = excluded.updated_at`,
       input.chatId,
       input.agentId,
       input.projectId,
       input.name ?? null,
       input.mode ?? null,
+      input.model ?? null,
+      input.reasoningEffort ?? null,
       now,
       now,
     );
@@ -582,6 +621,45 @@ export class ConnectStateStore {
       agentId,
     );
     return row ? runtimeSessionFromRow(row) : null;
+  }
+
+  async resolveOrMaterializeRuntimeSession(
+    input: ResolveOrMaterializeRuntimeSessionInput,
+  ): Promise<RuntimeSessionRecord> {
+    const db = await this.requireDb();
+    const now = Date.now();
+    const sessionId = db.transaction((run, get) => {
+      const current = get<{ session_id: string }>(
+        "SELECT session_id FROM runtime_sessions WHERE chat_id = ? AND agent_id = ? AND is_current = 1 ORDER BY updated_at DESC LIMIT 1",
+        input.chatId,
+        input.agentId,
+      );
+      if (current?.session_id) return current.session_id;
+      const intent = get<Record<string, unknown>>(
+        "SELECT * FROM session_intents WHERE chat_id = ? AND agent_id = ?",
+        input.chatId,
+        input.agentId,
+      );
+      run(
+        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+        input.chatId,
+        input.sessionId,
+        input.agentId,
+        nullableString(intent?.project_id),
+        nullableString(intent?.name),
+        nullableString(intent?.mode),
+        nullableString(intent?.model),
+        nullableString(intent?.reasoning_effort),
+        now,
+        now,
+      );
+      run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
+      return input.sessionId;
+    });
+    await this.getOrCreateSessionRef({ chatId: input.chatId, agentId: input.agentId, sessionId });
+    const session = await this.getCurrentRuntimeSession(input.chatId, input.agentId);
+    if (!session || session.sessionId !== sessionId) throw new Error("failed to materialize current Session");
+    return session;
   }
   async listRuntimeSessions(chatId: string, agentId: string): Promise<RuntimeSessionRecord[]> {
     const db = await this.requireDb();
@@ -1348,6 +1426,8 @@ export class ConnectStateStore {
         project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT,
         name TEXT,
         mode TEXT,
+        model TEXT,
+        reasoning_effort TEXT,
         has_messages INTEGER NOT NULL DEFAULT 0,
         is_current INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
@@ -1360,6 +1440,8 @@ export class ConnectStateStore {
         project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT,
         name TEXT,
         mode TEXT,
+        model TEXT,
+        reasoning_effort TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY(chat_id, agent_id)
@@ -1496,6 +1578,15 @@ export class ConnectStateStore {
     const columns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_sessions)");
     if (!columns.some((column) => column.name === "has_messages"))
       await db.exec("ALTER TABLE runtime_sessions ADD COLUMN has_messages INTEGER NOT NULL DEFAULT 0");
+    if (!columns.some((column) => column.name === "model"))
+      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN model TEXT");
+    if (!columns.some((column) => column.name === "reasoning_effort"))
+      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN reasoning_effort TEXT");
+    const intentColumns = await db.all<{ name: string }[]>("PRAGMA table_info(session_intents)");
+    if (!intentColumns.some((column) => column.name === "model"))
+      await db.exec("ALTER TABLE session_intents ADD COLUMN model TEXT");
+    if (!intentColumns.some((column) => column.name === "reasoning_effort"))
+      await db.exec("ALTER TABLE session_intents ADD COLUMN reasoning_effort TEXT");
     const messageColumns = await db.all<{ name: string }[]>("PRAGMA table_info(clawchat_messages)");
     if (!messageColumns.some((column) => column.name === "rejected_at"))
       await db.exec("ALTER TABLE clawchat_messages ADD COLUMN rejected_at INTEGER");
@@ -1508,7 +1599,7 @@ export class ConnectStateStore {
     );
     const now = Date.now();
     await db.run(
-      `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, created_at, updated_at) SELECT chat_id, agent_id, project_id, name, mode, ?, ? FROM runtime_sessions WHERE is_current = 1 AND has_messages = 0 ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, updated_at = excluded.updated_at`,
+      `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, model, reasoning_effort, created_at, updated_at) SELECT chat_id, agent_id, project_id, name, mode, model, reasoning_effort, ?, ? FROM runtime_sessions WHERE is_current = 1 AND has_messages = 0 ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, updated_at = excluded.updated_at`,
       now,
       now,
     );
@@ -1617,6 +1708,8 @@ function runtimeSessionFromRow(row: Record<string, unknown>): RuntimeSessionReco
     projectId: nullableString(row.project_id),
     name: nullableString(row.name),
     mode: nullableString(row.mode),
+    model: nullableString(row.model),
+    reasoningEffort: nullableString(row.reasoning_effort),
     hasMessages: Boolean(row.has_messages),
     isCurrent: Boolean(row.is_current),
     updatedAt: numberValue(row.updated_at),
@@ -1630,6 +1723,8 @@ function sessionIntentFromRow(row: Record<string, unknown>): SessionIntentRecord
     projectId: nullableString(row.project_id),
     name: nullableString(row.name),
     mode: nullableString(row.mode),
+    model: nullableString(row.model),
+    reasoningEffort: nullableString(row.reasoning_effort),
     updatedAt: numberValue(row.updated_at),
   };
 }

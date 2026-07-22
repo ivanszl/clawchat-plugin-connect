@@ -31,6 +31,8 @@ await stateStore.upsertRuntimeSession({
   agentId: "codex",
   runtimeSessionId: "thread-local",
   name: "Non-Project scratch",
+  model: "gpt-removed",
+  reasoningEffort: "high",
   hasMessages: true,
   isCurrent: true,
 });
@@ -103,6 +105,26 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
   {
     kind: "codex",
     modes: ["read-only", "workspace-write", "danger-full-access"],
+    listModels: async () => [
+      {
+        id: "gpt-default",
+        displayName: "Default model",
+        description: "Runtime default",
+        isDefault: true,
+        defaultReasoningEffort: "medium",
+        supportedReasoningEfforts: ["low", "medium", "high"],
+        inputModalities: ["text", "image"],
+      },
+      {
+        id: "gpt-deep",
+        displayName: "Deep model",
+        description: "Long-running coding work",
+        isDefault: false,
+        defaultReasoningEffort: "high",
+        supportedReasoningEfforts: ["high", "xhigh"],
+        inputModalities: ["text", "image"],
+      },
+    ],
     discoverAllThreads: async () => [
       {
         runtimeThreadId: "thread-project",
@@ -123,7 +145,7 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
   },
 ]);
 const config = defaultConfig();
-config.clientPort = 47_893;
+config.clientPort = Number(process.env.CONNECT_CLIENT_PREVIEW_PORT ?? 47_893);
 config.stateDbPath = stateStore.dbPath;
 config.defaultAgent = "codex";
 config.agents = { codex: { kind: "codex", displayName: "Codex · Local" } };

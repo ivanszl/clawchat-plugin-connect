@@ -3,6 +3,7 @@ import type { RuntimeOutputEvent } from "../src/output-visibility";
 import { createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import type {
   CodexAppServerClient,
+  CodexAppServerModel,
   CodexAppServerNotification,
   CodexAppServerRequest,
   CodexAppServerRequestHandler,
@@ -65,6 +66,27 @@ function turn(id = "turn-1", overrides: Partial<CodexAppServerTurn> = {}): Codex
 
 class FakeAppServer implements CodexAppServerClient {
   readonly listThreads = mock(async () => ({ data: [] as CodexAppServerThread[], nextCursor: null as string | null }));
+  readonly listModels = mock(
+    async (): Promise<{ data: CodexAppServerModel[]; nextCursor: string | null }> => ({
+      data: [
+        {
+          id: "gpt-5.2-codex",
+          model: "gpt-5.2-codex",
+          displayName: "GPT-5.2 Codex",
+          description: "Coding model",
+          hidden: false,
+          isDefault: true,
+          defaultReasoningEffort: "high",
+          supportedReasoningEfforts: [
+            { reasoningEffort: "medium", description: "Faster" },
+            { reasoningEffort: "high", description: "Deeper" },
+          ],
+          inputModalities: ["text", "image"],
+        },
+      ],
+      nextCursor: null as string | null,
+    }),
+  );
   readonly startThread = mock(async (_params: CodexThreadStartParams) => ({ thread: thread("thread-new") }));
   readonly resumeThread = mock(async (params: CodexThreadResumeParams) => ({ thread: thread(params.threadId) }));
   readonly readThread = mock(async (params: { threadId: string; includeTurns: true }) => ({
@@ -105,7 +127,13 @@ class FakeAppServer implements CodexAppServerClient {
 
 async function collect(session: ConnectRuntimeSession): Promise<RuntimeOutputEvent[]> {
   const output: RuntimeOutputEvent[] = [];
-  for await (const event of session.prompt({ prompt: "hello", workspace })) output.push(event);
+  for await (const event of session.prompt({
+    prompt: "hello",
+    workspace,
+    model: agent.model,
+    reasoningEffort: agent.modelReasoningEffort,
+  }))
+    output.push(event);
   return output;
 }
 
@@ -167,6 +195,82 @@ describe("Codex app-server runtime adapter", () => {
       }),
     );
     expect(client.listThreads).toHaveBeenNthCalledWith(2, expect.objectContaining({ cursor: "page-2" }));
+  });
+
+  it("discovers runtime-neutral model choices through the pinned app-server", async () => {
+    const client = new FakeAppServer();
+    client.listModels
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "gpt-5.2-codex",
+            model: "gpt-5.2-codex",
+            displayName: "GPT-5.2 Codex",
+            description: "Coding model",
+            hidden: false,
+            isDefault: true,
+            defaultReasoningEffort: "high",
+            supportedReasoningEfforts: [
+              { reasoningEffort: "medium", description: "Faster" },
+              { reasoningEffort: "high", description: "Deeper" },
+            ],
+            inputModalities: ["text", "image"],
+          },
+        ],
+        nextCursor: "page-2",
+      })
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "gpt-hidden",
+            model: "gpt-hidden",
+            displayName: "Hidden",
+            description: "Not user-selectable",
+            hidden: true,
+            isDefault: false,
+            defaultReasoningEffort: "medium",
+            supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "Default" }],
+            inputModalities: ["text"],
+          },
+          {
+            id: "gpt-fast",
+            model: "gpt-fast",
+            displayName: "Fast",
+            description: "Quick coding model",
+            hidden: false,
+            isDefault: false,
+            defaultReasoningEffort: "low",
+            supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Fast" }],
+            inputModalities: ["text"],
+          },
+        ],
+        nextCursor: null,
+      });
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+    if (!adapter.listModels) throw new Error("expected model discovery capability");
+
+    await expect(adapter.listModels(agent)).resolves.toEqual([
+      {
+        id: "gpt-5.2-codex",
+        displayName: "GPT-5.2 Codex",
+        description: "Coding model",
+        isDefault: true,
+        defaultReasoningEffort: "high",
+        supportedReasoningEfforts: ["medium", "high"],
+        inputModalities: ["text", "image"],
+      },
+      {
+        id: "gpt-fast",
+        displayName: "Fast",
+        description: "Quick coding model",
+        isDefault: false,
+        defaultReasoningEffort: "low",
+        supportedReasoningEfforts: ["low"],
+        inputModalities: ["text"],
+      },
+    ]);
+    expect(client.listModels).toHaveBeenNthCalledWith(1, { cursor: null, limit: 100, includeHidden: false });
+    expect(client.listModels).toHaveBeenNthCalledWith(2, { cursor: "page-2", limit: 100, includeHidden: false });
   });
 
   it("keeps child threads out of discovery and nests their transcript under the parent activity", async () => {
@@ -297,6 +401,35 @@ describe("Codex app-server runtime adapter", () => {
       }),
     );
     expect(started.onRuntimeSessionId).toHaveBeenCalledWith("thread-new");
+  });
+
+  it("uses Connect-resolved model options instead of reading Binding defaults for a turn", async () => {
+    const client = new FakeAppServer();
+    client.startTurn.mockImplementationOnce(async () => {
+      queueMicrotask(() => emitCompletedTurn(client, "thread-new", []));
+      return { turn: turn() };
+    });
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+    const runtimeSession = await adapter.start(agent, context());
+
+    for await (const _event of runtimeSession.prompt({
+      prompt: "switch model",
+      workspace,
+      model: "gpt-5.2-codex",
+      reasoningEffort: "medium",
+    })) {
+      // Drain the public Runtime Session output.
+    }
+
+    expect(client.startThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "gpt-5.2-codex",
+        config: expect.objectContaining({ model_reasoning_effort: "medium" }),
+      }),
+    );
+    expect(client.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "gpt-5.2-codex", effort: "medium" }),
+    );
   });
 
   it("resumes a persisted Codex thread", async () => {

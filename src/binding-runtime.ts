@@ -1,4 +1,4 @@
-import { handleChatCommand } from "./chat-commands";
+import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
 import type { TranscriptProjection } from "./client-interface/transcript-projection";
 import { getAgentBinding } from "./config";
 import { buildTextMessagePayload, normalizeInboundMessage } from "./message-mapper";
@@ -245,6 +245,7 @@ async function dispatchInboundMessage(
       invalidateRuntimeSession: (chatId) => params.runtime.invalidateSession(chatId),
       cancelRuntimeTurn: (chatId) => params.runtime.cancelTurn(chatId),
       runtimeModesFor: (binding) => params.runtime.runtimeModesFor(binding),
+      listRuntimeModels: (binding) => params.runtime.listRuntimeModels(binding),
       discoverRuntimeThreads: (chatId) => params.runtime.discoverRuntimeThreads(chatId),
     });
     if (!command.handled) return false;
@@ -258,11 +259,20 @@ async function dispatchInboundMessage(
     }
     return true;
   };
-  if (params.message.text.trim().split(/\s+/u)[0] === "/cancel") {
+  if (
+    params.message.text.trim().split(/\s+/u)[0] === "/cancel" ||
+    (isConnectControlMessage(params.message.text) &&
+      (params.message.sender.id !== params.activation.ownerUserId ||
+        !requiresOrderedSessionControl(params.message.text)))
+  ) {
     await routeCommand();
     return;
   }
-  await params.runtime.handleInboundMessage(params.message, routeCommand);
+  await params.runtime.handleInboundMessage(
+    params.message,
+    routeCommand,
+    requiresOrderedSessionControl(params.message.text),
+  );
 }
 
 async function recordConnectionStatus(

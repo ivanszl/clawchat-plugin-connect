@@ -3,6 +3,7 @@ import type {
   ConnectRuntimeAdapter,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
+  RuntimeModelOption,
   RuntimeThreadSummary,
 } from "./types";
 
@@ -28,6 +29,11 @@ export class RuntimeAdapterRegistry {
 
   modesFor(binding: AgentBindingConfig): readonly string[] {
     return this.require(binding.kind).modes;
+  }
+
+  async listModels(binding: AgentBindingConfig): Promise<RuntimeModelOption[] | null> {
+    const operation = this.require(binding.kind).listModels;
+    return operation ? await operation(binding) : null;
   }
 
   async discoverThreads(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]> {

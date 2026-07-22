@@ -18,6 +18,7 @@ import type {
   ConnectRuntimePrompt,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
+  RuntimeModelOption,
   RuntimeThreadSummary,
   RuntimeTranscriptEntry,
 } from "./types";
@@ -72,6 +73,10 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     async prepare(binding) {
       await clientFor(requireCodexBinding(binding));
     },
+    async listModels(binding) {
+      const codexBinding = requireCodexBinding(binding);
+      return await discoverCodexModels(await clientFor(codexBinding));
+    },
     async discoverThreads(binding, workspace) {
       const codexBinding = requireCodexBinding(binding);
       return await discoverCodexThreads(await clientFor(codexBinding), workspace.workingDirectory);
@@ -111,6 +116,32 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
       if (current) await (await current).close();
     },
   };
+}
+
+async function discoverCodexModels(client: CodexAppServerClient): Promise<RuntimeModelOption[]> {
+  const models: RuntimeModelOption[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const page = await client.listModels({ cursor, limit: 100, includeHidden: false });
+    models.push(
+      ...page.data
+        .filter((model) => !model.hidden)
+        .map((model) => ({
+          id: model.id,
+          displayName: model.displayName,
+          description: model.description,
+          isDefault: model.isDefault,
+          defaultReasoningEffort: model.defaultReasoningEffort,
+          supportedReasoningEfforts: model.supportedReasoningEfforts.map((option) => option.reasoningEffort),
+          inputModalities: model.inputModalities ?? ["text", "image"],
+        })),
+    );
+    cursor = page.nextCursor;
+    if (cursor && seenCursors.has(cursor)) throw new Error("Codex app-server returned a repeated model/list cursor");
+    if (cursor) seenCursors.add(cursor);
+  } while (cursor);
+  return models;
 }
 
 async function readCodexTranscript(
@@ -374,7 +405,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     if (this.closed) throw new Error("Codex runtime session is closed");
     if (this.activeTurn) throw new Error("Codex already has an active turn for this session");
     const sandboxMode = resolveSandboxMode(input.mode, this.binding.sandboxMode);
-    const threadId = await this.ensureThread(input.workspace, sandboxMode);
+    const threadId = await this.ensureThread(input.workspace, sandboxMode, input.model, input.reasoningEffort);
     const active: ActiveTurn = {
       threadId,
       turnId: null,
@@ -413,8 +444,8 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
           this.binding.networkAccessEnabled === true,
           this.binding.additionalDirectories ?? [],
         ),
-        ...(this.binding.model ? { model: this.binding.model } : {}),
-        ...(this.binding.modelReasoningEffort ? { effort: this.binding.modelReasoningEffort } : {}),
+        ...(input.model ? { model: input.model } : {}),
+        ...(input.reasoningEffort ? { effort: input.reasoningEffort } : {}),
       });
       active.turnId = response.turn.id;
       const buffered = active.bufferedNotifications.splice(0);
@@ -470,7 +501,12 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     await this.cancel().catch(() => undefined);
   }
 
-  private async ensureThread(workspace: RuntimeWorkspace, sandboxMode: CodexSandboxMode): Promise<string> {
+  private async ensureThread(
+    workspace: RuntimeWorkspace,
+    sandboxMode: CodexSandboxMode,
+    model?: string,
+    reasoningEffort?: string,
+  ): Promise<string> {
     const additionalDirectories = [
       ...new Set([...(this.binding.additionalDirectories ?? []), ...workspace.additionalDirectories]),
     ];
@@ -483,9 +519,9 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       throw new Error("Codex thread options changed; invalidate the current runtime session before continuing");
     }
     if (this.threadWorkspaceKey && this.runtimeSessionId) return this.runtimeSessionId;
-    const config = threadConfig(this.binding, additionalDirectories);
+    const config = threadConfig(this.binding, additionalDirectories, reasoningEffort);
     const common = {
-      ...(this.binding.model ? { model: this.binding.model } : {}),
+      ...(model ? { model } : {}),
       cwd: workspace.workingDirectory,
       approvalPolicy: resolveApprovalPolicy(this.binding.approvalPolicy),
       sandbox: sandboxMode,
@@ -671,9 +707,13 @@ function resolveApprovalPolicy(policy: CodexApprovalPolicy | undefined): "never"
   return policy ?? "never";
 }
 
-function threadConfig(binding: CodexAgentBindingConfig, additionalDirectories: string[]): Record<string, unknown> {
+function threadConfig(
+  binding: CodexAgentBindingConfig,
+  additionalDirectories: string[],
+  reasoningEffort?: string,
+): Record<string, unknown> {
   return {
-    ...(binding.modelReasoningEffort ? { model_reasoning_effort: binding.modelReasoningEffort } : {}),
+    ...(reasoningEffort ? { model_reasoning_effort: reasoningEffort } : {}),
     ...(binding.webSearchMode ? { web_search: binding.webSearchMode } : {}),
     ...(binding.networkAccessEnabled !== undefined || additionalDirectories.length > 0
       ? {

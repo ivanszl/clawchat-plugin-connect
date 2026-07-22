@@ -3,25 +3,29 @@ import { access } from "node:fs/promises";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import type { BindingRuntimeHandle } from "../binding-runtime";
 import {
+  type AddProjectRequest,
   type BootstrapView,
   type CancelTurnRequest,
   CLIENT_API_PREFIX,
   type ClientErrorView,
+  type CreateSessionRequest,
   normalizeSessionRef,
   type SessionMutationRequest,
+  type SessionView,
   type StartTurnRequest,
   type UpdateBindingPreferencesRequest,
+  type UpdateSessionPreferencesRequest,
 } from "../client-contract";
 import { saveConfig } from "../config";
-import type { ProjectCatalog } from "../projects";
+import { ProjectCatalog } from "../projects";
+import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { ConnectStateStore } from "../state";
-import type { ConnectConfig } from "../types";
+import type { AgentBindingConfig, ConnectConfig } from "../types";
 import { SessionCatalog } from "./session-catalog";
 import type { TranscriptProjection } from "./transcript-projection";
 
 const MAX_JSON_BODY_BYTES = 128 * 1_024;
-const REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const OUTPUT_VISIBILITIES = new Set(["minimal", "normal", "full"]);
 
 class ClientRequestError extends Error {
@@ -72,7 +76,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   const port = options.port ?? options.config.clientPort;
   const origin = `http://${hostname}:${port}`;
   const assetsPath = options.assetsPath ?? (await resolveClientAssetsPath());
-  const catalog = new SessionCatalog(options);
+  const projects = options.projects ?? new ProjectCatalog(options.stateStore);
+  const catalog = new SessionCatalog({ ...options, projects });
   const runtimes = new Map(options.runtimes.map((runtime) => [runtime.agentId, runtime]));
 
   const serverFactory: ClientHttpServerFactory = options.serverFactory ?? ((serverOptions) => Bun.serve(serverOptions));
@@ -95,12 +100,16 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               apiVersion: 1,
               eventCursor: await options.stateStore.getClientEventCursor(),
               outputVisibility: options.config.outputVisibility,
-              bindings: Object.entries(options.config.agents).map(([bindingId, binding]) => ({
-                bindingId,
-                displayName: binding.displayName || bindingId,
-                model: binding.model ?? null,
-                modelReasoningEffort: binding.modelReasoningEffort ?? null,
-              })),
+              bindings: await Promise.all(
+                Object.entries(options.config.agents).map(async ([bindingId, binding]) => ({
+                  bindingId,
+                  displayName: binding.displayName || bindingId,
+                  model: binding.model ?? null,
+                  modelReasoningEffort: binding.modelReasoningEffort ?? null,
+                  modelOptions: (await options.runtimeAdapters.listModels(binding)) ?? [],
+                  modeOptions: [...options.runtimeAdapters.modesFor(binding)],
+                })),
+              ),
               capabilities: {
                 localTurns: true,
                 cancellation: true,
@@ -112,6 +121,158 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/session-catalog` && request.method === "GET") {
             return jsonResponse(await catalog.view(url.searchParams.get("refresh") === "1"));
+          }
+          if (url.pathname === `${CLIENT_API_PREFIX}/projects` && request.method === "GET") {
+            return jsonResponse(await projects.list());
+          }
+          if (url.pathname === `${CLIENT_API_PREFIX}/projects` && request.method === "POST") {
+            const body = await readJsonBody<AddProjectRequest>(request);
+            if (!validRequestId(body.requestId))
+              return errorResponse(400, "invalid-request-id", "requestId is required");
+            if (typeof body.name !== "string" || typeof body.rootPath !== "string")
+              return errorResponse(400, "invalid-project", "Project name and rootPath are required");
+            if (
+              !Array.isArray(body.additionalDirectories) ||
+              !body.additionalDirectories.every((path) => typeof path === "string")
+            )
+              return errorResponse(400, "invalid-project", "additionalDirectories must be an array of paths");
+            return await idempotentCommand(options.stateStore, body.requestId, "project.add", body.name, async () => {
+              try {
+                const project = await projects.add(body.name, body.rootPath, body.additionalDirectories);
+                catalog.invalidate();
+                return { status: 201, body: project };
+              } catch (error) {
+                return commandError(409, "project-conflict", error instanceof Error ? error.message : String(error));
+              }
+            });
+          }
+          if (url.pathname === `${CLIENT_API_PREFIX}/sessions` && request.method === "POST") {
+            const body = await readJsonBody<CreateSessionRequest>(request);
+            if (!validRequestId(body.requestId))
+              return errorResponse(400, "invalid-request-id", "requestId is required");
+            if (typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 64_000)
+              return errorResponse(400, "invalid-prompt", "Prompt must contain 1 to 64,000 characters");
+            if (typeof body.bindingId !== "string" || !body.bindingId.trim())
+              return errorResponse(400, "invalid-binding", "bindingId is required");
+            if (body.projectId !== null && typeof body.projectId !== "string")
+              return errorResponse(400, "invalid-project", "projectId must be a string or null");
+            if (body.name !== null && typeof body.name !== "string")
+              return errorResponse(400, "invalid-name", "name must be a string or null");
+            if (body.mode !== null && typeof body.mode !== "string")
+              return errorResponse(400, "invalid-mode", "mode must be a string or null");
+            if (body.model !== null && typeof body.model !== "string")
+              return errorResponse(400, "invalid-model", "model must be a string or null");
+            if (body.reasoningEffort !== null && typeof body.reasoningEffort !== "string")
+              return errorResponse(400, "invalid-reasoning-effort", "reasoningEffort must be a string or null");
+            return await idempotentCommand(
+              options.stateStore,
+              body.requestId,
+              "session.create",
+              body.bindingId,
+              async () => {
+                const binding = options.config.agents[body.bindingId];
+                if (!binding) return commandError(404, "binding-not-found", "Agent Binding was not found");
+                const runtime = runtimes.get(body.bindingId);
+                if (!runtime?.enqueueClientTurn)
+                  return commandError(503, "runtime-offline", "Runtime is unavailable", true);
+                if (body.projectId && !(await projects.get(body.projectId)))
+                  return commandError(400, "invalid-project", "Project was not found");
+                const name = body.name?.trim() || null;
+                if (name && name.length > 200)
+                  return commandError(400, "invalid-name", "Session name must be at most 200 characters");
+                const modes = options.runtimeAdapters.modesFor(binding);
+                if (body.mode && !modes.includes(body.mode))
+                  return commandError(400, "invalid-mode", `Mode is not available: ${body.mode}`);
+                let model: string | null = null;
+                let reasoningEffort: string | null = null;
+                try {
+                  if (body.model) {
+                    const selectedModel = requireModel(await options.runtimeAdapters.listModels(binding), body.model);
+                    model = selectedModel.id;
+                    reasoningEffort = resolveEffort(selectedModel, body.reasoningEffort, true);
+                  } else if (body.reasoningEffort) {
+                    return commandError(400, "invalid-reasoning-effort", "reasoningEffort requires a model");
+                  }
+                } catch (error) {
+                  return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
+                }
+                const chatId = `__connect_client_session__:${randomUUID()}`;
+                await options.stateStore.setSessionIntent({
+                  chatId,
+                  agentId: body.bindingId,
+                  projectId: body.projectId,
+                  name,
+                  mode: body.mode,
+                  model,
+                  reasoningEffort,
+                });
+                const session = await options.stateStore.resolveOrMaterializeRuntimeSession({
+                  chatId,
+                  agentId: body.bindingId,
+                  sessionId: randomUUID(),
+                });
+                catalog.invalidate();
+                let view: SessionView | null;
+                try {
+                  view = await catalog.sessionView(session.sessionRef);
+                } catch (error) {
+                  await options.stateStore.deleteSessionByRef(session.sessionRef);
+                  catalog.invalidate();
+                  throw new ClientRequestError(
+                    503,
+                    "session-view-unavailable",
+                    error instanceof Error ? error.message : "Session view is unavailable",
+                    true,
+                  );
+                }
+                if (!view) {
+                  await options.stateStore.deleteSessionByRef(session.sessionRef);
+                  catalog.invalidate();
+                  throw new ClientRequestError(503, "session-create-failed", "Session could not be created", true);
+                }
+                try {
+                  await runtime.enqueueClientTurn(session.sessionRef, body.prompt.trim());
+                } catch (error) {
+                  await options.stateStore.deleteSessionByRef(session.sessionRef);
+                  catalog.invalidate();
+                  return commandError(
+                    503,
+                    "runtime-offline",
+                    error instanceof Error ? error.message : "Runtime is unavailable",
+                    true,
+                  );
+                }
+                return { status: 201, body: view };
+              },
+            );
+          }
+          const projectMatch = url.pathname.match(/^\/client\/v1\/projects\/([^/]+)$/u);
+          if (projectMatch && request.method === "DELETE") {
+            const reference = decodeURIComponent(projectMatch[1] ?? "");
+            const body = await readJsonBody<SessionMutationRequest>(request);
+            if (!validRequestId(body.requestId))
+              return errorResponse(400, "invalid-request-id", "requestId is required");
+            return await idempotentCommand(
+              options.stateStore,
+              body.requestId,
+              "project.remove",
+              reference,
+              async () => {
+                try {
+                  const result = await projects.remove(reference);
+                  if (!result.removed)
+                    return commandError(
+                      409,
+                      "project-in-use",
+                      `${result.referencedSessions} Session(s) and ${result.pendingIntents} Session Intent(s) still reference this Project`,
+                    );
+                  catalog.invalidate();
+                  return { status: 200, body: { projectId: result.project.projectId, removed: true } };
+                } catch (error) {
+                  return commandError(404, "project-not-found", error instanceof Error ? error.message : String(error));
+                }
+              },
+            );
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/events` && request.method === "GET") {
             const after = eventCursor(request, url);
@@ -235,6 +396,57 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return { status: 202, body: { accepted: true, ...accepted } };
             });
           }
+          const sessionPreferenceMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/preferences$/u);
+          if (sessionPreferenceMatch && request.method === "PATCH") {
+            const sessionRef = normalizeSessionRef(sessionPreferenceMatch[1] ?? "");
+            if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
+            const body = await readJsonBody<UpdateSessionPreferencesRequest>(request);
+            if (!validRequestId(body.requestId))
+              return errorResponse(400, "invalid-request-id", "requestId is required");
+            if (body.model !== null && typeof body.model !== "string")
+              return errorResponse(400, "invalid-model", "model must be a string or null");
+            if (body.reasoningEffort !== null && typeof body.reasoningEffort !== "string")
+              return errorResponse(400, "invalid-reasoning-effort", "reasoningEffort must be a string or null");
+            return await idempotentCommand(
+              options.stateStore,
+              body.requestId,
+              "session.preferences.update",
+              sessionRef,
+              async () => {
+                const session = await options.stateStore.getRuntimeSessionByRef(sessionRef);
+                if (!session) return commandError(404, "session-not-found", "Session was not found");
+                const binding = options.config.agents[session.agentId];
+                if (!binding) return commandError(404, "binding-not-found", "Agent Binding was not found");
+                let model: string | null = null;
+                let reasoningEffort: string | null = null;
+                try {
+                  if (body.model) {
+                    const models = await options.runtimeAdapters.listModels(binding);
+                    const selectedModel = requireModel(models, body.model);
+                    model = selectedModel.id;
+                    reasoningEffort = resolveEffort(selectedModel, body.reasoningEffort, true);
+                  } else if (body.reasoningEffort) {
+                    return commandError(400, "invalid-reasoning-effort", "reasoningEffort requires a model");
+                  }
+                } catch (error) {
+                  return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
+                }
+                const updated = await options.stateStore.setRuntimeSessionModelSelection(
+                  session.chatId,
+                  session.agentId,
+                  session.sessionId,
+                  model,
+                  reasoningEffort,
+                );
+                if (!updated) return commandError(404, "session-not-found", "Session was not found");
+                catalog.invalidate();
+                const view = await catalog.sessionView(sessionRef);
+                return view
+                  ? { status: 200, body: view }
+                  : commandError(404, "session-not-found", "Session was not found");
+              },
+            );
+          }
           const cancelMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turns\/[^/]+\/cancel$/u);
           if (cancelMatch && request.method === "POST") {
             const sessionRef = normalizeSessionRef(cancelMatch[1] ?? "");
@@ -264,11 +476,61 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               "binding.preferences.update",
               bindingId,
               async () => {
+                let modelUpdate = body.model;
+                let effortUpdate = body.modelReasoningEffort;
+                if (body.model !== undefined || body.modelReasoningEffort !== undefined) {
+                  const requestedModel =
+                    body.model === undefined ? (binding.model ?? null) : body.model?.trim() || null;
+                  const requestedEffort =
+                    body.modelReasoningEffort === undefined
+                      ? body.model === undefined
+                        ? (binding.modelReasoningEffort ?? null)
+                        : null
+                      : body.modelReasoningEffort;
+                  if (requestedModel) {
+                    try {
+                      const selectedModel = requireModel(
+                        await options.runtimeAdapters.listModels(binding),
+                        requestedModel,
+                      );
+                      resolveEffort(selectedModel, requestedEffort, true);
+                      if (body.model !== undefined) modelUpdate = selectedModel.id;
+                    } catch (error) {
+                      return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
+                    }
+                  } else if (requestedEffort) {
+                    try {
+                      const models = await options.runtimeAdapters.listModels(binding);
+                      const defaultModel = models?.find((candidate) => candidate.isDefault) ?? models?.[0];
+                      if (!defaultModel)
+                        return commandError(
+                          400,
+                          "invalid-reasoning-effort",
+                          "The Runtime Adapter does not advertise a default model",
+                        );
+                      resolveEffort(defaultModel, requestedEffort, true);
+                    } catch (error) {
+                      return commandError(
+                        400,
+                        "invalid-reasoning-effort",
+                        error instanceof Error ? error.message : String(error),
+                      );
+                    }
+                  } else {
+                    effortUpdate = null;
+                  }
+                  if (body.model !== undefined && body.modelReasoningEffort === undefined) effortUpdate = null;
+                }
                 if (body.displayName !== undefined) binding.displayName = requireDisplayName(body.displayName);
-                if (body.model !== undefined) setOptionalString(binding, "model", body.model);
-                if (body.modelReasoningEffort !== undefined) {
-                  if (body.modelReasoningEffort === null) delete binding.modelReasoningEffort;
-                  else binding.modelReasoningEffort = body.modelReasoningEffort;
+                if (modelUpdate !== undefined) setOptionalString(binding, "model", modelUpdate);
+                if (effortUpdate !== undefined) {
+                  if (effortUpdate === null) delete binding.modelReasoningEffort;
+                  else
+                    setOptionalString(
+                      binding,
+                      "modelReasoningEffort",
+                      effortUpdate as AgentBindingConfig["modelReasoningEffort"],
+                    );
                 }
                 if (body.outputVisibility !== undefined) options.config.outputVisibility = body.outputVisibility;
                 await saveConfig(options.config, options.configPath);
@@ -551,12 +813,14 @@ function validatePreferencePatch(body: UpdateBindingPreferencesRequest): void {
       throw new ClientRequestError(400, "invalid-model", "model must be null or contain at most 200 characters");
     }
   }
-  if (
-    body.modelReasoningEffort !== undefined &&
-    body.modelReasoningEffort !== null &&
-    !REASONING_EFFORTS.has(body.modelReasoningEffort)
-  ) {
-    throw new ClientRequestError(400, "invalid-reasoning-effort", "modelReasoningEffort is invalid");
+  if (body.modelReasoningEffort !== undefined && body.modelReasoningEffort !== null) {
+    if (typeof body.modelReasoningEffort !== "string" || body.modelReasoningEffort.trim().length > 100) {
+      throw new ClientRequestError(
+        400,
+        "invalid-reasoning-effort",
+        "modelReasoningEffort must be null or contain at most 100 characters",
+      );
+    }
   }
   if (body.outputVisibility !== undefined && !OUTPUT_VISIBILITIES.has(body.outputVisibility)) {
     throw new ClientRequestError(400, "invalid-output-visibility", "outputVisibility is invalid");

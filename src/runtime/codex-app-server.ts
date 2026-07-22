@@ -30,6 +30,18 @@ export interface CodexAppServerTurn {
   error: { message: string } | null;
 }
 
+export interface CodexAppServerModel {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  hidden: boolean;
+  isDefault: boolean;
+  defaultReasoningEffort: string;
+  supportedReasoningEfforts: Array<{ reasoningEffort: string; description: string }>;
+  inputModalities?: Array<"text" | "image" | "audio">;
+}
+
 export interface CodexAppServerThreadItem extends JsonObject {
   type: string;
   id: string;
@@ -94,6 +106,11 @@ export interface CodexTurnStartParams extends JsonObject {
 }
 
 export interface CodexAppServerClient {
+  listModels(params: {
+    cursor?: string | null;
+    limit?: number;
+    includeHidden?: boolean;
+  }): Promise<{ data: CodexAppServerModel[]; nextCursor: string | null }>;
   listThreads(params: {
     cursor?: string | null;
     limit?: number;
@@ -268,6 +285,14 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
     cwd?: string | string[];
   }): Promise<{ data: CodexAppServerThread[]; nextCursor: string | null }> {
     return await this.request("thread/list", params);
+  }
+
+  async listModels(params: {
+    cursor?: string | null;
+    limit?: number;
+    includeHidden?: boolean;
+  }): Promise<{ data: CodexAppServerModel[]; nextCursor: string | null }> {
+    return await this.request("model/list", params);
   }
 
   async startThread(params: CodexThreadStartParams): Promise<{ thread: CodexAppServerThread }> {

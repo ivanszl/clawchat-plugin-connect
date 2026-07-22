@@ -45,7 +45,7 @@ A continuous Connect conversation using one Agent Binding and optionally one Pro
 _Avoid_: Project, Runtime Thread
 
 **Session Intent**:
-The pending Project, mode, and optional name selected for the next Session. It is not a Session and is consumed when the first ordinary message creates that Session.
+The pending Project, mode, model, reasoning effort, and optional name selected for the next Session. It is not a Session and is consumed when the first ordinary message creates that Session.
 _Avoid_: Session, Draft Session
 
 **Session Name**:
@@ -101,6 +101,8 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - A Session has zero or one Project.
 - A Runtime Thread is associated with at most one Session for an Agent Binding. Connect Client and ClawChat operate that same Session rather than creating separate Session copies for one native thread.
 - Control commands create or replace a Session Intent; only an ordinary message or adoption of an existing Runtime Thread creates a Session.
+- Turns from ClawChat and Connect Client are strictly ordered per Session; different Sessions may run concurrently even when they belong to one ClawChat conversation.
+- A Session model selection overrides its Agent Binding model default, which overrides the Runtime Adapter default. Reasoning effort resolves independently from a strict Session effort, then a valid Agent Binding effort for the effective model, then the model's advertised default. An unavailable persisted Session selection never silently falls back; an invalid Binding effort falls back because it is only a default.
 - Changing Project association creates a Session Intent whose eventual Session starts a new Runtime Thread boundary.
 - Connect Client Session Catalog discovery is installation-wide across Projects, Non-Project Sessions, ClawChat conversations, and Agent Bindings.
 - Client Interface binds to loopback by default; unauthenticated IPv4 LAN exposure requires an explicit wildcard Host configuration and is not an internet-facing mode.
