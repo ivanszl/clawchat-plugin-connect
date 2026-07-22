@@ -22,12 +22,54 @@ export class RuntimeAdapterRegistry {
     return await this.require(binding.kind).start(binding, context);
   }
 
+  async prepare(binding: AgentBindingConfig): Promise<void> {
+    await this.require(binding.kind).prepare?.(binding);
+  }
+
   modesFor(binding: AgentBindingConfig): readonly string[] {
     return this.require(binding.kind).modes;
   }
 
   async discoverThreads(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]> {
     return (await this.require(binding.kind).discoverThreads?.(binding, workspace)) ?? [];
+  }
+
+  async discoverAllThreads(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]> {
+    return (await this.require(binding.kind).discoverAllThreads?.(binding)) ?? [];
+  }
+
+  async discoverArchivedThreads(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]> {
+    return (await this.require(binding.kind).discoverArchivedThreads?.(binding)) ?? [];
+  }
+
+  async readTranscript(binding: AgentBindingConfig, runtimeThreadId: string) {
+    return (await this.require(binding.kind).readTranscript?.(binding, runtimeThreadId)) ?? [];
+  }
+
+  async archiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
+    const operation = this.require(binding.kind).archiveThread;
+    if (!operation) throw new Error(`${binding.kind} Runtime Adapter does not support thread archiving`);
+    await operation(binding, runtimeThreadId);
+  }
+
+  async unarchiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
+    const operation = this.require(binding.kind).unarchiveThread;
+    if (!operation) throw new Error(`${binding.kind} Runtime Adapter does not support thread restoration`);
+    await operation(binding, runtimeThreadId);
+  }
+
+  async deleteThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
+    const operation = this.require(binding.kind).deleteThread;
+    if (!operation) throw new Error(`${binding.kind} Runtime Adapter does not support thread deletion`);
+    await operation(binding, runtimeThreadId);
+  }
+
+  async close(): Promise<void> {
+    const results = await Promise.allSettled(
+      [...this.adapters.values()].map(async (adapter) => await adapter.close?.()),
+    );
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failure) throw failure.reason;
   }
 
   private require(kind: string): ConnectRuntimeAdapter {

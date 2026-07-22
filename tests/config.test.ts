@@ -11,6 +11,7 @@ async function tempConfigPath(): Promise<string> {
 describe("Agent Binding configuration", () => {
   it("normalizes and persists a Codex Runtime configuration without making the Binding ID semantic", async () => {
     const config = normalizeConfig({
+      clientHost: "0.0.0.0",
       defaultAgent: "work",
       agents: {
         work: {
@@ -22,7 +23,6 @@ describe("Agent Binding configuration", () => {
           approvalPolicy: "never",
           webSearchMode: "live",
           networkAccessEnabled: true,
-          skipGitRepoCheck: true,
           additionalDirectories: ["/tmp/shared"],
           env: { CODEX_HOME: "/tmp/codex-home" },
         },
@@ -39,10 +39,10 @@ describe("Agent Binding configuration", () => {
         approvalPolicy: "never",
         webSearchMode: "live",
         networkAccessEnabled: true,
-        skipGitRepoCheck: true,
         additionalDirectories: ["/tmp/shared"],
       }),
     );
+    expect(config.clientHost).toBe("0.0.0.0");
 
     const path = await tempConfigPath();
     await saveConfig(config, path);
@@ -67,7 +67,21 @@ describe("Agent Binding configuration", () => {
     ).toThrow("Agent Binding other Runtime kind is not supported in this release: unsupported");
   });
 
+  it("allows at most one Agent Binding for each Runtime Adapter kind", () => {
+    expect(() =>
+      normalizeConfig({
+        agents: {
+          work: { kind: "codex" },
+          review: { kind: "codex" },
+        },
+      }),
+    ).toThrow("Runtime kind codex may be configured only once");
+  });
+
   it("rejects invalid security options instead of silently broadening access", () => {
+    expect(() => normalizeConfig({ clientHost: "192.168.1.20" })).toThrow(
+      "clientHost must be one of: 127.0.0.1, 0.0.0.0",
+    );
     expect(() =>
       normalizeConfig({
         defaultAgent: "codex",

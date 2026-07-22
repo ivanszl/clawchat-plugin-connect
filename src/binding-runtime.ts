@@ -1,4 +1,6 @@
 import { handleChatCommand } from "./chat-commands";
+import type { TranscriptProjection } from "./client-interface/transcript-projection";
+import { getAgentBinding } from "./config";
 import { buildTextMessagePayload } from "./message-mapper";
 import type { ProjectCatalog } from "./projects";
 import { EVENT, type NormalizedInboundMessage } from "./protocol";
@@ -17,6 +19,7 @@ export interface BindingRuntimeOptions {
   stateStore: ConnectStateStore;
   projects: ProjectCatalog;
   runtimeAdapters: RuntimeAdapterRegistry;
+  transcriptProjection?: TranscriptProjection;
   writeError: (message: string) => void;
 }
 
@@ -25,6 +28,8 @@ export interface BindingRuntimeHandle {
   websocketUrl: string;
   deviceId: string;
   close(): Promise<void>;
+  enqueueClientTurn?(sessionRef: string, prompt: string): Promise<{ turnId: string; sessionRef: string }>;
+  cancelClientTurn?(sessionRef: string): Promise<boolean>;
 }
 
 export async function startBindingRuntime(options: BindingRuntimeOptions): Promise<BindingRuntimeHandle> {
@@ -43,6 +48,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     wsClient,
     projects: options.projects,
     runtimeAdapters: options.runtimeAdapters,
+    transcriptProjection: options.transcriptProjection,
   });
   wsClient.on("message", (message: NormalizedInboundMessage) => {
     void dispatchInboundMessage({ ...options, message, wsClient, runtime }).catch((error) =>
@@ -59,6 +65,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     else if (state === "disconnected") void recordConnectionStatus(options, false, null).catch(() => undefined);
   });
   try {
+    await options.runtimeAdapters.prepare(getAgentBinding(options.config, options.agentId));
     await wsClient.connect();
     await recordConnectionStatus(options, true, null);
   } catch (error) {
@@ -71,6 +78,8 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     agentId: options.agentId,
     websocketUrl: options.config.websocketUrl,
     deviceId: options.deviceId,
+    enqueueClientTurn: async (sessionRef, prompt) => await runtime.enqueueClientTurn(sessionRef, prompt),
+    cancelClientTurn: async (sessionRef) => await runtime.cancelClientTurn(sessionRef),
     async close() {
       wsClient.close();
       await runtime.dispose();

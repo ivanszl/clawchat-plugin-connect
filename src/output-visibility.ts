@@ -6,6 +6,12 @@ export interface RuntimeOutputEvent {
   kind: RuntimeOutputKind;
   text: string;
   requiredControl?: boolean;
+  /** Stable runtime-native item identity when the protocol exposes one. */
+  itemId?: string;
+  /** Lifecycle state for started/completed protocol items. */
+  state?: "pending" | "streaming" | "complete" | "error" | "cancelled";
+  /** Runtime-neutral structured fields used by rich clients. */
+  data?: Record<string, unknown>;
 }
 export interface OutputVisibilityPolicy {
   mode: OutputVisibility;

@@ -1,0 +1,353 @@
+import { afterEach, describe, expect, it, mock } from "bun:test";
+import { mkdir, mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { BindingRuntimeHandle } from "../src/binding-runtime";
+import { type ClientInterfaceHandle, startClientInterface } from "../src/client-interface/server";
+import { TranscriptProjection } from "../src/client-interface/transcript-projection";
+import { defaultConfig } from "../src/config";
+import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import type { ConnectRuntimeAdapter } from "../src/runtime/types";
+import { type ConnectStateStore, createStateStore } from "../src/state";
+
+const openHandles: ClientInterfaceHandle[] = [];
+const openStores: ConnectStateStore[] = [];
+
+afterEach(async () => {
+  await Promise.allSettled(openHandles.splice(0).map(async (handle) => await handle.stop()));
+  await Promise.allSettled(openStores.splice(0).map(async (store) => await store.close()));
+});
+
+describe("Connect Client Interface", () => {
+  it("serves direct loopback snapshots and local turns", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-interface-"));
+    const assetsPath = join(directory, "assets");
+    await mkdir(assetsPath);
+    await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect test</title>");
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite"), sessionRefFactory: () => "ABCDEFGH" });
+    openStores.push(store);
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "codex",
+      runtimeSessionId: "thread-1",
+      name: "First session",
+      hasMessages: true,
+      isCurrent: true,
+    });
+    const session = await store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!session) throw new Error("test session was not created");
+    let isArchived = false;
+    let isDeleted = false;
+    const lifecycleCalls: string[] = [];
+    const summary = { runtimeThreadId: "thread-1", name: "First session", updatedAt: 1 };
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      discoverAllThreads: async () => (!isArchived && !isDeleted ? [summary] : []),
+      discoverArchivedThreads: async () => (isArchived && !isDeleted ? [{ ...summary, isArchived: true }] : []),
+      archiveThread: async (_binding, threadId) => {
+        lifecycleCalls.push(`archive:${threadId}`);
+        isArchived = true;
+      },
+      unarchiveThread: async (_binding, threadId) => {
+        lifecycleCalls.push(`unarchive:${threadId}`);
+        isArchived = false;
+      },
+      deleteThread: async (_binding, threadId) => {
+        lifecycleCalls.push(`delete:${threadId}`);
+        isDeleted = true;
+      },
+      readTranscript: async () => [
+        { id: "user-1", kind: "user", text: "hello", state: "complete" },
+        { id: "agent-1", kind: "assistant", text: "world", state: "complete" },
+        {
+          id: "subagent-1",
+          kind: "subagent",
+          text: "Scout · researcher",
+          state: "complete",
+          data: { title: "Scout", role: "researcher", activityKind: "started" },
+          children: [
+            { id: "child-user", kind: "user", text: "investigate", state: "complete" },
+            { id: "child-agent", kind: "assistant", text: "found it", state: "complete" },
+          ],
+        },
+      ],
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const registry = new RuntimeAdapterRegistry([adapter]);
+    const config = defaultConfig();
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.defaultAgent = "codex";
+    config.stateDbPath = store.dbPath;
+    const enqueueClientTurn = mock(async (sessionRef: string) => ({ turnId: "turn-123", sessionRef }));
+    const runtime: BindingRuntimeHandle = {
+      agentId: "codex",
+      websocketUrl: config.websocketUrl,
+      deviceId: "device-1",
+      enqueueClientTurn,
+      close: async () => undefined,
+    };
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const port = 47_891;
+    config.clientPort = port;
+    let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
+    const handle = await startClientInterface({
+      config,
+      configPath: join(directory, "config.json"),
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      runtimes: [runtime],
+      assetsPath,
+      port,
+      serverFactory: (options) => {
+        fetchHandler = options.fetch;
+        return { stop: async () => undefined };
+      },
+    });
+    openHandles.push(handle);
+    if (!fetchHandler) throw new Error("test Client Interface did not expose a request handler");
+
+    const document = await localRequest(fetchHandler, handle.origin, "/");
+    expect(document.status).toBe(200);
+    const contentSecurityPolicy = document.headers.get("content-security-policy") ?? "";
+    expect(contentSecurityPolicy).toContain("script-src 'self'; script-src-attr 'none'");
+    expect(contentSecurityPolicy).toContain("style-src-elem 'self'; style-src-attr 'unsafe-inline'");
+    expect(contentSecurityPolicy).not.toContain("script-src 'self' 'unsafe-inline'");
+    const bootstrap = await localRequest(fetchHandler, handle.origin, "/client/v1/bootstrap");
+    expect(bootstrap.status).toBe(200);
+    await expect(bootstrap.json()).resolves.toMatchObject({
+      apiVersion: 1,
+      bindings: [{ bindingId: "codex", displayName: "Codex" }],
+      capabilities: { localTurns: true, runtimeInteractions: false },
+    });
+
+    const sessionResponse = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}`,
+    );
+    expect(sessionResponse.status).toBe(200);
+    const transcript = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/transcript`,
+    );
+    expect(transcript.status).toBe(200);
+    await expect(transcript.json()).resolves.toMatchObject({
+      sessionRef: session.sessionRef,
+      blocks: [
+        { type: "message", role: "user", markdown: "hello" },
+        { type: "message", role: "assistant", markdown: "world" },
+        {
+          type: "subagent",
+          title: "Scout",
+          role: "researcher",
+          activityKind: "started",
+          blocks: [
+            { type: "message", role: "user", markdown: "investigate" },
+            { type: "message", role: "assistant", markdown: "found it" },
+          ],
+        },
+      ],
+    });
+
+    const turn = await localRequest(fetchHandler, handle.origin, `/client/v1/sessions/${session.sessionRef}/turns`, {
+      method: "POST",
+      headers: {
+        origin: handle.origin,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ requestId: "request_123", prompt: "from web" }),
+    });
+    expect(turn.status).toBe(202);
+    await expect(turn.json()).resolves.toEqual({ accepted: true, turnId: "turn-123", sessionRef: session.sessionRef });
+    expect(enqueueClientTurn).toHaveBeenCalledWith(session.sessionRef, "from web");
+
+    const replayedTurn = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turns`,
+      {
+        method: "POST",
+        headers: {
+          origin: handle.origin,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ requestId: "request_123", prompt: "from web" }),
+      },
+    );
+    expect(replayedTurn.status).toBe(202);
+    expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
+
+    const conflictingRequestId = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turns/turn-123/cancel`,
+      {
+        method: "POST",
+        headers: {
+          origin: handle.origin,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ requestId: "request_123" }),
+      },
+    );
+    expect(conflictingRequestId.status).toBe(409);
+
+    const rejected = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turns`,
+      {
+        method: "POST",
+        headers: { origin: "http://evil.invalid" },
+        body: "{}",
+      },
+    );
+    expect(rejected.status).toBe(403);
+
+    const archived = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/archive`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "archive_request" }),
+      },
+    );
+    expect(archived.status).toBe(200);
+    await expect(archived.json()).resolves.toEqual({ sessionRef: session.sessionRef, archived: true });
+    const archivedView = await localRequest(fetchHandler, handle.origin, `/client/v1/sessions/${session.sessionRef}`);
+    await expect(archivedView.json()).resolves.toMatchObject({ isArchived: true });
+
+    const restored = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/unarchive`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "unarchive_request" }),
+      },
+    );
+    expect(restored.status).toBe(200);
+    await expect(restored.json()).resolves.toEqual({ sessionRef: session.sessionRef, archived: false });
+
+    const deleted = await localRequest(fetchHandler, handle.origin, `/client/v1/sessions/${session.sessionRef}`, {
+      method: "DELETE",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({ requestId: "delete_request" }),
+    });
+    expect(deleted.status).toBe(200);
+    await expect(deleted.json()).resolves.toEqual({ sessionRef: session.sessionRef, deleted: true });
+    expect(lifecycleCalls).toEqual(["archive:thread-1", "unarchive:thread-1", "delete:thread-1"]);
+    await expect(store.getSessionRefTarget(session.sessionRef)).resolves.toBeNull();
+  });
+
+  it("serves documents directly and rejects invalid Host headers", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-auth-"));
+    const assetsPath = join(directory, "assets");
+    await mkdir(assetsPath);
+    await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect test</title>");
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    openStores.push(store);
+    const config = defaultConfig();
+    const registry = new RuntimeAdapterRegistry([]);
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const port = 47_892;
+    let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
+    const handle = await startClientInterface({
+      config,
+      configPath: join(directory, "config.json"),
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      runtimes: [],
+      assetsPath,
+      port,
+      serverFactory: (options) => {
+        fetchHandler = options.fetch;
+        return { stop: async () => undefined };
+      },
+    });
+    openHandles.push(handle);
+    if (!fetchHandler) throw new Error("test Client Interface did not expose a request handler");
+    const document = await localRequest(fetchHandler, handle.origin, "/");
+    expect(document.status).toBe(200);
+    expect(await document.text()).toContain("Connect test");
+    const invalidHost = await (fetchHandler as (request: Request) => Response | Promise<Response>)(
+      new Request(handle.origin, { headers: { host: "localhost.invalid" } }),
+    );
+    expect(invalidHost.status).toBe(400);
+  });
+
+  it("supports explicit IPv4 LAN Host mode with request-local same-origin checks", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-lan-"));
+    const assetsPath = join(directory, "assets");
+    await mkdir(assetsPath);
+    await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect LAN test</title>");
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    openStores.push(store);
+    const config = defaultConfig();
+    config.clientHost = "0.0.0.0";
+    const registry = new RuntimeAdapterRegistry([]);
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const port = 47_894;
+    let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
+    let listeningHost = "";
+    const handle = await startClientInterface({
+      config,
+      configPath: join(directory, "config.json"),
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      runtimes: [],
+      assetsPath,
+      port,
+      serverFactory: (options) => {
+        listeningHost = options.hostname;
+        fetchHandler = options.fetch;
+        return { stop: async () => undefined };
+      },
+    });
+    openHandles.push(handle);
+    if (!fetchHandler) throw new Error("test Client Interface did not expose a request handler");
+    expect(listeningHost).toBe("0.0.0.0");
+    expect(handle.origin).toBe(`http://0.0.0.0:${port}`);
+
+    const lanOrigin = `http://192.168.1.20:${port}`;
+    const document = await localRequest(fetchHandler, lanOrigin, "/");
+    expect(document.status).toBe(200);
+
+    const sameOriginMutation = await localRequest(fetchHandler, lanOrigin, "/client/v1/not-found", {
+      method: "POST",
+      headers: { origin: lanOrigin, "sec-fetch-site": "same-origin" },
+    });
+    expect(sameOriginMutation.status).toBe(404);
+
+    const wrongOrigin = await localRequest(fetchHandler, lanOrigin, "/client/v1/not-found", {
+      method: "POST",
+      headers: { origin: `http://192.168.1.21:${port}`, "sec-fetch-site": "same-origin" },
+    });
+    expect(wrongOrigin.status).toBe(403);
+
+    const hostnameRebinding = await (fetchHandler as (request: Request) => Response | Promise<Response>)(
+      new Request(lanOrigin, { headers: { host: `attacker.example:${port}` } }),
+    );
+    expect(hostnameRebinding.status).toBe(400);
+  });
+});
+
+async function localRequest(
+  fetchHandler: (request: Request) => Response | Promise<Response>,
+  origin: string,
+  input: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set("host", new URL(origin).host);
+  return await fetchHandler(new Request(new URL(input, origin), { ...init, headers }));
+}

@@ -2,6 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
+import type { ClientViewEvent, TranscriptBlock } from "./client-contract";
 import { defaultStateDbPath } from "./config";
 import {
   type ActivationCredentials,
@@ -25,10 +26,21 @@ export interface SessionRefTarget {
   runtimeSessionId?: string | null;
 }
 
+export interface SessionRefRecord {
+  sessionRef: string;
+  chatId: string;
+  agentId: string;
+  sessionId: string | null;
+  runtimeSessionId: string | null;
+}
+
 class BunSqliteAdapter {
   constructor(private readonly database: Database) {}
 
-  async run(sql: string, ...bindings: SQLQueryBindings[]): Promise<{ changes: number }> {
+  async run(
+    sql: string,
+    ...bindings: SQLQueryBindings[]
+  ): Promise<{ changes: number; lastInsertRowid: number | bigint }> {
     return this.database.query<unknown, SQLQueryBindings[]>(sql).run(...bindings);
   }
 
@@ -42,6 +54,16 @@ class BunSqliteAdapter {
 
   async exec(sql: string): Promise<void> {
     this.database.exec(sql);
+  }
+
+  transaction<T>(
+    callback: (
+      run: (sql: string, ...bindings: SQLQueryBindings[]) => { changes: number; lastInsertRowid: number | bigint },
+    ) => T,
+  ): T {
+    return this.database.transaction(() =>
+      callback((sql, ...bindings) => this.database.query<unknown, SQLQueryBindings[]>(sql).run(...bindings)),
+    )();
   }
 
   async close(): Promise<void> {
@@ -86,6 +108,27 @@ export interface SetSessionIntentInput {
   name?: string | null;
   mode?: string | null;
 }
+
+export interface StoredClientEvent {
+  cursor: number;
+  event: ClientViewEvent;
+  createdAt: number;
+}
+
+export type ClientCommandClaim =
+  | { state: "claimed" }
+  | { state: "pending" }
+  | { state: "conflict" }
+  | { state: "complete"; responseStatus: number; responseBody: unknown };
+
+export type TranscriptBlockInput<T extends TranscriptBlock = TranscriptBlock> = T extends TranscriptBlock
+  ? Omit<T, "sequence" | "revision" | "createdAt" | "updatedAt"> & {
+      id: string;
+      revision?: number;
+      createdAt?: string;
+      updatedAt?: string;
+    }
+  : never;
 
 export class ConnectStateStore {
   readonly dbPath: string;
@@ -341,6 +384,19 @@ export class ConnectStateStore {
     );
     return rows.map(runtimeSessionFromRow);
   }
+  async listAllRuntimeSessions(): Promise<RuntimeSessionRecord[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<Record<string, unknown>[]>(`${runtimeSessionSelect()} ORDER BY rs.updated_at DESC`);
+    return rows.map(runtimeSessionFromRow);
+  }
+  async getRuntimeSessionByRef(sessionRef: string): Promise<RuntimeSessionRecord | null> {
+    const db = await this.requireDb();
+    const row = await db.get<Record<string, unknown>>(
+      `${runtimeSessionSelect()} WHERE sr.session_ref = ? COLLATE NOCASE LIMIT 1`,
+      sessionRef,
+    );
+    return row ? runtimeSessionFromRow(row) : null;
+  }
   async switchRuntimeSession(chatId: string, agentId: string, sessionId: string): Promise<boolean> {
     const db = await this.requireDb();
     await db.run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?", chatId, agentId);
@@ -383,6 +439,24 @@ export class ConnectStateStore {
         );
       }
     }
+    return result.changes > 0;
+  }
+
+  async setRuntimeSessionProject(
+    chatId: string,
+    agentId: string,
+    sessionId: string,
+    projectId: string,
+  ): Promise<boolean> {
+    const db = await this.requireDb();
+    const result = await db.run(
+      "UPDATE runtime_sessions SET project_id = ?, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
+      projectId,
+      Date.now(),
+      chatId,
+      agentId,
+      sessionId,
+    );
     return result.changes > 0;
   }
 
@@ -460,6 +534,21 @@ export class ConnectStateStore {
     }
     throw new Error("failed to allocate a unique Session Ref");
   }
+  async getSessionRefTarget(sessionRef: string): Promise<SessionRefRecord | null> {
+    const db = await this.requireDb();
+    const row = await db.get<SessionRefRow>(
+      "SELECT * FROM session_refs WHERE session_ref = ? COLLATE NOCASE",
+      sessionRef,
+    );
+    if (!row) return null;
+    return {
+      sessionRef: row.session_ref,
+      chatId: row.chat_id,
+      agentId: row.agent_id,
+      sessionId: nullableString(row.session_id),
+      runtimeSessionId: nullableString(row.runtime_session_id),
+    };
+  }
   async setRuntimeSessionName(chatId: string, agentId: string, sessionId: string, name: string): Promise<boolean> {
     const db = await this.requireDb();
     const result = await db.run(
@@ -511,6 +600,27 @@ export class ConnectStateStore {
       }
     }
     return result.changes > 0;
+  }
+
+  async deleteSessionByRef(sessionRef: string): Promise<boolean> {
+    const db = await this.requireDb();
+    const target = await db.get<SessionRefRow>(
+      "SELECT * FROM session_refs WHERE session_ref = ? COLLATE NOCASE",
+      sessionRef,
+    );
+    if (!target) return false;
+    return db.transaction((run) => {
+      if (target.session_id) {
+        run(
+          "DELETE FROM runtime_sessions WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
+          target.chat_id,
+          target.agent_id,
+          target.session_id,
+        );
+      }
+      const result = run("DELETE FROM session_refs WHERE session_ref = ? COLLATE NOCASE", sessionRef);
+      return result.changes > 0;
+    });
   }
 
   async claimMessageOnce(input: MessageInput): Promise<boolean> {
@@ -589,6 +699,273 @@ export class ConnectStateStore {
       globalQueued: numberValue(row.global_queued),
       recentError: nullableString(row.recent_error),
     };
+  }
+
+  async deleteExpiredClientCommands(now = Date.now()): Promise<void> {
+    const db = await this.requireDb();
+    await db.run("DELETE FROM client_commands WHERE created_at < ?", now - 24 * 60 * 60 * 1_000);
+  }
+
+  async claimClientCommand(requestId: string, commandKind: string, entityRef: string): Promise<ClientCommandClaim> {
+    const db = await this.requireDb();
+    const inserted = await db.run(
+      "INSERT OR IGNORE INTO client_commands(request_id, command_kind, entity_ref, response_status, response_json, created_at, completed_at) VALUES (?, ?, ?, NULL, NULL, ?, NULL)",
+      requestId,
+      commandKind,
+      entityRef,
+      Date.now(),
+    );
+    if (inserted.changes > 0) return { state: "claimed" };
+    const row = await db.get<{
+      command_kind: string;
+      entity_ref: string;
+      response_status: number | null;
+      response_json: string | null;
+    }>(
+      "SELECT command_kind, entity_ref, response_status, response_json FROM client_commands WHERE request_id = ?",
+      requestId,
+    );
+    if (!row || row.command_kind !== commandKind || row.entity_ref !== entityRef) {
+      return { state: "conflict" };
+    }
+    if (row.response_status == null || row.response_json == null) return { state: "pending" };
+    try {
+      return { state: "complete", responseStatus: row.response_status, responseBody: JSON.parse(row.response_json) };
+    } catch {
+      throw new Error("stored Client command response is invalid");
+    }
+  }
+
+  async completeClientCommand(requestId: string, responseStatus: number, responseBody: unknown): Promise<void> {
+    const db = await this.requireDb();
+    await db.run(
+      "UPDATE client_commands SET response_status = ?, response_json = ?, completed_at = ? WHERE request_id = ? AND response_status IS NULL",
+      responseStatus,
+      JSON.stringify(responseBody),
+      Date.now(),
+      requestId,
+    );
+  }
+
+  async abandonClientCommand(requestId: string): Promise<void> {
+    const db = await this.requireDb();
+    await db.run("DELETE FROM client_commands WHERE request_id = ? AND response_status IS NULL", requestId);
+  }
+
+  async upsertTranscriptBlock(
+    sessionRef: string,
+    input: TranscriptBlockInput,
+  ): Promise<{ block: TranscriptBlock; cursor: number }> {
+    const db = await this.requireDb();
+    const existing = await db.get<{ sequence: number; revision: number; created_at: number; block_json: string }>(
+      "SELECT sequence, revision, created_at, block_json FROM transcript_blocks WHERE session_ref = ? AND block_id = ?",
+      sessionRef,
+      input.id,
+    );
+    if (existing) {
+      try {
+        const stored = JSON.parse(existing.block_json) as TranscriptBlock;
+        if (sameTranscriptPayload(stored, input)) return { block: stored, cursor: 0 };
+      } catch {
+        // Replace malformed projection JSON below.
+      }
+    }
+    const now = Date.now();
+    const sequence =
+      existing?.sequence ??
+      numberValue(
+        (
+          await db.get<{ sequence?: number }>(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM transcript_blocks WHERE session_ref = ?",
+            sessionRef,
+          )
+        )?.sequence,
+      );
+    const revision = Math.max(input.revision ?? (existing?.revision ?? 0) + 1, (existing?.revision ?? 0) + 1);
+    const createdAt = input.createdAt ? Date.parse(input.createdAt) : (existing?.created_at ?? now);
+    const updatedAt = input.updatedAt ? Date.parse(input.updatedAt) : now;
+    const block = {
+      ...input,
+      revision,
+      sequence,
+      createdAt: new Date(Number.isFinite(createdAt) ? createdAt : now).toISOString(),
+      updatedAt: new Date(Number.isFinite(updatedAt) ? updatedAt : now).toISOString(),
+    } as TranscriptBlock;
+    await db.run(
+      `INSERT INTO transcript_blocks(session_ref, block_id, revision, sequence, block_type, origin, state, plain_text, block_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_ref, block_id) DO UPDATE SET revision = excluded.revision, block_type = excluded.block_type, origin = excluded.origin, state = excluded.state, plain_text = excluded.plain_text, block_json = excluded.block_json, updated_at = excluded.updated_at`,
+      sessionRef,
+      block.id,
+      block.revision,
+      block.sequence,
+      block.type,
+      block.origin,
+      block.state,
+      block.plainText,
+      JSON.stringify(block),
+      Date.parse(block.createdAt),
+      Date.parse(block.updatedAt),
+    );
+    const eventWithoutCursor = {
+      type: "transcript.block-upserted",
+      cursor: 0,
+      sessionRef,
+      revision: block.revision,
+      block,
+    } satisfies ClientViewEvent;
+    const eventInsert = await db.run(
+      "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+      eventWithoutCursor.type,
+      sessionRef,
+      block.revision,
+      JSON.stringify(eventWithoutCursor),
+      now,
+    );
+    const cursor = Number(eventInsert.lastInsertRowid);
+    return { block, cursor };
+  }
+
+  async countTranscriptBlocks(sessionRef: string): Promise<number> {
+    const db = await this.requireDb();
+    const row = await db.get<{ count?: number }>(
+      "SELECT COUNT(*) AS count FROM transcript_blocks WHERE session_ref = ?",
+      sessionRef,
+    );
+    return numberValue(row?.count);
+  }
+
+  async rekeyMatchingTranscriptMessage(
+    sessionRef: string,
+    input: Extract<TranscriptBlockInput, { type: "message" }>,
+  ): Promise<TranscriptBlock | null> {
+    const db = await this.requireDb();
+    const stable = await db.get<{ block_id: string }>(
+      "SELECT block_id FROM transcript_blocks WHERE session_ref = ? AND block_id = ?",
+      sessionRef,
+      input.id,
+    );
+    if (stable) return null;
+    const rows = await db.all<
+      Array<{ block_id: string; revision: number; sequence: number; created_at: number; block_json: string }>
+    >(
+      "SELECT block_id, revision, sequence, created_at, block_json FROM transcript_blocks WHERE session_ref = ? AND block_type = 'message' AND plain_text = ? ORDER BY sequence DESC LIMIT 20",
+      sessionRef,
+      input.plainText,
+    );
+    const candidate = rows.find((row) => {
+      if (row.block_id.startsWith("b_")) return false;
+      try {
+        const block = JSON.parse(row.block_json) as TranscriptBlock;
+        if (block.type !== "message" || block.role !== input.role) return false;
+        return block.origin === input.origin || (input.origin === "runtime" && block.origin === "client");
+      } catch {
+        return false;
+      }
+    });
+    if (!candidate) return null;
+    const previous = JSON.parse(candidate.block_json) as Extract<TranscriptBlock, { type: "message" }>;
+    const now = Date.now();
+    const block: TranscriptBlock = {
+      ...input,
+      origin: previous.origin,
+      author: previous.author,
+      revision: candidate.revision + 1,
+      sequence: candidate.sequence,
+      createdAt: new Date(candidate.created_at).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+    };
+    await db.run(
+      "UPDATE transcript_blocks SET block_id = ?, revision = ?, origin = ?, state = ?, plain_text = ?, block_json = ?, updated_at = ? WHERE session_ref = ? AND block_id = ?",
+      block.id,
+      block.revision,
+      block.origin,
+      block.state,
+      block.plainText,
+      JSON.stringify(block),
+      now,
+      sessionRef,
+      candidate.block_id,
+    );
+    const removed = {
+      type: "transcript.block-removed",
+      cursor: 0,
+      sessionRef,
+      revision: block.revision,
+      blockId: candidate.block_id,
+    } satisfies ClientViewEvent;
+    await db.run(
+      "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+      removed.type,
+      sessionRef,
+      removed.revision,
+      JSON.stringify(removed),
+      now,
+    );
+    const upserted = {
+      type: "transcript.block-upserted",
+      cursor: 0,
+      sessionRef,
+      revision: block.revision,
+      block,
+    } satisfies ClientViewEvent;
+    await db.run(
+      "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+      upserted.type,
+      sessionRef,
+      upserted.revision,
+      JSON.stringify(upserted),
+      now,
+    );
+    return block;
+  }
+
+  async listTranscriptBlocks(
+    sessionRef: string,
+    options: { beforeSequence?: number | null; limit?: number } = {},
+  ): Promise<TranscriptBlock[]> {
+    const db = await this.requireDb();
+    const limit = Math.max(1, Math.min(200, Math.trunc(options.limit ?? 100)));
+    const before = options.beforeSequence ?? Number.MAX_SAFE_INTEGER;
+    const rows = await db.all<{ block_json: string }[]>(
+      "SELECT block_json FROM transcript_blocks WHERE session_ref = ? AND sequence < ? ORDER BY sequence DESC LIMIT ?",
+      sessionRef,
+      before,
+      limit,
+    );
+    return rows
+      .flatMap((row) => {
+        try {
+          return [JSON.parse(row.block_json) as TranscriptBlock];
+        } catch {
+          return [];
+        }
+      })
+      .reverse();
+  }
+
+  async getClientEventCursor(): Promise<number> {
+    const db = await this.requireDb();
+    return numberValue(
+      (await db.get<{ cursor?: number }>("SELECT COALESCE(MAX(cursor), 0) AS cursor FROM client_events"))?.cursor,
+    );
+  }
+
+  async listClientEvents(afterCursor: number, limit = 500): Promise<StoredClientEvent[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<Array<{ cursor: number; event_json: string; created_at: number }>>(
+      "SELECT cursor, event_json, created_at FROM client_events WHERE cursor > ? ORDER BY cursor ASC LIMIT ?",
+      afterCursor,
+      Math.max(1, Math.min(1_000, Math.trunc(limit))),
+    );
+    return rows.flatMap((row) => {
+      try {
+        const event = JSON.parse(row.event_json) as ClientViewEvent;
+        return [
+          { cursor: row.cursor, event: { ...event, cursor: row.cursor } as ClientViewEvent, createdAt: row.created_at },
+        ];
+      } catch {
+        return [];
+      }
+    });
   }
   private async requireDb(): Promise<SqliteDb> {
     if (!this.db) await this.initialize();
@@ -695,6 +1072,44 @@ export class ConnectStateStore {
         global_queued INTEGER NOT NULL,
         recent_error TEXT
       );
+      CREATE TABLE IF NOT EXISTS client_commands(
+        request_id TEXT PRIMARY KEY,
+        command_kind TEXT NOT NULL,
+        entity_ref TEXT NOT NULL,
+        response_status INTEGER,
+        response_json TEXT,
+        created_at INTEGER NOT NULL,
+        completed_at INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_client_commands_created
+        ON client_commands(created_at);
+      CREATE TABLE IF NOT EXISTS transcript_blocks(
+        session_ref TEXT NOT NULL REFERENCES session_refs(session_ref) ON DELETE CASCADE,
+        block_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        sequence INTEGER NOT NULL,
+        block_type TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        state TEXT NOT NULL,
+        plain_text TEXT NOT NULL,
+        block_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(session_ref, block_id),
+        UNIQUE(session_ref, sequence)
+      );
+      CREATE INDEX IF NOT EXISTS idx_transcript_blocks_page
+        ON transcript_blocks(session_ref, sequence DESC);
+      CREATE TABLE IF NOT EXISTS client_events(
+        cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        entity_ref TEXT,
+        revision INTEGER NOT NULL,
+        event_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_client_events_created
+        ON client_events(created_at);
     `);
   }
 
@@ -751,6 +1166,15 @@ function nullableString(value: unknown): string | null {
   const text = stringValue(value).trim();
   return text ? text : null;
 }
+function sameTranscriptPayload(stored: TranscriptBlock, input: TranscriptBlockInput): boolean {
+  const storedPayload = { ...stored } as Record<string, unknown>;
+  const inputPayload = { ...input } as Record<string, unknown>;
+  for (const key of ["sequence", "revision", "createdAt", "updatedAt"]) {
+    delete storedPayload[key];
+    delete inputPayload[key];
+  }
+  return JSON.stringify(storedPayload) === JSON.stringify(inputPayload);
+}
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : Number(value ?? 0) || 0;
 }
@@ -801,6 +1225,8 @@ function sessionIntentFromRow(row: Record<string, unknown>): SessionIntentRecord
 
 interface SessionRefRow {
   session_ref: string;
+  chat_id: string;
+  agent_id: string;
   session_id: string | null;
   runtime_session_id: string | null;
 }

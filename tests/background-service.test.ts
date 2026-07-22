@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type BackgroundCommandResult,
+  connectCommandForProcess,
   currentConnectCommand,
   manageBackgroundService,
 } from "../src/background-service";
@@ -130,5 +131,11 @@ describe("background service manager", () => {
     expect(command[0]).toBeTruthy();
     expect(command.length).toBeGreaterThanOrEqual(1);
     expect(command.length).toBeLessThanOrEqual(2);
+  });
+
+  it("relaunches a Bun-compiled executable without passing its virtual entrypoint", () => {
+    expect(connectCommandForProcess("/opt/clawchat-connect", "/$bunfs/root/clawchat-connect")).toEqual([
+      "/opt/clawchat-connect",
+    ]);
   });
 });

@@ -1,123 +1,327 @@
-import { createReadStream } from "node:fs";
-import { readdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
-import type { CodexOptions, ThreadEvent, ThreadItem, ThreadOptions, TurnOptions } from "@openai/codex-sdk";
 import type { RuntimeOutputEvent } from "../output-visibility";
-import type { CodexAgentBindingConfig, CodexSandboxMode, RuntimeWorkspace } from "../types";
+import type { CodexAgentBindingConfig, CodexApprovalPolicy, CodexSandboxMode, RuntimeWorkspace } from "../types";
+import {
+  type CodexAppServerClient,
+  type CodexAppServerNotification,
+  type CodexAppServerRequest,
+  type CodexAppServerThread,
+  type CodexAppServerThreadItem,
+  type CodexAppServerTurn,
+  type CodexSandboxPolicy,
+  createCodexAppServerClient,
+} from "./codex-app-server";
 import type {
   ConnectRuntimeAdapter,
   ConnectRuntimePrompt,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
   RuntimeThreadSummary,
+  RuntimeTranscriptEntry,
 } from "./types";
 
-export interface CodexThreadLike {
-  readonly id: string | null;
-  runStreamed(input: string, options?: TurnOptions): Promise<{ events: AsyncIterable<ThreadEvent> }>;
-}
-
-export interface CodexClientLike {
-  startThread(options?: ThreadOptions): CodexThreadLike;
-  resumeThread(id: string, options?: ThreadOptions): CodexThreadLike;
-}
-
 export interface CreateCodexRuntimeAdapterOptions {
-  createCodex?: (options: CodexOptions) => Promise<CodexClientLike>;
+  createAppServer?: (binding: CodexAgentBindingConfig) => Promise<CodexAppServerClient>;
 }
 
 const SANDBOX_MODES: readonly CodexSandboxMode[] = ["read-only", "workspace-write", "danger-full-access"];
+const THREAD_SOURCE_KINDS = [
+  "cli",
+  "vscode",
+  "exec",
+  "appServer",
+  "subAgent",
+  "subAgentReview",
+  "subAgentCompact",
+  "subAgentThreadSpawn",
+  "subAgentOther",
+  "unknown",
+] as const;
 
 export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOptions = {}): ConnectRuntimeAdapter {
-  const createCodex = options.createCodex ?? createOfficialCodexClient;
+  const createAppServer = options.createAppServer ?? createCodexAppServerClient;
+  let bindingIdentity: string | null = null;
+  let clientPromise: Promise<CodexAppServerClient> | null = null;
+
+  const clientFor = async (binding: CodexAgentBindingConfig): Promise<CodexAppServerClient> => {
+    const identity = processIdentity(binding);
+    if (bindingIdentity && bindingIdentity !== identity) {
+      throw new Error("The shared Codex app-server cannot be reused with a different executable or environment");
+    }
+    bindingIdentity = identity;
+    if (!clientPromise) {
+      clientPromise = createAppServer(binding).catch((error) => {
+        clientPromise = null;
+        bindingIdentity = null;
+        throw error;
+      });
+    }
+    return await clientPromise;
+  };
+
   return {
     kind: "codex",
     modes: SANDBOX_MODES,
+    async prepare(binding) {
+      await clientFor(requireCodexBinding(binding));
+    },
     async discoverThreads(binding, workspace) {
-      if (binding.kind !== "codex") throw new Error("Codex Runtime Adapter requires a Codex Agent Binding");
-      return await discoverCodexThreads(binding, workspace.workingDirectory);
+      const codexBinding = requireCodexBinding(binding);
+      return await discoverCodexThreads(await clientFor(codexBinding), workspace.workingDirectory);
+    },
+    async discoverAllThreads(binding) {
+      const codexBinding = requireCodexBinding(binding);
+      return await discoverCodexThreads(await clientFor(codexBinding));
+    },
+    async discoverArchivedThreads(binding) {
+      const codexBinding = requireCodexBinding(binding);
+      return await discoverCodexThreads(await clientFor(codexBinding), undefined, true);
+    },
+    async readTranscript(binding, runtimeThreadId) {
+      const codexBinding = requireCodexBinding(binding);
+      return await readCodexTranscript(await clientFor(codexBinding), runtimeThreadId);
+    },
+    async archiveThread(binding, runtimeThreadId) {
+      const codexBinding = requireCodexBinding(binding);
+      await (await clientFor(codexBinding)).archiveThread({ threadId: runtimeThreadId });
+    },
+    async unarchiveThread(binding, runtimeThreadId) {
+      const codexBinding = requireCodexBinding(binding);
+      await (await clientFor(codexBinding)).unarchiveThread({ threadId: runtimeThreadId });
+    },
+    async deleteThread(binding, runtimeThreadId) {
+      const codexBinding = requireCodexBinding(binding);
+      await (await clientFor(codexBinding)).deleteThread({ threadId: runtimeThreadId });
     },
     async start(binding, context) {
-      if (binding.kind !== "codex") throw new Error("Codex Runtime Adapter requires a Codex Agent Binding");
-      const client = await createCodex(codexOptions(binding));
-      return new CodexRuntimeSession(client, binding, context);
+      const codexBinding = requireCodexBinding(binding);
+      return new CodexRuntimeSession(await clientFor(codexBinding), codexBinding, context);
+    },
+    async close() {
+      const current = clientPromise;
+      clientPromise = null;
+      bindingIdentity = null;
+      if (current) await (await current).close();
     },
   };
 }
 
-async function discoverCodexThreads(
-  binding: CodexAgentBindingConfig,
-  workingDirectory: string,
-): Promise<RuntimeThreadSummary[]> {
-  const configuredHome = binding.env?.CODEX_HOME ?? process.env.CODEX_HOME;
-  const sessionsRoot = join(resolve(configuredHome || join(homedir(), ".codex")), "sessions");
-  const files = await listSessionFiles(sessionsRoot);
-  const target = resolve(workingDirectory);
-  const summaries = await Promise.all(files.map(async (path) => await readCodexThread(path, target)));
-  return summaries
-    .filter((summary): summary is RuntimeThreadSummary => summary !== null)
-    .sort((left, right) => right.updatedAt - left.updatedAt);
+async function readCodexTranscript(
+  client: CodexAppServerClient,
+  runtimeThreadId: string,
+): Promise<RuntimeTranscriptEntry[]> {
+  return (await readCodexThreadTranscript(client, runtimeThreadId, new Set(), new Map())).entries;
 }
 
-async function listSessionFiles(directory: string): Promise<string[]> {
-  const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
-  const nested = await Promise.all(
-    entries.map(async (entry) => {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) return await listSessionFiles(path);
-      return entry.isFile() && entry.name.endsWith(".jsonl") ? [path] : [];
-    }),
-  );
-  return nested.flat();
-}
-
-async function readCodexThread(path: string, targetDirectory: string): Promise<RuntimeThreadSummary | null> {
-  const lines = createInterface({ input: createReadStream(path), crlfDelay: Number.POSITIVE_INFINITY });
-  let runtimeThreadId = "";
-  let updatedAt = 0;
-  let name: string | null = null;
-  try {
-    for await (const line of lines) {
-      const record = parseRecord(line);
-      if (!record) continue;
-      const payload = asRecord(record.payload);
-      if (record.type === "session_meta" && payload) {
-        const directory = stringField(payload.cwd);
-        if (!directory || resolve(directory) !== targetDirectory) return null;
-        runtimeThreadId = stringField(payload.id) || stringField(payload.session_id);
-        updatedAt = Date.parse(stringField(payload.timestamp));
-        if (!Number.isFinite(updatedAt)) updatedAt = 0;
+async function readCodexThreadTranscript(
+  client: CodexAppServerClient,
+  runtimeThreadId: string,
+  ancestors: ReadonlySet<string>,
+  reads: Map<string, Promise<{ thread: CodexAppServerThread }>>,
+): Promise<{
+  thread: CodexAppServerThread;
+  entries: RuntimeTranscriptEntry[];
+}> {
+  const response = await readCodexThread(client, runtimeThreadId, reads);
+  const entries: RuntimeTranscriptEntry[] = [];
+  const lineage = new Set(ancestors).add(runtimeThreadId);
+  const seenChildThreads = new Set<string>();
+  for (const turn of response.thread.turns ?? []) {
+    for (const item of turn.items) {
+      if (item.type === "subAgentActivity") {
+        const childThreadId = stringField(item.agentThreadId);
+        if (!childThreadId || lineage.has(childThreadId) || seenChildThreads.has(childThreadId)) continue;
+        seenChildThreads.add(childThreadId);
+        entries.push(await subagentTranscriptEntry(client, item, childThreadId, lineage, reads));
         continue;
       }
-      if (record.type === "event_msg" && payload?.type === "user_message" && !name) {
-        name = normalizeThreadName(stringField(payload.message));
-        if (runtimeThreadId) break;
-      }
+      const entry = transcriptEntry(item, turn.status);
+      if (entry) entries.push(entry);
     }
-  } catch {
-    return null;
-  } finally {
-    lines.close();
   }
-  return runtimeThreadId ? { runtimeThreadId, name, updatedAt } : null;
+  return { thread: response.thread, entries };
 }
 
-function parseRecord(line: string): Record<string, unknown> | null {
+async function readCodexThread(
+  client: CodexAppServerClient,
+  runtimeThreadId: string,
+  reads: Map<string, Promise<{ thread: CodexAppServerThread }>>,
+) {
+  const active = reads.get(runtimeThreadId);
+  if (active) return await active;
+  const read = client.readThread({ threadId: runtimeThreadId, includeTurns: true });
+  reads.set(runtimeThreadId, read);
+  return await read;
+}
+
+async function subagentTranscriptEntry(
+  client: CodexAppServerClient,
+  item: CodexAppServerThreadItem,
+  childThreadId: string,
+  lineage: ReadonlySet<string>,
+  reads: Map<string, Promise<{ thread: CodexAppServerThread }>>,
+): Promise<RuntimeTranscriptEntry> {
+  const activityKind = stringField(item.kind) || "unknown";
   try {
-    return asRecord(JSON.parse(line));
+    const child = await readCodexThreadTranscript(client, childThreadId, lineage, reads);
+    const role = stringField(child.thread.agentRole) || null;
+    const title =
+      stringField(child.thread.agentNickname) ||
+      normalizeThreadName(child.thread.name || child.thread.preview) ||
+      childAgentPath(item) ||
+      "Sub-agent";
+    return {
+      id: item.id,
+      kind: "subagent",
+      text: role && role !== title ? `${title} · ${role}` : title,
+      state: childTranscriptState(child.thread.turns, activityKind),
+      data: { title, role, activityKind },
+      children: child.entries,
+    };
   } catch {
-    return null;
+    const title = childAgentPath(item) || "Sub-agent";
+    return {
+      id: item.id,
+      kind: "subagent",
+      text: title,
+      state: "error",
+      data: { title, role: null, activityKind },
+      children: [
+        {
+          id: `${item.id}:unavailable`,
+          kind: "unknown",
+          text: "Sub-agent transcript is unavailable.",
+          state: "error",
+        },
+      ],
+    };
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+function childTranscriptState(
+  turns: CodexAppServerThread["turns"],
+  activityKind: string,
+): RuntimeTranscriptEntry["state"] {
+  if (activityKind === "interrupted") return "cancelled";
+  const status = turns?.at(-1)?.status;
+  if (status === "failed") return "error";
+  if (status === "interrupted") return "cancelled";
+  if (status === "inProgress") return "streaming";
+  return "complete";
 }
 
-function stringField(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
+function childAgentPath(item: CodexAppServerThreadItem): string | null {
+  const path = stringField(item.agentPath);
+  return path ? (path.split(/[\\/]/u).filter(Boolean).at(-1) ?? null) : null;
+}
+
+function transcriptEntry(
+  item: CodexAppServerThreadItem,
+  turnStatus: CodexAppServerTurn["status"],
+): RuntimeTranscriptEntry | null {
+  const state =
+    turnStatus === "failed"
+      ? "error"
+      : turnStatus === "interrupted"
+        ? "cancelled"
+        : turnStatus === "completed"
+          ? "complete"
+          : "streaming";
+  if (item.type === "userMessage") {
+    const content = Array.isArray(item.content)
+      ? item.content.flatMap((value) => {
+          const part = recordField(value);
+          return part?.type === "text" ? [stringField(part.text)] : [];
+        })
+      : [];
+    return { id: item.id, kind: "user", text: content.join("\n"), state };
+  }
+  if (item.type === "agentMessage") return { id: item.id, kind: "assistant", text: stringField(item.text), state };
+  if (item.type === "reasoning") {
+    return {
+      id: item.id,
+      kind: "reasoning",
+      text: [...stringArray(item.summary), ...stringArray(item.content)].join("\n"),
+      state,
+    };
+  }
+  if (item.type === "plan") return { id: item.id, kind: "plan", text: stringField(item.text), state };
+  if (item.type === "commandExecution") {
+    return {
+      id: item.id,
+      kind: "command",
+      text: stringField(item.aggregatedOutput),
+      state,
+      data: {
+        command: stringField(item.command),
+        status: stringField(item.status),
+        exitCode: numberField(item.exitCode),
+      },
+    };
+  }
+  if (item.type === "fileChange") {
+    return {
+      id: item.id,
+      kind: "file-change",
+      text: formatCompletedItem(item)?.text ?? "File changes",
+      state,
+      data: { status: stringField(item.status), changes: item.changes },
+    };
+  }
+  if (item.type === "mcpToolCall" || item.type === "dynamicToolCall" || item.type === "webSearch") {
+    return {
+      id: item.id,
+      kind: "tool",
+      text: formatCompletedItem(item)?.text ?? item.type,
+      state,
+      data: { itemType: item.type },
+    };
+  }
+  return { id: item.id, kind: "unknown", text: item.type, state, data: { itemType: item.type } };
+}
+
+function requireCodexBinding(binding: { kind: string }): CodexAgentBindingConfig {
+  if (binding.kind !== "codex") throw new Error("Codex Runtime Adapter requires a Codex Agent Binding");
+  return binding as CodexAgentBindingConfig;
+}
+
+function processIdentity(binding: CodexAgentBindingConfig): string {
+  return JSON.stringify({ codexPathOverride: binding.codexPathOverride ?? null, env: binding.env ?? null });
+}
+
+async function discoverCodexThreads(
+  client: CodexAppServerClient,
+  workingDirectory?: string,
+  archived = false,
+): Promise<RuntimeThreadSummary[]> {
+  const summaries: RuntimeThreadSummary[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const page = await client.listThreads({
+      cursor,
+      limit: 100,
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      sourceKinds: [...THREAD_SOURCE_KINDS],
+      archived,
+      ...(workingDirectory ? { cwd: workingDirectory } : {}),
+    });
+    summaries.push(
+      ...page.data
+        .filter((thread) => !thread.parentThreadId)
+        .map((thread) => ({
+          runtimeThreadId: thread.id,
+          ...(archived ? { isArchived: true } : {}),
+          name: normalizeThreadName(thread.name || thread.preview),
+          updatedAt: thread.updatedAt * 1_000,
+          workingDirectory: thread.cwd,
+        })),
+    );
+    cursor = page.nextCursor;
+    if (cursor && seenCursors.has(cursor)) throw new Error("Codex app-server returned a repeated thread/list cursor");
+    if (cursor) seenCursors.add(cursor);
+  } while (cursor);
+  return summaries.sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
 function normalizeThreadName(value: string): string | null {
@@ -129,40 +333,24 @@ function normalizeThreadName(value: string): string | null {
   return normalized.length <= 100 ? normalized : `${normalized.slice(0, 99).trimEnd()}…`;
 }
 
-async function createOfficialCodexClient(options: CodexOptions): Promise<CodexClientLike> {
-  const { Codex } = await import("@openai/codex-sdk");
-  const codexPathOverride = options.codexPathOverride ?? Bun.which("codex", { PATH: options.env?.PATH });
-  if (!codexPathOverride) {
-    throw new Error(
-      "Codex executable was not found in PATH; install Codex or configure the Agent Binding with --codex-path",
-    );
-  }
-  return new Codex({ ...options, codexPathOverride });
-}
-
-function codexOptions(binding: CodexAgentBindingConfig): CodexOptions {
-  const env = binding.env ? { ...definedProcessEnvironment(), ...binding.env } : undefined;
-  return {
-    ...(binding.codexPathOverride ? { codexPathOverride: binding.codexPathOverride } : {}),
-    ...(env ? { env } : {}),
-  };
-}
-
-function definedProcessEnvironment(): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
+interface ActiveTurn {
+  threadId: string;
+  turnId: string | null;
+  cancelled: boolean;
+  bufferedNotifications: CodexAppServerNotification[];
+  queue: RuntimeEventQueue;
+  pendingAgentMessage: { itemId: string; text: string } | null;
+  seenErrors: Set<string>;
 }
 
 class CodexRuntimeSession implements ConnectRuntimeSession {
-  private thread: CodexThreadLike | null = null;
-  private activeTurn: AbortController | null = null;
-  private threadWorkspaceKey: string | null = null;
-  private threadSandboxMode: CodexSandboxMode | null = null;
+  private activeTurn: ActiveTurn | null = null;
   private runtimeSessionId: string | null;
+  private threadWorkspaceKey: string | null = null;
+  private closed = false;
 
   constructor(
-    private readonly client: CodexClientLike,
+    private readonly client: CodexAppServerClient,
     private readonly binding: CodexAgentBindingConfig,
     private readonly context: ConnectRuntimeStartContext,
   ) {
@@ -170,132 +358,236 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
   }
 
   async *prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeOutputEvent> {
+    if (this.closed) throw new Error("Codex runtime session is closed");
     if (this.activeTurn) throw new Error("Codex already has an active turn for this session");
     const sandboxMode = resolveSandboxMode(input.mode, this.binding.sandboxMode);
-    const thread = this.ensureThread(input.workspace, sandboxMode);
-    const controller = new AbortController();
-    this.activeTurn = controller;
-    let emittedFailure = false;
-    try {
-      const streamed = await thread.runStreamed(input.prompt, { signal: controller.signal });
-      let pendingAgentMessage: string | null = null;
-      const seenErrors = new Set<string>();
-      for await (const event of streamed.events) {
-        if (controller.signal.aborted) return;
-        if (event.type === "thread.started") {
-          await this.recordRuntimeSessionId(event.thread_id);
-          continue;
-        }
-        if (event.type === "turn.started") {
-          yield { kind: "progress", text: "Codex turn started." };
-          continue;
-        }
-        if (event.type === "item.started") {
-          const progress = formatStartedItem(event.item);
-          if (progress) yield progress;
-          continue;
-        }
-        if (event.type === "item.updated") continue;
-        if (event.type === "item.completed") {
-          if (event.item.type === "agent_message") {
-            if (pendingAgentMessage !== null) yield { kind: "assistant", text: pendingAgentMessage };
-            pendingAgentMessage = event.item.text;
-            continue;
-          }
-          const mapped = formatCompletedItem(event.item);
-          if (mapped) {
-            if (event.item.type === "error") seenErrors.add(event.item.message.trim());
-            yield mapped;
-          }
-          continue;
-        }
-        if (event.type === "turn.completed") {
-          yield { kind: "progress", text: formatUsage(event.usage) };
-          if (pendingAgentMessage !== null) {
-            yield { kind: "final", text: pendingAgentMessage };
-            pendingAgentMessage = null;
-          }
-          continue;
-        }
-        if (event.type === "turn.failed") {
-          if (pendingAgentMessage !== null) {
-            yield { kind: "assistant", text: pendingAgentMessage };
-            pendingAgentMessage = null;
-          }
-          const message = event.error.message.trim();
-          if (!seenErrors.has(message)) {
-            yield { kind: "final", text: `Codex turn failed: ${message}` };
-            seenErrors.add(message);
-          }
-          emittedFailure = true;
-          continue;
-        }
-        if (event.type === "error") {
-          const message = event.message.trim();
-          if (!seenErrors.has(message)) {
-            yield { kind: "final", text: `Codex stream error: ${message}` };
-            seenErrors.add(message);
-          }
-          emittedFailure = true;
-        }
+    const threadId = await this.ensureThread(input.workspace, sandboxMode);
+    const active: ActiveTurn = {
+      threadId,
+      turnId: null,
+      cancelled: false,
+      bufferedNotifications: [],
+      queue: new RuntimeEventQueue(),
+      pendingAgentMessage: null,
+      seenErrors: new Set(),
+    };
+    this.activeTurn = active;
+    const removeNotificationListener = this.client.onNotification((notification) => {
+      if (notification.method === "$transport/exited") {
+        this.handleNotification(active, notification);
+        return;
       }
-      if (pendingAgentMessage !== null) yield { kind: "final", text: pendingAgentMessage };
+      if (notificationThreadId(notification) !== active.threadId) return;
+      if (!active.turnId) {
+        active.bufferedNotifications.push(notification);
+        return;
+      }
+      this.handleNotification(active, notification);
+    });
+    const removeRequestHandler = this.client.onRequest(
+      async (request) => await this.handleServerRequest(active, request),
+    );
+    try {
+      const response = await this.client.startTurn({
+        threadId,
+        input: [{ type: "text", text: input.prompt, text_elements: [] }],
+        cwd: input.workspace.workingDirectory,
+        approvalPolicy: resolveApprovalPolicy(this.binding.approvalPolicy),
+        sandboxPolicy: sandboxPolicy(
+          input.workspace,
+          sandboxMode,
+          this.binding.networkAccessEnabled === true,
+          this.binding.additionalDirectories ?? [],
+        ),
+        ...(this.binding.model ? { model: this.binding.model } : {}),
+        ...(this.binding.modelReasoningEffort ? { effort: this.binding.modelReasoningEffort } : {}),
+      });
+      active.turnId = response.turn.id;
+      const buffered = active.bufferedNotifications.splice(0);
+      for (const notification of buffered) this.handleNotification(active, notification);
+      if (active.cancelled) await this.client.interruptTurn({ threadId, turnId: response.turn.id });
+      for await (const event of active.queue) yield event;
     } catch (error) {
-      if (controller.signal.aborted) return;
-      if (!emittedFailure) {
+      if (!active.cancelled) {
         yield {
           kind: "final",
           text: `Codex execution failed: ${error instanceof Error ? error.message : String(error)}`,
         };
       }
     } finally {
-      if (this.activeTurn === controller) this.activeTurn = null;
+      removeRequestHandler();
+      removeNotificationListener();
+      active.queue.close();
+      if (this.activeTurn === active) this.activeTurn = null;
     }
   }
 
   async cancel(): Promise<boolean> {
-    if (!this.activeTurn) return false;
-    this.activeTurn.abort();
+    const active = this.activeTurn;
+    if (!active) return false;
+    if (active.cancelled) return true;
+    active.cancelled = true;
+    if (active.turnId) await this.client.interruptTurn({ threadId: active.threadId, turnId: active.turnId });
     return true;
   }
 
   async close(): Promise<void> {
-    this.activeTurn?.abort();
-    this.activeTurn = null;
+    if (this.closed) return;
+    this.closed = true;
+    await this.cancel().catch(() => undefined);
   }
 
-  private ensureThread(workspace: RuntimeWorkspace, sandboxMode: CodexSandboxMode): CodexThreadLike {
+  private async ensureThread(workspace: RuntimeWorkspace, sandboxMode: CodexSandboxMode): Promise<string> {
     const additionalDirectories = [
       ...new Set([...(this.binding.additionalDirectories ?? []), ...workspace.additionalDirectories]),
     ];
     const workspaceKey = JSON.stringify({
       workingDirectory: workspace.workingDirectory,
       additionalDirectories,
-      skipGitRepoCheck: workspace.skipGitRepoCheck || this.binding.skipGitRepoCheck === true,
-    });
-    if (this.thread) {
-      if (this.threadWorkspaceKey !== workspaceKey || this.threadSandboxMode !== sandboxMode) {
-        throw new Error("Codex thread options changed; invalidate the current runtime session before continuing");
-      }
-      return this.thread;
-    }
-    const options: ThreadOptions = {
-      workingDirectory: workspace.workingDirectory,
-      model: this.binding.model,
       sandboxMode,
-      skipGitRepoCheck: workspace.skipGitRepoCheck || this.binding.skipGitRepoCheck === true,
-      modelReasoningEffort: this.binding.modelReasoningEffort,
-      networkAccessEnabled: this.binding.networkAccessEnabled,
-      webSearchMode: this.binding.webSearchMode,
-      approvalPolicy: this.binding.approvalPolicy ?? "never",
-      additionalDirectories: additionalDirectories.length > 0 ? additionalDirectories : undefined,
+    });
+    if (this.threadWorkspaceKey && this.threadWorkspaceKey !== workspaceKey) {
+      throw new Error("Codex thread options changed; invalidate the current runtime session before continuing");
+    }
+    if (this.threadWorkspaceKey && this.runtimeSessionId) return this.runtimeSessionId;
+    const config = threadConfig(this.binding, additionalDirectories);
+    const common = {
+      ...(this.binding.model ? { model: this.binding.model } : {}),
+      cwd: workspace.workingDirectory,
+      approvalPolicy: resolveApprovalPolicy(this.binding.approvalPolicy),
+      sandbox: sandboxMode,
+      ...(Object.keys(config).length > 0 ? { config } : {}),
     };
-    this.thread = this.runtimeSessionId
-      ? this.client.resumeThread(this.runtimeSessionId, options)
-      : this.client.startThread(options);
+    const response = this.runtimeSessionId
+      ? await this.client.resumeThread({ threadId: this.runtimeSessionId, ...common })
+      : await this.client.startThread(common);
     this.threadWorkspaceKey = workspaceKey;
-    this.threadSandboxMode = sandboxMode;
-    return this.thread;
+    await this.recordRuntimeSessionId(response.thread.id);
+    return response.thread.id;
+  }
+
+  private handleNotification(active: ActiveTurn, notification: CodexAppServerNotification): void {
+    if (notification.method === "$transport/exited") {
+      active.queue.push({
+        kind: "final",
+        text: stringField(notification.params.message) || "Codex app-server exited unexpectedly.",
+      });
+      active.queue.close();
+      return;
+    }
+    const turnId = notificationTurnId(notification);
+    if (turnId && turnId !== active.turnId) return;
+    if (notification.method === "turn/started") {
+      active.queue.push({
+        kind: "progress",
+        text: "Codex turn started.",
+        itemId: active.turnId ? `turn:${active.turnId}` : undefined,
+        state: "streaming",
+        data: { itemType: "turn" },
+      });
+      return;
+    }
+    if (notification.method === "item/started") {
+      const item = threadItem(notification.params.item);
+      const event = item ? formatStartedItem(item) : null;
+      if (event) active.queue.push(event);
+      return;
+    }
+    if (notification.method === "item/completed") {
+      const item = threadItem(notification.params.item);
+      if (!item) return;
+      if (item.type === "agentMessage") {
+        const text = stringField(item.text);
+        if (!text) return;
+        if (active.pendingAgentMessage !== null) {
+          active.queue.push({
+            kind: "assistant",
+            text: active.pendingAgentMessage.text,
+            itemId: active.pendingAgentMessage.itemId,
+            state: "complete",
+            data: { itemType: "agentMessage" },
+          });
+        }
+        active.pendingAgentMessage = { itemId: item.id, text };
+        return;
+      }
+      const event = formatCompletedItem(item);
+      if (event) active.queue.push(event);
+      return;
+    }
+    if (notification.method === "error") {
+      const error = recordField(notification.params.error);
+      const message = stringField(error?.message);
+      if (message && !active.seenErrors.has(message)) {
+        active.seenErrors.add(message);
+        active.queue.push({ kind: "final", text: `Codex stream error: ${message}` });
+      }
+      return;
+    }
+    if (notification.method === "turn/completed") {
+      const turn = recordField(notification.params.turn) as unknown as CodexAppServerTurn | null;
+      this.completeTurn(active, turn);
+    }
+  }
+
+  private completeTurn(active: ActiveTurn, turn: CodexAppServerTurn | null): void {
+    if (active.pendingAgentMessage !== null) {
+      active.queue.push({
+        kind: turn?.status === "completed" ? "final" : "assistant",
+        text: active.pendingAgentMessage.text,
+        itemId: active.pendingAgentMessage.itemId,
+        state: turn?.status === "completed" ? "complete" : turn?.status === "interrupted" ? "cancelled" : "error",
+        data: { itemType: "agentMessage" },
+      });
+      active.pendingAgentMessage = null;
+    }
+    if (active.turnId) {
+      active.queue.push({
+        kind: "progress",
+        text: turn?.status === "interrupted" ? "Codex turn interrupted." : "Codex turn completed.",
+        itemId: `turn:${active.turnId}`,
+        state: turn?.status === "interrupted" ? "cancelled" : turn?.status === "failed" ? "error" : "complete",
+        data: { itemType: "turn" },
+      });
+    }
+    const errorMessage = stringField(turn?.error?.message);
+    if (turn?.status === "failed" && errorMessage && !active.seenErrors.has(errorMessage)) {
+      active.seenErrors.add(errorMessage);
+      active.queue.push({ kind: "final", text: `Codex turn failed: ${errorMessage}` });
+    }
+    active.queue.close();
+  }
+
+  private async handleServerRequest(active: ActiveTurn, request: CodexAppServerRequest) {
+    if (stringField(request.params.threadId) !== active.threadId) return { handled: false } as const;
+    const turnId = stringField(request.params.turnId);
+    if (active.turnId && turnId && turnId !== active.turnId) return { handled: false } as const;
+    if (request.method === "item/commandExecution/requestApproval") {
+      const command = stringField(request.params.command) || "a command";
+      active.queue.push({
+        kind: "control",
+        text: `Codex requested approval for ${command}; this ClawChat runtime cannot answer app-server interactions yet, so the request was cancelled.`,
+        requiredControl: true,
+      });
+      return { handled: true, result: { decision: "cancel" } } as const;
+    }
+    if (request.method === "item/fileChange/requestApproval") {
+      active.queue.push({
+        kind: "control",
+        text: "Codex requested approval for file changes; this ClawChat runtime cannot answer app-server interactions yet, so the request was cancelled.",
+        requiredControl: true,
+      });
+      return { handled: true, result: { decision: "cancel" } } as const;
+    }
+    if (request.method === "item/tool/requestUserInput") {
+      active.queue.push({
+        kind: "control",
+        text: "Codex requested user input; interactive app-server responses will be added with the Connect Client, so this request received no answers.",
+        requiredControl: true,
+      });
+      return { handled: true, result: { answers: {} } } as const;
+    }
+    return { handled: false } as const;
   }
 
   private async recordRuntimeSessionId(runtimeSessionId: string): Promise<void> {
@@ -306,71 +598,238 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
   }
 }
 
+class RuntimeEventQueue implements AsyncIterable<RuntimeOutputEvent> {
+  private readonly values: RuntimeOutputEvent[] = [];
+  private readonly waiters: Array<(result: IteratorResult<RuntimeOutputEvent>) => void> = [];
+  private closed = false;
+
+  push(value: RuntimeOutputEvent): void {
+    if (this.closed) return;
+    const waiter = this.waiters.shift();
+    if (waiter) waiter({ value, done: false });
+    else this.values.push(value);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<RuntimeOutputEvent> {
+    return {
+      next: async () => {
+        const value = this.values.shift();
+        if (value) return { value, done: false };
+        if (this.closed) return { value: undefined, done: true };
+        return await new Promise<IteratorResult<RuntimeOutputEvent>>((resolve) => this.waiters.push(resolve));
+      },
+    };
+  }
+}
+
 function resolveSandboxMode(mode: string | undefined, configured: CodexSandboxMode | undefined): CodexSandboxMode {
   if (!mode) return configured ?? "workspace-write";
   if (SANDBOX_MODES.includes(mode as CodexSandboxMode)) return mode as CodexSandboxMode;
   throw new Error(`Codex mode must be one of: ${SANDBOX_MODES.join(", ")}`);
 }
 
-function formatStartedItem(item: ThreadItem): RuntimeOutputEvent | null {
-  if (item.type === "command_execution") return { kind: "progress", text: `Codex running command: ${item.command}` };
-  if (item.type === "mcp_tool_call")
-    return { kind: "progress", text: `Codex calling MCP tool: ${item.server}/${item.tool}` };
-  if (item.type === "web_search") return { kind: "progress", text: `Codex searching the web: ${item.query}` };
-  return null;
+function resolveApprovalPolicy(policy: CodexApprovalPolicy | undefined): "never" | "on-request" | "untrusted" {
+  return policy ?? "never";
 }
 
-function formatCompletedItem(item: ThreadItem): RuntimeOutputEvent | null {
-  if (item.type === "reasoning") return { kind: "reasoning", text: item.text };
-  if (item.type === "command_execution") {
-    const exit = item.exit_code === undefined ? "unknown" : String(item.exit_code);
-    const output = item.aggregated_output.trim();
-    return {
-      kind: "tool",
-      text: [
-        `Codex command (${item.status}, exit ${exit}):`,
-        `\`${item.command}\``,
-        ...(output ? ["```text", output, "```"] : []),
-      ].join("\n"),
-    };
-  }
-  if (item.type === "file_change") {
-    const changes = item.changes.map((change) => `- ${change.kind}: ${change.path}`);
-    return { kind: "tool", text: [`Codex file changes (${item.status}):`, ...changes].join("\n") };
-  }
-  if (item.type === "mcp_tool_call") {
-    const details = item.error
-      ? `error: ${item.error.message}`
-      : item.result === undefined
-        ? "no result"
-        : safeJson(item.result);
-    return {
-      kind: "tool",
-      text: [
-        `Codex MCP tool (${item.status}): ${item.server}/${item.tool}`,
-        `arguments: ${safeJson(item.arguments)}`,
-        details,
-      ].join("\n"),
-    };
-  }
-  if (item.type === "web_search") return { kind: "tool", text: `Codex web search: ${item.query}` };
-  if (item.type === "todo_list") {
+function threadConfig(binding: CodexAgentBindingConfig, additionalDirectories: string[]): Record<string, unknown> {
+  return {
+    ...(binding.modelReasoningEffort ? { model_reasoning_effort: binding.modelReasoningEffort } : {}),
+    ...(binding.webSearchMode ? { web_search: binding.webSearchMode } : {}),
+    ...(binding.networkAccessEnabled !== undefined || additionalDirectories.length > 0
+      ? {
+          sandbox_workspace_write: {
+            ...(binding.networkAccessEnabled !== undefined ? { network_access: binding.networkAccessEnabled } : {}),
+            ...(additionalDirectories.length > 0 ? { writable_roots: additionalDirectories } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+function sandboxPolicy(
+  workspace: RuntimeWorkspace,
+  mode: CodexSandboxMode,
+  networkAccess: boolean,
+  bindingDirectories: string[],
+): CodexSandboxPolicy {
+  if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+  if (mode === "read-only") return { type: "readOnly", networkAccess };
+  return {
+    type: "workspaceWrite",
+    writableRoots: [
+      ...new Set([workspace.workingDirectory, ...bindingDirectories, ...(workspace.additionalDirectories ?? [])]),
+    ],
+    networkAccess,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  };
+}
+
+function notificationThreadId(notification: CodexAppServerNotification): string {
+  return stringField(notification.params.threadId) || stringField(recordField(notification.params.thread)?.id);
+}
+
+function notificationTurnId(notification: CodexAppServerNotification): string {
+  return stringField(notification.params.turnId) || stringField(recordField(notification.params.turn)?.id);
+}
+
+function threadItem(value: unknown): CodexAppServerThreadItem | null {
+  const item = recordField(value);
+  if (!item || !stringField(item.type) || !stringField(item.id)) return null;
+  return item as CodexAppServerThreadItem;
+}
+
+function formatStartedItem(item: CodexAppServerThreadItem): RuntimeOutputEvent | null {
+  if (item.type === "commandExecution") {
     return {
       kind: "progress",
-      text: ["Codex tasks:", ...item.items.map((todo) => `- [${todo.completed ? "x" : " "}] ${todo.text}`)].join("\n"),
+      text: `Codex running command: ${stringField(item.command)}`,
+      itemId: item.id,
+      state: "streaming",
+      data: { itemType: item.type, command: stringField(item.command), status: "running" },
     };
   }
-  if (item.type === "error") return { kind: "final", text: `Codex item error: ${item.message}` };
+  if (item.type === "mcpToolCall") {
+    return {
+      kind: "progress",
+      text: `Codex calling MCP tool: ${stringField(item.server)}/${stringField(item.tool)}`,
+      itemId: item.id,
+      state: "streaming",
+      data: { itemType: item.type, server: stringField(item.server), tool: stringField(item.tool) },
+    };
+  }
+  if (item.type === "webSearch")
+    return {
+      kind: "progress",
+      text: `Codex searching the web: ${stringField(item.query)}`,
+      itemId: item.id,
+      state: "streaming",
+      data: { itemType: item.type, query: stringField(item.query) },
+    };
+  if (item.type === "fileChange")
+    return {
+      kind: "progress",
+      text: "Codex preparing file changes.",
+      itemId: item.id,
+      state: "streaming",
+      data: { itemType: item.type, status: "running" },
+    };
   return null;
 }
 
-function formatUsage(usage: {
-  input_tokens: number;
-  cached_input_tokens: number;
-  output_tokens: number;
-  reasoning_output_tokens: number;
-}): string {
-  return `Codex usage: ${usage.input_tokens} input, ${usage.cached_input_tokens} cached, ${usage.output_tokens} output, ${usage.reasoning_output_tokens} reasoning tokens.`;
+function formatCompletedItem(item: CodexAppServerThreadItem): RuntimeOutputEvent | null {
+  if (item.type === "reasoning") {
+    const summary = stringArray(item.summary);
+    const content = stringArray(item.content);
+    const text = [...summary, ...content].join("\n").trim();
+    return text ? { kind: "reasoning", text, itemId: item.id, state: "complete", data: { itemType: item.type } } : null;
+  }
+  if (item.type === "commandExecution") {
+    const output = stringField(item.aggregatedOutput);
+    return {
+      kind: "tool",
+      text: [
+        `Codex command (${stringField(item.status) || "unknown"}, exit ${numberField(item.exitCode) ?? "unknown"}):`,
+        `\`${stringField(item.command)}\``,
+        ...(output ? ["```text", output, "```"] : []),
+      ].join("\n"),
+      itemId: item.id,
+      state: stringField(item.status) === "failed" ? "error" : "complete",
+      data: {
+        itemType: item.type,
+        command: stringField(item.command),
+        output,
+        status: stringField(item.status),
+        exitCode: numberField(item.exitCode),
+      },
+    };
+  }
+  if (item.type === "fileChange") {
+    const changes = Array.isArray(item.changes)
+      ? item.changes.flatMap((value) => {
+          const change = recordField(value);
+          return change ? [`- ${stringField(change.kind) || "update"}: ${stringField(change.path)}`] : [];
+        })
+      : [];
+    return {
+      kind: "tool",
+      text: [`Codex file changes (${stringField(item.status) || "unknown"}):`, ...changes].join("\n"),
+      itemId: item.id,
+      state: stringField(item.status) === "failed" ? "error" : "complete",
+      data: { itemType: item.type, status: stringField(item.status), changes: item.changes },
+    };
+  }
+  if (item.type === "mcpToolCall") {
+    const error = recordField(item.error);
+    return {
+      kind: "tool",
+      text: [
+        `Codex MCP tool (${stringField(item.status) || "unknown"}): ${stringField(item.server)}/${stringField(item.tool)}`,
+        `arguments: ${safeJson(item.arguments)}`,
+        error ? `error: ${stringField(error.message)}` : safeJson(item.result),
+      ].join("\n"),
+      itemId: item.id,
+      state: error ? "error" : "complete",
+      data: {
+        itemType: item.type,
+        server: item.server,
+        tool: item.tool,
+        arguments: item.arguments,
+        result: item.result,
+      },
+    };
+  }
+  if (item.type === "dynamicToolCall") {
+    return {
+      kind: "tool",
+      text: `Codex tool (${stringField(item.status) || "unknown"}): ${stringField(item.namespace)}/${stringField(item.tool)}\n${safeJson(item.contentItems)}`,
+      itemId: item.id,
+      state: stringField(item.status) === "failed" ? "error" : "complete",
+      data: { itemType: item.type, namespace: item.namespace, tool: item.tool, contentItems: item.contentItems },
+    };
+  }
+  if (item.type === "webSearch")
+    return {
+      kind: "tool",
+      text: `Codex web search: ${stringField(item.query)}`,
+      itemId: item.id,
+      state: "complete",
+      data: { itemType: item.type, query: item.query },
+    };
+  if (item.type === "plan")
+    return {
+      kind: "progress",
+      text: stringField(item.text),
+      itemId: item.id,
+      state: "complete",
+      data: { itemType: item.type },
+    };
+  return null;
+}
+
+function recordField(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function numberField(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(stringField).filter(Boolean) : [];
 }
 
 function safeJson(value: unknown): string {

@@ -3,10 +3,11 @@ export const AGENT_TYPE = "clawbot" as const;
 
 export type OutputVisibility = "minimal" | "normal" | "full";
 export type ChatType = "direct" | "group";
+export type ClientHost = "127.0.0.1" | "0.0.0.0";
 
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
-export type CodexApprovalPolicy = "never" | "on-request" | "on-failure" | "untrusted";
+export type CodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type CodexWebSearchMode = "disabled" | "cached" | "live";
 
 export interface CodexAgentBindingConfig {
@@ -20,7 +21,6 @@ export interface CodexAgentBindingConfig {
   approvalPolicy?: CodexApprovalPolicy;
   webSearchMode?: CodexWebSearchMode;
   networkAccessEnabled?: boolean;
-  skipGitRepoCheck?: boolean;
   additionalDirectories?: string[];
 }
 
@@ -35,6 +35,8 @@ export interface ConnectConfig {
   agents: Record<string, AgentBindingConfig>;
   maxConcurrentTurns?: number;
   maxPendingPerChat?: number;
+  clientHost: ClientHost;
+  clientPort: number;
 }
 
 export interface ActivationCredentials {

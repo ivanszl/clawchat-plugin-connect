@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleChatCommand } from "../src/chat-commands";
 import { runConnectCli } from "../src/cli";
-import { defaultConfig, loadConfig, upsertAgentBinding } from "../src/config";
+import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import type { UpdateAccountProfileResult } from "../src/profile";
 import { ProjectCatalog } from "../src/projects";
 import type { NormalizedInboundMessage } from "../src/protocol";
@@ -102,6 +102,11 @@ describe("runConnectCli", () => {
     await expect(loadConfig(path)).resolves.toMatchObject({ stateDbPath });
     expect(output.stdout.join("")).toContain("Updated config:");
 
+    await expect(
+      runConnectCli(["config", "set", "clientHost", "0.0.0.0", "--config", path], output.deps),
+    ).resolves.toBe(0);
+    await expect(loadConfig(path)).resolves.toMatchObject({ clientHost: "0.0.0.0" });
+
     output.stdout.length = 0;
     await expect(runConnectCli(["config", "get", "stateDbPath", "--config", path], output.deps)).resolves.toBe(0);
     expect(output.stdout).toEqual([`${JSON.stringify(stateDbPath)}\n`]);
@@ -144,6 +149,30 @@ describe("runConnectCli", () => {
     await expect(runConnectCli(["run"], { ...output.deps, startConnectService })).resolves.toBe(1);
     expect(startConnectService).toHaveBeenCalledTimes(1);
     expect(output.stdout.join("")).not.toContain("run [--config");
+  });
+
+  it("opens the fixed loopback Connect Client URL", async () => {
+    const path = await tempConfig();
+    const config = defaultConfig();
+    config.stateDbPath = `${path}.sqlite`;
+    config.clientPort = 49_123;
+    await saveConfig(config, path);
+    const output = io();
+    const openUrl = mock(async (_url: string) => undefined);
+
+    await expect(runConnectCli(["web", "--config", path], { ...output.deps, openUrl })).resolves.toBe(0);
+    expect(openUrl).toHaveBeenCalledTimes(1);
+    expect(openUrl).toHaveBeenCalledWith("http://127.0.0.1:49123/");
+    expect(output.stdout.join("")).toContain("Connect Client URL: http://127.0.0.1:49123/");
+
+    await expect(runConnectCli(["web", "--no-open", "--config", path], { ...output.deps, openUrl })).resolves.toBe(0);
+    expect(openUrl).toHaveBeenCalledTimes(1);
+
+    config.clientHost = "0.0.0.0";
+    await saveConfig(config, path);
+    output.stdout.length = 0;
+    await expect(runConnectCli(["web", "--no-open", "--config", path], { ...output.deps, openUrl })).resolves.toBe(0);
+    expect(output.stdout.join("")).toContain("LAN Host mode is enabled on 0.0.0.0:49123");
   });
 
   it("manages one native background service for the complete Connect installation", async () => {

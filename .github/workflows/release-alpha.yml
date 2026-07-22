@@ -43,14 +43,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          bun run build:web
           mkdir -p build/release build/bin
           while read -r target platform architecture; do
             output="build/bin/${platform}-${architecture}/clawchat-connect"
             mkdir -p "$(dirname "${output}")"
             bun build ./src/bin.ts --compile --minify --target="${target}" --outfile="${output}"
             chmod 755 "${output}"
+            cp -R dist/client "$(dirname "${output}")/clawchat-connect-client"
             tar -C "$(dirname "${output}")" -czf \
-              "build/release/clawchat-connect-${platform}-${architecture}.tar.gz" clawchat-connect
+              "build/release/clawchat-connect-${platform}-${architecture}.tar.gz" \
+              clawchat-connect clawchat-connect-client
           done <<'TARGETS'
           bun-darwin-arm64 darwin arm64
           bun-darwin-x64 darwin x64

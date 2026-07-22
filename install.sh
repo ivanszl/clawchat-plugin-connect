@@ -59,8 +59,9 @@ fi
 
 [ "$actual_checksum" = "$expected_checksum" ] || fail "checksum verification failed for $asset"
 
-tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" clawchat-connect
+tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" clawchat-connect clawchat-connect-client
 [ -f "$tmp_dir/clawchat-connect" ] || fail "release archive does not contain clawchat-connect"
+[ -f "$tmp_dir/clawchat-connect-client/index.html" ] || fail "release archive does not contain Connect Client"
 
 mkdir -p "$install_dir"
 if command -v install >/dev/null 2>&1; then
@@ -69,10 +70,13 @@ else
   cp "$tmp_dir/clawchat-connect" "$install_dir/clawchat-connect"
   chmod 755 "$install_dir/clawchat-connect"
 fi
+mkdir -p "$install_dir/clawchat-connect-client"
+cp -R "$tmp_dir/clawchat-connect-client/." "$install_dir/clawchat-connect-client/"
 
 "$install_dir/clawchat-connect" --help >/dev/null
 
 printf 'Installed clawchat-connect to %s/clawchat-connect\n' "$install_dir"
+printf 'Installed Connect Client assets to %s/clawchat-connect-client\n' "$install_dir"
 case ":${PATH}:" in
   *":${install_dir}:"*) ;;
   *) printf 'Add %s to PATH before running clawchat-connect.\n' "$install_dir" ;;

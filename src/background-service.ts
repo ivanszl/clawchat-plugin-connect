@@ -73,9 +73,14 @@ export async function manageBackgroundService(
 }
 
 export function currentConnectCommand(): string[] {
-  const executable = resolve(process.execPath);
-  const entrypoint = resolve(Bun.main);
-  return executable === entrypoint ? [executable] : [executable, entrypoint];
+  return connectCommandForProcess(process.execPath, Bun.main);
+}
+
+export function connectCommandForProcess(executablePath: string, entrypointPath: string): string[] {
+  const executable = resolve(executablePath);
+  const entrypoint = resolve(entrypointPath);
+  const isBunCompiledEntrypoint = entrypoint === "/$bunfs" || entrypoint.startsWith("/$bunfs/");
+  return executable === entrypoint || isBunCompiledEntrypoint ? [executable] : [executable, entrypoint];
 }
 
 function createServiceDefinition(request: BackgroundServiceRequest, homeDirectory: string): ServiceDefinition {

@@ -1,0 +1,163 @@
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { startClientInterface } from "../../src/client-interface/server";
+import { TranscriptProjection } from "../../src/client-interface/transcript-projection";
+import { defaultConfig } from "../../src/config";
+import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
+import type { RuntimeTranscriptEntry } from "../../src/runtime/types";
+import { createStateStore } from "../../src/state";
+
+const directory = await mkdtemp(join(tmpdir(), "connect-client-preview-"));
+const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ"];
+const stateStore = createStateStore({
+  dbPath: join(directory, "state.sqlite"),
+  sessionRefFactory: () => refs.shift() ?? "23456789",
+});
+await stateStore.insertProject({ projectId: "connect", name: "clawchat-plugin-connect", rootPath: process.cwd() });
+await stateStore.upsertRuntimeSession({
+  chatId: "chat-project",
+  sessionId: "session-project",
+  agentId: "codex",
+  runtimeSessionId: "thread-project",
+  projectId: "connect",
+  name: "App Server 与 Web Client",
+  hasMessages: true,
+  isCurrent: true,
+});
+await stateStore.upsertRuntimeSession({
+  chatId: "chat-local",
+  sessionId: "session-local",
+  agentId: "codex",
+  runtimeSessionId: "thread-local",
+  name: "Non-Project scratch",
+  hasMessages: true,
+  isCurrent: true,
+});
+await stateStore.setRuntimeConnectionStatus("codex", true, null);
+
+const transcripts = new Map<string, RuntimeTranscriptEntry[]>([
+  [
+    "thread-project",
+    [
+      {
+        id: "u1",
+        kind: "user",
+        text: "ClawChat direct message from Colin:\n实现 app-server 后再构建 Web。",
+        state: "complete",
+      },
+      {
+        id: "r1",
+        kind: "reasoning",
+        text: "先固定协议边界，再把浏览器限制在 Connect Client Interface。",
+        state: "complete",
+      },
+      {
+        id: "p1",
+        kind: "plan",
+        text: "1. 迁移 app-server\n2. 建立 Client Contract\n3. 构建 React SPA\n4. 联调与验证",
+        state: "complete",
+      },
+      {
+        id: "c1",
+        kind: "command",
+        text: "94 tests passed",
+        state: "complete",
+        data: { command: "bun test", status: "completed", exitCode: 0 },
+      },
+      {
+        id: "f1",
+        kind: "file-change",
+        text: "Web files created",
+        state: "complete",
+        data: {
+          status: "completed",
+          changes: [{ path: "web/src/main.tsx", kind: "add", diff: "+ createRoot(root).render(<ConnectClient />);" }],
+        },
+      },
+      {
+        id: "a1",
+        kind: "assistant",
+        text: "App Server 已成为 Codex 的唯一生产协议；Web 只连接 Connect，并可从原生 thread 重建完整消息。",
+        state: "complete",
+      },
+    ],
+  ],
+  [
+    "thread-local",
+    [
+      { id: "u2", kind: "user", text: "检查一个 Non-Project Session。", state: "complete" },
+      { id: "a2", kind: "assistant", text: "这个 Session 会直接显示在导航中，不套 Project 节点。", state: "complete" },
+    ],
+  ],
+  [
+    "thread-unmanaged",
+    [
+      { id: "u3", kind: "user", text: "来自 Codex TUI 的现有 thread。", state: "complete" },
+      { id: "a3", kind: "assistant", text: "网页可以发现并打开它，首次发送时由 Connect 采用。", state: "complete" },
+    ],
+  ],
+]);
+
+const runtimeAdapters = new RuntimeAdapterRegistry([
+  {
+    kind: "codex",
+    modes: ["read-only", "workspace-write", "danger-full-access"],
+    discoverAllThreads: async () => [
+      {
+        runtimeThreadId: "thread-project",
+        name: "App Server 与 Web Client",
+        updatedAt: Date.now(),
+        workingDirectory: process.cwd(),
+      },
+      { runtimeThreadId: "thread-local", name: "Non-Project scratch", updatedAt: Date.now() - 1_000 },
+      {
+        runtimeThreadId: "thread-unmanaged",
+        name: "Codex TUI existing thread",
+        updatedAt: Date.now() - 2_000,
+        workingDirectory: process.cwd(),
+      },
+    ],
+    readTranscript: async (_binding, runtimeThreadId) => transcripts.get(runtimeThreadId) ?? [],
+    start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+  },
+]);
+const config = defaultConfig();
+config.clientPort = 47_893;
+config.stateDbPath = stateStore.dbPath;
+config.defaultAgent = "codex";
+config.agents = { codex: { kind: "codex", displayName: "Codex · Local" } };
+const transcriptProjection = new TranscriptProjection({ stateStore, config, runtimeAdapters });
+const runtime = {
+  agentId: "codex",
+  websocketUrl: config.websocketUrl,
+  deviceId: "preview",
+  close: async () => undefined,
+  enqueueClientTurn: async (sessionRef: string, prompt: string) => {
+    await transcriptProjection.appendUserMessage({ sessionRef, text: prompt, origin: "client", author: "You" });
+    await transcriptProjection.appendRuntimeOutput(sessionRef, {
+      kind: "final",
+      text: "这是 Preview Runtime 的本地回复；它不会发送到 ClawChat。",
+      itemId: `preview:${crypto.randomUUID()}`,
+    });
+    return { sessionRef, turnId: crypto.randomUUID() };
+  },
+  cancelClientTurn: async () => true,
+};
+const clientInterface = await startClientInterface({
+  config,
+  configPath: join(directory, "config.json"),
+  stateStore,
+  runtimeAdapters,
+  transcriptProjection,
+  runtimes: [runtime],
+  assetsPath: join(process.cwd(), "dist/client"),
+});
+process.stdout.write(`${clientInterface.origin}/\n`);
+
+await new Promise<void>((resolve) => {
+  process.once("SIGINT", resolve);
+  process.once("SIGTERM", resolve);
+});
+await clientInterface.stop();
+await stateStore.close();

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { TranscriptProjection } from "../client-interface/transcript-projection";
 import { defaultConfigPath, getAgentBinding } from "../config";
 import { buildReplyTextMessagePayload } from "../message-mapper";
 import {
@@ -25,6 +26,7 @@ export interface ConnectRuntimeOptions {
   wsClient: ConnectWsClient;
   projects?: ProjectCatalog;
   runtimeAdapters: RuntimeAdapterRegistry;
+  transcriptProjection?: TranscriptProjection;
 }
 
 export class ConnectRuntime {
@@ -47,14 +49,19 @@ export class ConnectRuntime {
 
   async handleInboundMessage(message: NormalizedInboundMessage, beforeTurn?: () => Promise<boolean>): Promise<void> {
     try {
-      await this.queue.enqueue(message.chatId, async () => {
+      const queuedSession = await this.options.stateStore.getCurrentRuntimeSession(
+        message.chatId,
+        this.options.agentId,
+      );
+      const queueKey = queuedSession ? sessionKey(queuedSession.chatId, queuedSession.sessionId) : message.chatId;
+      await this.queue.enqueue(queueKey, async () => {
         if (await beforeTurn?.()) return;
-        this.activeTurnChats.add(message.chatId);
+        this.activeTurnChats.add(queueKey);
         await this.recordRuntimeStatus(this.queue.stats());
         try {
           await this.runTurn(message);
         } finally {
-          this.activeTurnChats.delete(message.chatId);
+          this.activeTurnChats.delete(queueKey);
           await this.recordRuntimeStatus(this.queue.stats());
         }
       });
@@ -66,10 +73,46 @@ export class ConnectRuntime {
     }
   }
 
+  async enqueueClientTurn(sessionRef: string, prompt: string): Promise<{ turnId: string; sessionRef: string }> {
+    const text = prompt.trim();
+    if (!text) throw new Error("prompt is required");
+    const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
+    if (!current || current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
+    const turnId = randomUUID();
+    const key = sessionKey(current.chatId, current.sessionId);
+    void this.queue
+      .enqueue(key, async () => {
+        this.activeTurnChats.add(key);
+        await this.recordRuntimeStatus(this.queue.stats());
+        try {
+          await this.runClientTurn(current, text, turnId);
+        } finally {
+          this.activeTurnChats.delete(key);
+          await this.recordRuntimeStatus(this.queue.stats());
+        }
+      })
+      .catch(async (error) => {
+        await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, {
+          kind: "final",
+          text: `Connect Client turn failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      });
+    return { turnId, sessionRef: current.sessionRef };
+  }
+
+  async cancelClientTurn(sessionRef: string): Promise<boolean> {
+    const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
+    if (!current || current.agentId !== this.options.agentId) return false;
+    const session = this.sessions.get(sessionKey(current.chatId, current.sessionId));
+    return (await session?.cancel?.()) ?? false;
+  }
+
   async dispose(): Promise<void> {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
-    for (const session of sessions) await session.close();
+    const results = await Promise.allSettled(sessions.map(async (session) => await session.close()));
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failure) throw failure.reason;
   }
 
   async closeSession(chatId: string): Promise<boolean> {
@@ -155,6 +198,13 @@ export class ConnectRuntime {
     });
     const policy = policyForOutputVisibility(mode);
     const buffered: MaterializedRuntimeReply[] = [];
+    await this.options.transcriptProjection?.appendUserMessage({
+      sessionRef: current.sessionRef,
+      text: message.text,
+      origin: "clawchat",
+      author: message.sender.nick_name || message.sender.id,
+      id: message.messageId || undefined,
+    });
     for await (const event of session.prompt({
       prompt: renderPrompt(message),
       workspace,
@@ -167,12 +217,45 @@ export class ConnectRuntime {
       },
       outputPolicy: { mode: policy.mode, allowedKinds: allowedRuntimeKinds(policy) },
     })) {
+      await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, event);
       const reply = materializeRuntimeOutput(event, policy);
       if (!reply) continue;
       if (reply.requiredControl) await this.sendReply(message, reply, activeAgentId);
       else buffered.push(reply);
     }
     for (const reply of buffered) await this.sendReply(message, reply, activeAgentId);
+  }
+
+  private async runClientTurn(current: RuntimeSessionRecord, prompt: string, turnId: string): Promise<void> {
+    const activeAgentId = current.agentId || this.options.agentId;
+    const workspace = await this.projects.resolveWorkspace(current);
+    const session = await this.sessionForChat(current, activeAgentId);
+    await this.options.transcriptProjection?.appendUserMessage({
+      sessionRef: current.sessionRef,
+      text: prompt,
+      origin: "client",
+      author: "You",
+      id: `turn_${turnId}_user`,
+    });
+    for await (const event of session.prompt({
+      prompt,
+      workspace,
+      mode: current.mode ?? undefined,
+      metadata: {
+        origin: "client",
+        turnId,
+        chatId: current.chatId,
+        sessionId: current.sessionId,
+        agentId: activeAgentId,
+        projectId: current.projectId ?? "none",
+      },
+      outputPolicy: {
+        mode: "client-full",
+        allowedKinds: ["final", "assistant", "tool", "progress", "reasoning", "control"],
+      },
+    })) {
+      await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, event);
+    }
   }
 
   private async recordRuntimeStatus(stats: QueueStats): Promise<void> {

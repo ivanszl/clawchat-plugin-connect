@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import type {
   AgentBindingConfig,
+  ClientHost,
   CodexAgentBindingConfig,
   CodexApprovalPolicy,
   CodexReasoningEffort,
@@ -15,11 +16,14 @@ import type {
 
 export const DEFAULT_BASE_URL = "https://app.clawling.com" as const;
 export const DEFAULT_WEBSOCKET_URL = "wss://app.clawling.com/ws" as const;
+export const DEFAULT_CLIENT_PORT = 47_823 as const;
+export const DEFAULT_CLIENT_HOST = "127.0.0.1" as const;
 
 const CODEX_SANDBOX_MODES = new Set<CodexSandboxMode>(["read-only", "workspace-write", "danger-full-access"]);
 const CODEX_REASONING_EFFORTS = new Set<CodexReasoningEffort>(["minimal", "low", "medium", "high", "xhigh"]);
-const CODEX_APPROVAL_POLICIES = new Set<CodexApprovalPolicy>(["never", "on-request", "on-failure", "untrusted"]);
+const CODEX_APPROVAL_POLICIES = new Set<CodexApprovalPolicy>(["never", "on-request", "untrusted"]);
 const CODEX_WEB_SEARCH_MODES = new Set<CodexWebSearchMode>(["disabled", "cached", "live"]);
+const CLIENT_HOSTS = new Set<ClientHost>(["127.0.0.1", "0.0.0.0"]);
 
 export function defaultDataDir(): string {
   return join(homedir(), ".clawchat-connect");
@@ -65,7 +69,7 @@ function normalizeAgentBinding(agentId: string, raw: unknown): AgentBindingConfi
 }
 
 function normalizeCodexAgentBinding(record: Record<string, unknown>): CodexAgentBindingConfig {
-  for (const field of ["command", "args", "processCwd", "authMethod", "mode"]) {
+  for (const field of ["command", "args", "processCwd", "authMethod", "mode", "skipGitRepoCheck"]) {
     if (field in record) throw new Error(`legacy agent config field is not supported: ${field}`);
   }
   const env = readEnv(record.env);
@@ -79,7 +83,6 @@ function normalizeCodexAgentBinding(record: Record<string, unknown>): CodexAgent
   const approvalPolicy = readOptionalEnum(record.approvalPolicy, CODEX_APPROVAL_POLICIES, "approvalPolicy");
   const webSearchMode = readOptionalEnum(record.webSearchMode, CODEX_WEB_SEARCH_MODES, "webSearchMode");
   const networkAccessEnabled = readOptionalBoolean(record.networkAccessEnabled, "networkAccessEnabled");
-  const skipGitRepoCheck = readOptionalBoolean(record.skipGitRepoCheck, "skipGitRepoCheck");
   return {
     kind: "codex",
     ...(readString(record.codexPathOverride) ? { codexPathOverride: readString(record.codexPathOverride) } : {}),
@@ -91,7 +94,6 @@ function normalizeCodexAgentBinding(record: Record<string, unknown>): CodexAgent
     ...(approvalPolicy ? { approvalPolicy } : {}),
     ...(webSearchMode ? { webSearchMode } : {}),
     ...(networkAccessEnabled !== undefined ? { networkAccessEnabled } : {}),
-    ...(skipGitRepoCheck !== undefined ? { skipGitRepoCheck } : {}),
     ...(additionalDirectories ? { additionalDirectories } : {}),
   };
 }
@@ -133,6 +135,8 @@ export function defaultConfig(): ConnectConfig {
     defaultAgent: null,
     outputVisibility: "normal",
     agents: {},
+    clientHost: DEFAULT_CLIENT_HOST,
+    clientPort: DEFAULT_CLIENT_PORT,
   };
 }
 
@@ -148,6 +152,16 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
     const id = agentId.trim();
     if (id) agents[id] = normalizeAgentBinding(id, value);
   }
+  const ownersByKind = new Map<string, string>();
+  for (const [agentId, binding] of Object.entries(agents)) {
+    const existing = ownersByKind.get(binding.kind);
+    if (existing) {
+      throw new Error(
+        `Runtime kind ${binding.kind} may be configured only once (Agent Bindings: ${existing}, ${agentId})`,
+      );
+    }
+    ownersByKind.set(binding.kind, agentId);
+  }
   const firstAgent = Object.keys(agents)[0] ?? null;
   const requestedDefault = readString(record.defaultAgent) || null;
   const defaultAgent = requestedDefault && agents[requestedDefault] ? requestedDefault : firstAgent;
@@ -158,6 +172,14 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
     defaultAgent,
     outputVisibility: isOutputVisibility(record.outputVisibility) ? record.outputVisibility : fallback.outputVisibility,
     agents,
+    clientHost: readOptionalEnum(record.clientHost, CLIENT_HOSTS, "clientHost") ?? fallback.clientHost,
+    clientPort:
+      typeof record.clientPort === "number" &&
+      Number.isInteger(record.clientPort) &&
+      record.clientPort >= 1_024 &&
+      record.clientPort <= 65_535
+        ? record.clientPort
+        : fallback.clientPort,
     ...(typeof record.maxConcurrentTurns === "number" && Number.isFinite(record.maxConcurrentTurns)
       ? { maxConcurrentTurns: Math.max(1, Math.trunc(record.maxConcurrentTurns)) }
       : {}),
@@ -195,7 +217,9 @@ export function getAgentBinding(config: ConnectConfig, agentId = config.defaultA
 export function upsertAgentBinding(config: ConnectConfig, agentId: string, binding: AgentBindingConfig): ConnectConfig {
   const id = agentId.trim();
   if (!id) throw new Error("agent id is required");
-  config.agents[id] = normalizeAgentBinding(id, binding);
-  if (!config.defaultAgent) config.defaultAgent = id;
-  return normalizeConfig(config);
+  return normalizeConfig({
+    ...config,
+    defaultAgent: config.defaultAgent || id,
+    agents: { ...config.agents, [id]: normalizeAgentBinding(id, binding) },
+  });
 }

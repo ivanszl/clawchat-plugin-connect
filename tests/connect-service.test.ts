@@ -3,10 +3,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindingRuntimeHandle } from "../src/binding-runtime";
-import { defaultConfig, upsertAgentBinding } from "../src/config";
+import { defaultConfig } from "../src/config";
 import { startConnectService } from "../src/connect-service";
+import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { createStateStore } from "../src/state";
-import type { ActivationCredentials } from "../src/types";
+import type { ActivationCredentials, AgentBindingConfig, ConnectConfig } from "../src/types";
 
 function activation(agentId: string): ActivationCredentials {
   return {
@@ -26,9 +27,7 @@ describe("Connect Service", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     await stateStore.upsertActivation(activation("codex-work"));
     await stateStore.upsertActivation(activation("codex-review"));
-    let config = upsertAgentBinding(defaultConfig(), "codex-work", { kind: "codex" });
-    config = upsertAgentBinding(config, "codex-review", { kind: "codex" });
-    config = upsertAgentBinding(config, "not-activated", { kind: "codex" });
+    const config = serviceConfig(["codex-work", "codex-review", "not-activated"]);
     config.stateDbPath = stateStore.dbPath;
     const closed: string[] = [];
     const startBindingRuntime = mock(
@@ -41,6 +40,20 @@ describe("Connect Service", () => {
         },
       }),
     );
+    const stopClientInterface = mock(async () => undefined);
+    const startClientInterface = mock(async () => ({ origin: "http://127.0.0.1:47823", stop: stopClientInterface }));
+    const closeRuntimeAdapter = mock(async () => undefined);
+    const createRuntimeAdapterRegistry = () =>
+      new RuntimeAdapterRegistry([
+        {
+          kind: "codex",
+          modes: ["read-only"],
+          start: async () => {
+            throw new Error("not used by this service lifecycle test");
+          },
+          close: closeRuntimeAdapter,
+        },
+      ]);
 
     const result = await startConnectService(
       {
@@ -50,13 +63,16 @@ describe("Connect Service", () => {
         waitUntilShutdown: async () => undefined,
         writeOutput: () => undefined,
       },
-      { startBindingRuntime },
+      { startBindingRuntime, startClientInterface, createRuntimeAdapterRegistry },
     );
 
     expect(result.startedAgentIds).toEqual(["codex-work", "codex-review"]);
     expect(startBindingRuntime).toHaveBeenCalledTimes(2);
     expect(startBindingRuntime.mock.calls.map(([options]) => options.agentId)).toEqual(["codex-work", "codex-review"]);
     expect(closed).toEqual(["codex-work", "codex-review"]);
+    expect(startClientInterface).toHaveBeenCalledTimes(1);
+    expect(stopClientInterface).toHaveBeenCalledTimes(1);
+    expect(closeRuntimeAdapter).toHaveBeenCalledTimes(1);
   });
 
   it("keeps healthy Bindings running when another activated Binding fails to start", async () => {
@@ -64,8 +80,7 @@ describe("Connect Service", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     await stateStore.upsertActivation(activation("healthy"));
     await stateStore.upsertActivation(activation("broken"));
-    let config = upsertAgentBinding(defaultConfig(), "healthy", { kind: "codex" });
-    config = upsertAgentBinding(config, "broken", { kind: "codex" });
+    const config = serviceConfig(["healthy", "broken"]);
     config.stateDbPath = stateStore.dbPath;
     const errors: string[] = [];
     const startBindingRuntime = mock(async (options): Promise<BindingRuntimeHandle> => {
@@ -77,6 +92,10 @@ describe("Connect Service", () => {
         close: async () => undefined,
       };
     });
+    const startClientInterface = mock(async () => ({
+      origin: "http://127.0.0.1:47823",
+      stop: async () => undefined,
+    }));
 
     await expect(
       startConnectService(
@@ -88,9 +107,21 @@ describe("Connect Service", () => {
           writeOutput: () => undefined,
           writeError: (message) => errors.push(message),
         },
-        { startBindingRuntime },
+        { startBindingRuntime, startClientInterface },
       ),
     ).resolves.toEqual({ startedAgentIds: ["healthy"] });
     expect(errors.join("")).toContain("broken: invalid credentials");
   });
 });
+
+function serviceConfig(agentIds: string[]): ConnectConfig {
+  const config = defaultConfig();
+  config.defaultAgent = agentIds[0] ?? null;
+  config.agents = Object.fromEntries(
+    agentIds.map((agentId, index) => [
+      agentId,
+      { kind: index === 0 ? "codex" : `future-runtime-${index}` } as unknown as AgentBindingConfig,
+    ]),
+  );
+  return config;
+}

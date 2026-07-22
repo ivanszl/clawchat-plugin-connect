@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ConnectStateStore } from "./state";
 import type { ProjectRecord, RuntimeSessionRecord, RuntimeWorkspace } from "./types";
 
@@ -62,6 +62,30 @@ export class ProjectCatalog {
     return await this.stateStore.listProjects();
   }
 
+  async ensureDiscoveredWorkspace(rootPath: string): Promise<ProjectRecord | null> {
+    if (this.isIsolatedWorkspace(rootPath)) return null;
+    const canonicalRoot = await existingDirectory(rootPath, "Runtime Thread workspace");
+    const projects = await this.stateStore.listProjects();
+    const existing = projects.find((project) => project.rootPath === canonicalRoot);
+    if (existing) return existing;
+    const baseName = discoveredProjectName(basename(canonicalRoot));
+    const conflictingName = projects.some((project) => project.name.toLowerCase() === baseName.toLowerCase());
+    const name = conflictingName
+      ? `${baseName}-${createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 8)}`
+      : baseName;
+    return await this.stateStore.insertProject({
+      projectId: randomUUID(),
+      name,
+      rootPath: canonicalRoot,
+      additionalDirectories: [],
+    });
+  }
+
+  isIsolatedWorkspace(path: string): boolean {
+    const nestedPath = relative(resolve(this.workspaceRoot), resolve(path));
+    return nestedPath === "" || (!nestedPath.startsWith("..") && !isAbsolute(nestedPath));
+  }
+
   async remove(reference: string): Promise<RemoveProjectResult> {
     const project = await this.require(reference);
     const referencedSessions = await this.stateStore.countRuntimeSessionsForProject(project.projectId);
@@ -117,6 +141,11 @@ function normalizeProjectName(value: string): string {
   if (/\s/u.test(name)) throw new Error("project name cannot contain whitespace");
   if (name.length > 100) throw new Error("project name cannot exceed 100 characters");
   return name;
+}
+
+function discoveredProjectName(value: string): string {
+  const normalized = value.trim().replace(/\s+/gu, "-").slice(0, 100);
+  return normalized || "workspace";
 }
 
 async function existingDirectory(value: string, label: string): Promise<string> {

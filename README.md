@@ -3,7 +3,8 @@
 `@clawling/clawchat-plugin-connect` binds ClawChat identities and conversations to local coding agents. Prebuilt releases run as standalone executables; Bun 1.3 or newer is only required for development from source.
 
 - Connect manages multiple independent Agent Bindings; the first release provides a Codex Runtime Adapter.
-- Codex runs directly through the official `@openai/codex-sdk`.
+- Codex runs through one Connect-owned `codex app-server` process shared by every Codex Session.
+- Connect Client is a local React application that talks only to Connect Service, never directly to a local agent; it uses loopback by default and has an explicit trusted-LAN Host mode.
 - Connect Sessions may use a reusable Connect-managed Project or an isolated Non-Project workspace.
 - Connect does not expose tools or inject a bundled MCP server into Codex.
 
@@ -24,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/ma
   CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.3
 ```
 
-The installer downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs `clawchat-connect` to `~/.local/bin` by default. Add that directory to `PATH` if necessary. Connect expects the coding-agent executable selected by its Runtime Adapter to already be installed and available; it does not install coding agents.
+The installer downloads the matching archive from GitHub Releases, verifies its SHA-256 checksum, and installs `clawchat-connect` plus its prebuilt `clawchat-connect-client` assets to `~/.local/bin` by default. Add that directory to `PATH` if necessary. Connect expects the coding-agent executable selected by its Runtime Adapter to already be installed and available; it does not install coding agents.
 
 Developers can instead install the Bun package directly:
 
@@ -50,7 +51,7 @@ clawchat-connect profile update --agent work --nickname Luna
 clawchat-connect profile update --agent work --avatar-url https://example.com/luna.png --bio "Local coding agent"
 ```
 
-The Codex Runtime Adapter starts the user's existing Codex executable from `PATH` and uses normal Codex authentication and Session storage. To select a specific Codex executable:
+The Codex Runtime Adapter starts the user's existing Codex executable from `PATH` and uses normal Codex authentication and Session storage. This release requires exactly `codex-cli 0.145.0`; Connect checks the version before opening the ClawChat connection and does not fall back to the SDK or older protocols. To select a specific Codex executable:
 
 ```bash
 clawchat-connect agent add work --kind codex --codex-path /absolute/path/to/codex
@@ -75,7 +76,7 @@ Codex configuration can also be edited in `~/.clawchat-connect/config.json`:
 }
 ```
 
-Supported Codex options include `codexPathOverride`, `env`, `model`, `sandboxMode`, `modelReasoningEffort`, `approvalPolicy`, `webSearchMode`, `networkAccessEnabled`, `skipGitRepoCheck`, and `additionalDirectories`.
+Supported Codex options include `codexPathOverride`, `env`, `model`, `sandboxMode`, `modelReasoningEffort`, `approvalPolicy`, `webSearchMode`, `networkAccessEnabled`, and `additionalDirectories`. App-server accepts non-Git working directories directly, so the former SDK-only `skipGitRepoCheck` option is not supported.
 
 The first release registers only `kind: "codex"`. Connect's Agent Binding model and runtime seam are not Codex-specific; later releases can register additional Runtime Adapters. Legacy agent shapes and unavailable runtime kinds are rejected rather than inferred or migrated.
 
@@ -102,6 +103,35 @@ clawchat-connect service logs --lines 250 --follow
 
 One Connect installation has exactly one service definition; Agent Bindings and Runtime Adapters never own system services. `stop` stops the current background process but retains its installed login configuration; `start` loads it again. Logs are stored below `~/.clawchat-connect/logs/` on macOS and in the user journal on Linux.
 
+## Connect Client Web
+
+The background service also serves Connect Client directly on `127.0.0.1` (port `47823` by default):
+
+```bash
+clawchat-connect web
+clawchat-connect web --no-open
+```
+
+Both commands use the local URL `http://127.0.0.1:47823/`; the first opens the browser and `--no-open` only prints it. There is no local login, launch token, or browser session. In the default loopback mode, the Client Interface enforces the exact loopback Host. Every mode requires mutation requests to use the request Host's exact same Origin, compatible Fetch Metadata, and a production CSP that forbids inline scripts and style elements. Astryx's runtime layout primitives require style attributes, so that single CSP surface is allowed explicitly while script attributes remain blocked.
+
+To expose Connect Client to trusted devices on the same LAN, explicitly enable wildcard IPv4 Host mode and restart the service:
+
+```bash
+clawchat-connect config set clientHost 0.0.0.0
+clawchat-connect service restart
+clawchat-connect web --no-open
+```
+
+Then open `http://<this-computer-LAN-IP>:47823/` from another device. LAN Host mode has no authentication or TLS: anyone who can reach that port can read Sessions and submit local agent turns. Use it only on a trusted private network, do not forward the port to the internet, and return to loopback with `clawchat-connect config set clientHost 127.0.0.1` when remote access is no longer needed. Host mode accepts only IPv4-literal request Hosts and rejects hostname-based DNS rebinding.
+
+Connect Client discovers all Sessions and native Runtime Threads available to every configured Agent Binding. Project Sessions are grouped below collapsible Project nodes; Non-Project Sessions remain direct navigation items. Opening a native thread reads its persisted transcript through the Runtime Adapter. For Codex, `thread/read` is the context and history authority while SQLite holds the Connect-owned presentation projection, provenance, cursors, and reconnect stream.
+
+Web-originated messages are local to Connect: they run on the selected Session's existing Runtime Thread and are never published to ClawChat. ClawChat-originated messages and agent output are projected into the Client in real time. Connect serializes both origins on the same Session queue so two surfaces cannot overlap turns on one Runtime Thread.
+
+The browser has no app-server, filesystem, process, or local-agent access. It uses versioned same-origin HTTP snapshots and commands plus one Server-Sent Events stream per tab. Settings deliberately expose only safe presentation/runtime preferences; sandbox, approval, executable, environment, and directory trust remain local configuration.
+
+`clientHost` accepts only `127.0.0.1` and `0.0.0.0`. To use a different port, set `clientPort` in `~/.clawchat-connect/config.json` and restart the service.
+
 ## Projects and Sessions
 
 A Project is a named, reusable Connect workspace. Projects are global and may be used by Sessions from any Agent Binding.
@@ -127,7 +157,7 @@ Rules:
 - `/switch <name-or-ref>` returns to a Connect Session or explicitly imports a discovered Runtime Thread.
 - A Project can only be removed while no Session or pending Session selection references it.
 
-A Non-Project Session works immediately. Connect creates a deterministic isolated workspace below `~/.clawchat-connect/workspaces/`; it never falls back to the process working directory. Registered Project roots are explicit trusted workspaces, so Connect enables Codex's Git-repository-check bypass for both Project and Non-Project Sessions.
+A Non-Project Session works immediately. Connect creates a deterministic isolated workspace below `~/.clawchat-connect/workspaces/`; it never falls back to the process working directory. App-server accepts both registered Project roots and isolated Non-Project directories directly, without the former SDK command's Git-repository preflight.
 
 Codex accepts these Session modes:
 
@@ -341,11 +371,9 @@ The first four control commands only prepare the Session. The review request is 
 
 ## Codex Runtime Threads and output
 
-Connect stores the Codex thread ID on its owning logical Session. It resumes that Runtime Thread after a process restart or after `/switch` returns to the Session. For the current workspace, `/list` reads Codex's persisted history under `CODEX_HOME` (or `~/.codex`) and shows unclaimed Runtime Threads by their first user-message title and Session Ref. `/switch <name-or-ref>` explicitly adopts one into a new Connect Session while preserving that Ref. Refs are random Connect-owned Base32 handles, not prefixes of internal UUIDs. A Runtime Thread never crosses a Project boundary.
+Connect stores the Codex thread ID on its owning logical Session. It resumes that Runtime Thread after a process restart or after `/switch` returns to the Session. For the current workspace, `/list` calls app-server `thread/list` across every Codex source kind and shows unclaimed Runtime Threads by title and Session Ref. `/switch <name-or-ref>` explicitly adopts one into a new Connect Session while preserving that Ref. Refs are random Connect-owned Base32 handles, not prefixes of internal UUIDs. A Runtime Thread never crosses a Project boundary.
 
-The official Codex SDK creates non-interactive Threads, which Codex omits from its default resume picker. To include them, run `codex resume --include-non-interactive` directly.
-
-The Codex adapter maps official SDK events into ClawChat output kinds:
+The Codex adapter maps stable app-server notifications into ClawChat output kinds:
 
 - agent messages → `assistant` and `final`
 - reasoning → `reasoning`
@@ -353,7 +381,7 @@ The Codex adapter maps official SDK events into ClawChat output kinds:
 - task lists, searches, and turn lifecycle → `progress`
 - failures → visible `final` replies
 
-The latest completed agent message is emitted exactly once as the final reply. `/cancel` aborts the active SDK turn through `AbortSignal`.
+The latest completed agent message is emitted exactly once as the final reply. `/cancel` interrupts the active app-server turn through `turn/interrupt`. The shared child process is closed only after Connect has closed its Runtime Sessions.
 
 ## External tools and MCP
 
@@ -380,8 +408,9 @@ bun run typecheck
 bun test
 bun run build
 bun run build:binary
+bun run preview:web
 ```
 
 Pushing a version tag such as `v0.1.0-alpha.3` runs the alpha release workflow. The workflow requires the tag to match `package.json`, runs the complete check suite, builds standalone macOS/Linux binaries for arm64 and x64, and publishes them with `install.sh` and SHA-256 checksums as a GitHub prerelease. Non-alpha tags are not accepted by this workflow.
 
-The runtime uses Bun's built-in WebSocket client and `bun:sqlite`; it does not depend on `ws`, `sqlite`, `sqlite3`, Vitest, or tsup. Generated `dist/` output remains ignored.
+The runtime uses Bun's built-in WebSocket client and `bun:sqlite`; it does not ship `ws`, `sqlite`, `sqlite3`, or tsup. The Web build uses Vite while the current backend suite continues to run with `bun:test`. Generated `dist/` output remains ignored.

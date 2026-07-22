@@ -39,6 +39,7 @@ export interface ConnectCliDeps extends Partial<CliIo> {
   manageBackgroundService?: typeof manageBackgroundServiceDefault;
   startConnectService?: typeof startConnectServiceDefault;
   waitUntilShutdown?: () => Promise<void>;
+  openUrl?: (url: string) => Promise<void>;
 }
 
 interface AgentCliOptions {
@@ -58,6 +59,7 @@ const HELP_TEXT = `${[
   "  profile update [--agent <id>] [--nickname <text>] [--avatar-url <url>] [--bio <text>] [--config <path>]",
   "  service install|start|stop|restart|status [--config <path>]",
   "  service logs [--lines <count>] [--follow] [--config <path>]",
+  "  web [--no-open] [--config <path>]",
   "  status [--agent <agentId>] [--config <path>]",
   "  config get [key] [--config <path>]",
   "  config set <key> <value> [--config <path>]",
@@ -101,6 +103,8 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   if (nestedServiceResult !== null) return nestedServiceResult;
   const nestedConfigResult = await maybeRunNestedConfigCommand(argv, io);
   if (nestedConfigResult !== null) return nestedConfigResult;
+  const webResult = await maybeRunWebCommand(argv, io, deps.openUrl ?? openUrlDefault);
+  if (webResult !== null) return webResult;
 
   const cli = cac("clawchat-connect");
   let commandRan = false;
@@ -209,6 +213,42 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+}
+
+async function maybeRunWebCommand(
+  argv: string[],
+  io: CliIo,
+  openUrl: (url: string) => Promise<void>,
+): Promise<number | null> {
+  if (argv[0] !== "web") return null;
+  const configPath = optionValue(argv, "--config");
+  const config = await loadConfig(configPath);
+  const url = `http://127.0.0.1:${config.clientPort}/`;
+  try {
+    io.writeStdout(`Connect Client URL: ${url}\n`);
+    if (config.clientHost === "0.0.0.0") {
+      io.writeStdout(
+        `WARNING: LAN Host mode is enabled on 0.0.0.0:${config.clientPort} without authentication. Use http://<this-computer-LAN-IP>:${config.clientPort}/ from trusted devices only.\n`,
+      );
+    }
+    if (!argv.includes("--no-open")) await openUrl(url);
+    return 0;
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+async function openUrlDefault(url: string): Promise<void> {
+  const command =
+    process.platform === "darwin"
+      ? ["open", url]
+      : process.platform === "win32"
+        ? ["cmd", "/c", "start", "", url]
+        : ["xdg-open", url];
+  const child = Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  const code = await child.exited;
+  if (code !== 0) throw new Error(`Could not open the browser; use the printed Connect Client URL (exit ${code})`);
 }
 
 async function maybeRunNestedAgentCommand(argv: string[], io: CliIo): Promise<number | null> {
@@ -457,6 +497,19 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
     config.outputVisibility = parseOutputVisibility(value);
     return;
   }
+  if (key === "clientPort") {
+    const port = Number(value);
+    if (!Number.isInteger(port) || port < 1_024 || port > 65_535) throw new Error("clientPort must be 1024-65535");
+    config.clientPort = port;
+    return;
+  }
+  if (key === "clientHost") {
+    if (value !== "127.0.0.1" && value !== "0.0.0.0") {
+      throw new Error("clientHost must be one of: 127.0.0.1, 0.0.0.0");
+    }
+    config.clientHost = value;
+    return;
+  }
   const match = key.match(/^agents\.([^.]+)\.([A-Za-z]+)$/u);
   if (!match) throw new Error(`Unsupported config key: ${key}`);
   const agentId = match[1];
@@ -487,15 +540,10 @@ function setCodexConfigValue(binding: CodexAgentBindingConfig, field: string, va
       field,
     );
   else if (field === "approvalPolicy")
-    binding.approvalPolicy = parseCodexEnum<CodexApprovalPolicy>(
-      value,
-      ["never", "on-request", "on-failure", "untrusted"],
-      field,
-    );
+    binding.approvalPolicy = parseCodexEnum<CodexApprovalPolicy>(value, ["never", "on-request", "untrusted"], field);
   else if (field === "webSearchMode")
     binding.webSearchMode = parseCodexEnum<CodexWebSearchMode>(value, ["disabled", "cached", "live"], field);
   else if (field === "networkAccessEnabled") binding.networkAccessEnabled = parseBoolean(value, field);
-  else if (field === "skipGitRepoCheck") binding.skipGitRepoCheck = parseBoolean(value, field);
   else throw new Error(`Unsupported Codex config key: ${key}`);
 }
 

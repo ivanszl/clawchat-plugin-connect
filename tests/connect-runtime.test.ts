@@ -219,6 +219,63 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     await fixture.store.close();
   });
 
+  it("serializes ClawChat and Client turns on the same logical Session", async () => {
+    const fixture = await runtimeFixture();
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!current) throw new Error("test session was not created");
+    let releaseClawChat: (() => void) | undefined;
+    let markClawChatStarted: (() => void) | undefined;
+    let markClientFinished: (() => void) | undefined;
+    const clawChatStarted = new Promise<void>((resolve) => {
+      markClawChatStarted = resolve;
+    });
+    const clientFinished = new Promise<void>((resolve) => {
+      markClientFinished = resolve;
+    });
+    const clawChatGate = new Promise<void>((resolve) => {
+      releaseClawChat = resolve;
+    });
+    const order: string[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: mock(async () => ({
+        prompt: async function* (input: ConnectRuntimePrompt) {
+          if (input.metadata?.origin === "client") {
+            order.push("client-started", "client-finished");
+            markClientFinished?.();
+          } else {
+            order.push("clawchat-started");
+            markClawChatStarted?.();
+            await clawChatGate;
+            order.push("clawchat-finished");
+          }
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    const clawChatTurn = runtime.handleInboundMessage(message("from clawchat"));
+    await clawChatStarted;
+    await runtime.enqueueClientTurn(current.sessionRef, "from web");
+    await Bun.sleep(5);
+    expect(order).toEqual(["clawchat-started"]);
+    releaseClawChat?.();
+    await Promise.all([clawChatTurn, clientFinished]);
+    expect(order).toEqual(["clawchat-started", "clawchat-finished", "client-started", "client-finished"]);
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
   it("persists a Codex thread id and resumes it after runtime restart", async () => {
     const fixture = await runtimeFixture();
     const starts: ConnectRuntimeStartContext[] = [];

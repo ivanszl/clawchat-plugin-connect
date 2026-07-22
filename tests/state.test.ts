@@ -265,6 +265,100 @@ describe("state store", () => {
     await store.close();
   });
 
+  it("keeps transcript projection updates idempotent and rekeys optimistic user messages", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({
+      dbPath: join(dir, "state.sqlite"),
+      sessionRefFactory: () => "ABCDEFGH",
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "codex",
+      runtimeSessionId: "thread-1",
+      hasMessages: true,
+    });
+    const session = await store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!session) throw new Error("test session was not created");
+    const assistant = {
+      id: "b_stable_assistant",
+      type: "message" as const,
+      origin: "runtime" as const,
+      state: "complete" as const,
+      plainText: "done",
+      role: "assistant" as const,
+      author: "Agent",
+      markdown: "done",
+    };
+    const inserted = await store.upsertTranscriptBlock(session.sessionRef, assistant);
+    const repeated = await store.upsertTranscriptBlock(session.sessionRef, assistant);
+    expect(inserted.cursor).toBeGreaterThan(0);
+    expect(repeated.cursor).toBe(0);
+    expect(await store.listClientEvents(0)).toHaveLength(1);
+
+    const optimistic = await store.upsertTranscriptBlock(session.sessionRef, {
+      id: "turn_local_user",
+      type: "message",
+      origin: "client",
+      state: "complete",
+      plainText: "same prompt",
+      role: "user",
+      author: "You",
+      markdown: "same prompt",
+    });
+    const rekeyed = await store.rekeyMatchingTranscriptMessage(session.sessionRef, {
+      id: "b_native_user",
+      type: "message",
+      origin: "runtime",
+      state: "complete",
+      plainText: "same prompt",
+      role: "user",
+      author: "You",
+      markdown: "same prompt",
+    });
+    expect(rekeyed).toMatchObject({ id: "b_native_user", origin: "client", sequence: optimistic.block.sequence });
+    expect(await store.listTranscriptBlocks(session.sessionRef)).toEqual([
+      expect.objectContaining({ id: "b_stable_assistant" }),
+      expect.objectContaining({ id: "b_native_user", origin: "client" }),
+    ]);
+    await store.close();
+  });
+
+  it("deletes a Session Ref together with its managed Session and transcript projection", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({
+      dbPath: join(dir, "state.sqlite"),
+      sessionRefFactory: () => "ABCDEFGH",
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "codex",
+      runtimeSessionId: "thread-1",
+      hasMessages: true,
+    });
+    const session = await store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!session) throw new Error("test session was not created");
+    await store.upsertTranscriptBlock(session.sessionRef, {
+      id: "message-1",
+      type: "message",
+      origin: "runtime",
+      state: "complete",
+      plainText: "hello",
+      role: "user",
+      author: "You",
+      markdown: "hello",
+    });
+
+    await expect(store.deleteSessionByRef(session.sessionRef)).resolves.toBe(true);
+
+    await expect(store.getSessionRefTarget(session.sessionRef)).resolves.toBeNull();
+    await expect(store.getRuntimeSessionByRef(session.sessionRef)).resolves.toBeNull();
+    await expect(store.listTranscriptBlocks(session.sessionRef)).resolves.toEqual([]);
+    await expect(store.deleteSessionByRef(session.sessionRef)).resolves.toBe(false);
+    await store.close();
+  });
+
   it("tracks runtime status independently for every Agent Binding", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
