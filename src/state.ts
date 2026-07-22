@@ -84,6 +84,40 @@ export interface MessageInput {
   raw?: unknown;
   createdAt?: number;
 }
+export interface ProtocolDeliveryInput {
+  agentId: string;
+  ackEpoch: string;
+  dseq: number;
+  eventKey: string;
+  eventType: string;
+  traceId: string;
+  chatId?: string | null;
+  messageId?: string | null;
+  raw: unknown;
+}
+export interface ProtocolDeliveryState {
+  ackEpoch: string;
+  lastReadDseq: number;
+  ackHighWater: number;
+}
+export interface ProtocolDeliveryQuarantineInput {
+  agentId: string;
+  ackEpoch: string;
+  dseq: number;
+  eventType: string;
+  traceId: string;
+  raw: unknown;
+  error: string;
+}
+export interface ProtocolDeliveryQuarantineRecord {
+  ackEpoch: string;
+  dseq: number;
+  eventType: string;
+  traceId: string;
+  raw: unknown;
+  error: string;
+  createdAt: number;
+}
 export interface InsertProjectInput {
   projectId: string;
   name: string;
@@ -224,6 +258,180 @@ export class ConnectStateStore {
       deviceId,
       now,
     );
+  }
+  async beginProtocolDeliveryEpoch(agentId: string, ackEpoch: string): Promise<void> {
+    const normalizedAgentId = requireStateString(agentId, "agentId");
+    const normalizedEpoch = requireStateString(ackEpoch, "ackEpoch");
+    const db = await this.requireDb();
+    await db.run(
+      `INSERT INTO protocol_delivery_state(local_agent_id, ack_epoch, last_read_dseq, ack_high_water, updated_at)
+       VALUES (?, ?, 0, 0, ?)
+       ON CONFLICT(local_agent_id) DO UPDATE SET
+         ack_epoch = excluded.ack_epoch,
+         last_read_dseq = 0,
+         ack_high_water = 0,
+         updated_at = excluded.updated_at`,
+      normalizedAgentId,
+      normalizedEpoch,
+      Date.now(),
+    );
+  }
+  async getProtocolDeliveryState(agentId: string): Promise<ProtocolDeliveryState | null> {
+    const db = await this.requireDb();
+    const row = await db.get<Record<string, unknown>>(
+      "SELECT ack_epoch, last_read_dseq, ack_high_water FROM protocol_delivery_state WHERE local_agent_id = ?",
+      requireStateString(agentId, "agentId"),
+    );
+    if (!row) return null;
+    return {
+      ackEpoch: stringValue(row.ack_epoch),
+      lastReadDseq: numberValue(row.last_read_dseq),
+      ackHighWater: numberValue(row.ack_high_water),
+    };
+  }
+  async recordProtocolDelivery(input: ProtocolDeliveryInput): Promise<"inserted" | "updated" | "duplicate"> {
+    const agentId = requireStateString(input.agentId, "agentId");
+    const ackEpoch = requireStateString(input.ackEpoch, "ackEpoch");
+    const eventKey = requireStateString(input.eventKey, "eventKey");
+    const eventType = requireStateString(input.eventType, "eventType");
+    const traceId = requireStateString(input.traceId, "traceId");
+    if (!Number.isSafeInteger(input.dseq) || input.dseq <= 0) throw new Error("dseq must be a positive integer");
+    const db = await this.requireDb();
+    const deliveryState = await this.getProtocolDeliveryState(agentId);
+    if (!deliveryState || deliveryState.ackEpoch !== ackEpoch)
+      throw new Error(`protocol delivery epoch mismatch for ${agentId}`);
+    if (input.dseq !== deliveryState.lastReadDseq + 1)
+      throw new Error(`protocol delivery dseq gap: expected ${deliveryState.lastReadDseq + 1}, received ${input.dseq}`);
+    const rawJson = toJson(input.raw) ?? "null";
+    const deliveryContent = protocolDeliveryContentJson(input.raw);
+    const existing = await db.get<{ raw_json?: string }>(
+      "SELECT raw_json FROM protocol_inbox WHERE local_agent_id = ? AND event_key = ?",
+      agentId,
+      eventKey,
+    );
+    const result = !existing
+      ? "inserted"
+      : protocolDeliveryContentJson(existing.raw_json) === deliveryContent
+        ? "duplicate"
+        : "updated";
+    const now = Date.now();
+    db.transaction((run) => {
+      run(
+        `INSERT INTO protocol_inbox(local_agent_id, event_key, event_type, trace_id, chat_id, message_id, raw_json, first_received_at, last_received_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(local_agent_id, event_key) DO UPDATE SET
+           event_type = excluded.event_type,
+           trace_id = excluded.trace_id,
+           chat_id = excluded.chat_id,
+           message_id = excluded.message_id,
+           raw_json = excluded.raw_json,
+           last_received_at = excluded.last_received_at`,
+        agentId,
+        eventKey,
+        eventType,
+        traceId,
+        input.chatId ?? null,
+        input.messageId ?? null,
+        rawJson,
+        now,
+        now,
+      );
+      run(
+        `UPDATE protocol_delivery_state
+         SET last_read_dseq = ?, ack_high_water = ?, updated_at = ?
+         WHERE local_agent_id = ? AND ack_epoch = ?`,
+        input.dseq,
+        input.dseq,
+        now,
+        agentId,
+        ackEpoch,
+      );
+    });
+    return result;
+  }
+  async quarantineProtocolDelivery(input: ProtocolDeliveryQuarantineInput): Promise<void> {
+    const agentId = requireStateString(input.agentId, "agentId");
+    const ackEpoch = requireStateString(input.ackEpoch, "ackEpoch");
+    const eventType = requireStateString(input.eventType, "eventType");
+    const traceId = requireStateString(input.traceId, "traceId");
+    const error = requireStateString(input.error, "error");
+    if (!Number.isSafeInteger(input.dseq) || input.dseq <= 0) throw new Error("dseq must be a positive integer");
+    const db = await this.requireDb();
+    const deliveryState = await this.getProtocolDeliveryState(agentId);
+    if (!deliveryState || deliveryState.ackEpoch !== ackEpoch)
+      throw new Error(`protocol delivery epoch mismatch for ${agentId}`);
+    if (input.dseq !== deliveryState.lastReadDseq + 1)
+      throw new Error(`protocol delivery dseq gap: expected ${deliveryState.lastReadDseq + 1}, received ${input.dseq}`);
+    const now = Date.now();
+    db.transaction((run) => {
+      run(
+        `INSERT INTO protocol_delivery_quarantine(local_agent_id, ack_epoch, dseq, event_type, trace_id, raw_json, error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(local_agent_id, ack_epoch, dseq) DO UPDATE SET
+           event_type = excluded.event_type,
+           trace_id = excluded.trace_id,
+           raw_json = excluded.raw_json,
+           error = excluded.error`,
+        agentId,
+        ackEpoch,
+        input.dseq,
+        eventType,
+        traceId,
+        toJson(input.raw) ?? "null",
+        error,
+        now,
+      );
+      run(
+        `UPDATE protocol_delivery_state
+         SET last_read_dseq = ?, ack_high_water = ?, updated_at = ?
+         WHERE local_agent_id = ? AND ack_epoch = ?`,
+        input.dseq,
+        input.dseq,
+        now,
+        agentId,
+        ackEpoch,
+      );
+    });
+  }
+  async advanceProtocolDelivery(agentId: string, ackEpoch: string, dseq: number): Promise<void> {
+    const normalizedAgentId = requireStateString(agentId, "agentId");
+    const normalizedEpoch = requireStateString(ackEpoch, "ackEpoch");
+    if (!Number.isSafeInteger(dseq) || dseq <= 0) throw new Error("dseq must be a positive integer");
+    const db = await this.requireDb();
+    const deliveryState = await this.getProtocolDeliveryState(normalizedAgentId);
+    if (!deliveryState || deliveryState.ackEpoch !== normalizedEpoch)
+      throw new Error(`protocol delivery epoch mismatch for ${normalizedAgentId}`);
+    if (dseq !== deliveryState.lastReadDseq + 1)
+      throw new Error(`protocol delivery dseq gap: expected ${deliveryState.lastReadDseq + 1}, received ${dseq}`);
+    await db.run(
+      `UPDATE protocol_delivery_state
+       SET last_read_dseq = ?, ack_high_water = ?, updated_at = ?
+       WHERE local_agent_id = ? AND ack_epoch = ?`,
+      dseq,
+      dseq,
+      Date.now(),
+      normalizedAgentId,
+      normalizedEpoch,
+    );
+  }
+  async listProtocolDeliveryQuarantine(agentId: string): Promise<ProtocolDeliveryQuarantineRecord[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<Record<string, unknown>[]>(
+      `SELECT ack_epoch, dseq, event_type, trace_id, raw_json, error, created_at
+       FROM protocol_delivery_quarantine
+       WHERE local_agent_id = ?
+       ORDER BY created_at, dseq`,
+      requireStateString(agentId, "agentId"),
+    );
+    return rows.map((row) => ({
+      ackEpoch: stringValue(row.ack_epoch),
+      dseq: numberValue(row.dseq),
+      eventType: stringValue(row.event_type),
+      traceId: stringValue(row.trace_id),
+      raw: parseJsonValue(row.raw_json),
+      error: stringValue(row.error),
+      createdAt: numberValue(row.created_at),
+    }));
   }
   async getOutputVisibility(chatId: string): Promise<OutputVisibility | null> {
     const db = await this.requireDb();
@@ -642,6 +850,61 @@ export class ConnectStateStore {
     );
     return (result.changes ?? 0) > 0;
   }
+  async upsertInboundMessage(input: MessageInput): Promise<"inserted" | "updated" | "duplicate"> {
+    const agentId = requireStateString(input.agentId ?? "", "agentId");
+    const messageId = requireStateString(input.messageId ?? "", "messageId");
+    if (input.direction !== "inbound" || input.kind !== "message")
+      throw new Error("upsertInboundMessage requires an inbound message");
+    const db = await this.requireDb();
+    const rawJson = toJson(input.raw) ?? "null";
+    const existing = await db.get<{ raw_json?: string }>(
+      `SELECT raw_json FROM clawchat_messages
+       WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?`,
+      agentId,
+      messageId,
+    );
+    if (!existing) {
+      await db.run(
+        `INSERT INTO clawchat_messages(platform, local_agent_id, kind, direction, event_type, trace_id, chat_id, message_id, text, raw_json, created_at, send_status)
+         VALUES (?, ?, 'message', 'inbound', ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        PLATFORM_ID,
+        agentId,
+        input.eventType,
+        input.traceId ?? null,
+        input.chatId ?? null,
+        messageId,
+        input.text ?? null,
+        rawJson,
+        input.createdAt ?? Date.now(),
+      );
+      return "inserted";
+    }
+    if (protocolDeliveryContentJson(existing.raw_json) === protocolDeliveryContentJson(input.raw)) return "duplicate";
+    await db.run(
+      `UPDATE clawchat_messages
+       SET event_type = ?, trace_id = ?, chat_id = ?, text = ?, raw_json = ?, created_at = ?
+       WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?`,
+      input.eventType,
+      input.traceId ?? null,
+      input.chatId ?? null,
+      input.text ?? null,
+      rawJson,
+      input.createdAt ?? Date.now(),
+      agentId,
+      messageId,
+    );
+    return "updated";
+  }
+  async claimProtocolEvent(agentId: string, eventId: string): Promise<boolean> {
+    const db = await this.requireDb();
+    const result = await db.run(
+      `INSERT OR IGNORE INTO protocol_event_dedup(local_agent_id, event_id, created_at) VALUES (?, ?, ?)`,
+      requireStateString(agentId, "agentId"),
+      requireStateString(eventId, "eventId"),
+      Date.now(),
+    );
+    return (result.changes ?? 0) > 0;
+  }
   async markMessageAcknowledged(params: {
     messageId: string;
     protocolMessageId?: string | null;
@@ -652,6 +915,22 @@ export class ConnectStateStore {
       `UPDATE clawchat_messages SET send_status = 'acknowledged', protocol_message_id = ?, acked_at = ?, send_error = NULL WHERE direction = 'outbound' AND kind = 'message' AND message_id = ?`,
       params.protocolMessageId ?? params.messageId,
       params.ackedAt ?? Date.now(),
+      params.messageId,
+    );
+    return (result.changes ?? 0) > 0;
+  }
+  async markMessageFailed(params: {
+    messageId: string;
+    protocolMessageId?: string | null;
+    rejectedAt?: number;
+    error: string;
+  }): Promise<boolean> {
+    const db = await this.requireDb();
+    const result = await db.run(
+      `UPDATE clawchat_messages SET send_status = 'failed', protocol_message_id = ?, rejected_at = ?, send_error = ? WHERE direction = 'outbound' AND kind = 'message' AND message_id = ?`,
+      params.protocolMessageId ?? null,
+      params.rejectedAt ?? Date.now(),
+      params.error,
       params.messageId,
     );
     return (result.changes ?? 0) > 0;
@@ -1058,11 +1337,48 @@ export class ConnectStateStore {
         send_status TEXT,
         protocol_message_id TEXT,
         acked_at INTEGER,
+        rejected_at INTEGER,
         send_error TEXT
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique
         ON clawchat_messages(local_agent_id, direction, kind, message_id)
         WHERE kind = 'message' AND message_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS protocol_delivery_state(
+        local_agent_id TEXT PRIMARY KEY,
+        ack_epoch TEXT NOT NULL,
+        last_read_dseq INTEGER NOT NULL,
+        ack_high_water INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS protocol_inbox(
+        local_agent_id TEXT NOT NULL,
+        event_key TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        trace_id TEXT NOT NULL,
+        chat_id TEXT,
+        message_id TEXT,
+        raw_json TEXT NOT NULL,
+        first_received_at INTEGER NOT NULL,
+        last_received_at INTEGER NOT NULL,
+        PRIMARY KEY(local_agent_id, event_key)
+      );
+      CREATE TABLE IF NOT EXISTS protocol_delivery_quarantine(
+        local_agent_id TEXT NOT NULL,
+        ack_epoch TEXT NOT NULL,
+        dseq INTEGER NOT NULL,
+        event_type TEXT NOT NULL,
+        trace_id TEXT NOT NULL,
+        raw_json TEXT NOT NULL,
+        error TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(local_agent_id, ack_epoch, dseq)
+      );
+      CREATE TABLE IF NOT EXISTS protocol_event_dedup(
+        local_agent_id TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(local_agent_id, event_id)
+      );
       CREATE TABLE IF NOT EXISTS runtime_statuses(
         agent_id TEXT PRIMARY KEY,
         updated_at INTEGER NOT NULL,
@@ -1118,6 +1434,9 @@ export class ConnectStateStore {
     const columns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_sessions)");
     if (!columns.some((column) => column.name === "has_messages"))
       await db.exec("ALTER TABLE runtime_sessions ADD COLUMN has_messages INTEGER NOT NULL DEFAULT 0");
+    const messageColumns = await db.all<{ name: string }[]>("PRAGMA table_info(clawchat_messages)");
+    if (!messageColumns.some((column) => column.name === "rejected_at"))
+      await db.exec("ALTER TABLE clawchat_messages ADD COLUMN rejected_at INTEGER");
     await db.run(
       `UPDATE runtime_sessions AS rs SET has_messages = 1 WHERE has_messages = 0 AND (runtime_session_id IS NOT NULL OR EXISTS (SELECT 1 FROM clawchat_messages AS message WHERE message.local_agent_id = rs.agent_id AND message.chat_id = rs.chat_id AND message.direction = 'inbound' AND message.kind = 'message' AND COALESCE(message.text, '') NOT LIKE '/%' AND message.created_at >= rs.created_at AND NOT EXISTS (SELECT 1 FROM runtime_sessions AS newer WHERE newer.chat_id = rs.chat_id AND newer.agent_id = rs.agent_id AND newer.created_at > rs.created_at AND newer.created_at <= message.created_at)))`,
     );
@@ -1159,8 +1478,34 @@ function toJson(value: unknown): string | null {
     return JSON.stringify({ error: "unserializable" });
   }
 }
+function protocolDeliveryContentJson(value: unknown): string {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return toJson(parsed) ?? "null";
+  const content = { ...(parsed as Record<string, unknown>) };
+  for (const field of ["dseq", "emitted_at", "trace_id"]) delete content[field];
+  return toJson(content) ?? "null";
+}
+function parseJsonValue(value: unknown): unknown {
+  try {
+    return JSON.parse(stringValue(value)) as unknown;
+  } catch {
+    return null;
+  }
+}
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : String(value ?? "");
+}
+function requireStateString(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${field} is required`);
+  return normalized;
 }
 function nullableString(value: unknown): string | null {
   const text = stringValue(value).trim();

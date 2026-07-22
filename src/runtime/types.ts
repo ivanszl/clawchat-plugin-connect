@@ -3,6 +3,7 @@ import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 
 export interface ConnectRuntimePrompt {
   prompt: string;
+  media?: ConnectRuntimeMedia[];
   workspace: RuntimeWorkspace;
   mode?: string;
   metadata?: Record<string, string>;
@@ -10,6 +11,17 @@ export interface ConnectRuntimePrompt {
     mode: string;
     allowedKinds: RuntimeOutputKind[];
   };
+}
+
+export interface ConnectRuntimeMedia {
+  kind: "image" | "file" | "audio" | "video";
+  url: string;
+  name?: string;
+  mime?: string;
+  size?: number;
+  width?: number;
+  height?: number;
+  duration?: number;
 }
 
 export interface ConnectRuntimeStartContext {

@@ -63,6 +63,7 @@ RuntimeAdapterRegistry → CodexRuntimeAdapter → private JSONL JSON-RPC client
 - The Connect Service composition root registers and closes one shared Runtime Adapter registry. Binding runtimes close only their own Sessions, so stopping one Binding cannot tear down adapters used by another runtime kind.
 - The first release registers the Codex Runtime Adapter; `ConnectRuntime` has no Codex dependency.
 - `ConnectRuntime` owns queueing, Session lifecycle, workspace resolution, output visibility, reply delivery, and persisted Runtime Thread IDs.
+- ClawChat media fragments remain structured across `ConnectRuntimePrompt`: the Codex Adapter downloads every media URL unchanged into the Connect-owned cache, submits images and audio as native local app-server inputs, and submits files and videos as local file mentions. Downloads accept only HTTP(S), are capped at 100 MiB, and use path-safe cached names.
 - Adapters receive a resolved `RuntimeWorkspace` and never access SQLite directly. They may discover resumable Runtime Threads scoped to that workspace through the same seam.
 
 Future coding clients should add direct Runtime Adapters behind the same seam rather than changing Agent Binding or `ConnectRuntime` semantics.
@@ -174,6 +175,7 @@ src/runtime/registry.ts        Runtime Adapter selection by Binding kind
 src/runtime/codex-app-server.ts Pinned app-server process and JSON-RPC transport
 src/runtime/codex-adapter.ts   Codex Runtime Adapter and Connect event mapping
 src/runtime/connect-runtime.ts Queue, lifecycle, discovery, output, and reply dispatch
+src/runtime/media-cache.ts    Bounded state-local cache for runtime file/video inputs
 src/client-contract/index.ts    Browser-safe versioned Client views and intents
 src/client-interface/          Loopback server, catalog, and transcript projection
 web/src/                       React/Astryx/TanStack Connect Client

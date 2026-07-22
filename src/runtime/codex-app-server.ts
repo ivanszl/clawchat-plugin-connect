@@ -75,9 +75,17 @@ export type CodexSandboxPolicy =
       excludeSlashTmp: boolean;
     };
 
+export type CodexUserInput =
+  | { type: "text"; text: string; text_elements: [] }
+  | { type: "image"; url: string; detail?: "auto" | "low" | "high" | "original" }
+  | { type: "localImage"; path: string; detail?: "auto" | "low" | "high" | "original" }
+  | { type: "audio"; url: string }
+  | { type: "localAudio"; path: string }
+  | { type: "mention"; name: string; path: string };
+
 export interface CodexTurnStartParams extends JsonObject {
   threadId: string;
-  input: Array<{ type: "text"; text: string; text_elements: [] }>;
+  input: CodexUserInput[];
   cwd: string;
   approvalPolicy: "never" | "on-request" | "untrusted";
   sandboxPolicy: CodexSandboxPolicy;

@@ -33,6 +33,148 @@ describe("agent-only config", () => {
 });
 
 describe("state store", () => {
+  it("persists Protocol v2 negative acknowledgements on outbound messages", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath });
+    await store.claimMessageOnce({
+      agentId: "codex",
+      direction: "outbound",
+      kind: "message",
+      eventType: "message.send",
+      traceId: "trace-send",
+      messageId: "trace-send",
+    });
+
+    await expect(
+      store.markMessageFailed({
+        messageId: "trace-send",
+        protocolMessageId: "msg-client-stable",
+        rejectedAt: 1234,
+        error: "chat_not_found: chat missing",
+      }),
+    ).resolves.toBe(true);
+    await store.close();
+
+    const database = new Database(dbPath);
+    expect(
+      database.query("SELECT send_status, protocol_message_id, rejected_at, send_error FROM clawchat_messages").get(),
+    ).toEqual({
+      send_status: "failed",
+      protocol_message_id: "msg-client-stable",
+      rejected_at: 1234,
+      send_error: "chat_not_found: chat missing",
+    });
+    database.close();
+  });
+
+  it("durably records a Protocol v2 delivery before advancing its dseq high-water", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath });
+    await store.beginProtocolDeliveryEpoch("codex", "01JXYZ8K3MNPQRSTVWXYZ0AB");
+
+    await expect(
+      store.recordProtocolDelivery({
+        agentId: "codex",
+        ackEpoch: "01JXYZ8K3MNPQRSTVWXYZ0AB",
+        dseq: 1,
+        eventKey: "msg-01HVB6S7K8L9M0N1P2Q3R4S5T6",
+        eventType: "message.send",
+        traceId: "down-1",
+        chatId: "chat-1",
+        messageId: "msg-01HVB6S7K8L9M0N1P2Q3R4S5T6",
+        raw: { version: "2", event: "message.send", dseq: 1 },
+      }),
+    ).resolves.toBe("inserted");
+    await expect(store.getProtocolDeliveryState("codex")).resolves.toEqual({
+      ackEpoch: "01JXYZ8K3MNPQRSTVWXYZ0AB",
+      lastReadDseq: 1,
+      ackHighWater: 1,
+    });
+
+    await store.close();
+    const reopened = createStateStore({ dbPath });
+    await expect(reopened.getProtocolDeliveryState("codex")).resolves.toEqual({
+      ackEpoch: "01JXYZ8K3MNPQRSTVWXYZ0AB",
+      lastReadDseq: 1,
+      ackHighWater: 1,
+    });
+    await reopened.close();
+  });
+
+  it("distinguishes coalesced updates from redelivery metadata and deduplicates event ids", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await store.beginProtocolDeliveryEpoch("codex", "epoch-1");
+    const delivery = (dseq: number, text: string) =>
+      store.recordProtocolDelivery({
+        agentId: "codex",
+        ackEpoch: "epoch-1",
+        dseq,
+        eventKey: "message:msg-1",
+        eventType: "message.reply",
+        traceId: "trace-1",
+        messageId: "msg-1",
+        raw: { version: "2", event: "message.reply", trace_id: "trace-1", dseq, payload: { text } },
+      });
+
+    await expect(delivery(1, "draft")).resolves.toBe("inserted");
+    await expect(delivery(2, "draft")).resolves.toBe("duplicate");
+    await expect(delivery(3, "final")).resolves.toBe("updated");
+
+    const message = (text: string) => ({
+      agentId: "codex",
+      direction: "inbound" as const,
+      kind: "message" as const,
+      eventType: "message.reply",
+      traceId: "trace-1",
+      chatId: "chat-1",
+      messageId: "msg-1",
+      text,
+      raw: { payload: { text } },
+    });
+    await expect(store.upsertInboundMessage(message("draft"))).resolves.toBe("inserted");
+    await expect(store.upsertInboundMessage(message("draft"))).resolves.toBe("duplicate");
+    await expect(store.upsertInboundMessage(message("final"))).resolves.toBe("updated");
+    await expect(store.claimProtocolEvent("codex", "event-1")).resolves.toBe(true);
+    await expect(store.claimProtocolEvent("codex", "event-1")).resolves.toBe(false);
+    await store.close();
+    const reopened = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await expect(reopened.claimProtocolEvent("codex", "event-1")).resolves.toBe(false);
+    await reopened.close();
+  });
+
+  it("quarantines an unpersistable Protocol v2 frame without stalling its dseq", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await store.beginProtocolDeliveryEpoch("codex", "epoch-poison");
+
+    await store.quarantineProtocolDelivery({
+      agentId: "codex",
+      ackEpoch: "epoch-poison",
+      dseq: 1,
+      eventType: "message.send",
+      traceId: "poison-1",
+      raw: { version: "2", event: "message.send", dseq: 1, payload: {} },
+      error: "invalid message.send payload",
+    });
+
+    await expect(store.getProtocolDeliveryState("codex")).resolves.toMatchObject({
+      lastReadDseq: 1,
+      ackHighWater: 1,
+    });
+    await expect(store.listProtocolDeliveryQuarantine("codex")).resolves.toEqual([
+      expect.objectContaining({
+        ackEpoch: "epoch-poison",
+        dseq: 1,
+        traceId: "poison-1",
+        error: "invalid message.send payload",
+      }),
+    ]);
+    await store.close();
+  });
+
   it("stores activation per local agent and exposes previous user id", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });

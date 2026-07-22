@@ -43,6 +43,7 @@ describe("Connect Service", () => {
     const stopClientInterface = mock(async () => undefined);
     const startClientInterface = mock(async () => ({ origin: "http://127.0.0.1:47823", stop: stopClientInterface }));
     const closeRuntimeAdapter = mock(async () => undefined);
+    const onProtocolEvent = mock(() => undefined);
     const createRuntimeAdapterRegistry = () =>
       new RuntimeAdapterRegistry([
         {
@@ -62,6 +63,7 @@ describe("Connect Service", () => {
         stateStore,
         waitUntilShutdown: async () => undefined,
         writeOutput: () => undefined,
+        onProtocolEvent,
       },
       { startBindingRuntime, startClientInterface, createRuntimeAdapterRegistry },
     );
@@ -69,6 +71,7 @@ describe("Connect Service", () => {
     expect(result.startedAgentIds).toEqual(["codex-work", "codex-review"]);
     expect(startBindingRuntime).toHaveBeenCalledTimes(2);
     expect(startBindingRuntime.mock.calls.map(([options]) => options.agentId)).toEqual(["codex-work", "codex-review"]);
+    expect(startBindingRuntime.mock.calls.every(([options]) => options.onProtocolEvent === onProtocolEvent)).toBe(true);
     expect(closed).toEqual(["codex-work", "codex-review"]);
     expect(startClientInterface).toHaveBeenCalledTimes(1);
     expect(stopClientInterface).toHaveBeenCalledTimes(1);

@@ -315,6 +315,88 @@ describe("Codex app-server runtime adapter", () => {
     expect(client.startThread).not.toHaveBeenCalled();
   });
 
+  it("caches image and audio media before submitting local Codex turn inputs", async () => {
+    const client = new FakeAppServer();
+    client.startTurn.mockImplementationOnce(async () => {
+      queueMicrotask(() => emitCompletedTurn(client, "thread-new", []));
+      return { turn: turn() };
+    });
+    const cacheMedia = mock(async (media: { name?: string }) => `/cache/${media.name || "media"}`);
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client, cacheMedia });
+    const session = await adapter.start(agent, context({ stateDbPath: "/state/connect.sqlite" }));
+
+    for await (const _event of session.prompt({
+      prompt: "inspect the media",
+      workspace,
+      media: [
+        {
+          kind: "image",
+          url: "https://media.example/photo.png?signature=opaque",
+          name: "photo.png",
+          mime: "image/png",
+        },
+        {
+          kind: "audio",
+          url: "https://media.example/voice.m4a?signature=opaque",
+          name: "voice.m4a",
+          mime: "audio/mp4",
+        },
+      ],
+    })) {
+      // Consume the generator.
+    }
+
+    expect(cacheMedia).toHaveBeenCalledTimes(2);
+    expect(client.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: [
+          { type: "text", text: "inspect the media", text_elements: [] },
+          { type: "localImage", path: "/cache/photo.png" },
+          { type: "localAudio", path: "/cache/voice.m4a" },
+        ],
+      }),
+    );
+  });
+
+  it("caches file and video media and submits them as Codex file mentions", async () => {
+    const client = new FakeAppServer();
+    client.startTurn.mockImplementationOnce(async () => {
+      queueMicrotask(() => emitCompletedTurn(client, "thread-new", []));
+      return { turn: turn() };
+    });
+    const cacheMedia = mock(async (media: { kind: string }) => `/cache/${media.kind}.bin`);
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client, cacheMedia });
+    const session = await adapter.start(agent, context({ stateDbPath: "/state/connect.sqlite" }));
+    const file = {
+      kind: "file" as const,
+      url: "https://media.example/report.pdf?signature=opaque",
+      name: "report.pdf",
+      mime: "application/pdf",
+    };
+    const video = {
+      kind: "video" as const,
+      url: "https://media.example/demo.mp4?signature=opaque",
+      name: "demo.mp4",
+      mime: "video/mp4",
+    };
+
+    for await (const _event of session.prompt({ prompt: "inspect the files", workspace, media: [file, video] })) {
+      // Consume the generator.
+    }
+
+    expect(cacheMedia).toHaveBeenNthCalledWith(1, file, "/state/connect.sqlite");
+    expect(cacheMedia).toHaveBeenNthCalledWith(2, video, "/state/connect.sqlite");
+    expect(client.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: [
+          { type: "text", text: "inspect the files", text_elements: [] },
+          { type: "mention", name: "report.pdf", path: "/cache/file.bin" },
+          { type: "mention", name: "demo.mp4", path: "/cache/video.bin" },
+        ],
+      }),
+    );
+  });
+
   it("maps completed app-server items and emits the latest agent message once as final", async () => {
     const client = new FakeAppServer();
     client.startTurn.mockImplementationOnce(async () => {

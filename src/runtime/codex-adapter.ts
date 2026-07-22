@@ -8,10 +8,13 @@ import {
   type CodexAppServerThreadItem,
   type CodexAppServerTurn,
   type CodexSandboxPolicy,
+  type CodexUserInput,
   createCodexAppServerClient,
 } from "./codex-app-server";
+import { cacheRuntimeMedia } from "./media-cache";
 import type {
   ConnectRuntimeAdapter,
+  ConnectRuntimeMedia,
   ConnectRuntimePrompt,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
@@ -21,6 +24,7 @@ import type {
 
 export interface CreateCodexRuntimeAdapterOptions {
   createAppServer?: (binding: CodexAgentBindingConfig) => Promise<CodexAppServerClient>;
+  cacheMedia?: (media: ConnectRuntimeMedia, stateDbPath: string) => Promise<string>;
 }
 
 const SANDBOX_MODES: readonly CodexSandboxMode[] = ["read-only", "workspace-write", "danger-full-access"];
@@ -39,6 +43,7 @@ const THREAD_SOURCE_KINDS = [
 
 export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOptions = {}): ConnectRuntimeAdapter {
   const createAppServer = options.createAppServer ?? createCodexAppServerClient;
+  const cacheMedia = options.cacheMedia ?? cacheRuntimeMedia;
   let bindingIdentity: string | null = null;
   let clientPromise: Promise<CodexAppServerClient> | null = null;
 
@@ -94,7 +99,7 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     },
     async start(binding, context) {
       const codexBinding = requireCodexBinding(binding);
-      return new CodexRuntimeSession(await clientFor(codexBinding), codexBinding, context);
+      return new CodexRuntimeSession(await clientFor(codexBinding), codexBinding, context, cacheMedia);
     },
     async close() {
       const current = clientPromise;
@@ -353,6 +358,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     private readonly client: CodexAppServerClient,
     private readonly binding: CodexAgentBindingConfig,
     private readonly context: ConnectRuntimeStartContext,
+    private readonly cacheMedia: (media: ConnectRuntimeMedia, stateDbPath: string) => Promise<string>,
   ) {
     this.runtimeSessionId = context.runtimeSessionId;
   }
@@ -388,9 +394,10 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       async (request) => await this.handleServerRequest(active, request),
     );
     try {
+      const turnInput = await this.buildTurnInput(input);
       const response = await this.client.startTurn({
         threadId,
-        input: [{ type: "text", text: input.prompt, text_elements: [] }],
+        input: turnInput,
         cwd: input.workspace.workingDirectory,
         approvalPolicy: resolveApprovalPolicy(this.binding.approvalPolicy),
         sandboxPolicy: sandboxPolicy(
@@ -420,6 +427,23 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       active.queue.close();
       if (this.activeTurn === active) this.activeTurn = null;
     }
+  }
+
+  private async buildTurnInput(input: ConnectRuntimePrompt): Promise<CodexUserInput[]> {
+    const turnInput: CodexUserInput[] = [{ type: "text", text: input.prompt, text_elements: [] }];
+    for (const media of input.media ?? []) {
+      const path = await this.cacheMedia(media, this.context.stateDbPath);
+      if (media.kind === "image") {
+        turnInput.push({ type: "localImage", path });
+        continue;
+      }
+      if (media.kind === "audio") {
+        turnInput.push({ type: "localAudio", path });
+        continue;
+      }
+      turnInput.push({ type: "mention", name: media.name || media.kind, path });
+    }
+    return turnInput;
   }
 
   async cancel(): Promise<boolean> {

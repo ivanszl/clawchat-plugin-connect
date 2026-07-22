@@ -97,6 +97,71 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     await fixture.store.close();
   });
 
+  it("preserves inbound ClawChat media for the Runtime Adapter", async () => {
+    const fixture = await runtimeFixture();
+    const prompts: ConnectRuntimePrompt[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["read-only", "workspace-write", "danger-full-access"],
+      start: mock(async () => ({
+        prompt: async function* (input: ConnectRuntimePrompt) {
+          prompts.push(input);
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+    const inbound = message("describe the attachments");
+    inbound.fragments = [
+      { kind: "text", text: "describe the attachments" },
+      {
+        kind: "image",
+        url: "https://media.example/photo.png?signature=opaque",
+        name: "photo.png",
+        mime: "image/png",
+        size: 123,
+      },
+      {
+        kind: "file",
+        url: "https://media.example/report.pdf?signature=opaque",
+        name: "report.pdf",
+        mime: "application/pdf",
+        size: 456,
+      },
+    ];
+
+    await runtime.handleInboundMessage(inbound);
+
+    expect(prompts[0]).toMatchObject({
+      media: [
+        {
+          kind: "image",
+          url: "https://media.example/photo.png?signature=opaque",
+          name: "photo.png",
+          mime: "image/png",
+          size: 123,
+        },
+        {
+          kind: "file",
+          url: "https://media.example/report.pdf?signature=opaque",
+          name: "report.pdf",
+          mime: "application/pdf",
+          size: 456,
+        },
+      ],
+    });
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
   it("discovers within a pending Project and materializes its Session on the first message", async () => {
     const fixture = await runtimeFixture();
     const projects = new ProjectCatalog(fixture.store);

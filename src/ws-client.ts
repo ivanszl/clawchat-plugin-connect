@@ -10,17 +10,38 @@ import {
   type EmptyPayload,
   type Envelope,
   EVENT,
+  type Fragment,
   type HelloFailPayload,
   type HelloOkPayload,
+  type HistoryTransitPayload,
   isChallengePayload,
+  isChatMetadataInvalidatedPayload,
+  isEmptyPayload,
   isHelloFailPayload,
   isHelloOkPayload,
+  isHistoryTransitPayload,
+  isMaterializedMessagePayload,
   isMessageAckPayload,
+  isMessageAddPayload,
+  isMessageCreatedPayload,
+  isMessageDeliveredPayload,
   isMessageErrorPayload,
+  isMessagePayload,
+  isMessageTerminalPayload,
+  isNotifySignalPayload,
+  isPermissionRequestPayload,
+  isPermissionResolvedPayload,
+  isPresencePayload,
+  isSyncMarkPayload,
+  isTypingUpdatePayload,
   type MessageAckPayload,
+  type MessageAddPayload,
+  type MessageCreatedPayload,
   type MessageErrorPayload,
   type MessagePayload,
   MessageSendError,
+  type MessageTerminalPayload,
+  type NormalizedInboundMessage,
   ProtocolError,
   parseEnvelope,
   StateError,
@@ -119,11 +140,14 @@ export interface ConnectWsClientOptions {
   agentId: string;
   url: string;
   token: string;
+  userId?: string;
+  userNickName?: string;
   stateStore: ConnectStateStore;
   deviceId?: string;
   transport?: Transport;
   traceIdFactory?: () => string;
   ackTimeoutMs?: number;
+  handshakeTimeoutMs?: number;
   reconnect?: {
     enabled?: boolean;
     initialDelayMs?: number;
@@ -132,6 +156,13 @@ export interface ConnectWsClientOptions {
     jitterRatio?: number;
   };
   heartbeat?: { enabled?: boolean; intervalMs?: number; timeoutMs?: number };
+  reliability?: { ackDebounceMs?: number; ackResendMs?: number };
+  capabilities?: {
+    chatMetadataEvents?: boolean;
+    notifySignals?: boolean;
+    permissionEvents?: boolean;
+    historySync?: boolean;
+  };
 }
 
 type PendingAck = {
@@ -146,13 +177,23 @@ export class ConnectWsClient extends EventEmitter {
   private authFailed = false;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
+  private syncAckTimer: ReturnType<typeof setTimeout> | null = null;
+  private syncAckResendTimer: ReturnType<typeof setInterval> | null = null;
   private lastPingTraceId: string | null = null;
   private resolvedDeviceId: string | null = null;
   private connectResolve?: () => void;
   private connectReject?: (error: Error) => void;
   private expectedConnectTraceId: string | null = null;
+  private ackEpoch: string | null = null;
+  private lastReadDseq = 0;
+  private ackHighWater = 0;
+  private frameQueue: Promise<void> = Promise.resolve();
+  private readonly inboundStreams = new Map<string, { sequence: number; fragments: Fragment[] }>();
+  private readonly outboundStreams = new Map<string, { sequence: number; fragments: Fragment[] }>();
+  private readonly presenceSubscriptions = new Set<string>();
   private readonly pendingAcks = new Map<string, PendingAck>();
   private readonly transport: Transport;
   private readonly traceIdFactory: () => string;
@@ -188,8 +229,11 @@ export class ConnectWsClient extends EventEmitter {
 
   close(): void {
     this.closing = true;
+    this.flushSyncAck();
     this.clearTimers();
     this.rejectPending(new StateError("client closed"));
+    this.connectReject?.(new StateError("client closed"));
+    this.clearConnectCallbacks();
     this.transport.close(1000, "client close");
     this.transition("disconnected");
   }
@@ -209,6 +253,13 @@ export class ConnectWsClient extends EventEmitter {
     options: { toType?: ChatType } = {},
   ): Promise<Envelope<MessageAckPayload>> {
     if (!chatId.trim()) throw new StateError("chatId is required");
+    if (this.state !== "connected") throw new StateError("cannot send business traffic before hello-ok");
+    if (!isMessagePayload(payload)) throw new ProtocolError(`invalid ${event} payload`);
+    if (payload.message.streaming !== undefined)
+      throw new ProtocolError(`${event} payload.message.streaming must be omitted on uplink`);
+    const messageRecord = payload.message as unknown as Record<string, unknown>;
+    if (["chat", "sender", "to"].some((field) => field in messageRecord))
+      throw new ProtocolError(`${event} payload.message contains server routing fields`);
     const traceId = this.traceIdFactory();
     const envelope: Envelope<MessagePayload> = {
       version: "2",
@@ -246,6 +297,101 @@ export class ConnectWsClient extends EventEmitter {
     });
   }
 
+  sendStreamCreated(chatId: string, payload: MessageCreatedPayload, options: { toType?: ChatType } = {}): void {
+    this.assertBusinessSendAllowed(chatId);
+    if (!isMessageCreatedPayload(payload)) throw new ProtocolError("invalid message.created payload");
+    this.outboundStreams.set(payload.message_id, { sequence: -1, fragments: [] });
+    this.sendBusinessEvent(EVENT.MESSAGE_CREATED, chatId, payload, options);
+  }
+
+  sendStreamAdd(chatId: string, payload: MessageAddPayload, options: { toType?: ChatType } = {}): void {
+    this.assertBusinessSendAllowed(chatId);
+    if (!isMessageAddPayload(payload)) throw new ProtocolError("invalid message.add payload");
+    const stream = this.outboundStreams.get(payload.message_id);
+    if (!stream || payload.sequence !== stream.sequence + 1)
+      throw new ProtocolError("message.add sequence is not contiguous");
+    const deltaError = streamDeltaError(stream.fragments, payload.fragments);
+    if (deltaError) throw new ProtocolError(deltaError);
+    stream.sequence = payload.sequence;
+    stream.fragments = payload.fragments;
+    this.sendBusinessEvent(EVENT.MESSAGE_ADD, chatId, payload, options);
+  }
+
+  sendStreamDone(chatId: string, payload: MessageTerminalPayload, options: { toType?: ChatType } = {}): void {
+    this.sendStreamTerminal(EVENT.MESSAGE_DONE, chatId, payload, options);
+  }
+
+  sendStreamFailed(chatId: string, payload: MessageTerminalPayload, options: { toType?: ChatType } = {}): void {
+    this.sendStreamTerminal(EVENT.MESSAGE_FAILED, chatId, payload, options);
+  }
+
+  sendTyping(chatId: string, isTyping: boolean, options: { toType?: ChatType } = {}): void {
+    this.assertBusinessSendAllowed(chatId);
+    this.sendEnvelope({
+      version: "2",
+      event: EVENT.TYPING_UPDATE,
+      trace_id: this.traceIdFactory(),
+      emitted_at: Date.now(),
+      chat_id: chatId,
+      to: { id: chatId, type: options.toType ?? "direct" },
+      payload: { is_typing: isTyping },
+    });
+  }
+
+  subscribePresence(userId: string): void {
+    const normalized = assertPresenceUserId(userId);
+    if (!this.presenceSubscriptions.has(normalized) && this.presenceSubscriptions.size >= 16)
+      throw new StateError("presence subscription limit is 16");
+    this.presenceSubscriptions.add(normalized);
+    if (this.state === "connected") this.sendPresenceEvent(EVENT.PRESENCE_SUBSCRIBE, normalized);
+  }
+
+  unsubscribePresence(userId: string): void {
+    const normalized = assertPresenceUserId(userId);
+    this.presenceSubscriptions.delete(normalized);
+    if (this.state === "connected") this.sendPresenceEvent(EVENT.PRESENCE_UNSUBSCRIBE, normalized);
+  }
+
+  sendHistoryTransit(
+    targetDeviceId: string,
+    payload: HistoryTransitPayload,
+    options: { ciphertextFragments?: unknown[] } = {},
+  ): void {
+    if (this.state !== "connected") throw new StateError("cannot send business traffic before hello-ok");
+    if (!targetDeviceId.trim()) throw new StateError("targetDeviceId is required");
+    if (!this.options.userId) throw new StateError("userId is required to send history.transit");
+    if (!this.resolvedDeviceId) throw new StateError("deviceId is required to send history.transit");
+    if (!isHistoryTransitPayload(payload)) throw new ProtocolError("invalid history.transit payload");
+    if (options.ciphertextFragments !== undefined && !Array.isArray(options.ciphertextFragments))
+      throw new ProtocolError("ciphertextFragments must be an array");
+    this.sendEnvelope({
+      version: "2",
+      event: EVENT.HISTORY_TRANSIT,
+      trace_id: this.traceIdFactory(),
+      emitted_at: Date.now(),
+      target_device_id: targetDeviceId,
+      sender: {
+        id: this.options.userId,
+        type: "direct",
+        nick_name: this.options.userNickName ?? this.options.userId,
+      },
+      origin_device_id: this.resolvedDeviceId,
+      ...(options.ciphertextFragments ? { ciphertext_fragments: options.ciphertextFragments } : {}),
+      payload,
+    });
+  }
+
+  resetDeviceCursor(): void {
+    if (this.state !== "connected") throw new StateError("cannot reset device cursor before hello-ok");
+    this.sendEnvelope({
+      version: "2",
+      event: EVENT.DEVICE_CURSOR_RESET,
+      trace_id: this.traceIdFactory(),
+      emitted_at: Date.now(),
+      payload: {} as EmptyPayload,
+    });
+  }
+
   private async openTransport(): Promise<void> {
     try {
       await this.transport.connect(this.options.url, this.transportEvents());
@@ -254,11 +400,65 @@ export class ConnectWsClient extends EventEmitter {
     }
   }
 
+  private sendStreamTerminal(
+    event: "message.done" | "message.failed",
+    chatId: string,
+    payload: MessageTerminalPayload,
+    options: { toType?: ChatType },
+  ): void {
+    this.assertBusinessSendAllowed(chatId);
+    const status = event === EVENT.MESSAGE_DONE ? "done" : "failed";
+    if (!isMessageTerminalPayload(payload, status)) throw new ProtocolError(`invalid ${event} payload`);
+    const stream = this.outboundStreams.get(payload.message_id);
+    if (!stream || payload.streaming.sequence !== terminalSequence(stream.sequence))
+      throw new ProtocolError(`${event} sequence does not match the stream`);
+    this.outboundStreams.delete(payload.message_id);
+    this.sendBusinessEvent(event, chatId, payload, options);
+  }
+
+  private sendPresenceEvent(event: "presence.subscribe" | "presence.unsubscribe", userId: string): void {
+    this.sendEnvelope({
+      version: "2",
+      event,
+      trace_id: this.traceIdFactory(),
+      emitted_at: Date.now(),
+      payload: { user_id: userId },
+    });
+  }
+
+  private sendBusinessEvent(
+    event: "message.created" | "message.add" | "message.done" | "message.failed",
+    chatId: string,
+    payload: MessageCreatedPayload | MessageAddPayload | MessageTerminalPayload,
+    options: { toType?: ChatType },
+  ): void {
+    this.sendEnvelope({
+      version: "2",
+      event,
+      trace_id: this.traceIdFactory(),
+      emitted_at: Date.now(),
+      chat_id: chatId,
+      to: { id: chatId, type: options.toType ?? "direct" },
+      payload,
+    });
+  }
+
+  private assertBusinessSendAllowed(chatId: string): void {
+    if (!chatId.trim()) throw new StateError("chatId is required");
+    if (this.state !== "connected") throw new StateError("cannot send business traffic before hello-ok");
+  }
+
   private transportEvents(): TransportEvents {
     return {
-      onOpen: () => undefined,
-      onMessage: (data) => this.handleRawFrame(data),
+      onOpen: () => {
+        this.resetReliableConnection();
+        this.transition("challenging");
+        this.startHandshakeTimeout();
+      },
+      onMessage: (data) => this.enqueueRawFrame(data),
       onClose: (code, reason) => {
+        this.clearHandshakeTimeout();
+        this.resetReliableConnection();
         this.clearHeartbeat();
         this.rejectPending(new TransportError(`closed ${code}: ${reason}`));
         this.transition("disconnected");
@@ -274,11 +474,76 @@ export class ConnectWsClient extends EventEmitter {
     try {
       envelope = parseEnvelope(data);
     } catch (error) {
-      this.emit("error", error);
+      const protocolError = error instanceof ProtocolError ? error : new ProtocolError(String(error));
+      const poison = recoverDseqPoisonEnvelope(data);
+      if (this.state === "connected" && this.ackEpoch) {
+        if (poison?.dseq !== undefined) {
+          if (poison.dseq !== this.lastReadDseq + 1) {
+            this.disconnectForProtocolError(
+              new ProtocolError(`dseq gap: expected ${this.lastReadDseq + 1}, received ${poison.dseq}`),
+              "dseq gap",
+            );
+            return;
+          }
+          await this.quarantineDseqEnvelope(poison, poison.dseq, protocolError.message);
+          return;
+        }
+        this.disconnectForProtocolError(protocolError, "invalid reliable frame");
+        return;
+      }
+      this.emit("error", protocolError);
       return;
     }
+    if (
+      this.state === "connected" &&
+      this.ackEpoch &&
+      isV2AckableDownlink(envelope.event) &&
+      envelope.dseq === undefined
+    ) {
+      this.disconnectForProtocolError(
+        new ProtocolError(`${envelope.event} is missing dseq on a v2 reliable connection`),
+        "missing dseq",
+      );
+      return;
+    }
+    const materializedDseq = envelope.dseq;
+    if (materializedDseq !== undefined) {
+      try {
+        if (!(await this.recordDseqEnvelope(envelope))) return;
+      } catch (error) {
+        this.disconnectForProtocolError(
+          new ProtocolError(
+            `failed to persist dseq ${materializedDseq}: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+          "dseq persistence failed",
+        );
+        return;
+      }
+    }
+    try {
+      await this.dispatchEnvelope(envelope);
+    } catch (error) {
+      if (materializedDseq !== undefined) {
+        this.disconnectForProtocolError(
+          new ProtocolError(
+            `failed to materialize dseq ${materializedDseq}: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+          "dseq materialization failed",
+        );
+        return;
+      }
+      throw error;
+    }
+    if (materializedDseq !== undefined) {
+      this.ackHighWater = materializedDseq;
+      this.scheduleSyncAck();
+    }
+  }
+
+  private async dispatchEnvelope(envelope: Envelope): Promise<void> {
     if (envelope.event === EVENT.MESSAGE_SEND || envelope.event === EVENT.MESSAGE_REPLY) {
-      const claimed = await this.options.stateStore.claimMessageOnce({
+      const materialized = normalizeInboundMessage(envelope);
+      const upserted = await this.options.stateStore.upsertInboundMessage({
         agentId: this.options.agentId,
         direction: "inbound",
         kind: "message",
@@ -286,9 +551,14 @@ export class ConnectWsClient extends EventEmitter {
         traceId: envelope.trace_id,
         chatId: envelope.chat_id ?? null,
         messageId: messageIdForAudit(envelope),
+        text: materialized?.text ?? null,
         raw: envelope,
       });
-      if (!claimed) return;
+      if (upserted === "duplicate") {
+        if (materialized && this.options.userId && materialized.sender.id !== this.options.userId)
+          this.sendDeliveryReceipt(materialized);
+        return;
+      }
     } else {
       void this.options.stateStore
         .claimMessageOnce({
@@ -304,17 +574,17 @@ export class ConnectWsClient extends EventEmitter {
         .catch(() => undefined);
     }
     if (envelope.event === EVENT.CONNECT_CHALLENGE) {
-      if (!isChallengePayload(envelope.payload))
-        return this.failConnect(new ProtocolError("invalid connect.challenge payload"));
+      if (envelope.trace_id !== "challenge" || !isChallengePayload(envelope.payload))
+        return this.failHandshake(new ProtocolError("invalid connect.challenge payload"));
       return this.handleChallenge(envelope as Envelope<ChallengePayload>);
     }
     if (envelope.event === EVENT.HELLO_OK) {
-      if (!isHelloOkPayload(envelope.payload)) return this.failConnect(new ProtocolError("invalid hello-ok payload"));
+      if (!isHelloOkPayload(envelope.payload)) return this.failHandshake(new ProtocolError("invalid hello-ok payload"));
       return this.handleHelloOk(envelope as Envelope<HelloOkPayload>);
     }
     if (envelope.event === EVENT.HELLO_FAIL) {
       if (!isHelloFailPayload(envelope.payload))
-        return this.failConnect(new ProtocolError("invalid hello-fail payload"));
+        return this.failHandshake(new ProtocolError("invalid hello-fail payload"));
       return this.handleHelloFail(envelope as Envelope<HelloFailPayload>);
     }
     if (envelope.event === EVENT.PING)
@@ -340,16 +610,99 @@ export class ConnectWsClient extends EventEmitter {
       }
       return this.handleMessageError(envelope as Envelope<MessageErrorPayload>);
     }
+    if (
+      envelope.event === EVENT.MESSAGE_CREATED ||
+      envelope.event === EVENT.MESSAGE_ADD ||
+      envelope.event === EVENT.MESSAGE_DONE ||
+      envelope.event === EVENT.MESSAGE_FAILED
+    ) {
+      this.handleInboundStream(envelope);
+      return;
+    }
+    if (envelope.event === EVENT.PRESENCE_SNAPSHOT || envelope.event === EVENT.PRESENCE_UPDATE) {
+      if (!isPresencePayload(envelope.payload)) {
+        this.emit("error", new ProtocolError(`invalid ${envelope.event} payload`));
+        return;
+      }
+      this.emit("presence", envelope);
+      return;
+    }
+    if (envelope.event === EVENT.TYPING_UPDATE) {
+      if (!envelope.chat_id || !envelope.chat_type || !envelope.sender || !isTypingUpdatePayload(envelope.payload)) {
+        this.emit("error", new ProtocolError("invalid typing.update frame"));
+        return;
+      }
+      this.emit("typing", envelope);
+      return;
+    }
+    if (envelope.event === EVENT.MESSAGE_DELIVERED) {
+      if (!envelope.chat_id || !envelope.sender || !isMessageDeliveredPayload(envelope.payload)) {
+        this.emit("error", new ProtocolError("invalid message.delivered frame"));
+        return;
+      }
+      this.emit("delivered", envelope);
+      return;
+    }
     if (envelope.event === EVENT.CHAT_METADATA_INVALIDATED) {
+      if (!envelope.chat_id || !envelope.chat_type || !isChatMetadataInvalidatedPayload(envelope.payload)) {
+        this.emit("error", new ProtocolError("invalid chat.metadata.invalidated frame"));
+        return;
+      }
       this.emit("metadata_invalidated", envelope);
       return;
     }
+    if (envelope.event === EVENT.NOTIFY_SIGNAL) {
+      if (!isNotifySignalPayload(envelope.payload)) return;
+      if (!(await this.options.stateStore.claimProtocolEvent(this.options.agentId, envelope.payload.event_id))) return;
+      this.emit("notify", envelope);
+      return;
+    }
+    if (envelope.event === EVENT.PERMISSION_REQUEST) {
+      if (!envelope.chat_id || !isPermissionRequestPayload(envelope.payload)) {
+        this.emit("error", new ProtocolError("invalid permission.request frame"));
+        return;
+      }
+      this.emit("permission", envelope);
+      return;
+    }
+    if (envelope.event === EVENT.PERMISSION_RESOLVED) {
+      if (!envelope.chat_id || !isPermissionResolvedPayload(envelope.payload)) {
+        this.emit("error", new ProtocolError("invalid permission.resolved frame"));
+        return;
+      }
+      this.emit("permission", envelope);
+      return;
+    }
+    if (envelope.event === EVENT.HISTORY_TRANSIT) {
+      this.emit("history_transit", envelope);
+      return;
+    }
     const inbound = normalizeInboundMessage(envelope);
-    if (inbound) this.emit("message", inbound);
-    else this.emit("event", envelope);
+    if (inbound) {
+      if (
+        this.options.userId &&
+        inbound.sender.id === this.options.userId &&
+        envelope.origin_device_id === this.resolvedDeviceId
+      )
+        return;
+      this.emit("message", inbound);
+      if (this.options.userId && inbound.sender.id !== this.options.userId) this.sendDeliveryReceipt(inbound);
+    } else this.emit("event", envelope);
+  }
+
+  private enqueueRawFrame(data: string | Buffer): void {
+    this.frameQueue = this.frameQueue
+      .then(async () => await this.handleRawFrame(data))
+      .catch((error) => {
+        this.emit("error", error instanceof Error ? error : new Error(String(error)));
+      });
   }
 
   private handleChallenge(envelope: Envelope<ChallengePayload>): void {
+    if (this.state !== "challenging") {
+      this.failHandshake(new ProtocolError(`unexpected connect.challenge while ${this.state}`));
+      return;
+    }
     this.transition("authenticating");
     const traceId = this.traceIdFactory();
     this.expectedConnectTraceId = traceId;
@@ -357,20 +710,40 @@ export class ConnectWsClient extends EventEmitter {
       token: this.options.token,
       nonce: envelope.payload.nonce,
       ...(this.resolvedDeviceId ? { device_id: this.resolvedDeviceId } : {}),
-      capabilities: { multi_device: true, device_replay: true, chat_meta_events: true },
+      capabilities: {
+        multi_device: true,
+        device_replay: true,
+        chat_meta_events: this.options.capabilities?.chatMetadataEvents ?? true,
+        delivery_receipt: true,
+        notify_signals: this.options.capabilities?.notifySignals ?? true,
+        permission_events: this.options.capabilities?.permissionEvents ?? true,
+        history_sync: this.options.capabilities?.historySync ?? true,
+        reliable_delivery_v2: true,
+        e2ee: false,
+      },
     };
     this.sendEnvelope({ version: "2", event: EVENT.CONNECT, trace_id: traceId, emitted_at: Date.now(), payload });
   }
 
   private async handleHelloOk(envelope: Envelope<HelloOkPayload>): Promise<void> {
-    if (this.expectedConnectTraceId && envelope.trace_id !== this.expectedConnectTraceId)
-      return this.failConnect(new ProtocolError("hello-ok trace mismatch"));
-    this.reconnectAttempts = 0;
-    if (envelope.payload.device_id) {
-      this.resolvedDeviceId = envelope.payload.device_id;
-      await this.options.stateStore.setDeviceId(envelope.payload.device_id);
+    if (this.state !== "authenticating")
+      return this.failHandshake(new ProtocolError(`unexpected hello-ok while ${this.state}`));
+    if (!this.expectedConnectTraceId || envelope.trace_id !== this.expectedConnectTraceId)
+      return this.failHandshake(new ProtocolError("hello-ok trace mismatch"));
+    try {
+      await this.options.stateStore.beginProtocolDeliveryEpoch(this.options.agentId, envelope.payload.ack_epoch);
+      if (envelope.payload.device_id) await this.options.stateStore.setDeviceId(envelope.payload.device_id);
+    } catch (error) {
+      this.failHandshake(error instanceof Error ? error : new Error(String(error)));
+      return;
     }
+    this.clearHandshakeTimeout();
+    this.ackEpoch = envelope.payload.ack_epoch;
+    this.startSyncAckResend();
+    this.reconnectAttempts = 0;
+    if (envelope.payload.device_id) this.resolvedDeviceId = envelope.payload.device_id;
     this.transition("connected");
+    for (const userId of this.presenceSubscriptions) this.sendPresenceEvent(EVENT.PRESENCE_SUBSCRIBE, userId);
     this.startHeartbeat();
     this.connectResolve?.();
     this.clearConnectCallbacks();
@@ -378,6 +751,20 @@ export class ConnectWsClient extends EventEmitter {
   }
 
   private handleHelloFail(envelope: Envelope<HelloFailPayload>): void {
+    if (this.state !== "authenticating") {
+      this.failHandshake(new ProtocolError(`unexpected hello-fail while ${this.state}`));
+      return;
+    }
+    if (!this.expectedConnectTraceId || envelope.trace_id !== this.expectedConnectTraceId) {
+      this.failHandshake(new ProtocolError("hello-fail trace mismatch"));
+      return;
+    }
+    this.clearHandshakeTimeout();
+    if (envelope.payload.reason === "remote auth service unavailable") {
+      this.emit("error", new AuthError(envelope.payload.reason));
+      this.transport.close(1013, envelope.payload.reason);
+      return;
+    }
     this.authFailed = true;
     this.failConnect(new AuthError(envelope.payload.reason || "authentication failed"));
     this.transport.close(1008, "authentication failed");
@@ -399,7 +786,20 @@ export class ConnectWsClient extends EventEmitter {
     pending.resolve(envelope);
   }
 
-  private handleMessageError(envelope: Envelope<MessageErrorPayload>): void {
+  private async handleMessageError(envelope: Envelope<MessageErrorPayload>): Promise<void> {
+    const detail = envelope.payload.reason
+      ? `${envelope.payload.code}: ${envelope.payload.reason}`
+      : envelope.payload.code;
+    try {
+      await this.options.stateStore.markMessageFailed({
+        messageId: envelope.trace_id,
+        protocolMessageId: envelope.payload.message_id || null,
+        rejectedAt: envelope.payload.rejected_at,
+        error: detail,
+      });
+    } catch (error) {
+      this.emit("error", error instanceof Error ? error : new Error(String(error)));
+    }
     const pending = this.pendingAcks.get(envelope.trace_id);
     if (!pending) {
       this.emit("message_error", envelope);
@@ -407,7 +807,7 @@ export class ConnectWsClient extends EventEmitter {
     }
     clearTimeout(pending.timer);
     this.pendingAcks.delete(envelope.trace_id);
-    pending.reject(new MessageSendError(`${envelope.payload.code}: ${envelope.payload.message}`));
+    pending.reject(new MessageSendError(detail));
   }
 
   private startHeartbeat(): void {
@@ -442,6 +842,203 @@ export class ConnectWsClient extends EventEmitter {
     this.emit("event", envelope);
   }
 
+  private sendDeliveryReceipt(message: NormalizedInboundMessage): void {
+    this.sendEnvelope({
+      version: "2",
+      event: EVENT.MESSAGE_DELIVERED,
+      trace_id: this.traceIdFactory(),
+      emitted_at: Date.now(),
+      chat_id: message.chatId,
+      to: { id: message.sender.id, type: "direct" },
+      payload: { message_id: message.messageId, delivered_at: Date.now() },
+    });
+  }
+
+  private handleInboundStream(envelope: Envelope): void {
+    if (!envelope.chat_id || !envelope.chat_type || !envelope.sender) {
+      this.emit("error", new ProtocolError(`invalid ${envelope.event} routing`));
+      return;
+    }
+    if (
+      this.options.userId &&
+      envelope.sender.id === this.options.userId &&
+      envelope.origin_device_id === this.resolvedDeviceId
+    )
+      return;
+    if (envelope.event === EVENT.MESSAGE_CREATED) {
+      if (!isMessageCreatedPayload(envelope.payload)) {
+        this.emit("error", new ProtocolError("invalid message.created payload"));
+        return;
+      }
+      this.inboundStreams.set(envelope.payload.message_id, { sequence: -1, fragments: [] });
+      this.emit("stream", envelope);
+      return;
+    }
+    if (envelope.event === EVENT.MESSAGE_ADD) {
+      if (!isMessageAddPayload(envelope.payload)) {
+        this.emit("error", new ProtocolError("invalid message.add payload"));
+        return;
+      }
+      const stream = this.inboundStreams.get(envelope.payload.message_id);
+      if (!stream || envelope.payload.sequence !== stream.sequence + 1) {
+        this.emit("error", new ProtocolError("message.add sequence is not contiguous"));
+        return;
+      }
+      const deltaError = streamDeltaError(stream.fragments, envelope.payload.fragments);
+      if (deltaError) {
+        this.emit("error", new ProtocolError(deltaError));
+        return;
+      }
+      stream.sequence = envelope.payload.sequence;
+      stream.fragments = envelope.payload.fragments;
+      this.emit("stream", envelope);
+      return;
+    }
+    const status = envelope.event === EVENT.MESSAGE_DONE ? "done" : "failed";
+    if (!isMessageTerminalPayload(envelope.payload, status)) {
+      this.emit("error", new ProtocolError(`invalid ${envelope.event} payload`));
+      return;
+    }
+    const stream = this.inboundStreams.get(envelope.payload.message_id);
+    if (!stream || envelope.payload.streaming.sequence !== terminalSequence(stream.sequence)) {
+      this.emit("error", new ProtocolError(`${envelope.event} sequence does not match the stream`));
+      return;
+    }
+    this.inboundStreams.delete(envelope.payload.message_id);
+    this.emit("stream", envelope);
+  }
+
+  private async recordDseqEnvelope(envelope: Envelope): Promise<boolean> {
+    if (!this.ackEpoch) {
+      this.disconnectForProtocolError(
+        new ProtocolError("received dseq before reliable-delivery negotiation"),
+        "unexpected dseq",
+      );
+      return false;
+    }
+    const dseq = envelope.dseq;
+    if (dseq !== this.lastReadDseq + 1) {
+      this.disconnectForProtocolError(
+        new ProtocolError(`dseq gap: expected ${this.lastReadDseq + 1}, received ${dseq}`),
+        "dseq gap",
+      );
+      return false;
+    }
+    const validationError = dseqPayloadError(envelope);
+    if (validationError) return await this.quarantineDseqEnvelope(envelope, dseq, validationError);
+    if (envelope.event === EVENT.SYNC_MARK || envelope.event === EVENT.REPLAY_DONE) {
+      await this.options.stateStore.advanceProtocolDelivery(this.options.agentId, this.ackEpoch, dseq);
+      this.lastReadDseq = dseq;
+      this.ackHighWater = dseq;
+      if (envelope.event === EVENT.REPLAY_DONE) {
+        this.flushSyncAck();
+        this.emit("replay_done", envelope);
+      } else {
+        this.scheduleSyncAck();
+      }
+      return false;
+    }
+    const messageId = messageIdForAudit(envelope);
+    try {
+      const result = await this.options.stateStore.recordProtocolDelivery({
+        agentId: this.options.agentId,
+        ackEpoch: this.ackEpoch,
+        dseq,
+        eventKey: messageId ? `message:${messageId}` : `${envelope.event}:${envelope.trace_id}`,
+        eventType: envelope.event,
+        traceId: envelope.trace_id,
+        chatId: envelope.chat_id ?? null,
+        messageId,
+        raw: envelope,
+      });
+      this.lastReadDseq = dseq;
+      this.emit("delivery_persisted", { envelope, result });
+      return true;
+    } catch (error) {
+      return await this.quarantineDseqEnvelope(envelope, dseq, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async quarantineDseqEnvelope(envelope: Envelope, dseq: number, error: string): Promise<false> {
+    if (!this.ackEpoch) return false;
+    try {
+      await this.options.stateStore.quarantineProtocolDelivery({
+        agentId: this.options.agentId,
+        ackEpoch: this.ackEpoch,
+        dseq,
+        eventType: envelope.event,
+        traceId: envelope.trace_id,
+        raw: envelope,
+        error,
+      });
+    } catch (quarantineError) {
+      this.disconnectForProtocolError(
+        new ProtocolError(
+          `failed to quarantine dseq ${dseq}: ${
+            quarantineError instanceof Error ? quarantineError.message : String(quarantineError)
+          }`,
+        ),
+        "quarantine persistence failed",
+      );
+      return false;
+    }
+    this.lastReadDseq = dseq;
+    this.ackHighWater = dseq;
+    this.scheduleSyncAck();
+    this.emit("quarantined", { envelope, error });
+    return false;
+  }
+
+  private scheduleSyncAck(): void {
+    if (this.syncAckTimer) clearTimeout(this.syncAckTimer);
+    const delay = this.options.reliability?.ackDebounceMs ?? 200;
+    this.syncAckTimer = setTimeout(() => this.flushSyncAck(), Math.max(0, delay));
+  }
+
+  private flushSyncAck(): void {
+    if (!this.ackEpoch || this.ackHighWater <= 0 || this.transport.state !== "open") return;
+    if (this.syncAckTimer) clearTimeout(this.syncAckTimer);
+    this.syncAckTimer = null;
+    this.sendEnvelope({
+      version: "2",
+      event: EVENT.MESSAGE_SYNC_ACK,
+      trace_id: this.traceIdFactory(),
+      emitted_at: Date.now(),
+      payload: { dseq: this.ackHighWater, epoch: this.ackEpoch },
+    });
+  }
+
+  private startSyncAckResend(): void {
+    this.clearReliabilityTimers();
+    const interval = this.options.reliability?.ackResendMs ?? 30_000;
+    if (interval <= 0) return;
+    this.syncAckResendTimer = setInterval(() => this.flushSyncAck(), interval);
+    this.syncAckResendTimer.unref?.();
+  }
+
+  private clearReliabilityTimers(): void {
+    if (this.syncAckTimer) clearTimeout(this.syncAckTimer);
+    if (this.syncAckResendTimer) clearInterval(this.syncAckResendTimer);
+    this.syncAckTimer = null;
+    this.syncAckResendTimer = null;
+  }
+
+  private resetReliableConnection(): void {
+    this.clearReliabilityTimers();
+    this.ackEpoch = null;
+    this.lastReadDseq = 0;
+    this.ackHighWater = 0;
+  }
+
+  private disconnectForProtocolError(error: ProtocolError, reason: string): void {
+    this.clearTimers();
+    this.resetReliableConnection();
+    this.rejectPending(error);
+    this.transition("disconnected");
+    this.emit("error", error);
+    this.transport.close(1002, reason);
+  }
+
   private scheduleReconnect(): void {
     const cfg = {
       enabled: true,
@@ -473,6 +1070,25 @@ export class ConnectWsClient extends EventEmitter {
     this.emit("error", error);
   }
 
+  private failHandshake(error: Error): void {
+    this.clearHandshakeTimeout();
+    this.failConnect(error);
+    this.transport.close(1002, "protocol handshake error");
+  }
+
+  private startHandshakeTimeout(): void {
+    this.clearHandshakeTimeout();
+    this.handshakeTimer = setTimeout(
+      () => this.failHandshake(new TransportError("websocket handshake timed out")),
+      this.options.handshakeTimeoutMs ?? 10_000,
+    );
+  }
+
+  private clearHandshakeTimeout(): void {
+    if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
+    this.handshakeTimer = null;
+  }
+
   private rejectPending(error: Error): void {
     for (const [traceId, pending] of this.pendingAcks.entries()) {
       clearTimeout(pending.timer);
@@ -492,6 +1108,8 @@ export class ConnectWsClient extends EventEmitter {
   private clearTimers(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.clearHandshakeTimeout();
+    this.clearReliabilityTimers();
     this.clearHeartbeat();
   }
 
@@ -513,4 +1131,88 @@ function messageIdForAudit(envelope: Envelope): string | null {
   if (envelope.event === EVENT.MESSAGE_ERROR) return envelope.trace_id;
   const payload = envelope.payload as { message_id?: unknown };
   return typeof payload.message_id === "string" ? payload.message_id : null;
+}
+
+function dseqPayloadError(envelope: Envelope): string | null {
+  if (envelope.event === EVENT.MESSAGE_SEND || envelope.event === EVENT.MESSAGE_REPLY) {
+    const payload = envelope.payload as { message_id?: unknown };
+    if (
+      !envelope.chat_id ||
+      !envelope.chat_type ||
+      !envelope.sender ||
+      !isMaterializedMessagePayload(envelope.payload) ||
+      typeof payload.message_id !== "string" ||
+      !payload.message_id
+    )
+      return `invalid ${envelope.event} payload`;
+  }
+  if (envelope.event === EVENT.NOTIFY_SIGNAL && !isNotifySignalPayload(envelope.payload))
+    return "invalid notify.signal payload";
+  if (
+    envelope.event === EVENT.HISTORY_TRANSIT &&
+    (!envelope.target_device_id ||
+      !envelope.sender ||
+      !envelope.origin_device_id ||
+      !isHistoryTransitPayload(envelope.payload))
+  )
+    return "invalid history.transit frame";
+  if (envelope.event === EVENT.SYNC_MARK && !isSyncMarkPayload(envelope.payload)) return "invalid sync.mark payload";
+  if (envelope.event === EVENT.REPLAY_DONE && !isEmptyPayload(envelope.payload)) return "invalid replay.done payload";
+  return null;
+}
+
+function isV2AckableDownlink(event: string): boolean {
+  return (
+    event === EVENT.MESSAGE_SEND ||
+    event === EVENT.MESSAGE_REPLY ||
+    event === EVENT.HISTORY_TRANSIT ||
+    event === EVENT.NOTIFY_SIGNAL ||
+    event === EVENT.SYNC_MARK ||
+    event === EVENT.REPLAY_DONE
+  );
+}
+
+function streamDeltaError(previousFragments: Fragment[], nextFragments: Fragment[]): string | null {
+  for (const [index, fragment] of nextFragments.entries()) {
+    if (fragment.kind !== "text") continue;
+    const previous = previousFragments[index];
+    const previousText = previous?.kind === "text" ? previous.text : "";
+    if (typeof fragment.delta !== "string" || previousText + fragment.delta !== fragment.text)
+      return "message.add text delta invariant failed";
+  }
+  return null;
+}
+
+function recoverDseqPoisonEnvelope(data: string | Buffer): Envelope | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.isBuffer(data) ? data.toString("utf8") : data);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  if (!Number.isSafeInteger(record.dseq) || Number(record.dseq) <= 0) return null;
+  const dseq = Number(record.dseq);
+  return {
+    ...record,
+    version: "2",
+    event: typeof record.event === "string" && record.event ? record.event : "invalid",
+    trace_id: typeof record.trace_id === "string" && record.trace_id ? record.trace_id : `invalid-dseq-${dseq}`,
+    emitted_at:
+      typeof record.emitted_at === "number" && Number.isFinite(record.emitted_at) ? record.emitted_at : Date.now(),
+    dseq,
+    payload:
+      record.payload && typeof record.payload === "object" && !Array.isArray(record.payload) ? record.payload : {},
+  } as Envelope;
+}
+
+function terminalSequence(lastAddSequence: number): number {
+  return lastAddSequence < 0 ? 0 : lastAddSequence;
+}
+
+function assertPresenceUserId(userId: string): string {
+  const normalized = userId.trim();
+  if (!/^(?:usr_|agt_).+/u.test(normalized)) throw new StateError("presence userId must start with usr_ or agt_");
+  return normalized;
 }

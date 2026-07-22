@@ -2,7 +2,7 @@ import {
   type Envelope,
   EVENT,
   type Fragment,
-  isMessagePayload,
+  isMaterializedMessagePayload,
   type MessagePayload,
   type NormalizedInboundMessage,
 } from "./protocol";
@@ -52,7 +52,8 @@ export function extractMentionIds(fragments: Fragment[], mentions: unknown[]): s
 
 export function normalizeInboundMessage(envelope: Envelope): NormalizedInboundMessage | null {
   if (envelope.event !== EVENT.MESSAGE_SEND && envelope.event !== EVENT.MESSAGE_REPLY) return null;
-  if (!envelope.chat_id || !envelope.sender || !isMessagePayload(envelope.payload)) return null;
+  if (!envelope.chat_id || !envelope.chat_type || !envelope.sender || !isMaterializedMessagePayload(envelope.payload))
+    return null;
   const payload = envelope.payload as MessagePayload;
   const messageId = typeof payload.message_id === "string" && payload.message_id ? payload.message_id : null;
   if (!messageId) return null;

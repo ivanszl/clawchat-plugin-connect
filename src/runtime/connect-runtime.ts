@@ -16,7 +16,7 @@ import type { AgentBindingConfig, ConnectConfig, RuntimeSessionRecord } from "..
 import type { ConnectWsClient } from "../ws-client";
 import type { RuntimeAdapterRegistry } from "./registry";
 import { type QueueStats, SessionQueue } from "./session-queue";
-import type { ConnectRuntimeSession, SelectableRuntimeThread } from "./types";
+import type { ConnectRuntimeMedia, ConnectRuntimeSession, SelectableRuntimeThread } from "./types";
 
 export interface ConnectRuntimeOptions {
   agentId: string;
@@ -207,6 +207,7 @@ export class ConnectRuntime {
     });
     for await (const event of session.prompt({
       prompt: renderPrompt(message),
+      media: runtimeMedia(message),
       workspace,
       mode: current.mode ?? undefined,
       metadata: {
@@ -372,4 +373,25 @@ function sessionKey(chatId: string, sessionId: string): string {
 function renderPrompt(message: NormalizedInboundMessage): string {
   const sender = message.sender.nick_name || message.sender.id;
   return [`ClawChat ${message.chatType} message from ${sender}:`, message.text].join("\n");
+}
+
+function runtimeMedia(message: NormalizedInboundMessage): ConnectRuntimeMedia[] {
+  return message.fragments.flatMap((fragment) => {
+    if (fragment.kind !== "image" && fragment.kind !== "file" && fragment.kind !== "audio" && fragment.kind !== "video")
+      return [];
+    const record = fragment as Record<string, unknown>;
+    if (typeof record.url !== "string" || !record.url) return [];
+    return [
+      {
+        kind: fragment.kind,
+        url: record.url,
+        ...(typeof record.name === "string" ? { name: record.name } : {}),
+        ...(typeof record.mime === "string" ? { mime: record.mime } : {}),
+        ...(typeof record.size === "number" ? { size: record.size } : {}),
+        ...(typeof record.width === "number" ? { width: record.width } : {}),
+        ...(typeof record.height === "number" ? { height: record.height } : {}),
+        ...(typeof record.duration === "number" ? { duration: record.duration } : {}),
+      },
+    ];
+  });
 }

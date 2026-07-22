@@ -1,5 +1,10 @@
 import { resolve } from "node:path";
-import { type BindingRuntimeHandle, type BindingRuntimeOptions, startBindingRuntime } from "./binding-runtime";
+import {
+  type BindingProtocolEvent,
+  type BindingRuntimeHandle,
+  type BindingRuntimeOptions,
+  startBindingRuntime,
+} from "./binding-runtime";
 import {
   type ClientInterfaceHandle,
   type ClientInterfaceOptions,
@@ -20,6 +25,7 @@ export interface ConnectServiceOptions {
   waitUntilShutdown?: () => Promise<void>;
   writeOutput?: (message: string) => void;
   writeError?: (message: string) => void;
+  onProtocolEvent?: (event: BindingProtocolEvent) => void | Promise<void>;
 }
 
 export interface ConnectServiceDependencies {
@@ -75,6 +81,7 @@ export async function startConnectService(
           projects,
           runtimeAdapters,
           transcriptProjection,
+          onProtocolEvent: options.onProtocolEvent,
           writeError,
         });
       }),
