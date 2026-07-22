@@ -21,7 +21,7 @@ export interface BindingRuntimeOptions {
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection?: TranscriptProjection;
   wsTransport?: Transport;
-  onProtocolEvent?: (event: BindingProtocolEvent) => void | Promise<void>;
+  protocolEventHandlers?: BindingProtocolEventHandlers;
   writeError: (message: string) => void;
 }
 
@@ -39,8 +39,16 @@ export type BindingProtocolEventType =
   | "unknown";
 
 export type BindingProtocolEvent =
-  | { type: BindingProtocolEventType; envelope: Envelope }
+  | {
+      [Type in BindingProtocolEventType]: { type: Type; envelope: Envelope };
+    }[BindingProtocolEventType]
   | { type: "quarantined"; envelope: Envelope; error: string };
+
+export type BindingProtocolEventHandlers = {
+  [Type in BindingProtocolEvent["type"]]?: (
+    event: Extract<BindingProtocolEvent, { type: Type }>,
+  ) => void | Promise<void>;
+};
 
 export interface BindingRuntimeHandle {
   agentId: string;
@@ -56,17 +64,19 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   const wsClient = new ConnectWsClient({
     agentId: options.agentId,
     url: options.config.websocketUrl,
+    mediaUploadUrl: options.config.mediaUploadUrl,
     token: options.activation.accessToken,
     userId: options.activation.userId,
     userNickName: options.agentId,
     stateStore: options.stateStore,
     deviceId: options.deviceId,
     transport: options.wsTransport,
+    protocolEventHandler: async (type, envelope) => await dispatchProtocolEventHandler(options, type, envelope),
     capabilities: {
-      chatMetadataEvents: Boolean(options.onProtocolEvent),
-      notifySignals: Boolean(options.onProtocolEvent),
-      permissionEvents: Boolean(options.onProtocolEvent),
-      historySync: Boolean(options.onProtocolEvent),
+      chatMetadataEvents: Boolean(options.protocolEventHandlers?.metadata_invalidated),
+      notifySignals: Boolean(options.protocolEventHandlers?.notify),
+      permissionEvents: Boolean(options.protocolEventHandlers?.permission),
+      historySync: Boolean(options.protocolEventHandlers?.history_transit),
     },
   });
   const runtime = new ConnectRuntime({
@@ -84,7 +94,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       options.writeError(`${options.agentId}: ${error instanceof Error ? error.message : String(error)}\n`),
     );
   });
-  wireProtocolEvents(wsClient, options);
+  wireQuarantineEvents(wsClient, options);
   wsClient.on("error", (error: unknown) => {
     const detail = error instanceof Error ? error.message : String(error);
     options.writeError(`${options.agentId}: ${detail}\n`);
@@ -118,44 +128,30 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   };
 }
 
-function wireProtocolEvents(wsClient: ConnectWsClient, options: BindingRuntimeOptions): void {
-  const eventNames: ReadonlyArray<readonly [string, BindingProtocolEventType]> = [
-    ["stream", "stream"],
-    ["typing", "typing"],
-    ["presence", "presence"],
-    ["delivered", "delivered"],
-    ["metadata_invalidated", "metadata_invalidated"],
-    ["notify", "notify"],
-    ["permission", "permission"],
-    ["history_transit", "history_transit"],
-    ["replay_done", "replay_done"],
-    ["message_error", "message_error"],
-    ["event", "unknown"],
-  ];
-  for (const [eventName, type] of eventNames) {
-    wsClient.on(eventName, (envelope: Envelope) => dispatchProtocolEvent(options, { type, envelope }));
-  }
+async function dispatchProtocolEventHandler(
+  options: BindingRuntimeOptions,
+  type: BindingProtocolEventType,
+  envelope: Envelope,
+): Promise<void> {
+  const handler = options.protocolEventHandlers?.[type] as
+    | ((event: BindingProtocolEvent) => void | Promise<void>)
+    | undefined;
+  if (handler) await handler({ type, envelope } as BindingProtocolEvent);
+}
+
+function wireQuarantineEvents(wsClient: ConnectWsClient, options: BindingRuntimeOptions): void {
   wsClient.on("quarantined", (event: { envelope: Envelope; error: string }) => {
     options.writeError(
       `${options.agentId}: quarantined Protocol v2 ${event.envelope.event} dseq=${event.envelope.dseq ?? "?"}: ${event.error}\n`,
     );
-    dispatchProtocolEvent(options, { type: "quarantined", ...event });
-  });
-}
-
-function dispatchProtocolEvent(options: BindingRuntimeOptions, event: BindingProtocolEvent): void {
-  if (!options.onProtocolEvent) return;
-  try {
-    void Promise.resolve(options.onProtocolEvent(event)).catch((error) =>
+    const handler = options.protocolEventHandlers?.quarantined;
+    if (!handler) return;
+    void Promise.resolve(handler({ type: "quarantined", ...event })).catch((error) =>
       options.writeError(
         `${options.agentId}: Protocol event handler failed: ${error instanceof Error ? error.message : String(error)}\n`,
       ),
     );
-  } catch (error) {
-    options.writeError(
-      `${options.agentId}: Protocol event handler failed: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
-  }
+  });
 }
 
 async function dispatchInboundMessage(

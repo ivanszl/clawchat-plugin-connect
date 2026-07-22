@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import {
-  type BindingProtocolEvent,
+  type BindingProtocolEventHandlers,
   type BindingRuntimeHandle,
   type BindingRuntimeOptions,
   startBindingRuntime,
@@ -25,7 +25,7 @@ export interface ConnectServiceOptions {
   waitUntilShutdown?: () => Promise<void>;
   writeOutput?: (message: string) => void;
   writeError?: (message: string) => void;
-  onProtocolEvent?: (event: BindingProtocolEvent) => void | Promise<void>;
+  protocolEventHandlers?: BindingProtocolEventHandlers;
 }
 
 export interface ConnectServiceDependencies {
@@ -81,7 +81,7 @@ export async function startConnectService(
           projects,
           runtimeAdapters,
           transcriptProjection,
-          onProtocolEvent: options.onProtocolEvent,
+          protocolEventHandlers: options.protocolEventHandlers,
           writeError,
         });
       }),

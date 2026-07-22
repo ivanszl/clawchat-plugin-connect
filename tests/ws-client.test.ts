@@ -67,6 +67,7 @@ function createStore(options: { deviceId?: string; claim?: boolean } = {}): Conn
     setDeviceId: mock(async () => undefined),
     claimMessageOnce: mock(async () => options.claim ?? true),
     upsertInboundMessage: mock(async () => "inserted" as const),
+    hasProtocolEvent: mock(async () => false),
     claimProtocolEvent: mock(async () => true),
     markMessageAcknowledged: mock(async () => true),
     markMessageFailed: mock(async () => true),
@@ -384,6 +385,126 @@ describe("ConnectWsClient", () => {
     client.close();
   });
 
+  it("uploads media with the WebSocket bearer token and returns the response Fragment", async () => {
+    const transport = new MemoryTransport();
+    const mediaFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("https://media.example/media/upload");
+      expect(init?.method).toBe("POST");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer token");
+      const form = init?.body as FormData;
+      const file = form.get("file");
+      expect(file).toBeInstanceOf(File);
+      expect((file as File).name).toBe("photo.png");
+      expect((file as File).type).toBe("image/png");
+      expect(await (file as File).text()).toBe("image-bytes");
+      return new Response(
+        JSON.stringify({
+          code: 0,
+          msg: "ok",
+          data: {
+            kind: "image",
+            url: "https://cdn.example/opaque-image",
+            name: "photo.png",
+            mime: "image/png",
+            size: 11,
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport,
+      mediaUploadUrl: "https://media.example/media/upload",
+      mediaFetch,
+      heartbeat: { enabled: false },
+    });
+
+    await expect(
+      client.uploadMedia(new Blob(["image-bytes"], { type: "image/png" }), { filename: "photo.png" }),
+    ).resolves.toEqual({
+      kind: "image",
+      url: "https://cdn.example/opaque-image",
+      name: "photo.png",
+      mime: "image/png",
+      size: 11,
+    });
+    expect(mediaFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a media upload business error even when HTTP succeeds", async () => {
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport: new MemoryTransport(),
+      mediaUploadUrl: "https://media.example/media/upload",
+      mediaFetch: async () =>
+        new Response(JSON.stringify({ code: 41501, msg: "mime type not allowed" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      heartbeat: { enabled: false },
+    });
+
+    await expect(client.uploadMedia(new Blob(["bad"]), { filename: "bad.exe" })).rejects.toThrow(
+      /41501: mime type not allowed/u,
+    );
+  });
+
+  it("uploads media before sending the returned Fragment in a materialized message", async () => {
+    const transport = new MemoryTransport();
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport,
+      mediaUploadUrl: "https://media.example/media/upload",
+      mediaFetch: async () =>
+        new Response(
+          JSON.stringify({
+            code: 0,
+            msg: "ok",
+            data: { kind: "file", url: "https://cdn.example/opaque-file", name: "report.pdf", size: 3 },
+          }),
+        ),
+      traceIdFactory: () => "trace-media-send",
+      heartbeat: { enabled: false },
+    });
+    await handshake(client, transport, "trace-media-send");
+
+    const sending = client.sendMediaMessage(
+      "chat-media",
+      [{ file: new Blob(["pdf"], { type: "application/pdf" }), filename: "report.pdf" }],
+      { text: "attached" },
+    );
+    await flush();
+    const sent = transport.sent.find((envelope) => envelope.event === EVENT.MESSAGE_SEND);
+    expect(sent?.payload).toMatchObject({
+      message: {
+        body: {
+          fragments: [
+            { kind: "text", text: "attached" },
+            { kind: "file", url: "https://cdn.example/opaque-file", name: "report.pdf", size: 3 },
+          ],
+        },
+      },
+    });
+    if (!sent) throw new Error("media message was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.MESSAGE_ACK,
+      trace_id: sent.trace_id,
+      emitted_at: 4,
+      payload: { message_id: "media-message", accepted_at: 4 },
+    });
+
+    await expect(sending).resolves.toMatchObject({ event: EVENT.MESSAGE_ACK });
+    client.close();
+  });
+
   it("reuses persisted device id when no explicit device id is supplied", async () => {
     const transport = new MemoryTransport();
     const client = createClient({
@@ -504,6 +625,45 @@ describe("ConnectWsClient", () => {
     await expect(client.sendMessageEnvelope(EVENT.MESSAGE_SEND, "chat-1", payload)).rejects.toThrow(
       /streaming must be omitted/,
     );
+    client.close();
+  });
+
+  it("rejects nonconforming client message ids and nested timestamps on uplink", async () => {
+    const transport = new MemoryTransport();
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport,
+      traceIdFactory: () => "trace-uplink-contract",
+      ackTimeoutMs: 5,
+      heartbeat: { enabled: false },
+    });
+    await handshake(client, transport, "trace-uplink-contract");
+    const payload = {
+      message_mode: "normal",
+      message: {
+        body: { fragments: [{ kind: "text", text: "hello" }] },
+        context: { mentions: [], reply: null },
+      },
+    };
+
+    await expect(
+      client.sendMessageEnvelope(EVENT.MESSAGE_REPLY, "chat-1", {
+        ...payload,
+        message_id: "stream-custom-id",
+      }),
+    ).rejects.toThrow(/message_id must match/u);
+    await expect(
+      client.sendMessageEnvelope(EVENT.MESSAGE_SEND, "chat-1", {
+        ...payload,
+        message: { ...payload.message, created_at: 123 },
+      } as never),
+    ).rejects.toThrow(/timestamp field created_at/u);
+    expect(() =>
+      client.sendStreamCreated("chat-1", { message_id: "stream-custom-id", message_mode: "thinking" }),
+    ).toThrow(/message_id must match/u);
+    expect(transport.sent.filter((envelope) => envelope.event.startsWith("message."))).toEqual([]);
     client.close();
   });
 
@@ -1247,14 +1407,17 @@ describe("ConnectWsClient", () => {
     client.on("stream", (event: Envelope) => inbound.push(event));
     await handshake(client, transport, "trace-empty-stream");
     const terminal = {
-      message_id: "stream-empty",
+      message_id: "msg-01HVB6S7K8L9M0N1P2Q3R4S5T7",
       fragments: [],
       streaming: { status: "done" as const, sequence: 0, mutation_policy: "append_text_only" as const },
       completed_at: 10,
     };
 
-    client.sendStreamCreated("chat-1", { message_id: "outbound-empty" });
-    client.sendStreamDone("chat-1", { ...terminal, message_id: "outbound-empty" });
+    client.sendStreamCreated("chat-1", { message_id: "msg-01HVB6S7K8L9M0N1P2Q3R4S5T8" });
+    client.sendStreamDone("chat-1", {
+      ...terminal,
+      message_id: "msg-01HVB6S7K8L9M0N1P2Q3R4S5T8",
+    });
     transport.receive({
       version: "2",
       event: EVENT.MESSAGE_CREATED,
@@ -1263,7 +1426,7 @@ describe("ConnectWsClient", () => {
       chat_id: "chat-1",
       chat_type: "direct",
       sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
-      payload: { message_id: "stream-empty" },
+      payload: { message_id: "msg-01HVB6S7K8L9M0N1P2Q3R4S5T7" },
     });
     transport.receive({
       version: "2",
@@ -1546,11 +1709,13 @@ describe("ConnectWsClient", () => {
   it("deduplicates notify.signal by event_id across reliable redelivery", async () => {
     const transport = new MemoryTransport();
     const store = createStore();
-    let eventClaim = 0;
+    const claimedEvents = new Set<string>();
+    store.hasProtocolEvent = mock(async (_agentId, eventId) => claimedEvents.has(eventId));
     store.claimProtocolEvent = mock(async () => {
-      eventClaim += 1;
-      return eventClaim === 1;
+      claimedEvents.add("ntf_same");
+      return true;
     });
+    const handled = mock(async (_envelope: Envelope) => undefined);
     const client = createClient({
       url: "ws://example/ws",
       token: "token",
@@ -1559,6 +1724,9 @@ describe("ConnectWsClient", () => {
       traceIdFactory: () => "trace-notify-dedup",
       heartbeat: { enabled: false },
       reliability: { ackDebounceMs: 0, ackResendMs: 0 },
+      protocolEventHandler: async (type, envelope) => {
+        if (type === "notify") await handled(envelope);
+      },
     });
     const notifications: Envelope[] = [];
     client.on("notify", (event: Envelope) => notifications.push(event));
@@ -1584,7 +1752,8 @@ describe("ConnectWsClient", () => {
     await flush();
 
     expect(notifications).toHaveLength(1);
-    expect(store.claimProtocolEvent).toHaveBeenCalledTimes(2);
+    expect(handled).toHaveBeenCalledTimes(1);
+    expect(store.claimProtocolEvent).toHaveBeenCalledTimes(1);
     client.close();
   });
 
@@ -1678,6 +1847,47 @@ describe("ConnectWsClient", () => {
     expect(store.recordProtocolDelivery).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: EVENT.HISTORY_TRANSIT, dseq: 1 }),
     );
+    client.close();
+  });
+
+  it("does not claim or acknowledge notify.signal when its production handler fails", async () => {
+    const transport = new MemoryTransport();
+    const store = createStore();
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: store,
+      transport,
+      traceIdFactory: () => "trace-1",
+      reconnect: { enabled: false },
+      heartbeat: { enabled: false },
+      reliability: { ackDebounceMs: 0, ackResendMs: 0 },
+      protocolEventHandler: async (type) => {
+        if (type === "notify") throw new Error("notify consumer failed");
+      },
+    });
+    client.on("error", () => undefined);
+    await handshake(client, transport);
+
+    transport.receive({
+      version: "2",
+      event: EVENT.NOTIFY_SIGNAL,
+      trace_id: "notify-handler-failed",
+      emitted_at: 10,
+      dseq: 1,
+      payload: {
+        type: "friend.added",
+        entity_id: "usr_bob",
+        version: 1,
+        event_id: "event-handler-failed",
+        message_id: "msg-handler-failed",
+      },
+    });
+    await flush();
+
+    expect(client.connectionState).toBe("disconnected");
+    expect(store.claimProtocolEvent).not.toHaveBeenCalled();
+    expect(transport.sent.some((event) => event.event === EVENT.MESSAGE_SYNC_ACK)).toBe(false);
     client.close();
   });
 

@@ -12,6 +12,7 @@ describe("Agent Binding configuration", () => {
   it("normalizes and persists a Codex Runtime configuration without making the Binding ID semantic", async () => {
     const config = normalizeConfig({
       clientHost: "0.0.0.0",
+      mediaUploadUrl: "https://media.example/media/upload",
       defaultAgent: "work",
       agents: {
         work: {
@@ -43,6 +44,7 @@ describe("Agent Binding configuration", () => {
       }),
     );
     expect(config.clientHost).toBe("0.0.0.0");
+    expect(config.mediaUploadUrl).toBe("https://media.example/media/upload");
 
     const path = await tempConfigPath();
     await saveConfig(config, path);

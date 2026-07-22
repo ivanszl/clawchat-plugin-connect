@@ -905,6 +905,15 @@ export class ConnectStateStore {
     );
     return (result.changes ?? 0) > 0;
   }
+  async hasProtocolEvent(agentId: string, eventId: string): Promise<boolean> {
+    const db = await this.requireDb();
+    const existing = await db.get<{ present: number }>(
+      `SELECT 1 AS present FROM protocol_event_dedup WHERE local_agent_id = ? AND event_id = ? LIMIT 1`,
+      requireStateString(agentId, "agentId"),
+      requireStateString(eventId, "eventId"),
+    );
+    return existing !== undefined;
+  }
   async markMessageAcknowledged(params: {
     messageId: string;
     protocolMessageId?: string | null;

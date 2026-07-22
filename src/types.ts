@@ -29,6 +29,7 @@ export type AgentBindingConfig = CodexAgentBindingConfig;
 export interface ConnectConfig {
   baseUrl: string;
   websocketUrl: string;
+  mediaUploadUrl: string;
   stateDbPath: string;
   defaultAgent: string | null;
   outputVisibility: OutputVisibility;

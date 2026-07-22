@@ -136,10 +136,32 @@ async function normalizeWebSocketData(data: unknown): Promise<string | Buffer> {
   throw new TransportError(`unsupported websocket message type: ${typeof data}`);
 }
 
+export type ConnectProtocolEventType =
+  | "stream"
+  | "typing"
+  | "presence"
+  | "delivered"
+  | "metadata_invalidated"
+  | "notify"
+  | "permission"
+  | "history_transit"
+  | "replay_done"
+  | "message_error"
+  | "unknown";
+
+export type MediaUploadFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+export interface MediaUploadInput {
+  file: Blob;
+  filename?: string;
+}
+
 export interface ConnectWsClientOptions {
   agentId: string;
   url: string;
   token: string;
+  mediaUploadUrl?: string;
+  mediaFetch?: MediaUploadFetch;
   userId?: string;
   userNickName?: string;
   stateStore: ConnectStateStore;
@@ -157,6 +179,7 @@ export interface ConnectWsClientOptions {
   };
   heartbeat?: { enabled?: boolean; intervalMs?: number; timeoutMs?: number };
   reliability?: { ackDebounceMs?: number; ackResendMs?: number };
+  protocolEventHandler?: (type: ConnectProtocolEventType, envelope: Envelope) => void | Promise<void>;
   capabilities?: {
     chatMetadataEvents?: boolean;
     notifySignals?: boolean;
@@ -246,6 +269,66 @@ export class ConnectWsClient extends EventEmitter {
     return await this.sendMessageEnvelope(EVENT.MESSAGE_SEND, chatId, buildTextMessagePayload(text), options);
   }
 
+  async uploadMedia(file: Blob, options: { filename?: string } = {}): Promise<Fragment> {
+    if (!(file instanceof Blob)) throw new ProtocolError("media upload file must be a Blob");
+    const uploadUrl = parseMediaUploadUrl(this.options.mediaUploadUrl);
+    const body = new FormData();
+    body.append("file", file, options.filename?.trim() ?? "");
+    let response: Response;
+    try {
+      response = await (this.options.mediaFetch ?? globalThis.fetch)(uploadUrl, {
+        method: "POST",
+        headers: { authorization: `Bearer ${this.options.token}` },
+        body,
+      });
+    } catch (error) {
+      throw new TransportError(`media upload failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    let parsed: unknown;
+    try {
+      parsed = await response.json();
+    } catch (error) {
+      if (!response.ok) throw new TransportError(`media upload failed with HTTP ${response.status}`);
+      throw new TransportError(
+        `media upload returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const envelope = objectRecord(parsed);
+    if (!envelope || typeof envelope.code !== "number" || !Number.isSafeInteger(envelope.code)) {
+      throw new ProtocolError("media upload response is missing an integer code");
+    }
+    if (envelope.code !== 0) {
+      const detail = typeof envelope.msg === "string" && envelope.msg ? envelope.msg : "media upload rejected";
+      throw new ProtocolError(`${envelope.code}: ${detail}`);
+    }
+    if (!response.ok) throw new TransportError(`media upload failed with HTTP ${response.status}`);
+    if (!isUploadedMediaFragment(envelope.data)) {
+      throw new ProtocolError("media upload response data is not a media Fragment");
+    }
+    return envelope.data;
+  }
+
+  async sendMediaMessage(
+    chatId: string,
+    uploads: readonly MediaUploadInput[],
+    options: {
+      text?: string;
+      event?: "message.send" | "message.reply";
+      toType?: ChatType;
+    } = {},
+  ): Promise<Envelope<MessageAckPayload>> {
+    this.assertBusinessSendAllowed(chatId);
+    if (uploads.length === 0) throw new ProtocolError("sendMediaMessage requires at least one media upload");
+    const mediaFragments = await Promise.all(
+      uploads.map(async (upload) => await this.uploadMedia(upload.file, { filename: upload.filename })),
+    );
+    const payload = buildTextMessagePayload(options.text ?? "");
+    payload.message.body.fragments.push(...mediaFragments);
+    return await this.sendMessageEnvelope(options.event ?? EVENT.MESSAGE_SEND, chatId, payload, {
+      toType: options.toType,
+    });
+  }
+
   async sendMessageEnvelope(
     event: "message.send" | "message.reply",
     chatId: string,
@@ -255,11 +338,18 @@ export class ConnectWsClient extends EventEmitter {
     if (!chatId.trim()) throw new StateError("chatId is required");
     if (this.state !== "connected") throw new StateError("cannot send business traffic before hello-ok");
     if (!isMessagePayload(payload)) throw new ProtocolError(`invalid ${event} payload`);
+    if (payload.message_id !== undefined) assertClientMessageId(payload.message_id);
     if (payload.message.streaming !== undefined)
       throw new ProtocolError(`${event} payload.message.streaming must be omitted on uplink`);
     const messageRecord = payload.message as unknown as Record<string, unknown>;
-    if (["chat", "sender", "to"].some((field) => field in messageRecord))
-      throw new ProtocolError(`${event} payload.message contains server routing fields`);
+    const forbiddenField = findForbiddenUplinkMessageField(messageRecord);
+    if (forbiddenField) {
+      throw new ProtocolError(
+        forbiddenField.kind === "timestamp"
+          ? `${event} payload.message contains timestamp field ${forbiddenField.field}`
+          : `${event} payload.message contains server routing field ${forbiddenField.field}`,
+      );
+    }
     const traceId = this.traceIdFactory();
     const envelope: Envelope<MessagePayload> = {
       version: "2",
@@ -300,6 +390,7 @@ export class ConnectWsClient extends EventEmitter {
   sendStreamCreated(chatId: string, payload: MessageCreatedPayload, options: { toType?: ChatType } = {}): void {
     this.assertBusinessSendAllowed(chatId);
     if (!isMessageCreatedPayload(payload)) throw new ProtocolError("invalid message.created payload");
+    assertClientMessageId(payload.message_id);
     this.outboundStreams.set(payload.message_id, { sequence: -1, fragments: [] });
     this.sendBusinessEvent(EVENT.MESSAGE_CREATED, chatId, payload, options);
   }
@@ -307,6 +398,7 @@ export class ConnectWsClient extends EventEmitter {
   sendStreamAdd(chatId: string, payload: MessageAddPayload, options: { toType?: ChatType } = {}): void {
     this.assertBusinessSendAllowed(chatId);
     if (!isMessageAddPayload(payload)) throw new ProtocolError("invalid message.add payload");
+    assertClientMessageId(payload.message_id);
     const stream = this.outboundStreams.get(payload.message_id);
     if (!stream || payload.sequence !== stream.sequence + 1)
       throw new ProtocolError("message.add sequence is not contiguous");
@@ -409,6 +501,7 @@ export class ConnectWsClient extends EventEmitter {
     this.assertBusinessSendAllowed(chatId);
     const status = event === EVENT.MESSAGE_DONE ? "done" : "failed";
     if (!isMessageTerminalPayload(payload, status)) throw new ProtocolError(`invalid ${event} payload`);
+    assertClientMessageId(payload.message_id);
     const stream = this.outboundStreams.get(payload.message_id);
     if (!stream || payload.streaming.sequence !== terminalSequence(stream.sequence))
       throw new ProtocolError(`${event} sequence does not match the stream`);
@@ -536,7 +629,8 @@ export class ConnectWsClient extends EventEmitter {
     }
     if (materializedDseq !== undefined) {
       this.ackHighWater = materializedDseq;
-      this.scheduleSyncAck();
+      if (envelope.event === EVENT.REPLAY_DONE) this.flushSyncAck();
+      else this.scheduleSyncAck();
     }
   }
 
@@ -595,7 +689,11 @@ export class ConnectWsClient extends EventEmitter {
         emitted_at: envelope.emitted_at,
         payload: {} as EmptyPayload,
       });
-    if (envelope.event === EVENT.PONG) return this.handlePong(envelope);
+    if (envelope.event === EVENT.PONG) return await this.handlePong(envelope);
+    if (envelope.event === EVENT.REPLAY_DONE) {
+      await this.publishProtocolEvent("replay_done", "replay_done", envelope);
+      return;
+    }
     if (envelope.event === EVENT.MESSAGE_ACK) {
       if (!isMessageAckPayload(envelope.payload)) {
         this.emit("error", new ProtocolError("invalid message.ack payload"));
@@ -616,7 +714,7 @@ export class ConnectWsClient extends EventEmitter {
       envelope.event === EVENT.MESSAGE_DONE ||
       envelope.event === EVENT.MESSAGE_FAILED
     ) {
-      this.handleInboundStream(envelope);
+      await this.handleInboundStream(envelope);
       return;
     }
     if (envelope.event === EVENT.PRESENCE_SNAPSHOT || envelope.event === EVENT.PRESENCE_UPDATE) {
@@ -624,7 +722,7 @@ export class ConnectWsClient extends EventEmitter {
         this.emit("error", new ProtocolError(`invalid ${envelope.event} payload`));
         return;
       }
-      this.emit("presence", envelope);
+      await this.publishProtocolEvent("presence", "presence", envelope);
       return;
     }
     if (envelope.event === EVENT.TYPING_UPDATE) {
@@ -632,7 +730,7 @@ export class ConnectWsClient extends EventEmitter {
         this.emit("error", new ProtocolError("invalid typing.update frame"));
         return;
       }
-      this.emit("typing", envelope);
+      await this.publishProtocolEvent("typing", "typing", envelope);
       return;
     }
     if (envelope.event === EVENT.MESSAGE_DELIVERED) {
@@ -640,7 +738,7 @@ export class ConnectWsClient extends EventEmitter {
         this.emit("error", new ProtocolError("invalid message.delivered frame"));
         return;
       }
-      this.emit("delivered", envelope);
+      await this.publishProtocolEvent("delivered", "delivered", envelope);
       return;
     }
     if (envelope.event === EVENT.CHAT_METADATA_INVALIDATED) {
@@ -648,11 +746,13 @@ export class ConnectWsClient extends EventEmitter {
         this.emit("error", new ProtocolError("invalid chat.metadata.invalidated frame"));
         return;
       }
-      this.emit("metadata_invalidated", envelope);
+      await this.publishProtocolEvent("metadata_invalidated", "metadata_invalidated", envelope);
       return;
     }
     if (envelope.event === EVENT.NOTIFY_SIGNAL) {
       if (!isNotifySignalPayload(envelope.payload)) return;
+      if (await this.options.stateStore.hasProtocolEvent(this.options.agentId, envelope.payload.event_id)) return;
+      await this.options.protocolEventHandler?.("notify", envelope);
       if (!(await this.options.stateStore.claimProtocolEvent(this.options.agentId, envelope.payload.event_id))) return;
       this.emit("notify", envelope);
       return;
@@ -662,7 +762,7 @@ export class ConnectWsClient extends EventEmitter {
         this.emit("error", new ProtocolError("invalid permission.request frame"));
         return;
       }
-      this.emit("permission", envelope);
+      await this.publishProtocolEvent("permission", "permission", envelope);
       return;
     }
     if (envelope.event === EVENT.PERMISSION_RESOLVED) {
@@ -670,11 +770,11 @@ export class ConnectWsClient extends EventEmitter {
         this.emit("error", new ProtocolError("invalid permission.resolved frame"));
         return;
       }
-      this.emit("permission", envelope);
+      await this.publishProtocolEvent("permission", "permission", envelope);
       return;
     }
     if (envelope.event === EVENT.HISTORY_TRANSIT) {
-      this.emit("history_transit", envelope);
+      await this.publishProtocolEvent("history_transit", "history_transit", envelope);
       return;
     }
     const inbound = normalizeInboundMessage(envelope);
@@ -687,7 +787,7 @@ export class ConnectWsClient extends EventEmitter {
         return;
       this.emit("message", inbound);
       if (this.options.userId && inbound.sender.id !== this.options.userId) this.sendDeliveryReceipt(inbound);
-    } else this.emit("event", envelope);
+    } else await this.publishProtocolEvent("unknown", "event", envelope);
   }
 
   private enqueueRawFrame(data: string | Buffer): void {
@@ -773,7 +873,7 @@ export class ConnectWsClient extends EventEmitter {
   private async handleAck(envelope: Envelope<MessageAckPayload>): Promise<void> {
     const pending = this.pendingAcks.get(envelope.trace_id);
     if (!pending) {
-      this.emit("event", envelope);
+      await this.publishProtocolEvent("unknown", "event", envelope);
       return;
     }
     clearTimeout(pending.timer);
@@ -802,7 +902,7 @@ export class ConnectWsClient extends EventEmitter {
     }
     const pending = this.pendingAcks.get(envelope.trace_id);
     if (!pending) {
-      this.emit("message_error", envelope);
+      await this.publishProtocolEvent("message_error", "message_error", envelope);
       return;
     }
     clearTimeout(pending.timer);
@@ -833,13 +933,13 @@ export class ConnectWsClient extends EventEmitter {
     }, cfg.intervalMs);
   }
 
-  private handlePong(envelope: Envelope): void {
+  private async handlePong(envelope: Envelope): Promise<void> {
     if (this.lastPingTraceId && envelope.trace_id === this.lastPingTraceId && this.pongTimer) {
       clearTimeout(this.pongTimer);
       this.pongTimer = null;
       this.lastPingTraceId = null;
     }
-    this.emit("event", envelope);
+    await this.publishProtocolEvent("unknown", "event", envelope);
   }
 
   private sendDeliveryReceipt(message: NormalizedInboundMessage): void {
@@ -854,7 +954,7 @@ export class ConnectWsClient extends EventEmitter {
     });
   }
 
-  private handleInboundStream(envelope: Envelope): void {
+  private async handleInboundStream(envelope: Envelope): Promise<void> {
     if (!envelope.chat_id || !envelope.chat_type || !envelope.sender) {
       this.emit("error", new ProtocolError(`invalid ${envelope.event} routing`));
       return;
@@ -871,7 +971,7 @@ export class ConnectWsClient extends EventEmitter {
         return;
       }
       this.inboundStreams.set(envelope.payload.message_id, { sequence: -1, fragments: [] });
-      this.emit("stream", envelope);
+      await this.publishProtocolEvent("stream", "stream", envelope);
       return;
     }
     if (envelope.event === EVENT.MESSAGE_ADD) {
@@ -891,7 +991,7 @@ export class ConnectWsClient extends EventEmitter {
       }
       stream.sequence = envelope.payload.sequence;
       stream.fragments = envelope.payload.fragments;
-      this.emit("stream", envelope);
+      await this.publishProtocolEvent("stream", "stream", envelope);
       return;
     }
     const status = envelope.event === EVENT.MESSAGE_DONE ? "done" : "failed";
@@ -905,7 +1005,7 @@ export class ConnectWsClient extends EventEmitter {
       return;
     }
     this.inboundStreams.delete(envelope.payload.message_id);
-    this.emit("stream", envelope);
+    await this.publishProtocolEvent("stream", "stream", envelope);
   }
 
   private async recordDseqEnvelope(envelope: Envelope): Promise<boolean> {
@@ -929,14 +1029,12 @@ export class ConnectWsClient extends EventEmitter {
     if (envelope.event === EVENT.SYNC_MARK || envelope.event === EVENT.REPLAY_DONE) {
       await this.options.stateStore.advanceProtocolDelivery(this.options.agentId, this.ackEpoch, dseq);
       this.lastReadDseq = dseq;
-      this.ackHighWater = dseq;
-      if (envelope.event === EVENT.REPLAY_DONE) {
-        this.flushSyncAck();
-        this.emit("replay_done", envelope);
-      } else {
+      if (envelope.event === EVENT.SYNC_MARK) {
+        this.ackHighWater = dseq;
         this.scheduleSyncAck();
+        return false;
       }
-      return false;
+      return true;
     }
     const messageId = messageIdForAudit(envelope);
     try {
@@ -957,6 +1055,15 @@ export class ConnectWsClient extends EventEmitter {
     } catch (error) {
       return await this.quarantineDseqEnvelope(envelope, dseq, error instanceof Error ? error.message : String(error));
     }
+  }
+
+  private async publishProtocolEvent(
+    type: ConnectProtocolEventType,
+    eventName: string,
+    envelope: Envelope,
+  ): Promise<void> {
+    await this.options.protocolEventHandler?.(type, envelope);
+    this.emit(eventName, envelope);
   }
 
   private async quarantineDseqEnvelope(envelope: Envelope, dseq: number, error: string): Promise<false> {
@@ -1131,6 +1238,73 @@ function messageIdForAudit(envelope: Envelope): string | null {
   if (envelope.event === EVENT.MESSAGE_ERROR) return envelope.trace_id;
   const payload = envelope.payload as { message_id?: unknown };
   return typeof payload.message_id === "string" ? payload.message_id : null;
+}
+
+function parseMediaUploadUrl(value: string | undefined): URL {
+  if (!value?.trim()) throw new StateError("mediaUploadUrl is required for media uploads");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new StateError("mediaUploadUrl is invalid");
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new StateError(`mediaUploadUrl protocol is unsupported: ${url.protocol}`);
+  }
+  return url;
+}
+
+const CLIENT_MESSAGE_ID_PATTERN = /^msg-[0-9A-HJ-NP-Z]{26}$/u;
+
+function assertClientMessageId(messageId: string): void {
+  if (!CLIENT_MESSAGE_ID_PATTERN.test(messageId)) {
+    throw new ProtocolError("client message_id must match ^msg-[0-9A-HJ-NP-Z]{26}$");
+  }
+}
+
+function findForbiddenUplinkMessageField(
+  value: unknown,
+  seen = new WeakSet<object>(),
+): { kind: "routing" | "timestamp"; field: string } | null {
+  if (!value || typeof value !== "object") return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const nested = findForbiddenUplinkMessageField(item, seen);
+      if (nested) return nested;
+    }
+    return null;
+  }
+  for (const [field, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+    if (field === "chat" || field === "sender" || field === "to") return { kind: "routing", field };
+    if (field === "timestamp" || field.endsWith("_at") || field.endsWith("At")) {
+      return { kind: "timestamp", field };
+    }
+    const nested = findForbiddenUplinkMessageField(nestedValue, seen);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function isUploadedMediaFragment(value: unknown): value is Fragment {
+  const fragment = objectRecord(value);
+  if (!fragment || !["image", "file", "audio", "video"].includes(String(fragment.kind))) return false;
+  if (typeof fragment.url !== "string" || !fragment.url) return false;
+  if (typeof fragment.name !== "string" || !fragment.name) return false;
+  if (fragment.mime !== undefined && typeof fragment.mime !== "string") return false;
+  if (
+    fragment.size !== undefined &&
+    (typeof fragment.size !== "number" || !Number.isFinite(fragment.size) || fragment.size < 0)
+  )
+    return false;
+  return true;
 }
 
 function dseqPayloadError(envelope: Envelope): string | null {

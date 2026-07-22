@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { realpath, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { TranscriptProjection } from "../client-interface/transcript-projection";
 import { defaultConfigPath, getAgentBinding } from "../config";
 import { buildReplyTextMessagePayload } from "../message-mapper";
@@ -12,8 +15,9 @@ import {
 import { ProjectCatalog } from "../projects";
 import { type ChatType, EVENT, type NormalizedInboundMessage } from "../protocol";
 import type { ConnectStateStore } from "../state";
-import type { AgentBindingConfig, ConnectConfig, RuntimeSessionRecord } from "../types";
+import type { AgentBindingConfig, ConnectConfig, RuntimeSessionRecord, RuntimeWorkspace } from "../types";
 import type { ConnectWsClient } from "../ws-client";
+import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import type { RuntimeAdapterRegistry } from "./registry";
 import { type QueueStats, SessionQueue } from "./session-queue";
 import type { ConnectRuntimeMedia, ConnectRuntimeSession, SelectableRuntimeThread } from "./types";
@@ -221,10 +225,10 @@ export class ConnectRuntime {
       await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, event);
       const reply = materializeRuntimeOutput(event, policy);
       if (!reply) continue;
-      if (reply.requiredControl) await this.sendReply(message, reply, activeAgentId);
+      if (reply.requiredControl) await this.sendReply(message, reply, activeAgentId, workspace);
       else buffered.push(reply);
     }
-    for (const reply of buffered) await this.sendReply(message, reply, activeAgentId);
+    for (const reply of buffered) await this.sendReply(message, reply, activeAgentId, workspace);
   }
 
   private async runClientTurn(current: RuntimeSessionRecord, prompt: string, turnId: string): Promise<void> {
@@ -278,14 +282,22 @@ export class ConnectRuntime {
     message: NormalizedInboundMessage,
     reply: MaterializedRuntimeReply,
     agentId: string,
+    workspace?: RuntimeWorkspace,
   ): Promise<void> {
     const route = await this.resolveReplyRoute(message, reply, agentId);
-    await this.options.wsClient.sendMessageEnvelope(
-      EVENT.MESSAGE_REPLY,
-      route.chatId,
-      buildReplyTextMessagePayload(reply.text, message),
-      { toType: route.chatType },
-    );
+    const localMedia = workspace
+      ? await resolveLocalReplyMedia(reply.text, this.options.config.stateDbPath, workspace)
+      : { text: reply.text, files: [] };
+    const payload = buildReplyTextMessagePayload(localMedia.text, message);
+    for (const file of localMedia.files) {
+      payload.message.body.fragments.push(
+        await this.options.wsClient.uploadMedia(Bun.file(file.path), { filename: file.filename }),
+      );
+    }
+    if (payload.message.body.fragments.length === 0) return;
+    await this.options.wsClient.sendMessageEnvelope(EVENT.MESSAGE_REPLY, route.chatId, payload, {
+      toType: route.chatType,
+    });
   }
 
   private async resolveReplyRoute(
@@ -364,6 +376,72 @@ export class ConnectRuntime {
     this.sessions.set(key, session);
     return session;
   }
+}
+
+interface LocalReplyMediaFile {
+  path: string;
+  filename: string;
+}
+
+const LOCAL_MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/gu;
+
+async function resolveLocalReplyMedia(
+  text: string,
+  stateDbPath: string,
+  workspace: RuntimeWorkspace,
+): Promise<{ text: string; files: LocalReplyMediaFile[] }> {
+  const roots = await Promise.all(
+    [join(dirname(stateDbPath), "media-cache"), workspace.workingDirectory, ...workspace.additionalDirectories].map(
+      async (root) => await realpath(root).catch(() => null),
+    ),
+  );
+  const files: LocalReplyMediaFile[] = [];
+  const seen = new Set<string>();
+  let result = "";
+  let cursor = 0;
+  for (const match of text.matchAll(LOCAL_MARKDOWN_IMAGE_PATTERN)) {
+    const index = match.index;
+    const reference = match[1] ?? match[2] ?? "";
+    const path = await resolveSafeLocalMediaPath(reference, workspace.workingDirectory, roots);
+    result += text.slice(cursor, index);
+    if (!path) {
+      result += match[0];
+    } else if (!seen.has(path)) {
+      const metadata = await stat(path);
+      if (!metadata.isFile() || metadata.size <= 0) throw new Error(`Runtime media file is empty or invalid: ${path}`);
+      if (metadata.size > MAX_RUNTIME_MEDIA_BYTES) {
+        throw new Error(`Runtime media file exceeds the ${MAX_RUNTIME_MEDIA_BYTES}-byte upload limit: ${path}`);
+      }
+      seen.add(path);
+      files.push({ path, filename: basename(path) });
+    }
+    cursor = index + match[0].length;
+  }
+  result += text.slice(cursor);
+  return { text: result.trim(), files };
+}
+
+async function resolveSafeLocalMediaPath(
+  reference: string,
+  workingDirectory: string,
+  roots: Array<string | null>,
+): Promise<string | null> {
+  let decoded: string;
+  try {
+    decoded = reference.startsWith("file:") ? fileURLToPath(reference) : decodeURIComponent(reference);
+  } catch {
+    return null;
+  }
+  const candidate = await realpath(isAbsolute(decoded) ? decoded : resolve(workingDirectory, decoded)).catch(
+    () => null,
+  );
+  if (!candidate) return null;
+  return roots.some((root) => root && pathIsWithin(candidate, root)) ? candidate : null;
+}
+
+function pathIsWithin(candidate: string, root: string): boolean {
+  const nested = relative(root, candidate);
+  return nested === "" || (!nested.startsWith("..") && !isAbsolute(nested));
 }
 
 function sessionKey(chatId: string, sessionId: string): string {

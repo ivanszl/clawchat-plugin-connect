@@ -461,6 +461,7 @@ function formatStatus(
     `configured agents: ${Object.keys(config.agents).length}`,
     `activated: ${activated ? "yes" : "no"}`,
     `websocket: ${config.websocketUrl}`,
+    `media upload: ${config.mediaUploadUrl}`,
     `runtime: ${status?.websocketConnected === true ? "connected" : status?.websocketConnected === false ? "disconnected" : "unknown"}`,
     `running: ${status?.globalRunning ?? 0}`,
     `queued: ${status?.globalQueued ?? 0}`,
@@ -483,6 +484,10 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
   }
   if (key === "websocketUrl") {
     config.websocketUrl = value;
+    return;
+  }
+  if (key === "mediaUploadUrl") {
+    config.mediaUploadUrl = value;
     return;
   }
   if (key === "stateDbPath") {

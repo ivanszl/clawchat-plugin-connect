@@ -137,10 +137,13 @@ describe("state store", () => {
     await expect(store.upsertInboundMessage(message("draft"))).resolves.toBe("inserted");
     await expect(store.upsertInboundMessage(message("draft"))).resolves.toBe("duplicate");
     await expect(store.upsertInboundMessage(message("final"))).resolves.toBe("updated");
+    await expect(store.hasProtocolEvent("codex", "event-1")).resolves.toBe(false);
     await expect(store.claimProtocolEvent("codex", "event-1")).resolves.toBe(true);
+    await expect(store.hasProtocolEvent("codex", "event-1")).resolves.toBe(true);
     await expect(store.claimProtocolEvent("codex", "event-1")).resolves.toBe(false);
     await store.close();
     const reopened = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await expect(reopened.hasProtocolEvent("codex", "event-1")).resolves.toBe(true);
     await expect(reopened.claimProtocolEvent("codex", "event-1")).resolves.toBe(false);
     await reopened.close();
   });

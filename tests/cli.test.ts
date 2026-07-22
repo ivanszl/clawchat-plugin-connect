@@ -107,6 +107,16 @@ describe("runConnectCli", () => {
     ).resolves.toBe(0);
     await expect(loadConfig(path)).resolves.toMatchObject({ clientHost: "0.0.0.0" });
 
+    await expect(
+      runConnectCli(
+        ["config", "set", "mediaUploadUrl", "https://media.example/media/upload", "--config", path],
+        output.deps,
+      ),
+    ).resolves.toBe(0);
+    await expect(loadConfig(path)).resolves.toMatchObject({
+      mediaUploadUrl: "https://media.example/media/upload",
+    });
+
     output.stdout.length = 0;
     await expect(runConnectCli(["config", "get", "stateDbPath", "--config", path], output.deps)).resolves.toBe(0);
     expect(output.stdout).toEqual([`${JSON.stringify(stateDbPath)}\n`]);

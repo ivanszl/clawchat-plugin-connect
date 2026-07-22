@@ -16,6 +16,7 @@ import type {
 
 export const DEFAULT_BASE_URL = "https://app.clawling.com" as const;
 export const DEFAULT_WEBSOCKET_URL = "wss://app.clawling.com/ws" as const;
+export const DEFAULT_MEDIA_UPLOAD_URL = "https://app.clawling.com/media/upload" as const;
 export const DEFAULT_CLIENT_PORT = 47_823 as const;
 export const DEFAULT_CLIENT_HOST = "127.0.0.1" as const;
 
@@ -131,6 +132,7 @@ export function defaultConfig(): ConnectConfig {
   return {
     baseUrl: DEFAULT_BASE_URL,
     websocketUrl: DEFAULT_WEBSOCKET_URL,
+    mediaUploadUrl: DEFAULT_MEDIA_UPLOAD_URL,
     stateDbPath: defaultStateDbPath(),
     defaultAgent: null,
     outputVisibility: "normal",
@@ -168,6 +170,7 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
   return {
     baseUrl: readString(record.baseUrl) || fallback.baseUrl,
     websocketUrl: readString(record.websocketUrl) || fallback.websocketUrl,
+    mediaUploadUrl: readString(record.mediaUploadUrl) || fallback.mediaUploadUrl,
     stateDbPath: requireAbsolutePath(readString(record.stateDbPath) || fallback.stateDbPath, "stateDbPath"),
     defaultAgent,
     outputVisibility: isOutputVisibility(record.outputVisibility) ? record.outputVisibility : fallback.outputVisibility,

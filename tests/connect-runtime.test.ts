@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
-import { mkdtemp, realpath, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import type { RuntimeOutputEvent } from "../src/output-visibility";
 import { ProjectCatalog } from "../src/projects";
@@ -57,8 +57,16 @@ async function runtimeFixture() {
     projectId: null,
     isCurrent: true,
   });
-  const wsClient = { sendMessageEnvelope: mock(async () => ({ payload: {} })) } as unknown as ConnectWsClient;
-  return { config, store, wsClient, configPath: join(directory, "config.json") };
+  const uploadMedia = mock(async (_file: Blob, _options?: { filename?: string }) => ({
+    kind: "image" as const,
+    url: "https://cdn.example/uploaded-image",
+    name: "00-TheFool.jpg",
+    mime: "image/jpeg",
+    size: 11,
+  }));
+  const sendMessageEnvelope = mock(async () => ({ payload: {} }));
+  const wsClient = { uploadMedia, sendMessageEnvelope } as unknown as ConnectWsClient;
+  return { config, store, wsClient, uploadMedia, sendMessageEnvelope, configPath: join(directory, "config.json") };
 }
 
 describe("ConnectRuntime Agent Binding sessions", () => {
@@ -158,6 +166,103 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         },
       ],
     });
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("uploads a safe local Markdown image before replying with a media Fragment", async () => {
+    const fixture = await runtimeFixture();
+    const imagePath = join(dirname(fixture.config.stateDbPath), "media-cache", "cached-image", "00-TheFool.jpg");
+    await mkdir(dirname(imagePath), { recursive: true });
+    await writeFile(imagePath, "image-bytes");
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["read-only", "workspace-write", "danger-full-access"],
+      start: mock(async () => ({
+        prompt: async function* () {
+          yield { kind: "final", text: `![00-TheFool.jpg](${imagePath})` } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    await runtime.handleInboundMessage(message("send the image back"));
+
+    expect(fixture.uploadMedia).toHaveBeenCalledTimes(1);
+    const [uploadedFile, uploadOptions] = fixture.uploadMedia.mock.calls[0] ?? [];
+    expect(uploadOptions).toEqual({ filename: "00-TheFool.jpg" });
+    expect(await uploadedFile?.text()).toBe("image-bytes");
+    expect(fixture.sendMessageEnvelope).toHaveBeenCalledWith(
+      "message.reply",
+      "chat-1",
+      expect.objectContaining({
+        message: {
+          body: {
+            fragments: [
+              {
+                kind: "image",
+                url: "https://cdn.example/uploaded-image",
+                name: "00-TheFool.jpg",
+                mime: "image/jpeg",
+                size: 11,
+              },
+            ],
+          },
+          context: expect.any(Object),
+        },
+      }),
+      { toType: "direct" },
+    );
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("does not upload a local Markdown image outside the media cache or Runtime Workspace", async () => {
+    const fixture = await runtimeFixture();
+    const outsideDirectory = await mkdtemp(join(tmpdir(), "clawchat-outside-media-"));
+    const outsideImage = join(outsideDirectory, "private.png");
+    await writeFile(outsideImage, "private-bytes");
+    const markdown = `![private.png](${outsideImage})`;
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["read-only", "workspace-write", "danger-full-access"],
+      start: mock(async () => ({
+        prompt: async function* () {
+          yield { kind: "final", text: markdown } as const;
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    await runtime.handleInboundMessage(message("send a private file"));
+
+    expect(fixture.uploadMedia).not.toHaveBeenCalled();
+    expect(fixture.sendMessageEnvelope).toHaveBeenCalledWith(
+      "message.reply",
+      "chat-1",
+      expect.objectContaining({
+        message: expect.objectContaining({
+          body: { fragments: [{ kind: "text", text: markdown }] },
+        }),
+      }),
+      { toType: "direct" },
+    );
     await runtime.dispose();
     await fixture.store.close();
   });

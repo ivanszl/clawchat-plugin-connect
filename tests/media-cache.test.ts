@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { cacheRuntimeMedia } from "../src/runtime/media-cache";
@@ -70,5 +70,46 @@ describe("Runtime media cache", () => {
         fetch: fetchMedia,
       }),
     ).rejects.toThrow(/HTTP 403/u);
+  });
+
+  it("bounds total cache size by evicting the least recently used file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-media-capacity-"));
+    const stateDbPath = join(directory, "state.sqlite");
+    let now = 10_000;
+    const fetchMedia = mock(
+      async (input: RequestInfo | URL) => new Response(String(input).includes("first") ? "11111" : "22222"),
+    );
+    const cache = async (url: string, name: string) =>
+      await cacheRuntimeMedia({ kind: "file", url, name }, stateDbPath, {
+        fetch: fetchMedia,
+        maxTotalBytes: 8,
+        now: () => now,
+      });
+
+    const first = await cache("https://media.example/first", "first.bin");
+    await utimes(first, new Date(now), new Date(now));
+    now += 1_000;
+    const second = await cache("https://media.example/second", "second.bin");
+
+    await expect(stat(first)).rejects.toThrow();
+    expect(await readFile(second, "utf8")).toBe("22222");
+  });
+
+  it("expires cached media after its TTL and downloads it again", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-media-ttl-"));
+    const stateDbPath = join(directory, "state.sqlite");
+    let now = 20_000;
+    const fetchMedia = mock(async () => new Response("fresh"));
+    const media = { kind: "file" as const, url: "https://media.example/expiring", name: "expiring.bin" };
+    const options = { fetch: fetchMedia, ttlMs: 1_000, now: () => now };
+
+    const first = await cacheRuntimeMedia(media, stateDbPath, options);
+    await utimes(first, new Date(now), new Date(now));
+    now += 999;
+    await cacheRuntimeMedia(media, stateDbPath, options);
+    now += 1_001;
+    await cacheRuntimeMedia(media, stateDbPath, options);
+
+    expect(fetchMedia).toHaveBeenCalledTimes(2);
   });
 });

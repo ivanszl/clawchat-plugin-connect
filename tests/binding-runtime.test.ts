@@ -46,6 +46,167 @@ async function flush(): Promise<void> {
 }
 
 describe("Binding Runtime Protocol v2 assembly", () => {
+  it("advertises each optional capability only when its production handler is installed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-capabilities-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      {
+        kind: "codex",
+        modes: ["read-only"],
+        start: async () => {
+          throw new Error("not used by this assembly test");
+        },
+      },
+    ]);
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      protocolEventHandlers: {
+        notify: async () => undefined,
+      },
+      writeError: () => undefined,
+    });
+    await flush();
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 1,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+
+    expect(connect?.payload).toMatchObject({
+      capabilities: {
+        chat_meta_events: false,
+        notify_signals: true,
+        permission_events: false,
+        history_sync: false,
+      },
+    });
+    transport.close();
+    await runtimeAdapters.close();
+    await stateStore.close();
+    void starting.catch(() => undefined);
+  });
+
+  it("waits for a reliable production handler before acknowledging its dseq", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-handler-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      {
+        kind: "codex",
+        modes: ["read-only"],
+        start: async () => {
+          throw new Error("not used by this assembly test");
+        },
+      },
+    ]);
+    const transport = new MemoryTransport();
+    let handlerStarted = false;
+    let releaseHandler: (() => void) | undefined;
+    const handlerGate = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      protocolEventHandlers: {
+        notify: async () => {
+          handlerStarted = true;
+          await handlerGate;
+        },
+      },
+      writeError: () => undefined,
+    });
+    await flush();
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 1,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 2,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AB" },
+    });
+    const handle = await starting;
+
+    transport.receive({
+      version: "2",
+      event: EVENT.NOTIFY_SIGNAL,
+      trace_id: "notify-1",
+      emitted_at: 3,
+      dseq: 1,
+      payload: {
+        type: "friend.added",
+        entity_id: "usr_bob",
+        version: 1,
+        event_id: "event-1",
+        message_id: "msg-1",
+      },
+    });
+    await flush();
+
+    try {
+      expect(handlerStarted).toBe(true);
+      expect(transport.sent.some((event) => event.event === EVENT.MESSAGE_SYNC_ACK)).toBe(false);
+      releaseHandler?.();
+      await Bun.sleep(220);
+      expect(transport.sent.at(-1)).toMatchObject({ event: EVENT.MESSAGE_SYNC_ACK, payload: { dseq: 1 } });
+    } finally {
+      releaseHandler?.();
+      await handle.close();
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
   it("delivers inbound WS media fragments to the production Runtime Adapter", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-media-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
@@ -203,8 +364,13 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       projects: new ProjectCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
-      onProtocolEvent: (event) => {
-        events.push(event);
+      protocolEventHandlers: {
+        presence: (event) => {
+          events.push(event);
+        },
+        quarantined: (event) => {
+          events.push(event);
+        },
       },
       writeError: (message) => errors.push(message),
     });
@@ -221,10 +387,10 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     if (!connect) throw new Error("connect frame was not sent");
     expect(connect.payload).toMatchObject({
       capabilities: {
-        chat_meta_events: true,
-        notify_signals: true,
-        permission_events: true,
-        history_sync: true,
+        chat_meta_events: false,
+        notify_signals: false,
+        permission_events: false,
+        history_sync: false,
       },
     });
     transport.receive({
