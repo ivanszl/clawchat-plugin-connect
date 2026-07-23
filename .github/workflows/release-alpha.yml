@@ -59,12 +59,18 @@ jobs:
             mkdir -p "$(dirname "${output}")"
             bun build ./src/bin.ts --compile --minify --target="${target}" --outfile="${output}"
             chmod 755 "${output}"
-            cp -R dist/client "$(dirname "${output}")/clawchat-connect-client"
-            cp LICENSE "$(dirname "${output}")/LICENSE"
-            cp THIRD_PARTY_NOTICES.md "$(dirname "${output}")/THIRD_PARTY_NOTICES.md"
-            tar -C "$(dirname "${output}")" -czf \
-              "build/release/clawchat-connect-${platform}-${architecture}.tar.gz" \
-              clawchat-connect clawchat-connect-client LICENSE THIRD_PARTY_NOTICES.md
+            case "${architecture}" in
+              x64) liveware_architecture="amd64" ;;
+              arm64) liveware_architecture="arm64" ;;
+              *) echo "Unsupported Liveware architecture: ${architecture}" >&2; exit 1 ;;
+            esac
+            liveware_asset="liveware-${platform}-${liveware_architecture}"
+            sh scripts/verify-liveware-bundle.sh "${liveware_asset}"
+            sh scripts/package-release-archive.sh \
+              "${output}" \
+              dist/client \
+              "vendor/liveware/${liveware_asset}" \
+              "build/release/clawchat-connect-${platform}-${architecture}.tar.gz"
           done <<'TARGETS'
           bun-darwin-arm64 darwin arm64
           bun-darwin-x64 darwin x64

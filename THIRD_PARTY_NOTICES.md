@@ -2,6 +2,7 @@
 
 The distributed Connect artifacts include the following third-party software:
 
+- ClawNest Liveware v0.0.16 — distributed as the unmodified, platform-specific executable released by Clawling.
 - React, React DOM, Scheduler, and use-sync-external-store — Copyright (c) Meta Platforms, Inc. and affiliates — MIT License.
 - Astryx Core and Theme Neutral — Copyright (c) 2026 Meta Platforms, Inc. — MIT License.
 - StyleX — Copyright (c) Meta Platforms, Inc. and affiliates — MIT License.

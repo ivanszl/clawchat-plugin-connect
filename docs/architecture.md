@@ -14,12 +14,14 @@ clawchat-connect service install|start|stop|restart|status|logs
       Project/Session workspace resolution
       direct runtime adapter dispatch
       materialized message replies
+    configured local Host → Connect Client SPA
+    bundled Liveware agent → managed Liveware Exposure → the same Connect Client SPA
 
 clawchat-connect profile update --agent <bindingId> [fields]
   authenticated ClawChat Profile update
 
 clawchat-connect web
-  configured local Host → Connect Client SPA
+  open the configured local Connect Client URL
 ```
 
 The generated native service definition owns the internal process entry. Connect does not expose a foreground run command.
@@ -217,6 +219,6 @@ Do not add `sqlite`, `sqlite3`, `node:sqlite`, or `better-sqlite3`.
 
 ## Build and quality tooling
 
-Bun owns dependency installation (`bun.lock`), TypeScript execution, `bun:test`, and service bundling. Vite builds the browser-only SPA to `dist/client`; `bun build --target=bun --packages=external` emits service entrypoints under `dist/src`. Standalone release archives place the same build beside the executable as `clawchat-connect-client`, and the installer preserves that layout. `tsconfig.json` type-checks service/tests and `tsconfig.web.json` independently checks the DOM bundle and browser-safe contract.
+Bun owns dependency installation (`bun.lock`), TypeScript execution, `bun:test`, and service bundling. Vite builds the browser-only SPA to `dist/client`; `bun build --target=bun --packages=external` emits service entrypoints under `dist/src`. Standalone release archives place the same build beside `clawchat-connect-client` and the pinned, platform-specific `liveware` executable; the installer preserves that sibling layout. The repository and npm package carry all four supported, unmodified Liveware v0.0.16 assets because the source release is private. Every asset is checked against the repository's SHA-256 manifest before packaging. `tsconfig.json` type-checks service/tests and `tsconfig.web.json` independently checks the DOM bundle and browser-safe contract.
 
 Biome owns formatting, import organization, and linting. `tsc --noEmit` remains the independent type check. Generated `dist/` artifacts stay ignored and outside Git history.

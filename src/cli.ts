@@ -15,6 +15,7 @@ import {
   upsertAgentBinding,
 } from "./config";
 import { startConnectService as startConnectServiceDefault } from "./connect-service";
+import { resolveLivewareExecutablePath as resolveLivewareExecutablePathDefault } from "./liveware-exposure";
 import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "./profile";
 import { ProjectCatalog } from "./projects";
 import { type ConnectStateStore, createStateStore } from "./state";
@@ -26,6 +27,7 @@ import type {
   CodexSandboxMode,
   CodexWebSearchMode,
   ConnectConfig,
+  LivewareAccessPolicy,
   OutputVisibility,
 } from "./types";
 
@@ -41,6 +43,7 @@ export interface ConnectCliDeps extends Partial<CliIo> {
   startConnectService?: typeof startConnectServiceDefault;
   waitUntilShutdown?: () => Promise<void>;
   openUrl?: (url: string) => Promise<void>;
+  resolveLivewareExecutablePath?: typeof resolveLivewareExecutablePathDefault;
 }
 
 interface AgentCliOptions {
@@ -189,8 +192,9 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       const store = createStateStore({ dbPath: config.stateDbPath });
       const activation = agentId ? await store.getActivation(agentId) : null;
       const status = agentId ? await store.getRuntimeStatus(agentId) : null;
+      const livewareExposure = await store.getLivewareExposure();
       await store.close();
-      io.writeStdout(formatStatus(config, agentId, activation !== null, status));
+      io.writeStdout(formatStatus(config, agentId, activation !== null, status, livewareExposure));
     });
 
   cli
@@ -200,10 +204,18 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       commandRan = true;
       const config = await loadConfig(options.config);
       const problems = [config.defaultAgent ? null : "defaultAgent is not set"].filter(Boolean);
+      let livewarePath: string | null = null;
+      if (config.livewareAccessPolicy !== "off") {
+        try {
+          livewarePath = await (deps.resolveLivewareExecutablePath ?? resolveLivewareExecutablePathDefault)();
+        } catch (error) {
+          problems.push(error instanceof Error ? error.message : String(error));
+        }
+      }
       io.writeStdout(
         problems.length === 0
-          ? "clawchat-connect doctor: ok\n"
-          : `clawchat-connect doctor:\n- ${problems.join("\n- ")}\n`,
+          ? `clawchat-connect doctor: ok${livewarePath ? `\nliveware: ${livewarePath}` : ""}\n`
+          : `clawchat-connect doctor:${livewarePath ? `\nliveware: ${livewarePath}` : ""}\n- ${problems.join("\n- ")}\n`,
       );
     });
 
@@ -516,6 +528,7 @@ function formatStatus(
   agentId: string | null,
   activated: boolean,
   status: Awaited<ReturnType<ConnectStateStore["getRuntimeStatus"]>>,
+  livewareExposure: Awaited<ReturnType<ConnectStateStore["getLivewareExposure"]>>,
 ): string {
   return `${[
     "ClawChat Connect status",
@@ -524,6 +537,8 @@ function formatStatus(
     `activated: ${activated ? "yes" : "no"}`,
     `websocket: ${config.websocketUrl}`,
     `media upload: ${config.mediaUploadUrl}`,
+    `liveware policy: ${config.livewareAccessPolicy}`,
+    `liveware exposure: ${livewareExposure?.publicUrl ?? "not active"}`,
     `runtime: ${status?.websocketConnected === true ? "connected" : status?.websocketConnected === false ? "disconnected" : "unknown"}`,
     `running: ${status?.globalRunning ?? 0}`,
     `queued: ${status?.globalQueued ?? 0}`,
@@ -575,6 +590,10 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
       throw new Error("clientHost must be one of: 127.0.0.1, 0.0.0.0");
     }
     config.clientHost = value;
+    return;
+  }
+  if (key === "livewareAccessPolicy") {
+    config.livewareAccessPolicy = parseLivewareAccessPolicy(value);
     return;
   }
   const match = key.match(/^agents\.([^.]+)\.([A-Za-z]+)$/u);
@@ -629,4 +648,9 @@ function parseOutputVisibility(value: string): OutputVisibility {
   const mode = value.trim().toLowerCase();
   if (mode === "minimal" || mode === "normal" || mode === "full") return mode;
   throw new Error("outputVisibility must be minimal, normal, or full");
+}
+
+function parseLivewareAccessPolicy(value: string): LivewareAccessPolicy {
+  if (value === "off" || value === "private" || value === "public") return value;
+  throw new Error("livewareAccessPolicy must be off, private, or public");
 }

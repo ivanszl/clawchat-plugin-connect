@@ -33,19 +33,13 @@ textarea {
   stroke-linejoin: round;
 }
 
-.brand-mark {
-  width: 28px;
-  height: 28px;
-  color: var(--color-accent);
-}
-
 .session-nav {
   min-height: 0;
 }
 
 .session-nav-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: end;
   gap: var(--spacing-1);
   padding: 0 var(--spacing-2) var(--spacing-2);
@@ -429,6 +423,11 @@ textarea {
 }
 
 @media (max-width: 720px) {
+  .astryx-mobile-nav > div {
+    width: 100vw;
+    max-width: none;
+  }
+
   .session-header {
     min-height: 60px;
   }

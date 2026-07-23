@@ -12,6 +12,14 @@ import {
 } from "./client-interface/server";
 import { TranscriptProjection } from "./client-interface/transcript-projection";
 import { defaultConfigPath, loadConfig } from "./config";
+import {
+  createLivewareExposureDependencies,
+  type LivewareExposureDependencies,
+  type LivewareExposureHandle,
+  resolveLivewareExecutablePath,
+  retireLivewareExposure,
+  startLivewareExposure,
+} from "./liveware-exposure";
 import { ProjectCatalog } from "./projects";
 import type { RuntimeAdapterRegistry } from "./runtime/registry";
 import { createReleasedRuntimeAdapterRegistry } from "./runtime/released-adapters";
@@ -32,6 +40,7 @@ export interface ConnectServiceDependencies {
   startBindingRuntime?: (options: BindingRuntimeOptions) => Promise<BindingRuntimeHandle>;
   startClientInterface?: (options: ClientInterfaceOptions) => Promise<ClientInterfaceHandle>;
   createRuntimeAdapterRegistry?: () => RuntimeAdapterRegistry;
+  livewareDependencies?: LivewareExposureDependencies;
 }
 
 export interface ConnectServiceResult {
@@ -50,6 +59,7 @@ export async function startConnectService(
   const handles: BindingRuntimeHandle[] = [];
   const runtimeAdapters = (dependencies.createRuntimeAdapterRegistry ?? createReleasedRuntimeAdapterRegistry)();
   let clientInterface: ClientInterfaceHandle | null = null;
+  let livewareExposure: LivewareExposureHandle | null = null;
   try {
     const activatedBindings = (
       await Promise.all(
@@ -62,6 +72,14 @@ export async function startConnectService(
     if (activatedBindings.length === 0) {
       throw new Error(
         "no activated Agent Bindings are configured; activate at least one Binding before starting Connect",
+      );
+    }
+    const ownerUserIds = new Set(
+      activatedBindings.flatMap(({ activation }) => (activation ? [activation.ownerUserId] : [])),
+    );
+    if (ownerUserIds.size !== 1) {
+      throw new Error(
+        `activated Agent Bindings belong to multiple Connect Owners: ${[...ownerUserIds].join(", ")}; activate one Binding as the replacement owner`,
       );
     }
     const deviceId = await store.getOrCreateDeviceId();
@@ -119,10 +137,61 @@ export async function startConnectService(
         `WARNING: Connect Client is exposed on all IPv4 interfaces without authentication; use port ${config.clientPort} only on a trusted LAN.\n`,
       );
     }
+    const livewarePrincipal =
+      activatedBindings.find(({ agentId }) => agentId === config.defaultAgent)?.activation ??
+      activatedBindings[0]?.activation ??
+      null;
+    if (livewarePrincipal) {
+      const existingExposure = await store.getLivewareExposure();
+      if (config.livewareAccessPolicy !== "off" || existingExposure) {
+        try {
+          const livewareDependencies =
+            dependencies.livewareDependencies ??
+            createLivewareExposureDependencies({
+              livewarePath: await resolveLivewareExecutablePath(),
+              clawChatBaseUrl: config.baseUrl,
+            });
+          if (config.livewareAccessPolicy === "off") {
+            const retirementPrincipal =
+              activatedBindings.find(({ agentId }) => agentId === existingExposure?.localAgentId)?.activation ??
+              livewarePrincipal;
+            await retireLivewareExposure(
+              { activation: retirementPrincipal, deviceId, stateStore: store },
+              livewareDependencies,
+            );
+            writeOutput("Liveware Exposure is disabled and its previous App was retired.\n");
+          } else {
+            livewareExposure = await startLivewareExposure(
+              {
+                activation: livewarePrincipal,
+                deviceId,
+                upstream: `http://127.0.0.1:${config.clientPort}`,
+                accessPolicy: config.livewareAccessPolicy,
+                stateStore: store,
+                writeError,
+              },
+              livewareDependencies,
+            );
+            writeOutput(
+              `Liveware Exposure is available at ${livewareExposure.record.publicUrl} (${livewareExposure.record.accessPolicy}).\n`,
+            );
+          }
+        } catch (error) {
+          writeError(
+            `Liveware Exposure unavailable; local Connect remains running: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+        }
+      }
+    }
     await (options.waitUntilShutdown ?? waitForShutdown)();
     return { startedAgentIds: handles.map((handle) => handle.agentId) };
   } finally {
     const shutdownFailures: unknown[] = [];
+    try {
+      await livewareExposure?.close();
+    } catch (error) {
+      shutdownFailures.push(error);
+    }
     try {
       await clientInterface?.stop();
     } catch (error) {

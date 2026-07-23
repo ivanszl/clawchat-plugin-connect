@@ -9,6 +9,15 @@ async function tempConfigPath(): Promise<string> {
 }
 
 describe("Agent Binding configuration", () => {
+  it("enables a private Liveware Exposure by default and accepts only off, private, or public", () => {
+    expect(normalizeConfig({}).livewareAccessPolicy).toBe("private");
+    expect(normalizeConfig({ livewareAccessPolicy: "off" }).livewareAccessPolicy).toBe("off");
+    expect(normalizeConfig({ livewareAccessPolicy: "public" }).livewareAccessPolicy).toBe("public");
+    expect(() => normalizeConfig({ livewareAccessPolicy: "allowlist" })).toThrow(
+      "livewareAccessPolicy must be one of: off, private, public",
+    );
+  });
+
   it("normalizes and persists a Codex Runtime configuration without making the Binding ID semantic", async () => {
     const config = normalizeConfig({
       clientHost: "0.0.0.0",

@@ -39,6 +39,8 @@ The standalone installer does not require Bun or Node.js:
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
 ```
 
+Standalone releases include the pinned, unmodified Liveware companion for the selected platform. Connect installs it beside `clawchat-connect`; no separate Liveware repository checkout, build, login, or installation is required.
+
 The default executable location is `~/.local/bin`. If it is not already on `PATH`:
 
 ```bash
@@ -88,6 +90,8 @@ clawchat-connect activate work YOUR_INVITE_CODE
 
 Connect stores the returned credentials, not the invite code, and updates the ClawChat Profile nickname to the Binding ID (`work` in this example).
 
+Activation also provisions (or adopts) one Liveware App named `ClawChat Connect`, binds it to the local Client Interface, and registers it with the activated ClawChat Agent. The default Liveware Access Policy is `private`, so only the Connect Owner can open it from ClawChat. Liveware synchronization failures do not discard the saved activation; restarting the Connect Service retries them.
+
 ### 4. Install the background service
 
 ```bash
@@ -97,7 +101,7 @@ clawchat-connect service status
 
 Installation starts Connect immediately and enables it for future logins. Connect runs as a native per-user LaunchAgent on macOS or systemd user service on Linux; root access is not required.
 
-There is no foreground `run` command. The background service owns the ClawChat WebSocket connection, Codex app-server process, and browser client.
+There is no foreground `run` command. The background service owns the ClawChat WebSocket connection, Codex app-server process, browser client, and bundled Liveware companion.
 
 ### 5. Send a message
 
@@ -192,6 +196,27 @@ The browser client can create a Session by choosing its Project, mode, model, re
 
 Browser and ClawChat turns targeting the same Session are strictly ordered. Different Sessions may run concurrently, including two Sessions associated with one ClawChat conversation, up to `maxConcurrentTurns`.
 
+### ClawChat access through Liveware
+
+The activated Agent exposes `ClawChat Connect` in ClawChat. Its URL tunnels to the same complete Connect Client that is available locally; Connect does not add a second permissions layer or remove capabilities from the remote view.
+
+Choose who Liveware admits, then restart the service:
+
+```bash
+# Connect Owner only (default)
+clawchat-connect config set livewareAccessPolicy private
+
+# Any authenticated ClawChat user who can open the Liveware App
+clawchat-connect config set livewareAccessPolicy public
+
+# Unregister and retire the Liveware Exposure
+clawchat-connect config set livewareAccessPolicy off
+
+clawchat-connect service restart
+```
+
+Changing the Connect Owner replaces the previous activation: Connect unregisters and retires the previous owner's Liveware App, preserves local Projects, Sessions, and Runtime Threads, and provisions a new App for the replacement owner. The public URL may change.
+
 ### Trusted LAN access
 
 To make the browser client reachable from another device on a trusted private network:
@@ -242,6 +267,7 @@ clawchat-connect config get agents.work.sandboxMode
 Common settings can be changed from the CLI:
 
 ```bash
+clawchat-connect config set livewareAccessPolicy private
 clawchat-connect config set agents.work.model YOUR_MODEL_ID
 clawchat-connect config set agents.work.sandboxMode workspace-write
 clawchat-connect config set agents.work.modelReasoningEffort high
@@ -260,6 +286,14 @@ Supported Codex values:
 | `approvalPolicy` | `never`, `on-request`, `untrusted` |
 | `webSearchMode` | `disabled`, `cached`, `live` |
 | `networkAccessEnabled` | `true`, `false` |
+
+Installation-wide values:
+
+| Setting | Values |
+| --- | --- |
+| `livewareAccessPolicy` | `private` (default), `public`, `off` |
+| `clientHost` | `127.0.0.1`, `0.0.0.0` |
+| `clientPort` | `1024`–`65535` |
 
 Edit JSON directly for `env` and `additionalDirectories`, which are intentionally not exposed by `config set`:
 
@@ -308,8 +342,8 @@ clawchat-connect config set mediaUploadUrl https://media.example.com/media/uploa
 
 | Command | Purpose |
 | --- | --- |
-| `clawchat-connect status [--agent <id>]` | Show activation and runtime status. |
-| `clawchat-connect doctor` | Check basic configuration. |
+| `clawchat-connect status [--agent <id>]` | Show activation, runtime, and Liveware Exposure status. |
+| `clawchat-connect doctor` | Check basic configuration and the bundled Liveware executable. |
 | `clawchat-connect agent list` | List configured Agent Bindings. |
 | `clawchat-connect agent remove <id>` | Remove a local Binding configuration. |
 | `clawchat-connect service start` | Start the installed service. |
@@ -345,6 +379,8 @@ Common causes:
 - **Codex works in a terminal but not in Connect:** reinstall the service so it captures the current `PATH`.
 - **Configuration changed but behavior did not:** restart the service.
 - **Browser client does not open:** confirm the service is running, then use `clawchat-connect web --no-open` and open the printed URL.
+- **ClawChat does not show `ClawChat Connect`:** run `clawchat-connect status`, then restart the service and inspect its logs for `Liveware Exposure`.
+- **Local Connect works but Liveware does not:** this is intentional failure isolation. Run `clawchat-connect doctor` to verify the bundled executable, then restart the service to retry registration and the tunnel.
 - **A Project cannot be removed:** switch away from it and remove any pending/current Session references first.
 
 ## Local data and security
@@ -380,9 +416,9 @@ Run the real Codex model-catalog and same-Runtime-Thread model-switch test with:
 CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
 ```
 
-Create a standalone binary with `bun run build:binary`. Preview the browser client with `bun run preview:web`.
+Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it at `dist/liveware` beside `dist/clawchat-connect`. Preview the browser client with `bun run preview:web`.
 
-Version tags such as `v0.1.0-alpha.4` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, builds macOS/Linux archives, and publishes checksums and license notices as a GitHub prerelease.
+Version tags such as `v0.1.0-alpha.4` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies the four vendored Liveware assets, builds macOS/Linux archives containing the matching pinned executable, and publishes checksums and license notices as a GitHub prerelease. npm packages include the same four assets so a global Bun install remains portable.
 
 ## License
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { BindingRuntimeHandle } from "../src/binding-runtime";
 import { defaultConfig } from "../src/config";
 import { startConnectService } from "../src/connect-service";
+import type { ClawChatLivewarePort, LivewareControlPlanePort, LivewareControlSession } from "../src/liveware-exposure";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { createStateStore } from "../src/state";
 import type { ActivationCredentials, AgentBindingConfig, ConnectConfig } from "../src/types";
@@ -16,7 +17,7 @@ function activation(agentId: string): ActivationCredentials {
     refreshToken: null,
     serverAgentId: `server-${agentId}`,
     userId: `user-${agentId}`,
-    ownerUserId: `owner-${agentId}`,
+    ownerUserId: "owner-1",
     conversationId: `chat-${agentId}`,
   };
 }
@@ -117,6 +118,121 @@ describe("Connect Service", () => {
     ).resolves.toEqual({ startedAgentIds: ["healthy"] });
     expect(errors.join("")).toContain("broken: invalid credentials");
   });
+
+  it("starts Liveware after the Client Interface and closes it before the Client", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-liveware-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await stateStore.upsertActivation(activation("codex"));
+    const config = serviceConfig(["codex"]);
+    config.stateDbPath = stateStore.dbPath;
+    config.livewareAccessPolicy = "private";
+    const events: string[] = [];
+    const process = controlledAgentProcess(events);
+    const controlPlane: LivewareControlPlanePort = {
+      connect: async (): Promise<LivewareControlSession> => {
+        events.push("liveware-connect");
+        return {
+          listApps: async () => [],
+          createApp: async (name) => ({
+            appId: "app-0000000000000001",
+            name,
+            publicUrl: "https://app-0000000000000001.apps.example",
+          }),
+          setAccessPolicy: async () => undefined,
+          bindTunnel: async () => "https://app-0000000000000001.apps.example",
+          deleteApp: async () => undefined,
+          startAgent: async () => {
+            events.push("liveware-agent-start");
+            return process;
+          },
+        };
+      },
+    };
+    const clawChat: ClawChatLivewarePort = {
+      list: async () => [],
+      register: async () => undefined,
+      unregister: async () => undefined,
+    };
+
+    await startConnectService(
+      {
+        config,
+        stateStore,
+        waitUntilShutdown: async () => undefined,
+        writeOutput: () => undefined,
+        writeError: () => undefined,
+      },
+      {
+        startBindingRuntime: async () => ({
+          agentId: "codex",
+          websocketUrl: config.websocketUrl,
+          deviceId: "device-1",
+          close: async () => {
+            events.push("binding-close");
+          },
+        }),
+        startClientInterface: async () => {
+          events.push("client-start");
+          return {
+            origin: "http://127.0.0.1:47823",
+            stop: async () => {
+              events.push("client-stop");
+            },
+          };
+        },
+        livewareDependencies: { controlPlane, clawChat },
+      },
+    );
+
+    expect(events.indexOf("client-start")).toBeLessThan(events.indexOf("liveware-agent-start"));
+    expect(events.indexOf("liveware-agent-stop")).toBeLessThan(events.indexOf("client-stop"));
+  });
+
+  it("keeps local Connect running when the optional Liveware Exposure cannot start", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-liveware-failure-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await stateStore.upsertActivation(activation("codex"));
+    const config = serviceConfig(["codex"]);
+    config.stateDbPath = stateStore.dbPath;
+    config.livewareAccessPolicy = "private";
+    const errors: string[] = [];
+    const result = await startConnectService(
+      {
+        config,
+        stateStore,
+        waitUntilShutdown: async () => undefined,
+        writeOutput: () => undefined,
+        writeError: (message) => errors.push(message),
+      },
+      {
+        startBindingRuntime: async () => ({
+          agentId: "codex",
+          websocketUrl: config.websocketUrl,
+          deviceId: "device-1",
+          close: async () => undefined,
+        }),
+        startClientInterface: async () => ({
+          origin: "http://127.0.0.1:47823",
+          stop: async () => undefined,
+        }),
+        livewareDependencies: {
+          controlPlane: {
+            connect: async () => {
+              throw new Error("control plane unavailable");
+            },
+          },
+          clawChat: {
+            list: async () => [],
+            register: async () => undefined,
+            unregister: async () => undefined,
+          },
+        },
+      },
+    );
+
+    expect(result).toEqual({ startedAgentIds: ["codex"] });
+    expect(errors.join("")).toContain("local Connect remains running: control plane unavailable");
+  });
 });
 
 function serviceConfig(agentIds: string[]): ConnectConfig {
@@ -128,5 +244,20 @@ function serviceConfig(agentIds: string[]): ConnectConfig {
       { kind: index === 0 ? "codex" : `future-runtime-${index}` } as unknown as AgentBindingConfig,
     ]),
   );
+  config.livewareAccessPolicy = "off";
   return config;
+}
+
+function controlledAgentProcess(events: string[]) {
+  let resolveExit: (exitCode: number) => void = () => undefined;
+  const exited = new Promise<number>((resolve) => {
+    resolveExit = resolve;
+  });
+  return {
+    exited,
+    stop: async () => {
+      events.push("liveware-agent-stop");
+      resolveExit(0);
+    },
+  };
 }

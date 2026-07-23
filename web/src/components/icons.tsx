@@ -10,16 +10,6 @@ function IconFrame({ children, ...props }: IconProps) {
   );
 }
 
-export function ConnectMark(props: IconProps) {
-  return (
-    <IconFrame {...props}>
-      <path d="M7.5 7.5h3v3h-3zM13.5 13.5h3v3h-3z" />
-      <path d="m10.5 10.5 3 3M16.5 7.5h-3v3M7.5 16.5h3v-3" />
-      <circle cx="12" cy="12" r="10" />
-    </IconFrame>
-  );
-}
-
 export function FolderIcon(props: IconProps) {
   return (
     <IconFrame {...props}>

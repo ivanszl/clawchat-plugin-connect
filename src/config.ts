@@ -11,6 +11,7 @@ import type {
   CodexSandboxMode,
   CodexWebSearchMode,
   ConnectConfig,
+  LivewareAccessPolicy,
   OutputVisibility,
 } from "./types";
 
@@ -25,6 +26,7 @@ const CODEX_REASONING_EFFORTS = new Set<CodexReasoningEffort>(["minimal", "low",
 const CODEX_APPROVAL_POLICIES = new Set<CodexApprovalPolicy>(["never", "on-request", "untrusted"]);
 const CODEX_WEB_SEARCH_MODES = new Set<CodexWebSearchMode>(["disabled", "cached", "live"]);
 const CLIENT_HOSTS = new Set<ClientHost>(["127.0.0.1", "0.0.0.0"]);
+const LIVEWARE_ACCESS_POLICIES = new Set<LivewareAccessPolicy>(["off", "private", "public"]);
 
 export function defaultDataDir(): string {
   return join(homedir(), ".clawchat-connect");
@@ -139,6 +141,7 @@ export function defaultConfig(): ConnectConfig {
     agents: {},
     clientHost: DEFAULT_CLIENT_HOST,
     clientPort: DEFAULT_CLIENT_PORT,
+    livewareAccessPolicy: "private",
   };
 }
 
@@ -189,6 +192,9 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
       record.clientPort <= 65_535
         ? record.clientPort
         : fallback.clientPort,
+    livewareAccessPolicy:
+      readOptionalEnum(record.livewareAccessPolicy, LIVEWARE_ACCESS_POLICIES, "livewareAccessPolicy") ??
+      fallback.livewareAccessPolicy,
     ...(typeof record.maxConcurrentTurns === "number" && Number.isFinite(record.maxConcurrentTurns)
       ? { maxConcurrentTurns: Math.max(1, Math.trunc(record.maxConcurrentTurns)) }
       : {}),

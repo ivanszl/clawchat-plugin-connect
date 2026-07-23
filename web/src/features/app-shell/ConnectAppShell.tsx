@@ -3,7 +3,7 @@ import { Button } from "@astryxdesign/core/Button";
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { ConnectMark, SettingsIcon } from "../../components/icons";
+import { SettingsIcon } from "../../components/icons";
 import { SessionNavigation } from "../session-catalog/SessionNavigation";
 
 export function ConnectAppShell({ children }: { children: ReactNode }) {
@@ -16,15 +16,8 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
       contentPadding={0}
       topNav={
         <TopNav
-          label="Connect Client"
-          heading={
-            <TopNavHeading
-              logo={<ConnectMark className="brand-mark" />}
-              heading="Connect"
-              subheading="Local agent relay"
-              headingHref="/"
-            />
-          }
+          label="ClawChat Connect"
+          heading={<TopNavHeading heading="ClawChat Connect" headingHref="/" />}
           endContent={
             <Button
               label={isSettings ? "返回 Session" : "设置"}

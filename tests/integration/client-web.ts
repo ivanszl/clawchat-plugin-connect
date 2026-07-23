@@ -18,6 +18,7 @@ try {
   const executablePath = await localChromiumPath();
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   try {
+    await verifySmallWindowNavigation(browser, origin);
     const page = await browser.newPage();
     const createRequests: unknown[] = [];
     page.on("request", (request) => {
@@ -77,6 +78,46 @@ try {
 } finally {
   server.kill("SIGTERM");
   await server.exited;
+}
+
+async function verifySmallWindowNavigation(browser: Awaited<ReturnType<typeof chromium.launch>>, origin: string) {
+  const viewport = { width: 442, height: 704 };
+  const page = await browser.newPage({ viewport });
+  try {
+    await page.goto(origin);
+    await expect(page).toHaveTitle("ClawChat Connect");
+    await page.getByTestId("mobile-nav-toggle").click();
+    const dialog = page.locator("dialog[open]");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("link", { name: "ClawChat Connect" })).toBeVisible();
+    await expect(dialog.getByText("Local agent relay", { exact: true })).toHaveCount(0);
+    const drawer = dialog.locator(":scope > div");
+    const drawerBox = await drawer.boundingBox();
+    assert(drawerBox, "small-window navigation drawer must have a bounding box");
+    assert.equal(Math.round(drawerBox.x), 0, "small-window navigation drawer must start at the viewport edge");
+    assert.equal(
+      Math.round(drawerBox.width),
+      viewport.width,
+      "small-window navigation drawer must fill the viewport width",
+    );
+
+    const createButton = page.getByRole("button", { name: "新建 Session" });
+    const search = page.getByRole("textbox", { name: "搜索 Session" });
+    const refresh = page.getByRole("button", { name: "刷新全部 Session" });
+    const [createBox, searchBox, refreshBox] = await Promise.all([
+      createButton.boundingBox(),
+      search.boundingBox(),
+      refresh.boundingBox(),
+    ]);
+    assert(createBox && searchBox && refreshBox, "small-window navigation tools must be visible");
+    assert(createBox.width >= 112, "new Session button must remain wide enough for its full label");
+    assert(
+      Math.max(createBox.y, searchBox.y, refreshBox.y) - Math.min(createBox.y, searchBox.y, refreshBox.y) <= 1,
+      `small-window navigation tools must remain on one row: ${JSON.stringify({ createBox, searchBox, refreshBox })}`,
+    );
+  } finally {
+    await page.close();
+  }
 }
 
 async function choose(page: Page, combobox: Locator, optionName: string): Promise<void> {

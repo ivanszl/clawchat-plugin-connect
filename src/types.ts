@@ -4,6 +4,7 @@ export const AGENT_TYPE = "clawbot" as const;
 export type OutputVisibility = "minimal" | "normal" | "full";
 export type ChatType = "direct" | "group";
 export type ClientHost = "127.0.0.1" | "0.0.0.0";
+export type LivewareAccessPolicy = "off" | "private" | "public";
 
 export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
 export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -38,6 +39,7 @@ export interface ConnectConfig {
   maxPendingPerSession?: number;
   clientHost: ClientHost;
   clientPort: number;
+  livewareAccessPolicy: LivewareAccessPolicy;
 }
 
 export interface ActivationCredentials {
@@ -48,6 +50,14 @@ export interface ActivationCredentials {
   userId: string;
   ownerUserId: string;
   conversationId: string | null;
+}
+
+export interface LivewareExposureRecord {
+  ownerUserId: string;
+  localAgentId: string;
+  appId: string;
+  publicUrl: string;
+  accessPolicy: Exclude<LivewareAccessPolicy, "off">;
 }
 
 export interface ProjectRecord {

@@ -117,9 +117,53 @@ describe("runConnectCli", () => {
       mediaUploadUrl: "https://media.example/media/upload",
     });
 
+    await expect(
+      runConnectCli(["config", "set", "livewareAccessPolicy", "public", "--config", path], output.deps),
+    ).resolves.toBe(0);
+    await expect(loadConfig(path)).resolves.toMatchObject({ livewareAccessPolicy: "public" });
+
     output.stdout.length = 0;
     await expect(runConnectCli(["config", "get", "stateDbPath", "--config", path], output.deps)).resolves.toBe(0);
     expect(output.stdout).toEqual([`${JSON.stringify(stateDbPath)}\n`]);
+  });
+
+  it("reports the configured and active Liveware Exposure", async () => {
+    const path = await tempConfig();
+    const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
+    config.stateDbPath = `${path}.sqlite`;
+    await saveConfig(config, path);
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    await store.setLivewareExposure({
+      ownerUserId: "owner-1",
+      localAgentId: "work",
+      appId: "app-1",
+      publicUrl: "https://app-1.apps.example",
+      accessPolicy: "private",
+    });
+    await store.close();
+    const output = io();
+
+    await expect(runConnectCli(["status", "--config", path], output.deps)).resolves.toBe(0);
+    expect(output.stdout.join("")).toContain("liveware policy: private");
+    expect(output.stdout.join("")).toContain("liveware exposure: https://app-1.apps.example");
+  });
+
+  it("checks the bundled Liveware executable when exposure is enabled", async () => {
+    const path = await tempConfig();
+    const config = defaultConfig();
+    config.livewareAccessPolicy = "private";
+    await saveConfig(config, path);
+    const output = io();
+    const resolveLivewareExecutablePath = mock(async () => "/bundle/liveware");
+
+    await expect(
+      runConnectCli(["doctor", "--config", path], {
+        ...output.deps,
+        resolveLivewareExecutablePath,
+      }),
+    ).resolves.toBe(0);
+    expect(resolveLivewareExecutablePath).toHaveBeenCalledTimes(1);
+    expect(output.stdout.join("")).toContain("liveware: /bundle/liveware");
   });
 
   it("manages Projects only through the local CLI", async () => {

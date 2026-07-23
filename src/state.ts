@@ -6,6 +6,7 @@ import type { ClientViewEvent, TranscriptBlock } from "./client-contract";
 import { defaultStateDbPath } from "./config";
 import {
   type ActivationCredentials,
+  type LivewareExposureRecord,
   type OutputVisibility,
   PLATFORM_ID,
   type ProjectRecord,
@@ -251,6 +252,113 @@ export class ConnectStateStore {
   }
   async getActivationUserId(localAgentId: string): Promise<string | null> {
     return (await this.getActivation(localAgentId))?.userId ?? null;
+  }
+
+  async listActivations(): Promise<ActivationCredentials[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<Array<Record<string, unknown>>>(
+      `SELECT local_agent_id, access_token, refresh_token, server_agent_id, user_id, owner_user_id, conversation_id
+         FROM activations
+        WHERE platform = ?
+        ORDER BY local_agent_id`,
+      PLATFORM_ID,
+    );
+    return rows.flatMap((row) => {
+      const localAgentId = stringValue(row.local_agent_id);
+      const accessToken = stringValue(row.access_token);
+      const userId = stringValue(row.user_id);
+      const ownerUserId = stringValue(row.owner_user_id);
+      if (!localAgentId || !accessToken || !userId || !ownerUserId) return [];
+      return [
+        {
+          localAgentId,
+          accessToken,
+          refreshToken: nullableString(row.refresh_token),
+          serverAgentId: nullableString(row.server_agent_id),
+          userId,
+          ownerUserId,
+          conversationId: nullableString(row.conversation_id),
+        },
+      ];
+    });
+  }
+
+  async replaceOwnerActivation(input: ActivationCredentials): Promise<void> {
+    const now = Date.now();
+    const db = await this.requireDb();
+    db.transaction((run) => {
+      run("DELETE FROM activations WHERE platform = ? AND owner_user_id <> ?", PLATFORM_ID, input.ownerUserId);
+      run(
+        `INSERT INTO activations(
+           platform, local_agent_id, access_token, refresh_token, server_agent_id,
+           user_id, owner_user_id, conversation_id, activated_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(platform, local_agent_id) DO UPDATE SET
+           access_token = excluded.access_token,
+           refresh_token = excluded.refresh_token,
+           server_agent_id = excluded.server_agent_id,
+           user_id = excluded.user_id,
+           owner_user_id = excluded.owner_user_id,
+           conversation_id = excluded.conversation_id,
+           updated_at = excluded.updated_at`,
+        PLATFORM_ID,
+        input.localAgentId,
+        input.accessToken,
+        input.refreshToken,
+        input.serverAgentId,
+        input.userId,
+        input.ownerUserId,
+        input.conversationId,
+        now,
+        now,
+      );
+    });
+  }
+
+  async getLivewareExposure(): Promise<LivewareExposureRecord | null> {
+    const db = await this.requireDb();
+    const row = await db.get<Record<string, unknown>>(
+      `SELECT owner_user_id, local_agent_id, app_id, public_url, access_policy
+         FROM liveware_exposure
+        WHERE id = 1`,
+    );
+    if (!row) return null;
+    const accessPolicy = stringValue(row.access_policy);
+    if (accessPolicy !== "private" && accessPolicy !== "public") return null;
+    return {
+      ownerUserId: stringValue(row.owner_user_id),
+      localAgentId: stringValue(row.local_agent_id),
+      appId: stringValue(row.app_id),
+      publicUrl: stringValue(row.public_url),
+      accessPolicy,
+    };
+  }
+
+  async setLivewareExposure(record: LivewareExposureRecord): Promise<void> {
+    const db = await this.requireDb();
+    await db.run(
+      `INSERT INTO liveware_exposure(
+         id, owner_user_id, local_agent_id, app_id, public_url, access_policy, updated_at
+       ) VALUES (1, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         owner_user_id = excluded.owner_user_id,
+         local_agent_id = excluded.local_agent_id,
+         app_id = excluded.app_id,
+         public_url = excluded.public_url,
+         access_policy = excluded.access_policy,
+         updated_at = excluded.updated_at`,
+      record.ownerUserId,
+      record.localAgentId,
+      record.appId,
+      record.publicUrl,
+      record.accessPolicy,
+      Date.now(),
+    );
+  }
+
+  async clearLivewareExposure(): Promise<void> {
+    const db = await this.requireDb();
+    await db.run("DELETE FROM liveware_exposure WHERE id = 1");
   }
 
   async getDeviceId(): Promise<string | null> {
@@ -1408,6 +1516,15 @@ export class ConnectStateStore {
       CREATE TABLE IF NOT EXISTS device_state(
         id INTEGER PRIMARY KEY CHECK(id = 1),
         device_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS liveware_exposure(
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        owner_user_id TEXT NOT NULL,
+        local_agent_id TEXT NOT NULL,
+        app_id TEXT NOT NULL,
+        public_url TEXT NOT NULL,
+        access_policy TEXT NOT NULL CHECK(access_policy IN ('private', 'public')),
         updated_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS projects(
