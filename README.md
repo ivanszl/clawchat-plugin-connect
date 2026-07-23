@@ -5,7 +5,7 @@ ClawChat Connect lets a ClawChat conversation use a coding agent running on your
 The current alpha release supports:
 
 - Codex CLI through `codex app-server`;
-- macOS and Linux on arm64 and x64;
+- macOS, Linux, and Windows on arm64 and x64;
 - persistent Sessions and reusable Project workspaces;
 - image, audio, file, and video input from ClawChat;
 - image replies from local Codex output;
@@ -19,7 +19,7 @@ Before installing Connect, you need:
 
 1. A ClawChat account and an Agent invite code.
 2. `codex-cli 0.145.0` installed and authenticated on the same computer.
-3. macOS or Linux. Windows is not currently packaged.
+3. macOS, Linux, or Windows 10/11 on arm64 or x64.
 
 Check the Codex version:
 
@@ -33,7 +33,7 @@ Connect requires exactly `codex-cli 0.145.0`. It uses your existing Codex login,
 
 ### 1. Install Connect
 
-The standalone installer does not require Bun or Node.js:
+On macOS or Linux, the standalone installer does not require Bun or Node.js:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
@@ -51,7 +51,25 @@ To install a specific release or choose another directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.4
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.5
+```
+
+On Windows PowerShell, download and inspect the installer before running it:
+
+```powershell
+Invoke-WebRequest `
+  https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.ps1 `
+  -OutFile install.ps1
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The Windows installer verifies the Release ZIP checksum, installs `clawchat-connect.exe`, `liveware.exe`, and Client assets under `%LOCALAPPDATA%\ClawChatConnect\bin`, and adds that directory to the current user's persistent `PATH`. Install a specific release or directory with:
+
+```powershell
+.\install.ps1 `
+  -Version v0.1.0-alpha.5 `
+  -InstallDirectory "D:\Tools\ClawChatConnect"
 ```
 
 Developers may install the Bun package instead:
@@ -99,7 +117,7 @@ clawchat-connect service install
 clawchat-connect service status
 ```
 
-Installation starts Connect immediately and enables it for future logins. Connect runs as a native per-user LaunchAgent on macOS or systemd user service on Linux; root access is not required.
+Installation starts Connect immediately and enables it for future logins. Connect runs as a native per-user LaunchAgent on macOS, systemd user service on Linux, or current-user Task Scheduler task on Windows; administrator/root access is not required.
 
 There is no foreground `run` command. The background service owns the ClawChat WebSocket connection, Codex app-server process, browser client, and bundled Liveware companion.
 
@@ -377,6 +395,7 @@ Common causes:
 
 - **Codex version rejected:** install exactly `codex-cli 0.145.0`, or set `agents.<id>.codexPathOverride` to the correct executable.
 - **Codex works in a terminal but not in Connect:** reinstall the service so it captures the current `PATH`.
+- **Windows service does not start:** run `clawchat-connect service install` again from a terminal where `codex` works, then inspect `clawchat-connect service logs`.
 - **Configuration changed but behavior did not:** restart the service.
 - **Browser client does not open:** confirm the service is running, then use `clawchat-connect web --no-open` and open the printed URL.
 - **ClawChat does not show `ClawChat Connect`:** run `clawchat-connect status`, then restart the service and inspect its logs for `Liveware Exposure`.
@@ -393,6 +412,8 @@ Common causes:
 | Isolated Non-Project workspaces | `~/.clawchat-connect/workspaces/` |
 | Downloaded media cache | `~/.clawchat-connect/media-cache/` |
 | Codex Runtime Threads | `~/.codex/sessions/` |
+
+On Windows, Connect data uses `%USERPROFILE%\.clawchat-connect\`, while the standalone binaries and notices default to `%LOCALAPPDATA%\ClawChatConnect\`.
 
 Invite codes are not persisted. Connect does not expose tools, run an MCP server, or inject MCP configuration into Codex. MCP servers already configured in the user's Codex environment remain under Codex's ownership.
 
@@ -416,9 +437,9 @@ Run the real Codex model-catalog and same-Runtime-Thread model-switch test with:
 CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
 ```
 
-Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it at `dist/liveware` beside `dist/clawchat-connect`. Preview the browser client with `bun run preview:web`.
+Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it beside the Connect executable under `dist/`. Windows builds use `.exe` names. Preview the browser client with `bun run preview:web`.
 
-Version tags such as `v0.1.0-alpha.4` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies the four vendored Liveware assets, builds macOS/Linux archives containing the matching pinned executable, and publishes checksums and license notices as a GitHub prerelease. npm packages include the same four assets so a global Bun install remains portable.
+Version tags such as `v0.1.0-alpha.5` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. npm packages include all six assets so a global Bun install remains portable.
 
 ## License
 

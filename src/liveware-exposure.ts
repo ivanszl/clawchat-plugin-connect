@@ -130,7 +130,7 @@ export async function resolveLivewareExecutablePath(): Promise<string> {
   const assetName = livewareAssetName(process.platform, process.arch);
   const candidates = [
     process.env.CLAWCHAT_CONNECT_LIVEWARE_PATH,
-    join(dirname(resolve(process.execPath)), "liveware"),
+    join(dirname(resolve(process.execPath)), process.platform === "win32" ? "liveware.exe" : "liveware"),
     join(moduleDirectory, "..", "vendor", "liveware", assetName),
     join(moduleDirectory, "..", "..", "vendor", "liveware", assetName),
   ].filter((candidate): candidate is string => Boolean(candidate));
@@ -148,12 +148,13 @@ export async function resolveLivewareExecutablePath(): Promise<string> {
 }
 
 export function livewareAssetName(platform: NodeJS.Platform, architecture: string): string {
-  const operatingSystem = platform === "darwin" ? "darwin" : platform === "linux" ? "linux" : null;
+  const operatingSystem =
+    platform === "darwin" ? "darwin" : platform === "linux" ? "linux" : platform === "win32" ? "windows" : null;
   const cpu = architecture === "arm64" ? "arm64" : architecture === "x64" ? "amd64" : null;
   if (!operatingSystem || !cpu) {
     throw new Error(`Liveware is not bundled for ${platform}/${architecture}`);
   }
-  return `liveware-${operatingSystem}-${cpu}`;
+  return `liveware-${operatingSystem}-${cpu}${platform === "win32" ? ".exe" : ""}`;
 }
 
 export async function prepareLivewareExposure(
@@ -464,7 +465,7 @@ async function spawnLivewareAgent(command: string[], env: Record<string, string>
   return {
     exited: child.exited,
     stop: async () => {
-      if (child.exitCode === null) child.kill("SIGTERM");
+      if (child.exitCode === null) child.kill();
       await child.exited;
     },
   };

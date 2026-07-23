@@ -265,7 +265,7 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
       clientInfo: {
         name: "clawchat_connect",
         title: "ClawChat Connect",
-        version: "0.1.0-alpha.4",
+        version: "0.1.0-alpha.5",
       },
       capabilities: {
         experimentalApi: false,

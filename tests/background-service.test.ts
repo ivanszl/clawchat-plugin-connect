@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   type BackgroundCommandResult,
   connectCommandForProcess,
@@ -111,11 +111,69 @@ describe("background service manager", () => {
     });
   });
 
+  it("installs one Windows user task and delegates lifecycle, status, and logs", async () => {
+    const homeDirectory = await mkdtemp(join(tmpdir(), "clawchat-connect-windows-task-"));
+    const commands: Array<{ command: string[]; inheritOutput: boolean | undefined }> = [];
+    const runCommand = mock(async (command: string[], inheritOutput?: boolean) => {
+      commands.push({ command, inheritOutput });
+      if (command[0] === "powershell.exe" && command.at(-1)?.includes("Get-ScheduledTask")) {
+        return successfulCommand("Running\r\n");
+      }
+      if (command[0] === "powershell.exe" && command.at(-1)?.includes("Get-Content")) {
+        return successfulCommand("connected\r\n");
+      }
+      return successfulCommand();
+    });
+    const configPath = join(homeDirectory, "connect config.json");
+    const base = {
+      configPath,
+      command: ["C:\\Program Files\\Claw's Chat\\clawchat-connect.exe"],
+    };
+    const dependencies = {
+      platform: "win32" as const,
+      homeDirectory,
+      pathEnvironment: "C:\\Codex;C:\\Windows\\System32",
+      runCommand,
+    };
+
+    const installed = await manageBackgroundService({ action: "install", ...base }, dependencies);
+    expect(installed).toMatchObject({ running: true, message: expect.stringContaining("Task Scheduler") });
+    const scriptPath = join(homeDirectory, ".clawchat-connect", "service.ps1");
+    const script = await readFile(scriptPath, "utf8");
+    expect(script).toContain("$env:PATH = 'C:\\Codex;C:\\Windows\\System32'");
+    expect(script).toContain("& 'C:\\Program Files\\Claw''s Chat\\clawchat-connect.exe'");
+    expect(script).toContain("'service' 'exec' '--config'");
+    expect(script).toContain("Set-Content");
+    expect(script).toContain("Start-Sleep -Seconds 5");
+    expect(commands.some(({ command }) => command[0] === "schtasks.exe" && command.includes("/Create"))).toBe(true);
+    expect(commands.some(({ command }) => command[0] === "schtasks.exe" && command.includes("/Run"))).toBe(true);
+
+    await expect(manageBackgroundService({ action: "status", ...base }, dependencies)).resolves.toMatchObject({
+      running: true,
+      message: expect.stringContaining("state: running"),
+    });
+    await expect(
+      manageBackgroundService({ action: "logs", lines: 25, follow: true, ...base }, dependencies),
+    ).resolves.toMatchObject({ message: "Log stream ended.\n" });
+    expect(commands.at(-1)).toMatchObject({ inheritOutput: true });
+    expect(commands.at(-1)?.command.at(-1)).toContain("Get-Content");
+
+    await writeFile(join(homeDirectory, ".clawchat-connect", "service.pid"), "4242");
+    await expect(manageBackgroundService({ action: "restart", ...base }, dependencies)).resolves.toMatchObject({
+      running: true,
+    });
+    await expect(manageBackgroundService({ action: "stop", ...base }, dependencies)).resolves.toMatchObject({
+      running: false,
+    });
+    expect(commands.some(({ command }) => command[0] === "schtasks.exe" && command.includes("/End"))).toBe(true);
+    expect(commands.some(({ command }) => command[0] === "taskkill.exe" && command.includes("4242"))).toBe(true);
+  });
+
   it("rejects unsupported platforms and unsafe service values", async () => {
     await expect(
       manageBackgroundService(
         { action: "install", configPath: "/tmp/config.json", command: ["/bin/connect"] },
-        { platform: "win32" },
+        { platform: "freebsd" },
       ),
     ).rejects.toThrow("not supported");
     await expect(
@@ -137,5 +195,8 @@ describe("background service manager", () => {
     expect(connectCommandForProcess("/opt/clawchat-connect", "/$bunfs/root/clawchat-connect")).toEqual([
       "/opt/clawchat-connect",
     ]);
+    expect(
+      connectCommandForProcess("C:\\Connect\\clawchat-connect.exe", "B:\\$bunfs\\root\\clawchat-connect.exe"),
+    ).toEqual([resolve("C:\\Connect\\clawchat-connect.exe")]);
   });
 });

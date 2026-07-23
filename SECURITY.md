@@ -7,3 +7,5 @@ Please report suspected credential disclosure, arbitrary file disclosure, reques
 Until a fix is available, stop the user service with `clawchat-connect service stop`, rotate the affected ClawChat activation credentials, set `livewareAccessPolicy` to `off`, and remove untrusted LAN exposure from the configuration.
 
 A Liveware Exposure presents the complete Connect Client. `private` admits only the Connect Owner and is the default; `public` admits any authenticated ClawChat user who can open the App. Connect intentionally adds no separate remote roles or capability filtering. Use `public` only when every admitted user may inspect Sessions, manage Project paths and preferences, and submit local runtime turns.
+
+Windows installs use a current-user Task Scheduler task and a generated `%USERPROFILE%\.clawchat-connect\service.ps1`; neither requires elevation. Release executables are alpha artifacts and may trigger Windows SmartScreen until code signing is configured. Verify the published SHA-256 checksums before bypassing an execution warning.

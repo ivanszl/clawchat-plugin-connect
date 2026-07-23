@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { chmod, mkdir, open, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -37,8 +37,11 @@ interface ServiceDefinition {
   command: string[];
   label: string;
   unitName: string;
+  windowsTaskName: string;
   launchAgentPath: string;
   systemdUnitPath: string;
+  windowsScriptPath: string;
+  windowsPidPath: string;
   stdoutPath: string;
   stderrPath: string;
 }
@@ -48,7 +51,7 @@ export async function manageBackgroundService(
   dependencies: BackgroundServiceDependencies = {},
 ): Promise<BackgroundServiceResult> {
   const platform = dependencies.platform ?? process.platform;
-  if (platform !== "darwin" && platform !== "linux") {
+  if (platform !== "darwin" && platform !== "linux" && platform !== "win32") {
     throw new Error(`background services are not supported on ${platform}`);
   }
   const definition = createServiceDefinition(request, dependencies.homeDirectory ?? homedir());
@@ -60,6 +63,14 @@ export async function manageBackgroundService(
       request,
       definition,
       uid,
+      dependencies.pathEnvironment ?? process.env.PATH ?? "",
+      runCommand,
+    );
+  }
+  if (platform === "win32") {
+    return await manageWindowsTask(
+      request,
+      definition,
       dependencies.pathEnvironment ?? process.env.PATH ?? "",
       runCommand,
     );
@@ -79,7 +90,11 @@ export function currentConnectCommand(): string[] {
 export function connectCommandForProcess(executablePath: string, entrypointPath: string): string[] {
   const executable = resolve(executablePath);
   const entrypoint = resolve(entrypointPath);
-  const isBunCompiledEntrypoint = entrypoint === "/$bunfs" || entrypoint.startsWith("/$bunfs/");
+  const normalizedEntrypoint = entrypointPath.replace(/\\/gu, "/");
+  const isBunCompiledEntrypoint =
+    normalizedEntrypoint === "/$bunfs" ||
+    normalizedEntrypoint.startsWith("/$bunfs/") ||
+    /^[A-Za-z]:\/\$bunfs(?:\/|$)/u.test(normalizedEntrypoint);
   return executable === entrypoint || isBunCompiledEntrypoint ? [executable] : [executable, entrypoint];
 }
 
@@ -94,8 +109,11 @@ function createServiceDefinition(request: BackgroundServiceRequest, homeDirector
     command: [...command, "service", BACKGROUND_SERVICE_PROCESS_ACTION, "--config", configPath],
     label: "com.clawchat.connect",
     unitName: "clawchat-connect.service",
+    windowsTaskName: "ClawChat Connect",
     launchAgentPath: join(homeDirectory, "Library", "LaunchAgents", "com.clawchat.connect.plist"),
     systemdUnitPath: join(homeDirectory, ".config", "systemd", "user", "clawchat-connect.service"),
+    windowsScriptPath: join(homeDirectory, ".clawchat-connect", "service.ps1"),
+    windowsPidPath: join(homeDirectory, ".clawchat-connect", "service.pid"),
     stdoutPath: join(logsDirectory, "service.log"),
     stderrPath: join(logsDirectory, "service.error.log"),
   };
@@ -170,6 +188,95 @@ async function manageSystemdUserService(
   };
 }
 
+async function manageWindowsTask(
+  request: BackgroundServiceRequest,
+  definition: ServiceDefinition,
+  pathEnvironment: string,
+  runCommand: NonNullable<BackgroundServiceDependencies["runCommand"]>,
+): Promise<BackgroundServiceResult> {
+  const taskTarget = ["/TN", definition.windowsTaskName];
+  if (request.action === "install") {
+    await writeManagedFile(definition.windowsScriptPath, windowsServiceScript(definition, pathEnvironment));
+    await ensureLogFiles(definition);
+    await endWindowsTask(runCommand, definition);
+    await runRequired(runCommand, [
+      "schtasks.exe",
+      "/Create",
+      ...taskTarget,
+      "/TR",
+      windowsTaskCommand(definition),
+      "/SC",
+      "ONLOGON",
+      "/RL",
+      "LIMITED",
+      "/F",
+    ]);
+    await runRequired(runCommand, ["schtasks.exe", "/Run", ...taskTarget]);
+    return {
+      message: installedMessage("Task Scheduler", definition.windowsScriptPath),
+      running: true,
+    };
+  }
+  if (request.action === "status") {
+    const status = await runCommand(windowsStatusCommand(definition));
+    return serviceStatus(
+      "Task Scheduler",
+      definition,
+      status.exitCode === 0 && status.stdout.trim().toLowerCase() === "running",
+    );
+  }
+  if (request.action === "logs") return await windowsTaskLogs(request, definition, runCommand);
+  requireInstalled(definition.windowsScriptPath);
+  if (request.action === "stop") {
+    await endWindowsTask(runCommand, definition);
+    return { message: "Stopped ClawChat Connect background service.\n", running: false };
+  }
+  if (request.action === "restart") await endWindowsTask(runCommand, definition);
+  await runRequired(runCommand, ["schtasks.exe", "/Run", ...taskTarget]);
+  return {
+    message: `${request.action === "restart" ? "Restarted" : "Started"} ClawChat Connect background service.\n`,
+    running: true,
+  };
+}
+
+async function endWindowsTask(
+  runCommand: NonNullable<BackgroundServiceDependencies["runCommand"]>,
+  definition: ServiceDefinition,
+): Promise<void> {
+  const taskState = await runCommand(windowsStatusCommand(definition));
+  if (taskState.exitCode === 0 && taskState.stdout.trim().toLowerCase() === "running") {
+    const rawPid = await readFile(definition.windowsPidPath, "utf8").catch(() => "");
+    const pid = Number(rawPid.trim());
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      const killCommand = ["taskkill.exe", "/PID", String(pid), "/T", "/F"];
+      const killed = await runCommand(killCommand);
+      if (killed.exitCode !== 0 && !isWindowsProcessMissing(killed)) {
+        throw commandError(killed, killCommand);
+      }
+    }
+  }
+  const command = ["schtasks.exe", "/End", "/TN", definition.windowsTaskName];
+  const result = await runCommand(command);
+  if (result.exitCode !== 0 && !isWindowsTaskAlreadyStopped(result)) {
+    throw commandError(result, command);
+  }
+  await unlink(definition.windowsPidPath).catch(() => undefined);
+}
+
+async function windowsTaskLogs(
+  request: BackgroundServiceRequest,
+  definition: ServiceDefinition,
+  runCommand: NonNullable<BackgroundServiceDependencies["runCommand"]>,
+): Promise<BackgroundServiceResult> {
+  const paths = [definition.stdoutPath, definition.stderrPath].filter((path) => existsSync(path));
+  if (paths.length === 0) return { message: "No service logs.\n" };
+  const script = `Get-Content -LiteralPath ${paths.map(powerShellQuote).join(", ")} -Tail ${normalizeLogLines(request.lines)}${request.follow ? " -Wait" : ""}`;
+  const command = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script];
+  const result = await runCommand(command, request.follow === true);
+  if (result.exitCode !== 0) throw commandError(result, command);
+  return { message: request.follow ? "Log stream ended.\n" : result.stdout || "No service logs.\n" };
+}
+
 async function launchAgentLogs(
   request: BackgroundServiceRequest,
   definition: ServiceDefinition,
@@ -237,6 +344,34 @@ function systemdUnit(definition: ServiceDefinition, pathEnvironment: string): st
   ].join("\n")}\n`;
 }
 
+function windowsServiceScript(definition: ServiceDefinition, pathEnvironment: string): string {
+  const invocation = definition.command.map(powerShellQuote).join(" ");
+  return `${[
+    "$ErrorActionPreference = 'Continue'",
+    `$env:PATH = ${powerShellQuote(pathEnvironment)}`,
+    `Set-Content -LiteralPath ${powerShellQuote(definition.windowsPidPath)} -Value $PID -Encoding ascii`,
+    "try {",
+    "  while ($true) {",
+    `    & ${invocation} 1>> ${powerShellQuote(definition.stdoutPath)} 2>> ${powerShellQuote(definition.stderrPath)}`,
+    "    $connectExitCode = $LASTEXITCODE",
+    "    if ($connectExitCode -eq 0) { exit 0 }",
+    "    Start-Sleep -Seconds 5",
+    "  }",
+    "} finally {",
+    `  Remove-Item -LiteralPath ${powerShellQuote(definition.windowsPidPath)} -Force -ErrorAction SilentlyContinue`,
+    "}",
+  ].join("\r\n")}\r\n`;
+}
+
+function windowsTaskCommand(definition: ServiceDefinition): string {
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${definition.windowsScriptPath.replace(/"/gu, '""')}"`;
+}
+
+function windowsStatusCommand(definition: ServiceDefinition): string[] {
+  const script = `$task = Get-ScheduledTask -TaskName ${powerShellQuote(definition.windowsTaskName)} -ErrorAction SilentlyContinue; if ($null -eq $task) { exit 1 }; $task.State.ToString()`;
+  return ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script];
+}
+
 async function writeManagedFile(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporaryPath = `${path}.${process.pid}.tmp`;
@@ -286,12 +421,27 @@ function isNotLoaded(result: BackgroundCommandResult): boolean {
   return /could not find|not found|no such process|service is not loaded/iu.test(`${result.stdout}\n${result.stderr}`);
 }
 
+function isWindowsTaskAlreadyStopped(result: BackgroundCommandResult): boolean {
+  return /cannot find|does not exist|not currently running|not running|找不到|没有运行/iu.test(
+    `${result.stdout}\n${result.stderr}`,
+  );
+}
+
+function isWindowsProcessMissing(result: BackgroundCommandResult): boolean {
+  return /not found|no running instance|not running|找不到|没有运行/iu.test(`${result.stdout}\n${result.stderr}`);
+}
+
 function installedMessage(manager: string, path: string): string {
   return `Installed and started ClawChat Connect background service with ${manager}.\nDefinition: ${path}\n`;
 }
 
 function serviceStatus(manager: string, definition: ServiceDefinition, running: boolean): BackgroundServiceResult {
-  const path = manager === "launchd" ? definition.launchAgentPath : definition.systemdUnitPath;
+  const path =
+    manager === "launchd"
+      ? definition.launchAgentPath
+      : manager === "systemd"
+        ? definition.systemdUnitPath
+        : definition.windowsScriptPath;
   return {
     message: `${[
       "ClawChat Connect background service",
@@ -328,4 +478,8 @@ function xmlEscape(value: string): string {
 
 function systemdQuote(value: string): string {
   return `"${value.replace(/%/gu, "%%").replace(/\\/gu, "\\\\").replace(/"/gu, '\\"')}"`;
+}
+
+function powerShellQuote(value: string): string {
+  return `'${value.replace(/'/gu, "''")}'`;
 }
