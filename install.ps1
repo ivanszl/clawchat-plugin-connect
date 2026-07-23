@@ -9,13 +9,13 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
-  $Version = if ($env:CLAWCHAT_CONNECT_VERSION) { $env:CLAWCHAT_CONNECT_VERSION } else { "v0.1.0-alpha.5" }
+  $Version = if ($env:CLAWCHAT_CONNECT_VERSION) { $env:CLAWCHAT_CONNECT_VERSION } else { "v0.1.0-alpha.6" }
 }
 if (-not $Version.StartsWith("v")) {
   $Version = "v$Version"
 }
 if ($Version -notmatch "^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$") {
-  throw "Only alpha versions are available (for example: v0.1.0-alpha.5)"
+  throw "Only alpha versions are available (for example: v0.1.0-alpha.6)"
 }
 
 $localApplicationData = if ($env:LOCALAPPDATA) {

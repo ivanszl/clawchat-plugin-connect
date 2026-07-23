@@ -180,7 +180,7 @@ describe("standalone release bundle", () => {
     );
     await chmod(curlPath, 0o755);
 
-    const installProcess = Bun.spawn(["sh", "install.sh", "v0.1.0-alpha.5"], {
+    const installProcess = Bun.spawn(["sh", "install.sh", "v0.1.0-alpha.6"], {
       cwd: process.cwd(),
       env: {
         ...process.env,

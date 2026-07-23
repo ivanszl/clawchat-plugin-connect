@@ -365,6 +365,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
         start: async () => ({
           prompt: async function* (input: ConnectRuntimePrompt) {
             prompts.push(input);
+            await Bun.sleep(10);
             yield { kind: "final", text: "media received" } as const;
           },
           close: mock(async () => undefined),
@@ -455,18 +456,22 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       ],
     });
     expect(errors).toEqual([]);
-    const reply = transport.sent.find((event) => event.event === EVENT.MESSAGE_REPLY);
-    if (reply) {
-      transport.receive({
-        version: "2",
-        event: EVENT.MESSAGE_ACK,
-        trace_id: reply.trace_id,
-        emitted_at: 4,
-        chat_id: "chat-media",
-        payload: { message_id: "reply-media", accepted_at: 4 },
-      });
-      await flush();
+    let reply = transport.sent.find((event) => event.event === EVENT.MESSAGE_REPLY);
+    for (let attempt = 0; attempt < 50 && !reply; attempt += 1) {
+      await Bun.sleep(2);
+      reply = transport.sent.find((event) => event.event === EVENT.MESSAGE_REPLY);
     }
+    expect(reply).toBeDefined();
+    if (!reply) throw new Error("media reply was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.MESSAGE_ACK,
+      trace_id: reply.trace_id,
+      emitted_at: 4,
+      chat_id: "chat-media",
+      payload: { message_id: "reply-media", accepted_at: 4 },
+    });
+    await flush();
     await handle.close();
     await runtimeAdapters.close();
     await stateStore.close();

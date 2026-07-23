@@ -51,7 +51,7 @@ To install a specific release or choose another directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.5
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.6
 ```
 
 On Windows PowerShell, download and inspect the installer before running it:
@@ -68,7 +68,7 @@ The Windows installer verifies the Release ZIP checksum, installs `clawchat-conn
 
 ```powershell
 .\install.ps1 `
-  -Version v0.1.0-alpha.5 `
+  -Version v0.1.0-alpha.6 `
   -InstallDirectory "D:\Tools\ClawChatConnect"
 ```
 
@@ -439,7 +439,7 @@ CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
 
 Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it beside the Connect executable under `dist/`. Windows builds use `.exe` names. Preview the browser client with `bun run preview:web`.
 
-Version tags such as `v0.1.0-alpha.5` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. npm packages include all six assets so a global Bun install remains portable.
+Version tags such as `v0.1.0-alpha.6` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. npm packages include all six assets so a global Bun install remains portable.
 
 ## License
 
