@@ -1,5 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { EmbeddedTranscriptBlock, TranscriptBlock, TranscriptOrigin } from "../client-contract";
+import type {
+  EmbeddedTranscriptBlock,
+  MessageBlockContent,
+  RuntimeInteractionBlock,
+  RuntimeInteractionBlockContent,
+  TranscriptBlock,
+  TranscriptOrigin,
+} from "../client-contract";
 import { getAgentBinding } from "../config";
 import type { RuntimeOutputEvent } from "../output-visibility";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
@@ -65,6 +72,7 @@ export class TranscriptProjection {
     origin: "client" | "clawchat";
     author: string;
     id?: string;
+    media?: MessageBlockContent["media"];
   }): Promise<TranscriptBlock> {
     const text = normalizeVisibleText(params.text);
     return (
@@ -77,8 +85,16 @@ export class TranscriptProjection {
         role: "user",
         author: params.author,
         markdown: text,
+        ...(params.media && params.media.length > 0 ? { media: params.media } : {}),
       })
     ).block;
+  }
+
+  async upsertRuntimeInteraction(
+    sessionRef: string,
+    input: RuntimeInteractionBlockContent,
+  ): Promise<RuntimeInteractionBlock> {
+    return (await this.options.stateStore.upsertTranscriptBlock(sessionRef, input)).block as RuntimeInteractionBlock;
   }
 
   async appendRuntimeOutput(

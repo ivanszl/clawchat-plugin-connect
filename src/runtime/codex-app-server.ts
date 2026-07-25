@@ -147,6 +147,7 @@ export interface CodexAppServerProcess {
 export interface CreateCodexAppServerClientOptions {
   readVersion?: (executable: string, env: NodeJS.ProcessEnv | undefined) => Promise<string>;
   spawnAppServer?: (executable: string, env: NodeJS.ProcessEnv | undefined) => CodexAppServerProcess;
+  requestTimeoutMs?: number;
 }
 
 export async function createCodexAppServerClient(
@@ -167,7 +168,7 @@ export async function createCodexAppServerClient(
     );
   }
   const child = (options.spawnAppServer ?? spawnCodexAppServer)(executable, env);
-  const client = new StdioCodexAppServerClient(child);
+  const client = new StdioCodexAppServerClient(child, options.requestTimeoutMs);
   try {
     await client.initialize();
     return client;
@@ -229,8 +230,13 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
   private readonly exited: Promise<void>;
   private stderrTail = "";
   private closed = false;
+  private terminalError: Error | null = null;
+  private requestTail: Promise<void> = Promise.resolve();
 
-  constructor(private readonly child: CodexAppServerProcess) {
+  constructor(
+    private readonly child: CodexAppServerProcess,
+    private readonly requestTimeoutMs = 10_000,
+  ) {
     this.lines = createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY });
     this.lines.on("line", (line) => {
       void this.handleLine(line);
@@ -247,6 +253,7 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
           : new Error(
               `Codex app-server exited (${code === null ? signal : `code ${code}`})${suffix ? `: ${suffix}` : ""}`,
             );
+        this.terminalError = reason;
         this.rejectPending(reason);
         if (!this.closed) {
           for (const listener of this.notificationListeners) {
@@ -256,7 +263,8 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
         resolve();
       });
       child.once("error", (error) => {
-        this.rejectPending(new Error(`Codex app-server process error: ${error.message}`, { cause: error }));
+        this.terminalError = new Error(`Codex app-server process error: ${error.message}`, { cause: error });
+        this.rejectPending(this.terminalError);
       });
     });
   }
@@ -356,19 +364,45 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
   }
 
   private async request<TResult>(method: string, params: unknown): Promise<TResult> {
-    if (this.closed) throw new Error("Codex app-server is closed");
-    const id = this.nextRequestId;
-    this.nextRequestId += 1;
-    const response = new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+    const previous = this.requestTail;
+    let release!: () => void;
+    this.requestTail = new Promise<void>((resolve) => {
+      release = resolve;
     });
+    await previous;
     try {
-      await this.write({ id, method, params });
-    } catch (error) {
-      this.pending.delete(id);
-      throw error;
+      if (this.terminalError) throw this.terminalError;
+      if (this.closed) throw new Error("Codex app-server is closed");
+      const id = this.nextRequestId;
+      this.nextRequestId += 1;
+      const response = new Promise<unknown>((resolve, reject) => {
+        this.pending.set(id, { resolve, reject });
+      });
+      try {
+        await this.write({ id, method, params });
+      } catch (error) {
+        this.pending.delete(id);
+        throw error;
+      }
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return (await Promise.race([
+          response,
+          new Promise<never>(
+            (_, reject) =>
+              (timeout = setTimeout(
+                () => reject(new Error(`Codex app-server ${method} timed out after ${this.requestTimeoutMs}ms`)),
+                this.requestTimeoutMs,
+              )),
+          ),
+        ])) as TResult;
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        this.pending.delete(id);
+      }
+    } finally {
+      release();
     }
-    return (await response) as TResult;
   }
 
   private async write(message: JsonObject): Promise<void> {

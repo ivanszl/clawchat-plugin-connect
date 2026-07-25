@@ -6,6 +6,7 @@ import type { ProjectCatalog } from "./projects";
 import { type Envelope, EVENT, type NormalizedInboundMessage, type Transport } from "./protocol";
 import { ConnectRuntime } from "./runtime/connect-runtime";
 import type { RuntimeAdapterRegistry } from "./runtime/registry";
+import type { RuntimeInteractionCoordinator } from "./runtime/runtime-interaction-coordinator";
 import type { ConnectStateStore } from "./state";
 import type { ActivationCredentials, ConnectConfig } from "./types";
 import { ConnectWsClient } from "./ws-client";
@@ -20,6 +21,7 @@ export interface BindingRuntimeOptions {
   projects: ProjectCatalog;
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection?: TranscriptProjection;
+  runtimeInteractions?: RuntimeInteractionCoordinator;
   wsTransport?: Transport;
   protocolEventHandlers?: BindingProtocolEventHandlers;
   writeError: (message: string) => void;
@@ -92,6 +94,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     projects: options.projects,
     runtimeAdapters: options.runtimeAdapters,
     transcriptProjection: options.transcriptProjection,
+    runtimeInteractions: options.runtimeInteractions,
   });
   inboundMessages = new InboundMessageProcessor(options, wsClient, runtime);
   wireQuarantineEvents(wsClient, options);
@@ -166,7 +169,9 @@ class InboundMessageProcessor {
       runtime: this.runtime,
       onTurnAccepted: markHandled,
     })
-      .then(markHandled)
+      .then(async (handledWithoutTurn) => {
+        if (handledWithoutTurn) await markHandled();
+      })
       .catch((error) =>
         this.options.writeError(
           `${this.options.agentId}: inbound message remains pending: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -247,7 +252,7 @@ async function dispatchInboundMessage(
     runtime: ConnectRuntime;
     onTurnAccepted: () => Promise<void>;
   },
-): Promise<void> {
+): Promise<boolean> {
   const routeCommand = async (): Promise<boolean> => {
     const command = await handleChatCommand({
       message: params.message,
@@ -272,6 +277,7 @@ async function dispatchInboundMessage(
         { toType: params.message.chatType },
       );
     }
+    await params.onTurnAccepted();
     return true;
   };
   if (
@@ -281,7 +287,7 @@ async function dispatchInboundMessage(
         !requiresOrderedSessionControl(params.message.text)))
   ) {
     await routeCommand();
-    return;
+    return true;
   }
   await params.runtime.handleInboundMessage(
     params.message,
@@ -289,6 +295,7 @@ async function dispatchInboundMessage(
     requiresOrderedSessionControl(params.message.text),
     params.onTurnAccepted,
   );
+  return false;
 }
 
 async function recordConnectionStatus(

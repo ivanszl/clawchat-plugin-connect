@@ -5,6 +5,24 @@ import { basename, join } from "node:path";
 import { cacheRuntimeMedia } from "../src/runtime/media-cache";
 
 describe("Runtime media cache", () => {
+  it("bounds DNS resolution with the media timeout", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-media-dns-timeout-"));
+    const stateDbPath = join(directory, "state.sqlite");
+    const outcome = await Promise.race([
+      cacheRuntimeMedia({ kind: "image", url: "https://media.example/image.jpg", name: "image.jpg" }, stateDbPath, {
+        timeoutMs: 10,
+        resolveHostname: async () => await new Promise<string[]>(() => undefined),
+      }).then(
+        () => "resolved",
+        (error) => (error instanceof Error ? error.message : String(error)),
+      ),
+      Bun.sleep(100).then(() => "hung"),
+    ]);
+
+    expect(outcome).not.toBe("hung");
+    expect(outcome).toMatch(/timed out/iu);
+  });
+
   const trustedMediaOrigin = { trustedOrigins: ["https://media.example"] } as const;
 
   it("downloads an opaque media URL once and reuses the cached file", async () => {

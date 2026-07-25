@@ -172,6 +172,7 @@ function SessionPage() {
         continueInClawChatHref={clawChatHref}
         canSend={view.allowedActions.includes("send") && view.status !== "offline"}
         isRuntimeActive={view.status === "running" || view.status === "queued"}
+        hasPendingInteraction={view.pendingInteractions.length > 0}
         modelControl={<SessionModelControls view={view} />}
       />
       <AlertDialog

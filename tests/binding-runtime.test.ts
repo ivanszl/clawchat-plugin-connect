@@ -497,6 +497,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     for (let attempt = 0; attempt < 50 && prompts.length === 0; attempt += 1) await Bun.sleep(2);
 
     expect(prompts[0]).toMatchObject({
+      trustedMediaOrigins: expect.arrayContaining(["https://media.clawling.chat"]),
       media: [
         {
           kind: "image",

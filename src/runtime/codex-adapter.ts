@@ -19,6 +19,7 @@ import type {
   ConnectRuntimePrompt,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
+  RuntimeInteractionPort,
   RuntimeModelOption,
   RuntimeThreadSummary,
   RuntimeTranscriptEntry,
@@ -50,71 +51,83 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     (async (media: ConnectRuntimeMedia, stateDbPath: string, trustedOrigins?: readonly string[]) =>
       await cacheRuntimeMedia(media, stateDbPath, { trustedOrigins }));
   let bindingIdentity: string | null = null;
-  let clientPromise: Promise<CodexAppServerClient> | null = null;
+  let runtimeClientPromise: Promise<CodexAppServerClient> | null = null;
+  let catalogClientPromise: Promise<CodexAppServerClient> | null = null;
 
-  const clientFor = async (binding: CodexAgentBindingConfig): Promise<CodexAppServerClient> => {
+  const clientFor = async (
+    binding: CodexAgentBindingConfig,
+    purpose: "runtime" | "catalog",
+  ): Promise<CodexAppServerClient> => {
     const identity = processIdentity(binding);
     if (bindingIdentity && bindingIdentity !== identity) {
       throw new Error("The shared Codex app-server cannot be reused with a different executable or environment");
     }
     bindingIdentity = identity;
-    if (!clientPromise) {
-      clientPromise = createAppServer(binding).catch((error) => {
-        clientPromise = null;
+    const current = purpose === "runtime" ? runtimeClientPromise : catalogClientPromise;
+    if (current) return await current;
+    const created = createAppServer(binding).catch((error) => {
+      if (purpose === "runtime") runtimeClientPromise = null;
+      else catalogClientPromise = null;
+      if (!runtimeClientPromise && !catalogClientPromise) {
         bindingIdentity = null;
-        throw error;
-      });
-    }
-    return await clientPromise;
+      }
+      throw error;
+    });
+    if (purpose === "runtime") runtimeClientPromise = created;
+    else catalogClientPromise = created;
+    return await created;
   };
 
   return {
     kind: "codex",
     modes: SANDBOX_MODES,
     async prepare(binding) {
-      await clientFor(requireCodexBinding(binding));
+      await clientFor(requireCodexBinding(binding), "runtime");
     },
     async listModels(binding) {
       const codexBinding = requireCodexBinding(binding);
-      return await discoverCodexModels(await clientFor(codexBinding));
+      return await discoverCodexModels(await clientFor(codexBinding, "runtime"));
     },
     async discoverThreads(binding, workspace) {
       const codexBinding = requireCodexBinding(binding);
-      return await discoverCodexThreads(await clientFor(codexBinding), workspace.workingDirectory);
+      return await discoverCodexThreads(await clientFor(codexBinding, "catalog"), workspace.workingDirectory);
     },
     async discoverAllThreads(binding) {
       const codexBinding = requireCodexBinding(binding);
-      return await discoverCodexThreads(await clientFor(codexBinding));
+      return await discoverCodexThreads(await clientFor(codexBinding, "catalog"));
     },
     async discoverArchivedThreads(binding) {
       const codexBinding = requireCodexBinding(binding);
-      return await discoverCodexThreads(await clientFor(codexBinding), undefined, true);
+      return await discoverCodexThreads(await clientFor(codexBinding, "catalog"), undefined, true);
     },
     async readTranscript(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
-      return await readCodexTranscript(await clientFor(codexBinding), runtimeThreadId);
+      return await readCodexTranscript(await clientFor(codexBinding, "catalog"), runtimeThreadId);
     },
     async archiveThread(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
-      await (await clientFor(codexBinding)).archiveThread({ threadId: runtimeThreadId });
+      await (await clientFor(codexBinding, "catalog")).archiveThread({ threadId: runtimeThreadId });
     },
     async unarchiveThread(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
-      await (await clientFor(codexBinding)).unarchiveThread({ threadId: runtimeThreadId });
+      await (await clientFor(codexBinding, "catalog")).unarchiveThread({ threadId: runtimeThreadId });
     },
     async deleteThread(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
-      await (await clientFor(codexBinding)).deleteThread({ threadId: runtimeThreadId });
+      await (await clientFor(codexBinding, "catalog")).deleteThread({ threadId: runtimeThreadId });
     },
     async start(binding, context) {
       const codexBinding = requireCodexBinding(binding);
-      return new CodexRuntimeSession(await clientFor(codexBinding), codexBinding, context, cacheMedia);
+      return new CodexRuntimeSession(await clientFor(codexBinding, "runtime"), codexBinding, context, cacheMedia);
     },
     async close() {
-      const current = clientPromise;
-      clientPromise = null;
+      const clients = [runtimeClientPromise, catalogClientPromise].filter(
+        (client): client is Promise<CodexAppServerClient> => Boolean(client),
+      );
+      runtimeClientPromise = null;
+      catalogClientPromise = null;
       bindingIdentity = null;
-      if (current) await (await current).close();
+      await Promise.all(clients.map(async (client) => await (await client).close()));
     },
   };
 }
@@ -394,6 +407,12 @@ interface ActiveTurn {
   queue: RuntimeEventQueue;
   pendingAgentMessage: { itemId: string; text: string } | null;
   seenErrors: Set<string>;
+  interactionPort: RuntimeInteractionPort | null;
+  connectTurnId: string;
+  turnOrigin: "client" | "clawchat";
+  sessionRef: string;
+  interactionControllers: Set<AbortController>;
+  interactionControllersByRequestId: Map<string, AbortController>;
 }
 
 class CodexRuntimeSession implements ConnectRuntimeSession {
@@ -428,6 +447,12 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       queue: new RuntimeEventQueue(),
       pendingAgentMessage: null,
       seenErrors: new Set(),
+      interactionPort: input.interactionPort ?? null,
+      connectTurnId: input.turnId ?? `turn-${Date.now()}`,
+      turnOrigin: input.turnOrigin ?? "client",
+      sessionRef: input.metadata?.sessionRef ?? "",
+      interactionControllers: new Set(),
+      interactionControllersByRequestId: new Map(),
     };
     this.activeTurn = active;
     const removeNotificationListener = this.client.onNotification((notification) => {
@@ -468,6 +493,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       if (active.cancelled) await this.client.interruptTurn({ threadId, turnId: response.turn.id });
       for await (const event of active.queue) yield event;
     } catch (error) {
+      if (!active.turnId) throw error;
       if (!active.cancelled) {
         yield {
           kind: "final",
@@ -475,6 +501,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         };
       }
     } finally {
+      for (const controller of active.interactionControllers) controller.abort();
       removeRequestHandler();
       removeNotificationListener();
       active.queue.close();
@@ -561,6 +588,12 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     }
     const turnId = notificationTurnId(notification);
     if (turnId && turnId !== active.turnId) return;
+    if (notification.method === "serverRequest/resolved") {
+      const requestId = requestIdKey(notification.params.requestId);
+      const controller = requestId ? active.interactionControllersByRequestId.get(requestId) : null;
+      controller?.abort();
+      return;
+    }
     if (notification.method === "turn/started") {
       active.queue.push({
         kind: "progress",
@@ -648,30 +681,115 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     if (active.turnId && turnId && turnId !== active.turnId) return { handled: false } as const;
     if (request.method === "item/commandExecution/requestApproval") {
       const command = stringField(request.params.command) || "a command";
-      active.queue.push({
-        kind: "control",
-        text: `Codex requested approval for ${command}; this ClawChat runtime cannot answer app-server interactions yet, so the request was cancelled.`,
-        requiredControl: true,
+      if (!active.interactionPort || !active.sessionRef) {
+        active.queue.push({
+          kind: "control",
+          text: `Codex requested approval for ${command}; interactive responses are unavailable, so the request was cancelled.`,
+          requiredControl: true,
+        });
+        return { handled: true, result: { decision: "cancel" } } as const;
+      }
+      const response = await this.requestInteraction(active, request.id, {
+        kind: "approval",
+        action: "command",
+        title: "允许 Codex 运行命令？",
+        description: stringField(request.params.reason) || "Codex 请求运行以下命令。",
+        command,
+        cwd: stringField(request.params.cwd) || undefined,
+        options: approvalOptions(),
       });
-      return { handled: true, result: { decision: "cancel" } } as const;
+      return {
+        handled: true,
+        result: { decision: approvalDecision(response.kind === "approval" ? response.optionId : "cancel") },
+      } as const;
     }
     if (request.method === "item/fileChange/requestApproval") {
-      active.queue.push({
-        kind: "control",
-        text: "Codex requested approval for file changes; this ClawChat runtime cannot answer app-server interactions yet, so the request was cancelled.",
-        requiredControl: true,
+      if (!active.interactionPort || !active.sessionRef) {
+        active.queue.push({
+          kind: "control",
+          text: "Codex requested approval for file changes; interactive responses are unavailable, so the request was cancelled.",
+          requiredControl: true,
+        });
+        return { handled: true, result: { decision: "cancel" } } as const;
+      }
+      const grantRoot = stringField(request.params.grantRoot);
+      const response = await this.requestInteraction(active, request.id, {
+        kind: "approval",
+        action: "file-change",
+        title: "允许 Codex 修改文件？",
+        description: stringField(request.params.reason) || "Codex 请求修改工作区文件。",
+        files: grantRoot ? [{ path: grantRoot }] : [],
+        options: approvalOptions(),
       });
-      return { handled: true, result: { decision: "cancel" } } as const;
+      return {
+        handled: true,
+        result: { decision: approvalDecision(response.kind === "approval" ? response.optionId : "cancel") },
+      } as const;
     }
     if (request.method === "item/tool/requestUserInput") {
-      active.queue.push({
-        kind: "control",
-        text: "Codex requested user input; interactive app-server responses will be added with the Connect Client, so this request received no answers.",
-        requiredControl: true,
+      if (!active.interactionPort || !active.sessionRef) {
+        active.queue.push({
+          kind: "control",
+          text: "Codex requested user input; interactive responses are unavailable, so no answers were returned.",
+          requiredControl: true,
+        });
+        return { handled: true, result: { answers: {} } } as const;
+      }
+      const questions = Array.isArray(request.params.questions) ? request.params.questions : [];
+      const response = await this.requestInteraction(active, request.id, {
+        kind: "user-input",
+        title: "Codex 需要你的回答",
+        description:
+          questions.length === 1 ? stringField(questions[0]?.question) : `请回答 ${questions.length} 个问题。`,
+        questions: questions.map((question, index) => ({
+          id: stringField(question.id) || `question-${index + 1}`,
+          header: stringField(question.header) || `问题 ${index + 1}`,
+          prompt: stringField(question.question) || "请输入回答",
+          secret: question.isSecret === true,
+          allowOther: question.isOther === true,
+          options: Array.isArray(question.options)
+            ? question.options.map((option: Record<string, unknown>, optionIndex: number) => ({
+                id: stringField(option.label) || `option-${optionIndex + 1}`,
+                label: stringField(option.label) || `选项 ${optionIndex + 1}`,
+                description: stringField(option.description) || undefined,
+              }))
+            : null,
+        })),
+        autoResolutionMs: typeof request.params.autoResolutionMs === "number" ? request.params.autoResolutionMs : null,
       });
-      return { handled: true, result: { answers: {} } } as const;
+      return {
+        handled: true,
+        result: { answers: response.kind === "user-input" ? mapAnswers(response.answers) : {} },
+      } as const;
     }
     return { handled: false } as const;
+  }
+
+  private async requestInteraction(
+    active: ActiveTurn,
+    nativeRequestId: unknown,
+    request: import("./types").RuntimeInteractionRequest,
+  ): Promise<import("./types").RuntimeInteractionResponse> {
+    if (!active.interactionPort) return { kind: "approval", optionId: "cancel" };
+    const controller = new AbortController();
+    active.interactionControllers.add(controller);
+    const requestId = requestIdKey(nativeRequestId);
+    if (requestId) active.interactionControllersByRequestId.set(requestId, controller);
+    try {
+      return await active.interactionPort.request(request, {
+        sessionRef: active.sessionRef,
+        turnId: active.connectTurnId,
+        origin: active.turnOrigin,
+        signal: controller.signal,
+      });
+    } catch {
+      return request.kind === "approval"
+        ? { kind: "approval", optionId: "cancel" }
+        : { kind: "user-input", answers: {} };
+    } finally {
+      active.interactionControllers.delete(controller);
+      if (requestId) active.interactionControllersByRequestId.delete(requestId);
+    }
   }
 
   private async recordRuntimeSessionId(runtimeSessionId: string): Promise<void> {
@@ -720,6 +838,29 @@ function resolveSandboxMode(mode: string | undefined, configured: CodexSandboxMo
 
 function resolveApprovalPolicy(policy: CodexApprovalPolicy | undefined): "never" | "on-request" | "untrusted" {
   return policy ?? "never";
+}
+
+function approvalOptions() {
+  return [
+    { id: "approve-once" as const, label: "仅此次允许" },
+    { id: "approve-session" as const, label: "本 Session 允许" },
+    { id: "deny" as const, label: "拒绝" },
+  ];
+}
+
+function approvalDecision(optionId: string): "accept" | "acceptForSession" | "decline" | "cancel" {
+  if (optionId === "approve-once") return "accept";
+  if (optionId === "approve-session") return "acceptForSession";
+  if (optionId === "deny") return "decline";
+  return "cancel";
+}
+
+function mapAnswers(answers: Record<string, string[]>): Record<string, { answers: string[] }> {
+  return Object.fromEntries(Object.entries(answers).map(([id, values]) => [id, { answers: values }]));
+}
+
+function requestIdKey(value: unknown): string | null {
+  return typeof value === "string" || typeof value === "number" ? String(value) : null;
 }
 
 function threadConfig(

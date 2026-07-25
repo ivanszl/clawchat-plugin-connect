@@ -12,8 +12,14 @@ import { CodeBlock } from "@astryxdesign/core/CodeBlock";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { Text } from "@astryxdesign/core/Text";
-import type { ReactNode } from "react";
-import type { EmbeddedTranscriptBlock, TranscriptBlock } from "../../../../src/client-contract";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
+import type {
+  EmbeddedTranscriptBlock,
+  RuntimeInteractionBlock,
+  TranscriptBlock,
+} from "../../../../src/client-contract";
+import { respondToRuntimeInteraction } from "../../client-interface/query-options";
 
 export function TranscriptBlockView({ block }: { block: TranscriptBlock | EmbeddedTranscriptBlock }) {
   if (block.type === "message") {
@@ -30,7 +36,23 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
             />
           }
         >
-          <SafeMarkdown markdown={block.markdown} isStreaming={block.state === "streaming"} />
+          {block.media?.map((media) =>
+            media.kind === "image" ? (
+              <a href={media.url} target="_blank" rel="noreferrer" key={media.url}>
+                <img
+                  className="clawchat-message-image"
+                  src={media.url}
+                  alt={media.name || "ClawChat 图片"}
+                  width={media.width ?? undefined}
+                  height={media.height ?? undefined}
+                  loading="lazy"
+                />
+              </a>
+            ) : null,
+          )}
+          {visibleMessageMarkdown(block) ? (
+            <SafeMarkdown markdown={visibleMessageMarkdown(block)} isStreaming={block.state === "streaming"} />
+          ) : null}
         </ChatMessageBubble>
       </ChatMessage>
     );
@@ -149,13 +171,7 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
     );
   }
   if (block.type === "runtime-interaction") {
-    return (
-      <div className="runtime-block">
-        <Banner status="warning" title={block.title} description={block.description} container="section">
-          <Text type="supporting">此版本仅展示 Runtime 交互；响应仍由 Connect 的受控通道处理。</Text>
-        </Banner>
-      </div>
-    );
+    return <RuntimeInteractionForm block={block as RuntimeInteractionBlock} />;
   }
   if (block.type === "usage") {
     return (
@@ -184,6 +200,151 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
   );
 }
 
+function RuntimeInteractionForm({ block }: { block: RuntimeInteractionBlock }) {
+  const queryClient = useQueryClient();
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [remainingMs, setRemainingMs] = useState(() => deadlineRemaining(block.autoResolutionAt));
+  useEffect(() => {
+    setRemainingMs(deadlineRemaining(block.autoResolutionAt));
+    if (!block.autoResolutionAt || block.responseState !== "pending") return;
+    const timer = window.setInterval(() => setRemainingMs(deadlineRemaining(block.autoResolutionAt)), 1_000);
+    return () => window.clearInterval(timer);
+  }, [block.autoResolutionAt, block.responseState]);
+  const submit = useMutation({
+    mutationFn: async (payload: { optionId?: string; answers?: Record<string, string[]> }) =>
+      await respondToRuntimeInteraction(block.interactionId, payload),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["client"] }),
+  });
+  const pending = block.responseState === "pending";
+  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (submit.isPending || !pending) return;
+    submit.mutate({
+      answers: Object.fromEntries(
+        block.questions.map((question) => [question.id, [(answers[question.id] ?? "").replace(/^__other__:/u, "")]]),
+      ),
+    });
+  };
+  return (
+    <div className="runtime-block runtime-interaction-card">
+      <Banner
+        status={pending ? "warning" : block.responseState === "resolved" ? "success" : "info"}
+        title={block.title}
+        description={block.description}
+        container="section"
+      >
+        {block.command ? <CodeBlock code={block.command} language="shell" isWrapped width="100%" /> : null}
+        {block.cwd ? <Text type="supporting">工作目录：{block.cwd}</Text> : null}
+        {pending && remainingMs !== null ? (
+          <Text type="supporting">剩余 {Math.max(0, Math.ceil(remainingMs / 1_000))} 秒</Text>
+        ) : null}
+        {block.files.map((file) => (
+          <div key={file.path}>
+            <Text type="supporting">{file.path}</Text>
+            {file.diff ? <CodeBlock code={file.diff} language="diff" isWrapped width="100%" /> : null}
+          </div>
+        ))}
+        {pending && block.interactionType === "approval" ? (
+          <div className="runtime-interaction-actions">
+            {block.options.map((option) => (
+              <button
+                type="button"
+                key={option.id}
+                disabled={submit.isPending}
+                className={option.id === "deny" ? "interaction-button danger" : "interaction-button"}
+                onClick={() => submit.mutate({ optionId: option.id })}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {pending && block.interactionType === "user-input" ? (
+          <form className="runtime-interaction-form" onSubmit={onSubmit}>
+            {block.questions.map((question) => (
+              <fieldset key={question.id}>
+                <legend>{question.header}</legend>
+                <Text type="supporting">{question.prompt}</Text>
+                {question.options ? (
+                  <div className="runtime-interaction-options">
+                    {question.options.map((option) => (
+                      <label key={option.id}>
+                        <input
+                          required
+                          type="radio"
+                          name={question.id}
+                          value={option.label}
+                          checked={answers[question.id] === option.label}
+                          onChange={() => setAnswers((current) => ({ ...current, [question.id]: option.label }))}
+                        />
+                        <span>
+                          {option.label}
+                          {option.description ? <small>{option.description}</small> : null}
+                        </span>
+                      </label>
+                    ))}
+                    {question.allowOther ? (
+                      <label>
+                        <input
+                          required
+                          type="radio"
+                          name={question.id}
+                          value="__other__"
+                          checked={answers[question.id]?.startsWith("__other__:") === true}
+                          onChange={() => setAnswers((current) => ({ ...current, [question.id]: "__other__:" }))}
+                        />
+                        <span>其他</span>
+                        <input
+                          aria-label={`${question.header}的其他回答`}
+                          type={question.secret ? "password" : "text"}
+                          disabled={!answers[question.id]?.startsWith("__other__:")}
+                          required={answers[question.id]?.startsWith("__other__:")}
+                          value={answers[question.id]?.replace(/^__other__:/u, "") ?? ""}
+                          onChange={(event) =>
+                            setAnswers((current) => ({
+                              ...current,
+                              [question.id]: `__other__:${event.target.value}`,
+                            }))
+                          }
+                        />
+                      </label>
+                    ) : null}
+                  </div>
+                ) : (
+                  <input
+                    aria-label={question.header}
+                    required
+                    type={question.secret ? "password" : "text"}
+                    autoComplete={question.secret ? "off" : undefined}
+                    value={answers[question.id] ?? ""}
+                    onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
+                  />
+                )}
+              </fieldset>
+            ))}
+            <button className="interaction-button" type="submit" disabled={submit.isPending}>
+              提交回答
+            </button>
+          </form>
+        ) : null}
+        {!pending ? (
+          <Text type="supporting">
+            {block.responseState === "resolved" ? "已处理" : "此请求已过期"}
+            {block.resolvedBy ? ` · ${block.resolvedBy === "client" ? "Web" : block.resolvedBy}` : ""}
+          </Text>
+        ) : null}
+        {submit.isError ? <Text type="supporting">{submit.error.message}</Text> : null}
+      </Banner>
+    </div>
+  );
+}
+
+function deadlineRemaining(deadline: string | null): number | null {
+  if (!deadline) return null;
+  const timestamp = Date.parse(deadline);
+  return Number.isFinite(timestamp) ? timestamp - Date.now() : null;
+}
+
 function SafeMarkdown({ markdown, isStreaming }: { markdown: string; isStreaming: boolean }) {
   return (
     <Markdown
@@ -210,6 +371,14 @@ function SafeMarkdown({ markdown, isStreaming }: { markdown: string; isStreaming
       {markdown}
     </Markdown>
   );
+}
+
+function visibleMessageMarkdown(
+  block: Extract<TranscriptBlock | EmbeddedTranscriptBlock, { type: "message" }>,
+): string {
+  if (!block.media?.length) return block.markdown;
+  const withoutMediaPlaceholders = block.markdown.replace(/\[(?:image|file|audio|video)(?:: [^\]]+)?\]/giu, "").trim();
+  return withoutMediaPlaceholders;
 }
 
 function isSafeExternalLink(href: string): boolean {

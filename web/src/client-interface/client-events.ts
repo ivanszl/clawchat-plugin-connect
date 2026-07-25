@@ -3,6 +3,7 @@ import type {
   ClientEventBatchView,
   ClientViewEvent,
   SessionCatalogView,
+  SessionView,
   TranscriptPageView,
 } from "../../../src/client-contract";
 import { CLIENT_API_PREFIX } from "../../../src/client-contract";
@@ -110,6 +111,40 @@ export function applyClientEvent(queryClient: QueryClient, event: ClientViewEven
     },
   );
   const catalog = queryClient.getQueryData<SessionCatalogView>(clientKeys.catalog);
+  if (event.type === "transcript.block-upserted" && event.block.type === "runtime-interaction") {
+    const interaction = event.block;
+    queryClient.setQueryData<SessionView>(clientKeys.session(event.sessionRef), (current) => {
+      if (!current) return current;
+      const pendingInteractions = current.pendingInteractions.filter(
+        (candidate) => candidate.interactionId !== interaction.interactionId,
+      );
+      if (interaction.responseState === "pending") pendingInteractions.push(interaction);
+      return { ...current, pendingInteractions };
+    });
+    const pendingCount = queryClient.getQueryData<SessionView>(clientKeys.session(event.sessionRef))
+      ?.pendingInteractions.length;
+    queryClient.setQueryData<SessionCatalogView>(clientKeys.catalog, (current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        bindings: current.bindings.map((binding) => ({
+          ...binding,
+          entries: binding.entries.map((entry) =>
+            entry.sessionRef === event.sessionRef
+              ? {
+                  ...entry,
+                  pendingInteractionCount:
+                    pendingCount ??
+                    (interaction.responseState === "pending"
+                      ? entry.pendingInteractionCount + 1
+                      : Math.max(0, entry.pendingInteractionCount - 1)),
+                }
+              : entry,
+          ),
+        })),
+      };
+    });
+  }
   const knownSession = catalog?.bindings.some((binding) =>
     binding.entries.some((entry) => entry.sessionRef === event.sessionRef),
   );

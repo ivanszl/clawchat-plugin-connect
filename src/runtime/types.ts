@@ -9,12 +9,57 @@ export interface ConnectRuntimePrompt {
   mode?: string;
   model?: string;
   reasoningEffort?: string;
+  turnId?: string;
+  turnOrigin?: "client" | "clawchat";
+  interactionPort?: RuntimeInteractionPort;
   onAccepted?: () => Promise<void>;
   metadata?: Record<string, string>;
   outputPolicy?: {
     mode: string;
     allowedKinds: RuntimeOutputKind[];
   };
+}
+
+export type RuntimeInteractionRequest =
+  | {
+      kind: "approval";
+      action: "command" | "file-change";
+      title: string;
+      description: string;
+      command?: string;
+      cwd?: string;
+      files?: Array<{ path: string; diff?: string }>;
+      options: Array<{ id: "approve-once" | "approve-session" | "deny"; label: string; description?: string }>;
+    }
+  | {
+      kind: "user-input";
+      title: string;
+      description: string;
+      questions: Array<{
+        id: string;
+        header: string;
+        prompt: string;
+        secret: boolean;
+        allowOther: boolean;
+        options: Array<{ id: string; label: string; description?: string }> | null;
+      }>;
+      autoResolutionMs: number | null;
+    };
+
+export type RuntimeInteractionResponse =
+  | { kind: "approval"; optionId: "approve-once" | "approve-session" | "deny" | "cancel" }
+  | { kind: "user-input"; answers: Record<string, string[]> };
+
+export interface RuntimeInteractionPort {
+  request(
+    request: RuntimeInteractionRequest,
+    context: {
+      sessionRef: string;
+      turnId: string;
+      origin: "client" | "clawchat";
+      signal?: AbortSignal;
+    },
+  ): Promise<RuntimeInteractionResponse>;
 }
 
 export interface RuntimeModelOption {

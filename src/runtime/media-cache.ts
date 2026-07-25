@@ -28,6 +28,7 @@ interface RuntimeMediaRequestPolicy {
   trustedOrigins: ReadonlySet<string>;
   resolveHostname: RuntimeMediaHostResolver;
   maxRedirects: number;
+  timeoutMs: number;
 }
 
 export async function cacheRuntimeMedia(
@@ -50,7 +51,7 @@ export async function cacheRuntimeMedia(
   }
   const source = parseMediaUrl(media.url);
   const requestPolicy = createRequestPolicy(options);
-  await assertSafeMediaUrl(source, requestPolicy.trustedOrigins, requestPolicy.resolveHostname);
+  await assertSafeMediaUrl(source, requestPolicy);
   const key = createHash("sha256").update(media.url).digest("hex");
   const cacheRoot = join(dirname(stateDbPath), "media-cache");
   const directory = join(cacheRoot, key.slice(0, 32));
@@ -118,6 +119,7 @@ function createRequestPolicy(options: CacheRuntimeMediaOptions): RuntimeMediaReq
     trustedOrigins: normalizeTrustedOrigins(options.trustedOrigins ?? []),
     resolveHostname: options.resolveHostname ?? resolveHostAddresses,
     maxRedirects,
+    timeoutMs: options.timeoutMs ?? 30_000,
   };
 }
 
@@ -130,7 +132,7 @@ async function fetchRuntimeMedia(
   let current = source;
   for (let redirectCount = 0; ; redirectCount += 1) {
     if (redirectCount > 0) {
-      await assertSafeMediaUrl(current, policy.trustedOrigins, policy.resolveHostname);
+      await assertSafeMediaUrl(current, policy);
     }
     const response = await fetchMedia(current, {
       redirect: "manual",
@@ -165,23 +167,39 @@ function normalizeTrustedOrigins(values: readonly string[]): Set<string> {
   return origins;
 }
 
-async function assertSafeMediaUrl(
-  url: URL,
-  trustedOrigins: ReadonlySet<string>,
-  resolveHostname: RuntimeMediaHostResolver,
-): Promise<void> {
+async function assertSafeMediaUrl(url: URL, policy: RuntimeMediaRequestPolicy): Promise<void> {
   if (url.username || url.password) throw new Error("ClawChat media URL must not contain credentials");
-  if (trustedOrigins.has(url.origin)) return;
+  if (policy.trustedOrigins.has(url.origin)) return;
   const hostname = url.hostname.replace(/^\[|\]$/gu, "").toLowerCase();
   if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
     throw new Error(`ClawChat media URL resolves to a private or local address: ${hostname || "(missing)"}`);
   }
-  const addresses = isIP(hostname) ? [hostname] : await resolveHostname(hostname);
+  const addresses = isIP(hostname)
+    ? [hostname]
+    : await withTimeout(
+        policy.resolveHostname(hostname),
+        policy.timeoutMs,
+        `ClawChat media DNS resolution timed out after ${policy.timeoutMs}ms`,
+      );
   if (addresses.length === 0) throw new Error(`ClawChat media host did not resolve: ${hostname}`);
   if (addresses.some(isPrivateOrLocalAddress)) {
     throw new Error(`ClawChat media URL resolves to a private or local address: ${hostname}`);
   }
   if (url.protocol !== "https:") throw new Error("untrusted ClawChat media URLs must use HTTPS");
+}
+
+async function withTimeout<T>(work: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function resolveHostAddresses(hostname: string): Promise<string[]> {

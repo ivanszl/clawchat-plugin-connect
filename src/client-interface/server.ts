@@ -20,6 +20,7 @@ import { saveConfig } from "../config";
 import { ProjectCatalog } from "../projects";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
+import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig } from "../types";
 import { SessionCatalog } from "./session-catalog";
@@ -45,6 +46,7 @@ export interface ClientInterfaceOptions {
   stateStore: ConnectStateStore;
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection: TranscriptProjection;
+  runtimeInteractions?: RuntimeInteractionCoordinator;
   projects?: ProjectCatalog;
   runtimes: BindingRuntimeHandle[];
   assetsPath?: string;
@@ -79,6 +81,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   const projects = options.projects ?? new ProjectCatalog(options.stateStore);
   const catalog = new SessionCatalog({ ...options, projects });
   const runtimes = new Map(options.runtimes.map((runtime) => [runtime.agentId, runtime]));
+  const runtimeInteractions =
+    options.runtimeInteractions ?? new RuntimeInteractionCoordinator(options.transcriptProjection);
 
   const serverFactory: ClientHttpServerFactory = options.serverFactory ?? ((serverOptions) => Bun.serve(serverOptions));
   const server = serverFactory({
@@ -92,7 +96,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
         const url = new URL(request.url);
         if (url.pathname.startsWith(CLIENT_API_PREFIX)) {
           if (isMutation(request.method)) {
-            const mutationError = validateMutationRequest(request, requestOrigin);
+            const mutationError = await validateMutationRequest(request, requestOrigin, options.stateStore);
             if (mutationError) return mutationError;
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/bootstrap` && request.method === "GET") {
@@ -114,7 +118,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               capabilities: {
                 localTurns: true,
                 cancellation: true,
-                runtimeInteractions: false,
+                runtimeInteractions: true,
                 preferenceEditing: true,
               },
             };
@@ -378,6 +382,13 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-prompt", "Prompt must contain 1 to 64,000 characters");
             }
             return await idempotentCommand(options.stateStore, body.requestId, "turn.start", sessionRef, async () => {
+              if (runtimeInteractions.hasPending(sessionRef)) {
+                return commandError(
+                  409,
+                  "runtime-interaction-pending",
+                  "Complete the pending Runtime interaction before sending another message",
+                );
+              }
               const session = await catalog.adopt(sessionRef);
               if (!session) return commandError(404, "session-not-found", "Session was not found");
               const runtime = runtimes.get(session.agentId);
@@ -387,6 +398,23 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               catalog.invalidate();
               return { status: 202, body: { accepted: true, ...accepted } };
             });
+          }
+          const interactionMatch = url.pathname.match(/^\/client\/v1\/runtime-interactions\/([^/]+)\/respond$/u);
+          if (interactionMatch && request.method === "POST") {
+            const interactionId = decodeURIComponent(interactionMatch[1] ?? "");
+            const body = await readJsonBody<import("../client-contract").RespondToRuntimeInteractionRequest>(request);
+            if (!validRequestId(body.requestId))
+              return errorResponse(400, "invalid-request-id", "requestId is required");
+            try {
+              const block = await runtimeInteractions.respond(interactionId, body);
+              catalog.invalidate();
+              return jsonResponse(block);
+            } catch (error) {
+              if (error instanceof RuntimeInteractionError) {
+                return errorResponse(error.code === "interaction-not-pending" ? 409 : 400, error.code, error.message);
+              }
+              throw error;
+            }
           }
           const sessionPreferenceMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/preferences$/u);
           if (sessionPreferenceMatch && request.method === "PATCH") {
@@ -580,13 +608,34 @@ function allowedRequestOrigin(request: Request, listeningHost: string, port: num
   return `http://${authority}`;
 }
 
-function validateMutationRequest(request: Request, origin: string): Response | null {
-  if (request.headers.get("origin") !== origin) return errorResponse(403, "invalid-origin", "Invalid request Origin");
+async function validateMutationRequest(
+  request: Request,
+  origin: string,
+  stateStore: ConnectStateStore,
+): Promise<Response | null> {
+  const requestOrigin = request.headers.get("origin");
+  if (requestOrigin !== origin && !(await isRegisteredLivewareOrigin(requestOrigin, stateStore))) {
+    return errorResponse(403, "invalid-origin", "Invalid request Origin");
+  }
   const fetchSite = request.headers.get("sec-fetch-site");
   if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
     return errorResponse(403, "cross-site-request", "Cross-site request was rejected");
   }
   return null;
+}
+
+async function isRegisteredLivewareOrigin(
+  requestOrigin: string | null,
+  stateStore: ConnectStateStore,
+): Promise<boolean> {
+  if (!requestOrigin) return false;
+  const exposure = await stateStore.getLivewareExposure();
+  if (!exposure) return false;
+  try {
+    return new URL(requestOrigin).origin === new URL(exposure.publicUrl).origin;
+  } catch {
+    return false;
+  }
 }
 
 function eventStreamResponse(store: ConnectStateStore, request: Request, afterCursor: number): Response {
@@ -760,7 +809,7 @@ function clientErrorView(code: string, message: string, retryable = false, diagn
 function securityHeaders(initial: Record<string, string> = {}): Headers {
   return new Headers({
     "Content-Security-Policy":
-      "default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+      "default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https:; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "Cross-Origin-Opener-Policy": "same-origin",

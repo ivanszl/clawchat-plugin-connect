@@ -122,14 +122,10 @@ export class ProjectCatalog {
   async resolveProjectWorkspace(projectId: string): Promise<RuntimeWorkspace> {
     const project = await this.stateStore.getProject(projectId);
     if (!project) throw new Error(`project ${projectId} no longer exists`);
-    const workingDirectory = await existingDirectory(project.rootPath, `project ${project.name} root`);
-    const additionalDirectories = await Promise.all(
-      project.additionalDirectories.map((path) => existingDirectory(path, `project ${project.name} directory`)),
-    );
     return {
       projectId: project.projectId,
-      workingDirectory,
-      additionalDirectories,
+      workingDirectory: project.rootPath,
+      additionalDirectories: project.additionalDirectories,
       skipGitRepoCheck: true,
     };
   }

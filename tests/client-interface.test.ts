@@ -7,6 +7,7 @@ import { type ClientInterfaceHandle, startClientInterface } from "../src/client-
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
 import { type ConnectStateStore, createStateStore } from "../src/state";
 
@@ -122,6 +123,7 @@ describe("Connect Client Interface", () => {
       close: async () => undefined,
     };
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const runtimeInteractions = new RuntimeInteractionCoordinator(projection);
     const port = 47_891;
     config.clientPort = port;
     let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
@@ -131,6 +133,7 @@ describe("Connect Client Interface", () => {
       stateStore: store,
       runtimeAdapters: registry,
       transcriptProjection: projection,
+      runtimeInteractions,
       runtimes: [runtime],
       assetsPath,
       port,
@@ -153,7 +156,7 @@ describe("Connect Client Interface", () => {
     await expect(bootstrap.json()).resolves.toMatchObject({
       apiVersion: 1,
       bindings: [{ bindingId: "codex", displayName: "Codex", clawChatUserId: "usr_agent_codex" }],
-      capabilities: { localTurns: true, runtimeInteractions: false },
+      capabilities: { localTurns: true, runtimeInteractions: true },
     });
     const invalidBindingModel = await localRequest(
       fetchHandler,
@@ -384,6 +387,16 @@ describe("Connect Client Interface", () => {
       text: "from ClawChat",
       origin: "clawchat",
       author: "usr_opaque",
+      media: [
+        {
+          kind: "image",
+          url: "https://media.clawling.chat/media/example.jpg",
+          name: "example.jpg",
+          mime: "image/jpeg",
+          width: 640,
+          height: 480,
+        },
+      ],
     });
     const eventBatch = await localRequest(fetchHandler, handle.origin, `/client/v1/events/batch?after=${eventCursor}`);
     expect(eventBatch.status).toBe(200);
@@ -392,7 +405,18 @@ describe("Connect Client Interface", () => {
         {
           type: "transcript.block-upserted",
           sessionRef: session.sessionRef,
-          block: { type: "message", origin: "clawchat", markdown: "from ClawChat" },
+          block: {
+            type: "message",
+            origin: "clawchat",
+            markdown: "from ClawChat",
+            media: [
+              {
+                kind: "image",
+                url: "https://media.clawling.chat/media/example.jpg",
+                name: "example.jpg",
+              },
+            ],
+          },
         },
       ],
     });
@@ -440,6 +464,69 @@ describe("Connect Client Interface", () => {
     );
     expect(conflictingRequestId.status).toBe(409);
 
+    const approvalResult = runtimeInteractions.request(
+      {
+        kind: "approval",
+        action: "command",
+        title: "Run command?",
+        description: "git push",
+        command: "git push",
+        options: [
+          { id: "approve-once", label: "Approve once" },
+          { id: "deny", label: "Deny" },
+        ],
+      },
+      { sessionRef: session.sessionRef, turnId: "turn-approval", origin: "client" },
+    );
+    while ((await store.listPendingRuntimeInteractions(session.sessionRef)).length === 0) await Bun.sleep(0);
+    const pendingViewResponse = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}`,
+    );
+    await expect(pendingViewResponse.json()).resolves.toMatchObject({
+      pendingInteractions: [
+        {
+          interactionType: "approval",
+          responseState: "pending",
+          command: "git push",
+        },
+      ],
+    });
+    const blockedTurn = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turns`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "request_blocked_by_approval", prompt: "must wait" }),
+      },
+    );
+    expect(blockedTurn.status).toBe(409);
+    await expect(blockedTurn.json()).resolves.toMatchObject({
+      error: { code: "runtime-interaction-pending" },
+    });
+    const pending = (await store.listPendingRuntimeInteractions(session.sessionRef))[0];
+    if (!pending) throw new Error("pending interaction was not projected");
+    const approval = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/runtime-interactions/${pending.interactionId}/respond`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "approval_response", optionId: "approve-once" }),
+      },
+    );
+    expect(approval.status).toBe(200);
+    await expect(approval.json()).resolves.toMatchObject({
+      responseState: "resolved",
+      resolvedOptionId: "approve-once",
+      resolvedBy: "client",
+    });
+    await expect(approvalResult).resolves.toEqual({ kind: "approval", optionId: "approve-once" });
+
     const rejected = await localRequest(
       fetchHandler,
       handle.origin,
@@ -451,6 +538,20 @@ describe("Connect Client Interface", () => {
       },
     );
     expect(rejected.status).toBe(403);
+
+    const livewareOrigin = "https://app-connect-test.apps.clawling.io";
+    await store.setLivewareExposure({
+      ownerUserId: "owner-1",
+      localAgentId: "codex",
+      appId: "app-connect-test",
+      publicUrl: livewareOrigin,
+      accessPolicy: "private",
+    });
+    const livewareMutation = await localRequest(fetchHandler, handle.origin, "/client/v1/not-found", {
+      method: "POST",
+      headers: { origin: livewareOrigin, "sec-fetch-site": "same-origin" },
+    });
+    expect(livewareMutation.status).toBe(404);
 
     const archived = await localRequest(
       fetchHandler,

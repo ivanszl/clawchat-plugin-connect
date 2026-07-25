@@ -23,6 +23,7 @@ import {
 import { ProjectCatalog } from "./projects";
 import type { RuntimeAdapterRegistry } from "./runtime/registry";
 import { createReleasedRuntimeAdapterRegistry } from "./runtime/released-adapters";
+import { RuntimeInteractionCoordinator } from "./runtime/runtime-interaction-coordinator";
 import { type ConnectStateStore, createStateStore } from "./state";
 import type { ConnectConfig } from "./types";
 
@@ -60,6 +61,7 @@ export async function startConnectService(
   const runtimeAdapters = (dependencies.createRuntimeAdapterRegistry ?? createReleasedRuntimeAdapterRegistry)();
   let clientInterface: ClientInterfaceHandle | null = null;
   let livewareExposure: LivewareExposureHandle | null = null;
+  let runtimeInteractions: RuntimeInteractionCoordinator | null = null;
   try {
     const activatedBindings = (
       await Promise.all(
@@ -83,8 +85,11 @@ export async function startConnectService(
       );
     }
     const deviceId = await store.getOrCreateDeviceId();
+    await store.expirePendingRuntimeInteractions();
     const projects = new ProjectCatalog(store);
     const transcriptProjection = new TranscriptProjection({ config, stateStore: store, runtimeAdapters });
+    const interactionCoordinator = new RuntimeInteractionCoordinator(transcriptProjection);
+    runtimeInteractions = interactionCoordinator;
     const startRuntime = dependencies.startBindingRuntime ?? startBindingRuntime;
     const attempts = await Promise.allSettled(
       activatedBindings.map(async ({ agentId, activation }) => {
@@ -99,6 +104,7 @@ export async function startConnectService(
           projects,
           runtimeAdapters,
           transcriptProjection,
+          runtimeInteractions: interactionCoordinator,
           protocolEventHandlers: options.protocolEventHandlers,
           writeError,
         });
@@ -128,6 +134,7 @@ export async function startConnectService(
       stateStore: store,
       runtimeAdapters,
       transcriptProjection,
+      runtimeInteractions: interactionCoordinator,
       projects,
       runtimes: handles,
     });
@@ -194,6 +201,11 @@ export async function startConnectService(
     }
     try {
       await clientInterface?.stop();
+    } catch (error) {
+      shutdownFailures.push(error);
+    }
+    try {
+      await runtimeInteractions?.close();
     } catch (error) {
       shutdownFailures.push(error);
     }

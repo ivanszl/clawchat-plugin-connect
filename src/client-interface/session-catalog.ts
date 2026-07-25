@@ -81,6 +81,7 @@ export class SessionCatalog {
       effectiveReasoningEffort = session?.reasoningEffort ?? binding.modelReasoningEffort ?? null;
       modelSource = session?.model ? "session" : binding.model ? "binding" : "runtime";
     }
+    const pendingInteractions = await this.options.stateStore.listPendingRuntimeInteractions(normalized);
     return {
       revision: Math.max(1, Date.parse(entry.updatedAt) || 1),
       sessionRef: normalized,
@@ -103,7 +104,7 @@ export class SessionCatalog {
       runtimeThreadAvailable,
       activeTurnId: null,
       transcriptCompleteness: runtimeThreadAvailable ? "complete" : "live-only",
-      pendingInteractions: [],
+      pendingInteractions,
       allowedActions: entry.isArchived
         ? ["unarchive", "delete"]
         : entry.isAdopted
@@ -317,6 +318,13 @@ export class SessionCatalog {
           allowedActions: thread.isArchived ? ["open", "unarchive", "delete"] : ["open", "adopt", "archive", "delete"],
         });
       }
+      await Promise.all(
+        entries.map(async (entry) => {
+          entry.pendingInteractionCount = (
+            await this.options.stateStore.listPendingRuntimeInteractions(entry.sessionRef)
+          ).length;
+        }),
+      );
       entries.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
       for (const entry of entries) entriesByRef.set(entry.sessionRef.toUpperCase(), entry);
       bindings.push({

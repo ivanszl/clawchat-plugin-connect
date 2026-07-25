@@ -12,6 +12,7 @@ export interface SessionComposerProps {
   continueInClawChatHref: string | null;
   canSend: boolean;
   isRuntimeActive: boolean;
+  hasPendingInteraction?: boolean;
   modelControl?: ReactNode;
 }
 
@@ -21,6 +22,7 @@ export function SessionComposer({
   continueInClawChatHref,
   canSend,
   isRuntimeActive,
+  hasPendingInteraction = false,
   modelControl,
 }: SessionComposerProps) {
   const queryClient = useQueryClient();
@@ -67,8 +69,14 @@ export function SessionComposer({
           if (!stop.isPending) stop.mutate();
         }}
         isStopShown={Boolean(acceptedTurnId) || isRuntimeActive}
-        isDisabled={!canSend || send.isPending}
-        placeholder={canSend ? "给 Agent 发送消息…" : "当前 Session 不可发送消息"}
+        isDisabled={!canSend || hasPendingInteraction || send.isPending}
+        placeholder={
+          hasPendingInteraction
+            ? "请先完成上方审批或回答"
+            : canSend
+              ? "给 Agent 发送消息…"
+              : "当前 Session 不可发送消息"
+        }
         status={error ? { type: "error", message: error.message } : undefined}
         density="balanced"
         footerActions={

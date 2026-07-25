@@ -64,6 +64,13 @@ describe("Connect Client session layout", () => {
       'name={sender === "user" && block.origin !== "clawchat" ? block.author : undefined}',
     );
   });
+
+  it("renders structured ClawChat image media instead of only its text placeholder", async () => {
+    const transcriptSource = await Bun.file(transcriptBlockUrl).text();
+    expect(transcriptSource).toContain('className="clawchat-message-image"');
+    expect(transcriptSource).toContain("block.media?.map");
+    expect(transcriptSource).toContain("visibleMessageMarkdown");
+  });
 });
 
 function cssRule(stylesheet: string, selector: string): string {

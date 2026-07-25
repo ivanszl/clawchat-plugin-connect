@@ -154,21 +154,24 @@ function emitCompletedTurn(client: FakeAppServer, threadId: string, items: Array
 }
 
 describe("Codex app-server runtime adapter", () => {
-  it("shares one app-server across discovery and runtime sessions", async () => {
-    const client = new FakeAppServer();
-    const createAppServer = mock(async () => client);
+  it("isolates catalog reads from the app-server shared by runtime sessions", async () => {
+    const catalogClient = new FakeAppServer();
+    const runtimeClient = new FakeAppServer();
+    const createAppServer = mock().mockResolvedValueOnce(catalogClient).mockResolvedValueOnce(runtimeClient);
     const adapter = createCodexRuntimeAdapter({ createAppServer });
 
     await adapter.discoverThreads?.(agent, workspace);
     const first = await adapter.start(agent, context({ chatId: "chat-1" }));
     const second = await adapter.start(agent, context({ chatId: "chat-2", sessionId: "session-2" }));
 
-    expect(createAppServer).toHaveBeenCalledTimes(1);
+    expect(createAppServer).toHaveBeenCalledTimes(2);
     await first.close();
     await second.close();
-    expect(client.close).not.toHaveBeenCalled();
+    expect(catalogClient.close).not.toHaveBeenCalled();
+    expect(runtimeClient.close).not.toHaveBeenCalled();
     await adapter.close?.();
-    expect(client.close).toHaveBeenCalledTimes(1);
+    expect(catalogClient.close).toHaveBeenCalledTimes(1);
+    expect(runtimeClient.close).toHaveBeenCalledTimes(1);
   });
 
   it("discovers persisted threads through paginated thread/list", async () => {
@@ -669,6 +672,54 @@ describe("Codex app-server runtime adapter", () => {
       value: { kind: "progress", state: "cancelled", itemId: "turn:turn-1" },
     });
     await expect(iterator.next()).resolves.toMatchObject({ done: true });
+  });
+
+  it("pauses for the Connect interaction port and maps an approval response", async () => {
+    const client = new FakeAppServer();
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+    const session = await adapter.start({ ...agent, approvalPolicy: "on-request" }, context());
+    const requests: unknown[] = [];
+    const iterator = session
+      .prompt({
+        prompt: "hello",
+        workspace,
+        turnId: "connect-turn-1",
+        turnOrigin: "client",
+        metadata: { sessionRef: "ABCDEFGH" },
+        interactionPort: {
+          request: async (request, requestContext) => {
+            requests.push({ request, requestContext: { ...requestContext, signal: undefined } });
+            return { kind: "approval", optionId: "approve-session" };
+          },
+        },
+      })
+      [Symbol.asyncIterator]();
+    const firstEvent = iterator.next();
+    while (client.startTurn.mock.calls.length === 0) await Bun.sleep(0);
+
+    await expect(
+      client.request("item/commandExecution/requestApproval", {
+        threadId: "thread-new",
+        turnId: "turn-1",
+        command: "git push",
+        cwd: "/workspace",
+      }),
+    ).resolves.toEqual({ decision: "acceptForSession" });
+    expect(requests).toEqual([
+      expect.objectContaining({
+        request: expect.objectContaining({ kind: "approval", action: "command", command: "git push" }),
+        requestContext: expect.objectContaining({
+          sessionRef: "ABCDEFGH",
+          turnId: "connect-turn-1",
+          origin: "client",
+        }),
+      }),
+    ]);
+    client.emit("turn/completed", { threadId: "thread-new", turn: turn() });
+    await firstEvent;
+    while (!(await iterator.next()).done) {
+      // Drain the turn.
+    }
   });
 
   it("interrupts active turns with turn/interrupt", async () => {

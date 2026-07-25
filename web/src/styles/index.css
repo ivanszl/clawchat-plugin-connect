@@ -262,6 +262,87 @@ textarea {
   color: var(--color-text-secondary);
 }
 
+.clawchat-message-image {
+  display: block;
+  width: auto;
+  max-width: min(360px, 100%);
+  height: auto;
+  max-height: 520px;
+  margin-bottom: 8px;
+  object-fit: contain;
+  border-radius: 12px;
+}
+
+.runtime-interaction-card {
+  max-width: min(760px, 100%);
+}
+
+.runtime-interaction-actions,
+.runtime-interaction-form,
+.runtime-interaction-options {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.runtime-interaction-actions {
+  grid-template-columns: repeat(auto-fit, minmax(120px, max-content));
+}
+
+.runtime-interaction-form fieldset {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-subtle, #d4d4d4);
+  border-radius: 10px;
+}
+
+.runtime-interaction-form input[type="text"],
+.runtime-interaction-form input[type="password"] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 8px;
+}
+
+.runtime-interaction-options label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.runtime-interaction-options small {
+  display: block;
+  opacity: 0.7;
+}
+
+.interaction-button {
+  min-height: 36px;
+  padding: 7px 14px;
+  color: var(--button-primary-foreground, white);
+  background: var(--button-primary-background, #222);
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.interaction-button.danger {
+  color: #a42020;
+  background: transparent;
+  border: 1px solid currentColor;
+}
+
+.interaction-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .reasoning-block {
   border-left-color: var(--color-border-purple);
 }

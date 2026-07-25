@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp, realpath, stat } from "node:fs/promises";
+import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProjectCatalog } from "../src/projects";
@@ -69,6 +69,21 @@ describe("ProjectCatalog", () => {
     expect(other.workingDirectory).not.toBe(first.workingDirectory);
     expect(otherBinding.workingDirectory).not.toBe(first.workingDirectory);
     expect((await stat(first.workingDirectory)).isDirectory()).toBe(true);
+    await store.close();
+  });
+
+  it("uses paths validated at Project registration without probing them for every runtime turn", async () => {
+    const { directory, store, projects } = await fixture();
+    const root = await mkdtemp(join(directory, "registered-"));
+    const project = await projects.add("registered", root);
+    await rm(root, { recursive: true });
+
+    await expect(projects.resolveProjectWorkspace(project.projectId)).resolves.toEqual({
+      projectId: project.projectId,
+      workingDirectory: project.rootPath,
+      additionalDirectories: [],
+      skipGitRepoCheck: true,
+    });
     await store.close();
   });
 

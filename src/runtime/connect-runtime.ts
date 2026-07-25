@@ -20,6 +20,7 @@ import type { ConnectWsClient } from "../ws-client";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
 import type { RuntimeAdapterRegistry } from "./registry";
+import type { RuntimeInteractionCoordinator } from "./runtime-interaction-coordinator";
 import { type QueueStats, SessionQueue } from "./session-queue";
 import type { ConnectRuntimeMedia, ConnectRuntimeSession, RuntimeModelOption, SelectableRuntimeThread } from "./types";
 
@@ -32,6 +33,7 @@ export interface ConnectRuntimeOptions {
   projects?: ProjectCatalog;
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection?: TranscriptProjection;
+  runtimeInteractions?: RuntimeInteractionCoordinator;
 }
 
 export class ConnectRuntime {
@@ -258,8 +260,12 @@ export class ConnectRuntime {
       mode: current.mode ?? undefined,
       model: model.model,
       reasoningEffort: model.reasoningEffort,
+      turnId: message.messageId,
+      turnOrigin: "clawchat",
+      interactionPort: this.options.runtimeInteractions,
       onAccepted: onTurnAccepted,
       metadata: {
+        sessionRef: current.sessionRef,
         chatId: message.chatId,
         sessionId: current.sessionId,
         agentId: activeAgentId,
@@ -294,7 +300,11 @@ export class ConnectRuntime {
       mode: current.mode ?? undefined,
       model: model.model,
       reasoningEffort: model.reasoningEffort,
+      turnId,
+      turnOrigin: "client",
+      interactionPort: this.options.runtimeInteractions,
       metadata: {
+        sessionRef: current.sessionRef,
         origin: "client",
         turnId,
         chatId: current.chatId,
@@ -380,6 +390,7 @@ export class ConnectRuntime {
       origin: "clawchat",
       author: message.sender.nick_name || message.sender.id,
       id: message.messageId || undefined,
+      media: transcriptMedia(message),
     });
   }
 
@@ -527,7 +538,7 @@ async function isSupportedImageFile(path: string): Promise<boolean> {
 }
 
 function configuredMediaOrigins(config: ConnectConfig): string[] {
-  const origins = new Set<string>();
+  const origins = new Set<string>(["https://media.clawling.chat"]);
   for (const value of [config.baseUrl, config.mediaUploadUrl]) {
     try {
       origins.add(new URL(value).origin);
@@ -590,6 +601,25 @@ function runtimeMedia(message: NormalizedInboundMessage): ConnectRuntimeMedia[] 
         ...(typeof record.width === "number" ? { width: record.width } : {}),
         ...(typeof record.height === "number" ? { height: record.height } : {}),
         ...(typeof record.duration === "number" ? { duration: record.duration } : {}),
+      },
+    ];
+  });
+}
+
+function transcriptMedia(message: NormalizedInboundMessage): import("../client-contract").MessageBlockContent["media"] {
+  return message.fragments.flatMap((fragment) => {
+    if (!["image", "file", "audio", "video"].includes(fragment.kind)) return [];
+    const record = fragment as Record<string, unknown>;
+    const url = typeof record.url === "string" ? record.url : "";
+    if (!url) return [];
+    return [
+      {
+        kind: fragment.kind as "image" | "file" | "audio" | "video",
+        url,
+        name: typeof record.name === "string" ? record.name : null,
+        mime: typeof record.mime === "string" ? record.mime : null,
+        width: typeof record.width === "number" ? record.width : null,
+        height: typeof record.height === "number" ? record.height : null,
       },
     ];
   });

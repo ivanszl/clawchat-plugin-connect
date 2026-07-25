@@ -131,6 +131,72 @@ describe("Codex app-server stdio client", () => {
     await client.close();
   });
 
+  it("serializes RPC requests on the shared app-server transport", async () => {
+    const process = new FakeProcess();
+    const received: Array<Record<string, unknown>> = [];
+    let buffer = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk: string) => {
+      buffer += chunk;
+      while (buffer.includes("\n")) {
+        const newline = buffer.indexOf("\n");
+        const message = JSON.parse(buffer.slice(0, newline)) as Record<string, unknown>;
+        buffer = buffer.slice(newline + 1);
+        received.push(message);
+        if (message.method === "initialize") respond(process, message.id, { userAgent: SUPPORTED_CODEX_VERSION });
+      }
+    });
+    const client = await createCodexAppServerClient(
+      { kind: "codex", codexPathOverride: "/opt/codex" },
+      { readVersion: async () => SUPPORTED_CODEX_VERSION, spawnAppServer: () => process },
+    );
+
+    const first = client.listThreads({});
+    const second = client.resumeThread({
+      threadId: "thread-1",
+      cwd: "/repo",
+      approvalPolicy: "never",
+      sandbox: "workspace-write",
+    });
+    await Bun.sleep(0);
+    expect(received.slice(2).map((message) => message.method)).toEqual(["thread/list"]);
+
+    respond(process, received[2]?.id, { data: [], nextCursor: null });
+    await first;
+    await Bun.sleep(0);
+    expect(received.slice(2).map((message) => message.method)).toEqual(["thread/list", "thread/resume"]);
+    respond(process, received[3]?.id, {
+      thread: { id: "thread-1", preview: "", name: null, createdAt: 1, updatedAt: 1, recencyAt: 1, cwd: "/repo" },
+    });
+    await second;
+    await client.close();
+  });
+
+  it("releases the shared RPC queue when an app-server request stops responding", async () => {
+    const process = new FakeProcess();
+    const received: Array<Record<string, unknown>> = [];
+    startFakeServer(process, received);
+    const client = await createCodexAppServerClient(
+      { kind: "codex", codexPathOverride: "/opt/codex" },
+      {
+        readVersion: async () => SUPPORTED_CODEX_VERSION,
+        spawnAppServer: () => process,
+        requestTimeoutMs: 10,
+      },
+    );
+
+    const stalled = client.startThread({
+      cwd: "/repo",
+      approvalPolicy: "never",
+      sandbox: "workspace-write",
+    });
+    const following = client.listThreads({});
+    await expect(stalled).rejects.toThrow("thread/start timed out after 10ms");
+    await expect(following).resolves.toEqual({ data: [], nextCursor: null });
+    expect(received.slice(2).map((message) => message.method)).toEqual(["thread/start", "thread/list"]);
+    await client.close();
+  });
+
   it("archives, restores, and deletes threads through the v2 methods", async () => {
     const process = new FakeProcess();
     const received: Array<Record<string, unknown>> = [];

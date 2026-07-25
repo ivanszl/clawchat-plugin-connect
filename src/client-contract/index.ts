@@ -25,6 +25,14 @@ export interface MessageBlockContent extends TranscriptBlockContentBase {
   role: "user" | "assistant";
   author: string;
   markdown: string;
+  media?: Array<{
+    kind: "image" | "file" | "audio" | "video";
+    url: string;
+    name: string | null;
+    mime: string | null;
+    width: number | null;
+    height: number | null;
+  }>;
 }
 
 export interface ReasoningSummaryBlockContent extends TranscriptBlockContentBase {
@@ -75,11 +83,33 @@ export interface RuntimeInteractionBlockContent extends TranscriptBlockContentBa
   type: "runtime-interaction";
   interactionId: string;
   interactionType: "approval" | "user-input";
+  action: "command" | "file-change" | null;
   title: string;
   description: string;
   responseState: "pending" | "submitting" | "resolved" | "expired";
   options: Array<{ id: string; label: string; description?: string }>;
+  questions: RuntimeInteractionQuestionView[];
+  command: string | null;
+  cwd: string | null;
+  files: Array<{ path: string; diff?: string }>;
+  autoResolutionAt: string | null;
   resolvedOptionId: string | null;
+  resolvedBy: "client" | "clawchat" | "system" | null;
+}
+
+export interface RuntimeInteractionQuestionView {
+  id: string;
+  header: string;
+  prompt: string;
+  secret: boolean;
+  allowOther: boolean;
+  options: Array<{ id: string; label: string; description?: string }> | null;
+}
+
+export interface RespondToRuntimeInteractionRequest {
+  requestId: string;
+  optionId?: string;
+  answers?: Record<string, string[]>;
 }
 
 export interface ErrorBlockContent extends TranscriptBlockContentBase {

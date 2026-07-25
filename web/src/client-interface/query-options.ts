@@ -5,6 +5,8 @@ import type {
   CancelTurnResponse,
   CreateSessionRequest,
   ProjectView,
+  RespondToRuntimeInteractionRequest,
+  RuntimeInteractionBlock,
   SessionArchiveResponse,
   SessionCatalogView,
   SessionDeleteResponse,
@@ -67,6 +69,19 @@ export async function startTurn(sessionRef: string, prompt: string): Promise<Sta
     method: "POST",
     body: JSON.stringify({ requestId: requestId(), prompt }),
   });
+}
+
+export async function respondToRuntimeInteraction(
+  interactionId: string,
+  response: Omit<RespondToRuntimeInteractionRequest, "requestId">,
+): Promise<RuntimeInteractionBlock> {
+  return await clientFetch<RuntimeInteractionBlock>(
+    `${CLIENT_API_PREFIX}/runtime-interactions/${encodeURIComponent(interactionId)}/respond`,
+    {
+      method: "POST",
+      body: JSON.stringify({ requestId: requestId(), ...response }),
+    },
+  );
 }
 
 export async function createSession(input: Omit<CreateSessionRequest, "requestId">): Promise<SessionView> {

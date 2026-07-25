@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
-import type { ClientViewEvent, TranscriptBlock } from "./client-contract";
+import type { ClientViewEvent, RuntimeInteractionBlock, TranscriptBlock } from "./client-contract";
 import { defaultStateDbPath } from "./config";
 import {
   type ActivationCredentials,
@@ -1452,6 +1452,49 @@ export class ConnectStateStore {
       sessionRef,
     );
     return numberValue(row?.count);
+  }
+
+  async listPendingRuntimeInteractions(sessionRef: string): Promise<RuntimeInteractionBlock[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<{ block_json: string }[]>(
+      "SELECT block_json FROM transcript_blocks WHERE session_ref = ? AND block_type = 'runtime-interaction' AND state = 'pending' ORDER BY sequence ASC",
+      sessionRef,
+    );
+    return rows.flatMap((row) => {
+      try {
+        const block = JSON.parse(row.block_json) as TranscriptBlock;
+        return block.type === "runtime-interaction" && block.responseState === "pending" ? [block] : [];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  async expirePendingRuntimeInteractions(reason = "Connect restarted"): Promise<number> {
+    const db = await this.requireDb();
+    const rows = await db.all<{ session_ref: string; block_json: string }[]>(
+      "SELECT session_ref, block_json FROM transcript_blocks WHERE block_type = 'runtime-interaction' AND state = 'pending'",
+    );
+    let expired = 0;
+    for (const row of rows) {
+      let block: TranscriptBlock;
+      try {
+        block = JSON.parse(row.block_json) as TranscriptBlock;
+      } catch {
+        continue;
+      }
+      if (block.type !== "runtime-interaction" || block.responseState !== "pending") continue;
+      await this.upsertTranscriptBlock(row.session_ref, {
+        ...block,
+        state: "cancelled",
+        plainText: `${block.title}\n${reason}`,
+        description: reason,
+        responseState: "expired",
+        resolvedBy: "system",
+      });
+      expired += 1;
+    }
+    return expired;
   }
 
   async rekeyMatchingTranscriptMessage(
