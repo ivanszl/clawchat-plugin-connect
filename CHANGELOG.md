@@ -2,6 +2,24 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.8] - 2026-07-25
+
+### Added
+
+- Added complete Web approval and user-input interactions for Codex Runtime turns.
+- Added structured ClawChat image delivery, local media caching, and Web transcript previews.
+
+### Changed
+
+- Improved Runtime event coordination and serialized Codex app-server requests.
+- Separated catalog and Runtime app-server processes to prevent discovery work from blocking active turns.
+
+### Fixed
+
+- Fixed Liveware mutation requests being rejected when they use the registered public exposure Origin.
+- Fixed ClawChat messages being marked handled before Codex accepted the corresponding Runtime turn.
+- Fixed Codex thread resume failures caused by competing app-server requests and repeated Project path probes.
+
 ## [0.1.0-alpha.7] - 2026-07-25
 
 ### Added
@@ -28,4 +46,3 @@ All notable changes to ClawChat Connect are documented in this file.
 - Added Windows installation, background-service support, and GitHub Actions release builds.
 - Refined Connect Client Session, Project, Runtime preference, and responsive navigation behavior.
 - Improved ClawChat registration, activation replacement, transcript projection, and media reply handling.
-
