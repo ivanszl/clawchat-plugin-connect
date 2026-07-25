@@ -33,14 +33,12 @@ export const bootstrapQueryOptions = queryOptions({
 export const catalogQueryOptions = queryOptions({
   queryKey: clientKeys.catalog,
   queryFn: async () => await clientFetch<SessionCatalogView>(`${CLIENT_API_PREFIX}/session-catalog`),
-  refetchInterval: 3_000,
 });
 
 export function sessionQueryOptions(sessionRef: string) {
   return queryOptions({
     queryKey: clientKeys.session(sessionRef),
     queryFn: async () => await clientFetch<SessionView>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}`),
-    refetchInterval: 2_000,
   });
 }
 
@@ -52,7 +50,6 @@ export const projectsQueryOptions = queryOptions({
 export function transcriptQueryOptions(sessionRef: string) {
   return infiniteQueryOptions({
     queryKey: clientKeys.transcript(sessionRef),
-    refetchInterval: 2_000,
     initialPageParam: null as string | null,
     queryFn: async ({ pageParam }) => {
       const search = new URLSearchParams({ limit: "100" });

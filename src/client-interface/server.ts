@@ -262,6 +262,14 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             const after = eventCursor(request, url);
             return eventStreamResponse(options.stateStore, request, after);
           }
+          if (url.pathname === `${CLIENT_API_PREFIX}/events/batch` && request.method === "GET") {
+            const after = eventCursor(request, url);
+            const events = await options.stateStore.listClientEvents(after);
+            return jsonResponse({
+              cursor: events.at(-1)?.cursor ?? after,
+              events: events.map((event) => event.event),
+            });
+          }
           const sessionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)$/u);
           if (sessionMatch && request.method === "GET") {
             const sessionRef = normalizeSessionRef(sessionMatch[1] ?? "");

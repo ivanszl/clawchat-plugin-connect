@@ -22,7 +22,7 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
       <ChatMessage sender={sender} density="balanced">
         <ChatMessageBubble
           variant={sender === "assistant" ? "ghost" : "filled"}
-          name={sender === "user" ? block.author : undefined}
+          name={sender === "user" && block.origin !== "clawchat" ? block.author : undefined}
           metadata={
             <ChatMessageMetadata
               footer={originLabel(block.origin)}

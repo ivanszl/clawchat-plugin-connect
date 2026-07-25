@@ -242,6 +242,51 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       text: "recover me",
       raw: recoveredEnvelope,
     });
+    const reconciledEnvelope: Envelope = {
+      ...recoveredEnvelope,
+      trace_id: "reconciled-message",
+      chat_id: "chat-reconciled",
+      payload: {
+        message_id: "msg-reconciled",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "already accepted" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    };
+    await stateStore.upsertInboundMessage({
+      agentId: "codex",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: reconciledEnvelope.trace_id,
+      chatId: reconciledEnvelope.chat_id,
+      messageId: "msg-reconciled",
+      text: "already accepted",
+      raw: reconciledEnvelope,
+    });
+    await stateStore.upsertRuntimeSession({
+      chatId: "chat-reconciled",
+      sessionId: "session-reconciled",
+      agentId: "codex",
+      runtimeSessionId: "thread-reconciled",
+      isCurrent: true,
+      hasMessages: true,
+    });
+    const reconciledSession = await stateStore.getCurrentRuntimeSession("chat-reconciled", "codex");
+    if (!reconciledSession) throw new Error("expected reconciled Session");
+    await stateStore.upsertTranscriptBlock(reconciledSession.sessionRef, {
+      id: "b_reconciled_runtime_message",
+      type: "message",
+      origin: "clawchat",
+      state: "complete",
+      plainText: "already accepted",
+      role: "user",
+      author: "ClawChat",
+      markdown: "already accepted",
+    });
 
     const prompts: ConnectRuntimePrompt[] = [];
     let releaseFirstPrompt: (() => void) | undefined;
@@ -255,6 +300,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
         start: async () => ({
           prompt: async function* (input: ConnectRuntimePrompt) {
             prompts.push(input);
+            await input.onAccepted?.();
             if (prompts.length === 1) await firstPromptGate;
             yield { kind: "progress", text: "processed" } as const;
           },
@@ -306,6 +352,11 @@ describe("Binding Runtime Protocol v2 assembly", () => {
 
     for (let attempt = 0; attempt < 50 && prompts.length === 0; attempt += 1) await Bun.sleep(2);
     expect(prompts[0]?.prompt).toContain("recover me");
+    await expect(stateStore.hasHandledInboundMessage("codex", "msg-recovered", recoveredEnvelope)).resolves.toBe(true);
+    await expect(stateStore.hasHandledInboundMessage("codex", "msg-reconciled", reconciledEnvelope)).resolves.toBe(
+      true,
+    );
+    expect(prompts.some((prompt) => prompt.prompt.includes("already accepted"))).toBe(false);
 
     const liveEnvelope: Envelope = {
       ...recoveredEnvelope,

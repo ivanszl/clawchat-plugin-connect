@@ -153,11 +153,20 @@ class InboundMessageProcessor {
     if (!this.accepting) throw new Error("inbound message processor is closing");
     const key = inboundHandlingKey(message);
     if (this.pending.has(key)) return "accepted";
-    const work = dispatchInboundMessage({ ...this.options, message, wsClient: this.wsClient, runtime: this.runtime })
-      .then(
-        async () =>
-          await this.options.stateStore.markInboundMessageHandled(this.options.agentId, message.messageId, message.raw),
-      )
+    let markedHandled = false;
+    const markHandled = async () => {
+      if (markedHandled) return;
+      await this.options.stateStore.markInboundMessageHandled(this.options.agentId, message.messageId, message.raw);
+      markedHandled = true;
+    };
+    const work = dispatchInboundMessage({
+      ...this.options,
+      message,
+      wsClient: this.wsClient,
+      runtime: this.runtime,
+      onTurnAccepted: markHandled,
+    })
+      .then(markHandled)
       .catch((error) =>
         this.options.writeError(
           `${this.options.agentId}: inbound message remains pending: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -179,7 +188,12 @@ class InboundMessageProcessor {
   private async recoverOnce(): Promise<void> {
     for (const raw of await this.options.stateStore.listUnhandledInboundMessages(this.options.agentId)) {
       const message = normalizeStoredInboundMessage(raw);
-      if (message) this.accept(message);
+      if (!message) continue;
+      if (await this.options.stateStore.hasReconciledInboundMessage(this.options.agentId, message.messageId)) {
+        await this.options.stateStore.markInboundMessageHandled(this.options.agentId, message.messageId, message.raw);
+        continue;
+      }
+      this.accept(message);
     }
   }
 
@@ -231,6 +245,7 @@ async function dispatchInboundMessage(
     message: NormalizedInboundMessage;
     wsClient: ConnectWsClient;
     runtime: ConnectRuntime;
+    onTurnAccepted: () => Promise<void>;
   },
 ): Promise<void> {
   const routeCommand = async (): Promise<boolean> => {
@@ -272,6 +287,7 @@ async function dispatchInboundMessage(
     params.message,
     routeCommand,
     requiresOrderedSessionControl(params.message.text),
+    params.onTurnAccepted,
   );
 }
 

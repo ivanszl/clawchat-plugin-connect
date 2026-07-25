@@ -461,6 +461,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         ...(input.model ? { model: input.model } : {}),
         ...(input.reasoningEffort ? { effort: input.reasoningEffort } : {}),
       });
+      await input.onAccepted?.();
       active.turnId = response.turn.id;
       const buffered = active.bufferedNotifications.splice(0);
       for (const notification of buffered) this.handleNotification(active, notification);

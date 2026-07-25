@@ -1,9 +1,17 @@
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
-import type { ClientViewEvent, TranscriptPageView } from "../../../src/client-contract";
+import type {
+  ClientEventBatchView,
+  ClientViewEvent,
+  SessionCatalogView,
+  TranscriptPageView,
+} from "../../../src/client-contract";
 import { CLIENT_API_PREFIX } from "../../../src/client-contract";
+import { clientFetch } from "./http";
 import { clientKeys } from "./query-options";
 
 export function connectClientEvents(queryClient: QueryClient, cursor: number): () => void {
+  let currentCursor = cursor;
+  let polling = false;
   const events = new EventSource(`${CLIENT_API_PREFIX}/events?after=${cursor}`);
   const handle = (message: MessageEvent<string>) => {
     let event: ClientViewEvent;
@@ -12,6 +20,7 @@ export function connectClientEvents(queryClient: QueryClient, cursor: number): (
     } catch {
       return;
     }
+    currentCursor = Math.max(currentCursor, event.cursor);
     applyClientEvent(queryClient, event);
   };
   for (const type of [
@@ -23,7 +32,37 @@ export function connectClientEvents(queryClient: QueryClient, cursor: number): (
   ]) {
     events.addEventListener(type, handle as EventListener);
   }
-  return () => events.close();
+  const poll = async () => {
+    if (polling) return;
+    polling = true;
+    try {
+      currentCursor = await pollClientEventBatch(queryClient, currentCursor);
+    } catch {
+      // Liveware may temporarily reconnect its HTTP relay; the next poll retries.
+    } finally {
+      polling = false;
+    }
+  };
+  void poll();
+  const pollTimer = setInterval(() => void poll(), 2_000);
+  return () => {
+    clearInterval(pollTimer);
+    events.close();
+  };
+}
+
+export async function pollClientEventBatch(
+  queryClient: QueryClient,
+  cursor: number,
+  fetchBatch: (after: number) => Promise<ClientEventBatchView> = fetchClientEventBatch,
+): Promise<number> {
+  const batch = await fetchBatch(cursor);
+  for (const event of batch.events) applyClientEvent(queryClient, event);
+  return Math.max(cursor, batch.cursor);
+}
+
+async function fetchClientEventBatch(after: number): Promise<ClientEventBatchView> {
+  return await clientFetch<ClientEventBatchView>(`${CLIENT_API_PREFIX}/events/batch?after=${after}`);
 }
 
 export function applyClientEvent(queryClient: QueryClient, event: ClientViewEvent): void {
@@ -70,6 +109,11 @@ export function applyClientEvent(queryClient: QueryClient, event: ClientViewEven
       return { ...current, pages };
     },
   );
-  void queryClient.invalidateQueries({ queryKey: clientKeys.session(event.sessionRef), refetchType: "active" });
-  void queryClient.invalidateQueries({ queryKey: clientKeys.catalog, refetchType: "active" });
+  const catalog = queryClient.getQueryData<SessionCatalogView>(clientKeys.catalog);
+  const knownSession = catalog?.bindings.some((binding) =>
+    binding.entries.some((entry) => entry.sessionRef === event.sessionRef),
+  );
+  if (catalog && !knownSession) {
+    void queryClient.invalidateQueries({ queryKey: clientKeys.catalog, refetchType: "active" });
+  }
 }

@@ -378,6 +378,25 @@ describe("Connect Client Interface", () => {
       ],
     });
 
+    const eventCursor = await store.getClientEventCursor();
+    await projection.appendUserMessage({
+      sessionRef: session.sessionRef,
+      text: "from ClawChat",
+      origin: "clawchat",
+      author: "usr_opaque",
+    });
+    const eventBatch = await localRequest(fetchHandler, handle.origin, `/client/v1/events/batch?after=${eventCursor}`);
+    expect(eventBatch.status).toBe(200);
+    await expect(eventBatch.json()).resolves.toMatchObject({
+      events: [
+        {
+          type: "transcript.block-upserted",
+          sessionRef: session.sessionRef,
+          block: { type: "message", origin: "clawchat", markdown: "from ClawChat" },
+        },
+      ],
+    });
+
     const turn = await localRequest(fetchHandler, handle.origin, `/client/v1/sessions/${session.sessionRef}/turns`, {
       method: "POST",
       headers: {

@@ -57,6 +57,7 @@ export class ConnectRuntime {
     message: NormalizedInboundMessage,
     beforeTurn?: () => Promise<boolean>,
     orderedControl = false,
+    onTurnAccepted?: () => Promise<void>,
   ): Promise<void> {
     try {
       if (orderedControl) {
@@ -79,7 +80,7 @@ export class ConnectRuntime {
             await this.queue.enqueue(
               sessionKey(current.chatId, current.sessionId),
               async () => {
-                await this.runTrackedTurn(message, current);
+                await this.runTrackedTurn(message, current, onTurnAccepted);
               },
               `Session ${current.sessionRef}`,
             );
@@ -97,7 +98,7 @@ export class ConnectRuntime {
           key,
           async () => {
             if (await beforeTurn?.()) return;
-            await this.runTrackedTurn(message, current);
+            await this.runTrackedTurn(message, current, onTurnAccepted);
           },
           `Session ${current.sessionRef}`,
         );
@@ -233,7 +234,11 @@ export class ConnectRuntime {
     return Boolean(session) || Boolean(current?.runtimeSessionId);
   }
 
-  private async runTurn(message: NormalizedInboundMessage, current: RuntimeSessionRecord): Promise<void> {
+  private async runTurn(
+    message: NormalizedInboundMessage,
+    current: RuntimeSessionRecord,
+    onTurnAccepted?: () => Promise<void>,
+  ): Promise<void> {
     const activeAgentId = current.agentId || this.options.agentId;
     const workspace = await this.projects.resolveWorkspace(current);
     const model = await this.modelFor(current, activeAgentId);
@@ -253,6 +258,7 @@ export class ConnectRuntime {
       mode: current.mode ?? undefined,
       model: model.model,
       reasoningEffort: model.reasoningEffort,
+      onAccepted: onTurnAccepted,
       metadata: {
         chatId: message.chatId,
         sessionId: current.sessionId,
@@ -377,12 +383,16 @@ export class ConnectRuntime {
     });
   }
 
-  private async runTrackedTurn(message: NormalizedInboundMessage, current: RuntimeSessionRecord): Promise<void> {
+  private async runTrackedTurn(
+    message: NormalizedInboundMessage,
+    current: RuntimeSessionRecord,
+    onTurnAccepted?: () => Promise<void>,
+  ): Promise<void> {
     const key = sessionKey(current.chatId, current.sessionId);
     this.activeTurnSessionChats.set(key, current.chatId);
     await this.recordRuntimeStatus(this.queue.stats());
     try {
-      await this.runTurn(message, current);
+      await this.runTurn(message, current, onTurnAccepted);
     } finally {
       this.activeTurnSessionChats.delete(key);
       await this.recordRuntimeStatus(this.queue.stats());

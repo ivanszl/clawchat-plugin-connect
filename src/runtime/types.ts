@@ -9,6 +9,7 @@ export interface ConnectRuntimePrompt {
   mode?: string;
   model?: string;
   reasoningEffort?: string;
+  onAccepted?: () => Promise<void>;
   metadata?: Record<string, string>;
   outputPolicy?: {
     mode: string;

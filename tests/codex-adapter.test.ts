@@ -125,13 +125,17 @@ class FakeAppServer implements CodexAppServerClient {
   }
 }
 
-async function collect(session: ConnectRuntimeSession): Promise<RuntimeOutputEvent[]> {
+async function collect(
+  session: ConnectRuntimeSession,
+  onAccepted?: () => Promise<void>,
+): Promise<RuntimeOutputEvent[]> {
   const output: RuntimeOutputEvent[] = [];
   for await (const event of session.prompt({
     prompt: "hello",
     workspace,
     model: agent.model,
     reasoningEffort: agent.modelReasoningEffort,
+    onAccepted,
   }))
     output.push(event);
   return output;
@@ -418,12 +422,14 @@ describe("Codex app-server runtime adapter", () => {
       return { turn: turn() };
     });
     const started = context();
+    const onAccepted = mock(async () => undefined);
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
     const session = await adapter.start(agent, started);
 
-    await expect(collect(session)).resolves.toContainEqual(
+    await expect(collect(session, onAccepted)).resolves.toContainEqual(
       expect.objectContaining({ kind: "final", text: "done", itemId: "a1", state: "complete" }),
     );
+    expect(onAccepted).toHaveBeenCalledTimes(1);
     expect(client.startThread).toHaveBeenCalledWith({
       model: "gpt-5-codex",
       cwd: "/repo",

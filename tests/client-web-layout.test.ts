@@ -5,6 +5,7 @@ const sessionRouteUrl = new URL("../web/src/routes/sessions.$sessionRef.tsx", im
 const sessionComposerUrl = new URL("../web/src/features/composer/SessionComposer.tsx", import.meta.url);
 const iconsUrl = new URL("../web/src/components/icons.tsx", import.meta.url);
 const appShellUrl = new URL("../web/src/features/app-shell/ConnectAppShell.tsx", import.meta.url);
+const transcriptBlockUrl = new URL("../web/src/features/transcript/TranscriptBlockView.tsx", import.meta.url);
 
 describe("Connect Client session layout", () => {
   it("keeps the transcript and composer in stable rows when the history warning is absent", async () => {
@@ -54,6 +55,14 @@ describe("Connect Client session layout", () => {
     expect(appShell).toContain('import { Icon } from "@astryxdesign/core/Icon"');
     expect(appShell).toContain('import { Settings } from "lucide-react"');
     expect(appShell).toContain("icon={<Icon icon={Settings}");
+  });
+
+  it("does not expose an opaque ClawChat user id as the message author", async () => {
+    const transcriptBlock = await Bun.file(transcriptBlockUrl).text();
+
+    expect(transcriptBlock).toContain(
+      'name={sender === "user" && block.origin !== "clawchat" ? block.author : undefined}',
+    );
   });
 });
 

@@ -1187,6 +1187,34 @@ export class ConnectStateStore {
     // write the completion marker for the newer content.
     if ((result.changes ?? 0) === 0) return;
   }
+  async hasReconciledInboundMessage(agentId: string, messageId: string): Promise<boolean> {
+    const db = await this.requireDb();
+    const row = await db.get<{ present: number }>(
+      `SELECT 1 AS present
+       FROM clawchat_messages AS message
+       JOIN runtime_sessions AS session
+         ON session.chat_id = message.chat_id
+        AND session.agent_id = message.local_agent_id
+       JOIN session_refs AS ref
+         ON ref.chat_id = session.chat_id
+        AND ref.agent_id = session.agent_id
+        AND ref.session_id = session.session_id
+       JOIN transcript_blocks AS block
+         ON block.session_ref = ref.session_ref
+       WHERE message.local_agent_id = ?
+         AND message.direction = 'inbound'
+         AND message.kind = 'message'
+         AND message.message_id = ?
+         AND block.origin = 'clawchat'
+         AND substr(block.block_id, 1, 2) = 'b_'
+         AND block.plain_text = COALESCE(message.text, '')
+         AND ABS(block.created_at - message.created_at) <= 10000
+       LIMIT 1`,
+      requireStateString(agentId, "agentId"),
+      requireStateString(messageId, "messageId"),
+    );
+    return row?.present === 1;
+  }
   async listUnhandledInboundMessages(agentId: string): Promise<unknown[]> {
     const db = await this.requireDb();
     const rows = await db.all<Array<{ raw_json?: string; handled_content_json?: string | null }>>(

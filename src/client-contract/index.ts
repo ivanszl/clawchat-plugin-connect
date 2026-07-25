@@ -265,6 +265,11 @@ export type ClientViewEvent =
       reason: "cursor-expired" | "revision-gap";
     };
 
+export interface ClientEventBatchView {
+  cursor: number;
+  events: ClientViewEvent[];
+}
+
 export interface ClientErrorView {
   error: {
     code: string;
