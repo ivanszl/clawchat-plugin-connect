@@ -143,6 +143,17 @@ export interface UpsertRuntimeSessionInput {
   hasMessages?: boolean;
   isCurrent?: boolean;
 }
+export interface AdoptRuntimeThreadRefInput {
+  sessionRef: string;
+  chatId: string;
+  sessionId: string;
+  agentId: string;
+  projectId: string | null;
+  name?: string | null;
+  mode?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
+}
 export interface SetSessionIntentInput {
   chatId: string;
   agentId: string;
@@ -664,6 +675,63 @@ export class ConnectStateStore {
         Date.now(),
         sessionRef,
       );
+  }
+
+  async adoptRuntimeThreadRef(input: AdoptRuntimeThreadRefInput): Promise<RuntimeSessionRecord | null> {
+    const db = await this.requireDb();
+    const now = Date.now();
+    db.transaction((run, get) => {
+      const target = get<SessionRefRow>(
+        "SELECT * FROM session_refs WHERE session_ref = ? COLLATE NOCASE",
+        input.sessionRef,
+      );
+      if (!target || target.agent_id !== input.agentId || !target.runtime_session_id || target.session_id) return;
+      const attached = get<{ session_id: string }>(
+        "SELECT session_id FROM runtime_sessions WHERE agent_id = ? AND runtime_session_id = ? LIMIT 1",
+        input.agentId,
+        target.runtime_session_id,
+      );
+      if (attached) throw new Error(`Runtime Thread is already attached to Session ${attached.session_id}`);
+      const competingRef = get<SessionRefRow>(
+        "SELECT * FROM session_refs WHERE chat_id = ? AND agent_id = ? AND runtime_session_id = ?",
+        input.chatId,
+        input.agentId,
+        target.runtime_session_id,
+      );
+      if (competingRef && competingRef.session_ref !== target.session_ref) {
+        if (competingRef.session_id)
+          throw new Error(`Runtime Thread is already mapped to Session Ref ${competingRef.session_ref}`);
+        run("DELETE FROM session_refs WHERE session_ref = ?", competingRef.session_ref);
+      }
+      run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
+      run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
+      run(
+        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, has_messages, is_current, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+        input.chatId,
+        input.sessionId,
+        input.agentId,
+        target.runtime_session_id,
+        input.projectId,
+        input.name ?? null,
+        input.mode ?? null,
+        input.model ?? null,
+        input.reasoningEffort ?? null,
+        now,
+        now,
+      );
+      const moved = run(
+        `UPDATE session_refs
+         SET chat_id = ?, session_id = ?, updated_at = ?
+         WHERE session_ref = ? COLLATE NOCASE AND session_id IS NULL`,
+        input.chatId,
+        input.sessionId,
+        now,
+        target.session_ref,
+      );
+      if (moved.changes !== 1) throw new Error(`Session Ref ${input.sessionRef} could not be adopted`);
+    });
+    return await this.getRuntimeSessionByRef(input.sessionRef);
   }
 
   async setRuntimeSessionModelSelection(

@@ -815,6 +815,57 @@ describe("handleChatCommand", () => {
     await store.close();
   });
 
+  it("switches a Client Catalog Session Ref without waiting for Runtime Thread discovery", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-catalog-switch-"));
+    const root = join(directory, "repo");
+    await mkdir(root);
+    const generatedRefs = ["ABCDEFGH", "NKEP79B8"];
+    const store = createStateStore({
+      dbPath: join(directory, "state.sqlite"),
+      sessionRefFactory: () => generatedRefs.shift() ?? "JKLMNPQR",
+    });
+    const projects = new ProjectCatalog(store);
+    const project = await projects.add("repo", root);
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-current",
+      agentId: "codex",
+      projectId: project.projectId,
+      runtimeSessionId: "thread-current",
+      isCurrent: true,
+    });
+    const catalogRef = await store.getOrCreateSessionRef({
+      chatId: "__connect_client_catalog__",
+      agentId: "codex",
+      runtimeSessionId: "thread-catalog",
+    });
+    expect(catalogRef).toBe("NKEP79B8");
+
+    const switched = await Promise.race([
+      handleChatCommand({
+        message: message(`/switch ${catalogRef}`),
+        agentId: "codex",
+        ownerUserId: "usr",
+        config,
+        stateStore: store,
+        projects,
+        closeRuntimeSession: mock(async () => true),
+        discoverRuntimeThreads: async () => await new Promise<SelectableRuntimeThread[]>(() => undefined),
+      }),
+      Bun.sleep(50).then(() => ({ handled: true, text: "timed out waiting for Runtime Thread discovery" })),
+    ]);
+
+    expect(switched.text).toBe(`Imported and switched to Session \`${catalogRef}\`.`);
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      runtimeSessionId: "thread-catalog",
+      sessionRef: catalogRef,
+      projectId: project.projectId,
+      isCurrent: true,
+    });
+    await store.close();
+  });
+
   it("lists only the current Session in a Non-Project workspace", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-non-project-list-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });

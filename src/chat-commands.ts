@@ -214,7 +214,6 @@ async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
 async function handleSwitch(ctx: ChatCommandContext, rawReference: string | undefined): Promise<ChatCommandResult> {
   const reference = rawReference?.trim() ?? "";
   if (!reference) return { handled: true, text: "Usage: /switch <name-or-ref>" };
-  const discovered = (await ctx.discoverRuntimeThreads?.(ctx.message.chatId)) ?? [];
   const sessions = await ctx.stateStore.listRuntimeSessions(ctx.message.chatId, ctx.agentId);
   const matches = matchingSessions(sessions, reference);
   if (matches.length > 1) return { handled: true, text: ambiguousSessionText(reference, matches) };
@@ -230,6 +229,37 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
     };
   }
 
+  if (SESSION_REF_PATTERN.test(reference)) {
+    const target = await ctx.stateStore.getSessionRefTarget(reference);
+    if (
+      target?.agentId === ctx.agentId &&
+      target.chatId !== ctx.message.chatId &&
+      target.runtimeSessionId &&
+      !target.sessionId
+    ) {
+      const selected = await selectedSessionContext(ctx);
+      if (!selected) return { handled: true, text: "Select a Project before importing a Runtime Thread." };
+      await closeRuntimeSession(ctx);
+      const adopted = await ctx.stateStore.adoptRuntimeThreadRef({
+        sessionRef: target.sessionRef,
+        chatId: ctx.message.chatId,
+        sessionId: randomUUID(),
+        agentId: ctx.agentId,
+        projectId: selected.projectId,
+        mode: selected.mode,
+        model: selected.model,
+        reasoningEffort: selected.reasoningEffort,
+      });
+      return {
+        handled: true,
+        text: adopted
+          ? `Imported and switched to Session \`${adopted.sessionRef}\`.`
+          : `Unknown Session \`${reference}\`. Use /sessions to see Sessions.`,
+      };
+    }
+  }
+
+  const discovered = (await ctx.discoverRuntimeThreads?.(ctx.message.chatId)) ?? [];
   const threadMatches = matchingRuntimeThreads(discovered, reference);
   if (threadMatches.length > 1) return { handled: true, text: ambiguousRuntimeThreadText(reference, threadMatches) };
   const thread = threadMatches[0];
@@ -484,6 +514,8 @@ function matchingRuntimeThreads(threads: SelectableRuntimeThread[], reference: s
   );
   return exact;
 }
+
+const SESSION_REF_PATTERN = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/iu;
 
 function ambiguousSessionText(reference: string, sessions: RuntimeSessionRecord[]): string {
   return `Session \`${reference}\` is ambiguous. Use a Ref: ${sessions.map((session) => session.sessionRef).join(", ")}`;

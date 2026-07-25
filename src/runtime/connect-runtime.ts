@@ -75,6 +75,7 @@ export class ConnectRuntime {
           );
           if (!handled) {
             const current = await this.materializeCurrentSession(message.chatId);
+            await this.projectClawChatMessage(message, current);
             await this.queue.enqueue(
               sessionKey(current.chatId, current.sessionId),
               async () => {
@@ -90,6 +91,7 @@ export class ConnectRuntime {
       let completion: Promise<void> | null = null;
       await this.withRoutingGate(message.chatId, async () => {
         const current = await this.materializeCurrentSession(message.chatId);
+        await this.projectClawChatMessage(message, current);
         const key = sessionKey(current.chatId, current.sessionId);
         completion = this.queue.enqueue(
           key,
@@ -243,13 +245,6 @@ export class ConnectRuntime {
     });
     const policy = policyForOutputVisibility(mode);
     const buffered: MaterializedRuntimeReply[] = [];
-    await this.options.transcriptProjection?.appendUserMessage({
-      sessionRef: current.sessionRef,
-      text: message.text,
-      origin: "clawchat",
-      author: message.sender.nick_name || message.sender.id,
-      id: message.messageId || undefined,
-    });
     for await (const event of session.prompt({
       prompt: renderPrompt(message),
       media: runtimeMedia(message),
@@ -366,6 +361,19 @@ export class ConnectRuntime {
       chatId,
       agentId: this.options.agentId,
       sessionId: randomUUID(),
+    });
+  }
+
+  private async projectClawChatMessage(
+    message: NormalizedInboundMessage,
+    current: RuntimeSessionRecord,
+  ): Promise<void> {
+    await this.options.transcriptProjection?.appendUserMessage({
+      sessionRef: current.sessionRef,
+      text: message.text,
+      origin: "clawchat",
+      author: message.sender.nick_name || message.sender.id,
+      id: message.messageId || undefined,
     });
   }
 

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { handleChatCommand } from "../src/chat-commands";
+import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import type { RuntimeOutputEvent } from "../src/output-visibility";
 import { ProjectCatalog } from "../src/projects";
@@ -71,6 +72,84 @@ async function runtimeFixture() {
 }
 
 describe("ConnectRuntime Agent Binding sessions", () => {
+  it("projects queued ClawChat messages before waiting for Runtime startup", async () => {
+    const fixture = await runtimeFixture();
+    let releaseRuntimeStart: (() => void) | undefined;
+    const runtimeStartGate = new Promise<void>((resolve) => {
+      releaseRuntimeStart = resolve;
+    });
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: mock(async () => {
+        await runtimeStartGate;
+        return {
+          prompt: async function* () {
+            yield { kind: "final", text: "done" } as const;
+          },
+          close: mock(async () => undefined),
+        };
+      }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const transcriptProjection = new TranscriptProjection({
+      stateStore: fixture.store,
+      config: fixture.config,
+      runtimeAdapters,
+    });
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters,
+      transcriptProjection,
+    });
+    const firstInbound = message("commit");
+    const secondInbound = {
+      ...message("push"),
+      messageId: "message-2",
+      traceId: "trace-2",
+    };
+    const firstTurn = runtime.handleInboundMessage(firstInbound);
+    const secondTurn = runtime.handleInboundMessage(secondInbound);
+
+    try {
+      const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+      if (!current) throw new Error("expected current Session");
+      for (
+        let attempt = 0;
+        attempt < 25 && (await fixture.store.countTranscriptBlocks(current.sessionRef)) < 2;
+        attempt += 1
+      )
+        await Bun.sleep(2);
+      await expect(fixture.store.listTranscriptBlocks(current.sessionRef)).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: firstInbound.messageId,
+            type: "message",
+            role: "user",
+            origin: "clawchat",
+            plainText: "commit",
+          }),
+          expect.objectContaining({
+            id: secondInbound.messageId,
+            type: "message",
+            role: "user",
+            origin: "clawchat",
+            plainText: "push",
+          }),
+        ]),
+      );
+    } finally {
+      releaseRuntimeStart?.();
+      await Promise.all([firstTurn, secondTurn]);
+      await runtime.dispose();
+      await fixture.store.close();
+    }
+  });
+
   it("starts the first message in a Non-Project Session with an isolated workspace", async () => {
     const fixture = await runtimeFixture();
     await fixture.store.deleteRuntimeSession("chat-1", "codex", "session-1");

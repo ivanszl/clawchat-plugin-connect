@@ -52,6 +52,7 @@ export const projectsQueryOptions = queryOptions({
 export function transcriptQueryOptions(sessionRef: string) {
   return infiniteQueryOptions({
     queryKey: clientKeys.transcript(sessionRef),
+    refetchInterval: 2_000,
     initialPageParam: null as string | null,
     queryFn: async ({ pageParam }) => {
       const search = new URLSearchParams({ limit: "100" });
