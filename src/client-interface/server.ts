@@ -150,8 +150,6 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             const body = await readJsonBody<CreateSessionRequest>(request);
             if (!validRequestId(body.requestId))
               return errorResponse(400, "invalid-request-id", "requestId is required");
-            if (typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 64_000)
-              return errorResponse(400, "invalid-prompt", "Prompt must contain 1 to 64,000 characters");
             if (typeof body.bindingId !== "string" || !body.bindingId.trim())
               return errorResponse(400, "invalid-binding", "bindingId is required");
             if (body.projectId !== null && typeof body.projectId !== "string")
@@ -172,9 +170,6 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               async () => {
                 const binding = options.config.agents[body.bindingId];
                 if (!binding) return commandError(404, "binding-not-found", "Agent Binding was not found");
-                const runtime = runtimes.get(body.bindingId);
-                if (!runtime?.enqueueClientTurn)
-                  return commandError(503, "runtime-offline", "Runtime is unavailable", true);
                 if (body.projectId && !(await projects.get(body.projectId)))
                   return commandError(400, "invalid-project", "Project was not found");
                 const name = body.name?.trim() || null;
@@ -229,18 +224,6 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   await options.stateStore.deleteSessionByRef(session.sessionRef);
                   catalog.invalidate();
                   throw new ClientRequestError(503, "session-create-failed", "Session could not be created", true);
-                }
-                try {
-                  await runtime.enqueueClientTurn(session.sessionRef, body.prompt.trim());
-                } catch (error) {
-                  await options.stateStore.deleteSessionByRef(session.sessionRef);
-                  catalog.invalidate();
-                  return commandError(
-                    503,
-                    "runtime-offline",
-                    error instanceof Error ? error.message : "Runtime is unavailable",
-                    true,
-                  );
                 }
                 return { status: 201, body: view };
               },

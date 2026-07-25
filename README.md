@@ -210,7 +210,7 @@ Use `--no-open` to print the URL without opening a browser:
 clawchat-connect web --no-open
 ```
 
-The browser client can create a Session by choosing its Project, mode, model, reasoning effort, and first task together. It can also inspect Sessions, read native Codex transcripts, change Session model options, manage Projects, and send more turns. Browser-originated turns stay local to Connect and are not posted into ClawChat.
+The browser client can create an empty Session by choosing its Project, mode, model, and reasoning effort, then submit its first task from the Session composer. It can also inspect Sessions, read native Codex transcripts, change Session model options, manage Projects, and send more turns. Browser-originated turns stay local to Connect and are not posted into ClawChat.
 
 Browser and ClawChat turns targeting the same Session are strictly ordered. Different Sessions may run concurrently, including two Sessions associated with one ClawChat conversation, up to `maxConcurrentTurns`.
 

@@ -104,6 +104,60 @@ describe("Session Catalog workspace grouping", () => {
     expect(adoptedProject?.rootPath).toBe(await realpath(firstWorkspace));
   });
 
+  it("keeps Codex App scratch threads as direct Non-Project leaves", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-date-workspaces-"));
+    const firstWorkspace = join(directory, "2026-07-24", "f");
+    const secondWorkspace = join(directory, "2026-07-23", "f");
+    await Promise.all([mkdir(firstWorkspace, { recursive: true }), mkdir(secondWorkspace, { recursive: true })]);
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    stores.push(store);
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      discoverAllThreads: async () => [
+        {
+          runtimeThreadId: "thread-current-date",
+          name: "Current date task",
+          updatedAt: 2,
+          workingDirectory: firstWorkspace,
+          workspaceKind: "transient",
+        },
+        {
+          runtimeThreadId: "thread-previous-date",
+          name: "Previous date task",
+          updatedAt: 1,
+          workingDirectory: secondWorkspace,
+          workspaceKind: "transient",
+        },
+      ],
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const config = defaultConfig();
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+
+    const entries = (await catalog.view()).bindings[0]?.entries ?? [];
+
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.workspaceId)).toEqual([null, null]);
+    expect(entries.map((entry) => entry.workspaceName)).toEqual([null, null]);
+
+    const adopted = await catalog.adopt(entries[0]?.sessionRef ?? "");
+    expect(adopted?.projectId).toBeNull();
+    expect(await store.listProjects()).toEqual([]);
+    expect((await catalog.view()).bindings[0]?.entries[0]).toMatchObject({
+      sessionRef: entries[0]?.sessionRef,
+      workspaceId: null,
+      workspaceName: null,
+    });
+  });
+
   it("keeps a managed Non-Project Session as a direct catalog leaf", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-non-project-"));
     const isolatedWorkspace = join(directory, "workspaces", "agent", "chat", "session");

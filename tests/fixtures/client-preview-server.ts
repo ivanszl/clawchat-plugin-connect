@@ -9,10 +9,14 @@ import type { RuntimeTranscriptEntry } from "../../src/runtime/types";
 import { createStateStore } from "../../src/state";
 
 const directory = await mkdtemp(join(tmpdir(), "connect-client-preview-"));
-const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ"];
+const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ", "23456789", "BCDEFGHJ"];
 const stateStore = createStateStore({
   dbPath: join(directory, "state.sqlite"),
-  sessionRefFactory: () => refs.shift() ?? "23456789",
+  sessionRefFactory: () => {
+    const ref = refs.shift();
+    if (!ref) throw new Error("Preview fixture exhausted Session Refs");
+    return ref;
+  },
 });
 await stateStore.insertProject({ projectId: "connect", name: "clawchat-plugin-connect", rootPath: process.cwd() });
 await stateStore.upsertRuntimeSession({

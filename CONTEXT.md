@@ -53,7 +53,7 @@ A named, reusable local code workspace that a Session may use. A Project has a r
 _Avoid_: Directory, cwd, repository
 
 **Workspace Group**:
-A Connect Client navigation group derived from a Project root or a discovered Runtime Thread's native working directory. It keeps native threads from unrelated workspaces visually separate without pretending every discovered directory is already a registered Project.
+A Connect Client navigation group derived from a Project root or a discovered Runtime Thread's persistent native working directory. Runtime Adapter-classified transient scratch workspaces remain direct Non-Project leaves. The group keeps native threads from unrelated durable workspaces visually separate without pretending every discovered directory is already a registered Project.
 _Avoid_: Project, when the group comes only from Runtime Thread discovery
 
 **Session**:
@@ -118,14 +118,14 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Sessions are scoped by ClawChat conversation and Agent Binding.
 - A Session has zero or one Project.
 - A Runtime Thread is associated with at most one Session for an Agent Binding. Connect Client and ClawChat operate that same Session rather than creating separate Session copies for one native thread.
-- Control commands create or replace a Session Intent; only an ordinary message or adoption of an existing Runtime Thread creates a Session.
+- ClawChat control commands create or replace a Session Intent; an ordinary message consumes it. Connect Client may explicitly create an empty Session, and adoption of an existing Runtime Thread also creates a Session.
 - Turns from ClawChat and Connect Client are strictly ordered per Session; different Sessions may run concurrently even when they belong to one ClawChat conversation.
 - A Session model selection overrides its Agent Binding model default, which overrides the Runtime Adapter default. Reasoning effort resolves independently from a strict Session effort, then a valid Agent Binding effort for the effective model, then the model's advertised default. An unavailable persisted Session selection never silently falls back; an invalid Binding effort falls back because it is only a default.
 - Changing Project association creates a Session Intent whose eventual Session starts a new Runtime Thread boundary.
 - Connect Client Session Catalog discovery is installation-wide across Projects, Non-Project Sessions, ClawChat conversations, and Agent Bindings.
 - Client Interface binds to loopback by default; unauthenticated IPv4 LAN exposure requires an explicit wildcard Host configuration and is not an internet-facing mode.
-- Connect Client groups discovered Runtime Threads by native working directory even when that workspace is not yet a registered Project; genuine Non-Project Sessions remain direct catalog leaves.
-- Adopting a discovered Runtime Thread with a native working directory registers or reuses the corresponding Project before Connect sends another turn, preserving the Runtime Thread's workspace.
+- Connect Client groups discovered Runtime Threads by persistent native working directory even when that workspace is not yet a registered Project; Runtime Adapter-classified transient scratch workspaces and genuine Non-Project Sessions remain direct catalog leaves.
+- Adopting a discovered Runtime Thread with a persistent native working directory registers or reuses the corresponding Project before Connect sends another turn, preserving the Runtime Thread's workspace. A transient scratch Runtime Thread is adopted as a Non-Project Session without creating a Project from its generated directory.
 - ClawChat Session Catalog discovery spans Projects, Non-Project Sessions, and ClawChat conversations but is scoped to the Agent Binding that received the command.
 - Runtime Thread discovery uses only that Agent Binding's Runtime Adapter and remains scoped to the selected workspace from the Session Intent or current Session; an external Runtime Thread is adopted only through an explicit switch.
 - A Runtime Thread and its Runtime Transcript remain authoritative for Agent context and native resume; Connect does not replace them with its own thread or rebuild context by replaying the Client Transcript.

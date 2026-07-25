@@ -1,3 +1,4 @@
+import { basename, dirname, resolve } from "node:path";
 import type { RuntimeOutputEvent } from "../output-visibility";
 import type { CodexAgentBindingConfig, CodexApprovalPolicy, CodexSandboxMode, RuntimeWorkspace } from "../types";
 import {
@@ -354,6 +355,7 @@ async function discoverCodexThreads(
           name: normalizeThreadName(thread.name || thread.preview),
           updatedAt: thread.updatedAt * 1_000,
           workingDirectory: thread.cwd,
+          ...(isCodexAppScratchWorkspace(thread) ? { workspaceKind: "transient" as const } : {}),
         })),
     );
     cursor = page.nextCursor;
@@ -361,6 +363,18 @@ async function discoverCodexThreads(
     if (cursor) seenCursors.add(cursor);
   } while (cursor);
   return summaries.sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+function isCodexAppScratchWorkspace(thread: CodexAppServerThread): boolean {
+  if (thread.source !== "vscode" || thread.gitInfo !== null) return false;
+  const workspace = resolve(thread.cwd);
+  const dateDirectory = dirname(workspace);
+  const codexDirectory = dirname(dateDirectory);
+  return (
+    basename(dirname(codexDirectory)) === "Documents" &&
+    basename(codexDirectory) === "Codex" &&
+    /^\d{4}-\d{2}-\d{2}$/u.test(basename(dateDirectory))
+  );
 }
 
 function normalizeThreadName(value: string): string | null {

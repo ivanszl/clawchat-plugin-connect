@@ -23,4 +23,17 @@ describe("Connect Client Session lifecycle", () => {
     expect(source).toContain("id: `archived:" + "$" + "{binding.bindingId}`");
     expect(source).toContain('label: "已归档"');
   });
+
+  it("keeps Session Refs out of navigation rows and represents state with a compact status dot", async () => {
+    const source = await Bun.file(navigationUrl).text();
+    const itemSource = source.slice(
+      source.indexOf("function sessionItem("),
+      source.indexOf("\nfunction sessionStatus("),
+    );
+
+    expect(itemSource).not.toContain("description:");
+    expect(itemSource).toContain("endContent: <StatusDot");
+    expect(source).toContain('idle: { variant: "success", label: "空闲" }');
+    expect(source).toContain('running: { variant: "accent", label: "运行中", isPulsing: true }');
+  });
 });

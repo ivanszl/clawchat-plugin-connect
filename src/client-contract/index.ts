@@ -280,7 +280,6 @@ export interface StartTurnRequest {
 
 export interface CreateSessionRequest {
   requestId: string;
-  prompt: string;
   bindingId: string;
   projectId: string | null;
   name: string | null;

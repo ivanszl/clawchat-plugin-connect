@@ -3,6 +3,7 @@ import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
+import { Popover } from "@astryxdesign/core/Popover";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -76,10 +77,9 @@ function SessionPage() {
           <p className="session-eyebrow">
             {view.workspaceName || view.projectName || "Non-Project"} / {view.sessionRef}
           </p>
-          <h1>{view.name}</h1>
+          <h1 title={view.name}>{view.name}</h1>
         </div>
         <div className="session-meta">
-          <SessionModelControls view={view} />
           <Badge label={view.bindingKind} variant="neutral" />
           {view.isArchived ? <Badge label="已归档" variant="neutral" /> : null}
           <Badge
@@ -166,6 +166,7 @@ function SessionPage() {
         sessionRef={sessionRef}
         canSend={view.allowedActions.includes("send") && view.status !== "offline"}
         isRuntimeActive={view.status === "running" || view.status === "queued"}
+        modelControl={<SessionModelControls view={view} />}
       />
       <AlertDialog
         isOpen={deleteOpen}
@@ -183,15 +184,20 @@ function SessionPage() {
 
 function SessionModelControls({ view }: { view: SessionView }) {
   const queryClient = useQueryClient();
+  const [isOpen, setIsOpen] = useState(false);
   const [model, setModel] = useState(view.model ?? "default");
   const [effort, setEffort] = useState(view.reasoningEffort ?? view.effectiveReasoningEffort ?? "default");
   useEffect(() => {
     setModel(view.model ?? "default");
     setEffort(view.reasoningEffort ?? view.effectiveReasoningEffort ?? "default");
-  }, [view]);
+  }, [view.effectiveReasoningEffort, view.model, view.reasoningEffort]);
   const selectedModel = view.modelOptions.find((option) => option.id === model);
+  const effectiveModelOption = view.modelOptions.find((option) => option.id === view.effectiveModel);
   const unavailableModel =
     view.model && !view.modelOptions.some((option) => option.id === view.model) ? view.model : null;
+  const compactLabel = `${effectiveModelOption?.displayName ?? view.effectiveModel ?? "Runtime 默认模型"} · ${
+    view.effectiveReasoningEffort ?? "default"
+  }`;
   const modelOptions = [
     { value: "default", label: "继承 Agent Binding / Runtime 默认值" },
     ...(unavailableModel ? [{ value: unavailableModel, label: `${unavailableModel}（不可用）` }] : []),
@@ -209,37 +215,73 @@ function SessionModelControls({ view }: { view: SessionView }) {
       ),
     onSuccess: (updated) => {
       queryClient.setQueryData(clientKeys.session(view.sessionRef), updated);
+      setIsOpen(false);
     },
   });
   return (
-    <div className="session-model-controls">
-      <p className="session-model-summary">
-        生效：{view.effectiveModel ?? "runtime default"} · {view.effectiveReasoningEffort ?? "default"}（
-        {{ session: "Session", binding: "Agent Binding", runtime: "Runtime" }[view.modelSource]}）
-      </p>
-      <Selector
-        label="Session 模型"
-        options={modelOptions}
-        value={model}
-        onChange={(value) => {
-          const option = view.modelOptions.find((candidate) => candidate.id === value);
-          setModel(value);
-          setEffort(option?.defaultReasoningEffort ?? view.effectiveReasoningEffort ?? "default");
-        }}
-        isDisabled={view.modelOptions.length === 0 && !unavailableModel}
-        disabledMessage="Runtime Adapter 不支持模型选择。"
-      />
-      <Selector
-        label="推理强度"
-        options={selectedModel?.supportedReasoningEfforts ?? [effort]}
-        value={effort}
-        onChange={setEffort}
-        isDisabled={model === "default"}
-      />
-      <Button label="应用" size="sm" isLoading={save.isPending} onClick={() => save.mutate()} />
-      {!view.modelAvailable ? <Badge label="模型不可用" variant="error" /> : null}
-      {save.isError ? <span className="form-error">{save.error.message}</span> : null}
-    </div>
+    <Popover
+      label="Session 模型设置"
+      placement="above"
+      alignment="end"
+      width="min(340px, calc(100vw - 24px))"
+      isOpen={isOpen}
+      onOpenChange={setIsOpen}
+      content={
+        <div className="session-model-popover">
+          <div className="session-model-popover-heading">
+            <div>
+              <strong>模型与推理强度</strong>
+              <p>
+                当前生效：{compactLabel}（
+                {{ session: "Session", binding: "Agent Binding", runtime: "Runtime" }[view.modelSource]}）
+              </p>
+            </div>
+            {!view.modelAvailable ? <Badge label="模型不可用" variant="error" /> : null}
+          </div>
+          <Selector
+            label="Session 模型"
+            options={modelOptions}
+            value={model}
+            onChange={(value) => {
+              const option = view.modelOptions.find((candidate) => candidate.id === value);
+              setModel(value);
+              setEffort(option?.defaultReasoningEffort ?? view.effectiveReasoningEffort ?? "default");
+            }}
+            isDisabled={view.modelOptions.length === 0 && !unavailableModel}
+            disabledMessage="Runtime Adapter 不支持模型选择。"
+            width="100%"
+          />
+          <Selector
+            label="推理强度"
+            options={selectedModel?.supportedReasoningEfforts ?? [effort]}
+            value={effort}
+            onChange={setEffort}
+            isDisabled={model === "default"}
+            width="100%"
+          />
+          {save.isError ? <span className="form-error">{save.error.message}</span> : null}
+          <div className="session-model-popover-actions">
+            <Button
+              label="应用模型设置"
+              variant="primary"
+              size="sm"
+              isLoading={save.isPending}
+              onClick={() => save.mutate()}
+            />
+          </div>
+        </div>
+      }
+    >
+      <Button
+        className="composer-model-trigger"
+        label={`模型设置：${compactLabel}`}
+        variant="ghost"
+        size="md"
+        isLoading={save.isPending}
+      >
+        {compactLabel}
+      </Button>
+    </Popover>
   );
 }
 

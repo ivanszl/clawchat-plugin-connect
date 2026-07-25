@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { basename, isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import type {
   SessionCatalogBindingView,
   SessionCatalogEntryView,
@@ -152,7 +152,9 @@ export class SessionCatalog {
     if (!entry || entry.isArchived) return null;
     const workingDirectory = state.workingDirectoryByRef.get(normalized) ?? null;
     const discoveredProject =
-      !entry.projectId && workingDirectory ? await this.projects.ensureDiscoveredWorkspace(workingDirectory) : null;
+      !entry.projectId && entry.workspaceId && workingDirectory
+        ? await this.projects.ensureDiscoveredWorkspace(workingDirectory)
+        : null;
     const existing = await this.options.stateStore.getRuntimeSessionByRef(normalized);
     if (existing) {
       if (!existing.projectId && discoveredProject) {
@@ -291,7 +293,10 @@ export class SessionCatalog {
           runtimeSessionId: thread.runtimeThreadId,
         });
         if (thread.workingDirectory) workingDirectoryByRef.set(sessionRef.toUpperCase(), thread.workingDirectory);
-        const workspace = workspaceView(project?.rootPath ?? thread.workingDirectory);
+        const workspace =
+          project || thread.workspaceKind !== "transient"
+            ? workspaceView(project?.rootPath ?? thread.workingDirectory)
+            : null;
         entries.push({
           sessionRef,
           entryKind: "runtime-thread",
@@ -341,7 +346,10 @@ function managedEntry(
   runtimeThread?: RuntimeThreadSummary,
 ): SessionCatalogEntryView {
   const workspace = workspaceView(
-    project?.rootPath ?? (session.chatId === CLIENT_CATALOG_CHAT ? runtimeThread?.workingDirectory : null),
+    project?.rootPath ??
+      (session.chatId === CLIENT_CATALOG_CHAT && runtimeThread?.workspaceKind !== "transient"
+        ? runtimeThread?.workingDirectory
+        : null),
   );
   return {
     sessionRef: session.sessionRef,
@@ -369,9 +377,11 @@ function managedEntry(
 function workspaceView(workingDirectory: string | null | undefined): { id: string; name: string } | null {
   if (!workingDirectory) return null;
   const root = resolve(workingDirectory);
+  const name = basename(root) || root;
+  const parentName = basename(dirname(root));
   return {
     id: createHash("sha256").update(root).digest("hex").slice(0, 24),
-    name: basename(root) || root,
+    name: /^\d{4}-\d{2}-\d{2}$/u.test(parentName) ? `${parentName}/${name}` : name,
   };
 }
 

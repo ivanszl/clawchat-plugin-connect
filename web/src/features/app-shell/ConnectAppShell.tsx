@@ -1,12 +1,15 @@
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { SettingsIcon } from "../../components/icons";
+import { catalogQueryOptions } from "../../client-interface/query-options";
+import { RefreshIcon, SettingsIcon } from "../../components/icons";
 import { SessionNavigation } from "../session-catalog/SessionNavigation";
 
 export function ConnectAppShell({ children }: { children: ReactNode }) {
+  const catalog = useQuery(catalogQueryOptions);
   const navigate = useNavigate();
   const isSettings = useRouterState({ select: (state) => state.location.pathname === "/settings" });
   return (
@@ -19,13 +22,25 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
           label="ClawChat Connect"
           heading={<TopNavHeading heading="ClawChat Connect" headingHref="/" />}
           endContent={
-            <Button
-              label={isSettings ? "返回 Session" : "设置"}
-              icon={<SettingsIcon />}
-              variant={isSettings ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => void navigate({ to: isSettings ? "/" : "/settings" })}
-            />
+            <div className="top-nav-actions">
+              <Button
+                label="刷新全部 Session"
+                isIconOnly
+                icon={<RefreshIcon />}
+                variant="ghost"
+                size="sm"
+                isLoading={catalog.isFetching}
+                onClick={() => void catalog.refetch()}
+              />
+              <Button
+                label={isSettings ? "返回 Session" : "设置"}
+                isIconOnly
+                icon={<SettingsIcon />}
+                variant={isSettings ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => void navigate({ to: isSettings ? "/" : "/settings" })}
+              />
+            </div>
           }
         />
       }

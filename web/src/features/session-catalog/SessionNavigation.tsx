@@ -5,7 +5,6 @@ import { Selector } from "@astryxdesign/core/Selector";
 import { SideNav, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
-import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { TreeList, type TreeListItemData } from "@astryxdesign/core/TreeList";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -24,7 +23,7 @@ import {
   createSession,
   projectsQueryOptions,
 } from "../../client-interface/query-options";
-import { FolderIcon, RefreshIcon, ThreadIcon } from "../../components/icons";
+import { AddIcon, FolderIcon, ThreadIcon } from "../../components/icons";
 
 export function SessionNavigation() {
   const catalog = useQuery(catalogQueryOptions);
@@ -55,7 +54,6 @@ export function SessionNavigation() {
         resizable={{ defaultWidth: 304, minWidth: 248, maxWidth: 440, autoSaveId: "connect-client-session-nav" }}
         topContent={
           <div className="session-nav-tools">
-            <Button label="新建 Session" size="sm" variant="primary" onClick={() => setNewSessionOpen(true)} />
             <TextInput
               label="搜索 Session"
               isLabelHidden
@@ -66,13 +64,12 @@ export function SessionNavigation() {
               width="100%"
             />
             <Button
-              label="刷新全部 Session"
+              label="新建 Session"
               isIconOnly
-              icon={<RefreshIcon />}
+              icon={<AddIcon />}
               size="sm"
-              variant="ghost"
-              isLoading={catalog.isFetching}
-              onClick={() => void catalog.refetch()}
+              variant="primary"
+              onClick={() => setNewSessionOpen(true)}
             />
           </div>
         }
@@ -144,7 +141,6 @@ function NewSessionDialog({
   const [bindingId, setBindingId] = useState(bindings[0]?.bindingId ?? "");
   const [projectId, setProjectId] = useState("none");
   const [name, setName] = useState("");
-  const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState("default");
   const [model, setModel] = useState("default");
   const [reasoningEffort, setReasoningEffort] = useState("default");
@@ -156,7 +152,6 @@ function NewSessionDialog({
   const create = useMutation({
     mutationFn: async () =>
       await createSession({
-        prompt,
         bindingId,
         projectId: projectId === "none" ? null : projectId,
         name: name.trim() || null,
@@ -177,21 +172,20 @@ function NewSessionDialog({
     setReasoningEffort("default");
   };
   return (
-    <Dialog isOpen={isOpen} onOpenChange={onOpenChange} purpose="form" width={520}>
+    <Dialog
+      className="new-session-dialog"
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
+      purpose="form"
+      width={520}
+      maxHeight="calc(100dvh - 24px)"
+    >
       <Layout
-        height="auto"
         header={<DialogHeader title="新建 Session" subtitle="一次选择工作区和运行选项。" onOpenChange={onOpenChange} />}
         content={
-          <LayoutContent isScrollable={false}>
+          <LayoutContent className="new-session-dialog-content">
             <div className="new-session-form">
               <TextInput label="名称" value={name} onChange={setName} isOptional width="100%" />
-              <TextArea
-                label="首个任务"
-                value={prompt}
-                onChange={setPrompt}
-                placeholder="描述要交给 coding agent 的任务"
-                width="100%"
-              />
               <Selector
                 label="Agent Binding"
                 options={bindings.map((candidate) => ({
@@ -262,7 +256,7 @@ function NewSessionDialog({
                 label="创建 Session"
                 variant="primary"
                 isLoading={create.isPending}
-                isDisabled={!bindingId || !prompt.trim()}
+                isDisabled={!bindingId}
                 onClick={() => create.mutate()}
               />
             </div>
@@ -334,12 +328,12 @@ function sessionItem(
   selectedRef: string | null,
   open: (sessionRef: string) => void,
 ): TreeListItemData {
+  const status = sessionStatus(entry);
   return {
     id: entry.sessionRef,
     label: entry.name,
-    description: `${entry.sessionRef} · ${entry.isArchived ? "已归档" : statusLabel(entry.status)}`,
     startContent: <ThreadIcon />,
-    endContent: entry.status === "running" ? <StatusDot variant="accent" label="正在运行" isPulsing /> : undefined,
+    endContent: <StatusDot variant={status.variant} label={status.label} isPulsing={status.isPulsing} />,
     isSelected: entry.sessionRef === selectedRef,
     href: `/sessions/${entry.sessionRef}`,
     onClick: (event) => {
@@ -349,6 +343,20 @@ function sessionItem(
   };
 }
 
-function statusLabel(status: SessionCatalogEntryView["status"]): string {
-  return { idle: "空闲", running: "运行中", queued: "排队中", offline: "离线", error: "错误" }[status];
+type SessionStatusView = {
+  variant: "success" | "warning" | "error" | "accent" | "neutral";
+  label: string;
+  isPulsing?: boolean;
+};
+
+function sessionStatus(entry: SessionCatalogEntryView): SessionStatusView {
+  if (entry.isArchived) return { variant: "neutral", label: "已归档" };
+  const statuses: Record<SessionCatalogEntryView["status"], SessionStatusView> = {
+    idle: { variant: "success", label: "空闲" },
+    running: { variant: "accent", label: "运行中", isPulsing: true },
+    queued: { variant: "neutral", label: "排队中" },
+    offline: { variant: "warning", label: "离线" },
+    error: { variant: "error", label: "错误" },
+  };
+  return statuses[entry.status];
 }

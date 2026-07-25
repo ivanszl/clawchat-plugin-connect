@@ -197,6 +197,59 @@ describe("Codex app-server runtime adapter", () => {
     expect(client.listThreads).toHaveBeenNthCalledWith(2, expect.objectContaining({ cursor: "page-2" }));
   });
 
+  it("marks only gitless Codex App scratch directories as transient workspaces", async () => {
+    const client = new FakeAppServer();
+    client.listThreads.mockResolvedValueOnce({
+      data: [
+        thread("thread-scratch", {
+          name: "Scratch task",
+          cwd: "/Users/test/Documents/Codex/2026-07-24/f",
+          source: "vscode",
+          gitInfo: null,
+          updatedAt: 30,
+        }),
+        thread("thread-folder", {
+          name: "Folder task",
+          cwd: "/Users/test/account",
+          source: "vscode",
+          gitInfo: null,
+          updatedAt: 20,
+        }),
+        thread("thread-repository", {
+          name: "Repository task",
+          cwd: "/Users/test/Documents/Codex/2026-07-24/repository",
+          source: "vscode",
+          gitInfo: { sha: "abc" },
+          updatedAt: 10,
+        }),
+      ],
+      nextCursor: null,
+    });
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+
+    await expect(adapter.discoverAllThreads?.(agent)).resolves.toEqual([
+      {
+        runtimeThreadId: "thread-scratch",
+        name: "Scratch task",
+        updatedAt: 30_000,
+        workingDirectory: "/Users/test/Documents/Codex/2026-07-24/f",
+        workspaceKind: "transient",
+      },
+      {
+        runtimeThreadId: "thread-folder",
+        name: "Folder task",
+        updatedAt: 20_000,
+        workingDirectory: "/Users/test/account",
+      },
+      {
+        runtimeThreadId: "thread-repository",
+        name: "Repository task",
+        updatedAt: 10_000,
+        workingDirectory: "/Users/test/Documents/Codex/2026-07-24/repository",
+      },
+    ]);
+  });
+
   it("discovers runtime-neutral model choices through the pinned app-server", async () => {
     const client = new FakeAppServer();
     client.listModels

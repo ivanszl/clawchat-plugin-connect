@@ -54,6 +54,7 @@ export interface RuntimeThreadSummary {
   name: string | null;
   updatedAt: number;
   workingDirectory?: string | null;
+  workspaceKind?: "persistent" | "transient";
 }
 
 export interface SelectableRuntimeThread extends RuntimeThreadSummary {

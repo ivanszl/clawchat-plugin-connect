@@ -1,15 +1,16 @@
 import { ChatComposer } from "@astryxdesign/core/Chat";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { cancelTurn, clientKeys, startTurn } from "../../client-interface/query-options";
 
 export interface SessionComposerProps {
   sessionRef: string;
   canSend: boolean;
   isRuntimeActive: boolean;
+  modelControl?: ReactNode;
 }
 
-export function SessionComposer({ sessionRef, canSend, isRuntimeActive }: SessionComposerProps) {
+export function SessionComposer({ sessionRef, canSend, isRuntimeActive, modelControl }: SessionComposerProps) {
   const queryClient = useQueryClient();
   const storageKey = `connect-client:draft:${sessionRef}`;
   const [value, setValue] = useState(() => sessionStorage.getItem(storageKey) ?? "");
@@ -58,6 +59,7 @@ export function SessionComposer({ sessionRef, canSend, isRuntimeActive }: Sessio
         status={error ? { type: "error", message: error.message } : undefined}
         density="balanced"
         footerActions={<span className="composer-note">仅发送到 Connect · 不同步至 ClawChat</span>}
+        sendActions={modelControl}
       />
       <div className="sr-only" aria-live="polite">
         {send.isPending ? "消息正在提交" : acceptedTurnId ? "Agent 正在处理" : ""}

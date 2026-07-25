@@ -313,7 +313,6 @@ describe("Connect Client Interface", () => {
       headers: { origin: handle.origin, "content-type": "application/json" },
       body: JSON.stringify({
         requestId: "session_create_request",
-        prompt: "First planned task",
         bindingId: "codex",
         projectId: sessionProject.projectId,
         name: "Planned from Client",
@@ -345,7 +344,7 @@ describe("Connect Client Interface", () => {
       reasoningEffort: "xhigh",
       runtimeSessionId: null,
     });
-    expect(enqueueClientTurn).toHaveBeenCalledWith(createdSessionView.sessionRef, "First planned task");
+    expect(enqueueClientTurn).not.toHaveBeenCalled();
     const transcript = await localRequest(
       fetchHandler,
       handle.origin,
@@ -396,7 +395,7 @@ describe("Connect Client Interface", () => {
       },
     );
     expect(replayedTurn.status).toBe(202);
-    expect(enqueueClientTurn).toHaveBeenCalledTimes(2);
+    expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
 
     const conflictingRequestId = await localRequest(
       fetchHandler,
@@ -464,7 +463,7 @@ describe("Connect Client Interface", () => {
     await expect(store.getSessionRefTarget(session.sessionRef)).resolves.toBeNull();
   });
 
-  it("rolls back a Session before enqueue when its response view cannot be built", async () => {
+  it("rolls back a Session when its response view cannot be built", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-create-retry-"));
     const assetsPath = join(directory, "assets");
     await mkdir(assetsPath);
@@ -526,7 +525,6 @@ describe("Connect Client Interface", () => {
     if (!fetchHandler) throw new Error("test Client Interface did not expose a request handler");
     const request = {
       requestId: "session_retry_request",
-      prompt: "Run exactly once",
       bindingId: "codex",
       projectId: null,
       name: "Retry safely",
@@ -551,7 +549,7 @@ describe("Connect Client Interface", () => {
       body: JSON.stringify(request),
     });
     expect(retried.status).toBe(201);
-    expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
+    expect(enqueueClientTurn).not.toHaveBeenCalled();
     await expect(store.listAllRuntimeSessions()).resolves.toHaveLength(1);
   });
 

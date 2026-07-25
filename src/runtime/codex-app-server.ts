@@ -21,6 +21,7 @@ export interface CodexAppServerThread {
   updatedAt: number;
   recencyAt: number | null;
   cwd: string;
+  gitInfo?: unknown;
   turns?: Array<{ id: string; status: CodexAppServerTurn["status"]; items: CodexAppServerThreadItem[] }>;
 }
 
