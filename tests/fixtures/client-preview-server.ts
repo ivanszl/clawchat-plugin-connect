@@ -18,6 +18,15 @@ const stateStore = createStateStore({
     return ref;
   },
 });
+await stateStore.upsertActivation({
+  localAgentId: "codex",
+  accessToken: "preview-token",
+  refreshToken: null,
+  serverAgentId: "preview-agent",
+  userId: "usr_connect_preview",
+  ownerUserId: "usr_preview_owner",
+  conversationId: "preview-conversation",
+});
 await stateStore.insertProject({ projectId: "connect", name: "clawchat-plugin-connect", rootPath: process.cwd() });
 await stateStore.upsertRuntimeSession({
   chatId: "chat-project",
@@ -80,6 +89,13 @@ const transcripts = new Map<string, RuntimeTranscriptEntry[]>([
           status: "completed",
           changes: [{ path: "web/src/main.tsx", kind: "add", diff: "+ createRoot(root).render(<ConnectClient />);" }],
         },
+      },
+      {
+        id: "x1",
+        kind: "unknown",
+        text: "imageGeneration",
+        state: "complete",
+        data: { itemType: "imageGeneration" },
       },
       {
         id: "a1",

@@ -1,16 +1,28 @@
+import { Button } from "@astryxdesign/core/Button";
 import { ChatComposer } from "@astryxdesign/core/Chat";
+import { Icon } from "@astryxdesign/core/Icon";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { MessageCircle } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { cancelTurn, clientKeys, startTurn } from "../../client-interface/query-options";
 
 export interface SessionComposerProps {
   sessionRef: string;
+  contextLabel: string;
+  continueInClawChatHref: string | null;
   canSend: boolean;
   isRuntimeActive: boolean;
   modelControl?: ReactNode;
 }
 
-export function SessionComposer({ sessionRef, canSend, isRuntimeActive, modelControl }: SessionComposerProps) {
+export function SessionComposer({
+  sessionRef,
+  contextLabel,
+  continueInClawChatHref,
+  canSend,
+  isRuntimeActive,
+  modelControl,
+}: SessionComposerProps) {
   const queryClient = useQueryClient();
   const storageKey = `connect-client:draft:${sessionRef}`;
   const [value, setValue] = useState(() => sessionStorage.getItem(storageKey) ?? "");
@@ -45,6 +57,7 @@ export function SessionComposer({ sessionRef, canSend, isRuntimeActive, modelCon
   return (
     <div className="composer-region">
       <ChatComposer
+        className="session-composer"
         value={value}
         onChange={setValue}
         onSubmit={(prompt) => {
@@ -58,7 +71,31 @@ export function SessionComposer({ sessionRef, canSend, isRuntimeActive, modelCon
         placeholder={canSend ? "给 Agent 发送消息…" : "当前 Session 不可发送消息"}
         status={error ? { type: "error", message: error.message } : undefined}
         density="balanced"
-        footerActions={<span className="composer-note">仅发送到 Connect · 不同步至 ClawChat</span>}
+        footerActions={
+          <div className="composer-context-actions">
+            <span className="composer-note" title={contextLabel}>
+              {contextLabel}
+            </span>
+            {continueInClawChatHref ? (
+              <>
+                <span className="continue-clawchat-desktop">
+                  <Button label="继续在 ClawChat 聊天" href={continueInClawChatHref} size="sm" variant="ghost" />
+                </span>
+                <span className="continue-clawchat-mobile">
+                  <Button
+                    label="继续在 ClawChat 聊天"
+                    tooltip="继续在 ClawChat 聊天"
+                    href={continueInClawChatHref}
+                    icon={<Icon icon={MessageCircle} size="sm" />}
+                    isIconOnly
+                    size="sm"
+                    variant="ghost"
+                  />
+                </span>
+              </>
+            ) : null}
+          </div>
+        }
         sendActions={modelControl}
       />
       <div className="sr-only" aria-live="polite">

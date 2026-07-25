@@ -104,6 +104,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 Object.entries(options.config.agents).map(async ([bindingId, binding]) => ({
                   bindingId,
                   displayName: binding.displayName || bindingId,
+                  clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
                   model: binding.model ?? null,
                   modelReasoningEffort: binding.modelReasoningEffort ?? null,
                   modelOptions: (await options.runtimeAdapters.listModels(binding)) ?? [],
@@ -523,6 +524,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   body: {
                     bindingId,
                     displayName: binding.displayName || bindingId,
+                    clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
                     model: binding.model ?? null,
                     modelReasoningEffort: binding.modelReasoningEffort ?? null,
                     outputVisibility: options.config.outputVisibility,

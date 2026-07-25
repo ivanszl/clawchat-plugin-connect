@@ -19,6 +19,9 @@ try {
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   try {
     await verifySmallWindowNavigation(browser, origin);
+    await verifyTranscriptAlwaysFollowsLatest(browser, origin);
+    await verifyTranscriptPresentation(browser, origin);
+    await verifyContinueInClawChat(browser, origin);
     const page = await browser.newPage();
     const createRequests: unknown[] = [];
     page.on("request", (request) => {
@@ -50,6 +53,11 @@ try {
     await dialog.getByRole("button", { name: "创建 Session" }).click();
 
     await expect(page.getByRole("heading", { name: "Browser-created Session" })).toBeVisible();
+    const createdSessionRef = new URL(page.url()).pathname.split("/").at(-1);
+    assert(createdSessionRef, "created Session URL must include its Session Ref");
+    await expect(page.locator(".session-header").getByText(/clawchat-plugin-connect/iu)).toHaveCount(0);
+    await expect(page.locator(".composer-note")).toHaveText(`clawchat-plugin-connect / ${createdSessionRef}`);
+    await expect(page.getByRole("link", { name: "继续在 ClawChat 聊天" })).toHaveCount(0);
     await expect(page.locator(".session-header").getByRole("combobox", { name: "Session 模型" })).toHaveCount(0);
     const modelTrigger = page.getByRole("button", { name: /模型设置：Deep model · xhigh/u });
     await expect(modelTrigger).toBeVisible();
@@ -93,6 +101,193 @@ try {
 } finally {
   server.kill("SIGTERM");
   await server.exited;
+}
+
+async function verifyContinueInClawChat(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
+  const page = await browser.newPage({
+    viewport: { width: 320, height: 704 },
+    userAgent: "Mozilla/5.0 ConnectClientTest clawchat",
+  });
+  try {
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    const mobileStressLabel =
+      "$grill-with-docs 根据https://github.com/clawling/clawnest-liveware，connect web可以使用liveware".repeat(3);
+    await page.locator(".session-heading h1").evaluate((element, label) => {
+      element.textContent = label;
+      element.setAttribute("title", label);
+    }, mobileStressLabel);
+    await page.locator(".composer-note").evaluate((element, label) => {
+      element.textContent = label;
+      element.setAttribute("title", label);
+    }, mobileStressLabel);
+
+    const sessionRef = new URL(page.url()).pathname.split("/").at(-1);
+    assert(sessionRef, "fixture Session URL must include its Session Ref");
+    const action = page.getByRole("link", { name: "继续在 ClawChat 聊天" });
+    await expect(action).toBeVisible();
+    await expect(action).toHaveAttribute(
+      "href",
+      `clawchat://u/usr_connect_preview?chat=1&draft=${encodeURIComponent(`/switch ${sessionRef}`)}`,
+    );
+
+    const [contextBox, actionBox] = await Promise.all([
+      page.locator(".composer-note").boundingBox(),
+      action.boundingBox(),
+    ]);
+    assert(contextBox && actionBox, "ClawChat continuation action and Session context must be visible");
+    assert(
+      contextBox.x < actionBox.x && Math.abs(contextBox.y - actionBox.y) <= actionBox.height,
+      `continuation action must follow Session context in the composer footer: ${JSON.stringify({
+        contextBox,
+        actionBox,
+      })}`,
+    );
+    assert(actionBox.width <= 44, `mobile continuation action must collapse to an icon: ${JSON.stringify(actionBox)}`);
+    const width = await page.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+      layoutClient: document.querySelector<HTMLElement>(".astryx-layout-content")?.clientWidth,
+      layoutScroll: document.querySelector<HTMLElement>(".astryx-layout-content")?.scrollWidth,
+      composerClient: document.querySelector<HTMLElement>(".composer-region")?.clientWidth,
+      composerScroll: document.querySelector<HTMLElement>(".composer-region")?.scrollWidth,
+      layoutScrollLeft: (() => {
+        const layout = document.querySelector<HTMLElement>(".astryx-layout-content");
+        if (!layout) return null;
+        layout.scrollLeft = 100;
+        return layout.scrollLeft;
+      })(),
+    }));
+    assert.equal(
+      width.scroll,
+      width.client,
+      `continuation action must not widen a small window: ${JSON.stringify(width)}`,
+    );
+    assert.equal(
+      width.layoutScroll,
+      width.layoutClient,
+      `Connect content must not become horizontally scrollable: ${JSON.stringify(width)}`,
+    );
+    assert.equal(
+      width.composerScroll,
+      width.composerClient,
+      `Session composer must fit its mobile grid track: ${JSON.stringify(width)}`,
+    );
+    assert.equal(
+      width.layoutScrollLeft,
+      0,
+      `Connect content must reject horizontal dragging: ${JSON.stringify(width)}`,
+    );
+  } finally {
+    await page.close();
+  }
+}
+
+async function verifyTranscriptAlwaysFollowsLatest(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const page = await browser.newPage({ viewport: { width: 900, height: 420 } });
+  try {
+    await page.goto(previewOrigin);
+    const navigation = page.locator(".session-nav");
+    await navigation.getByText("clawchat-plugin-connect", { exact: true }).click();
+    await navigation.getByText("App Server 与 Web Client", { exact: true }).click();
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    const sessionRef = new URL(page.url()).pathname.split("/").at(-1);
+    assert(sessionRef, "fixture Session URL must include its Session Ref");
+    const transcript = page.locator(".transcript-scroll");
+
+    let blockCount = await transcriptBlockCount(page, sessionRef);
+    for (let index = 0; index < 8; index += 1) {
+      await postPreviewTurn(page, sessionRef, `滚动测试 ${index}`);
+      blockCount += 2;
+      await expect.poll(async () => await transcriptBlockCount(page, sessionRef)).toBe(blockCount);
+    }
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    await expect
+      .poll(async () => await bottomDistance(transcript), {
+        message: "Session entry and refresh must anchor at the end",
+      })
+      .toBeLessThanOrEqual(2);
+    await page.waitForTimeout(120);
+
+    await transcript.evaluate((element) => {
+      element.scrollTop = 0;
+      element.dispatchEvent(new Event("scroll"));
+    });
+    await expect.poll(async () => await transcript.evaluate((element) => element.scrollTop)).toBe(0);
+    const previousScrollHeight = await transcript.evaluate((element) => element.scrollHeight);
+    await postPreviewTurn(page, sessionRef, "强制跟随最新输出");
+    blockCount += 2;
+    await expect.poll(async () => await transcriptBlockCount(page, sessionRef)).toBe(blockCount);
+    await expect
+      .poll(async () => await transcript.evaluate((element) => element.scrollHeight))
+      .toBeGreaterThan(previousScrollHeight);
+    await expect
+      .poll(async () => await bottomDistance(transcript), {
+        message: "Agent output must force the transcript to the end",
+      })
+      .toBeLessThanOrEqual(2);
+  } finally {
+    await page.close();
+  }
+}
+
+async function verifyTranscriptPresentation(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(previewOrigin);
+    const navigation = page.locator(".session-nav");
+    await navigation.getByText("clawchat-plugin-connect", { exact: true }).click();
+    await navigation.getByText("App Server 与 Web Client", { exact: true }).click();
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+
+    const transcript = page.locator(".transcript-scroll");
+    await expect(transcript.getByText("Agent", { exact: true })).toHaveCount(0);
+    const group = transcript
+      .locator("[data-transcript-group]")
+      .filter({ hasText: "App Server 已成为 Codex 的唯一生产协议" });
+    await expect(group).toHaveCount(1);
+    await expect(group.getByRole("separator")).toHaveCount(1);
+    await expect(group.locator('[data-block-type="file-change"]')).toHaveCount(1);
+    const unknown = group.locator('[data-block-type="unknown"]');
+    await expect(unknown.getByRole("button")).toHaveAttribute("aria-expanded", "false");
+  } finally {
+    await page.close();
+  }
+}
+
+async function postPreviewTurn(page: Page, sessionRef: string, prompt: string) {
+  const response = await page.evaluate(
+    async ({ ref, text }) => {
+      const request = await fetch(`/client/v1/sessions/${ref}/turns`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ requestId: crypto.randomUUID(), prompt: text }),
+      });
+      return { ok: request.ok, status: request.status };
+    },
+    { ref: sessionRef, text: prompt },
+  );
+  assert(response.ok, `preview turn failed: ${response.status}`);
+}
+
+async function bottomDistance(transcript: Locator): Promise<number> {
+  return await transcript.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+}
+
+async function transcriptBlockCount(page: Page, sessionRef: string): Promise<number> {
+  return await page.evaluate(async (ref) => {
+    const response = await fetch(`/client/v1/sessions/${ref}/transcript?limit=100`);
+    const body = (await response.json()) as { blocks?: unknown[] };
+    return body.blocks?.length ?? 0;
+  }, sessionRef);
 }
 
 async function verifySmallWindowNavigation(browser: Awaited<ReturnType<typeof chromium.launch>>, origin: string) {

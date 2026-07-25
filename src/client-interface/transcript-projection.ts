@@ -116,6 +116,15 @@ export class TranscriptProjection {
         };
       }
       if (itemType === "plan") return { ...base, type: "plan" as const, markdown: text };
+      if (isToolItemType(itemType)) {
+        return {
+          ...base,
+          type: "tool-call" as const,
+          title: toolTitle(event, text),
+          status: stringEventData(event, "status") || base.state,
+          detail: text,
+        };
+      }
       if (event.kind === "assistant" || event.kind === "final") {
         if (base.state === "error") {
           return {
@@ -295,6 +304,13 @@ function toolTitle(event: RuntimeOutputEvent, text: string): string {
     return target ? `MCP · ${target}` : "MCP tool";
   }
   if (itemType === "webSearch") return `Web search · ${stringEventData(event, "query") || firstLine(text)}`;
-  if (itemType === "dynamicToolCall") return stringEventData(event, "tool") || "Tool call";
+  if (itemType === "dynamicToolCall") {
+    const target = [stringEventData(event, "namespace"), stringEventData(event, "tool")].filter(Boolean).join("/");
+    return target || "Tool call";
+  }
   return firstLine(text);
+}
+
+function isToolItemType(itemType: string): boolean {
+  return itemType === "mcpToolCall" || itemType === "dynamicToolCall" || itemType === "webSearch";
 }

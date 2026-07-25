@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 const stylesheetUrl = new URL("../web/src/styles/index.css", import.meta.url);
 const sessionRouteUrl = new URL("../web/src/routes/sessions.$sessionRef.tsx", import.meta.url);
+const sessionComposerUrl = new URL("../web/src/features/composer/SessionComposer.tsx", import.meta.url);
 const iconsUrl = new URL("../web/src/components/icons.tsx", import.meta.url);
 const appShellUrl = new URL("../web/src/features/app-shell/ConnectAppShell.tsx", import.meta.url);
 
@@ -24,14 +25,26 @@ describe("Connect Client session layout", () => {
     expect(source).toContain('placement="above"');
   });
 
-  it("places Session workspace metadata below the primary title", async () => {
-    const source = await Bun.file(sessionRouteUrl).text();
-    const heading = source.slice(
-      source.indexOf('<div className="session-heading">'),
-      source.indexOf('<div className="session-meta">'),
-    );
+  it("moves Session workspace metadata from the header into the composer footer", async () => {
+    const [source, composer, stylesheet] = await Promise.all([
+      Bun.file(sessionRouteUrl).text(),
+      Bun.file(sessionComposerUrl).text(),
+      Bun.file(stylesheetUrl).text(),
+    ]);
+    const header = source.slice(source.indexOf('<header className="session-header">'), source.indexOf("</header>"));
 
-    expect(heading.indexOf("<h1")).toBeLessThan(heading.indexOf('<p className="session-eyebrow">'));
+    expect(header).not.toContain("view.workspaceName");
+    expect(source).toContain("contextLabel={`${view.workspaceName");
+    expect(composer).toContain("contextLabel: string;");
+    expect(composer).toContain("continueInClawChatHref: string | null;");
+    expect(composer).toContain('className="composer-note" title={contextLabel}');
+    expect(composer).toContain('label="继续在 ClawChat 聊天"');
+    expect(composer).toContain("href={continueInClawChatHref}");
+    expect(composer).not.toContain("仅发送到 Connect");
+    expect(cssRule(stylesheet, ".composer-context-actions")).toContain("display: flex");
+    expect(cssRule(stylesheet, ".composer-note")).toContain("text-overflow: ellipsis");
+    expect(cssRule(stylesheet, ".composer-note")).toContain("text-transform: uppercase");
+    expect(stylesheet).not.toContain(".composer-note {\n    display: none;");
   });
 
   it("uses the Astryx-recommended Lucide icon instead of a hand-drawn settings glyph", async () => {

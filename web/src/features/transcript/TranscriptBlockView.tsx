@@ -15,23 +15,16 @@ import { Text } from "@astryxdesign/core/Text";
 import type { ReactNode } from "react";
 import type { EmbeddedTranscriptBlock, TranscriptBlock } from "../../../../src/client-contract";
 
-export function TranscriptBlockView({
-  block,
-  isNested = false,
-}: {
-  block: TranscriptBlock | EmbeddedTranscriptBlock;
-  isNested?: boolean;
-}) {
+export function TranscriptBlockView({ block }: { block: TranscriptBlock | EmbeddedTranscriptBlock }) {
   if (block.type === "message") {
     const sender = block.role === "user" ? "user" : "assistant";
     return (
       <ChatMessage sender={sender} density="balanced">
         <ChatMessageBubble
           variant={sender === "assistant" ? "ghost" : "filled"}
-          name={block.author}
+          name={sender === "user" ? block.author : undefined}
           metadata={
             <ChatMessageMetadata
-              timestamp={!isNested && "updatedAt" in block ? formatTime(block.updatedAt) : undefined}
               footer={originLabel(block.origin)}
               status={block.state === "error" ? "error" : block.state === "pending" ? "sending" : undefined}
             />
@@ -55,7 +48,7 @@ export function TranscriptBlockView({
             {block.blocks.length > 0 ? (
               block.blocks.map((child) => (
                 <article className="subagent-transcript-item" data-block-type={child.type} key={child.id}>
-                  <TranscriptBlockView block={child} isNested />
+                  <TranscriptBlockView block={child} />
                 </article>
               ))
             ) : (
@@ -82,6 +75,7 @@ export function TranscriptBlockView({
     return (
       <div className="runtime-block">
         <ChatToolCalls
+          defaultIsExpanded={false}
           calls={[
             {
               key: block.id,
@@ -100,6 +94,7 @@ export function TranscriptBlockView({
     return (
       <div className="runtime-block">
         <ChatToolCalls
+          defaultIsExpanded={false}
           calls={[
             {
               key: block.id,
@@ -131,6 +126,7 @@ export function TranscriptBlockView({
     return (
       <div className="runtime-block">
         <ChatToolCalls
+          defaultIsExpanded={false}
           label={`${block.files.length} 个文件变更`}
           calls={block.files.map((file, index) => ({
             key: `${block.id}:${index}`,
@@ -169,7 +165,23 @@ export function TranscriptBlockView({
     );
   }
   if (block.type === "progress") return <ChatSystemMessage>{block.label}</ChatSystemMessage>;
-  return null;
+  return (
+    <div className="runtime-block unknown-block">
+      <ChatToolCalls
+        defaultIsExpanded={false}
+        calls={[
+          {
+            key: block.id,
+            name: block.label || "Runtime activity",
+            status: toolStatus(block.state, block.state),
+            resultDetail: block.detail ? (
+              <CodeBlock code={block.detail} isWrapped hasCopyButton width="100%" size="sm" />
+            ) : undefined,
+          },
+        ]}
+      />
+    </div>
+  );
 }
 
 function SafeMarkdown({ markdown, isStreaming }: { markdown: string; isStreaming: boolean }) {
@@ -207,12 +219,6 @@ function isSafeExternalLink(href: string): boolean {
   } catch {
     return false;
   }
-}
-
-function formatTime(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
 function originLabel(origin: TranscriptBlock["origin"]): ReactNode {

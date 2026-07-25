@@ -1,8 +1,9 @@
 import { ChatLayoutScrollButton } from "@astryxdesign/core/Chat";
+import { Divider } from "@astryxdesign/core/Divider";
 import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptBlock, TranscriptPageView } from "../../../../src/client-contract";
 import { ThreadIcon } from "../../components/icons";
 import { TranscriptBlockView } from "./TranscriptBlockView";
@@ -19,14 +20,19 @@ export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder 
   const loadingOlderRef = useRef(false);
   const [showJump, setShowJump] = useState(false);
   const blocks = useMemo(() => mergePages(pages), [pages]);
+  const groups = useMemo(() => groupTranscriptBlocks(blocks), [blocks]);
+  const latestBlock = blocks.at(-1);
+  const latestBlockRevision = latestBlock
+    ? `${latestBlock.id}:${latestBlock.revision}:${latestBlock.state}:${latestBlock.plainText.length}`
+    : null;
   const virtualizer = useVirtualizer({
-    count: blocks.length,
+    count: groups.length,
     getScrollElement: () => scrollRef.current,
-    getItemKey: (index) => blocks[index]?.id ?? index,
-    estimateSize: (index) => estimateBlockSize(blocks[index]),
+    getItemKey: (index) => groups[index]?.id ?? index,
+    estimateSize: (index) => estimateGroupSize(groups[index]),
     overscan: 7,
     anchorTo: "end",
-    followOnAppend: true,
+    followOnAppend: false,
     scrollEndThreshold: 96,
   });
   const virtualItems = virtualizer.getVirtualItems();
@@ -35,9 +41,25 @@ export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder 
   const paddingBefore = Math.max(0, first?.start ?? 0);
   const paddingAfter = Math.max(0, virtualizer.getTotalSize() - (last?.end ?? 0));
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (!latestBlockRevision) return;
     virtualizer.measure();
-  }, [virtualizer]);
+    let frame = 0;
+    let frameCount = 0;
+    let stableFrames = 0;
+    const followLatest = () => {
+      virtualizer.scrollToEnd({ behavior: "auto" });
+      const element = scrollRef.current;
+      const distance = element
+        ? element.scrollHeight - element.clientHeight - element.scrollTop
+        : Number.POSITIVE_INFINITY;
+      stableFrames = distance <= 1 ? stableFrames + 1 : 0;
+      frameCount += 1;
+      if (stableFrames < 4 && frameCount < 60) frame = window.requestAnimationFrame(followLatest);
+    };
+    frame = window.requestAnimationFrame(followLatest);
+    return () => window.cancelAnimationFrame(frame);
+  }, [latestBlockRevision, virtualizer]);
 
   const onScroll = () => {
     const element = scrollRef.current;
@@ -74,17 +96,24 @@ export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder 
           ) : null}
           <VirtualSpacer height={paddingBefore} />
           {virtualItems.map((item) => {
-            const block = blocks[item.index];
-            if (!block) return null;
+            const group = groups[item.index];
+            if (!group) return null;
             return (
               <article
                 className="transcript-item"
                 data-index={item.index}
-                data-block-type={block.type}
-                key={block.id}
+                data-transcript-group
+                key={group.id}
                 ref={virtualizer.measureElement}
               >
-                <TranscriptBlockView block={block} />
+                <Divider className="transcript-group-divider" label={formatTranscriptDate(group.createdAt)} />
+                <div className="transcript-group-blocks">
+                  {group.blocks.map((block) => (
+                    <div className="transcript-group-block" data-block-type={block.type} key={block.id}>
+                      <TranscriptBlockView block={block} />
+                    </div>
+                  ))}
+                </div>
               </article>
             );
           })}
@@ -115,6 +144,44 @@ export function mergePages(pages: TranscriptPageView[]): TranscriptBlock[] {
     }
   }
   return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
+}
+
+export interface TranscriptGroup {
+  id: string;
+  createdAt: string;
+  blocks: TranscriptBlock[];
+}
+
+export function groupTranscriptBlocks(blocks: TranscriptBlock[]): TranscriptGroup[] {
+  const groups: TranscriptGroup[] = [];
+  for (const block of blocks) {
+    const beginsTurn = block.type === "message" && block.role === "user";
+    let group = groups.at(-1);
+    if (!group || beginsTurn) {
+      group = { id: block.id, createdAt: block.createdAt, blocks: [] };
+      groups.push(group);
+    }
+    group.blocks.push(block);
+    group.id = group.blocks.at(-1)?.id ?? group.id;
+  }
+  return groups;
+}
+
+function formatTranscriptDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function estimateGroupSize(group: TranscriptGroup | undefined): number {
+  if (!group) return 96;
+  return 44 + group.blocks.reduce((height, block) => height + estimateBlockSize(block), 0);
 }
 
 function estimateBlockSize(block: TranscriptBlock | undefined): number {

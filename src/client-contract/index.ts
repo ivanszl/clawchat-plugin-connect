@@ -222,6 +222,7 @@ export interface ProjectView {
 export interface BindingPreferenceView {
   bindingId: string;
   displayName: string;
+  clawChatUserId: string | null;
   model: string | null;
   modelReasoningEffort: string | null;
   modelOptions: RuntimeModelOptionView[];

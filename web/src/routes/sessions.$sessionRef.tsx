@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import type { SessionView } from "../../../src/client-contract";
 import {
   archiveSession,
+  bootstrapQueryOptions,
   catalogQueryOptions,
   clientKeys,
   deleteSession,
@@ -23,6 +24,7 @@ import {
 import { MoreIcon } from "../components/icons";
 import { SessionComposer } from "../features/composer/SessionComposer";
 import { TranscriptViewport } from "../features/transcript/TranscriptViewport";
+import { continueInClawChatHref, isClawChatLivewareContext } from "../liveware/clawchat-deep-link";
 
 export const Route = createFileRoute("/sessions/$sessionRef")({ component: SessionPage });
 
@@ -30,6 +32,7 @@ function SessionPage() {
   const { sessionRef } = Route.useParams();
   const session = useQuery(sessionQueryOptions(sessionRef));
   const transcript = useInfiniteQuery(transcriptQueryOptions(sessionRef));
+  const bootstrap = useQuery(bootstrapQueryOptions);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -70,14 +73,15 @@ function SessionPage() {
     );
   }
   const view = session.data;
+  const binding = bootstrap.data?.bindings.find((candidate) => candidate.bindingId === view.bindingId);
+  const clawChatHref = isClawChatLivewareContext(window.location.hostname, window.navigator.userAgent)
+    ? continueInClawChatHref(binding?.clawChatUserId ?? null, view.sessionRef)
+    : null;
   return (
     <section className="session-page">
       <header className="session-header">
         <div className="session-heading">
           <h1 title={view.name}>{view.name}</h1>
-          <p className="session-eyebrow">
-            {view.workspaceName || view.projectName || "Non-Project"} / {view.sessionRef}
-          </p>
         </div>
         <div className="session-meta">
           <Badge label={view.bindingKind} variant="neutral" />
@@ -164,6 +168,8 @@ function SessionPage() {
       />
       <SessionComposer
         sessionRef={sessionRef}
+        contextLabel={`${view.workspaceName || view.projectName || "Non-Project"} / ${view.sessionRef}`}
+        continueInClawChatHref={clawChatHref}
         canSend={view.allowedActions.includes("send") && view.status !== "offline"}
         isRuntimeActive={view.status === "running" || view.status === "queued"}
         modelControl={<SessionModelControls view={view} />}

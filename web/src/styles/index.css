@@ -151,7 +151,6 @@ textarea {
   white-space: nowrap;
 }
 
-.session-eyebrow,
 .settings-eyebrow {
   margin: 0;
   color: var(--color-text-secondary);
@@ -159,10 +158,6 @@ textarea {
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-}
-
-.session-heading .session-eyebrow {
-  margin-top: 4px;
 }
 
 .session-meta {
@@ -246,6 +241,19 @@ textarea {
   padding-bottom: var(--spacing-5);
 }
 
+.transcript-group-divider {
+  margin-bottom: var(--spacing-2);
+}
+
+.transcript-group-blocks {
+  display: grid;
+  gap: var(--spacing-1);
+}
+
+.transcript-group-block {
+  min-width: 0;
+}
+
 .runtime-block {
   max-width: 780px;
   margin-inline: auto;
@@ -322,15 +330,51 @@ textarea {
   z-index: 3;
   grid-row: 4;
   width: min(100%, 920px);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   margin: 0 auto;
   padding: var(--spacing-2) clamp(14px, 4vw, 42px) var(--spacing-4);
   background: linear-gradient(0deg, var(--color-background-surface) 76%, transparent);
 }
 
+.composer-context-actions {
+  display: flex;
+  flex: 1 1 auto;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-1);
+  overflow: hidden;
+}
+
+.session-composer div:has(> .composer-context-actions) {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
 .composer-note {
+  display: block;
+  flex: 1 1 auto;
+  max-width: min(42vw, 420px);
+  min-width: 0;
+  overflow: hidden;
   color: var(--color-text-secondary);
   font-size: 11px;
   letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.continue-clawchat-desktop,
+.continue-clawchat-mobile {
+  flex: 0 0 auto;
+}
+
+.continue-clawchat-mobile {
+  display: none;
 }
 
 .composer-model-trigger {
@@ -474,7 +518,16 @@ textarea {
   }
 
   .composer-note {
+    max-width: none;
+    font-size: 10px;
+  }
+
+  .continue-clawchat-desktop {
     display: none;
+  }
+
+  .continue-clawchat-mobile {
+    display: inline-flex;
   }
 
   .composer-model-trigger {

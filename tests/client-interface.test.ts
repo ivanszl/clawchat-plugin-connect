@@ -30,6 +30,15 @@ describe("Connect Client Interface", () => {
       sessionRefFactory: () => sessionRefs.shift() ?? "CDEFGHJK",
     });
     openStores.push(store);
+    await store.upsertActivation({
+      localAgentId: "codex",
+      accessToken: "token-codex",
+      refreshToken: null,
+      serverAgentId: "agent-codex",
+      userId: "usr_agent_codex",
+      ownerUserId: "usr_owner",
+      conversationId: "chat-owner-agent",
+    });
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-1",
@@ -143,7 +152,7 @@ describe("Connect Client Interface", () => {
     expect(bootstrap.status).toBe(200);
     await expect(bootstrap.json()).resolves.toMatchObject({
       apiVersion: 1,
-      bindings: [{ bindingId: "codex", displayName: "Codex" }],
+      bindings: [{ bindingId: "codex", displayName: "Codex", clawChatUserId: "usr_agent_codex" }],
       capabilities: { localTurns: true, runtimeInteractions: false },
     });
     const invalidBindingModel = await localRequest(
