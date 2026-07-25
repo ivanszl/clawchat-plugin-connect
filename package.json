@@ -58,6 +58,7 @@
     "@tanstack/react-router": "1.168.23",
     "@tanstack/react-virtual": "3.14.6",
     "cac": "^6.7.14",
+    "lucide-react": "1.25.0",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },

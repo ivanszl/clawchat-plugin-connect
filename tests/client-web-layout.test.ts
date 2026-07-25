@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 const stylesheetUrl = new URL("../web/src/styles/index.css", import.meta.url);
 const sessionRouteUrl = new URL("../web/src/routes/sessions.$sessionRef.tsx", import.meta.url);
 const iconsUrl = new URL("../web/src/components/icons.tsx", import.meta.url);
+const appShellUrl = new URL("../web/src/features/app-shell/ConnectAppShell.tsx", import.meta.url);
 
 describe("Connect Client session layout", () => {
   it("keeps the transcript and composer in stable rows when the history warning is absent", async () => {
@@ -23,15 +24,23 @@ describe("Connect Client session layout", () => {
     expect(source).toContain('placement="above"');
   });
 
-  it("uses a gear glyph for the settings action rather than a theme sun", async () => {
-    const source = await Bun.file(iconsUrl).text();
-    const settingsIcon = source.slice(
-      source.indexOf("export function SettingsIcon"),
-      source.indexOf("\nexport function RefreshIcon"),
+  it("places Session workspace metadata below the primary title", async () => {
+    const source = await Bun.file(sessionRouteUrl).text();
+    const heading = source.slice(
+      source.indexOf('<div className="session-heading">'),
+      source.indexOf('<div className="session-meta">'),
     );
 
-    expect(settingsIcon).toContain('d="M10 2h4');
-    expect(settingsIcon).not.toContain("M12 2v3");
+    expect(heading.indexOf("<h1")).toBeLessThan(heading.indexOf('<p className="session-eyebrow">'));
+  });
+
+  it("uses the Astryx-recommended Lucide icon instead of a hand-drawn settings glyph", async () => {
+    const [icons, appShell] = await Promise.all([Bun.file(iconsUrl).text(), Bun.file(appShellUrl).text()]);
+
+    expect(icons).not.toContain("export function SettingsIcon");
+    expect(appShell).toContain('import { Icon } from "@astryxdesign/core/Icon"');
+    expect(appShell).toContain('import { Settings } from "lucide-react"');
+    expect(appShell).toContain("icon={<Icon icon={Settings}");
   });
 });
 

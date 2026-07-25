@@ -107,6 +107,14 @@ async function verifySmallWindowNavigation(browser: Awaited<ReturnType<typeof ch
     assert(refreshBox && settingsBox, "refresh and settings actions must be visible in the top navigation");
     assert(refreshBox.width <= 44, "refresh must be an icon-only top navigation action");
     assert(settingsBox.width <= 44, "settings must be an icon-only top navigation action");
+    const settingsGeometry = await settings.locator("svg path").evaluate((path) => {
+      const box = (path as SVGGraphicsElement).getBBox();
+      return { centerX: box.x + box.width / 2, centerY: box.y + box.height / 2 };
+    });
+    assert(
+      Math.abs(settingsGeometry.centerX - 12) <= 0.1 && Math.abs(settingsGeometry.centerY - 12) <= 0.1,
+      `settings gear must be centered in its 24px viewBox: ${JSON.stringify(settingsGeometry)}`,
+    );
     assert(
       Math.abs(refreshBox.y - settingsBox.y) <= 1 && refreshBox.x < settingsBox.x,
       `refresh must sit before settings in the top navigation: ${JSON.stringify({ refreshBox, settingsBox })}`,

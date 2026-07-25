@@ -74,10 +74,10 @@ function SessionPage() {
     <section className="session-page">
       <header className="session-header">
         <div className="session-heading">
+          <h1 title={view.name}>{view.name}</h1>
           <p className="session-eyebrow">
             {view.workspaceName || view.projectName || "Non-Project"} / {view.sessionRef}
           </p>
-          <h1 title={view.name}>{view.name}</h1>
         </div>
         <div className="session-meta">
           <Badge label={view.bindingKind} variant="neutral" />

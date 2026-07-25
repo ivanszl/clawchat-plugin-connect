@@ -1,11 +1,13 @@
 import { AppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
+import { Icon } from "@astryxdesign/core/Icon";
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { catalogQueryOptions } from "../../client-interface/query-options";
-import { RefreshIcon, SettingsIcon } from "../../components/icons";
+import { RefreshIcon } from "../../components/icons";
 import { SessionNavigation } from "../session-catalog/SessionNavigation";
 
 export function ConnectAppShell({ children }: { children: ReactNode }) {
@@ -35,7 +37,7 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
               <Button
                 label={isSettings ? "返回 Session" : "设置"}
                 isIconOnly
-                icon={<SettingsIcon />}
+                icon={<Icon icon={Settings} size="sm" />}
                 variant={isSettings ? "secondary" : "ghost"}
                 size="sm"
                 onClick={() => void navigate({ to: isSettings ? "/" : "/settings" })}

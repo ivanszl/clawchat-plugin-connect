@@ -27,15 +27,6 @@ export function ThreadIcon(props: IconProps) {
   );
 }
 
-export function SettingsIcon(props: IconProps) {
-  return (
-    <IconFrame {...props}>
-      <path d="M10 2h4l.5 2.1a8 8 0 0 1 1.6.9l2-.6 2 3.4-1.5 1.5a8 8 0 0 1 0 1.8l1.5 1.5-2 3.4-2-.6a8 8 0 0 1-1.6.9L14 20h-4l-.5-2.1a8 8 0 0 1-1.6-.9l-2 .6-2-3.4 1.5-1.5a8 8 0 0 1 0-1.8L3.9 9.4l2-3.4 2 .6a8 8 0 0 1 1.6-.9z" />
-      <circle cx="12" cy="12" r="3" />
-    </IconFrame>
-  );
-}
-
 export function RefreshIcon(props: IconProps) {
   return (
     <IconFrame {...props}>
