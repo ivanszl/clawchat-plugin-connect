@@ -435,6 +435,41 @@ textarea {
   overflow: hidden;
 }
 
+.composer-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.composer-attachments {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: var(--spacing-2);
+}
+
+.composer-attachment {
+  display: flex;
+  max-width: min(100%, 300px);
+  min-width: 0;
+  align-items: center;
+  gap: var(--spacing-1);
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-lg);
+  background: var(--color-background-surface);
+}
+
+.composer-attachment > span {
+  overflow: hidden;
+  font-size: var(--font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .composer-note {
   display: block;
   flex: 1 1 auto;

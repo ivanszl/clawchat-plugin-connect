@@ -7,6 +7,7 @@ import { type Envelope, EVENT, type NormalizedInboundMessage, type Transport } f
 import { ConnectRuntime } from "./runtime/connect-runtime";
 import type { RuntimeAdapterRegistry } from "./runtime/registry";
 import type { RuntimeInteractionCoordinator } from "./runtime/runtime-interaction-coordinator";
+import type { ConnectRuntimeMedia } from "./runtime/types";
 import type { ConnectStateStore } from "./state";
 import type { ActivationCredentials, ConnectConfig } from "./types";
 import { ConnectWsClient } from "./ws-client";
@@ -57,7 +58,12 @@ export interface BindingRuntimeHandle {
   websocketUrl: string;
   deviceId: string;
   close(): Promise<void>;
-  enqueueClientTurn?(sessionRef: string, prompt: string): Promise<{ turnId: string; sessionRef: string }>;
+  enqueueClientTurn?(
+    sessionRef: string,
+    prompt: string,
+    media?: ConnectRuntimeMedia[],
+  ): Promise<{ turnId: string; sessionRef: string }>;
+  uploadClientMedia?(file: Blob, filename: string): Promise<ConnectRuntimeMedia>;
   cancelClientTurn?(sessionRef: string): Promise<boolean>;
 }
 
@@ -130,7 +136,8 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     agentId: options.agentId,
     websocketUrl: options.config.websocketUrl,
     deviceId: options.deviceId,
-    enqueueClientTurn: async (sessionRef, prompt) => await runtime.enqueueClientTurn(sessionRef, prompt),
+    enqueueClientTurn: async (sessionRef, prompt, media) => await runtime.enqueueClientTurn(sessionRef, prompt, media),
+    uploadClientMedia: async (file, filename) => await runtime.uploadClientMedia(file, filename),
     cancelClientTurn: async (sessionRef) => await runtime.cancelClientTurn(sessionRef),
     async close() {
       await inboundMessages.close();

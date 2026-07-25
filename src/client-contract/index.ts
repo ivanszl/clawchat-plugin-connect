@@ -312,6 +312,18 @@ export interface ClientErrorView {
 export interface StartTurnRequest {
   requestId: string;
   prompt: string;
+  media?: ClientMediaAttachment[];
+}
+
+export interface ClientMediaAttachment {
+  kind: "image" | "file" | "audio" | "video";
+  url: string;
+  name: string;
+  mime?: string;
+  size?: number;
+  width?: number;
+  height?: number;
+  duration?: number;
 }
 
 export interface CreateSessionRequest {

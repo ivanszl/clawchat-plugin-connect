@@ -8,6 +8,7 @@ import {
   type CancelTurnRequest,
   CLIENT_API_PREFIX,
   type ClientErrorView,
+  type ClientMediaAttachment,
   type CreateSessionRequest,
   normalizeSessionRef,
   type SessionMutationRequest,
@@ -18,6 +19,7 @@ import {
 } from "../client-contract";
 import { saveConfig } from "../config";
 import { ProjectCatalog } from "../projects";
+import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
@@ -27,6 +29,7 @@ import { SessionCatalog } from "./session-catalog";
 import type { TranscriptProjection } from "./transcript-projection";
 
 const MAX_JSON_BODY_BYTES = 128 * 1_024;
+const MAX_CLIENT_MEDIA_ATTACHMENTS = 10;
 const OUTPUT_VISIBILITIES = new Set(["minimal", "normal", "full"]);
 
 class ClientRequestError extends Error {
@@ -372,6 +375,31 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             );
           }
           const turnsMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turns$/u);
+          const mediaMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/media$/u);
+          if (mediaMatch && request.method === "POST") {
+            const sessionRef = normalizeSessionRef(mediaMatch[1] ?? "");
+            if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
+            const declaredLength = Number(request.headers.get("content-length") ?? "0");
+            if (Number.isFinite(declaredLength) && declaredLength > MAX_RUNTIME_MEDIA_BYTES + 1_048_576) {
+              return errorResponse(413, "media-too-large", "Media files may not exceed 100 MiB");
+            }
+            const form = await request.formData();
+            const file = form.get("file");
+            if (!(file instanceof File) || file.size === 0) {
+              return errorResponse(400, "invalid-media", "A non-empty media file is required");
+            }
+            if (file.size > MAX_RUNTIME_MEDIA_BYTES) {
+              return errorResponse(413, "media-too-large", "Media files may not exceed 100 MiB");
+            }
+            const session = await catalog.adopt(sessionRef);
+            if (!session) return errorResponse(404, "session-not-found", "Session was not found");
+            const runtime = runtimes.get(session.agentId);
+            if (!runtime?.uploadClientMedia) {
+              return errorResponse(503, "runtime-offline", "Runtime media upload is unavailable", true);
+            }
+            const media = await runtime.uploadClientMedia(file, file.name || "attachment");
+            return jsonResponse(media, 201);
+          }
           if (turnsMatch && request.method === "POST") {
             const sessionRef = normalizeSessionRef(turnsMatch[1] ?? "");
             if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
@@ -380,6 +408,14 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-request-id", "requestId is required");
             if (typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 64_000) {
               return errorResponse(400, "invalid-prompt", "Prompt must contain 1 to 64,000 characters");
+            }
+            const media = validClientMedia(body.media);
+            if (!media) {
+              return errorResponse(
+                400,
+                "invalid-media",
+                `Media must contain at most ${MAX_CLIENT_MEDIA_ATTACHMENTS} valid attachments`,
+              );
             }
             return await idempotentCommand(options.stateStore, body.requestId, "turn.start", sessionRef, async () => {
               if (runtimeInteractions.hasPending(sessionRef)) {
@@ -394,7 +430,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               const runtime = runtimes.get(session.agentId);
               if (!runtime?.enqueueClientTurn)
                 return commandError(503, "runtime-offline", "Runtime is unavailable", true);
-              const accepted = await runtime.enqueueClientTurn(sessionRef, body.prompt);
+              const accepted = await runtime.enqueueClientTurn(sessionRef, body.prompt, media);
               catalog.invalidate();
               return { status: 202, body: { accepted: true, ...accepted } };
             });
@@ -839,6 +875,26 @@ function parseLimit(value: string | null): number {
 
 function validRequestId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{8,100}$/u.test(value);
+}
+
+function validClientMedia(value: unknown): ClientMediaAttachment[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > MAX_CLIENT_MEDIA_ATTACHMENTS) return null;
+  const media: ClientMediaAttachment[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const record = item as Record<string, unknown>;
+    if (!["image", "file", "audio", "video"].includes(String(record.kind))) return null;
+    if (typeof record.url !== "string" || !record.url || record.url.length > 8_192) return null;
+    if (typeof record.name !== "string" || !record.name || record.name.length > 255) return null;
+    if (record.mime !== undefined && (typeof record.mime !== "string" || record.mime.length > 200)) return null;
+    for (const field of ["size", "width", "height", "duration"] as const) {
+      const number = record[field];
+      if (number !== undefined && (typeof number !== "number" || !Number.isFinite(number) || number < 0)) return null;
+    }
+    media.push(record as unknown as ClientMediaAttachment);
+  }
+  return media;
 }
 
 function requireDisplayName(value: unknown): string {

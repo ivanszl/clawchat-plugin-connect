@@ -255,7 +255,14 @@ async function verifyTranscriptPresentation(
       .filter({ hasText: "App Server 已成为 Codex 的唯一生产协议" });
     await expect(group).toHaveCount(1);
     await expect(group.getByRole("separator")).toHaveCount(1);
-    await expect(group.locator('[data-block-type="file-change"]')).toHaveCount(1);
+    const tools = group.locator('[data-block-type="tool-group"]');
+    await expect(tools).toHaveCount(1);
+    const toolsToggle = tools.getByRole("button").first();
+    await expect(toolsToggle).toHaveAttribute("aria-expanded", "false");
+    await toolsToggle.click();
+    await expect(toolsToggle).toHaveAttribute("aria-expanded", "true");
+    await expect(tools.getByText("Command", { exact: true })).toBeVisible();
+    await expect(tools.getByText("web/src/main.tsx", { exact: true })).toBeVisible();
     const unknown = group.locator('[data-block-type="unknown"]');
     await expect(unknown.getByRole("button")).toHaveAttribute("aria-expanded", "false");
   } finally {

@@ -1,10 +1,13 @@
 import { Button } from "@astryxdesign/core/Button";
-import { ChatComposer } from "@astryxdesign/core/Chat";
+import { ChatComposer, ChatComposerDrawer, ChatComposerInput, ChatSendButton } from "@astryxdesign/core/Chat";
 import { Icon } from "@astryxdesign/core/Icon";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { MessageCircle } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
-import { cancelTurn, clientKeys, startTurn } from "../../client-interface/query-options";
+import { MessageCircle, Paperclip, X } from "lucide-react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { cancelTurn, clientKeys, startTurn, uploadMedia } from "../../client-interface/query-options";
+
+const MAX_ATTACHMENTS = 10;
+const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
 export interface SessionComposerProps {
   sessionRef: string;
@@ -28,10 +31,15 @@ export function SessionComposer({
   const queryClient = useQueryClient();
   const storageKey = `connect-client:draft:${sessionRef}`;
   const [value, setValue] = useState(() => sessionStorage.getItem(storageKey) ?? "");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [acceptedTurnId, setAcceptedTurnId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     const next = sessionStorage.getItem(storageKey) ?? "";
     setValue(next);
+    setAttachments([]);
+    setAttachmentError(null);
     setAcceptedTurnId(null);
   }, [storageKey]);
   useEffect(() => {
@@ -43,33 +51,58 @@ export function SessionComposer({
   }, [isRuntimeActive]);
 
   const send = useMutation({
-    mutationFn: async (prompt: string) => await startTurn(sessionRef, prompt),
+    mutationFn: async ({ prompt, files }: { prompt: string; files: File[] }) => {
+      const media = await Promise.all(files.map(async (file) => await uploadMedia(sessionRef, file)));
+      return await startTurn(sessionRef, prompt || "请查看附件。", media);
+    },
     onSuccess: (response) => {
       setValue("");
+      setAttachments([]);
+      setAttachmentError(null);
       setAcceptedTurnId(response.turnId);
       void queryClient.invalidateQueries({ queryKey: clientKeys.session(sessionRef) });
       void queryClient.invalidateQueries({ queryKey: clientKeys.catalog });
     },
   });
+  const addFiles = (files: File[]) => {
+    setAttachmentError(null);
+    const oversized = files.find((file) => file.size > MAX_ATTACHMENT_BYTES);
+    if (oversized) {
+      setAttachmentError(`${oversized.name} 超过 100 MiB，无法上传`);
+      return;
+    }
+    setAttachments((current) => {
+      const next = [...current, ...files];
+      if (next.length > MAX_ATTACHMENTS) {
+        setAttachmentError(`每条消息最多上传 ${MAX_ATTACHMENTS} 个文件`);
+        return current;
+      }
+      return next;
+    });
+  };
+  const submit = (prompt: string) => {
+    if (!send.isPending && (prompt.trim() || attachments.length > 0)) {
+      send.mutate({ prompt: prompt.trim(), files: attachments });
+    }
+  };
   const stop = useMutation({
     mutationFn: async () => await cancelTurn(sessionRef, acceptedTurnId ?? "active"),
     onSettled: () => void queryClient.invalidateQueries({ queryKey: clientKeys.session(sessionRef) }),
   });
-  const error = send.error ?? stop.error;
+  const error = attachmentError ?? send.error?.message ?? stop.error?.message;
+  const composerDisabled = !canSend || hasPendingInteraction || send.isPending;
   return (
     <div className="composer-region">
       <ChatComposer
         className="session-composer"
         value={value}
         onChange={setValue}
-        onSubmit={(prompt) => {
-          if (!send.isPending && prompt.trim()) send.mutate(prompt);
-        }}
+        onSubmit={submit}
         onStop={() => {
           if (!stop.isPending) stop.mutate();
         }}
         isStopShown={Boolean(acceptedTurnId) || isRuntimeActive}
-        isDisabled={!canSend || hasPendingInteraction || send.isPending}
+        isDisabled={composerDisabled}
         placeholder={
           hasPendingInteraction
             ? "请先完成上方审批或回答"
@@ -77,8 +110,69 @@ export function SessionComposer({
               ? "给 Agent 发送消息…"
               : "当前 Session 不可发送消息"
         }
-        status={error ? { type: "error", message: error.message } : undefined}
+        status={error ? { type: "error", message: error } : undefined}
         density="balanced"
+        input={
+          <ChatComposerInput
+            value={value}
+            onChange={setValue}
+            onFiles={addFiles}
+            placeholder={
+              hasPendingInteraction
+                ? "请先完成上方审批或回答"
+                : canSend
+                  ? "给 Agent 发送消息…"
+                  : "当前 Session 不可发送消息"
+            }
+            isDisabled={composerDisabled}
+          />
+        }
+        drawer={
+          attachments.length > 0 ? (
+            <ChatComposerDrawer count={attachments.length} label="附件">
+              <div className="composer-attachments">
+                {attachments.map((file, index) => (
+                  <div className="composer-attachment" key={`${file.name}-${file.size}-${file.lastModified}`}>
+                    <span title={file.name}>{file.name}</span>
+                    <Button
+                      label={`移除 ${file.name}`}
+                      tooltip="移除附件"
+                      icon={<Icon icon={X} size="sm" />}
+                      isIconOnly
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setAttachments((current) => current.filter((_, item) => item !== index))}
+                    />
+                  </div>
+                ))}
+              </div>
+            </ChatComposerDrawer>
+          ) : undefined
+        }
+        headerActions={
+          <>
+            <input
+              ref={fileInputRef}
+              className="composer-file-input"
+              type="file"
+              multiple
+              onChange={(event) => {
+                addFiles(Array.from(event.currentTarget.files ?? []));
+                event.currentTarget.value = "";
+              }}
+            />
+            <Button
+              label="上传媒体文件"
+              tooltip="上传媒体文件"
+              icon={<Icon icon={Paperclip} size="sm" />}
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              isDisabled={composerDisabled}
+              onClick={() => fileInputRef.current?.click()}
+            />
+          </>
+        }
         footerActions={
           <div className="composer-context-actions">
             <span className="composer-note" title={contextLabel}>
@@ -105,6 +199,16 @@ export function SessionComposer({
           </div>
         }
         sendActions={modelControl}
+        sendButton={
+          <ChatSendButton
+            isStopShown={Boolean(acceptedTurnId) || isRuntimeActive}
+            isDisabled={composerDisabled || (!value.trim() && attachments.length === 0)}
+            onSend={() => submit(value)}
+            onStop={() => {
+              if (!stop.isPending) stop.mutate();
+            }}
+          />
+        }
       />
       <div className="sr-only" aria-live="polite">
         {send.isPending ? "消息正在提交" : acceptedTurnId ? "Agent 正在处理" : ""}

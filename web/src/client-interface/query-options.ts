@@ -3,6 +3,7 @@ import type {
   BindingPreferenceView,
   BootstrapView,
   CancelTurnResponse,
+  ClientMediaAttachment,
   CreateSessionRequest,
   ProjectView,
   RespondToRuntimeInteractionRequest,
@@ -64,10 +65,23 @@ export function transcriptQueryOptions(sessionRef: string) {
   });
 }
 
-export async function startTurn(sessionRef: string, prompt: string): Promise<StartTurnResponse> {
+export async function uploadMedia(sessionRef: string, file: File): Promise<ClientMediaAttachment> {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  return await clientFetch<ClientMediaAttachment>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}/media`, {
+    method: "POST",
+    body,
+  });
+}
+
+export async function startTurn(
+  sessionRef: string,
+  prompt: string,
+  media: ClientMediaAttachment[] = [],
+): Promise<StartTurnResponse> {
   return await clientFetch<StartTurnResponse>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}/turns`, {
     method: "POST",
-    body: JSON.stringify({ requestId: requestId(), prompt }),
+    body: JSON.stringify({ requestId: requestId(), prompt, media }),
   });
 }
 

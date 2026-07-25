@@ -5,6 +5,7 @@ import {
   ChatMessageBubble,
   ChatMessageMetadata,
   ChatSystemMessage,
+  type ChatToolCallItem,
   type ChatToolCallStatus,
   ChatToolCalls,
 } from "@astryxdesign/core/Chat";
@@ -94,74 +95,13 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
     );
   }
   if (block.type === "tool-call") {
-    return (
-      <div className="runtime-block">
-        <ChatToolCalls
-          defaultIsExpanded={false}
-          calls={[
-            {
-              key: block.id,
-              name: block.title || "Tool call",
-              status: toolStatus(block.status, block.state),
-              resultDetail: block.detail ? (
-                <CodeBlock code={block.detail} isWrapped hasCopyButton width="100%" size="sm" />
-              ) : undefined,
-            },
-          ]}
-        />
-      </div>
-    );
+    return <TranscriptToolCallsView blocks={[block]} />;
   }
   if (block.type === "command") {
-    return (
-      <div className="runtime-block">
-        <ChatToolCalls
-          defaultIsExpanded={false}
-          calls={[
-            {
-              key: block.id,
-              name: "Command",
-              target: block.command,
-              status: toolStatus(block.status, block.state),
-              stats:
-                block.exitCode == null ? undefined : (
-                  <Badge variant={block.exitCode === 0 ? "success" : "error"} label={`exit ${block.exitCode}`} />
-                ),
-              resultDetail: (
-                <CodeBlock
-                  code={block.output || block.command}
-                  language="shell"
-                  title={block.command}
-                  hasCopyButton
-                  isWrapped
-                  width="100%"
-                  size="sm"
-                />
-              ),
-            },
-          ]}
-        />
-      </div>
-    );
+    return <TranscriptToolCallsView blocks={[block]} />;
   }
   if (block.type === "file-change") {
-    return (
-      <div className="runtime-block">
-        <ChatToolCalls
-          defaultIsExpanded={false}
-          label={`${block.files.length} 个文件变更`}
-          calls={block.files.map((file, index) => ({
-            key: `${block.id}:${index}`,
-            name: file.kind || "File change",
-            target: file.path,
-            status: toolStatus(block.status, block.state),
-            resultDetail: file.diff ? (
-              <CodeBlock code={file.diff} language="diff" hasLineNumbers isWrapped width="100%" size="sm" />
-            ) : undefined,
-          }))}
-        />
-      </div>
-    );
+    return <TranscriptToolCallsView blocks={[block]} />;
   }
   if (block.type === "error") {
     return (
@@ -198,6 +138,84 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
       />
     </div>
   );
+}
+
+export type ToolTranscriptBlock = Extract<
+  TranscriptBlock | EmbeddedTranscriptBlock,
+  { type: "tool-call" | "command" | "file-change" }
+>;
+
+export function TranscriptToolCallsView({ blocks }: { blocks: ToolTranscriptBlock[] }) {
+  const calls = blocks.flatMap(toolCallsForBlock);
+  return (
+    <div className="runtime-block runtime-tool-calls">
+      <ChatToolCalls calls={calls} defaultIsExpanded={false} />
+    </div>
+  );
+}
+
+function toolCallsForBlock(block: ToolTranscriptBlock): ChatToolCallItem[] {
+  if (block.type === "tool-call") {
+    return [
+      {
+        key: block.id,
+        name: block.title || "Tool call",
+        status: toolStatus(block.status, block.state),
+        resultDetail: block.detail ? (
+          <CodeBlock code={block.detail} isWrapped hasCopyButton width="100%" size="sm" />
+        ) : undefined,
+      },
+    ];
+  }
+  if (block.type === "command") {
+    return [
+      {
+        key: block.id,
+        name: "Command",
+        target: block.command,
+        status: toolStatus(block.status, block.state),
+        stats:
+          block.exitCode == null ? undefined : (
+            <Badge variant={block.exitCode === 0 ? "success" : "error"} label={`exit ${block.exitCode}`} />
+          ),
+        resultDetail: (
+          <CodeBlock
+            code={block.output || block.command}
+            language="shell"
+            title={block.command}
+            hasCopyButton
+            isWrapped
+            width="100%"
+            size="sm"
+          />
+        ),
+      },
+    ];
+  }
+  return block.files.map((file) => {
+    const changes = diffStats(file.diff);
+    return {
+      key: `${block.id}:${file.path}`,
+      name: file.kind || "File change",
+      target: file.path,
+      status: toolStatus(block.status, block.state),
+      additions: changes.additions || undefined,
+      deletions: changes.deletions || undefined,
+      resultDetail: file.diff ? (
+        <CodeBlock code={file.diff} language="diff" hasLineNumbers isWrapped width="100%" size="sm" />
+      ) : undefined,
+    };
+  });
+}
+
+function diffStats(diff: string): { additions: number; deletions: number } {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
+    if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+  }
+  return { additions, deletions };
 }
 
 function RuntimeInteractionForm({ block }: { block: RuntimeInteractionBlock }) {

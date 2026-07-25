@@ -115,7 +115,29 @@ export class ConnectRuntime {
     }
   }
 
-  async enqueueClientTurn(sessionRef: string, prompt: string): Promise<{ turnId: string; sessionRef: string }> {
+  async uploadClientMedia(file: Blob, filename: string): Promise<ConnectRuntimeMedia> {
+    const fragment = await this.options.wsClient.uploadMedia(file, { filename });
+    const record = fragment as Record<string, unknown>;
+    if (!["image", "file", "audio", "video"].includes(fragment.kind) || typeof record.url !== "string") {
+      throw new Error("ClawChat media upload returned an unsupported Fragment");
+    }
+    return {
+      kind: fragment.kind as ConnectRuntimeMedia["kind"],
+      url: record.url,
+      name: typeof record.name === "string" ? record.name : filename,
+      ...(typeof record.mime === "string" ? { mime: record.mime } : {}),
+      ...(typeof record.size === "number" ? { size: record.size } : {}),
+      ...(typeof record.width === "number" ? { width: record.width } : {}),
+      ...(typeof record.height === "number" ? { height: record.height } : {}),
+      ...(typeof record.duration === "number" ? { duration: record.duration } : {}),
+    };
+  }
+
+  async enqueueClientTurn(
+    sessionRef: string,
+    prompt: string,
+    media: ConnectRuntimeMedia[] = [],
+  ): Promise<{ turnId: string; sessionRef: string }> {
     const text = prompt.trim();
     if (!text) throw new Error("prompt is required");
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
@@ -129,7 +151,7 @@ export class ConnectRuntime {
           this.activeTurnSessionChats.set(key, current.chatId);
           await this.recordRuntimeStatus(this.queue.stats());
           try {
-            await this.runClientTurn(current, text, turnId);
+            await this.runClientTurn(current, text, turnId, media);
           } finally {
             this.activeTurnSessionChats.delete(key);
             await this.recordRuntimeStatus(this.queue.stats());
@@ -282,7 +304,12 @@ export class ConnectRuntime {
     for (const reply of buffered) await this.sendReply(message, reply, activeAgentId, workspace);
   }
 
-  private async runClientTurn(current: RuntimeSessionRecord, prompt: string, turnId: string): Promise<void> {
+  private async runClientTurn(
+    current: RuntimeSessionRecord,
+    prompt: string,
+    turnId: string,
+    media: ConnectRuntimeMedia[],
+  ): Promise<void> {
     const activeAgentId = current.agentId || this.options.agentId;
     const workspace = await this.projects.resolveWorkspace(current);
     const model = await this.modelFor(current, activeAgentId);
@@ -293,9 +320,19 @@ export class ConnectRuntime {
       origin: "client",
       author: "You",
       id: `turn_${turnId}_user`,
+      media: media.map((item) => ({
+        kind: item.kind,
+        url: item.url,
+        name: item.name ?? null,
+        mime: item.mime ?? null,
+        width: item.width ?? null,
+        height: item.height ?? null,
+      })),
     });
     for await (const event of session.prompt({
       prompt,
+      media,
+      trustedMediaOrigins: configuredMediaOrigins(this.options.config),
       workspace,
       mode: current.mode ?? undefined,
       model: model.model,

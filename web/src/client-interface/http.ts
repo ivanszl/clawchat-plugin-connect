@@ -17,7 +17,7 @@ export async function clientFetch<T>(path: string, init: RequestInit = {}): Prom
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
-  if (init.body != null) headers.set("Content-Type", "application/json");
+  if (init.body != null && !(init.body instanceof FormData)) headers.set("Content-Type", "application/json");
   const response = await fetch(path, { ...init, method, headers });
   if (!response.ok) {
     let view: ClientErrorView | null = null;

@@ -72,6 +72,42 @@ async function runtimeFixture() {
 }
 
 describe("ConnectRuntime Agent Binding sessions", () => {
+  it("uploads Web media and includes it in the client Runtime turn", async () => {
+    const fixture = await runtimeFixture();
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!current) throw new Error("current Session is missing");
+    const received: ConnectRuntimePrompt[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: async () => ({
+        prompt: async function* (input) {
+          received.push(input);
+          yield { kind: "final", text: "done" } as const;
+        },
+        close: async () => undefined,
+      }),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    const media = await runtime.uploadClientMedia(new Blob(["image"], { type: "image/jpeg" }), "photo.jpg");
+    await runtime.enqueueClientTurn(current.sessionRef, "inspect", [media]);
+    while (received.length === 0) await Bun.sleep(0);
+
+    expect(fixture.uploadMedia).toHaveBeenCalledWith(expect.any(Blob), { filename: "photo.jpg" });
+    expect(received[0]?.media).toEqual([media]);
+    expect(received[0]?.trustedMediaOrigins).toContain(new URL(fixture.config.mediaUploadUrl).origin);
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
   it("projects queued ClawChat messages before waiting for Runtime startup", async () => {
     const fixture = await runtimeFixture();
     let releaseRuntimeStart: (() => void) | undefined;

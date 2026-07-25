@@ -6,7 +6,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptBlock, TranscriptPageView } from "../../../../src/client-contract";
 import { ThreadIcon } from "../../components/icons";
-import { TranscriptBlockView } from "./TranscriptBlockView";
+import { TranscriptBlockView, TranscriptToolCallsView } from "./TranscriptBlockView";
+import { groupBlocksForRendering } from "./transcript-render-groups";
 
 export interface TranscriptViewportProps {
   pages: TranscriptPageView[];
@@ -108,11 +109,17 @@ export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder 
               >
                 <Divider className="transcript-group-divider" label={formatTranscriptDate(group.createdAt)} />
                 <div className="transcript-group-blocks">
-                  {group.blocks.map((block) => (
-                    <div className="transcript-group-block" data-block-type={block.type} key={block.id}>
-                      <TranscriptBlockView block={block} />
-                    </div>
-                  ))}
+                  {groupBlocksForRendering(group.blocks).map((entry) =>
+                    entry.kind === "tools" ? (
+                      <div className="transcript-group-block" data-block-type="tool-group" key={entry.id}>
+                        <TranscriptToolCallsView blocks={entry.blocks} />
+                      </div>
+                    ) : (
+                      <div className="transcript-group-block" data-block-type={entry.block.type} key={entry.id}>
+                        <TranscriptBlockView block={entry.block} />
+                      </div>
+                    ),
+                  )}
                 </div>
               </article>
             );

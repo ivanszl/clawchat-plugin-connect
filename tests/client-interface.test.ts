@@ -115,11 +115,19 @@ describe("Connect Client Interface", () => {
     config.defaultAgent = "codex";
     config.stateDbPath = store.dbPath;
     const enqueueClientTurn = mock(async (sessionRef: string) => ({ turnId: "turn-123", sessionRef }));
+    const uploadClientMedia = mock(async (_file: Blob, filename: string) => ({
+      kind: "image" as const,
+      url: "https://media.clawling.chat/media/uploaded-photo",
+      name: filename,
+      mime: "image/png",
+      size: 5,
+    }));
     const runtime: BindingRuntimeHandle = {
       agentId: "codex",
       websocketUrl: config.websocketUrl,
       deviceId: "device-1",
       enqueueClientTurn,
+      uploadClientMedia,
       close: async () => undefined,
     };
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
@@ -421,17 +429,35 @@ describe("Connect Client Interface", () => {
       ],
     });
 
+    const uploadBody = new FormData();
+    uploadBody.append("file", new File(["photo"], "photo.png", { type: "image/png" }));
+    const upload = await localRequest(fetchHandler, handle.origin, `/client/v1/sessions/${session.sessionRef}/media`, {
+      method: "POST",
+      headers: { origin: handle.origin },
+      body: uploadBody,
+    });
+    expect(upload.status).toBe(201);
+    const uploadedMedia = await upload.json();
+    expect(uploadClientMedia).toHaveBeenCalledTimes(1);
+    expect(uploadedMedia).toEqual({
+      kind: "image",
+      url: "https://media.clawling.chat/media/uploaded-photo",
+      name: "photo.png",
+      mime: "image/png",
+      size: 5,
+    });
+
     const turn = await localRequest(fetchHandler, handle.origin, `/client/v1/sessions/${session.sessionRef}/turns`, {
       method: "POST",
       headers: {
         origin: handle.origin,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ requestId: "request_123", prompt: "from web" }),
+      body: JSON.stringify({ requestId: "request_123", prompt: "from web", media: [uploadedMedia] }),
     });
     expect(turn.status).toBe(202);
     await expect(turn.json()).resolves.toEqual({ accepted: true, turnId: "turn-123", sessionRef: session.sessionRef });
-    expect(enqueueClientTurn).toHaveBeenCalledWith(session.sessionRef, "from web");
+    expect(enqueueClientTurn).toHaveBeenCalledWith(session.sessionRef, "from web", [uploadedMedia]);
 
     const replayedTurn = await localRequest(
       fetchHandler,
@@ -443,7 +469,7 @@ describe("Connect Client Interface", () => {
           origin: handle.origin,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ requestId: "request_123", prompt: "from web" }),
+        body: JSON.stringify({ requestId: "request_123", prompt: "from web", media: [uploadedMedia] }),
       },
     );
     expect(replayedTurn.status).toBe(202);
