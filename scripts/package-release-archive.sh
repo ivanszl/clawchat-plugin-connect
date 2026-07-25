@@ -16,16 +16,18 @@ test -f "$client_directory/index.html"
 test -x "$liveware_binary"
 test -f "$repository_root/LICENSE"
 test -f "$repository_root/THIRD_PARTY_NOTICES.md"
+test -f "$repository_root/CHANGELOG.md"
 
 cp "$connect_binary" "$staging_directory/clawchat-connect"
 cp "$liveware_binary" "$staging_directory/liveware"
 cp -R "$client_directory" "$staging_directory/clawchat-connect-client"
-cp "$repository_root/LICENSE" "$repository_root/THIRD_PARTY_NOTICES.md" "$staging_directory/"
+cp "$repository_root/LICENSE" "$repository_root/THIRD_PARTY_NOTICES.md" "$repository_root/CHANGELOG.md" "$staging_directory/"
 chmod 755 "$staging_directory/clawchat-connect" "$staging_directory/liveware"
 
 tar -C "$staging_directory" -czf "$archive" \
   clawchat-connect \
   clawchat-connect-client \
   liveware \
+  CHANGELOG.md \
   LICENSE \
   THIRD_PARTY_NOTICES.md

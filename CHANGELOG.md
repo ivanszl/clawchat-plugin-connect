@@ -2,6 +2,17 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.9] - 2026-07-25
+
+### Added
+
+- Added Web media uploads with attachment selection, removal, validation, ClawChat storage, and Codex Runtime delivery.
+
+### Changed
+
+- Grouped consecutive Runtime tools, commands, and file changes with the official Astryx `ChatToolCalls` presentation.
+- Added the matching Changelog section to GitHub Release notes and included `CHANGELOG.md` with release artifacts.
+
 ## [0.1.0-alpha.8] - 2026-07-25
 
 ### Added

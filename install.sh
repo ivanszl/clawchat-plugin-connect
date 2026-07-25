@@ -61,10 +61,11 @@ fi
 [ "$actual_checksum" = "$expected_checksum" ] || fail "checksum verification failed for $asset"
 
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" \
-  clawchat-connect clawchat-connect-client liveware LICENSE THIRD_PARTY_NOTICES.md
+  clawchat-connect clawchat-connect-client liveware CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md
 [ -f "$tmp_dir/clawchat-connect" ] || fail "release archive does not contain clawchat-connect"
 [ -f "$tmp_dir/clawchat-connect-client/index.html" ] || fail "release archive does not contain Connect Client"
 [ -f "$tmp_dir/liveware" ] || fail "release archive does not contain Liveware"
+[ -f "$tmp_dir/CHANGELOG.md" ] || fail "release archive does not contain the Changelog"
 [ -f "$tmp_dir/LICENSE" ] || fail "release archive does not contain LICENSE"
 [ -f "$tmp_dir/THIRD_PARTY_NOTICES.md" ] || fail "release archive does not contain third-party notices"
 
@@ -81,7 +82,7 @@ fi
 mkdir -p "$install_dir/clawchat-connect-client"
 cp -R "$tmp_dir/clawchat-connect-client/." "$install_dir/clawchat-connect-client/"
 mkdir -p "$license_dir"
-cp "$tmp_dir/LICENSE" "$tmp_dir/THIRD_PARTY_NOTICES.md" "$license_dir/"
+cp "$tmp_dir/CHANGELOG.md" "$tmp_dir/LICENSE" "$tmp_dir/THIRD_PARTY_NOTICES.md" "$license_dir/"
 
 "$install_dir/clawchat-connect" --help >/dev/null
 "$install_dir/liveware" --help >/dev/null

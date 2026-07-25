@@ -29,6 +29,7 @@ describe("standalone release bundle", () => {
     expect(tarExitCode).toBe(0);
     expect(stdout.trim().split("\n").sort()).toEqual(
       [
+        "CHANGELOG.md",
         "LICENSE",
         "THIRD_PARTY_NOTICES.md",
         "clawchat-connect",
@@ -92,6 +93,7 @@ describe("standalone release bundle", () => {
     expect(zipExitCode).toBe(0);
     expect(stdout.trim().split("\n").sort()).toEqual(
       [
+        "CHANGELOG.md",
         "LICENSE",
         "THIRD_PARTY_NOTICES.md",
         "clawchat-connect-client/",
@@ -108,11 +110,13 @@ describe("standalone release bundle", () => {
     expect(installer).toContain("Expand-Archive");
     expect(installer).toContain("clawchat-connect.exe");
     expect(installer).toContain("liveware.exe");
+    expect(installer).toContain("CHANGELOG.md");
     expect(installer).toContain('service", "stop');
     const workflow = await readFile(".github/workflows/release-alpha.yml", "utf8");
     expect(workflow).toContain("bun-windows-x64 windows x64");
     expect(workflow).toContain("bun-windows-arm64 windows arm64");
     expect(workflow).toContain("install.ps1");
+    expect(workflow).toContain("--notes-file build/release-notes.md");
   });
 
   it("uses vendored, verified Liveware assets for npm packages and local compiled builds", async () => {
@@ -198,6 +202,9 @@ describe("standalone release bundle", () => {
     await expect(readFile(join(installDirectory, "liveware"), "utf8")).resolves.toContain("--help");
     await expect(readFile(join(installDirectory, "clawchat-connect-client", "index.html"), "utf8")).resolves.toContain(
       "<!doctype html>",
+    );
+    await expect(readFile(join(installDirectory, "licenses", "CHANGELOG.md"), "utf8")).resolves.toContain(
+      "# Changelog",
     );
   });
 });

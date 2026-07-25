@@ -85,6 +85,7 @@ try {
     $connectSource,
     $livewareSource,
     (Join-Path $clientSource "index.html"),
+    (Join-Path $extractedDirectory "CHANGELOG.md"),
     (Join-Path $extractedDirectory "LICENSE"),
     (Join-Path $extractedDirectory "THIRD_PARTY_NOTICES.md")
   )) {
@@ -121,6 +122,7 @@ try {
   Move-Item -LiteralPath $clientStaging -Destination $clientTarget
 
   New-Item -ItemType Directory -Path $LicenseDirectory -Force | Out-Null
+  Copy-Item -LiteralPath (Join-Path $extractedDirectory "CHANGELOG.md") -Destination $LicenseDirectory -Force
   Copy-Item -LiteralPath (Join-Path $extractedDirectory "LICENSE") -Destination $LicenseDirectory -Force
   Copy-Item -LiteralPath (Join-Path $extractedDirectory "THIRD_PARTY_NOTICES.md") -Destination $LicenseDirectory -Force
 
