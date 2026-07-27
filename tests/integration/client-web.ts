@@ -22,6 +22,7 @@ try {
     await verifyTranscriptAlwaysFollowsLatest(browser, origin);
     await verifyTranscriptPresentation(browser, origin);
     await verifyContinueInClawChat(browser, origin);
+    await verifyImeConfirmationDoesNotSubmit(browser, origin);
     const page = await browser.newPage();
     const createRequests: unknown[] = [];
     page.on("request", (request) => {
@@ -101,6 +102,51 @@ try {
 } finally {
   server.kill("SIGTERM");
   await server.exited;
+}
+
+async function verifyImeConfirmationDoesNotSubmit(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const page = await browser.newPage();
+  try {
+    let submittedTurns = 0;
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/client/v1/sessions/ABCDEFGH/turns") {
+        submittedTurns += 1;
+      }
+    });
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    const input = page.locator(".session-composer [contenteditable='true']");
+    await input.fill("中文");
+    await input.dispatchEvent("compositionstart");
+    await input.dispatchEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+    });
+    await input.dispatchEvent("compositionend");
+    await page.waitForTimeout(50);
+
+    assert.equal(submittedTurns, 0, "Enter used to confirm IME composition must not submit a turn");
+    await expect(input).toHaveText("中文");
+
+    await input.dispatchEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 229,
+      bubbles: true,
+      cancelable: true,
+    });
+    await page.waitForTimeout(50);
+    assert.equal(submittedTurns, 0, "IME compatibility Enter keyCode must not submit a turn");
+    await expect(input).toHaveText("中文");
+  } finally {
+    await page.close();
+  }
 }
 
 async function verifyContinueInClawChat(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {

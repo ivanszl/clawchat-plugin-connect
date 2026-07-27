@@ -117,6 +117,12 @@ export function SessionComposer({
             value={value}
             onChange={setValue}
             onFiles={addFiles}
+            onKeyDownCapture={(event) => {
+              if (event.key === "Enter" && (event.nativeEvent.isComposing || event.keyCode === 229)) {
+                event.preventDefault();
+                event.stopPropagation();
+              }
+            }}
             placeholder={
               hasPendingInteraction
                 ? "请先完成上方审批或回答"
