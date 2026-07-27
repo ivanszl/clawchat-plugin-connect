@@ -2,6 +2,17 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.10] - 2026-07-27
+
+### Added
+
+- Added pinned-version Codex rollout reconciliation so Connect Client history includes displayable tool calls omitted by app-server.
+- Added transcript completeness and event provenance across Runtime Adapter history and fallback reconciliation.
+
+### Fixed
+
+- Fixed Enter confirming Chinese and other IME composition from submitting the composer prematurely.
+
 ## [0.1.0-alpha.9] - 2026-07-25
 
 ### Added
