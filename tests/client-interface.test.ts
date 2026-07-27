@@ -92,21 +92,37 @@ describe("Connect Client Interface", () => {
         lifecycleCalls.push(`delete:${threadId}`);
         isDeleted = true;
       },
-      readTranscript: async () => [
-        { id: "user-1", kind: "user", text: "hello", state: "complete" },
-        { id: "agent-1", kind: "assistant", text: "world", state: "complete" },
-        {
-          id: "subagent-1",
-          kind: "subagent",
-          text: "Scout · researcher",
-          state: "complete",
-          data: { title: "Scout", role: "researcher", activityKind: "started" },
-          children: [
-            { id: "child-user", kind: "user", text: "investigate", state: "complete" },
-            { id: "child-agent", kind: "assistant", text: "found it", state: "complete" },
-          ],
-        },
-      ],
+      readTranscript: async () => ({
+        completeness: "complete",
+        entries: [
+          { id: "user-1", kind: "user", text: "hello", state: "complete", source: "history" },
+          { id: "agent-1", kind: "assistant", text: "world", state: "complete", source: "history" },
+          {
+            id: "subagent-1",
+            kind: "subagent",
+            text: "Scout · researcher",
+            state: "complete",
+            source: "history",
+            data: { title: "Scout", role: "researcher", activityKind: "started" },
+            children: [
+              {
+                id: "child-user",
+                kind: "user",
+                text: "investigate",
+                state: "complete",
+                source: "history",
+              },
+              {
+                id: "child-agent",
+                kind: "assistant",
+                text: "found it",
+                state: "complete",
+                source: "history",
+              },
+            ],
+          },
+        ],
+      }),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const registry = new RuntimeAdapterRegistry([adapter]);
@@ -216,6 +232,7 @@ describe("Connect Client Interface", () => {
       effectiveReasoningEffort: "medium",
       modelSource: "runtime",
       modelAvailable: true,
+      transcriptCompleteness: "complete",
       modelOptions: [
         { id: "gpt-default", supportedReasoningEfforts: ["medium", "high"] },
         { id: "gpt-deep", supportedReasoningEfforts: ["high", "xhigh"] },
@@ -373,9 +390,10 @@ describe("Connect Client Interface", () => {
     expect(transcript.status).toBe(200);
     await expect(transcript.json()).resolves.toMatchObject({
       sessionRef: session.sessionRef,
+      completeness: "complete",
       blocks: [
-        { type: "message", role: "user", markdown: "hello" },
-        { type: "message", role: "assistant", markdown: "world" },
+        { type: "message", role: "user", markdown: "hello", runtimeSource: "history" },
+        { type: "message", role: "assistant", markdown: "world", runtimeSource: "history" },
         {
           type: "subagent",
           title: "Scout",

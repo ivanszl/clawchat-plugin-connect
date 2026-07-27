@@ -57,10 +57,12 @@ The shared runtime seam lives in `src/runtime/types.ts`:
 Agent Binding
       ↓ kind
 RuntimeAdapterRegistry → CodexRuntimeAdapter → private JSONL JSON-RPC client → codex app-server
+                                      └────── versioned rollout fallback
 ```
 
 - `src/runtime/registry.ts` selects a Runtime Adapter from the Agent Binding's explicit `kind`.
 - `src/runtime/codex-app-server.ts` owns the pinned `codex-cli 0.145.0` process and stable wire protocol; callers see only the Runtime Adapter interface.
+- `src/runtime/codex-rollout.ts` supplements persisted app-server history with displayable raw tool calls omitted by that API. It is a read-only, pinned-version fallback inside the Codex Adapter and never exposes raw rollout records across the runtime seam.
 - The Codex Runtime Adapter filters child threads from discovery and translates parent `subAgentActivity` items plus child history into recursive runtime-neutral transcript entries.
 - The Connect Service composition root registers and closes one shared Runtime Adapter registry. Binding runtimes close only their own Sessions, so stopping one Binding cannot tear down adapters used by another runtime kind.
 - The first release registers the Codex Runtime Adapter; `ConnectRuntime` has no Codex dependency.
@@ -90,7 +92,7 @@ Client Interface ── Session Catalog / Transcript Projection / safe preferenc
 
 The Client catalog is installation-wide. It merges Connect Sessions with `discoverAllThreads`, keeps one stable Session Ref for an unadopted Runtime Thread, nests Project and persistent native-workspace entries, and leaves Non-Project entries at the binding root. Runtime Adapters may classify generated scratch workspaces as transient so their readable Session names remain direct leaves instead of exposing meaningless directory labels. A first Web send adopts an unclaimed thread without replacing its native identity; persistent native workspaces become Projects, while transient scratch workspaces remain Non-Project. Creating a Session submits its Project, mode, model, and reasoning effort; the server validates those options before materializing an empty Session. Its first Client-local task is submitted later through the ordinary turn command.
 
-The Runtime Transcript remains authoritative for agent context and resume. The Transcript Projection is a SQLite materialized view for the browser: it keeps normalized message, plan, reasoning-summary, command, file-change, tool, progress, usage, interaction, error, and unknown blocks. Runtime-native item IDs become stable block IDs; repeated `thread/read` reconciliation is idempotent. Session snapshot polling reconciles work performed by another Codex surface, while live Connect turns publish block upserts immediately through SSE.
+The Runtime Transcript remains authoritative for agent context and resume. The Transcript Projection is a SQLite materialized view for the browser: it keeps normalized message, plan, reasoning-summary, command, file-change, tool, progress, usage, interaction, error, and unknown blocks. Runtime-native item IDs become stable block IDs; repeated history reconciliation is idempotent. Runtime Adapters return a transcript snapshot with `complete`, `partial`, or `live-only` completeness and mark entries as ordinary history or fallback history. Session snapshot polling reconciles work performed by another Codex surface, while live Connect turns publish block upserts immediately through SSE.
 
 Client-local turns and ClawChat turns share the logical Session queue. Only ClawChat-originated turns pass through reply materialization and the ClawChat WebSocket. Client-local output remains in the projection and SSE stream.
 
@@ -137,7 +139,7 @@ Session Ref (display/select) → Connect Session ID (internal)
 
 `thread/start`, `thread/resume`, and `turn/start` receive the working directory, sandbox, additional writable roots, network policy, resolved model and reasoning effort, approval policy, and web-search settings. Model resolution runs for each turn in Session → Agent Binding → Runtime Adapter default order. Reasoning effort uses a strict Session value when present, otherwise a Binding value only when the effective model supports it, otherwise the advertised model default. A missing stored Session model fails visibly. Project changes create a Session Intent; its first ordinary message creates a Session with a null `runtime_session_id`. `/switch`, model changes, and process restarts preserve and resume the existing ID. `/mode` updates a pending intent or invalidates a current Session's ID because sandbox mode is also a thread startup option.
 
-The Codex adapter calls app-server `thread/list`, filters by the selected workspace, opts into every source kind, and uses the native name or preview as the Session Name. Connect never opens rollout JSONL itself. `ConnectRuntime` removes Runtime Threads already claimed by the current conversation and asks the state module for a stable Session Ref for every available result. `/sessions` presents only Connect Sessions from that workspace plus the remaining Runtime Threads as available; `/switch <name-or-ref>` explicitly creates a Connect Session that owns the selected Runtime Thread and preserves its Ref. Ambiguous names require a Ref.
+The Codex adapter calls app-server `thread/list`, filters by the selected workspace, opts into every source kind, and uses the native name or preview as the Session Name. It reads rollout JSONL only inside its pinned-version transcript fallback when app-server history omits displayable tool calls. `ConnectRuntime` and the Client Interface never open or interpret rollout files. `ConnectRuntime` removes Runtime Threads already claimed by the current conversation and asks the state module for a stable Session Ref for every available result. `/sessions` presents only Connect Sessions from that workspace plus the remaining Runtime Threads as available; `/switch <name-or-ref>` explicitly creates a Connect Session that owns the selected Runtime Thread and preserves its Ref. Ambiguous names require a Ref.
 
 Session Refs use eight characters from an unambiguous Base32 alphabet and contain 40 random bits. SQLite enforces global Ref uniqueness and stores mappings to both Connect Sessions and Runtime Threads. Existing databases are backfilled on startup. When a discovered Runtime Thread is adopted, its mapping is attached to the new Session; when a Session invalidates its Runtime Thread, the Session keeps its Ref and a later rediscovery of the old thread receives a different Ref.
 
@@ -183,6 +185,7 @@ src/projects.ts                Project catalog and workspace resolution
 src/runtime/types.ts           Direct runtime seam
 src/runtime/registry.ts        Runtime Adapter selection by Binding kind
 src/runtime/codex-app-server.ts Pinned app-server process and JSON-RPC transport
+src/runtime/codex-rollout.ts   Pinned-version Codex transcript fallback
 src/runtime/codex-adapter.ts   Codex Runtime Adapter and Connect event mapping
 src/runtime/connect-runtime.ts Queue, lifecycle, discovery, output, and reply dispatch
 src/runtime/media-cache.ts    Bounded state-local cache for runtime file/video inputs

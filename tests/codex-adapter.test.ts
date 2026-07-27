@@ -1,4 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { RuntimeOutputEvent } from "../src/output-visibility";
 import { createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import type {
@@ -376,20 +379,97 @@ describe("Codex app-server runtime adapter", () => {
     await expect(adapter.discoverAllThreads?.(agent)).resolves.toEqual([
       { runtimeThreadId: "thread-parent", name: "Fix the runtime", updatedAt: 20_000, workingDirectory: "/repo" },
     ]);
-    await expect(adapter.readTranscript?.(agent, "thread-parent")).resolves.toEqual([
-      {
-        id: "activity-1",
-        kind: "subagent",
-        text: "Scout · researcher",
-        state: "complete",
-        data: { title: "Scout", role: "researcher", activityKind: "started" },
-        children: [
-          { id: "child-user", kind: "user", text: "Investigate it", state: "complete" },
-          { id: "child-agent", kind: "assistant", text: "Found the cause", state: "complete" },
-        ],
-      },
-    ]);
+    await expect(adapter.readTranscript?.(agent, "thread-parent")).resolves.toEqual({
+      completeness: "partial",
+      entries: [
+        {
+          id: "activity-1",
+          kind: "subagent",
+          text: "Scout · researcher",
+          state: "complete",
+          source: "history",
+          data: { title: "Scout", role: "researcher", activityKind: "started" },
+          children: [
+            {
+              id: "child-user",
+              kind: "user",
+              text: "Investigate it",
+              state: "complete",
+              source: "history",
+            },
+            {
+              id: "child-agent",
+              kind: "assistant",
+              text: "Found the cause",
+              state: "complete",
+              source: "history",
+            },
+          ],
+        },
+      ],
+    });
     expect(client.readThread).toHaveBeenCalledWith({ threadId: "thread-child", includeTurns: true });
+  });
+
+  it("supplements app-server history from the Binding's pinned Codex rollout", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "connect-codex-adapter-rollout-"));
+    const sessions = join(codexHome, "sessions");
+    await mkdir(sessions, { recursive: true });
+    await writeFile(
+      join(sessions, "rollout-thread-1.jsonl"),
+      [
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", id: "user-1", role: "user", content: [] },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: {
+            type: "custom_tool_call",
+            id: "tool-1",
+            call_id: "call-1",
+            name: "exec",
+            input: "await tools.exec_command({ cmd: 'bun test' })",
+            status: "completed",
+          },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "custom_tool_call_output", call_id: "call-1", output: "ok" },
+        }),
+        JSON.stringify({
+          type: "response_item",
+          payload: { type: "message", id: "agent-1", role: "assistant", content: [] },
+        }),
+      ].join("\n"),
+    );
+    const client = new FakeAppServer();
+    client.readThread.mockResolvedValueOnce({
+      thread: thread("thread-1", {
+        turns: [
+          {
+            id: "turn-1",
+            status: "completed",
+            items: [
+              { type: "userMessage", id: "user-1", content: [{ type: "text", text: "run tests" }] },
+              { type: "agentMessage", id: "agent-1", text: "done" },
+            ],
+          },
+        ],
+      }),
+    });
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+
+    await expect(
+      adapter.readTranscript?.({ ...agent, env: { CODEX_HOME: codexHome } }, "thread-1"),
+    ).resolves.toMatchObject({
+      completeness: "complete",
+      entries: [
+        { id: "user-1", source: "history" },
+        { id: "rollout:call-1", kind: "tool", source: "fallback" },
+        { id: "agent-1", source: "history" },
+      ],
+    });
   });
 
   it("discovers archived threads separately and delegates lifecycle mutations", async () => {

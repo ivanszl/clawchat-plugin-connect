@@ -305,7 +305,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               blocks,
               beforeCursor: hasOlder && firstSequence ? `s:${firstSequence}` : null,
               hasOlder,
-              completeness: "complete",
+              completeness: options.transcriptProjection.completeness(sessionRef) ?? "live-only",
             });
           }
           const archiveMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/archive$/u);

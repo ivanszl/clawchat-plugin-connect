@@ -5,6 +5,7 @@ export type RuntimeOutputKind = "final" | "assistant" | "tool" | "progress" | "r
 export interface RuntimeOutputEvent {
   kind: RuntimeOutputKind;
   text: string;
+  source?: "live";
   requiredControl?: boolean;
   /** Stable runtime-native item identity when the protocol exposes one. */
   itemId?: string;

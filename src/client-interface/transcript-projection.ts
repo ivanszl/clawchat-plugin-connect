@@ -10,7 +10,7 @@ import type {
 import { getAgentBinding } from "../config";
 import type { RuntimeOutputEvent } from "../output-visibility";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
-import type { RuntimeTranscriptEntry } from "../runtime/types";
+import type { RuntimeTranscriptCompleteness, RuntimeTranscriptEntry } from "../runtime/types";
 import type { ConnectStateStore } from "../state";
 import type { ConnectConfig, RuntimeSessionRecord } from "../types";
 
@@ -23,6 +23,7 @@ export interface TranscriptProjectionOptions {
 export class TranscriptProjection {
   private readonly activeReconciliations = new Map<string, Promise<void>>();
   private readonly reconciledRuntimeRevisions = new Map<string, string>();
+  private readonly transcriptCompleteness = new Map<string, RuntimeTranscriptCompleteness>();
 
   constructor(private readonly options: TranscriptProjectionOptions) {}
 
@@ -50,13 +51,22 @@ export class TranscriptProjection {
 
   invalidate(sessionRef: string): void {
     this.reconciledRuntimeRevisions.delete(sessionRef);
+    this.transcriptCompleteness.delete(sessionRef);
+  }
+
+  completeness(sessionRef: string): RuntimeTranscriptCompleteness | null {
+    return this.transcriptCompleteness.get(sessionRef.toUpperCase()) ?? null;
   }
 
   private async reconcileFromRuntime(session: RuntimeSessionRecord): Promise<void> {
-    if (!session.runtimeSessionId) return;
+    if (!session.runtimeSessionId) {
+      this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), "live-only");
+      return;
+    }
     const binding = getAgentBinding(this.options.config, session.agentId);
-    const entries = await this.options.runtimeAdapters.readTranscript(binding, session.runtimeSessionId);
-    for (const entry of entries) {
+    const snapshot = await this.options.runtimeAdapters.readTranscript(binding, session.runtimeSessionId);
+    this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), snapshot.completeness);
+    for (const entry of snapshot.entries) {
       const input = this.fromRuntimeHistory(session.sessionRef, entry);
       if (input.type === "message") {
         const rekeyed = await this.options.stateStore.rekeyMatchingTranscriptMessage(session.sessionRef, input);
@@ -106,6 +116,7 @@ export class TranscriptProjection {
     const base = {
       id,
       origin: "runtime" as const,
+      runtimeSource: event.source ?? ("live" as const),
       state:
         event.state ??
         (event.kind === "final" && /(?:failed|error|exited)/iu.test(text) ? ("error" as const) : ("complete" as const)),
@@ -191,6 +202,7 @@ export class TranscriptProjection {
     const base = {
       id,
       origin: historyOrigin(entry),
+      runtimeSource: entry.source,
       state: entry.state,
       plainText: text,
     };
@@ -227,7 +239,13 @@ export class TranscriptProjection {
       };
     }
     if (entry.kind === "tool") {
-      return { ...base, type: "tool-call" as const, title: firstLine(text), status: entry.state, detail: text };
+      return {
+        ...base,
+        type: "tool-call" as const,
+        title: stringData(entry, "title") || firstLine(text),
+        status: stringData(entry, "status") || entry.state,
+        detail: text,
+      };
     }
     if (entry.kind === "progress") return { ...base, type: "progress" as const, label: text };
     if (entry.kind === "subagent") {

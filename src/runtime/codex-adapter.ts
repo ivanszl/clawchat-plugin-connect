@@ -1,4 +1,5 @@
-import { basename, dirname, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import type { RuntimeOutputEvent } from "../output-visibility";
 import type { CodexAgentBindingConfig, CodexApprovalPolicy, CodexSandboxMode, RuntimeWorkspace } from "../types";
 import {
@@ -12,6 +13,7 @@ import {
   type CodexUserInput,
   createCodexAppServerClient,
 } from "./codex-app-server";
+import { backfillCodexRolloutTranscript } from "./codex-rollout";
 import { cacheRuntimeMedia } from "./media-cache";
 import type {
   ConnectRuntimeAdapter,
@@ -102,7 +104,12 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     },
     async readTranscript(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
-      return await readCodexTranscript(await clientFor(codexBinding, "catalog"), runtimeThreadId);
+      const appServerEntries = await readCodexTranscript(await clientFor(codexBinding, "catalog"), runtimeThreadId);
+      return await backfillCodexRolloutTranscript({
+        codexHome: codexHome(codexBinding),
+        runtimeThreadId,
+        appServerEntries,
+      });
     },
     async archiveThread(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
@@ -227,6 +234,7 @@ async function subagentTranscriptEntry(
       kind: "subagent",
       text: role && role !== title ? `${title} · ${role}` : title,
       state: childTranscriptState(child.thread.turns, activityKind),
+      source: "history",
       data: { title, role, activityKind },
       children: child.entries,
     };
@@ -237,6 +245,7 @@ async function subagentTranscriptEntry(
       kind: "subagent",
       text: title,
       state: "error",
+      source: "history",
       data: { title, role: null, activityKind },
       children: [
         {
@@ -244,6 +253,7 @@ async function subagentTranscriptEntry(
           kind: "unknown",
           text: "Sub-agent transcript is unavailable.",
           state: "error",
+          source: "history",
         },
       ],
     };
@@ -286,24 +296,28 @@ function transcriptEntry(
           return part?.type === "text" ? [stringField(part.text)] : [];
         })
       : [];
-    return { id: item.id, kind: "user", text: content.join("\n"), state };
+    return { id: item.id, kind: "user", text: content.join("\n"), state, source: "history" };
   }
-  if (item.type === "agentMessage") return { id: item.id, kind: "assistant", text: stringField(item.text), state };
+  if (item.type === "agentMessage")
+    return { id: item.id, kind: "assistant", text: stringField(item.text), state, source: "history" };
   if (item.type === "reasoning") {
     return {
       id: item.id,
       kind: "reasoning",
       text: [...stringArray(item.summary), ...stringArray(item.content)].join("\n"),
       state,
+      source: "history",
     };
   }
-  if (item.type === "plan") return { id: item.id, kind: "plan", text: stringField(item.text), state };
+  if (item.type === "plan")
+    return { id: item.id, kind: "plan", text: stringField(item.text), state, source: "history" };
   if (item.type === "commandExecution") {
     return {
       id: item.id,
       kind: "command",
       text: stringField(item.aggregatedOutput),
       state,
+      source: "history",
       data: {
         command: stringField(item.command),
         status: stringField(item.status),
@@ -317,6 +331,7 @@ function transcriptEntry(
       kind: "file-change",
       text: formatCompletedItem(item)?.text ?? "File changes",
       state,
+      source: "history",
       data: { status: stringField(item.status), changes: item.changes },
     };
   }
@@ -326,10 +341,18 @@ function transcriptEntry(
       kind: "tool",
       text: formatCompletedItem(item)?.text ?? item.type,
       state,
+      source: "history",
       data: { itemType: item.type },
     };
   }
-  return { id: item.id, kind: "unknown", text: item.type, state, data: { itemType: item.type } };
+  return {
+    id: item.id,
+    kind: "unknown",
+    text: item.type,
+    state,
+    source: "history",
+    data: { itemType: item.type },
+  };
 }
 
 function requireCodexBinding(binding: { kind: string }): CodexAgentBindingConfig {
@@ -339,6 +362,10 @@ function requireCodexBinding(binding: { kind: string }): CodexAgentBindingConfig
 
 function processIdentity(binding: CodexAgentBindingConfig): string {
   return JSON.stringify({ codexPathOverride: binding.codexPathOverride ?? null, env: binding.env ?? null });
+}
+
+function codexHome(binding: CodexAgentBindingConfig): string {
+  return resolve(binding.env?.CODEX_HOME?.trim() || process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
 }
 
 async function discoverCodexThreads(

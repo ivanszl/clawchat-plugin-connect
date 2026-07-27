@@ -5,6 +5,7 @@ import type {
   ConnectRuntimeStartContext,
   RuntimeModelOption,
   RuntimeThreadSummary,
+  RuntimeTranscriptSnapshot,
 } from "./types";
 
 export class RuntimeAdapterRegistry {
@@ -48,8 +49,13 @@ export class RuntimeAdapterRegistry {
     return (await this.require(binding.kind).discoverArchivedThreads?.(binding)) ?? [];
   }
 
-  async readTranscript(binding: AgentBindingConfig, runtimeThreadId: string) {
-    return (await this.require(binding.kind).readTranscript?.(binding, runtimeThreadId)) ?? [];
+  async readTranscript(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeTranscriptSnapshot> {
+    return (
+      (await this.require(binding.kind).readTranscript?.(binding, runtimeThreadId)) ?? {
+        entries: [],
+        completeness: "live-only",
+      }
+    );
   }
 
   async archiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {

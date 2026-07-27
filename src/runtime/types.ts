@@ -107,6 +107,9 @@ export interface SelectableRuntimeThread extends RuntimeThreadSummary {
   sessionRef: string;
 }
 
+export type RuntimeTranscriptSource = "history" | "fallback";
+export type RuntimeTranscriptCompleteness = "complete" | "partial" | "live-only";
+
 export interface RuntimeTranscriptEntry {
   id: string;
   kind:
@@ -122,8 +125,14 @@ export interface RuntimeTranscriptEntry {
     | "unknown";
   text: string;
   state: "streaming" | "complete" | "error" | "cancelled";
+  source: RuntimeTranscriptSource;
   data?: Record<string, unknown>;
   children?: RuntimeTranscriptEntry[];
+}
+
+export interface RuntimeTranscriptSnapshot {
+  entries: RuntimeTranscriptEntry[];
+  completeness: RuntimeTranscriptCompleteness;
 }
 
 export interface ConnectRuntimeSession {
@@ -140,7 +149,7 @@ export interface ConnectRuntimeAdapter {
   discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
-  readTranscript?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeTranscriptEntry[]>;
+  readTranscript?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeTranscriptSnapshot>;
   archiveThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;
   unarchiveThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;
   deleteThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;

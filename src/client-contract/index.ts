@@ -9,6 +9,7 @@ export interface TranscriptBlockContentBase {
   origin: TranscriptOrigin;
   state: TranscriptState;
   plainText: string;
+  runtimeSource?: "live" | "history" | "fallback";
 }
 
 export interface TranscriptBlockMetadata {

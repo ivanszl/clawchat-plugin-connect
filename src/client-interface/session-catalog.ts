@@ -103,7 +103,9 @@ export class SessionCatalog {
       status: entry.status,
       runtimeThreadAvailable,
       activeTurnId: null,
-      transcriptCompleteness: runtimeThreadAvailable ? "complete" : "live-only",
+      transcriptCompleteness:
+        this.options.transcriptProjection.completeness(normalized) ??
+        (runtimeThreadAvailable ? "partial" : "live-only"),
       pendingInteractions,
       allowedActions: entry.isArchived
         ? ["unarchive", "delete"]
