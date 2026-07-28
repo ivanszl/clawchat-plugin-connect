@@ -193,11 +193,11 @@ describe("Codex app-server runtime adapter", () => {
     const second = await collect(session);
     const history = await adapter.readActivity?.(agent, "thread-new");
 
-    expect(first.find((activity) => activity.id === "a1")?.position).toBe("0.1");
-    expect(second.find((activity) => activity.id === "a2")?.position).toBe("1.1");
+    expect(first.find((activity) => activity.id === "a1")?.position).toBe("0.2");
+    expect(second.find((activity) => activity.id === "a2")?.position).toBe("1.2");
     expect(
       history?.activities.filter((activity) => activity.kind === "assistant").map((activity) => activity.position),
-    ).toEqual(["0.1", "1.1"]);
+    ).toEqual(["0.2", "1.2"]);
   });
 
   it("uses interactive approvals when a legacy Binding has no stored policy", async () => {

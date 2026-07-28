@@ -160,6 +160,7 @@ export interface RuntimeTranscriptEntry {
 export interface RuntimeActivity {
   id: string;
   aliases?: string[];
+  /** Runtime Thread-local `<turn ordinal>.<item ordinal>`; ordinals are zero-based and decimal. */
   position: string;
   parentId: string | null;
   kind: RuntimeTranscriptEntry["kind"] | "error";
@@ -168,6 +169,14 @@ export interface RuntimeActivity {
   source: "live" | RuntimeTranscriptSource;
   data?: Record<string, unknown>;
   children?: RuntimeActivity[];
+}
+
+export function runtimeActivityOrdinal(position: string): { turn: number; item: number } | null {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(position);
+  if (!match) return null;
+  const turn = Number(match[1]);
+  const item = Number(match[2]);
+  return Number.isSafeInteger(turn) && Number.isSafeInteger(item) ? { turn, item } : null;
 }
 
 export interface RuntimeActivitySnapshot {

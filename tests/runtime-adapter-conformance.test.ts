@@ -1,8 +1,14 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { TranscriptProjection } from "../src/client-interface/transcript-projection";
+import { defaultConfig } from "../src/config";
 import { createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { releasedRuntimeAdapters } from "../src/runtime/released-adapters";
-import { type ConnectRuntimeAdapter, RuntimeLifecycleError } from "../src/runtime/types";
+import { type ConnectRuntimeAdapter, RuntimeLifecycleError, runtimeActivityOrdinal } from "../src/runtime/types";
+import { createStateStore } from "../src/state";
 import type { AgentBindingConfig } from "../src/types";
 
 interface AdapterHarness {
@@ -56,11 +62,75 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
       expect(first.activities).toHaveLength(201);
       expect(new Set(first.activities.map((activity) => activity.id))).toHaveProperty("size", 201);
       expect(new Set(first.activities.map((activity) => activity.position))).toHaveProperty("size", 201);
+      expect(first.activities.every((activity) => runtimeActivityOrdinal(activity.position) !== null)).toBe(true);
       expect(first.activities.every((activity) => activity.text === "same output")).toBe(true);
       expect(
         first.activities.flatMap((activity) => activity.aliases ?? []).every((alias) => alias.trim().length > 0),
       ).toBe(true);
       await registry.close();
+    });
+
+    it("converges alias, current-state, replay, and out-of-order Activity through Projection", async () => {
+      const { adapter, binding } = createHarness();
+      const registry = new RuntimeAdapterRegistry([adapter]);
+      const directory = await mkdtemp(join(tmpdir(), "connect-adapter-conformance-projection-"));
+      const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+      try {
+        const config = defaultConfig();
+        config.agents = { codex: binding };
+        await store.upsertRuntimeSession({
+          chatId: "conformance",
+          sessionId: "conformance",
+          agentId: "codex",
+          runtimeSessionId: "thread-1",
+          name: "Conformance",
+          hasMessages: true,
+          isCurrent: true,
+        });
+        const session = await store.getCurrentRuntimeSession("conformance", "codex");
+        if (!session) throw new Error("conformance Session was not created");
+        const [earlier, later] = (await registry.readActivity(binding, "thread-1")).activities;
+        if (!earlier || !later) throw new Error("conformance Adapter returned insufficient Activity");
+        const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+
+        await projection.upsertRuntimeActivity(session.sessionRef, {
+          id: "turn-marker",
+          position: "0.0",
+          parentId: null,
+          kind: "progress",
+          text: "turn started",
+          state: "streaming",
+          source: "live",
+        });
+        await projection.upsertRuntimeActivity(session.sessionRef, {
+          ...later,
+          text: "later",
+          source: "live",
+        });
+        await projection.upsertRuntimeActivity(session.sessionRef, {
+          ...earlier,
+          id: "live-earlier",
+          text: "earlier streaming",
+          state: "streaming",
+          source: "live",
+        });
+        const completedEarlier = {
+          ...earlier,
+          aliases: [...(earlier.aliases ?? []), "live-earlier"],
+          text: "earlier complete",
+          state: "complete" as const,
+          source: "history" as const,
+        };
+        await projection.upsertRuntimeActivity(session.sessionRef, completedEarlier);
+        await projection.upsertRuntimeActivity(session.sessionRef, completedEarlier);
+
+        const blocks = await store.listTranscriptBlocks(session.sessionRef);
+        expect(blocks.map((block) => block.plainText)).toEqual(["turn started", "earlier complete", "later"]);
+        expect(new Set(blocks.map((block) => block.sequence)).size).toBe(3);
+      } finally {
+        await store.close();
+        await registry.close();
+      }
     });
 
     it("applies supported lifecycle operations idempotently", async () => {
@@ -76,6 +146,7 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
       await registry.deleteThread(harness.binding, "thread-1");
 
       expect(harness.lifecycleCalls()).toEqual(["archive", "restore", "delete"]);
+      await expect(registry.archiveThread(harness.binding, "thread-1")).rejects.toMatchObject({ code: "not-found" });
       await registry.close();
     });
 
@@ -167,7 +238,7 @@ runtimeAdapterConformance("reference", () => {
         activities: Array.from({ length: 201 }, (_, index) => ({
           id: `activity-${index}`,
           aliases: [`live-${index}`],
-          position: `${index}`,
+          position: `0.${index + 1}`,
           parentId: null,
           kind: "assistant" as const,
           text: "same output",

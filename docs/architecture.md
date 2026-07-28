@@ -102,7 +102,8 @@ progress, usage, interaction, error, and unknown blocks. Runtime Adapters transl
 fallback records into the same Runtime Activity contract before crossing the seam. Adapter-owned IDs, positions, and
 aliases become stable block identity and ordering; Projection never correlates runtime output by rendered text.
 Codex positions use native turn and item ordinals across live and historical Activity, and Projection reserves
-per-turn sequence ranges so replay or out-of-order delivery converges to the same order.
+per-turn sequence ranges so replay or out-of-order delivery converges to the same order. All Adapters use the
+runtime-neutral `<turn ordinal>.<item ordinal>` decimal position syntax; item `0` is reserved for turn-level Activity.
 Adapters report `complete`, `partial`, or `live-only` completeness plus explicit identity, correlation, or ordering
 limitations. Session snapshot polling reconciles work performed by another Codex surface, while live Connect turns
 publish the same Activity upserts immediately through SSE.

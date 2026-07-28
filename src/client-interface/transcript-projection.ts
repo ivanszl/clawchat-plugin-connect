@@ -9,7 +9,7 @@ import type {
 } from "../client-contract";
 import { getAgentBinding } from "../config";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
-import type { RuntimeActivity, RuntimeTranscriptCompleteness } from "../runtime/types";
+import { type RuntimeActivity, type RuntimeTranscriptCompleteness, runtimeActivityOrdinal } from "../runtime/types";
 import type { ConnectStateStore } from "../state";
 import type { ConnectConfig, RuntimeSessionRecord } from "../types";
 
@@ -66,22 +66,7 @@ export class TranscriptProjection {
     const snapshot = await this.options.runtimeAdapters.readActivity(binding, session.runtimeSessionId);
     this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), snapshot.completeness);
     for (const activity of snapshot.activities) {
-      const input = this.fromRuntimeActivity(session.sessionRef, activity);
-      let rekeyed = false;
-      for (const alias of activity.aliases ?? []) {
-        if (alias === activity.id) continue;
-        const block = await this.options.stateStore.rekeyTranscriptBlock(
-          session.sessionRef,
-          stableBlockId(session.sessionRef, alias),
-          input,
-        );
-        if (block) {
-          rekeyed = true;
-          break;
-        }
-      }
-      if (rekeyed) continue;
-      await this.options.stateStore.upsertTranscriptBlock(session.sessionRef, input);
+      await this.upsertRuntimeActivity(session.sessionRef, activity);
     }
   }
 
@@ -121,9 +106,17 @@ export class TranscriptProjection {
   }
 
   async upsertRuntimeActivity(sessionRef: string, activity: RuntimeActivity): Promise<TranscriptBlock> {
-    return (
-      await this.options.stateStore.upsertTranscriptBlock(sessionRef, this.fromRuntimeActivity(sessionRef, activity))
-    ).block;
+    const input = this.fromRuntimeActivity(sessionRef, activity);
+    for (const alias of activity.aliases ?? []) {
+      if (alias === activity.id) continue;
+      const block = await this.options.stateStore.rekeyTranscriptBlock(
+        sessionRef,
+        stableBlockId(sessionRef, alias),
+        input,
+      );
+      if (block) return block;
+    }
+    return (await this.options.stateStore.upsertTranscriptBlock(sessionRef, input)).block;
   }
 
   private fromRuntimeActivity(sessionRef: string, entry: RuntimeActivity): EmbeddedTranscriptBlock {
@@ -203,9 +196,9 @@ export class TranscriptProjection {
 }
 
 function runtimeActivitySequence(position: string): number | undefined {
-  const parts = position.split(".").map((part) => Number.parseInt(part, 10));
-  if (parts.length === 0 || parts.some((part) => !Number.isSafeInteger(part) || part < 0)) return undefined;
-  const [turn = 0, item = 0] = parts;
+  const ordinal = runtimeActivityOrdinal(position);
+  if (!ordinal) return undefined;
+  const { turn, item } = ordinal;
   if (turn >= 9_000_000_000 || item >= 1_000_000) return undefined;
   return (turn + 1) * 1_000_000 + item;
 }

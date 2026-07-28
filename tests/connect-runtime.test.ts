@@ -1262,7 +1262,10 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       ]),
     });
     const firstRelease = await runtime.claimSessionLifecycle(sessionRef);
-    await expect(runtime.claimSessionLifecycle(sessionRef)).rejects.toThrow("lifecycle operation is in progress");
+    await expect(runtime.claimSessionLifecycle(sessionRef)).rejects.toMatchObject({
+      code: "session-state-conflict",
+      message: expect.stringContaining("lifecycle operation is in progress"),
+    });
     await firstRelease();
     const secondRelease = await runtime.claimSessionLifecycle(sessionRef);
     await secondRelease();

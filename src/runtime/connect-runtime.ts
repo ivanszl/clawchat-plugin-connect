@@ -207,24 +207,36 @@ export class ConnectRuntime {
   }
 
   async claimSessionLifecycle(sessionRef: string): Promise<() => Promise<void>> {
-    const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
-    if (!current) {
-      const target = await this.options.stateStore.getSessionRefTarget(sessionRef);
-      if (!target || target.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
-      return await this.queue.acquire(`discovered:${sessionRef.toUpperCase()}`, `Session ${sessionRef}`);
+    try {
+      const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
+      if (!current) {
+        const target = await this.options.stateStore.getSessionRefTarget(sessionRef);
+        if (!target || target.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
+        return await this.queue.acquire(`discovered:${sessionRef.toUpperCase()}`, `Session ${sessionRef}`);
+      }
+      if (current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
+      const key = sessionKey(current.chatId, current.sessionId);
+      return await this.queue.acquire(
+        key,
+        `Session ${current.sessionRef}`,
+        async () => {
+          await this.executor.cancel(current.sessionRef);
+        },
+        async () => {
+          await this.executor.release(current.sessionRef);
+        },
+      );
+    } catch (error) {
+      if (error instanceof SessionLifecycleError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (/^Unknown Session Ref:/u.test(message)) {
+        throw new SessionLifecycleError("session-not-found", message);
+      }
+      if (/lifecycle operation is in progress/iu.test(message)) {
+        throw new SessionLifecycleError("session-state-conflict", message);
+      }
+      throw error;
     }
-    if (current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
-    const key = sessionKey(current.chatId, current.sessionId);
-    return await this.queue.acquire(
-      key,
-      `Session ${current.sessionRef}`,
-      async () => {
-        await this.executor.cancel(current.sessionRef);
-      },
-      async () => {
-        await this.executor.release(current.sessionRef);
-      },
-    );
   }
 
   async dispose(): Promise<void> {

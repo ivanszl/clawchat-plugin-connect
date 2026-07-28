@@ -80,11 +80,15 @@ export class RuntimeAdapterRegistry {
         "unsupported",
         `${binding.kind} Runtime Adapter does not support thread archiving`,
       );
-    if (
-      adapter.discoverArchivedThreads &&
-      (await adapter.discoverArchivedThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId)
-    ) {
-      return;
+    if (adapter.discoverArchivedThreads) {
+      if ((await adapter.discoverArchivedThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId))
+        return;
+      if (
+        adapter.discoverAllThreads &&
+        !(await adapter.discoverAllThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId)
+      ) {
+        throw new RuntimeLifecycleError("not-found", `Runtime Thread ${runtimeThreadId} was not found`);
+      }
     }
     await runLifecycleMutation("archive", () => operation(binding, runtimeThreadId));
   }
@@ -97,11 +101,15 @@ export class RuntimeAdapterRegistry {
         "unsupported",
         `${binding.kind} Runtime Adapter does not support thread restoration`,
       );
-    if (
-      adapter.discoverAllThreads &&
-      (await adapter.discoverAllThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId)
-    ) {
-      return;
+    if (adapter.discoverAllThreads) {
+      if ((await adapter.discoverAllThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId))
+        return;
+      if (
+        adapter.discoverArchivedThreads &&
+        !(await adapter.discoverArchivedThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId)
+      ) {
+        throw new RuntimeLifecycleError("not-found", `Runtime Thread ${runtimeThreadId} was not found`);
+      }
     }
     await runLifecycleMutation("restore", () => operation(binding, runtimeThreadId));
   }

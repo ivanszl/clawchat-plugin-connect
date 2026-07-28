@@ -191,7 +191,7 @@ async function readCodexThreadTranscript(
   const seenChildThreads = new Set<string>();
   for (const [turnIndex, turn] of (response.thread.turns ?? []).entries()) {
     for (const [itemIndex, item] of turn.items.entries()) {
-      const position = `${turnIndex}.${itemIndex}`;
+      const position = `${turnIndex}.${itemIndex + 1}`;
       if (item.type === "subAgentActivity") {
         const childThreadId = stringField(item.agentThreadId);
         if (!childThreadId || lineage.has(childThreadId) || seenChildThreads.has(childThreadId)) continue;
@@ -519,7 +519,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       interactionControllersByRequestId: new Map(),
       activityPositions: new Map(),
       turnPositionPrefix,
-      nextActivityPosition: 1,
+      nextActivityPosition: 2,
     };
     this.activeTurn = active;
     const removeNotificationListener = this.client.onNotification((notification) => {
