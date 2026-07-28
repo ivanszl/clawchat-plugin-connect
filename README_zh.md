@@ -1,6 +1,6 @@
 <div align="center">
   <p><a href="./README.md">English</a> | <strong>中文</strong></p>
-  <img src="./docs/assets/clawchat-connect.svg" alt="ClawChat Connect 标志" width="152" />
+  <a href="https://clawling.com/chat/"><img src="./docs/assets/clawchat.svg" alt="ClawChat 标志" width="152" /></a>
   <h1>ClawChat Connect</h1>
   <p><strong>把运行在你电脑上的编程 Agent 接入任意 ClawChat 对话。</strong></p>
   <p>

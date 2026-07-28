@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-labelledby="title desc">
+  <title id="title">ClawChat logo</title>
+  <desc id="desc">An orange square icon with a white chat bubble mascot, two antennae, orange eyes, a light gray lower edge, and a soft shadow.</desc>
+  <defs>
+    <filter id="softShadow" x="-8%" y="-8%" width="120%" height="125%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="15" dy="20" stdDeviation="2.4" flood-color="#7C3D10" flood-opacity="0.45"/>
+    </filter>
+    <radialGradient id="eyeOrange" cx="42%" cy="35%" r="70%">
+      <stop offset="0" stop-color="#F58220"/>
+      <stop offset="1" stop-color="#D96A1C"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="#F58220"/>
+
+  <g filter="url(#softShadow)">
+    <g fill="none" stroke="#fff" stroke-width="32" stroke-linecap="round">
+      <path d="M356 282 C343 235 316 192 284 166"/>
+      <path d="M668 282 C681 235 708 192 740 166"/>
+    </g>
+
+    <g fill="#fff">
+      <circle cx="270" cy="160" r="45"/>
+      <circle cx="754" cy="160" r="45"/>
+    </g>
+
+    <path
+      fill="#dde7eb"
+      d="M512 248
+         C710 248 872 368 872 519
+         C872 673 713 785 515 785
+         C491 785 468 783 446 779
+         C423 811 384 842 332 855
+         C314 860 305 848 317 835
+         C345 804 343 780 325 758
+         C224 720 153 630 153 520
+         C153 367 313 248 512 248 Z"/>
+
+    <path
+      fill="#fff"
+      d="M512 248
+         C710 248 872 367 872 518
+         C872 617 797 693 681 729
+         C567 764 421 758 312 710
+         C215 667 153 593 153 520
+         C153 367 313 248 512 248 Z"/>
+  </g>
+
+  <g>
+    <circle cx="382" cy="514" r="47" fill="url(#eyeOrange)"/>
+    <circle cx="645" cy="514" r="47" fill="url(#eyeOrange)"/>
+  </g>
+</svg>
