@@ -2,6 +2,25 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.12] - 2026-07-28
+
+### Added
+
+- Added a released Runtime Adapter catalog and shared conformance suite that gates every released adapter.
+- Added stable runtime-neutral Activity positions, aliases, replay ordering, and lifecycle error contracts.
+
+### Changed
+
+- Unified live, historical, and fallback output behind the Runtime Activity seam.
+- Shared one long-lived Codex app-server process across catalog and Session work for each Agent Binding.
+- Separated Session lifecycle claims, turn scheduling, execution, and Client/ClawChat Turn Surfaces.
+
+### Fixed
+
+- Fixed archive and delete races with active turns, including discovered but unadopted Runtime Threads.
+- Fixed aborted Runtime Interactions remaining actionable and duplicate or out-of-order Transcript projection.
+- Fixed unsupported, missing, and concurrent lifecycle operations leaking as internal Client errors.
+
 ## [0.1.0-alpha.11] - 2026-07-28
 
 ### Added
