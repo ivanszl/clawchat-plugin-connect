@@ -68,10 +68,8 @@ export class TranscriptProjection {
     this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), snapshot.completeness);
     for (const entry of snapshot.entries) {
       const input = this.fromRuntimeHistory(session.sessionRef, entry);
-      if (input.type === "message") {
-        const rekeyed = await this.options.stateStore.rekeyMatchingTranscriptMessage(session.sessionRef, input);
-        if (rekeyed) continue;
-      }
+      const rekeyed = await this.options.stateStore.rekeyMatchingTranscriptBlock(session.sessionRef, input);
+      if (rekeyed) continue;
       await this.options.stateStore.upsertTranscriptBlock(session.sessionRef, input);
     }
   }

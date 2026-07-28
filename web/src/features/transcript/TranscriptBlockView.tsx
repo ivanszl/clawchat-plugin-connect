@@ -52,7 +52,11 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
             ) : null,
           )}
           {visibleMessageMarkdown(block) ? (
-            <SafeMarkdown markdown={visibleMessageMarkdown(block)} isStreaming={block.state === "streaming"} />
+            <SafeMarkdown
+              markdown={visibleMessageMarkdown(block)}
+              isStreaming={block.state === "streaming"}
+              preserveLineBreaks
+            />
           ) : null}
         </ChatMessageBubble>
       </ChatMessage>
@@ -363,9 +367,18 @@ function deadlineRemaining(deadline: string | null): number | null {
   return Number.isFinite(timestamp) ? timestamp - Date.now() : null;
 }
 
-function SafeMarkdown({ markdown, isStreaming }: { markdown: string; isStreaming: boolean }) {
+function SafeMarkdown({
+  markdown,
+  isStreaming,
+  preserveLineBreaks = false,
+}: {
+  markdown: string;
+  isStreaming: boolean;
+  preserveLineBreaks?: boolean;
+}) {
   return (
     <Markdown
+      className={preserveLineBreaks ? "transcript-message-markdown" : undefined}
       headingLevelStart={3}
       isStreaming={isStreaming}
       autolink="gfm"

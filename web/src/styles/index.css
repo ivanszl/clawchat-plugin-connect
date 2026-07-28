@@ -254,6 +254,10 @@ textarea {
   min-width: 0;
 }
 
+.transcript-message-markdown {
+  white-space: pre-wrap;
+}
+
 .runtime-block {
   max-width: 780px;
   margin-inline: auto;
@@ -495,6 +499,25 @@ textarea {
 
 .composer-model-trigger {
   max-width: min(280px, 42vw);
+}
+
+.composer-working-control,
+.composer-working-indicator {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.composer-working-control {
+  gap: var(--spacing-2);
+}
+
+.composer-working-indicator {
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .settings-page {

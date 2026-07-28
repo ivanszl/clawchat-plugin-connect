@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startClientInterface } from "../../src/client-interface/server";
@@ -9,7 +9,11 @@ import type { RuntimeTranscriptEntry } from "../../src/runtime/types";
 import { createStateStore } from "../../src/state";
 
 const directory = await mkdtemp(join(tmpdir(), "connect-client-preview-"));
-const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ", "23456789", "BCDEFGHJ"];
+const discoveredWorkspace = join(directory, "discovered-workspace");
+const archivedDiscoveredWorkspace = join(directory, "archived", "discovered-workspace");
+await mkdir(discoveredWorkspace);
+await mkdir(archivedDiscoveredWorkspace, { recursive: true });
+const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ", "23456789", "BCDEFGHJ", "CDEFGHJK"];
 const stateStore = createStateStore({
   dbPath: join(directory, "state.sqlite"),
   sessionRefFactory: () => {
@@ -27,7 +31,7 @@ await stateStore.upsertActivation({
   ownerUserId: "usr_preview_owner",
   conversationId: "preview-conversation",
 });
-await stateStore.insertProject({ projectId: "connect", name: "clawchat-plugin-connect", rootPath: process.cwd() });
+await stateStore.insertProject({ projectId: "connect", name: "connect-qa", rootPath: process.cwd() });
 await stateStore.upsertRuntimeSession({
   chatId: "chat-project",
   sessionId: "session-project",
@@ -188,7 +192,14 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
         runtimeThreadId: "thread-unmanaged",
         name: "Codex TUI existing thread",
         updatedAt: Date.now() - 2_000,
-        workingDirectory: process.cwd(),
+        workingDirectory: discoveredWorkspace,
+      },
+      {
+        runtimeThreadId: "thread-unmanaged-archived",
+        name: "Archived Codex TUI thread",
+        updatedAt: Date.now() - 3_000,
+        workingDirectory: archivedDiscoveredWorkspace,
+        isArchived: true,
       },
     ],
     readTranscript: async (_binding, runtimeThreadId) => ({

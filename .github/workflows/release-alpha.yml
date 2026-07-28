@@ -145,7 +145,13 @@ jobs:
           bun-windows-arm64 windows arm64
           bun-windows-x64 windows x64
           TARGETS
-          cp install.sh install.ps1 CHANGELOG.md build/release/
+          sed "s/^default_version=.*/default_version=\"${GITHUB_REF_NAME}\"/" \
+            install.sh > build/release/install.sh
+          sed "s/else { \"v[^\"]*\" }/else { \"${GITHUB_REF_NAME}\" }/" \
+            install.ps1 > build/release/install.ps1
+          grep -F "default_version=\"${GITHUB_REF_NAME}\"" build/release/install.sh
+          grep -F "else { \"${GITHUB_REF_NAME}\" }" build/release/install.ps1
+          cp CHANGELOG.md build/release/
           cd build/release
           sha256sum clawchat-connect-*.tar.gz clawchat-connect-*.zip install.sh install.ps1 CHANGELOG.md > checksums.txt
 

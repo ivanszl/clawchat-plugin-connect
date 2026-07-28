@@ -189,6 +189,15 @@ export class SessionCatalog {
     return await this.options.stateStore.getRuntimeSessionByRef(normalized);
   }
 
+  async ensureWorkspaceProject(bindingId: string, workspaceId: string): Promise<ProjectRecord | null> {
+    const state = await this.load();
+    const entry = state.view.bindings
+      .find((binding) => binding.bindingId === bindingId)
+      ?.entries.find((candidate) => candidate.workspaceId === workspaceId);
+    const workingDirectory = entry ? state.workingDirectoryByRef.get(entry.sessionRef.toUpperCase()) : null;
+    return workingDirectory ? await this.projects.ensureDiscoveredWorkspace(workingDirectory) : null;
+  }
+
   async archive(sessionRef: string): Promise<boolean> {
     const target = await this.runtimeTarget(sessionRef);
     if (!target || target.entry.isArchived) return false;

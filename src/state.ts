@@ -1497,58 +1497,48 @@ export class ConnectStateStore {
     return expired;
   }
 
-  async rekeyMatchingTranscriptMessage(
-    sessionRef: string,
-    input: Extract<TranscriptBlockInput, { type: "message" }>,
-  ): Promise<TranscriptBlock | null> {
+  async rekeyMatchingTranscriptBlock(sessionRef: string, input: TranscriptBlockInput): Promise<TranscriptBlock | null> {
     const db = await this.requireDb();
-    const stable = await db.get<{ block_id: string }>(
-      "SELECT block_id FROM transcript_blocks WHERE session_ref = ? AND block_id = ?",
-      sessionRef,
-      input.id,
-    );
-    if (stable) return null;
     const rows = await db.all<
       Array<{ block_id: string; revision: number; sequence: number; created_at: number; block_json: string }>
     >(
-      "SELECT block_id, revision, sequence, created_at, block_json FROM transcript_blocks WHERE session_ref = ? AND block_type = 'message' AND plain_text = ? ORDER BY sequence DESC LIMIT 20",
+      "SELECT block_id, revision, sequence, created_at, block_json FROM transcript_blocks WHERE session_ref = ? AND block_type = ? AND plain_text = ? ORDER BY sequence ASC LIMIT 200",
       sessionRef,
+      input.type,
       input.plainText,
     );
+    const stable = rows.find((row) => row.block_id === input.id) ?? null;
     const candidate = rows.find((row) => {
-      if (row.block_id.startsWith("b_")) return false;
+      if (row.block_id === input.id) return false;
       try {
         const block = JSON.parse(row.block_json) as TranscriptBlock;
-        if (block.type !== "message" || block.role !== input.role) return false;
+        if (block.runtimeSource === "live") return sameTranscriptReconciliationPayload(block, input);
+        if (block.type !== "message" || input.type !== "message" || row.block_id.startsWith("b_")) return false;
+        if (block.role !== input.role) return false;
         return block.origin === input.origin || (input.origin === "runtime" && block.origin === "client");
       } catch {
         return false;
       }
     });
     if (!candidate) return null;
-    const previous = JSON.parse(candidate.block_json) as Extract<TranscriptBlock, { type: "message" }>;
+    const previous = JSON.parse(candidate.block_json) as TranscriptBlock;
     const now = Date.now();
+    const preserveOptimisticMessage =
+      previous.type === "message" && input.type === "message" && !candidate.block_id.startsWith("b_");
     const block: TranscriptBlock = {
       ...input,
-      origin: previous.origin,
-      author: previous.author,
-      revision: candidate.revision + 1,
+      ...(preserveOptimisticMessage
+        ? {
+            origin: previous.origin,
+            author: previous.author,
+            ...(previous.media && !input.media ? { media: previous.media } : {}),
+          }
+        : {}),
+      revision: Math.max(candidate.revision, stable?.revision ?? 0) + 1,
       sequence: candidate.sequence,
       createdAt: new Date(candidate.created_at).toISOString(),
       updatedAt: new Date(now).toISOString(),
     };
-    await db.run(
-      "UPDATE transcript_blocks SET block_id = ?, revision = ?, origin = ?, state = ?, plain_text = ?, block_json = ?, updated_at = ? WHERE session_ref = ? AND block_id = ?",
-      block.id,
-      block.revision,
-      block.origin,
-      block.state,
-      block.plainText,
-      JSON.stringify(block),
-      now,
-      sessionRef,
-      candidate.block_id,
-    );
     const removed = {
       type: "transcript.block-removed",
       cursor: 0,
@@ -1556,14 +1546,6 @@ export class ConnectStateStore {
       revision: block.revision,
       blockId: candidate.block_id,
     } satisfies ClientViewEvent;
-    await db.run(
-      "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
-      removed.type,
-      sessionRef,
-      removed.revision,
-      JSON.stringify(removed),
-      now,
-    );
     const upserted = {
       type: "transcript.block-upserted",
       cursor: 0,
@@ -1571,14 +1553,40 @@ export class ConnectStateStore {
       revision: block.revision,
       block,
     } satisfies ClientViewEvent;
-    await db.run(
-      "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
-      upserted.type,
-      sessionRef,
-      upserted.revision,
-      JSON.stringify(upserted),
-      now,
-    );
+    db.transaction((run) => {
+      if (stable) {
+        run("DELETE FROM transcript_blocks WHERE session_ref = ? AND block_id = ?", sessionRef, stable.block_id);
+      }
+      const updated = run(
+        "UPDATE transcript_blocks SET block_id = ?, revision = ?, origin = ?, state = ?, plain_text = ?, block_json = ?, updated_at = ? WHERE session_ref = ? AND block_id = ?",
+        block.id,
+        block.revision,
+        block.origin,
+        block.state,
+        block.plainText,
+        JSON.stringify(block),
+        now,
+        sessionRef,
+        candidate.block_id,
+      );
+      if (updated.changes !== 1) throw new Error("matching transcript block changed during reconciliation");
+      run(
+        "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        removed.type,
+        sessionRef,
+        removed.revision,
+        JSON.stringify(removed),
+        now,
+      );
+      run(
+        "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        upserted.type,
+        sessionRef,
+        upserted.revision,
+        JSON.stringify(upserted),
+        now,
+      );
+    });
     return block;
   }
 
@@ -1928,6 +1936,15 @@ function sameTranscriptPayload(stored: TranscriptBlock, input: TranscriptBlockIn
   const storedPayload = { ...stored } as Record<string, unknown>;
   const inputPayload = { ...input } as Record<string, unknown>;
   for (const key of ["sequence", "revision", "createdAt", "updatedAt"]) {
+    delete storedPayload[key];
+    delete inputPayload[key];
+  }
+  return JSON.stringify(storedPayload) === JSON.stringify(inputPayload);
+}
+function sameTranscriptReconciliationPayload(stored: TranscriptBlock, input: TranscriptBlockInput): boolean {
+  const storedPayload = { ...stored } as Record<string, unknown>;
+  const inputPayload = { ...input } as Record<string, unknown>;
+  for (const key of ["id", "runtimeSource", "state", "sequence", "revision", "createdAt", "updatedAt"]) {
     delete storedPayload[key];
     delete inputPayload[key];
   }

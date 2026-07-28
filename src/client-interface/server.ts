@@ -162,6 +162,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-binding", "bindingId is required");
             if (body.projectId !== null && typeof body.projectId !== "string")
               return errorResponse(400, "invalid-project", "projectId must be a string or null");
+            if (body.workspaceId !== undefined && body.workspaceId !== null && typeof body.workspaceId !== "string")
+              return errorResponse(400, "invalid-workspace", "workspaceId must be a string or null");
+            if (body.projectId && body.workspaceId)
+              return errorResponse(400, "invalid-workspace", "projectId and workspaceId are mutually exclusive");
             if (body.name !== null && typeof body.name !== "string")
               return errorResponse(400, "invalid-name", "name must be a string or null");
             if (body.mode !== null && typeof body.mode !== "string")
@@ -178,8 +182,15 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               async () => {
                 const binding = options.config.agents[body.bindingId];
                 if (!binding) return commandError(404, "binding-not-found", "Agent Binding was not found");
-                if (body.projectId && !(await projects.get(body.projectId)))
+                let projectId = body.projectId;
+                if (body.workspaceId) {
+                  const workspaceProject = await catalog.ensureWorkspaceProject(body.bindingId, body.workspaceId);
+                  if (!workspaceProject)
+                    return commandError(400, "invalid-workspace", "Discovered workspace was not found");
+                  projectId = workspaceProject.projectId;
+                } else if (projectId && !(await projects.get(projectId))) {
                   return commandError(400, "invalid-project", "Project was not found");
+                }
                 const name = body.name?.trim() || null;
                 if (name && name.length > 200)
                   return commandError(400, "invalid-name", "Session name must be at most 200 characters");
@@ -203,7 +214,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 await options.stateStore.setSessionIntent({
                   chatId,
                   agentId: body.bindingId,
-                  projectId: body.projectId,
+                  projectId,
                   name,
                   mode: body.mode,
                   model,

@@ -113,6 +113,7 @@ export function SessionNavigation() {
       <NewSessionDialog
         isOpen={newSessionOpen}
         bindings={bootstrap.data?.bindings ?? []}
+        catalogBindings={catalog.data?.bindings ?? []}
         projects={projects.data ?? []}
         onOpenChange={setNewSessionOpen}
         onCreated={(sessionRef) => {
@@ -127,19 +128,21 @@ export function SessionNavigation() {
 function NewSessionDialog({
   isOpen,
   bindings,
+  catalogBindings,
   projects,
   onOpenChange,
   onCreated,
 }: {
   isOpen: boolean;
   bindings: BindingPreferenceView[];
+  catalogBindings: SessionCatalogBindingView[];
   projects: ProjectView[];
   onOpenChange: (open: boolean) => void;
   onCreated: (sessionRef: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [bindingId, setBindingId] = useState(bindings[0]?.bindingId ?? "");
-  const [projectId, setProjectId] = useState("none");
+  const [workspaceSelection, setWorkspaceSelection] = useState("none");
   const [name, setName] = useState("");
   const [mode, setMode] = useState("default");
   const [model, setModel] = useState("default");
@@ -148,12 +151,14 @@ function NewSessionDialog({
     if (!bindings.some((binding) => binding.bindingId === bindingId)) setBindingId(bindings[0]?.bindingId ?? "");
   }, [bindingId, bindings]);
   const binding = bindings.find((candidate) => candidate.bindingId === bindingId) ?? bindings[0];
+  const workspaceOptions = newSessionWorkspaceOptions(catalogBindings, bindingId, projects);
   const selectedModel = binding?.modelOptions.find((candidate) => candidate.id === model);
   const create = useMutation({
     mutationFn: async () =>
       await createSession({
         bindingId,
-        projectId: projectId === "none" ? null : projectId,
+        projectId: workspaceSelection.startsWith("project:") ? workspaceSelection.slice("project:".length) : null,
+        workspaceId: workspaceSelection.startsWith("workspace:") ? workspaceSelection.slice("workspace:".length) : null,
         name: name.trim() || null,
         mode: mode === "default" ? null : mode,
         model: model === "default" ? null : model,
@@ -170,6 +175,7 @@ function NewSessionDialog({
     setMode("default");
     setModel("default");
     setReasoningEffort("default");
+    setWorkspaceSelection("none");
   };
   return (
     <Dialog
@@ -198,12 +204,9 @@ function NewSessionDialog({
               />
               <Selector
                 label="Project"
-                options={[
-                  { value: "none", label: "Non-Project（隔离工作区）" },
-                  ...projects.map((project) => ({ value: project.projectId, label: project.name })),
-                ]}
-                value={projectId}
-                onChange={setProjectId}
+                options={[{ value: "none", label: "Non-Project（隔离工作区）" }, ...workspaceOptions]}
+                value={workspaceSelection}
+                onChange={setWorkspaceSelection}
                 width="100%"
               />
               <Selector
@@ -265,6 +268,29 @@ function NewSessionDialog({
       />
     </Dialog>
   );
+}
+
+function newSessionWorkspaceOptions(
+  bindings: SessionCatalogBindingView[],
+  bindingId: string,
+  projects: ProjectView[],
+): { value: string; label: string }[] {
+  const options = new Map<string, { value: string; label: string }>();
+  const representedProjects = new Set<string>();
+  for (const entry of bindings.find((binding) => binding.bindingId === bindingId)?.entries ?? []) {
+    if (entry.isArchived || !entry.workspaceId || !entry.workspaceName) continue;
+    if (entry.projectId) representedProjects.add(entry.projectId);
+    if (options.has(entry.workspaceId) && !entry.projectId) continue;
+    options.set(entry.workspaceId, {
+      value: entry.projectId ? `project:${entry.projectId}` : `workspace:${entry.workspaceId}`,
+      label: entry.workspaceName,
+    });
+  }
+  for (const project of projects) {
+    if (representedProjects.has(project.projectId)) continue;
+    options.set(`project:${project.projectId}`, { value: `project:${project.projectId}`, label: project.name });
+  }
+  return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
 }
 
 function navigationItems(

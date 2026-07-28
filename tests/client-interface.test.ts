@@ -25,10 +25,10 @@ describe("Connect Client Interface", () => {
     const assetsPath = join(directory, "assets");
     await mkdir(assetsPath);
     await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect test</title>");
-    const sessionRefs = ["ABCDEFGH", "BCDEFGHJ"];
+    const sessionRefs = ["ABCDEFGH", "BCDEFGHJ", "CDEFGHJK", "DEFGHJKM"];
     const store = createStateStore({
       dbPath: join(directory, "state.sqlite"),
-      sessionRefFactory: () => sessionRefs.shift() ?? "CDEFGHJK",
+      sessionRefFactory: () => sessionRefs.shift() ?? "EFGHJKMN",
     });
     openStores.push(store);
     await store.upsertActivation({
@@ -49,12 +49,20 @@ describe("Connect Client Interface", () => {
       hasMessages: true,
       isCurrent: true,
     });
+    const discoveredWorkspaceRoot = join(directory, "discovered-workspace");
+    await mkdir(discoveredWorkspaceRoot);
     const session = await store.getCurrentRuntimeSession("chat-1", "codex");
     if (!session) throw new Error("test session was not created");
     let isArchived = false;
     let isDeleted = false;
     const lifecycleCalls: string[] = [];
     const summary = { runtimeThreadId: "thread-1", name: "First session", updatedAt: 1 };
+    const discoveredSummary = {
+      runtimeThreadId: "thread-discovered",
+      name: "Discovered workspace session",
+      updatedAt: 2,
+      workingDirectory: discoveredWorkspaceRoot,
+    };
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
@@ -78,7 +86,7 @@ describe("Connect Client Interface", () => {
           inputModalities: ["text", "image"],
         },
       ],
-      discoverAllThreads: async () => (!isArchived && !isDeleted ? [summary] : []),
+      discoverAllThreads: async () => (!isArchived && !isDeleted ? [summary, discoveredSummary] : [discoveredSummary]),
       discoverArchivedThreads: async () => (isArchived && !isDeleted ? [{ ...summary, isArchived: true }] : []),
       archiveThread: async (_binding, threadId) => {
         lifecycleCalls.push(`archive:${threadId}`);
@@ -381,6 +389,34 @@ describe("Connect Client Interface", () => {
       reasoningEffort: "xhigh",
       runtimeSessionId: null,
     });
+    const catalogResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/session-catalog?refresh=1");
+    const catalogView = (await catalogResponse.json()) as {
+      bindings: Array<{
+        entries: Array<{ workspaceId: string | null; workspaceName: string | null }>;
+      }>;
+    };
+    const discoveredWorkspace = catalogView.bindings[0]?.entries.find(
+      (entry) => entry.workspaceName === "discovered-workspace",
+    );
+    expect(discoveredWorkspace?.workspaceId).toBeTruthy();
+    const workspaceSession = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
+      method: "POST",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "workspace_session_create_request",
+        bindingId: "codex",
+        projectId: null,
+        workspaceId: discoveredWorkspace?.workspaceId,
+        name: "Created in discovered workspace",
+        mode: "workspace-write",
+        model: null,
+        reasoningEffort: null,
+      }),
+    });
+    expect(workspaceSession.status).toBe(201);
+    const workspaceSessionView = (await workspaceSession.json()) as { sessionRef: string; projectId: string };
+    const materializedWorkspaceProject = await store.getProject(workspaceSessionView.projectId);
+    expect(materializedWorkspaceProject?.rootPath).toBe(await realpath(discoveredWorkspaceRoot));
     expect(enqueueClientTurn).not.toHaveBeenCalled();
     const transcript = await localRequest(
       fetchHandler,

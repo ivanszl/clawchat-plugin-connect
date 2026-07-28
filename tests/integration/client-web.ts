@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { chromium, expect, type Locator, type Page } from "@playwright/test";
 
-const port = 49_000 + Math.floor(Math.random() * 10_000);
+const port = 20_000 + Math.floor(Math.random() * 10_000);
 const origin = `http://127.0.0.1:${port}`;
 const server = Bun.spawn({
   cmd: [process.execPath, "tests/fixtures/client-preview-server.ts"],
@@ -23,6 +23,7 @@ try {
     await verifyTranscriptPresentation(browser, origin);
     await verifyContinueInClawChat(browser, origin);
     await verifyImeConfirmationDoesNotSubmit(browser, origin);
+    await verifyComposerWorkingState(browser, origin);
     const page = await browser.newPage();
     const createRequests: unknown[] = [];
     page.on("request", (request) => {
@@ -35,13 +36,19 @@ try {
     await navigation.getByText("clawchat-plugin-connect", { exact: true }).click();
     await expect(navigation.getByText("ABCDEFGH", { exact: false })).toHaveCount(0);
     await expect(navigation.getByText("JKLMNPQR", { exact: false })).toHaveCount(0);
-    await expect(navigation.getByRole("img", { name: "空闲" })).toHaveCount(3);
+    await expect(navigation.getByRole("img", { name: "空闲" })).toHaveCount(2);
 
     await page.getByRole("button", { name: "新建 Session" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await dialog.getByRole("textbox", { name: /^名称/u }).fill("Browser-created Session");
     await expect(dialog.getByRole("textbox", { name: "首个任务" })).toHaveCount(0);
+    await dialog.getByRole("combobox", { name: "Project" }).click();
+    await expect(page.getByRole("option", { name: "discovered-workspace", exact: true })).toHaveCount(1);
+    await expect(page.getByText("已发现工作区", { exact: false })).toHaveCount(0);
+    await expect(page.getByRole("option", { name: "clawchat-plugin-connect", exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: "connect-qa", exact: true })).toHaveCount(0);
+    await page.keyboard.press("Escape");
     await choose(page, dialog.getByRole("combobox", { name: "Project" }), "clawchat-plugin-connect");
     await choose(page, dialog.getByRole("combobox", { name: "模式" }), "read-only");
     await choose(page, dialog.getByRole("combobox", { name: "模型" }), "Deep model (gpt-deep)");
@@ -71,6 +78,7 @@ try {
     assert.deepEqual(withoutRequestId(createRequests[0]), {
       bindingId: "codex",
       projectId: "connect",
+      workspaceId: null,
       name: "Browser-created Session",
       mode: "read-only",
       model: "gpt-deep",
@@ -144,6 +152,29 @@ async function verifyImeConfirmationDoesNotSubmit(
     await page.waitForTimeout(50);
     assert.equal(submittedTurns, 0, "IME compatibility Enter keyCode must not submit a turn");
     await expect(input).toHaveText("中文");
+  } finally {
+    await page.close();
+  }
+}
+
+async function verifyComposerWorkingState(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
+  const page = await browser.newPage();
+  try {
+    await page.route(/\/client\/v1\/sessions\/ABCDEFGH$/u, async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as Record<string, unknown>;
+      await route.fulfill({ response, json: { ...body, status: "running" } });
+    });
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    await expect(page.getByText("正在工作", { exact: true })).toBeVisible();
+    const stop = page.getByRole("button", { name: "停止", exact: true });
+    await expect(stop).toBeVisible();
+    const stopBox = await stop.boundingBox();
+    assert(
+      stopBox && stopBox.width > stopBox.height,
+      "working state must show a visible Stop label, not an icon alone",
+    );
   } finally {
     await page.close();
   }
@@ -296,6 +327,10 @@ async function verifyTranscriptPresentation(
 
     const transcript = page.locator(".transcript-scroll");
     await expect(transcript.getByText("Agent", { exact: true })).toHaveCount(0);
+    await postPreviewTurn(page, "ABCDEFGH", "问题一\n问题二\n问题三");
+    const multilineMessage = transcript.locator('[data-block-type="message"]').filter({ hasText: "问题一" });
+    await expect(multilineMessage).toHaveCount(1);
+    await expect.poll(async () => await multilineMessage.innerText()).toContain("问题一\n问题二\n问题三");
     const group = transcript
       .locator("[data-transcript-group]")
       .filter({ hasText: "App Server 已成为 Codex 的唯一生产协议" });

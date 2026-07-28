@@ -331,6 +331,7 @@ export interface CreateSessionRequest {
   requestId: string;
   bindingId: string;
   projectId: string | null;
+  workspaceId?: string | null;
   name: string | null;
   mode: string | null;
   model: string | null;

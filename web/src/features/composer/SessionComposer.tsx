@@ -1,8 +1,9 @@
 import { Button } from "@astryxdesign/core/Button";
 import { ChatComposer, ChatComposerDrawer, ChatComposerInput, ChatSendButton } from "@astryxdesign/core/Chat";
 import { Icon } from "@astryxdesign/core/Icon";
+import { Spinner } from "@astryxdesign/core/Spinner";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { MessageCircle, Paperclip, X } from "lucide-react";
+import { MessageCircle, Paperclip, Square, X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { cancelTurn, clientKeys, startTurn, uploadMedia } from "../../client-interface/query-options";
 
@@ -91,6 +92,7 @@ export function SessionComposer({
   });
   const error = attachmentError ?? send.error?.message ?? stop.error?.message;
   const composerDisabled = !canSend || hasPendingInteraction || send.isPending;
+  const isAgentWorking = Boolean(acceptedTurnId) || isRuntimeActive;
   return (
     <div className="composer-region">
       <ChatComposer
@@ -206,18 +208,35 @@ export function SessionComposer({
         }
         sendActions={modelControl}
         sendButton={
-          <ChatSendButton
-            isStopShown={Boolean(acceptedTurnId) || isRuntimeActive}
-            isDisabled={composerDisabled || (!value.trim() && attachments.length === 0)}
-            onSend={() => submit(value)}
-            onStop={() => {
-              if (!stop.isPending) stop.mutate();
-            }}
-          />
+          send.isPending ? (
+            <Button label="发送中" isLoading isDisabled size="md" variant="primary" />
+          ) : isAgentWorking ? (
+            <div className="composer-working-control">
+              <span className="composer-working-indicator">
+                <Spinner size="sm" aria-label="Agent 正在工作" />
+                正在工作
+              </span>
+              <Button
+                label="停止"
+                tooltip="停止当前任务"
+                icon={<Icon icon={Square} size="sm" />}
+                size="md"
+                variant="secondary"
+                isLoading={stop.isPending}
+                isDisabled={stop.isPending}
+                onClick={() => stop.mutate()}
+              />
+            </div>
+          ) : (
+            <ChatSendButton
+              isDisabled={composerDisabled || (!value.trim() && attachments.length === 0)}
+              onSend={() => submit(value)}
+            />
+          )
         }
       />
       <div className="sr-only" aria-live="polite">
-        {send.isPending ? "消息正在提交" : acceptedTurnId ? "Agent 正在处理" : ""}
+        {send.isPending ? "消息正在提交" : isAgentWorking ? "Agent 正在工作，可以点击停止" : ""}
       </div>
     </div>
   );
