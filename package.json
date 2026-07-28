@@ -24,6 +24,7 @@
     "dist/client",
     "src",
     "README.md",
+    "README_zh.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",

@@ -1,6 +1,35 @@
-# ClawChat Connect
+<div align="center">
+  <p><strong>English</strong> | <a href="./README_zh.md">中文</a></p>
+  <img src="./docs/assets/clawchat-connect.svg" alt="ClawChat Connect logo" width="152" />
+  <h1>ClawChat Connect</h1>
+  <p><strong>Bring a coding agent running on your computer into any ClawChat conversation.</strong></p>
+  <p>
+    <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
+    <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
+    <img alt="Platforms: macOS, Linux, and Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
+    <img alt="Runtime: Codex CLI" src="https://img.shields.io/badge/runtime-Codex%20CLI-f97316?style=flat-square">
+  </p>
+  <p>
+    <a href="#quick-start">Quick start</a> ·
+    <a href="#working-with-a-repository">Projects</a> ·
+    <a href="#connect-client">Connect Client</a> ·
+    <a href="#configuration">Configuration</a> ·
+    <a href="#development">Development</a>
+  </p>
+</div>
 
-ClawChat Connect lets a ClawChat conversation use a coding agent running on your own computer.
+---
+
+ClawChat Connect is a local bridge between ClawChat and coding-agent runtimes. It keeps the agent, its credentials, project files, and runtime history on your computer while making the same persistent Sessions available from ClawChat and the browser-based Connect Client.
+
+## Highlights
+
+- **Chat from anywhere.** Start or resume local coding work from a ClawChat conversation.
+- **Keep projects local.** Project paths and Runtime Threads stay on the machine running Connect.
+- **Continue across surfaces.** ClawChat and Connect Client turns share the same ordered Session.
+- **Bring rich context.** Send images, audio, files, and video references to Codex.
+- **Choose your access.** Use loopback by default, a trusted LAN explicitly, or a Liveware Exposure in ClawChat.
+- **Run as a native user service.** No administrator/root access is required.
 
 The current alpha release supports:
 
@@ -12,6 +41,9 @@ The current alpha release supports:
 - a local browser client for viewing Sessions and sending private local turns.
 
 Only the Codex Runtime Adapter is included today, so a current installation can have one Codex Agent Binding. The runtime interface is adapter-based, but other coding agents are not yet released.
+
+> [!IMPORTANT]
+> ClawChat Connect is alpha software. Review [Local data and security](#local-data-and-security) before enabling trusted-LAN or public Liveware access.
 
 ## Requirements
 
