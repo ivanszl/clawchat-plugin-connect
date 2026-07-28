@@ -71,11 +71,31 @@ export class SessionCatalog {
   }
 
   async view(force = false): Promise<SessionCatalogView> {
-    return (await this.load(force)).view;
+    const cached = (await this.load(force)).view;
+    return {
+      ...cached,
+      bindings: await Promise.all(
+        cached.bindings.map(async (binding) => {
+          const runtimeStatus = await this.options.stateStore.getRuntimeStatus(binding.bindingId);
+          return {
+            ...binding,
+            entries: await Promise.all(
+              binding.entries.map(async (entry) => ({
+                ...entry,
+                status: sessionStatus(
+                  runtimeStatus,
+                  (await this.options.sessionActivity?.(binding.bindingId, entry.sessionRef)) ?? "idle",
+                ),
+              })),
+            ),
+          };
+        }),
+      ),
+    };
   }
 
-  async entry(sessionRef: string): Promise<SessionCatalogEntryView | null> {
-    return (await this.load()).entriesByRef.get(sessionRef.toUpperCase()) ?? null;
+  async entry(sessionRef: string, force = false): Promise<SessionCatalogEntryView | null> {
+    return (await this.load(force)).entriesByRef.get(sessionRef.toUpperCase()) ?? null;
   }
 
   async sessionView(sessionRef: string): Promise<SessionView | null> {
@@ -86,6 +106,8 @@ export class SessionCatalog {
     const target = session ? null : await this.options.stateStore.getSessionRefTarget(normalized);
     const runtimeThreadAvailable = Boolean(session?.runtimeSessionId || target?.runtimeSessionId);
     const binding = getAgentBinding(this.options.config, entry.bindingId);
+    const runtimeStatus = await this.options.stateStore.getRuntimeStatus(entry.bindingId);
+    const activity = (await this.options.sessionActivity?.(entry.bindingId, normalized)) ?? "idle";
     const advertisedModels = await this.options.runtimeAdapters.listModels(binding);
     const modelOptions = advertisedModels ?? [];
     let modelAvailable = true;
@@ -126,7 +148,7 @@ export class SessionCatalog {
       modelSource,
       modelAvailable,
       modelOptions,
-      status: entry.status,
+      status: sessionStatus(runtimeStatus, activity),
       runtimeThreadAvailable,
       activeTurnId: null,
       transcriptCompleteness:
@@ -142,9 +164,9 @@ export class SessionCatalog {
     };
   }
 
-  async ensureProjection(sessionRef: string): Promise<boolean> {
+  async ensureProjection(sessionRef: string, refreshRuntime = false): Promise<boolean> {
     const normalized = sessionRef.toUpperCase();
-    const entry = await this.entry(normalized);
+    const entry = await this.entry(normalized, refreshRuntime);
     if (!entry) return false;
     const session = await this.options.stateStore.getRuntimeSessionByRef(normalized);
     if (session) {

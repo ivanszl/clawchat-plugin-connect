@@ -25,6 +25,11 @@ export interface MessageBlockContent extends TranscriptBlockContentBase {
   type: "message";
   role: "user" | "assistant";
   author: string;
+  sender?: {
+    id: string;
+    displayName: string | null;
+  };
+  conversationType?: "direct" | "group";
   markdown: string;
   media?: Array<{
     kind: "image" | "file" | "audio" | "video";

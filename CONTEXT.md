@@ -112,6 +112,10 @@ _Avoid_: Runtime Event, when implying a transport notification; Transcript Block
 The interaction surface that submitted a turn, either Connect Client or ClawChat. It remains attached to the turn and governs where its Runtime Interactions may be answered.
 _Avoid_: Message Source, Channel
 
+**Message Sender Identity**:
+The stable ClawChat user identity and optional display name attached to a ClawChat-originated user message. It identifies who submitted the message within a direct conversation or group and remains distinct from Turn Origin; authorization uses the stable identity, while presentation uses only the display name.
+_Avoid_: Author, when referring to an authorization identity; Turn Origin
+
 **Turn Surface**:
 The Connect Client or ClawChat interaction surface through which a turn is submitted and whose origin-specific policy governs its Connect-owned input, output, failure, and Runtime Interaction routes. A ClawChat-originated Runtime Interaction may still have an authorized Connect Client response route. The current browser SPA, whether opened locally, on a trusted LAN, or through Liveware Exposure, is one Connect Client Turn Surface rather than separate Web or Liveware origins.
 _Avoid_: Web Origin, Transport, Runtime Adapter

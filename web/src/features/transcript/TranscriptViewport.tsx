@@ -19,6 +19,7 @@ export interface TranscriptViewportProps {
 export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder }: TranscriptViewportProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const loadingOlderRef = useRef(false);
+  const followLatestRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
   const blocks = useMemo(() => mergePages(pages), [pages]);
   const groups = useMemo(() => groupTranscriptBlocks(blocks), [blocks]);
@@ -43,7 +44,7 @@ export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder 
   const paddingAfter = Math.max(0, virtualizer.getTotalSize() - (last?.end ?? 0));
 
   useLayoutEffect(() => {
-    if (!latestBlockRevision) return;
+    if (!latestBlockRevision || !followLatestRef.current) return;
     virtualizer.measure();
     let frame = 0;
     let frameCount = 0;
@@ -65,7 +66,8 @@ export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder 
   const onScroll = () => {
     const element = scrollRef.current;
     if (!element) return;
-    setShowJump(!virtualizer.isAtEnd(160));
+    followLatestRef.current = virtualizer.isAtEnd(160);
+    setShowJump(!followLatestRef.current);
     if (element.scrollTop > 240 || !hasOlder || loadingOlderRef.current) return;
     loadingOlderRef.current = true;
     void loadOlder().finally(() => {
@@ -131,7 +133,11 @@ export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder 
         className="jump-latest"
         isVisible={showJump}
         label="跳到最新消息"
-        onClick={() => virtualizer.scrollToEnd({ behavior: "auto" })}
+        onClick={() => {
+          followLatestRef.current = true;
+          setShowJump(false);
+          virtualizer.scrollToEnd({ behavior: "auto" });
+        }}
       />
     </div>
   );

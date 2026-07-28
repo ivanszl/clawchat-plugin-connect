@@ -19,12 +19,14 @@ try {
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   try {
     await verifyRuntimeApproval(browser, origin);
+    await verifyExternalTuiRefresh(browser, origin);
     await verifySmallWindowNavigation(browser, origin);
     await verifyTranscriptAlwaysFollowsLatest(browser, origin);
     await verifyTranscriptPresentation(browser, origin);
     await verifyContinueInClawChat(browser, origin);
     await verifyImeConfirmationDoesNotSubmit(browser, origin);
     await verifyComposerWorkingState(browser, origin);
+    await verifyComposerReturnsIdleAfterTurn(browser, origin);
     const page = await browser.newPage();
     const createRequests: unknown[] = [];
     page.on("request", (request) => {
@@ -188,7 +190,7 @@ async function verifyImeConfirmationDoesNotSubmit(
 async function verifyComposerWorkingState(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
   const page = await browser.newPage();
   try {
-    await page.route(/\/client\/v1\/sessions\/ABCDEFGH$/u, async (route) => {
+    await page.route(/\/client\/v1\/sessions\/ABCDEFGH(?:\?refresh=1)?$/u, async (route) => {
       const response = await route.fetch();
       const body = (await response.json()) as Record<string, unknown>;
       await route.fulfill({ response, json: { ...body, status: "running" } });
@@ -203,6 +205,24 @@ async function verifyComposerWorkingState(browser: Awaited<ReturnType<typeof chr
       stopBox && stopBox.width > stopBox.height,
       "working state must show a visible Stop label, not an icon alone",
     );
+  } finally {
+    await page.close();
+  }
+}
+
+async function verifyComposerReturnsIdleAfterTurn(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${previewOrigin}/sessions/JKLMNPQR`);
+    const input = page.locator(".session-composer [contenteditable='true']");
+    await input.fill("状态收敛测试");
+    await input.press("Enter");
+    await expect(page.getByText("正在工作", { exact: true })).toBeVisible();
+    await expect(page.getByText("这是 Preview Runtime 的本地回复；它不会发送到 ClawChat。")).toBeVisible();
+    await expect(page.getByText("正在工作", { exact: true })).toHaveCount(0, { timeout: 5_000 });
   } finally {
     await page.close();
   }
@@ -325,17 +345,29 @@ async function verifyTranscriptAlwaysFollowsLatest(
     });
     await expect.poll(async () => await transcript.evaluate((element) => element.scrollTop)).toBe(0);
     const previousScrollHeight = await transcript.evaluate((element) => element.scrollHeight);
-    await postPreviewTurn(page, sessionRef, "强制跟随最新输出");
+    await postPreviewTurn(page, sessionRef, "保持当前阅读位置");
     blockCount += 2;
     await expect.poll(async () => await transcriptBlockCount(page, sessionRef)).toBe(blockCount);
     await expect
       .poll(async () => await transcript.evaluate((element) => element.scrollHeight))
       .toBeGreaterThan(previousScrollHeight);
-    await expect
-      .poll(async () => await bottomDistance(transcript), {
-        message: "Agent output must force the transcript to the end",
-      })
-      .toBeLessThanOrEqual(2);
+    await expect.poll(async () => await transcript.evaluate((element) => element.scrollTop)).toBe(0);
+    await expect(page.getByRole("button", { name: "跳到最新消息" })).toBeVisible();
+    await page.getByRole("button", { name: "跳到最新消息" }).click();
+    await expect.poll(async () => await bottomDistance(transcript)).toBeLessThanOrEqual(2);
+  } finally {
+    await page.close();
+  }
+}
+
+async function verifyExternalTuiRefresh(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    await expect(page.getByText("来自 Codex TUI 的外部消息。", { exact: true })).toHaveCount(0);
+    await page.evaluate(async () => await fetch("/__preview/external-tui-turn", { method: "POST" }));
+    await expect(page.getByText("来自 Codex TUI 的外部消息。", { exact: true })).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("这条回复应在刷新 Session 后同步到 Web。", { exact: true })).toBeVisible();
   } finally {
     await page.close();
   }

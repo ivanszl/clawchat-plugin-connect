@@ -50,6 +50,16 @@ export function SessionComposer({
   useEffect(() => {
     if (!isRuntimeActive) setAcceptedTurnId(null);
   }, [isRuntimeActive]);
+  useEffect(() => {
+    if (!acceptedTurnId && !isRuntimeActive) return;
+    const refresh = () => {
+      void queryClient.invalidateQueries({ queryKey: clientKeys.session(sessionRef), refetchType: "active" });
+      void queryClient.invalidateQueries({ queryKey: clientKeys.catalog, refetchType: "active" });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 1_000);
+    return () => window.clearInterval(timer);
+  }, [acceptedTurnId, isRuntimeActive, queryClient, sessionRef]);
 
   const send = useMutation({
     mutationFn: async ({ prompt, files }: { prompt: string; files: File[] }) => {

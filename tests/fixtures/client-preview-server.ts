@@ -156,6 +156,26 @@ const transcripts = new Map<string, RuntimeTranscriptEntry[]>([
     ],
   ],
 ]);
+let projectThreadUpdatedAt = Date.now();
+function appendExternalTuiTurn() {
+  transcripts.get("thread-project")?.push(
+    {
+      id: "tui-external-user",
+      kind: "user",
+      text: "来自 Codex TUI 的外部消息。",
+      state: "complete",
+      source: "history",
+    },
+    {
+      id: "tui-external-assistant",
+      kind: "assistant",
+      text: "这条回复应在刷新 Session 后同步到 Web。",
+      state: "complete",
+      source: "history",
+    },
+  );
+  projectThreadUpdatedAt += 1_000;
+}
 
 const runtimeAdapters = new RuntimeAdapterRegistry([
   {
@@ -185,7 +205,7 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
       {
         runtimeThreadId: "thread-project",
         name: "App Server 与 Web Client",
-        updatedAt: Date.now(),
+        updatedAt: projectThreadUpdatedAt,
         workingDirectory: process.cwd(),
       },
       { runtimeThreadId: "thread-local", name: "Non-Project scratch", updatedAt: Date.now() - 1_000 },
@@ -217,6 +237,7 @@ config.defaultAgent = "codex";
 config.agents = { codex: { kind: "codex", displayName: "Codex · Local" } };
 const transcriptProjection = new TranscriptProjection({ stateStore, config, runtimeAdapters });
 const runtimeInteractions = new RuntimeInteractionCoordinator(transcriptProjection);
+const activityBySessionRef = new Map<string, "running" | "queued" | "idle">();
 const previewApproval = runtimeInteractions.request(
   {
     kind: "approval",
@@ -241,15 +262,22 @@ const runtime = {
   deviceId: "preview",
   close: async () => undefined,
   enqueueClientTurn: async (sessionRef: string, prompt: string) => {
-    await transcriptProjection.appendUserMessage({ sessionRef, text: prompt, origin: "client", author: "You" });
-    await transcriptProjection.appendRuntimeOutput(sessionRef, {
-      kind: "final",
-      text: "这是 Preview Runtime 的本地回复；它不会发送到 ClawChat。",
-      itemId: `preview:${crypto.randomUUID()}`,
-    });
-    return { sessionRef, turnId: crypto.randomUUID() };
+    const turnId = crypto.randomUUID();
+    activityBySessionRef.set(sessionRef, "running");
+    void (async () => {
+      await transcriptProjection.appendUserMessage({ sessionRef, text: prompt, origin: "client", author: "You" });
+      await Bun.sleep(250);
+      await transcriptProjection.appendRuntimeOutput(sessionRef, {
+        kind: "final",
+        text: "这是 Preview Runtime 的本地回复；它不会发送到 ClawChat。",
+        itemId: `preview:${turnId}`,
+      });
+      activityBySessionRef.set(sessionRef, "idle");
+    })();
+    return { sessionRef, turnId };
   },
   cancelClientTurn: async () => true,
+  sessionActivity: async (sessionRef: string) => activityBySessionRef.get(sessionRef) ?? "idle",
 };
 const clientInterface = await startClientInterface({
   config,
@@ -260,6 +288,17 @@ const clientInterface = await startClientInterface({
   runtimeInteractions,
   runtimes: [runtime],
   assetsPath: join(process.cwd(), "dist/client"),
+  serverFactory: (options) =>
+    Bun.serve({
+      ...options,
+      fetch: async (request) => {
+        if (new URL(request.url).pathname === "/__preview/external-tui-turn") {
+          appendExternalTuiTurn();
+          return new Response(null, { status: 204 });
+        }
+        return await options.fetch(request);
+      },
+    }),
 });
 process.stdout.write(`${clientInterface.origin}/\n`);
 

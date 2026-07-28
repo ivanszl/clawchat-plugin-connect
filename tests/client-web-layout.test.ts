@@ -61,8 +61,9 @@ describe("Connect Client session layout", () => {
     const transcriptBlock = await Bun.file(transcriptBlockUrl).text();
 
     expect(transcriptBlock).toContain(
-      'name={sender === "user" && block.origin !== "clawchat" ? block.author : undefined}',
+      'if (block.origin === "clawchat") return block.sender?.displayName || undefined;',
     );
+    expect(transcriptBlock).not.toContain("return block.sender?.id");
   });
 
   it("renders structured ClawChat image media instead of only its text placeholder", async () => {

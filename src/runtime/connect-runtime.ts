@@ -441,6 +441,11 @@ export class ConnectRuntime {
       text: message.text,
       origin: "clawchat",
       author: message.sender.nick_name || message.sender.id,
+      sender: {
+        id: message.sender.id,
+        displayName: message.sender.nick_name || null,
+      },
+      conversationType: message.chatType,
       id: message.messageId || undefined,
       media: transcriptMedia(message),
     });

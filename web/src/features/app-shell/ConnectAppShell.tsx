@@ -2,16 +2,24 @@ import { AppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Settings } from "lucide-react";
 import type { ReactNode } from "react";
-import { catalogQueryOptions } from "../../client-interface/query-options";
+import { catalogQueryOptions, clientKeys, refreshSessionCatalog } from "../../client-interface/query-options";
 import { RefreshIcon } from "../../components/icons";
 import { SessionNavigation } from "../session-catalog/SessionNavigation";
 
 export function ConnectAppShell({ children }: { children: ReactNode }) {
   const catalog = useQuery(catalogQueryOptions);
+  const queryClient = useQueryClient();
+  const refresh = useMutation({
+    mutationFn: refreshSessionCatalog,
+    onSuccess: async (view) => {
+      queryClient.setQueryData(clientKeys.catalog, view);
+      await queryClient.invalidateQueries({ queryKey: ["client", "session"], refetchType: "active" });
+    },
+  });
   const navigate = useNavigate();
   const isSettings = useRouterState({ select: (state) => state.location.pathname === "/settings" });
   return (
@@ -31,8 +39,8 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
                 icon={<RefreshIcon />}
                 variant="ghost"
                 size="sm"
-                isLoading={catalog.isFetching}
-                onClick={() => void catalog.refetch()}
+                isLoading={catalog.isFetching || refresh.isPending}
+                onClick={() => refresh.mutate()}
               />
               <Button
                 label={isSettings ? "返回 Session" : "设置"}

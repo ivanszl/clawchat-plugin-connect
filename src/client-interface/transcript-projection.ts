@@ -79,6 +79,8 @@ export class TranscriptProjection {
     text: string;
     origin: "client" | "clawchat";
     author: string;
+    sender?: MessageBlockContent["sender"];
+    conversationType?: MessageBlockContent["conversationType"];
     id?: string;
     media?: MessageBlockContent["media"];
   }): Promise<TranscriptBlock> {
@@ -92,6 +94,8 @@ export class TranscriptProjection {
         plainText: text,
         role: "user",
         author: params.author,
+        ...(params.sender ? { sender: params.sender } : {}),
+        ...(params.conversationType ? { conversationType: params.conversationType } : {}),
         markdown: text,
         ...(params.media && params.media.length > 0 ? { media: params.media } : {}),
       })

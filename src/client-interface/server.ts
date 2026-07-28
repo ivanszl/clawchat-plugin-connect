@@ -293,7 +293,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           if (sessionMatch && request.method === "GET") {
             const sessionRef = normalizeSessionRef(sessionMatch[1] ?? "");
             if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
-            await catalog.ensureProjection(sessionRef);
+            await catalog.ensureProjection(sessionRef, url.searchParams.get("refresh") === "1");
             const view = await catalog.sessionView(sessionRef);
             return view ? jsonResponse(view) : errorResponse(404, "session-not-found", "Session was not found");
           }

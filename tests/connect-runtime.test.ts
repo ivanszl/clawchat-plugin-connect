@@ -168,6 +168,8 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             role: "user",
             origin: "clawchat",
             plainText: "commit",
+            sender: { id: "user-1", displayName: "User" },
+            conversationType: "direct",
           }),
           expect.objectContaining({
             id: secondInbound.messageId,
@@ -175,6 +177,8 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             role: "user",
             origin: "clawchat",
             plainText: "push",
+            sender: { id: "user-1", displayName: "User" },
+            conversationType: "direct",
           }),
         ]),
       );

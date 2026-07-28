@@ -468,6 +468,7 @@ interface ActiveTurn {
   bufferedNotifications: CodexAppServerNotification[];
   queue: RuntimeEventQueue;
   pendingAgentMessage: { itemId: string; text: string } | null;
+  streamingAgentMessages: Map<string, string>;
   seenErrors: Set<string>;
   interactionPort: RuntimeInteractionPort | null;
   connectTurnId: string;
@@ -508,6 +509,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       bufferedNotifications: [],
       queue: new RuntimeEventQueue(),
       pendingAgentMessage: null,
+      streamingAgentMessages: new Map(),
       seenErrors: new Set(),
       interactionPort: input.interactionPort ?? null,
       connectTurnId: input.turnId ?? `turn-${Date.now()}`,
@@ -672,12 +674,28 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       if (event) active.queue.push(event);
       return;
     }
+    if (notification.method === "item/agentMessage/delta") {
+      const itemId = stringField(notification.params.itemId);
+      const delta = typeof notification.params.delta === "string" ? notification.params.delta : "";
+      if (!itemId || !delta) return;
+      const text = `${active.streamingAgentMessages.get(itemId) ?? ""}${delta}`;
+      active.streamingAgentMessages.set(itemId, text);
+      active.queue.push({
+        kind: "assistant",
+        text,
+        itemId,
+        state: "streaming",
+        data: { itemType: "agentMessage" },
+      });
+      return;
+    }
     if (notification.method === "item/completed") {
       const item = threadItem(notification.params.item);
       if (!item) return;
       if (item.type === "agentMessage") {
         const text = stringField(item.text);
         if (!text) return;
+        active.streamingAgentMessages.delete(item.id);
         if (active.pendingAgentMessage !== null) {
           active.queue.push({
             kind: "assistant",

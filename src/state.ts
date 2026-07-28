@@ -1511,14 +1511,16 @@ export class ConnectStateStore {
       sessionRef,
       input.id,
     );
+    let storedBlock: TranscriptBlock | null = null;
     if (existing) {
       try {
-        const stored = JSON.parse(existing.block_json) as TranscriptBlock;
-        if (sameTranscriptPayload(stored, input)) return { block: stored, cursor: 0 };
+        storedBlock = JSON.parse(existing.block_json) as TranscriptBlock;
       } catch {
         // Replace malformed projection JSON below.
       }
     }
+    const projectedInput = preserveConnectOwnedMessageMetadata(storedBlock, input);
+    if (storedBlock && sameTranscriptPayload(storedBlock, projectedInput)) return { block: storedBlock, cursor: 0 };
     const now = Date.now();
     const sequence =
       existing?.sequence ??
@@ -1530,11 +1532,11 @@ export class ConnectStateStore {
           )
         )?.sequence,
       );
-    const revision = Math.max(input.revision ?? (existing?.revision ?? 0) + 1, (existing?.revision ?? 0) + 1);
-    const createdAt = input.createdAt ? Date.parse(input.createdAt) : (existing?.created_at ?? now);
-    const updatedAt = input.updatedAt ? Date.parse(input.updatedAt) : now;
+    const revision = Math.max(projectedInput.revision ?? (existing?.revision ?? 0) + 1, (existing?.revision ?? 0) + 1);
+    const createdAt = projectedInput.createdAt ? Date.parse(projectedInput.createdAt) : (existing?.created_at ?? now);
+    const updatedAt = projectedInput.updatedAt ? Date.parse(projectedInput.updatedAt) : now;
     const block = {
-      ...input,
+      ...projectedInput,
       revision,
       sequence,
       createdAt: new Date(Number.isFinite(createdAt) ? createdAt : now).toISOString(),
@@ -1659,6 +1661,8 @@ export class ConnectStateStore {
         ? {
             origin: previous.origin,
             author: previous.author,
+            ...(previous.sender ? { sender: previous.sender } : {}),
+            ...(previous.conversationType ? { conversationType: previous.conversationType } : {}),
             ...(previous.media && !input.media ? { media: previous.media } : {}),
           }
         : {}),
@@ -2098,6 +2102,29 @@ function sameTranscriptReconciliationPayload(stored: TranscriptBlock, input: Tra
     delete inputPayload[key];
   }
   return JSON.stringify(storedPayload) === JSON.stringify(inputPayload);
+}
+function preserveConnectOwnedMessageMetadata(
+  stored: TranscriptBlock | null,
+  input: TranscriptBlockInput,
+): TranscriptBlockInput {
+  if (
+    stored?.type !== "message" ||
+    input.type !== "message" ||
+    stored.role !== "user" ||
+    input.role !== "user" ||
+    input.origin !== "runtime" ||
+    (stored.origin !== "client" && stored.origin !== "clawchat")
+  ) {
+    return input;
+  }
+  return {
+    ...input,
+    origin: stored.origin,
+    author: stored.author,
+    ...(stored.sender ? { sender: stored.sender } : {}),
+    ...(stored.conversationType ? { conversationType: stored.conversationType } : {}),
+    ...(stored.media && !input.media ? { media: stored.media } : {}),
+  };
 }
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : Number(value ?? 0) || 0;

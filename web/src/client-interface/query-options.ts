@@ -38,10 +38,16 @@ export const catalogQueryOptions = queryOptions({
   queryFn: async () => await clientFetch<SessionCatalogView>(`${CLIENT_API_PREFIX}/session-catalog`),
 });
 
+export async function refreshSessionCatalog(): Promise<SessionCatalogView> {
+  return await clientFetch<SessionCatalogView>(`${CLIENT_API_PREFIX}/session-catalog?refresh=1`);
+}
+
 export function sessionQueryOptions(sessionRef: string) {
   return queryOptions({
     queryKey: clientKeys.session(sessionRef),
-    queryFn: async () => await clientFetch<SessionView>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}`),
+    queryFn: async () => await clientFetch<SessionView>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}?refresh=1`),
+    refetchInterval: 2_000,
+    refetchIntervalInBackground: false,
   });
 }
 

@@ -449,6 +449,8 @@ describe("Connect Client Interface", () => {
       text: "from ClawChat",
       origin: "clawchat",
       author: "usr_opaque",
+      sender: { id: "usr_opaque", displayName: "Alice" },
+      conversationType: "group",
       media: [
         {
           kind: "image",
@@ -471,6 +473,8 @@ describe("Connect Client Interface", () => {
             type: "message",
             origin: "clawchat",
             markdown: "from ClawChat",
+            sender: { id: "usr_opaque", displayName: "Alice" },
+            conversationType: "group",
             media: [
               {
                 kind: "image",

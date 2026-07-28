@@ -2,6 +2,24 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.11] - 2026-07-28
+
+### Added
+
+- Added stable ClawChat sender identities and display names to the Client Transcript for group and direct-message attribution.
+- Added Codex agent-message delta handling for cumulative streaming output in Connect Client.
+
+### Changed
+
+- Automatically reconciled the active Session with external Runtime Thread updates while keeping revision polling scoped to the foreground view.
+- Preserved the reader's scroll position during streaming output and resumed following only after jumping to the latest message.
+- Made the global refresh action force Runtime Catalog discovery and immediate active Session synchronization.
+
+### Fixed
+
+- Fixed completed turns remaining stuck in the Liveware working state.
+- Fixed Web and ClawChat Turn Origin metadata being overwritten by subsequent Runtime history reconciliation.
+
 ## [0.1.0-alpha.10] - 2026-07-27
 
 ### Added

@@ -10,9 +10,10 @@ import {
 } from "../web/src/client-interface/query-options";
 
 describe("Connect Client event fallback", () => {
-  it("polls only persisted Client events without repeatedly querying Runtime-backed views", async () => {
+  it("polls persisted Client events and only checks the active Session for external Runtime updates", async () => {
     expect(catalogQueryOptions.refetchInterval).toBeUndefined();
-    expect(sessionQueryOptions("NKEP79B8").refetchInterval).toBeUndefined();
+    expect(sessionQueryOptions("NKEP79B8").refetchInterval).toBe(2_000);
+    expect(sessionQueryOptions("NKEP79B8").refetchIntervalInBackground).toBe(false);
     expect(transcriptQueryOptions("NKEP79B8").refetchInterval).toBeUndefined();
 
     const queryClient = new QueryClient();

@@ -569,6 +569,29 @@ describe("state store", () => {
       expect.objectContaining({ id: "b_stable_assistant" }),
       expect.objectContaining({ id: "b_native_user", origin: "client" }),
     ]);
+    await store.rekeyMatchingTranscriptBlock(session.sessionRef, {
+      id: "b_native_user",
+      type: "message",
+      origin: "runtime",
+      state: "complete",
+      plainText: "same prompt",
+      role: "user",
+      author: "You",
+      markdown: "same prompt",
+    });
+    await store.upsertTranscriptBlock(session.sessionRef, {
+      id: "b_native_user",
+      type: "message",
+      origin: "runtime",
+      state: "complete",
+      plainText: "same prompt",
+      role: "user",
+      author: "You",
+      markdown: "same prompt",
+    });
+    expect(await store.listTranscriptBlocks(session.sessionRef)).toContainEqual(
+      expect.objectContaining({ id: "b_native_user", origin: "client" }),
+    );
 
     const live = await store.upsertTranscriptBlock(session.sessionRef, {
       id: "b_live_reply",

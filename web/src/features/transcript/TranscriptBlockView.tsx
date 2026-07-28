@@ -29,7 +29,7 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
       <ChatMessage sender={sender} density="balanced">
         <ChatMessageBubble
           variant={sender === "assistant" ? "ghost" : "filled"}
-          name={sender === "user" && block.origin !== "clawchat" ? block.author : undefined}
+          name={messageAuthorLabel(block)}
           metadata={
             <ChatMessageMetadata
               footer={originLabel(block.origin)}
@@ -426,6 +426,12 @@ function originLabel(origin: TranscriptBlock["origin"]): ReactNode {
   if (origin === "clawchat") return <Badge label="ClawChat" variant="teal" />;
   if (origin === "client") return <Badge label="Web" variant="blue" />;
   return undefined;
+}
+
+function messageAuthorLabel(block: TranscriptBlock | EmbeddedTranscriptBlock): string | undefined {
+  if (block.type !== "message" || block.role !== "user") return undefined;
+  if (block.origin === "clawchat") return block.sender?.displayName || undefined;
+  return block.author;
 }
 
 function toolStatus(status: string, state: TranscriptBlock["state"]): ChatToolCallStatus {

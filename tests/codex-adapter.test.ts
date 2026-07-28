@@ -778,6 +778,47 @@ describe("Codex app-server runtime adapter", () => {
     ).rejects.toThrow(/read-only.*workspace-write.*danger-full-access/u);
   });
 
+  it("streams cumulative agent message deltas before completing the final message", async () => {
+    const client = new FakeAppServer();
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+    const session = await adapter.start(agent, context());
+    const outputPromise = collect(session);
+    while (client.startTurn.mock.calls.length === 0) await Bun.sleep(0);
+
+    client.emit("item/agentMessage/delta", {
+      threadId: "thread-new",
+      turnId: "turn-1",
+      itemId: "agent-1",
+      delta: "Hello",
+    });
+    client.emit("item/agentMessage/delta", {
+      threadId: "thread-new",
+      turnId: "turn-1",
+      itemId: "agent-1",
+      delta: " world",
+    });
+    client.emit("item/completed", {
+      threadId: "thread-new",
+      turnId: "turn-1",
+      item: { id: "agent-1", type: "agentMessage", text: "Hello world" },
+    });
+    client.emit("turn/completed", {
+      threadId: "thread-new",
+      turn: turn("turn-1", { status: "completed" }),
+    });
+
+    const output = await outputPromise;
+    expect(output).toContainEqual(
+      expect.objectContaining({ kind: "assistant", itemId: "agent-1", text: "Hello", state: "streaming" }),
+    );
+    expect(output).toContainEqual(
+      expect.objectContaining({ kind: "assistant", itemId: "agent-1", text: "Hello world", state: "streaming" }),
+    );
+    expect(output).toContainEqual(
+      expect.objectContaining({ kind: "final", itemId: "agent-1", text: "Hello world", state: "complete" }),
+    );
+  });
+
   it("routes approval requests to the active session and cancels them safely", async () => {
     const client = new FakeAppServer();
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
