@@ -157,6 +157,26 @@ function emitCompletedTurn(client: FakeAppServer, threadId: string, items: Array
 }
 
 describe("Codex app-server runtime adapter", () => {
+  it("uses interactive approvals when a legacy Binding has no stored policy", async () => {
+    const client = new FakeAppServer();
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+    const binding: CodexAgentBindingConfig = { ...agent };
+    delete binding.approvalPolicy;
+    const session = await adapter.start(binding, context());
+    const iterator = session.prompt({ prompt: "hello", workspace })[Symbol.asyncIterator]();
+    const firstEvent = iterator.next();
+    while (client.startTurn.mock.calls.length === 0) await Bun.sleep(0);
+
+    expect(client.startThread).toHaveBeenCalledWith(expect.objectContaining({ approvalPolicy: "on-request" }));
+    expect(client.startTurn).toHaveBeenCalledWith(expect.objectContaining({ approvalPolicy: "on-request" }));
+
+    emitCompletedTurn(client, "thread-new", []);
+    await firstEvent;
+    while (!(await iterator.next()).done) {
+      // Drain the turn.
+    }
+  });
+
   it("isolates catalog reads from the app-server shared by runtime sessions", async () => {
     const catalogClient = new FakeAppServer();
     const runtimeClient = new FakeAppServer();

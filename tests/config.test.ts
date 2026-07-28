@@ -9,6 +9,18 @@ async function tempConfigPath(): Promise<string> {
 }
 
 describe("Agent Binding configuration", () => {
+  it("defaults Codex Bindings to interactive approvals so Connect Client can surface requests", () => {
+    const config = normalizeConfig({
+      defaultAgent: "codex",
+      agents: { codex: { kind: "codex" } },
+    });
+
+    expect(getAgentBinding(config, "codex")).toMatchObject({
+      kind: "codex",
+      approvalPolicy: "on-request",
+    });
+  });
+
   it("enables a private Liveware Exposure by default and accepts only off, private, or public", () => {
     expect(normalizeConfig({}).livewareAccessPolicy).toBe("private");
     expect(normalizeConfig({ livewareAccessPolicy: "off" }).livewareAccessPolicy).toBe("off");

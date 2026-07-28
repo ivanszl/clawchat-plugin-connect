@@ -5,6 +5,7 @@ import { startClientInterface } from "../../src/client-interface/server";
 import { TranscriptProjection } from "../../src/client-interface/transcript-projection";
 import { defaultConfig } from "../../src/config";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
+import { RuntimeInteractionCoordinator } from "../../src/runtime/runtime-interaction-coordinator";
 import type { RuntimeTranscriptEntry } from "../../src/runtime/types";
 import { createStateStore } from "../../src/state";
 
@@ -215,6 +216,25 @@ config.stateDbPath = stateStore.dbPath;
 config.defaultAgent = "codex";
 config.agents = { codex: { kind: "codex", displayName: "Codex · Local" } };
 const transcriptProjection = new TranscriptProjection({ stateStore, config, runtimeAdapters });
+const runtimeInteractions = new RuntimeInteractionCoordinator(transcriptProjection);
+const previewApproval = runtimeInteractions.request(
+  {
+    kind: "approval",
+    action: "command",
+    title: "允许 Codex 更新本地 Connect？",
+    description: "该命令会替换本机安装的 Connect 并重启服务。",
+    command: "install dist/clawchat-connect ~/.local/bin/clawchat-connect",
+    cwd: process.cwd(),
+    options: [
+      { id: "approve-once", label: "仅此次允许" },
+      { id: "approve-session", label: "本 Session 允许" },
+      { id: "deny", label: "拒绝" },
+    ],
+  },
+  { sessionRef: "ABCDEFGH", turnId: "preview-approval", origin: "client" },
+);
+void previewApproval.catch(() => undefined);
+while ((await stateStore.listPendingRuntimeInteractions("ABCDEFGH")).length === 0) await Bun.sleep(0);
 const runtime = {
   agentId: "codex",
   websocketUrl: config.websocketUrl,
@@ -237,6 +257,7 @@ const clientInterface = await startClientInterface({
   stateStore,
   runtimeAdapters,
   transcriptProjection,
+  runtimeInteractions,
   runtimes: [runtime],
   assetsPath: join(process.cwd(), "dist/client"),
 });
@@ -247,4 +268,6 @@ await new Promise<void>((resolve) => {
   process.once("SIGTERM", resolve);
 });
 await clientInterface.stop();
+await runtimeInteractions.close();
+await previewApproval.catch(() => undefined);
 await stateStore.close();

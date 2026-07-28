@@ -20,6 +20,7 @@ export const DEFAULT_WEBSOCKET_URL = "wss://app.clawling.com/ws" as const;
 export const DEFAULT_MEDIA_UPLOAD_URL = "https://app.clawling.com/media/upload" as const;
 export const DEFAULT_CLIENT_PORT = 47_823 as const;
 export const DEFAULT_CLIENT_HOST = "127.0.0.1" as const;
+export const DEFAULT_CODEX_APPROVAL_POLICY = "on-request" as const;
 
 const CODEX_SANDBOX_MODES = new Set<CodexSandboxMode>(["read-only", "workspace-write", "danger-full-access"]);
 const CODEX_REASONING_EFFORTS = new Set<CodexReasoningEffort>(["minimal", "low", "medium", "high", "xhigh"]);
@@ -94,7 +95,7 @@ function normalizeCodexAgentBinding(record: Record<string, unknown>): CodexAgent
     ...(readString(record.model) ? { model: readString(record.model) } : {}),
     ...(sandboxMode ? { sandboxMode } : {}),
     ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
-    ...(approvalPolicy ? { approvalPolicy } : {}),
+    approvalPolicy: approvalPolicy ?? DEFAULT_CODEX_APPROVAL_POLICY,
     ...(webSearchMode ? { webSearchMode } : {}),
     ...(networkAccessEnabled !== undefined ? { networkAccessEnabled } : {}),
     ...(additionalDirectories ? { additionalDirectories } : {}),

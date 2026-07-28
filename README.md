@@ -301,7 +301,7 @@ Supported Codex values:
 | --- | --- |
 | `sandboxMode` | `read-only`, `workspace-write`, `danger-full-access` |
 | `modelReasoningEffort` | `minimal`, `low`, `medium`, `high`, `xhigh` |
-| `approvalPolicy` | `never`, `on-request`, `untrusted` |
+| `approvalPolicy` | `never`, `on-request` (default), `untrusted` |
 | `webSearchMode` | `disabled`, `cached`, `live` |
 | `networkAccessEnabled` | `true`, `false` |
 

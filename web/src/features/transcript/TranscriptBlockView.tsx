@@ -254,6 +254,7 @@ function RuntimeInteractionForm({ block }: { block: RuntimeInteractionBlock }) {
         title={block.title}
         description={block.description}
         container="section"
+        defaultIsExpanded={pending}
       >
         {block.command ? <CodeBlock code={block.command} language="shell" isWrapped width="100%" /> : null}
         {block.cwd ? <Text type="supporting">工作目录：{block.cwd}</Text> : null}

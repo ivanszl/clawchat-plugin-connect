@@ -143,6 +143,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - A Non-Project Session receives a deterministic isolated workspace and never inherits `process.cwd()`.
 - Connect control commands are restricted to the Connect Owner.
 - Every runtime turn records its Turn Origin, and every Runtime Interaction inherits that origin.
+- A Codex Agent Binding without an explicit approval policy normalizes to `on-request`, allowing Connect to surface Runtime Interactions while still requiring a human decision before an escalation is granted.
 - A Client-originated Runtime Interaction is visible and answerable only in Connect Client.
 - A ClawChat-originated Runtime Interaction is visible in Connect Client and to the Agent Binding owner in ClawChat; the first authorized valid response settles it, and every surface that received it observes the same resolution.
 - Connect Client connection state does not own Runtime Interaction lifetime. A pending Client-originated interaction survives Client disconnect and never falls back to ClawChat.

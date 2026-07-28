@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { DEFAULT_CODEX_APPROVAL_POLICY } from "../config";
 import type { RuntimeOutputEvent } from "../output-visibility";
 import type { CodexAgentBindingConfig, CodexApprovalPolicy, CodexSandboxMode, RuntimeWorkspace } from "../types";
 import {
@@ -864,7 +865,7 @@ function resolveSandboxMode(mode: string | undefined, configured: CodexSandboxMo
 }
 
 function resolveApprovalPolicy(policy: CodexApprovalPolicy | undefined): "never" | "on-request" | "untrusted" {
-  return policy ?? "never";
+  return policy ?? DEFAULT_CODEX_APPROVAL_POLICY;
 }
 
 function approvalOptions() {

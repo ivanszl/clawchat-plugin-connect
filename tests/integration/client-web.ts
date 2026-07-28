@@ -18,6 +18,7 @@ try {
   const executablePath = await localChromiumPath();
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   try {
+    await verifyRuntimeApproval(browser, origin);
     await verifySmallWindowNavigation(browser, origin);
     await verifyTranscriptAlwaysFollowsLatest(browser, origin);
     await verifyTranscriptPresentation(browser, origin);
@@ -110,6 +111,33 @@ try {
 } finally {
   server.kill("SIGTERM");
   await server.exited;
+}
+
+async function verifyRuntimeApproval(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
+  const page = await browser.newPage();
+  try {
+    const responses: unknown[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        /\/client\/v1\/runtime-interactions\/[^/]+\/respond$/u.test(new URL(request.url()).pathname)
+      ) {
+        responses.push(request.postDataJSON());
+      }
+    });
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    const approval = page.locator(".runtime-interaction-card").filter({ hasText: "允许 Codex 更新本地 Connect？" });
+    await expect(approval).toBeVisible();
+    await expect(approval).toContainText("install dist/clawchat-connect ~/.local/bin/clawchat-connect");
+    await approval.getByRole("button", { name: "仅此次允许", exact: true }).click();
+    await expect(approval.getByText("已处理 · Web", { exact: true })).toBeVisible();
+    await expect(approval.getByRole("button", { name: "仅此次允许", exact: true })).toHaveCount(0);
+    assert.equal(responses.length, 1, "approval UI must submit one response");
+    assert.deepEqual(withoutRequestId(responses[0]), { optionId: "approve-once" });
+  } finally {
+    await page.close();
+  }
 }
 
 async function verifyImeConfirmationDoesNotSubmit(
