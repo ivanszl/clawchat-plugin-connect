@@ -6,10 +6,13 @@ import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interactio
 class FakeProjection {
   readonly blocks: RuntimeInteractionBlock[] = [];
 
+  constructor(private readonly beforeUpsert?: () => Promise<void>) {}
+
   async upsertRuntimeInteraction(
     _sessionRef: string,
     input: RuntimeInteractionBlockContent,
   ): Promise<RuntimeInteractionBlock> {
+    await this.beforeUpsert?.();
     const previous = this.blocks.find((block) => block.id === input.id);
     const block = {
       ...input,
@@ -84,6 +87,51 @@ describe("RuntimeInteractionCoordinator", () => {
     await expect(result).resolves.toEqual({ kind: "user-input", answers: { token: ["top-secret"] } });
     expect(JSON.stringify(projection.blocks)).not.toContain("top-secret");
     expect(projection.blocks[0]).toMatchObject({ responseState: "resolved", plainText: "Credentials\n已安全回答" });
+  });
+
+  it("expires an Interaction when its Runtime Turn aborts during initial projection", async () => {
+    let releaseProjection: (() => void) | undefined;
+    let firstProjection = true;
+    const projectionStarted = Promise.withResolvers<void>();
+    const projection = new FakeProjection(async () => {
+      if (!firstProjection) return;
+      firstProjection = false;
+      await new Promise<void>((resolve) => {
+        projectionStarted.resolve();
+        releaseProjection = resolve;
+      });
+    });
+    const coordinator = new RuntimeInteractionCoordinator(projection as unknown as TranscriptProjection);
+    const controller = new AbortController();
+    const result = coordinator.request(
+      {
+        kind: "approval",
+        action: "command",
+        title: "Run?",
+        description: "git push",
+        options: [{ id: "deny", label: "Deny" }],
+      },
+      { sessionRef: "ABCDEFGH", turnId: "turn-abort", origin: "client", signal: controller.signal },
+    );
+
+    await projectionStarted.promise;
+    controller.abort();
+    releaseProjection?.();
+
+    await expect(
+      Promise.race([
+        result,
+        Bun.sleep(20).then(() => {
+          throw new Error("Interaction did not settle after abort");
+        }),
+      ]),
+    ).rejects.toMatchObject({ code: "interaction-expired" });
+    expect(projection.blocks.at(-1)).toMatchObject({
+      responseState: "expired",
+      state: "cancelled",
+      resolvedBy: "system",
+    });
+    expect(coordinator.hasPending("ABCDEFGH")).toBe(false);
   });
 });
 

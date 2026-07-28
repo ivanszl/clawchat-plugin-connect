@@ -513,7 +513,7 @@ describe("state store", () => {
     await store.close();
   });
 
-  it("keeps transcript projection updates idempotent and rekeys optimistic user messages", async () => {
+  it("keeps transcript projection updates idempotent and rekeys explicit Runtime Activity aliases", async () => {
     const dir = await tempDir();
     const store = createStateStore({
       dbPath: join(dir, "state.sqlite"),
@@ -554,7 +554,7 @@ describe("state store", () => {
       author: "You",
       markdown: "same prompt",
     });
-    const rekeyed = await store.rekeyMatchingTranscriptBlock(session.sessionRef, {
+    const rekeyed = await store.rekeyTranscriptBlock(session.sessionRef, "turn_local_user", {
       id: "b_native_user",
       type: "message",
       origin: "runtime",
@@ -569,7 +569,7 @@ describe("state store", () => {
       expect.objectContaining({ id: "b_stable_assistant" }),
       expect.objectContaining({ id: "b_native_user", origin: "client" }),
     ]);
-    await store.rekeyMatchingTranscriptBlock(session.sessionRef, {
+    await store.rekeyTranscriptBlock(session.sessionRef, "turn_local_user", {
       id: "b_native_user",
       type: "message",
       origin: "runtime",
@@ -615,8 +615,7 @@ describe("state store", () => {
       author: "Agent",
       markdown: "same reply",
     };
-    await store.upsertTranscriptBlock(session.sessionRef, historical);
-    const consolidated = await store.rekeyMatchingTranscriptBlock(session.sessionRef, historical);
+    const consolidated = await store.rekeyTranscriptBlock(session.sessionRef, "b_live_reply", historical);
     expect(consolidated).toMatchObject({
       id: "b_history_reply",
       runtimeSource: "history",

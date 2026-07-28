@@ -23,7 +23,7 @@ import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
-import { createSessionContinuity } from "../session-continuity";
+import { createSessionContinuity, SessionLifecycleError } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig } from "../types";
 import { SessionCatalog } from "./session-catalog";
@@ -90,6 +90,14 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     projects,
     sessionActivity: async (bindingId, sessionRef) =>
       (await runtimes.get(bindingId)?.sessionActivity?.(sessionRef)) ?? "idle",
+    coordinateSessionLifecycle: async (bindingId, sessionRef, run) => {
+      const coordinate = runtimes.get(bindingId)?.coordinateSessionLifecycle;
+      if (coordinate) {
+        await coordinate(sessionRef, run);
+        return;
+      }
+      await run();
+    },
   });
   await catalog.reconcileLifecycle();
   const runtimeInteractions =
@@ -620,6 +628,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       } catch (error) {
         if (error instanceof ClientRequestError) {
           return errorResponse(error.status, error.code, error.message, error.retryable);
+        }
+        if (error instanceof SessionLifecycleError) {
+          const status = error.code === "session-not-found" ? 404 : 409;
+          return errorResponse(status, error.code, error.message);
         }
         const diagnosticRef = randomUUID();
         console.error(`[client-interface:${diagnosticRef}]`, error);

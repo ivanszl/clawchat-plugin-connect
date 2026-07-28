@@ -259,6 +259,63 @@ describe("Session Catalog workspace grouping", () => {
     expect(entries.find((entry) => entry.sessionRef === "JKLMNPQR")?.status).toBe("idle");
   });
 
+  it("derives lifecycle actions from Runtime Adapter capabilities and Runtime Thread availability", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-capabilities-"));
+    const refs = ["ABCDEFGH", "JKLMNPQR"];
+    const store = createStateStore({
+      dbPath: join(directory, "state.sqlite"),
+      sessionRefFactory: () => refs.shift() ?? "STUVWXYZ",
+    });
+    stores.push(store);
+    await store.upsertRuntimeSession({
+      chatId: "chat-empty",
+      sessionId: "session-empty",
+      agentId: "codex",
+      runtimeSessionId: null,
+      name: "Empty",
+      isCurrent: true,
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-thread",
+      sessionId: "session-thread",
+      agentId: "codex",
+      runtimeSessionId: "thread-1",
+      name: "Thread",
+      hasMessages: true,
+      isCurrent: true,
+    });
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      lifecycleCapabilities: { archive: false, restore: false, delete: false },
+      discoverAllThreads: async () => [
+        {
+          runtimeThreadId: "thread-1",
+          name: "Thread",
+          updatedAt: 1,
+          workingDirectory: directory,
+        },
+      ],
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const config = defaultConfig();
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+
+    const entries = (await catalog.view()).bindings[0]?.entries ?? [];
+    expect(entries.find((entry) => entry.name === "Empty")?.allowedActions).toEqual(["open", "send"]);
+    expect(entries.find((entry) => entry.name === "Thread")?.allowedActions).toEqual(["open", "send", "cancel"]);
+    await expect(catalog.sessionView("ABCDEFGH")).resolves.toMatchObject({ allowedActions: ["send"] });
+    await expect(catalog.sessionView("JKLMNPQR")).resolves.toMatchObject({ allowedActions: ["send", "cancel"] });
+    await expect(catalog.archive("JKLMNPQR")).rejects.toMatchObject({ code: "session-action-unsupported" });
+  });
+
   it("archives, restores, and permanently deletes a native Runtime Thread by Session Ref", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-lifecycle-"));
     const store = createStateStore({

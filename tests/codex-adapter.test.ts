@@ -177,24 +177,23 @@ describe("Codex app-server runtime adapter", () => {
     }
   });
 
-  it("isolates catalog reads from the app-server shared by runtime sessions", async () => {
-    const catalogClient = new FakeAppServer();
-    const runtimeClient = new FakeAppServer();
-    const createAppServer = mock().mockResolvedValueOnce(catalogClient).mockResolvedValueOnce(runtimeClient);
+  it("shares one binding-owned app-server across catalog reads and runtime sessions", async () => {
+    const client = new FakeAppServer();
+    const createAppServer = mock(async () => client);
     const adapter = createCodexRuntimeAdapter({ createAppServer });
 
     await adapter.discoverThreads?.(agent, workspace);
     const first = await adapter.start(agent, context({ chatId: "chat-1" }));
     const second = await adapter.start(agent, context({ chatId: "chat-2", sessionId: "session-2" }));
 
-    expect(createAppServer).toHaveBeenCalledTimes(2);
+    expect(createAppServer).toHaveBeenCalledTimes(1);
     await first.close();
     await second.close();
-    expect(catalogClient.close).not.toHaveBeenCalled();
-    expect(runtimeClient.close).not.toHaveBeenCalled();
+    expect(client.close).not.toHaveBeenCalled();
     await adapter.close?.();
-    expect(catalogClient.close).toHaveBeenCalledTimes(1);
-    expect(runtimeClient.close).toHaveBeenCalledTimes(1);
+    expect(client.close).toHaveBeenCalledTimes(1);
+    await adapter.close?.();
+    expect(client.close).toHaveBeenCalledTimes(1);
   });
 
   it("discovers persisted threads through paginated thread/list", async () => {

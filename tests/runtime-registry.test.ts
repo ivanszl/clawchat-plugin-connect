@@ -1,5 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import { createReleasedRuntimeAdapterRegistry, releasedRuntimeAdapters } from "../src/runtime/released-adapters";
 import type { ConnectRuntimeAdapter, ConnectRuntimeSession } from "../src/runtime/types";
 import type { AgentBindingConfig } from "../src/types";
 
@@ -58,5 +59,14 @@ describe("RuntimeAdapterRegistry", () => {
     const unsupported = { kind: "claude" } as unknown as AgentBindingConfig;
 
     expect(() => registry.modesFor(unsupported)).toThrow("no Runtime Adapter registered for kind: claude");
+  });
+
+  it("constructs released adapters and operator metadata from one catalog", () => {
+    expect(releasedRuntimeAdapters()).toEqual([{ kind: "codex", displayName: "Codex" }]);
+    expect(createReleasedRuntimeAdapterRegistry().modesFor({ kind: "codex" })).toEqual([
+      "read-only",
+      "workspace-write",
+      "danger-full-access",
+    ]);
   });
 });

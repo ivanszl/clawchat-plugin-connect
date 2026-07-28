@@ -14,7 +14,12 @@ import {
 } from "../output-visibility";
 import { ProjectCatalog } from "../projects";
 import { type ChatType, EVENT, type NormalizedInboundMessage } from "../protocol";
-import { createSessionContinuity, type SessionContinuity, type TurnTarget } from "../session-continuity";
+import {
+  createSessionContinuity,
+  type SessionContinuity,
+  SessionLifecycleError,
+  type TurnTarget,
+} from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig, RuntimeSessionRecord, RuntimeWorkspace } from "../types";
 import type { ConnectWsClient } from "../ws-client";
@@ -157,6 +162,14 @@ export class ConnectRuntime {
     const target = await this.sessionContinuity.forSession(current.sessionRef).targetForTurn("client");
     const turnId = randomUUID();
     const key = sessionKey(current.chatId, current.sessionId);
+    try {
+      this.queue.assertAccepting(key, `Session ${current.sessionRef}`);
+    } catch {
+      throw new SessionLifecycleError(
+        "session-state-conflict",
+        `Session ${current.sessionRef} lifecycle operation is in progress`,
+      );
+    }
     void this.queue
       .enqueue(
         key,
@@ -165,6 +178,11 @@ export class ConnectRuntime {
           await this.recordRuntimeStatus(this.queue.stats());
           try {
             await this.runClientTurn(target, text, turnId, media);
+          } catch (error) {
+            await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, {
+              kind: "final",
+              text: `Connect Client turn failed: ${error instanceof Error ? error.message : String(error)}`,
+            });
           } finally {
             this.activeTurnSessionChats.delete(key);
             await this.recordRuntimeStatus(this.queue.stats());
@@ -172,12 +190,7 @@ export class ConnectRuntime {
         },
         `Session ${current.sessionRef}`,
       )
-      .catch(async (error) => {
-        await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, {
-          kind: "final",
-          text: `Connect Client turn failed: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      });
+      .catch(() => undefined);
     return { turnId, sessionRef: current.sessionRef };
   }
 
@@ -191,6 +204,21 @@ export class ConnectRuntime {
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
     if (!current || current.agentId !== this.options.agentId) return "idle";
     return this.queue.activity(sessionKey(current.chatId, current.sessionId));
+  }
+
+  async coordinateSessionLifecycle(sessionRef: string, run: () => Promise<void>): Promise<void> {
+    const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
+    if (!current || current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
+    const key = sessionKey(current.chatId, current.sessionId);
+    await this.executor.cancel(current.sessionRef);
+    await this.queue.claim(
+      key,
+      async () => {
+        await this.executor.release(current.sessionRef);
+        await run();
+      },
+      `Session ${current.sessionRef}`,
+    );
   }
 
   async dispose(): Promise<void> {

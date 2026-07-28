@@ -123,11 +123,15 @@ describe("Connect Transcript Projection", () => {
         {
           kind: "codex",
           modes: ["workspace-write"],
-          readTranscript: async () => ({
+          readActivity: async () => ({
             completeness: "complete",
-            entries: [
+            limitations: [],
+            activities: [
               {
                 id: "history-message-1",
+                aliases: ["live-message-1"],
+                position: "1",
+                parentId: null,
                 kind: "assistant",
                 text: "first reply",
                 state: "complete",
@@ -135,6 +139,9 @@ describe("Connect Transcript Projection", () => {
               },
               {
                 id: "history-message-2",
+                aliases: ["live-message-2"],
+                position: "2",
+                parentId: null,
                 kind: "assistant",
                 text: "first reply",
                 state: "complete",
@@ -142,6 +149,9 @@ describe("Connect Transcript Projection", () => {
               },
               {
                 id: "history-command-1",
+                aliases: ["live-command-1"],
+                position: "3",
+                parentId: null,
                 kind: "command",
                 text: "tests passed",
                 state: "complete",
@@ -150,6 +160,9 @@ describe("Connect Transcript Projection", () => {
               },
               {
                 id: "history-file-1",
+                aliases: ["live-file-1"],
+                position: "4",
+                parentId: null,
                 kind: "file-change",
                 text: "updated a.ts",
                 state: "complete",
@@ -231,6 +244,61 @@ describe("Connect Transcript Projection", () => {
           runtimeSource: "history",
         },
       ]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("reconciles more than 200 identical activities by Adapter-provided aliases without duplication", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-activity-aliases-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-1",
+        sessionId: "session-1",
+        agentId: "codex",
+        runtimeSessionId: "thread-1",
+        name: "Alias reconciliation",
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-1", "codex");
+      if (!session) throw new Error("test Session was not created");
+      const config = defaultConfig();
+      config.agents = { codex: { kind: "codex" } };
+      const runtimeAdapters = new RuntimeAdapterRegistry([
+        {
+          kind: "codex",
+          modes: [],
+          readActivity: async () => ({
+            completeness: "complete",
+            limitations: [],
+            activities: Array.from({ length: 201 }, (_, index) => ({
+              id: `history-${index}`,
+              aliases: [`live-${index}`],
+              position: `${index}`,
+              parentId: null,
+              kind: "assistant" as const,
+              text: "same output",
+              state: "complete" as const,
+              source: "history" as const,
+            })),
+          }),
+          start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+        },
+      ]);
+      const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters });
+      for (let index = 0; index < 201; index += 1) {
+        await projection.appendRuntimeOutput(session.sessionRef, {
+          kind: "assistant",
+          text: "same output",
+          itemId: `live-${index}`,
+        });
+      }
+
+      await projection.reconcile(session);
+
+      expect(await store.countTranscriptBlocks(session.sessionRef)).toBe(201);
     } finally {
       await store.close();
     }

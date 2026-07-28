@@ -76,12 +76,22 @@ export interface SessionLifecycle {
   delete(): Promise<void>;
 }
 
+export class SessionLifecycleError extends Error {
+  constructor(
+    readonly code: "session-not-found" | "session-state-conflict" | "session-action-unsupported",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export interface SessionContinuityOptions {
   stateStore: ConnectStateStore;
   sessionIdFactory?: () => string;
   operationIdFactory?: () => string;
   lifecycle?: RuntimeLifecycle;
   releaseRuntimeHandle?: (sessionRef: string) => Promise<void>;
+  coordinateRuntimeLifecycle?: (sessionRef: string, run: () => Promise<void>) => Promise<void>;
   beforeLifecycleLocalCommit?: (operation: SessionLifecycleOperationRecord) => Promise<void>;
 }
 
@@ -89,22 +99,32 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
   const sessionIdFactory = options.sessionIdFactory ?? randomUUID;
   const operationIdFactory = options.operationIdFactory ?? randomUUID;
   const runLifecycle = async (sessionRef: string, action: SessionLifecycleAction): Promise<void> => {
-    const lifecycle = requireLifecycle(options.lifecycle);
-    const session = await options.stateStore.getRuntimeSessionByRef(sessionRef);
-    const target = session ? null : await options.stateStore.getSessionRefTarget(sessionRef);
-    const bindingId = session?.agentId ?? target?.agentId;
-    const runtimeThreadId = session?.runtimeSessionId ?? target?.runtimeSessionId;
-    if (!bindingId || !runtimeThreadId) throw new Error(`Session ${sessionRef} has no Runtime Thread`);
-    requireLifecycleCapability(lifecycle.capabilities(bindingId), action);
-    await options.releaseRuntimeHandle?.(sessionRef.toUpperCase());
-    const operation = await options.stateStore.createSessionLifecycleOperation({
-      operationId: operationIdFactory(),
-      sessionRef,
-      action,
-      bindingId,
-      runtimeThreadId,
-    });
-    await executeLifecycleOperation(options, lifecycle, operation, session);
+    const execute = async () => {
+      const lifecycle = requireLifecycle(options.lifecycle);
+      const session = await options.stateStore.getRuntimeSessionByRef(sessionRef);
+      const target = session ? null : await options.stateStore.getSessionRefTarget(sessionRef);
+      const bindingId = session?.agentId ?? target?.agentId;
+      const runtimeThreadId = session?.runtimeSessionId ?? target?.runtimeSessionId;
+      if (!bindingId) throw new SessionLifecycleError("session-not-found", `Session ${sessionRef} was not found`);
+      if (!runtimeThreadId) {
+        throw new SessionLifecycleError("session-state-conflict", `Session ${sessionRef} has no Runtime Thread`);
+      }
+      requireLifecycleCapability(lifecycle.capabilities(bindingId), action);
+      await options.releaseRuntimeHandle?.(sessionRef.toUpperCase());
+      const operation = await options.stateStore.createSessionLifecycleOperation({
+        operationId: operationIdFactory(),
+        sessionRef,
+        action,
+        bindingId,
+        runtimeThreadId,
+      });
+      await executeLifecycleOperation(options, lifecycle, operation, session);
+    };
+    if (options.coordinateRuntimeLifecycle) {
+      await options.coordinateRuntimeLifecycle(sessionRef.toUpperCase(), execute);
+      return;
+    }
+    await execute();
   };
   return {
     inConversation(scope) {
@@ -329,5 +349,7 @@ function requireLifecycle(lifecycle: RuntimeLifecycle | undefined): RuntimeLifec
 }
 
 function requireLifecycleCapability(capabilities: RuntimeLifecycleCapabilities, action: SessionLifecycleAction): void {
-  if (!capabilities[action]) throw new Error(`Runtime Adapter does not support Session ${action}`);
+  if (!capabilities[action]) {
+    throw new SessionLifecycleError("session-action-unsupported", `Runtime Adapter does not support Session ${action}`);
+  }
 }

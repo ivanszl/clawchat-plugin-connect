@@ -2,30 +2,16 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import type {
-  AgentBindingConfig,
-  ClientHost,
-  CodexAgentBindingConfig,
-  CodexApprovalPolicy,
-  CodexReasoningEffort,
-  CodexSandboxMode,
-  CodexWebSearchMode,
-  ConnectConfig,
-  LivewareAccessPolicy,
-  OutputVisibility,
-} from "./types";
+import { normalizeReleasedAgentBinding } from "./runtime/released-adapters";
+import type { AgentBindingConfig, ClientHost, ConnectConfig, LivewareAccessPolicy, OutputVisibility } from "./types";
+
+export { DEFAULT_CODEX_APPROVAL_POLICY } from "./runtime/released-adapters";
 
 export const DEFAULT_BASE_URL = "https://app.clawling.com" as const;
 export const DEFAULT_WEBSOCKET_URL = "wss://app.clawling.com/ws" as const;
 export const DEFAULT_MEDIA_UPLOAD_URL = "https://app.clawling.com/media/upload" as const;
 export const DEFAULT_CLIENT_PORT = 47_823 as const;
 export const DEFAULT_CLIENT_HOST = "127.0.0.1" as const;
-export const DEFAULT_CODEX_APPROVAL_POLICY = "on-request" as const;
-
-const CODEX_SANDBOX_MODES = new Set<CodexSandboxMode>(["read-only", "workspace-write", "danger-full-access"]);
-const CODEX_REASONING_EFFORTS = new Set<CodexReasoningEffort>(["minimal", "low", "medium", "high", "xhigh"]);
-const CODEX_APPROVAL_POLICIES = new Set<CodexApprovalPolicy>(["never", "on-request", "untrusted"]);
-const CODEX_WEB_SEARCH_MODES = new Set<CodexWebSearchMode>(["disabled", "cached", "live"]);
 const CLIENT_HOSTS = new Set<ClientHost>(["127.0.0.1", "0.0.0.0"]);
 const LIVEWARE_ACCESS_POLICIES = new Set<LivewareAccessPolicy>(["off", "private", "public"]);
 
@@ -52,54 +38,8 @@ function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function readEnv(value: unknown): Record<string, string> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const env: Record<string, string> = {};
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    const name = key.trim();
-    if (!name) continue;
-    env[name] = typeof raw === "string" ? raw : String(raw ?? "");
-  }
-  return Object.keys(env).length > 0 ? env : undefined;
-}
-
 function normalizeAgentBinding(agentId: string, raw: unknown): AgentBindingConfig {
-  const record = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-  if (record.kind !== "codex")
-    throw new Error(
-      `Agent Binding ${agentId} Runtime kind is not supported in this release: ${readString(record.kind) || "(missing)"}`,
-    );
-  return normalizeCodexAgentBinding(record);
-}
-
-function normalizeCodexAgentBinding(record: Record<string, unknown>): CodexAgentBindingConfig {
-  for (const field of ["command", "args", "processCwd", "authMethod", "mode", "skipGitRepoCheck"]) {
-    if (field in record) throw new Error(`legacy agent config field is not supported: ${field}`);
-  }
-  const env = readEnv(record.env);
-  const additionalDirectories = readAbsolutePathArray(record.additionalDirectories, "additionalDirectories");
-  const sandboxMode = readOptionalEnum(record.sandboxMode, CODEX_SANDBOX_MODES, "sandboxMode");
-  const modelReasoningEffort = readOptionalEnum(
-    record.modelReasoningEffort,
-    CODEX_REASONING_EFFORTS,
-    "modelReasoningEffort",
-  );
-  const approvalPolicy = readOptionalEnum(record.approvalPolicy, CODEX_APPROVAL_POLICIES, "approvalPolicy");
-  const webSearchMode = readOptionalEnum(record.webSearchMode, CODEX_WEB_SEARCH_MODES, "webSearchMode");
-  const networkAccessEnabled = readOptionalBoolean(record.networkAccessEnabled, "networkAccessEnabled");
-  return {
-    kind: "codex",
-    ...(readString(record.codexPathOverride) ? { codexPathOverride: readString(record.codexPathOverride) } : {}),
-    ...(env ? { env } : {}),
-    ...(readString(record.displayName) ? { displayName: readString(record.displayName) } : {}),
-    ...(readString(record.model) ? { model: readString(record.model) } : {}),
-    ...(sandboxMode ? { sandboxMode } : {}),
-    ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
-    approvalPolicy: approvalPolicy ?? DEFAULT_CODEX_APPROVAL_POLICY,
-    ...(webSearchMode ? { webSearchMode } : {}),
-    ...(networkAccessEnabled !== undefined ? { networkAccessEnabled } : {}),
-    ...(additionalDirectories ? { additionalDirectories } : {}),
-  };
+  return normalizeReleasedAgentBinding(agentId, raw);
 }
 
 function requireAbsolutePath(value: string, label: string): string {
@@ -107,28 +47,11 @@ function requireAbsolutePath(value: string, label: string): string {
   return value;
 }
 
-function readAbsolutePathArray(value: unknown, label: string): string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value)) throw new Error(`${label} must be an array of absolute paths`);
-  const paths = value.map((item, index) => {
-    const path = readString(item);
-    if (!path) throw new Error(`${label}[${index}] must be a non-empty absolute path`);
-    return requireAbsolutePath(path, `${label}[${index}]`);
-  });
-  return paths.length > 0 ? [...new Set(paths)] : undefined;
-}
-
 function readOptionalEnum<T extends string>(value: unknown, allowed: ReadonlySet<T>, label: string): T | undefined {
   if (value === undefined) return undefined;
   const text = readString(value) as T;
   if (!allowed.has(text)) throw new Error(`${label} must be one of: ${[...allowed].join(", ")}`);
   return text;
-}
-
-function readOptionalBoolean(value: unknown, label: string): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
-  return value;
 }
 
 export function defaultConfig(): ConnectConfig {

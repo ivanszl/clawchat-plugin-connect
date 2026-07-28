@@ -1126,6 +1126,85 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     await fixture.store.close();
   });
 
+  it("settles an active Client turn and releases its handle before Session lifecycle commits", async () => {
+    const fixture = await runtimeFixture();
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!current) throw new Error("test session was not created");
+    let finishTurn: (() => void) | undefined;
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const turnGate = new Promise<void>((resolve) => {
+      finishTurn = resolve;
+    });
+    let finishLifecycle: (() => void) | undefined;
+    let markLifecycleClaimed: (() => void) | undefined;
+    const lifecycleClaimed = new Promise<void>((resolve) => {
+      markLifecycleClaimed = resolve;
+    });
+    const lifecycleGate = new Promise<void>((resolve) => {
+      finishLifecycle = resolve;
+    });
+    const order: string[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: async () => ({
+        prompt: async function* () {
+          order.push("turn-started");
+          markStarted?.();
+          await turnGate;
+          order.push("turn-settled");
+          yield { kind: "final", text: "cancelled" };
+        },
+        cancel: async () => {
+          order.push("turn-cancelled");
+          finishTurn?.();
+          return true;
+        },
+        close: async () => {
+          order.push("handle-closed");
+        },
+      }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const transcriptProjection = new TranscriptProjection({
+      stateStore: fixture.store,
+      config: fixture.config,
+      runtimeAdapters,
+    });
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters,
+      transcriptProjection,
+    });
+
+    await runtime.enqueueClientTurn(current.sessionRef, "long client turn");
+    await started;
+    const lifecycle = runtime.coordinateSessionLifecycle(current.sessionRef, async () => {
+      order.push("lifecycle-commit");
+      markLifecycleClaimed?.();
+      await lifecycleGate;
+      await fixture.store.deleteSessionByRef(current.sessionRef);
+    });
+    await lifecycleClaimed;
+    await expect(runtime.enqueueClientTurn(current.sessionRef, "too late")).rejects.toMatchObject({
+      code: "session-state-conflict",
+    });
+    finishLifecycle?.();
+    await lifecycle;
+
+    expect(order).toEqual(["turn-started", "turn-cancelled", "turn-settled", "handle-closed", "lifecycle-commit"]);
+    await expect(fixture.store.getRuntimeSessionByRef(current.sessionRef)).resolves.toBeNull();
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
   it("reports a Session Ref when that Session exceeds its pending-turn limit", async () => {
     const fixture = await runtimeFixture();
     fixture.config.maxConcurrentTurns = 1;

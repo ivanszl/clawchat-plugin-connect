@@ -68,7 +68,19 @@ export class TranscriptProjection {
     this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), snapshot.completeness);
     for (const activity of snapshot.activities) {
       const input = this.fromRuntimeActivity(session.sessionRef, activity);
-      const rekeyed = await this.options.stateStore.rekeyMatchingTranscriptBlock(session.sessionRef, input);
+      let rekeyed = false;
+      for (const alias of activity.aliases ?? []) {
+        if (alias === activity.id) continue;
+        const block = await this.options.stateStore.rekeyTranscriptBlock(
+          session.sessionRef,
+          stableBlockId(session.sessionRef, alias),
+          input,
+        );
+        if (block) {
+          rekeyed = true;
+          break;
+        }
+      }
       if (rekeyed) continue;
       await this.options.stateStore.upsertTranscriptBlock(session.sessionRef, input);
     }

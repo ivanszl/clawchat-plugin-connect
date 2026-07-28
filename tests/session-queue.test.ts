@@ -28,4 +28,30 @@ describe("SessionQueue", () => {
     await expect(queue.enqueue("a", async () => undefined)).rejects.toThrow(/too many pending turns for Session a/);
     await Promise.all([blocker, queued]);
   });
+
+  it("claims a Session for lifecycle after cancelling queued turns and rejects new turns until completion", async () => {
+    const queue = new SessionQueue({ maxConcurrentTurns: 1 });
+    let finishRunning: (() => void) | undefined;
+    const running = queue.enqueue(
+      "a",
+      async () =>
+        await new Promise<void>((resolve) => {
+          finishRunning = resolve;
+        }),
+    );
+    await Bun.sleep(0);
+    const queued = queue.enqueue("a", async () => {
+      throw new Error("queued turn must not run");
+    });
+    const lifecycle = queue.claim("a", async () => "deleted");
+
+    await expect(queued).rejects.toThrow("Session a lifecycle operation started");
+    await expect(queue.enqueue("a", async () => undefined)).rejects.toThrow(
+      "Session a lifecycle operation is in progress",
+    );
+    finishRunning?.();
+    await expect(running).resolves.toBeUndefined();
+    await expect(lifecycle).resolves.toBe("deleted");
+    await expect(queue.enqueue("a", async () => undefined)).resolves.toBeUndefined();
+  });
 });

@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import type {
+  SessionAction,
+  SessionCatalogAction,
   SessionCatalogBindingView,
   SessionCatalogEntryView,
   SessionCatalogView,
@@ -26,6 +28,7 @@ export interface SessionCatalogOptions {
   transcriptProjection: TranscriptProjection;
   projects?: ProjectCatalog;
   sessionActivity?: (bindingId: string, sessionRef: string) => SessionActivity | Promise<SessionActivity>;
+  coordinateSessionLifecycle?: (bindingId: string, sessionRef: string, run: () => Promise<void>) => Promise<void>;
 }
 
 interface CatalogState {
@@ -58,6 +61,15 @@ export class SessionCatalog {
         delete: async (bindingId, runtimeThreadId) =>
           await options.runtimeAdapters.deleteThread(getAgentBinding(options.config, bindingId), runtimeThreadId),
       },
+      coordinateRuntimeLifecycle: options.coordinateSessionLifecycle
+        ? async (sessionRef, run) => {
+            const session = await options.stateStore.getRuntimeSessionByRef(sessionRef);
+            const target = session ? null : await options.stateStore.getSessionRefTarget(sessionRef);
+            const bindingId = session?.agentId ?? target?.agentId;
+            if (!bindingId) throw new Error(`Session ${sessionRef} was not found`);
+            await options.coordinateSessionLifecycle?.(bindingId, sessionRef, run);
+          }
+        : undefined,
     });
   }
 
@@ -130,6 +142,7 @@ export class SessionCatalog {
       modelSource = session?.model ? "session" : binding.model ? "binding" : "runtime";
     }
     const pendingInteractions = await this.options.stateStore.listPendingRuntimeInteractions(normalized);
+    const lifecycleCapabilities = this.options.runtimeAdapters.lifecycleCapabilities(binding);
     return {
       revision: Math.max(1, Date.parse(entry.updatedAt) || 1),
       sessionRef: normalized,
@@ -155,11 +168,7 @@ export class SessionCatalog {
         this.options.transcriptProjection.completeness(normalized) ??
         (runtimeThreadAvailable ? "partial" : "live-only"),
       pendingInteractions,
-      allowedActions: entry.isArchived
-        ? ["unarchive", "delete"]
-        : entry.isAdopted
-          ? ["send", "cancel", "archive", "delete"]
-          : ["send", "archive", "delete"],
+      allowedActions: sessionActions(entry.isArchived, runtimeThreadAvailable, lifecycleCapabilities),
       updatedAt: entry.updatedAt,
     };
   }
@@ -308,6 +317,7 @@ export class SessionCatalog {
     >();
 
     for (const [bindingId, binding] of Object.entries(this.options.config.agents)) {
+      const lifecycleCapabilities = this.options.runtimeAdapters.lifecycleCapabilities(binding);
       const status = await this.options.stateStore.getRuntimeStatus(bindingId);
       const managed = sessions.filter((session) => session.agentId === bindingId);
       const managedRuntimeIds = new Set(
@@ -332,7 +342,7 @@ export class SessionCatalog {
           const workingDirectory = runtimeThread?.workingDirectory ?? null;
           if (workingDirectory) workingDirectoryByRef.set(session.sessionRef.toUpperCase(), workingDirectory);
           const activity = (await this.options.sessionActivity?.(bindingId, session.sessionRef)) ?? "idle";
-          return managedEntry(session, binding.kind, project, status, activity, runtimeThread);
+          return managedEntry(session, binding.kind, project, status, activity, lifecycleCapabilities, runtimeThread);
         }),
       );
       for (const thread of discovered) {
@@ -379,7 +389,7 @@ export class SessionCatalog {
           isAdopted: false,
           unreadCount: 0,
           pendingInteractionCount: 0,
-          allowedActions: thread.isArchived ? ["open", "unarchive", "delete"] : ["open", "adopt", "archive", "delete"],
+          allowedActions: catalogActions(thread.isArchived === true, false, true, lifecycleCapabilities),
         });
       }
       await Promise.all(
@@ -417,6 +427,7 @@ function managedEntry(
   project: ProjectRecord | null,
   status: RuntimeStatus | null,
   activity: SessionActivity,
+  lifecycleCapabilities: { archive: boolean; restore: boolean; delete: boolean },
   runtimeThread?: RuntimeThreadSummary,
 ): SessionCatalogEntryView {
   const workspace = workspaceView(
@@ -442,10 +453,46 @@ function managedEntry(
     isAdopted: true,
     unreadCount: 0,
     pendingInteractionCount: 0,
-    allowedActions: runtimeThread?.isArchived
-      ? ["open", "unarchive", "delete"]
-      : ["open", "send", "cancel", "archive", "delete"],
+    allowedActions: catalogActions(
+      runtimeThread?.isArchived === true,
+      true,
+      Boolean(session.runtimeSessionId),
+      lifecycleCapabilities,
+    ),
   };
+}
+
+function sessionActions(
+  isArchived: boolean,
+  hasRuntimeThread: boolean,
+  capabilities: { archive: boolean; restore: boolean; delete: boolean },
+): SessionAction[] {
+  return catalogActions(isArchived, true, hasRuntimeThread, capabilities).filter(
+    (action): action is SessionAction => action !== "open" && action !== "adopt",
+  );
+}
+
+function catalogActions(
+  isArchived: boolean,
+  isAdopted: boolean,
+  hasRuntimeThread: boolean,
+  capabilities: { archive: boolean; restore: boolean; delete: boolean },
+): SessionCatalogAction[] {
+  const actions: SessionCatalogAction[] = ["open"];
+  if (isArchived) {
+    if (hasRuntimeThread && capabilities.restore) actions.push("unarchive");
+    if (hasRuntimeThread && capabilities.delete) actions.push("delete");
+    return actions;
+  }
+  if (isAdopted) {
+    actions.push("send");
+    if (hasRuntimeThread) actions.push("cancel");
+  } else {
+    actions.push("adopt");
+  }
+  if (hasRuntimeThread && capabilities.archive) actions.push("archive");
+  if (hasRuntimeThread && capabilities.delete) actions.push("delete");
+  return actions;
 }
 
 function workspaceView(workingDirectory: string | null | undefined): { id: string; name: string } | null {

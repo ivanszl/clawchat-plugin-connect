@@ -1,6 +1,5 @@
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { DEFAULT_CODEX_APPROVAL_POLICY } from "../config";
 import type { RuntimeOutputEvent } from "../output-visibility";
 import type { CodexAgentBindingConfig, CodexApprovalPolicy, CodexSandboxMode, RuntimeWorkspace } from "../types";
 import {
@@ -55,30 +54,21 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     (async (media: ConnectRuntimeMedia, stateDbPath: string, trustedOrigins?: readonly string[]) =>
       await cacheRuntimeMedia(media, stateDbPath, { trustedOrigins }));
   let bindingIdentity: string | null = null;
-  let runtimeClientPromise: Promise<CodexAppServerClient> | null = null;
-  let catalogClientPromise: Promise<CodexAppServerClient> | null = null;
+  let clientPromise: Promise<CodexAppServerClient> | null = null;
 
-  const clientFor = async (
-    binding: CodexAgentBindingConfig,
-    purpose: "runtime" | "catalog",
-  ): Promise<CodexAppServerClient> => {
+  const clientFor = async (binding: CodexAgentBindingConfig): Promise<CodexAppServerClient> => {
     const identity = processIdentity(binding);
     if (bindingIdentity && bindingIdentity !== identity) {
       throw new Error("The shared Codex app-server cannot be reused with a different executable or environment");
     }
     bindingIdentity = identity;
-    const current = purpose === "runtime" ? runtimeClientPromise : catalogClientPromise;
-    if (current) return await current;
+    if (clientPromise) return await clientPromise;
     const created = createAppServer(binding).catch((error) => {
-      if (purpose === "runtime") runtimeClientPromise = null;
-      else catalogClientPromise = null;
-      if (!runtimeClientPromise && !catalogClientPromise) {
-        bindingIdentity = null;
-      }
+      clientPromise = null;
+      bindingIdentity = null;
       throw error;
     });
-    if (purpose === "runtime") runtimeClientPromise = created;
-    else catalogClientPromise = created;
+    clientPromise = created;
     return await created;
   };
 
@@ -87,27 +77,27 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     modes: SANDBOX_MODES,
     lifecycleCapabilities: { archive: true, restore: true, delete: true },
     async prepare(binding) {
-      await clientFor(requireCodexBinding(binding), "runtime");
+      await clientFor(requireCodexBinding(binding));
     },
     async listModels(binding) {
       const codexBinding = requireCodexBinding(binding);
-      return await discoverCodexModels(await clientFor(codexBinding, "runtime"));
+      return await discoverCodexModels(await clientFor(codexBinding));
     },
     async discoverThreads(binding, workspace) {
       const codexBinding = requireCodexBinding(binding);
-      return await discoverCodexThreads(await clientFor(codexBinding, "catalog"), workspace.workingDirectory);
+      return await discoverCodexThreads(await clientFor(codexBinding), workspace.workingDirectory);
     },
     async discoverAllThreads(binding) {
       const codexBinding = requireCodexBinding(binding);
-      return await discoverCodexThreads(await clientFor(codexBinding, "catalog"));
+      return await discoverCodexThreads(await clientFor(codexBinding));
     },
     async discoverArchivedThreads(binding) {
       const codexBinding = requireCodexBinding(binding);
-      return await discoverCodexThreads(await clientFor(codexBinding, "catalog"), undefined, true);
+      return await discoverCodexThreads(await clientFor(codexBinding), undefined, true);
     },
     async readTranscript(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
-      const appServerEntries = await readCodexTranscript(await clientFor(codexBinding, "catalog"), runtimeThreadId);
+      const appServerEntries = await readCodexTranscript(await clientFor(codexBinding), runtimeThreadId);
       return await backfillCodexRolloutTranscript({
         codexHome: codexHome(codexBinding),
         runtimeThreadId,
@@ -116,7 +106,7 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     },
     async readActivity(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
-      const appServerEntries = await readCodexTranscript(await clientFor(codexBinding, "catalog"), runtimeThreadId);
+      const appServerEntries = await readCodexTranscript(await clientFor(codexBinding), runtimeThreadId);
       const snapshot = await backfillCodexRolloutTranscript({
         codexHome: codexHome(codexBinding),
         runtimeThreadId,
@@ -130,28 +120,25 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     },
     async archiveThread(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
-      await (await clientFor(codexBinding, "catalog")).archiveThread({ threadId: runtimeThreadId });
+      await (await clientFor(codexBinding)).archiveThread({ threadId: runtimeThreadId });
     },
     async unarchiveThread(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
-      await (await clientFor(codexBinding, "catalog")).unarchiveThread({ threadId: runtimeThreadId });
+      await (await clientFor(codexBinding)).unarchiveThread({ threadId: runtimeThreadId });
     },
     async deleteThread(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
-      await (await clientFor(codexBinding, "catalog")).deleteThread({ threadId: runtimeThreadId });
+      await (await clientFor(codexBinding)).deleteThread({ threadId: runtimeThreadId });
     },
     async start(binding, context) {
       const codexBinding = requireCodexBinding(binding);
-      return new CodexRuntimeSession(await clientFor(codexBinding, "runtime"), codexBinding, context, cacheMedia);
+      return new CodexRuntimeSession(await clientFor(codexBinding), codexBinding, context, cacheMedia);
     },
     async close() {
-      const clients = [runtimeClientPromise, catalogClientPromise].filter(
-        (client): client is Promise<CodexAppServerClient> => Boolean(client),
-      );
-      runtimeClientPromise = null;
-      catalogClientPromise = null;
+      const client = clientPromise;
+      clientPromise = null;
       bindingIdentity = null;
-      await Promise.all(clients.map(async (client) => await (await client).close()));
+      if (client) await (await client).close();
     },
   };
 }
@@ -917,7 +904,7 @@ function resolveSandboxMode(mode: string | undefined, configured: CodexSandboxMo
 }
 
 function resolveApprovalPolicy(policy: CodexApprovalPolicy | undefined): "never" | "on-request" | "untrusted" {
-  return policy ?? DEFAULT_CODEX_APPROVAL_POLICY;
+  return policy ?? "on-request";
 }
 
 function approvalOptions() {

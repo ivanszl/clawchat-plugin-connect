@@ -129,6 +129,53 @@ it("journals native lifecycle work and reconciles an interrupted local commit", 
   await stateStore.close();
 });
 
+it("keeps runtime lifecycle coordination claimed through native and local deletion", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "connect-session-continuity-coordination-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.upsertRuntimeSession({
+    chatId: "chat-delete",
+    sessionId: "session-delete",
+    agentId: "codex",
+    runtimeSessionId: "thread-delete",
+    projectId: null,
+    name: "Delete",
+    isCurrent: true,
+  });
+  const session = await stateStore.getCurrentRuntimeSession("chat-delete", "codex");
+  const order: string[] = [];
+  const continuity = createSessionContinuity({
+    stateStore,
+    coordinateRuntimeLifecycle: async (sessionRef, run) => {
+      order.push(`claim:${sessionRef}`);
+      await run();
+      order.push(`release:${sessionRef}`);
+    },
+    lifecycle: {
+      capabilities: () => ({ archive: true, restore: true, delete: true }),
+      archive: async () => {},
+      restore: async () => {},
+      delete: async () => {
+        order.push("native-delete");
+        expect(await stateStore.getRuntimeSessionByRef(session?.sessionRef ?? "")).not.toBeNull();
+      },
+    },
+    beforeLifecycleLocalCommit: async () => {
+      order.push("local-commit");
+    },
+  });
+
+  await continuity.forSession(session?.sessionRef ?? "").delete();
+
+  expect(order).toEqual([
+    `claim:${session?.sessionRef}`,
+    "native-delete",
+    "local-commit",
+    `release:${session?.sessionRef}`,
+  ]);
+  expect(await stateStore.getRuntimeSessionByRef(session?.sessionRef ?? "")).toBeNull();
+  await stateStore.close();
+});
+
 it("maps one Runtime Workspace Identity unambiguously while allowing cross-Binding Project reuse", async () => {
   const directory = await mkdtemp(join(tmpdir(), "connect-session-continuity-workspace-"));
   const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });

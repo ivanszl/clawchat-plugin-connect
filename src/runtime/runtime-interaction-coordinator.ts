@@ -34,35 +34,47 @@ export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
     },
   ): Promise<RuntimeInteractionResponse> {
     const interactionId = randomUUID();
+    let abortedDuringProjection = context.signal?.aborted ?? false;
+    const observeProjectionAbort = () => {
+      abortedDuringProjection = true;
+    };
+    context.signal?.addEventListener("abort", observeProjectionAbort, { once: true });
     const autoResolutionAt =
       request.kind === "user-input" && request.autoResolutionMs !== null
         ? new Date(Date.now() + request.autoResolutionMs).toISOString()
         : null;
-    const block = await this.transcriptProjection.upsertRuntimeInteraction(context.sessionRef, {
-      id: `runtime-interaction:${interactionId}`,
-      type: "runtime-interaction",
-      origin: "runtime",
-      state: "pending",
-      plainText: `${request.title}\n${request.description}`.trim(),
-      interactionId,
-      interactionType: request.kind,
-      action: request.kind === "approval" ? request.action : null,
-      title: request.title,
-      description: request.description,
-      responseState: "pending",
-      options: request.kind === "approval" ? request.options : [],
-      questions: request.kind === "user-input" ? request.questions : [],
-      command: request.kind === "approval" ? (request.command ?? null) : null,
-      cwd: request.kind === "approval" ? (request.cwd ?? null) : null,
-      files: request.kind === "approval" ? (request.files ?? []) : [],
-      autoResolutionAt,
-      resolvedOptionId: null,
-      resolvedBy: null,
-    });
+    let block: RuntimeInteractionBlock;
+    try {
+      block = await this.transcriptProjection.upsertRuntimeInteraction(context.sessionRef, {
+        id: `runtime-interaction:${interactionId}`,
+        type: "runtime-interaction",
+        origin: "runtime",
+        state: "pending",
+        plainText: `${request.title}\n${request.description}`.trim(),
+        interactionId,
+        interactionType: request.kind,
+        action: request.kind === "approval" ? request.action : null,
+        title: request.title,
+        description: request.description,
+        responseState: "pending",
+        options: request.kind === "approval" ? request.options : [],
+        questions: request.kind === "user-input" ? request.questions : [],
+        command: request.kind === "approval" ? (request.command ?? null) : null,
+        cwd: request.kind === "approval" ? (request.cwd ?? null) : null,
+        files: request.kind === "approval" ? (request.files ?? []) : [],
+        autoResolutionAt,
+        resolvedOptionId: null,
+        resolvedBy: null,
+      });
+    } catch (error) {
+      context.signal?.removeEventListener("abort", observeProjectionAbort);
+      throw error;
+    }
 
     return await new Promise<RuntimeInteractionResponse>((resolve, reject) => {
       let timeout: ReturnType<typeof setTimeout> | null = null;
       const onAbort = () => void this.expire(interactionId, "Runtime request ended");
+      context.signal?.removeEventListener("abort", observeProjectionAbort);
       context.signal?.addEventListener("abort", onAbort, { once: true });
       if (request.kind === "user-input" && request.autoResolutionMs !== null) {
         timeout = setTimeout(
@@ -82,6 +94,7 @@ export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
           validate: (candidate) => validateResponse(request, candidate),
         }),
       });
+      if (abortedDuringProjection || context.signal?.aborted) void this.expire(interactionId, "Runtime request ended");
     });
   }
 

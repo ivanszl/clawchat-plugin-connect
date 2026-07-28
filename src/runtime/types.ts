@@ -139,6 +139,7 @@ export interface RuntimeTranscriptEntry {
 
 export interface RuntimeActivity {
   id: string;
+  aliases?: string[];
   position: string;
   parentId: string | null;
   kind: RuntimeTranscriptEntry["kind"] | "error";

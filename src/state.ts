@@ -1627,30 +1627,35 @@ export class ConnectStateStore {
     return expired;
   }
 
-  async rekeyMatchingTranscriptBlock(sessionRef: string, input: TranscriptBlockInput): Promise<TranscriptBlock | null> {
+  async rekeyTranscriptBlock(
+    sessionRef: string,
+    previousBlockId: string,
+    input: TranscriptBlockInput,
+  ): Promise<TranscriptBlock | null> {
     const db = await this.requireDb();
-    const rows = await db.all<
-      Array<{ block_id: string; revision: number; sequence: number; created_at: number; block_json: string }>
-    >(
-      "SELECT block_id, revision, sequence, created_at, block_json FROM transcript_blocks WHERE session_ref = ? AND block_type = ? AND plain_text = ? ORDER BY sequence ASC LIMIT 200",
+    const candidate = await db.get<{
+      block_id: string;
+      revision: number;
+      sequence: number;
+      created_at: number;
+      block_json: string;
+    }>(
+      "SELECT block_id, revision, sequence, created_at, block_json FROM transcript_blocks WHERE session_ref = ? AND block_id = ?",
       sessionRef,
-      input.type,
-      input.plainText,
+      previousBlockId,
     );
-    const stable = rows.find((row) => row.block_id === input.id) ?? null;
-    const candidate = rows.find((row) => {
-      if (row.block_id === input.id) return false;
-      try {
-        const block = JSON.parse(row.block_json) as TranscriptBlock;
-        if (block.runtimeSource === "live") return sameTranscriptReconciliationPayload(block, input);
-        if (block.type !== "message" || input.type !== "message" || row.block_id.startsWith("b_")) return false;
-        if (block.role !== input.role) return false;
-        return block.origin === input.origin || (input.origin === "runtime" && block.origin === "client");
-      } catch {
-        return false;
-      }
-    });
     if (!candidate) return null;
+    const stable = await db.get<{
+      block_id: string;
+      revision: number;
+      sequence: number;
+      created_at: number;
+      block_json: string;
+    }>(
+      "SELECT block_id, revision, sequence, created_at, block_json FROM transcript_blocks WHERE session_ref = ? AND block_id = ?",
+      sessionRef,
+      input.id,
+    );
     const previous = JSON.parse(candidate.block_json) as TranscriptBlock;
     const now = Date.now();
     const preserveOptimisticMessage =
@@ -1686,7 +1691,7 @@ export class ConnectStateStore {
       block,
     } satisfies ClientViewEvent;
     db.transaction((run) => {
-      if (stable) {
+      if (stable && stable.block_id !== candidate.block_id) {
         run("DELETE FROM transcript_blocks WHERE session_ref = ? AND block_id = ?", sessionRef, stable.block_id);
       }
       const updated = run(
@@ -2089,15 +2094,6 @@ function sameTranscriptPayload(stored: TranscriptBlock, input: TranscriptBlockIn
   const storedPayload = { ...stored } as Record<string, unknown>;
   const inputPayload = { ...input } as Record<string, unknown>;
   for (const key of ["sequence", "revision", "createdAt", "updatedAt"]) {
-    delete storedPayload[key];
-    delete inputPayload[key];
-  }
-  return JSON.stringify(storedPayload) === JSON.stringify(inputPayload);
-}
-function sameTranscriptReconciliationPayload(stored: TranscriptBlock, input: TranscriptBlockInput): boolean {
-  const storedPayload = { ...stored } as Record<string, unknown>;
-  const inputPayload = { ...input } as Record<string, unknown>;
-  for (const key of ["id", "runtimeSource", "state", "sequence", "revision", "createdAt", "updatedAt"]) {
     delete storedPayload[key];
     delete inputPayload[key];
   }

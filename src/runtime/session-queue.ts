@@ -20,6 +20,7 @@ export class SessionQueue {
   private readonly onStatsChange?: (stats: QueueStats) => Promise<void> | void;
   private readonly queues = new Map<string, QueueItem[]>();
   private readonly runningSessions = new Set<string>();
+  private readonly lifecycleClaims = new Set<string>();
   private running = 0;
   constructor(options: SessionQueueOptions = {}) {
     this.maxConcurrentTurns = options.maxConcurrentTurns ?? 4;
@@ -31,11 +32,53 @@ export class SessionQueue {
     run: () => Promise<void>,
     displayIdentity = `Session ${sessionIdentity}`,
   ): Promise<void> {
+    this.assertAccepting(sessionIdentity, displayIdentity);
     const queue = this.queues.get(sessionIdentity) ?? [];
     if (queue.length >= this.maxPendingPerSession) throw new Error(`too many pending turns for ${displayIdentity}`);
     this.queues.set(sessionIdentity, queue);
     await new Promise<void>((resolve, reject) => {
       queue.push({ run, resolve, reject });
+      this.pump();
+    });
+  }
+
+  assertAccepting(sessionIdentity: string, displayIdentity = `Session ${sessionIdentity}`): void {
+    if (this.lifecycleClaims.has(sessionIdentity)) {
+      throw new Error(`${displayIdentity} lifecycle operation is in progress`);
+    }
+  }
+
+  async claim<T>(
+    sessionIdentity: string,
+    run: () => Promise<T>,
+    displayIdentity = `Session ${sessionIdentity}`,
+  ): Promise<T> {
+    if (this.lifecycleClaims.has(sessionIdentity)) {
+      throw new Error(`${displayIdentity} lifecycle operation is in progress`);
+    }
+    this.lifecycleClaims.add(sessionIdentity);
+    const queue = this.queues.get(sessionIdentity) ?? [];
+    this.queues.set(sessionIdentity, queue);
+    for (const pending of queue.splice(0)) {
+      pending.reject(new Error(`${displayIdentity} lifecycle operation started`));
+    }
+    return await new Promise<T>((resolve, reject) => {
+      queue.push({
+        run: async () => {
+          try {
+            resolve(await run());
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          } finally {
+            this.lifecycleClaims.delete(sessionIdentity);
+          }
+        },
+        resolve: () => undefined,
+        reject: (error) => {
+          this.lifecycleClaims.delete(sessionIdentity);
+          reject(error);
+        },
+      });
       this.pump();
     });
   }
