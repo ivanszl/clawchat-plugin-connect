@@ -21,6 +21,7 @@ export const EVENT = {
   NOTIFY_SIGNAL: "notify.signal",
   PERMISSION_REQUEST: "permission.request",
   PERMISSION_RESOLVED: "permission.resolved",
+  INTERACTION_SUBMIT: "interaction.submit",
   HISTORY_TRANSIT: "history.transit",
   DEVICE_CURSOR_RESET: "device.cursor.reset",
   REPLAY_DONE: "replay.done",

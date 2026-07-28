@@ -184,6 +184,7 @@ export interface ConnectWsClientOptions {
   reliability?: { ackDebounceMs?: number; ackResendMs?: number };
   protocolEventHandler?: (type: ConnectProtocolEventType, envelope: Envelope) => void | Promise<void>;
   messageHandler?: (message: NormalizedInboundMessage) => MessageHandlingResult | Promise<MessageHandlingResult>;
+  interactionSubmitHandler?: (envelope: Envelope) => boolean | Promise<boolean>;
   capabilities?: {
     chatMetadataEvents?: boolean;
     notifySignals?: boolean;
@@ -752,6 +753,15 @@ export class ConnectWsClient extends EventEmitter {
         return;
       }
       await this.publishProtocolEvent("permission", "permission", envelope);
+      return;
+    }
+    if (envelope.event === EVENT.INTERACTION_SUBMIT) {
+      if (!envelope.chat_id || !envelope.sender) {
+        this.emit("error", new ProtocolError("invalid interaction.submit frame"));
+        return;
+      }
+      if (await this.options.interactionSubmitHandler?.(envelope)) return;
+      await this.publishProtocolEvent("unknown", "event", envelope);
       return;
     }
     if (envelope.event === EVENT.HISTORY_TRANSIT) {

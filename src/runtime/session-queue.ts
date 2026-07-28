@@ -3,6 +3,7 @@ export interface QueueStats {
   queued: number;
   sessions: number;
 }
+export type SessionActivity = "running" | "queued" | "idle";
 export interface SessionQueueOptions {
   maxConcurrentTurns?: number;
   maxPendingPerSession?: number;
@@ -42,6 +43,11 @@ export class SessionQueue {
     let queued = 0;
     for (const queue of this.queues.values()) queued += queue.length;
     return { running: this.running, queued, sessions: this.queues.size };
+  }
+  activity(sessionIdentity: string): SessionActivity {
+    if (this.runningSessions.has(sessionIdentity)) return "running";
+    if ((this.queues.get(sessionIdentity)?.length ?? 0) > 0) return "queued";
+    return "idle";
   }
   private pump(): void {
     if (this.running >= this.maxConcurrentTurns) return;

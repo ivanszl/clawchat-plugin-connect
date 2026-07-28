@@ -7,6 +7,8 @@ import { type Envelope, EVENT, type NormalizedInboundMessage, type Transport } f
 import { ConnectRuntime } from "./runtime/connect-runtime";
 import type { RuntimeAdapterRegistry } from "./runtime/registry";
 import type { RuntimeInteractionCoordinator } from "./runtime/runtime-interaction-coordinator";
+import { RuntimeInteractionRouter } from "./runtime/runtime-interaction-router";
+import type { SessionActivity } from "./runtime/session-queue";
 import type { ConnectRuntimeMedia } from "./runtime/types";
 import type { ConnectStateStore } from "./state";
 import type { ActivationCredentials, ConnectConfig } from "./types";
@@ -65,6 +67,7 @@ export interface BindingRuntimeHandle {
   ): Promise<{ turnId: string; sessionRef: string }>;
   uploadClientMedia?(file: Blob, filename: string): Promise<ConnectRuntimeMedia>;
   cancelClientTurn?(sessionRef: string): Promise<boolean>;
+  sessionActivity?(sessionRef: string): Promise<SessionActivity>;
 }
 
 export async function startBindingRuntime(options: BindingRuntimeOptions): Promise<BindingRuntimeHandle> {
@@ -72,6 +75,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   let runtime: ConnectRuntime;
   let inboundMessages: InboundMessageProcessor;
   let wsClient: ConnectWsClient;
+  let interactionRouter: RuntimeInteractionRouter;
   wsClient = new ConnectWsClient({
     agentId: options.agentId,
     url: options.config.websocketUrl,
@@ -83,12 +87,31 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     deviceId: options.deviceId,
     transport: options.wsTransport,
     messageHandler: (message) => inboundMessages.accept(message),
+    interactionSubmitHandler: async (envelope) => await interactionRouter.handleInteractionSubmit(envelope),
     protocolEventHandler: async (type, envelope) => await dispatchProtocolEventHandler(options, type, envelope),
     capabilities: {
       chatMetadataEvents: Boolean(options.protocolEventHandlers?.metadata_invalidated),
       notifySignals: Boolean(options.protocolEventHandlers?.notify),
       permissionEvents: Boolean(options.protocolEventHandlers?.permission),
       historySync: Boolean(options.protocolEventHandlers?.history_transit),
+    },
+  });
+  interactionRouter = new RuntimeInteractionRouter({
+    clientPort: options.runtimeInteractions,
+    ownerUserId: options.activation.ownerUserId,
+    ownerConversationId: options.activation.conversationId,
+    sendClawChatMessage: async (fragments) => {
+      const conversationId = options.activation.conversationId;
+      if (!conversationId) throw new Error("ClawChat owner direct conversation is unavailable");
+      await wsClient.sendMessageEnvelope(
+        EVENT.MESSAGE_REPLY,
+        conversationId,
+        {
+          message_mode: "normal",
+          message: { body: { fragments }, context: { mentions: [], reply: null } },
+        },
+        { toType: "direct" },
+      );
     },
   });
   runtime = new ConnectRuntime({
@@ -100,9 +123,9 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     projects: options.projects,
     runtimeAdapters: options.runtimeAdapters,
     transcriptProjection: options.transcriptProjection,
-    runtimeInteractions: options.runtimeInteractions,
+    runtimeInteractions: interactionRouter,
   });
-  inboundMessages = new InboundMessageProcessor(options, wsClient, runtime);
+  inboundMessages = new InboundMessageProcessor(options, wsClient, runtime, interactionRouter);
   wireQuarantineEvents(wsClient, options);
   wsClient.on("error", (error: unknown) => {
     const detail = error instanceof Error ? error.message : String(error);
@@ -139,8 +162,10 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     enqueueClientTurn: async (sessionRef, prompt, media) => await runtime.enqueueClientTurn(sessionRef, prompt, media),
     uploadClientMedia: async (file, filename) => await runtime.uploadClientMedia(file, filename),
     cancelClientTurn: async (sessionRef) => await runtime.cancelClientTurn(sessionRef),
+    sessionActivity: async (sessionRef) => await runtime.sessionActivity(sessionRef),
     async close() {
       await inboundMessages.close();
+      await interactionRouter.close();
       wsClient.close();
       await runtime.dispose();
       await recordConnectionStatus(options, false, null);
@@ -157,6 +182,7 @@ class InboundMessageProcessor {
     private readonly options: BindingRuntimeOptions,
     private readonly wsClient: ConnectWsClient,
     private readonly runtime: ConnectRuntime,
+    private readonly interactionRouter: RuntimeInteractionRouter,
   ) {}
 
   accept(message: NormalizedInboundMessage): "accepted" {
@@ -174,6 +200,7 @@ class InboundMessageProcessor {
       message,
       wsClient: this.wsClient,
       runtime: this.runtime,
+      interactionRouter: this.interactionRouter,
       onTurnAccepted: markHandled,
     })
       .then(async (handledWithoutTurn) => {
@@ -257,9 +284,14 @@ async function dispatchInboundMessage(
     message: NormalizedInboundMessage;
     wsClient: ConnectWsClient;
     runtime: ConnectRuntime;
+    interactionRouter: RuntimeInteractionRouter;
     onTurnAccepted: () => Promise<void>;
   },
 ): Promise<boolean> {
+  if (await params.interactionRouter.handleMessage(params.message)) {
+    await params.onTurnAccepted();
+    return true;
+  }
   const routeCommand = async (): Promise<boolean> => {
     const command = await handleChatCommand({
       message: params.message,

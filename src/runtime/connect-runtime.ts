@@ -20,9 +20,14 @@ import type { ConnectWsClient } from "../ws-client";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
 import type { RuntimeAdapterRegistry } from "./registry";
-import type { RuntimeInteractionCoordinator } from "./runtime-interaction-coordinator";
-import { type QueueStats, SessionQueue } from "./session-queue";
-import type { ConnectRuntimeMedia, ConnectRuntimeSession, RuntimeModelOption, SelectableRuntimeThread } from "./types";
+import { type QueueStats, type SessionActivity, SessionQueue } from "./session-queue";
+import type {
+  ConnectRuntimeMedia,
+  ConnectRuntimeSession,
+  RuntimeInteractionPort,
+  RuntimeModelOption,
+  SelectableRuntimeThread,
+} from "./types";
 
 export interface ConnectRuntimeOptions {
   agentId: string;
@@ -33,7 +38,7 @@ export interface ConnectRuntimeOptions {
   projects?: ProjectCatalog;
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection?: TranscriptProjection;
-  runtimeInteractions?: RuntimeInteractionCoordinator;
+  runtimeInteractions?: RuntimeInteractionPort;
 }
 
 export class ConnectRuntime {
@@ -173,6 +178,12 @@ export class ConnectRuntime {
     if (!current || current.agentId !== this.options.agentId) return false;
     const session = this.sessions.get(sessionKey(current.chatId, current.sessionId));
     return (await session?.cancel?.()) ?? false;
+  }
+
+  async sessionActivity(sessionRef: string): Promise<SessionActivity> {
+    const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
+    if (!current || current.agentId !== this.options.agentId) return "idle";
+    return this.queue.activity(sessionKey(current.chatId, current.sessionId));
   }
 
   async dispose(): Promise<void> {

@@ -202,6 +202,63 @@ describe("Session Catalog workspace grouping", () => {
     expect(entry).toMatchObject({ projectId: null, workspaceId: null, workspaceName: null });
   });
 
+  it("shows activity only on the Session whose turn is active", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-activity-"));
+    const refs = ["ABCDEFGH", "JKLMNPQR"];
+    const store = createStateStore({
+      dbPath: join(directory, "state.sqlite"),
+      sessionRefFactory: () => refs.shift() ?? "STUVWXYZ",
+    });
+    stores.push(store);
+    await store.upsertRuntimeSession({
+      chatId: "chat-active",
+      sessionId: "session-active",
+      agentId: "codex",
+      runtimeSessionId: "thread-active",
+      name: "Active task",
+      hasMessages: true,
+      isCurrent: true,
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-idle",
+      sessionId: "session-idle",
+      agentId: "codex",
+      runtimeSessionId: "thread-idle",
+      name: "Idle task",
+      hasMessages: true,
+      isCurrent: true,
+    });
+    await store.upsertRuntimeStatus({
+      websocketConnected: true,
+      activeAgent: "codex",
+      activeChats: 1,
+      globalRunning: 1,
+      globalQueued: 0,
+      recentError: null,
+    });
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      discoverAllThreads: async () => [],
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const config = defaultConfig();
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+      sessionActivity: (_bindingId, sessionRef) => (sessionRef === "ABCDEFGH" ? "running" : "idle"),
+    });
+
+    const entries = (await catalog.view()).bindings[0]?.entries ?? [];
+
+    expect(entries.find((entry) => entry.sessionRef === "ABCDEFGH")?.status).toBe("running");
+    expect(entries.find((entry) => entry.sessionRef === "JKLMNPQR")?.status).toBe("idle");
+  });
+
   it("archives, restores, and permanently deletes a native Runtime Thread by Session Ref", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-lifecycle-"));
     const store = createStateStore({

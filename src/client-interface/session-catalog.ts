@@ -10,6 +10,7 @@ import { getAgentBinding } from "../config";
 import { ProjectCatalog } from "../projects";
 import { resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
+import type { SessionActivity } from "../runtime/session-queue";
 import type { RuntimeThreadSummary } from "../runtime/types";
 import type { ConnectStateStore } from "../state";
 import type { ConnectConfig, ProjectRecord, RuntimeSessionRecord, RuntimeStatus } from "../types";
@@ -23,6 +24,7 @@ export interface SessionCatalogOptions {
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection: TranscriptProjection;
   projects?: ProjectCatalog;
+  sessionActivity?: (bindingId: string, sessionRef: string) => SessionActivity | Promise<SessionActivity>;
 }
 
 interface CatalogState {
@@ -289,13 +291,16 @@ export class SessionCatalog {
         ).values(),
       ];
       const discoveredById = new Map(discovered.map((thread) => [thread.runtimeThreadId, thread]));
-      const entries: SessionCatalogEntryView[] = managed.map((session) => {
-        const project = projectById.get(session.projectId ?? "") ?? null;
-        const runtimeThread = session.runtimeSessionId ? discoveredById.get(session.runtimeSessionId) : undefined;
-        const workingDirectory = runtimeThread?.workingDirectory ?? null;
-        if (workingDirectory) workingDirectoryByRef.set(session.sessionRef.toUpperCase(), workingDirectory);
-        return managedEntry(session, binding.kind, project, status, runtimeThread);
-      });
+      const entries: SessionCatalogEntryView[] = await Promise.all(
+        managed.map(async (session) => {
+          const project = projectById.get(session.projectId ?? "") ?? null;
+          const runtimeThread = session.runtimeSessionId ? discoveredById.get(session.runtimeSessionId) : undefined;
+          const workingDirectory = runtimeThread?.workingDirectory ?? null;
+          if (workingDirectory) workingDirectoryByRef.set(session.sessionRef.toUpperCase(), workingDirectory);
+          const activity = (await this.options.sessionActivity?.(bindingId, session.sessionRef)) ?? "idle";
+          return managedEntry(session, binding.kind, project, status, activity, runtimeThread);
+        }),
+      );
       for (const thread of discovered) {
         if (managedRuntimeIds.has(thread.runtimeThreadId)) continue;
         const project = thread.workingDirectory ? findProjectForWorkspace(projects, thread.workingDirectory) : null;
@@ -320,7 +325,7 @@ export class SessionCatalog {
           workspaceName: workspace?.name ?? null,
           name: thread.name || `Session ${sessionRef}`,
           isArchived: thread.isArchived === true,
-          status: connectionStatus(status),
+          status: sessionStatus(status, "idle"),
           updatedAt: new Date(thread.updatedAt || Date.now()).toISOString(),
           isCurrent: false,
           isAdopted: false,
@@ -362,6 +367,7 @@ function managedEntry(
   bindingKind: string,
   project: ProjectRecord | null,
   status: RuntimeStatus | null,
+  activity: SessionActivity,
   runtimeThread?: RuntimeThreadSummary,
 ): SessionCatalogEntryView {
   const workspace = workspaceView(
@@ -381,7 +387,7 @@ function managedEntry(
     workspaceName: workspace?.name ?? null,
     name: session.name || runtimeThread?.name || `Session ${session.sessionRef}`,
     isArchived: runtimeThread?.isArchived === true,
-    status: connectionStatus(status),
+    status: sessionStatus(status, activity),
     updatedAt: new Date(Math.max(session.updatedAt, runtimeThread?.updatedAt ?? 0)).toISOString(),
     isCurrent: session.isCurrent,
     isAdopted: true,
@@ -418,9 +424,7 @@ function pathContains(root: string, candidate: string): boolean {
   return nestedPath === "" || (!nestedPath.startsWith("..") && !isAbsolute(nestedPath));
 }
 
-function connectionStatus(status: RuntimeStatus | null): SessionCatalogEntryView["status"] {
-  if (status?.recentError) return "error";
-  if (status?.globalRunning) return "running";
-  if (status?.globalQueued) return "queued";
+function sessionStatus(status: RuntimeStatus | null, activity: SessionActivity): SessionCatalogEntryView["status"] {
+  if (activity !== "idle") return activity;
   return status?.websocketConnected === false ? "offline" : "idle";
 }

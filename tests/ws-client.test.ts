@@ -1818,6 +1818,50 @@ describe("ConnectWsClient", () => {
     client.close();
   });
 
+  it("dispatches ClawChat interaction submissions to the Runtime Interaction handler", async () => {
+    const transport = new MemoryTransport();
+    const interactionSubmitHandler = mock(async () => true);
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport,
+      traceIdFactory: () => "trace-interaction",
+      heartbeat: { enabled: false },
+      interactionSubmitHandler,
+    });
+    await handshake(client, transport, "trace-interaction");
+
+    transport.receive({
+      version: "2",
+      event: EVENT.INTERACTION_SUBMIT,
+      trace_id: "interaction-submit",
+      emitted_at: 5,
+      chat_id: "owner-conversation",
+      chat_type: "direct",
+      sender: { id: "owner-1", type: "direct", nick_name: "Owner" },
+      payload: {
+        action: {
+          payload: {
+            type: "connect_runtime_interaction",
+            interaction_id: "interaction-1",
+            option_id: "approve-once",
+          },
+        },
+      },
+    });
+    await flush();
+
+    expect(interactionSubmitHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: EVENT.INTERACTION_SUBMIT,
+        chat_id: "owner-conversation",
+        sender: expect.objectContaining({ id: "owner-1" }),
+      }),
+    );
+    client.close();
+  });
+
   it("deduplicates notify.signal by event_id across reliable redelivery", async () => {
     const transport = new MemoryTransport();
     const store = createStore();

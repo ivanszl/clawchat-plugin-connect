@@ -82,8 +82,13 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   const origin = `http://${hostname}:${port}`;
   const assetsPath = options.assetsPath ?? (await resolveClientAssetsPath());
   const projects = options.projects ?? new ProjectCatalog(options.stateStore);
-  const catalog = new SessionCatalog({ ...options, projects });
   const runtimes = new Map(options.runtimes.map((runtime) => [runtime.agentId, runtime]));
+  const catalog = new SessionCatalog({
+    ...options,
+    projects,
+    sessionActivity: async (bindingId, sessionRef) =>
+      (await runtimes.get(bindingId)?.sessionActivity?.(sessionRef)) ?? "idle",
+  });
   const runtimeInteractions =
     options.runtimeInteractions ?? new RuntimeInteractionCoordinator(options.transcriptProjection);
 
