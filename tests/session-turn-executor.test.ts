@@ -1,5 +1,4 @@
 import { expect, it } from "bun:test";
-import type { RuntimeOutputEvent } from "../src/output-visibility";
 import { SessionTurnExecutor } from "../src/runtime/session-turn-executor";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
 import type { TurnTarget } from "../src/session-continuity";
@@ -15,8 +14,17 @@ it("owns one native handle per Session and reports a new Runtime Thread through 
       starts.push(context.sessionId);
       await context.onRuntimeSessionId("thread-created");
       return {
-        async *prompt(): AsyncIterable<RuntimeOutputEvent> {
-          yield { kind: "final", text: "done" };
+        async *prompt() {
+          yield {
+            id: "done",
+            position: "0",
+            parentId: null,
+            kind: "assistant" as const,
+            text: "done",
+            state: "complete" as const,
+            source: "live" as const,
+            data: { outputKind: "final" },
+          };
         },
         async close() {
           closes.push(context.sessionId);
@@ -59,7 +67,18 @@ it("owns one native handle per Session and reports a new Runtime Thread through 
         },
       }),
     ),
-  ).toEqual([{ kind: "final", text: "done" }]);
+  ).toEqual([
+    {
+      id: "done",
+      position: "0",
+      parentId: null,
+      kind: "assistant",
+      text: "done",
+      state: "complete",
+      source: "live",
+      data: { outputKind: "final" },
+    },
+  ]);
   await Array.fromAsync(
     executor.execute(target, {
       prompt: "second",

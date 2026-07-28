@@ -3,11 +3,10 @@ import type {
   ConnectRuntimeAdapter,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
-  RuntimeActivity,
   RuntimeActivitySnapshot,
+  RuntimeLifecycleCapabilities,
   RuntimeModelOption,
   RuntimeThreadSummary,
-  RuntimeTranscriptSnapshot,
 } from "./types";
 
 export class RuntimeAdapterRegistry {
@@ -34,7 +33,7 @@ export class RuntimeAdapterRegistry {
     return this.require(binding.kind).modes;
   }
 
-  lifecycleCapabilities(binding: AgentBindingConfig): { archive: boolean; restore: boolean; delete: boolean } {
+  lifecycleCapabilities(binding: AgentBindingConfig): RuntimeLifecycleCapabilities {
     const adapter = this.require(binding.kind);
     return (
       adapter.lifecycleCapabilities ?? {
@@ -62,22 +61,12 @@ export class RuntimeAdapterRegistry {
     return (await this.require(binding.kind).discoverArchivedThreads?.(binding)) ?? [];
   }
 
-  async readTranscript(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeTranscriptSnapshot> {
-    return (
-      (await this.require(binding.kind).readTranscript?.(binding, runtimeThreadId)) ?? {
-        entries: [],
-        completeness: "live-only",
-      }
-    );
-  }
-
   async readActivity(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeActivitySnapshot> {
     const adapter = this.require(binding.kind);
     if (adapter.readActivity) return await adapter.readActivity(binding, runtimeThreadId);
-    const snapshot = await this.readTranscript(binding, runtimeThreadId);
     return {
-      activities: snapshot.entries.map((entry, index) => activityFromLegacyEntry(entry, `${index}`)),
-      completeness: snapshot.completeness,
+      activities: [],
+      completeness: "live-only",
       limitations: ["identity", "correlation", "ordering"],
     };
   }
@@ -135,17 +124,4 @@ export class RuntimeAdapterRegistry {
     if (!adapter) throw new Error(`no Runtime Adapter registered for kind: ${kind}`);
     return adapter;
   }
-}
-
-function activityFromLegacyEntry(
-  entry: RuntimeTranscriptSnapshot["entries"][number],
-  position: string,
-  parentId: string | null = null,
-): RuntimeActivity {
-  return {
-    ...entry,
-    position,
-    parentId,
-    children: entry.children?.map((child, index) => activityFromLegacyEntry(child, `${position}.${index}`, entry.id)),
-  };
 }

@@ -1,7 +1,6 @@
-import type { RuntimeOutputEvent } from "../output-visibility";
 import type { TurnTarget } from "../session-continuity";
 import type { AgentBindingConfig } from "../types";
-import type { ConnectRuntimePrompt, ConnectRuntimeSession, ConnectRuntimeStartContext } from "./types";
+import type { ConnectRuntimePrompt, ConnectRuntimeSession, ConnectRuntimeStartContext, RuntimeActivity } from "./types";
 
 export interface SessionTurnExecutorOptions {
   configPath: string;
@@ -18,7 +17,7 @@ export class SessionTurnExecutor {
 
   constructor(private readonly options: SessionTurnExecutorOptions) {}
 
-  async *execute(target: TurnTarget, input: SessionTurnExecution): AsyncIterable<RuntimeOutputEvent> {
+  async *execute(target: TurnTarget, input: SessionTurnExecution): AsyncIterable<RuntimeActivity> {
     const handle = await this.handleFor(target);
     yield* handle.prompt({ ...input, turnOrigin: target.turnOrigin });
   }

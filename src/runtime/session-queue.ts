@@ -11,8 +11,7 @@ export interface SessionQueueOptions {
 }
 interface QueueItem {
   run: () => Promise<void>;
-  resolve: () => void;
-  reject: (error: Error) => void;
+  settle(failure: Error | null): void;
 }
 export class SessionQueue {
   private readonly maxConcurrentTurns: number;
@@ -37,7 +36,13 @@ export class SessionQueue {
     if (queue.length >= this.maxPendingPerSession) throw new Error(`too many pending turns for ${displayIdentity}`);
     this.queues.set(sessionIdentity, queue);
     await new Promise<void>((resolve, reject) => {
-      queue.push({ run, resolve, reject });
+      queue.push({
+        run,
+        settle: (failure) => {
+          if (failure) reject(failure);
+          else resolve();
+        },
+      });
       this.pump();
     });
   }
@@ -52,6 +57,7 @@ export class SessionQueue {
     sessionIdentity: string,
     run: () => Promise<T>,
     displayIdentity = `Session ${sessionIdentity}`,
+    onClaim?: () => Promise<void>,
   ): Promise<T> {
     if (this.lifecycleClaims.has(sessionIdentity)) {
       throw new Error(`${displayIdentity} lifecycle operation is in progress`);
@@ -60,23 +66,27 @@ export class SessionQueue {
     const queue = this.queues.get(sessionIdentity) ?? [];
     this.queues.set(sessionIdentity, queue);
     for (const pending of queue.splice(0)) {
-      pending.reject(new Error(`${displayIdentity} lifecycle operation started`));
+      pending.settle(new Error(`${displayIdentity} lifecycle operation started`));
+    }
+    try {
+      await onClaim?.();
+    } catch (error) {
+      this.lifecycleClaims.delete(sessionIdentity);
+      throw error;
     }
     return await new Promise<T>((resolve, reject) => {
+      let value: T | undefined;
       queue.push({
         run: async () => {
+          value = await run();
+        },
+        settle: (failure) => {
           try {
-            resolve(await run());
-          } catch (error) {
-            reject(error instanceof Error ? error : new Error(String(error)));
+            if (failure) reject(failure);
+            else resolve(value as T);
           } finally {
             this.lifecycleClaims.delete(sessionIdentity);
           }
-        },
-        resolve: () => undefined,
-        reject: (error) => {
-          this.lifecycleClaims.delete(sessionIdentity);
-          reject(error);
         },
       });
       this.pump();
@@ -122,8 +132,7 @@ export class SessionQueue {
       await this.notifyStats().catch(() => undefined);
       this.pump();
     }
-    if (failure) item.reject(failure);
-    else item.resolve();
+    item.settle(failure);
   }
 
   private async notifyStats(): Promise<void> {

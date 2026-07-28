@@ -7,7 +7,9 @@ import type { AgentBindingConfig } from "../src/types";
 interface AdapterHarness {
   adapter: ConnectRuntimeAdapter;
   binding: AgentBindingConfig;
+  activateThread(): void;
   closeCount(): number;
+  lifecycleCalls(): string[];
 }
 
 function runtimeAdapterConformance(name: string, createHarness: () => AdapterHarness): void {
@@ -26,7 +28,14 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
       const models = await registry.listModels(binding);
       if (adapter.listModels) expect(models).toEqual(expect.any(Array));
       else expect(models).toBeNull();
-      expect(await registry.discoverAllThreads(binding)).toEqual([]);
+      expect(
+        await registry.discoverThreads(binding, {
+          projectId: null,
+          workingDirectory: "/tmp",
+          additionalDirectories: [],
+          skipGitRepoCheck: true,
+        }),
+      ).toEqual([]);
       await registry.close();
     });
 
@@ -38,7 +47,26 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
       const second = await registry.readActivity(binding, "thread-1");
 
       expect(second).toEqual(first);
-      expect(first.activities.map((activity) => [activity.id, activity.position])).toEqual([["activity-1", "0"]]);
+      expect(first.activities).toHaveLength(201);
+      expect(new Set(first.activities.map((activity) => activity.id))).toHaveProperty("size", 201);
+      expect(new Set(first.activities.map((activity) => activity.position))).toHaveProperty("size", 201);
+      expect(first.activities.every((activity) => activity.text === "same output")).toBe(true);
+      await registry.close();
+    });
+
+    it("applies supported lifecycle operations idempotently", async () => {
+      const harness = createHarness();
+      const registry = new RuntimeAdapterRegistry([harness.adapter]);
+      harness.activateThread();
+
+      await registry.archiveThread(harness.binding, "thread-1");
+      await registry.archiveThread(harness.binding, "thread-1");
+      await registry.unarchiveThread(harness.binding, "thread-1");
+      await registry.unarchiveThread(harness.binding, "thread-1");
+      await registry.deleteThread(harness.binding, "thread-1");
+      await registry.deleteThread(harness.binding, "thread-1");
+
+      expect(harness.lifecycleCalls()).toEqual(["archive", "restore", "delete"]);
       await registry.close();
     });
 
@@ -58,28 +86,48 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
 runtimeAdapterConformance("reference", () => {
   let closes = 0;
   let closed = false;
+  let state: "active" | "archived" | "deleted" = "deleted";
+  const lifecycleCalls: string[] = [];
   return {
     binding: { kind: "codex" },
+    activateThread: () => {
+      state = "active";
+    },
     closeCount: () => closes,
+    lifecycleCalls: () => lifecycleCalls,
     adapter: {
       kind: "codex",
       modes: [],
-      lifecycleCapabilities: { archive: false, restore: false, delete: false },
-      discoverAllThreads: async () => [],
+      lifecycleCapabilities: { archive: true, restore: true, delete: true },
+      discoverAllThreads: async () =>
+        state === "active" ? [{ runtimeThreadId: "thread-1", name: null, updatedAt: 1 }] : [],
+      discoverArchivedThreads: async () =>
+        state === "archived" ? [{ runtimeThreadId: "thread-1", name: null, updatedAt: 1, isArchived: true }] : [],
+      archiveThread: async () => {
+        lifecycleCalls.push("archive");
+        state = "archived";
+      },
+      unarchiveThread: async () => {
+        lifecycleCalls.push("restore");
+        state = "active";
+      },
+      deleteThread: async () => {
+        lifecycleCalls.push("delete");
+        state = "deleted";
+      },
       readActivity: async () => ({
         completeness: "complete",
         limitations: [],
-        activities: [
-          {
-            id: "activity-1",
-            position: "0",
-            parentId: null,
-            kind: "assistant",
-            text: "done",
-            state: "complete",
-            source: "history",
-          },
-        ],
+        activities: Array.from({ length: 201 }, (_, index) => ({
+          id: `activity-${index}`,
+          aliases: [`live-${index}`],
+          position: `${index}`,
+          parentId: null,
+          kind: "assistant" as const,
+          text: "same output",
+          state: "complete" as const,
+          source: "history" as const,
+        })),
       }),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
       close: async () => {
@@ -93,9 +141,27 @@ runtimeAdapterConformance("reference", () => {
 
 runtimeAdapterConformance("Codex", () => {
   let closes = 0;
+  let state: "active" | "archived" | "deleted" = "deleted";
+  const lifecycleCalls: string[] = [];
   const appServer = {
     listModels: async () => ({ data: [], nextCursor: null }),
-    listThreads: async () => ({ data: [], nextCursor: null }),
+    listThreads: async (params: { archived?: boolean }) => ({
+      data:
+        (params.archived === true && state === "archived") || (params.archived !== true && state === "active")
+          ? [
+              {
+                id: "thread-1",
+                preview: "",
+                name: null,
+                createdAt: 1,
+                updatedAt: 1,
+                recencyAt: 1,
+                cwd: "/tmp",
+              },
+            ]
+          : [],
+      nextCursor: null,
+    }),
     readThread: async () => ({
       thread: {
         id: "thread-1",
@@ -109,14 +175,28 @@ runtimeAdapterConformance("Codex", () => {
           {
             id: "turn-1",
             status: "completed",
-            items: [{ type: "agentMessage", id: "activity-1", text: "done" }],
+            items: Array.from({ length: 201 }, (_, index) => ({
+              type: "agentMessage",
+              id: `activity-${index}`,
+              text: "same output",
+            })),
           },
         ],
       },
     }),
-    archiveThread: async () => undefined,
-    unarchiveThread: async () => ({ thread: { id: "thread-1" } }),
-    deleteThread: async () => undefined,
+    archiveThread: async () => {
+      lifecycleCalls.push("archive");
+      state = "archived";
+    },
+    unarchiveThread: async () => {
+      lifecycleCalls.push("restore");
+      state = "active";
+      return { thread: { id: "thread-1" } };
+    },
+    deleteThread: async () => {
+      lifecycleCalls.push("delete");
+      state = "deleted";
+    },
     startThread: async () => ({ thread: { id: "thread-1" } }),
     resumeThread: async () => ({ thread: { id: "thread-1" } }),
     startTurn: async () => ({ turn: { id: "turn-1", status: "completed", error: null } }),
@@ -129,7 +209,11 @@ runtimeAdapterConformance("Codex", () => {
   };
   return {
     binding: { kind: "codex", env: { CODEX_HOME: "/tmp/connect-runtime-adapter-conformance" } },
+    activateThread: () => {
+      state = "active";
+    },
     closeCount: () => closes,
+    lifecycleCalls: () => lifecycleCalls,
     adapter: createCodexRuntimeAdapter({
       createAppServer: async () =>
         appServer as unknown as import("../src/runtime/codex-app-server").CodexAppServerClient,

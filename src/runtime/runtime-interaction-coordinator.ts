@@ -34,7 +34,8 @@ export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
     },
   ): Promise<RuntimeInteractionResponse> {
     const interactionId = randomUUID();
-    let abortedDuringProjection = context.signal?.aborted ?? false;
+    const initiallyAborted = context.signal?.aborted ?? false;
+    let abortedDuringProjection = initiallyAborted;
     const observeProjectionAbort = () => {
       abortedDuringProjection = true;
     };
@@ -49,14 +50,16 @@ export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
         id: `runtime-interaction:${interactionId}`,
         type: "runtime-interaction",
         origin: "runtime",
-        state: "pending",
-        plainText: `${request.title}\n${request.description}`.trim(),
+        state: initiallyAborted ? "cancelled" : "pending",
+        plainText: initiallyAborted
+          ? `${request.title}\nRuntime request ended`
+          : `${request.title}\n${request.description}`.trim(),
         interactionId,
         interactionType: request.kind,
         action: request.kind === "approval" ? request.action : null,
         title: request.title,
-        description: request.description,
-        responseState: "pending",
+        description: initiallyAborted ? "Runtime request ended" : request.description,
+        responseState: initiallyAborted ? "expired" : "pending",
         options: request.kind === "approval" ? request.options : [],
         questions: request.kind === "user-input" ? request.questions : [],
         command: request.kind === "approval" ? (request.command ?? null) : null,
@@ -64,11 +67,21 @@ export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
         files: request.kind === "approval" ? (request.files ?? []) : [],
         autoResolutionAt,
         resolvedOptionId: null,
-        resolvedBy: null,
+        resolvedBy: initiallyAborted ? "system" : null,
       });
     } catch (error) {
       context.signal?.removeEventListener("abort", observeProjectionAbort);
       throw error;
+    }
+    if (abortedDuringProjection) {
+      context.signal?.removeEventListener("abort", observeProjectionAbort);
+      if (!initiallyAborted) {
+        await this.transcriptProjection.upsertRuntimeInteraction(
+          context.sessionRef,
+          expiredBlock(block, "Runtime request ended"),
+        );
+      }
+      throw new RuntimeInteractionError("interaction-expired", "Runtime request ended");
     }
 
     return await new Promise<RuntimeInteractionResponse>((resolve, reject) => {
@@ -132,20 +145,24 @@ export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
     this.pending.delete(interactionId);
     if (pending.timeout) clearTimeout(pending.timeout);
     pending.removeAbortListener();
-    await this.transcriptProjection.upsertRuntimeInteraction(pending.sessionRef, {
-      ...pending.block,
-      state: "cancelled",
-      plainText: `${pending.block.title}\n${reason}`,
-      description: reason,
-      responseState: "expired",
-      resolvedBy: "system",
-    });
+    await this.transcriptProjection.upsertRuntimeInteraction(pending.sessionRef, expiredBlock(pending.block, reason));
     pending.reject(new RuntimeInteractionError("interaction-expired", reason));
   }
 
   async close(): Promise<void> {
     await Promise.all([...this.pending.keys()].map(async (id) => await this.expire(id, "Connect stopped")));
   }
+}
+
+function expiredBlock(block: RuntimeInteractionBlock, reason: string): RuntimeInteractionBlockContent {
+  return {
+    ...block,
+    state: "cancelled",
+    plainText: `${block.title}\n${reason}`,
+    description: reason,
+    responseState: "expired",
+    resolvedBy: "system",
+  };
 }
 
 export class RuntimeInteractionError extends Error {

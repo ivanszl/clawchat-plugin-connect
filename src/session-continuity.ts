@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { RuntimeLifecycleCapabilities } from "./runtime/types";
 import type { ConnectStateStore, SessionLifecycleAction, SessionLifecycleOperationRecord } from "./state";
 import type { RuntimeSessionRecord } from "./types";
 
@@ -49,12 +50,6 @@ export interface SessionContinuity {
     projectId: string;
   }): Promise<void>;
   reconcileLifecycle(): Promise<void>;
-}
-
-export interface RuntimeLifecycleCapabilities {
-  archive: boolean;
-  restore: boolean;
-  delete: boolean;
 }
 
 export interface RuntimeLifecycle {

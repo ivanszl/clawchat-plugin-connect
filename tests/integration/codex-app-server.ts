@@ -30,7 +30,7 @@ try {
   const prompt = async (input: ConnectRuntimePrompt) => {
     const events = [];
     for await (const event of session.prompt(input)) events.push(event);
-    const failure = events.find((event) => event.kind === "final" && event.text.startsWith("Codex execution failed:"));
+    const failure = events.find((event) => event.kind === "error" && event.text.startsWith("Codex execution failed:"));
     if (failure) throw new Error(failure.text);
   };
   const inputFor = (model: typeof selected): ConnectRuntimePrompt => ({

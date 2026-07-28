@@ -257,6 +257,8 @@ describe("Session Catalog workspace grouping", () => {
 
     expect(entries.find((entry) => entry.sessionRef === "ABCDEFGH")?.status).toBe("running");
     expect(entries.find((entry) => entry.sessionRef === "JKLMNPQR")?.status).toBe("idle");
+    expect(entries.find((entry) => entry.sessionRef === "ABCDEFGH")?.allowedActions).not.toContain("archive");
+    expect(entries.find((entry) => entry.sessionRef === "ABCDEFGH")?.allowedActions).not.toContain("delete");
   });
 
   it("derives lifecycle actions from Runtime Adapter capabilities and Runtime Thread availability", async () => {

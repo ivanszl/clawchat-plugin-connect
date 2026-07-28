@@ -100,13 +100,32 @@ describe("Connect Client Interface", () => {
         lifecycleCalls.push(`delete:${threadId}`);
         isDeleted = true;
       },
-      readTranscript: async () => ({
+      readActivity: async () => ({
         completeness: "complete",
-        entries: [
-          { id: "user-1", kind: "user", text: "hello", state: "complete", source: "history" },
-          { id: "agent-1", kind: "assistant", text: "world", state: "complete", source: "history" },
+        limitations: [],
+        activities: [
+          {
+            id: "user-1",
+            position: "0",
+            parentId: null,
+            kind: "user",
+            text: "hello",
+            state: "complete",
+            source: "history",
+          },
+          {
+            id: "agent-1",
+            position: "1",
+            parentId: null,
+            kind: "assistant",
+            text: "world",
+            state: "complete",
+            source: "history",
+          },
           {
             id: "subagent-1",
+            position: "2",
+            parentId: null,
             kind: "subagent",
             text: "Scout · researcher",
             state: "complete",
@@ -115,6 +134,8 @@ describe("Connect Client Interface", () => {
             children: [
               {
                 id: "child-user",
+                position: "2.0",
+                parentId: "subagent-1",
                 kind: "user",
                 text: "investigate",
                 state: "complete",
@@ -122,6 +143,8 @@ describe("Connect Client Interface", () => {
               },
               {
                 id: "child-agent",
+                position: "2.1",
+                parentId: "subagent-1",
                 kind: "assistant",
                 text: "found it",
                 state: "complete",

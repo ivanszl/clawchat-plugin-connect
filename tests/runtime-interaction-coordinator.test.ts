@@ -133,6 +133,29 @@ describe("RuntimeInteractionCoordinator", () => {
     });
     expect(coordinator.hasPending("ABCDEFGH")).toBe(false);
   });
+
+  it("persists an already-aborted Interaction directly as expired", async () => {
+    const projection = new FakeProjection();
+    const coordinator = new RuntimeInteractionCoordinator(projection as unknown as TranscriptProjection);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      coordinator.request(
+        {
+          kind: "approval",
+          action: "command",
+          title: "Run?",
+          description: "git push",
+          options: [{ id: "deny", label: "Deny" }],
+        },
+        { sessionRef: "ABCDEFGH", turnId: "turn-aborted", origin: "client", signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ code: "interaction-expired" });
+
+    expect(projection.blocks).toHaveLength(1);
+    expect(projection.blocks[0]).toMatchObject({ state: "cancelled", responseState: "expired" });
+  });
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {

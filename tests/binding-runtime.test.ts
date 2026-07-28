@@ -302,7 +302,16 @@ describe("Binding Runtime Protocol v2 assembly", () => {
             prompts.push(input);
             await input.onAccepted?.();
             if (prompts.length === 1) await firstPromptGate;
-            yield { kind: "progress", text: "processed" } as const;
+            yield {
+              id: "processed",
+              position: "0",
+              parentId: null,
+              kind: "progress",
+              text: "processed",
+              state: "complete",
+              source: "live",
+              data: { outputKind: "progress" },
+            } as const;
           },
           close: mock(async () => undefined),
         }),
@@ -417,7 +426,16 @@ describe("Binding Runtime Protocol v2 assembly", () => {
           prompt: async function* (input: ConnectRuntimePrompt) {
             prompts.push(input);
             await Bun.sleep(10);
-            yield { kind: "final", text: "media received" } as const;
+            yield {
+              id: "media-received",
+              position: "0",
+              parentId: null,
+              kind: "assistant",
+              text: "media received",
+              state: "complete",
+              source: "live",
+              data: { outputKind: "final" },
+            } as const;
           },
           close: mock(async () => undefined),
         }),

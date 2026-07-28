@@ -13,7 +13,7 @@ import { ProjectCatalog } from "../projects";
 import { resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { SessionActivity } from "../runtime/session-queue";
-import type { RuntimeThreadSummary } from "../runtime/types";
+import type { RuntimeLifecycleCapabilities, RuntimeThreadSummary } from "../runtime/types";
 import { createSessionContinuity, type SessionContinuity } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { ConnectConfig, ProjectRecord, RuntimeSessionRecord, RuntimeStatus } from "../types";
@@ -168,7 +168,7 @@ export class SessionCatalog {
         this.options.transcriptProjection.completeness(normalized) ??
         (runtimeThreadAvailable ? "partial" : "live-only"),
       pendingInteractions,
-      allowedActions: sessionActions(entry.isArchived, runtimeThreadAvailable, lifecycleCapabilities),
+      allowedActions: sessionActions(entry.isArchived, runtimeThreadAvailable, activity, lifecycleCapabilities),
       updatedAt: entry.updatedAt,
     };
   }
@@ -389,7 +389,7 @@ export class SessionCatalog {
           isAdopted: false,
           unreadCount: 0,
           pendingInteractionCount: 0,
-          allowedActions: catalogActions(thread.isArchived === true, false, true, lifecycleCapabilities),
+          allowedActions: catalogActions(thread.isArchived === true, false, true, "idle", lifecycleCapabilities),
         });
       }
       await Promise.all(
@@ -427,7 +427,7 @@ function managedEntry(
   project: ProjectRecord | null,
   status: RuntimeStatus | null,
   activity: SessionActivity,
-  lifecycleCapabilities: { archive: boolean; restore: boolean; delete: boolean },
+  lifecycleCapabilities: RuntimeLifecycleCapabilities,
   runtimeThread?: RuntimeThreadSummary,
 ): SessionCatalogEntryView {
   const workspace = workspaceView(
@@ -457,6 +457,7 @@ function managedEntry(
       runtimeThread?.isArchived === true,
       true,
       Boolean(session.runtimeSessionId),
+      activity,
       lifecycleCapabilities,
     ),
   };
@@ -465,9 +466,10 @@ function managedEntry(
 function sessionActions(
   isArchived: boolean,
   hasRuntimeThread: boolean,
-  capabilities: { archive: boolean; restore: boolean; delete: boolean },
+  activity: SessionActivity,
+  capabilities: RuntimeLifecycleCapabilities,
 ): SessionAction[] {
-  return catalogActions(isArchived, true, hasRuntimeThread, capabilities).filter(
+  return catalogActions(isArchived, true, hasRuntimeThread, activity, capabilities).filter(
     (action): action is SessionAction => action !== "open" && action !== "adopt",
   );
 }
@@ -476,7 +478,8 @@ function catalogActions(
   isArchived: boolean,
   isAdopted: boolean,
   hasRuntimeThread: boolean,
-  capabilities: { archive: boolean; restore: boolean; delete: boolean },
+  activity: SessionActivity,
+  capabilities: RuntimeLifecycleCapabilities,
 ): SessionCatalogAction[] {
   const actions: SessionCatalogAction[] = ["open"];
   if (isArchived) {
@@ -490,8 +493,8 @@ function catalogActions(
   } else {
     actions.push("adopt");
   }
-  if (hasRuntimeThread && capabilities.archive) actions.push("archive");
-  if (hasRuntimeThread && capabilities.delete) actions.push("delete");
+  if (activity === "idle" && hasRuntimeThread && capabilities.archive) actions.push("archive");
+  if (activity === "idle" && hasRuntimeThread && capabilities.delete) actions.push("delete");
   return actions;
 }
 

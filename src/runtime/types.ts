@@ -1,4 +1,4 @@
-import type { RuntimeOutputEvent, RuntimeOutputKind } from "../output-visibility";
+import type { RuntimeOutputKind } from "../output-visibility";
 import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 
 export interface ConnectRuntimePrompt {
@@ -110,6 +110,12 @@ export interface RuntimeWorkspaceIdentity {
   localRoot: string | null;
 }
 
+export interface RuntimeLifecycleCapabilities {
+  archive: boolean;
+  restore: boolean;
+  delete: boolean;
+}
+
 export interface SelectableRuntimeThread extends RuntimeThreadSummary {
   sessionRef: string;
 }
@@ -162,7 +168,7 @@ export interface RuntimeTranscriptSnapshot {
 }
 
 export interface ConnectRuntimeSession {
-  prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeOutputEvent>;
+  prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeActivity>;
   close(): Promise<void>;
   cancel?(): Promise<boolean>;
 }
@@ -170,17 +176,12 @@ export interface ConnectRuntimeSession {
 export interface ConnectRuntimeAdapter {
   readonly kind: string;
   readonly modes: readonly string[];
-  readonly lifecycleCapabilities?: {
-    archive: boolean;
-    restore: boolean;
-    delete: boolean;
-  };
+  readonly lifecycleCapabilities?: RuntimeLifecycleCapabilities;
   prepare?(binding: AgentBindingConfig): Promise<void>;
   listModels?(binding: AgentBindingConfig): Promise<RuntimeModelOption[]>;
   discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
-  readTranscript?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeTranscriptSnapshot>;
   readActivity?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeActivitySnapshot>;
   archiveThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;
   unarchiveThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;

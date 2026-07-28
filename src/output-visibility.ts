@@ -1,19 +1,8 @@
+import type { RuntimeActivity } from "./runtime/types";
 import type { ConnectStateStore } from "./state";
 import type { ConnectConfig, OutputVisibility } from "./types";
 
 export type RuntimeOutputKind = "final" | "assistant" | "tool" | "progress" | "reasoning" | "control";
-export interface RuntimeOutputEvent {
-  kind: RuntimeOutputKind;
-  text: string;
-  source?: "live";
-  requiredControl?: boolean;
-  /** Stable runtime-native item identity when the protocol exposes one. */
-  itemId?: string;
-  /** Lifecycle state for started/completed protocol items. */
-  state?: "pending" | "streaming" | "complete" | "error" | "cancelled";
-  /** Runtime-neutral structured fields used by rich clients. */
-  data?: Record<string, unknown>;
-}
 export interface OutputVisibilityPolicy {
   mode: OutputVisibility;
   includeKinds: Set<RuntimeOutputKind>;
@@ -40,9 +29,32 @@ export function allowedRuntimeKinds(policy: OutputVisibilityPolicy): RuntimeOutp
   return [...policy.includeKinds];
 }
 export function materializeRuntimeOutput(
-  event: RuntimeOutputEvent,
+  activity: RuntimeActivity,
   policy: OutputVisibilityPolicy,
 ): MaterializedRuntimeReply | null {
-  if (!policy.includeKinds.has(event.kind)) return null;
-  return { text: event.text, requiredControl: event.requiredControl === true || event.kind === "control" };
+  const outputKind = runtimeOutputKind(activity);
+  if (!policy.includeKinds.has(outputKind)) return null;
+  return {
+    text: activity.text,
+    requiredControl: activity.data?.requiredControl === true || outputKind === "control",
+  };
+}
+
+function runtimeOutputKind(activity: RuntimeActivity): RuntimeOutputKind {
+  const declared = activity.data?.outputKind;
+  if (
+    declared === "final" ||
+    declared === "assistant" ||
+    declared === "tool" ||
+    declared === "progress" ||
+    declared === "reasoning" ||
+    declared === "control"
+  ) {
+    return declared;
+  }
+  if (activity.kind === "assistant") return "assistant";
+  if (activity.kind === "reasoning") return "reasoning";
+  if (activity.kind === "command" || activity.kind === "file-change" || activity.kind === "tool") return "tool";
+  if (activity.kind === "error") return "final";
+  return "progress";
 }

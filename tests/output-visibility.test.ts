@@ -17,8 +17,20 @@ describe("output visibility", () => {
   });
   it("hides progress in normal mode and always materializes controls", () => {
     const policy = policyForOutputVisibility("normal");
-    expect(materializeRuntimeOutput({ kind: "progress", text: "hidden" }, policy)).toBeNull();
-    expect(materializeRuntimeOutput({ kind: "control", text: "approve", requiredControl: true }, policy)).toEqual({
+    const base = { position: "0", parentId: null, state: "complete", source: "live" } as const;
+    expect(materializeRuntimeOutput({ ...base, id: "progress", kind: "progress", text: "hidden" }, policy)).toBeNull();
+    expect(
+      materializeRuntimeOutput(
+        {
+          ...base,
+          id: "control",
+          kind: "error",
+          text: "approve",
+          data: { outputKind: "control", requiredControl: true },
+        },
+        policy,
+      ),
+    ).toEqual({
       text: "approve",
       requiredControl: true,
     });

@@ -5,7 +5,18 @@ import { join } from "node:path";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import type { RuntimeActivity } from "../src/runtime/types";
 import { createStateStore } from "../src/state";
+
+function liveActivity(
+  id: string,
+  kind: RuntimeActivity["kind"],
+  text: string,
+  data: Record<string, unknown> = {},
+  state: RuntimeActivity["state"] = "complete",
+): RuntimeActivity {
+  return { id, position: id, parentId: null, kind, text, state, source: "live", data };
+}
 
 describe("Connect Transcript Projection", () => {
   it("projects running app-server tool items as collapsible tool-call blocks", async () => {
@@ -29,13 +40,22 @@ describe("Connect Transcript Projection", () => {
         runtimeAdapters: new RuntimeAdapterRegistry([]),
       });
 
-      const block = await projection.appendRuntimeOutput(session.sessionRef, {
-        kind: "progress",
-        text: "Codex calling MCP tool: github/search",
-        itemId: "mcp-1",
-        state: "streaming",
-        data: { itemType: "mcpToolCall", server: "github", tool: "search", status: "running" },
-      });
+      const block = await projection.upsertRuntimeActivity(
+        session.sessionRef,
+        liveActivity(
+          "mcp-1",
+          "tool",
+          "Codex calling MCP tool: github/search",
+          {
+            itemType: "mcpToolCall",
+            server: "github",
+            tool: "search",
+            status: "running",
+            title: "MCP · github/search",
+          },
+          "streaming",
+        ),
+      );
 
       expect(block).toMatchObject({
         type: "tool-call",
@@ -69,11 +89,14 @@ describe("Connect Transcript Projection", () => {
         {
           kind: "codex",
           modes: ["workspace-write"],
-          readTranscript: async () => ({
+          readActivity: async () => ({
             completeness: "partial",
-            entries: [
+            limitations: ["correlation"],
+            activities: [
               {
                 id: "rollout:call-1",
+                position: "0",
+                parentId: null,
                 kind: "tool",
                 text: "Codex tool · exec\n\nOutput:\nok",
                 state: "complete",
@@ -178,44 +201,30 @@ describe("Connect Transcript Projection", () => {
         },
       ]);
       const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters });
-      await projection.appendRuntimeOutput(session.sessionRef, {
-        kind: "final",
-        text: "first reply",
-        itemId: "live-message-1",
-        state: "complete",
-        data: { itemType: "agentMessage" },
-      });
-      await projection.appendRuntimeOutput(session.sessionRef, {
-        kind: "final",
-        text: "first reply",
-        itemId: "live-message-2",
-        state: "complete",
-        data: { itemType: "agentMessage" },
-      });
-      await projection.appendRuntimeOutput(session.sessionRef, {
-        kind: "tool",
-        text: "tests passed",
-        itemId: "live-command-1",
-        state: "complete",
-        data: {
-          itemType: "commandExecution",
+      await projection.upsertRuntimeActivity(
+        session.sessionRef,
+        liveActivity("live-message-1", "assistant", "first reply"),
+      );
+      await projection.upsertRuntimeActivity(
+        session.sessionRef,
+        liveActivity("live-message-2", "assistant", "first reply"),
+      );
+      await projection.upsertRuntimeActivity(
+        session.sessionRef,
+        liveActivity("live-command-1", "command", "tests passed", {
           command: "bun test",
           output: "tests passed",
           status: "completed",
           exitCode: 0,
-        },
-      });
-      await projection.appendRuntimeOutput(session.sessionRef, {
-        kind: "tool",
-        text: "updated a.ts",
-        itemId: "live-file-1",
-        state: "complete",
-        data: {
-          itemType: "fileChange",
+        }),
+      );
+      await projection.upsertRuntimeActivity(
+        session.sessionRef,
+        liveActivity("live-file-1", "file-change", "updated a.ts", {
           status: "completed",
           changes: [{ path: "a.ts", kind: "update", diff: "+fixed" }],
-        },
-      });
+        }),
+      );
 
       await projection.reconcile(session);
 
@@ -289,11 +298,10 @@ describe("Connect Transcript Projection", () => {
       ]);
       const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters });
       for (let index = 0; index < 201; index += 1) {
-        await projection.appendRuntimeOutput(session.sessionRef, {
-          kind: "assistant",
-          text: "same output",
-          itemId: `live-${index}`,
-        });
+        await projection.upsertRuntimeActivity(
+          session.sessionRef,
+          liveActivity(`live-${index}`, "assistant", "same output"),
+        );
       }
 
       await projection.reconcile(session);

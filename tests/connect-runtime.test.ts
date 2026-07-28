@@ -5,7 +5,6 @@ import { dirname, join } from "node:path";
 import { handleChatCommand } from "../src/chat-commands";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
-import type { RuntimeOutputEvent } from "../src/output-visibility";
 import { ProjectCatalog } from "../src/projects";
 import type { NormalizedInboundMessage } from "../src/protocol";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
@@ -15,6 +14,7 @@ import type {
   ConnectRuntimePrompt,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
+  RuntimeActivity,
 } from "../src/runtime/types";
 import { createStateStore } from "../src/state";
 import type { ConnectWsClient } from "../src/ws-client";
@@ -37,13 +37,28 @@ function message(text = "hello"): NormalizedInboundMessage {
 }
 
 function session(
-  prompt: (context: ConnectRuntimeStartContext) => AsyncIterable<RuntimeOutputEvent>,
+  prompt: (context: ConnectRuntimeStartContext) => AsyncIterable<RuntimeActivity>,
   context: ConnectRuntimeStartContext,
 ): ConnectRuntimeSession {
   return {
     prompt: () => prompt(context),
     close: mock(async () => undefined),
     cancel: mock(async () => true),
+  };
+}
+
+let nextActivityId = 0;
+function activity(text: string, outputKind: "final" | "progress" = "final"): RuntimeActivity {
+  const position = `${nextActivityId++}`;
+  return {
+    id: `test-activity-${position}`,
+    position,
+    parentId: null,
+    kind: outputKind === "final" ? "assistant" : "progress",
+    text,
+    state: "complete",
+    source: "live",
+    data: { outputKind },
   };
 }
 
@@ -83,7 +98,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       start: async () => ({
         prompt: async function* (input) {
           received.push(input);
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: async () => undefined,
       }),
@@ -121,7 +136,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         await runtimeStartGate;
         return {
           prompt: async function* () {
-            yield { kind: "final", text: "done" } as const;
+            yield activity("done");
           },
           close: mock(async () => undefined),
         };
@@ -200,7 +215,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       start: mock(async () => ({
         prompt: async function* (input: ConnectRuntimePrompt) {
           prompts.push(input);
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -265,7 +280,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             markFirstStarted?.();
             await firstGate;
           }
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -312,7 +327,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       start: mock(async () => ({
         prompt: async function* (input: ConnectRuntimePrompt) {
           prompts.push(input);
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -409,7 +424,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       start: mock(async () => ({
         prompt: async function* (input: ConnectRuntimePrompt) {
           prompts.push(input);
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -473,7 +488,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             markFirstStarted?.();
             await firstGate;
           }
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -541,7 +556,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     });
     const start = mock(async () => ({
       prompt: async function* () {
-        yield { kind: "final", text: "must not run" } as const;
+        yield activity("must not run");
       },
       close: mock(async () => undefined),
     }));
@@ -589,7 +604,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       modes: ["read-only", "workspace-write", "danger-full-access"],
       start: mock(async () => ({
         prompt: async function* () {
-          yield { kind: "final", text: `![00-TheFool.jpg](${imagePath})` } as const;
+          yield activity(`![00-TheFool.jpg](${imagePath})`);
         },
         close: mock(async () => undefined),
       })),
@@ -647,7 +662,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       modes: ["workspace-write"],
       start: mock(async () => ({
         prompt: async function* () {
-          yield { kind: "final", text: markdown } as const;
+          yield activity(markdown);
         },
         close: mock(async () => undefined),
       })),
@@ -687,7 +702,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       modes: ["read-only", "workspace-write", "danger-full-access"],
       start: mock(async () => ({
         prompt: async function* () {
-          yield { kind: "final", text: markdown } as const;
+          yield activity(markdown);
         },
         close: mock(async () => undefined),
       })),
@@ -756,7 +771,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       start: mock(async () => ({
         prompt: async function* (input: ConnectRuntimePrompt) {
           prompts.push(input);
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -820,7 +835,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
           markStarted?.();
           await release;
           order.push("turn-finished");
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -882,7 +897,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             markFirstStarted?.();
             await gate;
           }
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -972,7 +987,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
               markFirstStarted?.();
               await firstGate;
             }
-            yield { kind: "final", text: "done" } as const;
+            yield activity("done");
           },
           close: mock(async () => undefined),
         })),
@@ -1057,7 +1072,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             await clawChatGate;
             order.push("clawchat-finished");
           }
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -1101,7 +1116,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         prompt: async function* () {
           markStarted?.();
           await gate;
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         cancel,
         close: mock(async () => undefined),
@@ -1138,6 +1153,14 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     const turnGate = new Promise<void>((resolve) => {
       finishTurn = resolve;
     });
+    let finishCancel: (() => void) | undefined;
+    let markCancelStarted: (() => void) | undefined;
+    const cancelStarted = new Promise<void>((resolve) => {
+      markCancelStarted = resolve;
+    });
+    const cancelGate = new Promise<void>((resolve) => {
+      finishCancel = resolve;
+    });
     let finishLifecycle: (() => void) | undefined;
     let markLifecycleClaimed: (() => void) | undefined;
     const lifecycleClaimed = new Promise<void>((resolve) => {
@@ -1156,10 +1179,12 @@ describe("ConnectRuntime Agent Binding sessions", () => {
           markStarted?.();
           await turnGate;
           order.push("turn-settled");
-          yield { kind: "final", text: "cancelled" };
+          yield activity("cancelled");
         },
         cancel: async () => {
           order.push("turn-cancelled");
+          markCancelStarted?.();
+          await cancelGate;
           finishTurn?.();
           return true;
         },
@@ -1192,6 +1217,11 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       await lifecycleGate;
       await fixture.store.deleteSessionByRef(current.sessionRef);
     });
+    await cancelStarted;
+    await expect(runtime.enqueueClientTurn(current.sessionRef, "during cancel")).rejects.toMatchObject({
+      code: "session-state-conflict",
+    });
+    finishCancel?.();
     await lifecycleClaimed;
     await expect(runtime.enqueueClientTurn(current.sessionRef, "too late")).rejects.toMatchObject({
       code: "session-state-conflict",
@@ -1201,6 +1231,38 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
     expect(order).toEqual(["turn-started", "turn-cancelled", "turn-settled", "handle-closed", "lifecycle-commit"]);
     await expect(fixture.store.getRuntimeSessionByRef(current.sessionRef)).resolves.toBeNull();
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("coordinates lifecycle for a discovered Runtime Thread without requiring an adopted Session", async () => {
+    const fixture = await runtimeFixture();
+    const sessionRef = await fixture.store.getOrCreateSessionRef({
+      chatId: "__connect_client_catalog__",
+      agentId: "codex",
+      runtimeSessionId: "thread-discovered",
+    });
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([
+        {
+          kind: "codex",
+          modes: [],
+          start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+        },
+      ]),
+    });
+    let ran = false;
+
+    await runtime.coordinateSessionLifecycle(sessionRef, async () => {
+      ran = true;
+    });
+
+    expect(ran).toBe(true);
     await runtime.dispose();
     await fixture.store.close();
   });
@@ -1230,7 +1292,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             markStarted?.();
             await gate;
           }
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -1299,7 +1361,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
           await gate;
           finished += 1;
           if (finished === 2) markBothFinished?.();
-          yield { kind: "final", text: "done" } as const;
+          yield activity("done");
         },
         close: mock(async () => undefined),
       })),
@@ -1332,7 +1394,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         starts.push(context);
         return session(async function* (startContext) {
           await startContext.onRuntimeSessionId("thread-1");
-          yield { kind: "final", text: "done" };
+          yield activity("done");
         }, context);
       }),
     };
@@ -1414,7 +1476,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       modes: ["read-only", "workspace-write", "danger-full-access"],
       start: mock(async (_agent, context) => {
         const created = session(async function* () {
-          yield { kind: "final", text: "done" };
+          yield activity("done");
         }, context);
         createdSessions.push(created);
         return created;

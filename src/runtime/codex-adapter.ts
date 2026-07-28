@@ -1,6 +1,5 @@
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import type { RuntimeOutputEvent } from "../output-visibility";
 import type { CodexAgentBindingConfig, CodexApprovalPolicy, CodexSandboxMode, RuntimeWorkspace } from "../types";
 import {
   type CodexAppServerClient,
@@ -27,6 +26,15 @@ import type {
   RuntimeThreadSummary,
   RuntimeTranscriptEntry,
 } from "./types";
+
+interface CodexOutputEvent {
+  kind: "final" | "assistant" | "tool" | "progress" | "reasoning" | "control";
+  text: string;
+  requiredControl?: boolean;
+  itemId?: string;
+  state?: "pending" | "streaming" | "complete" | "error" | "cancelled";
+  data?: Record<string, unknown>;
+}
 
 export interface CreateCodexRuntimeAdapterOptions {
   createAppServer?: (binding: CodexAgentBindingConfig) => Promise<CodexAppServerClient>;
@@ -94,15 +102,6 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     async discoverArchivedThreads(binding) {
       const codexBinding = requireCodexBinding(binding);
       return await discoverCodexThreads(await clientFor(codexBinding), undefined, true);
-    },
-    async readTranscript(binding, runtimeThreadId) {
-      const codexBinding = requireCodexBinding(binding);
-      const appServerEntries = await readCodexTranscript(await clientFor(codexBinding), runtimeThreadId);
-      return await backfillCodexRolloutTranscript({
-        codexHome: codexHome(codexBinding),
-        runtimeThreadId,
-        appServerEntries,
-      });
     },
     async readActivity(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
@@ -463,6 +462,8 @@ interface ActiveTurn {
   sessionRef: string;
   interactionControllers: Set<AbortController>;
   interactionControllersByRequestId: Map<string, AbortController>;
+  activityPositions: Map<string, string>;
+  nextActivityPosition: number;
 }
 
 class CodexRuntimeSession implements ConnectRuntimeSession {
@@ -484,7 +485,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     this.runtimeSessionId = context.runtimeSessionId;
   }
 
-  async *prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeOutputEvent> {
+  async *prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeActivity> {
     if (this.closed) throw new Error("Codex runtime session is closed");
     if (this.activeTurn) throw new Error("Codex already has an active turn for this session");
     const sandboxMode = resolveSandboxMode(input.mode, this.binding.sandboxMode);
@@ -504,6 +505,8 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       sessionRef: input.metadata?.sessionRef ?? "",
       interactionControllers: new Set(),
       interactionControllersByRequestId: new Map(),
+      activityPositions: new Map(),
+      nextActivityPosition: 0,
     };
     this.activeTurn = active;
     const removeNotificationListener = this.client.onNotification((notification) => {
@@ -542,14 +545,14 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       const buffered = active.bufferedNotifications.splice(0);
       for (const notification of buffered) this.handleNotification(active, notification);
       if (active.cancelled) await this.client.interruptTurn({ threadId, turnId: response.turn.id });
-      for await (const event of active.queue) yield event;
+      for await (const event of active.queue) yield codexLiveActivity(active, event);
     } catch (error) {
       if (!active.turnId) throw error;
       if (!active.cancelled) {
-        yield {
+        yield codexLiveActivity(active, {
           kind: "final",
           text: `Codex execution failed: ${error instanceof Error ? error.message : String(error)}`,
-        };
+        });
       }
     } finally {
       for (const controller of active.interactionControllers) controller.abort();
@@ -867,12 +870,83 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
   }
 }
 
-class RuntimeEventQueue implements AsyncIterable<RuntimeOutputEvent> {
-  private readonly values: RuntimeOutputEvent[] = [];
-  private readonly waiters: Array<(result: IteratorResult<RuntimeOutputEvent>) => void> = [];
+function codexLiveActivity(active: ActiveTurn, event: CodexOutputEvent): RuntimeActivity {
+  const text = event.text.trim();
+  const state =
+    event.state ??
+    (event.kind === "final" && /(?:failed|error|exited)/iu.test(text) ? ("error" as const) : ("complete" as const));
+  const itemType = stringField(event.data?.itemType);
+  const kind: RuntimeActivity["kind"] =
+    itemType === "commandExecution"
+      ? "command"
+      : itemType === "fileChange"
+        ? "file-change"
+        : itemType === "plan"
+          ? "plan"
+          : isCodexToolItemType(itemType) || event.kind === "tool"
+            ? "tool"
+            : event.kind === "assistant" || (event.kind === "final" && state !== "error")
+              ? "assistant"
+              : event.kind === "reasoning"
+                ? "reasoning"
+                : event.kind === "control" || state === "error"
+                  ? "error"
+                  : "progress";
+  const nextPosition = `${active.nextActivityPosition}`;
+  const id = event.itemId ?? `turn:${active.connectTurnId}:activity:${nextPosition}`;
+  let position = active.activityPositions.get(id);
+  if (!position) {
+    position = nextPosition;
+    active.nextActivityPosition += 1;
+    active.activityPositions.set(id, position);
+  }
+  return {
+    id,
+    position,
+    parentId: null,
+    kind,
+    text,
+    state,
+    source: "live",
+    data: {
+      ...event.data,
+      outputKind: event.kind,
+      ...(event.requiredControl ? { requiredControl: true } : {}),
+      ...(kind === "tool" ? { title: codexToolTitle(event, text) } : {}),
+      ...(event.kind === "control" ? { code: "runtime-interaction-unavailable" } : {}),
+    },
+  };
+}
+
+function codexToolTitle(event: CodexOutputEvent, text: string): string {
+  const itemType = stringField(event.data?.itemType);
+  if (itemType === "mcpToolCall") {
+    const target = [stringField(event.data?.server), stringField(event.data?.tool)].filter(Boolean).join("/");
+    return target ? `MCP · ${target}` : "MCP tool";
+  }
+  if (itemType === "webSearch") return `Web search · ${stringField(event.data?.query) || firstLine(text)}`;
+  if (itemType === "dynamicToolCall") {
+    const target = [stringField(event.data?.namespace), stringField(event.data?.tool)].filter(Boolean).join("/");
+    return target || "Tool call";
+  }
+  return firstLine(text);
+}
+
+function firstLine(text: string): string {
+  const line = text.split("\n", 1)[0]?.trim() || "Runtime activity";
+  return line.length <= 120 ? line : `${line.slice(0, 119)}…`;
+}
+
+function isCodexToolItemType(itemType: string): boolean {
+  return itemType === "mcpToolCall" || itemType === "dynamicToolCall" || itemType === "webSearch";
+}
+
+class RuntimeEventQueue implements AsyncIterable<CodexOutputEvent> {
+  private readonly values: CodexOutputEvent[] = [];
+  private readonly waiters: Array<(result: IteratorResult<CodexOutputEvent>) => void> = [];
   private closed = false;
 
-  push(value: RuntimeOutputEvent): void {
+  push(value: CodexOutputEvent): void {
     if (this.closed) return;
     const waiter = this.waiters.shift();
     if (waiter) waiter({ value, done: false });
@@ -885,13 +959,13 @@ class RuntimeEventQueue implements AsyncIterable<RuntimeOutputEvent> {
     for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<RuntimeOutputEvent> {
+  [Symbol.asyncIterator](): AsyncIterator<CodexOutputEvent> {
     return {
       next: async () => {
         const value = this.values.shift();
         if (value) return { value, done: false };
         if (this.closed) return { value: undefined, done: true };
-        return await new Promise<IteratorResult<RuntimeOutputEvent>>((resolve) => this.waiters.push(resolve));
+        return await new Promise<IteratorResult<CodexOutputEvent>>((resolve) => this.waiters.push(resolve));
       },
     };
   }
@@ -982,7 +1056,7 @@ function threadItem(value: unknown): CodexAppServerThreadItem | null {
   return item as CodexAppServerThreadItem;
 }
 
-function formatStartedItem(item: CodexAppServerThreadItem): RuntimeOutputEvent | null {
+function formatStartedItem(item: CodexAppServerThreadItem): CodexOutputEvent | null {
   if (item.type === "commandExecution") {
     return {
       kind: "progress",
@@ -1020,7 +1094,7 @@ function formatStartedItem(item: CodexAppServerThreadItem): RuntimeOutputEvent |
   return null;
 }
 
-function formatCompletedItem(item: CodexAppServerThreadItem): RuntimeOutputEvent | null {
+function formatCompletedItem(item: CodexAppServerThreadItem): CodexOutputEvent | null {
   if (item.type === "reasoning") {
     const summary = stringArray(item.summary);
     const content = stringArray(item.content);

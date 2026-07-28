@@ -9,3 +9,9 @@ Every Runtime Adapter will translate native live notifications, Runtime Transcri
 The Connect Transcript Projection maps Runtime Activities into Connect-owned blocks, sequence, origin, provenance, and persistence without interpreting native event types, guessing identity from display content, or branching on Runtime Adapter kind. Adapters report completeness, ordering, or correlation limitations rather than hiding them. This concentrates more implementation in each Adapter and may repeat complete Activity state during streaming, but it keeps native protocols and fallback formats behind the seam and gives live rendering, reconnect recovery, and future coding agents one stable interface.
 
 This decision refines ADR-0011, ADR-0012, and ADR-0019 without changing the Runtime Transcript's authority for Agent context or the Connect Transcript Projection's authority for Connect-owned metadata.
+
+## Implementation status
+
+Implemented. Runtime Sessions emit Runtime Activity directly, history and rollout fallback are translated by the
+Runtime Adapter, and Connect Transcript Projection accepts only Runtime Activity. Correlation uses Adapter-provided
+identity or aliases; display-text matching and the legacy live-output projection path have been removed.

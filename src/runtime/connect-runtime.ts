@@ -178,11 +178,6 @@ export class ConnectRuntime {
           await this.recordRuntimeStatus(this.queue.stats());
           try {
             await this.runClientTurn(target, text, turnId, media);
-          } catch (error) {
-            await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, {
-              kind: "final",
-              text: `Connect Client turn failed: ${error instanceof Error ? error.message : String(error)}`,
-            });
           } finally {
             this.activeTurnSessionChats.delete(key);
             await this.recordRuntimeStatus(this.queue.stats());
@@ -208,9 +203,14 @@ export class ConnectRuntime {
 
   async coordinateSessionLifecycle(sessionRef: string, run: () => Promise<void>): Promise<void> {
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
-    if (!current || current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
+    if (!current) {
+      const target = await this.options.stateStore.getSessionRefTarget(sessionRef);
+      if (!target || target.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
+      await run();
+      return;
+    }
+    if (current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
     const key = sessionKey(current.chatId, current.sessionId);
-    await this.executor.cancel(current.sessionRef);
     await this.queue.claim(
       key,
       async () => {
@@ -218,6 +218,9 @@ export class ConnectRuntime {
         await run();
       },
       `Session ${current.sessionRef}`,
+      async () => {
+        await this.executor.cancel(current.sessionRef);
+      },
     );
   }
 
@@ -313,7 +316,7 @@ export class ConnectRuntime {
     const policy = policyForOutputVisibility(mode);
     const surface = new ClawChatTurnSurface({
       project: async (event) => {
-        await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, event);
+        await this.options.transcriptProjection?.upsertRuntimeActivity(current.sessionRef, event);
       },
       materialize: (event) => materializeRuntimeOutput(event, policy),
       deliver: async (reply) => await this.sendReply(message, reply, activeAgentId, workspace),
@@ -370,36 +373,40 @@ export class ConnectRuntime {
     });
     const surface = new ClientTurnSurface({
       project: async (event) => {
-        await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, event);
+        await this.options.transcriptProjection?.upsertRuntimeActivity(current.sessionRef, event);
       },
     });
-    for await (const event of this.executor.execute(target, {
-      prompt,
-      media,
-      trustedMediaOrigins: configuredMediaOrigins(this.options.config),
-      workspace,
-      mode: current.mode ?? undefined,
-      model: model.model,
-      reasoningEffort: model.reasoningEffort,
-      turnId,
-      interactionPort: this.options.runtimeInteractions,
-      metadata: {
-        sessionRef: current.sessionRef,
-        origin: "client",
+    try {
+      for await (const event of this.executor.execute(target, {
+        prompt,
+        media,
+        trustedMediaOrigins: configuredMediaOrigins(this.options.config),
+        workspace,
+        mode: current.mode ?? undefined,
+        model: model.model,
+        reasoningEffort: model.reasoningEffort,
         turnId,
-        chatId: current.chatId,
-        sessionId: current.sessionId,
-        agentId: activeAgentId,
-        projectId: current.projectId ?? "none",
-      },
-      outputPolicy: {
-        mode: "client-full",
-        allowedKinds: ["final", "assistant", "tool", "progress", "reasoning", "control"],
-      },
-    })) {
-      await surface.accept(event);
+        interactionPort: this.options.runtimeInteractions,
+        metadata: {
+          sessionRef: current.sessionRef,
+          origin: "client",
+          turnId,
+          chatId: current.chatId,
+          sessionId: current.sessionId,
+          agentId: activeAgentId,
+          projectId: current.projectId ?? "none",
+        },
+        outputPolicy: {
+          mode: "client-full",
+          allowedKinds: ["final", "assistant", "tool", "progress", "reasoning", "control"],
+        },
+      })) {
+        await surface.accept(event);
+      }
+      await surface.complete();
+    } catch (error) {
+      await surface.fail(error);
     }
-    await surface.complete();
   }
 
   private async recordRuntimeStatus(stats: QueueStats): Promise<void> {

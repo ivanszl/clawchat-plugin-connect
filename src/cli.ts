@@ -18,6 +18,7 @@ import { startConnectService as startConnectServiceDefault } from "./connect-ser
 import { resolveLivewareExecutablePath as resolveLivewareExecutablePathDefault } from "./liveware-exposure";
 import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "./profile";
 import { ProjectCatalog } from "./projects";
+import { createReleasedAgentBinding, releasedRuntimeAdapters } from "./runtime/released-adapters";
 import { type ConnectStateStore, createStateStore } from "./state";
 import type {
   AgentBindingConfig,
@@ -116,12 +117,15 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   if (webResult !== null) return webResult;
 
   const cli = cac("clawchat-connect");
+  const releasedKinds = releasedRuntimeAdapters()
+    .map((adapter) => adapter.kind)
+    .join(", ");
   let commandRan = false;
   cli
     .command("init", "Create config")
     .option("--config <path>", "Config path")
     .option("--agent <id>", "Agent id")
-    .option("--kind <kind>", "Agent kind: codex")
+    .option("--kind <kind>", `Agent kind: ${releasedKinds}`)
     .option("--codex-path <path>", "Codex executable override")
     .action(async (options: { config?: string; agent?: string; kind?: string; codexPath?: string }) => {
       commandRan = true;
@@ -136,7 +140,7 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   cli
     .command("agent add <id>", "Add/update agent")
     .option("--config <path>", "Config path")
-    .option("--kind <kind>", "Agent kind: codex")
+    .option("--kind <kind>", `Agent kind: ${releasedKinds}`)
     .option("--codex-path <path>", "Codex executable override")
     .action(async (id: string, options: { config?: string; kind?: string; codexPath?: string }) => {
       commandRan = true;
@@ -487,12 +491,14 @@ function isBackgroundServiceAction(value: string | undefined): value is Backgrou
 }
 
 function agentBindingFromCli(options: AgentCliOptions): AgentBindingConfig {
-  const kind = options.kind?.trim().toLowerCase();
-  if (kind !== "codex") throw new Error("--kind codex is required");
-  return {
-    kind: "codex",
-    ...(options.codexPath?.trim() ? { codexPathOverride: options.codexPath.trim() } : {}),
-  };
+  try {
+    return createReleasedAgentBinding(options.kind, { executablePath: options.codexPath });
+  } catch {
+    const kinds = releasedRuntimeAdapters()
+      .map((adapter) => adapter.kind)
+      .join(", ");
+    throw new Error(`--kind ${kinds} is required`);
+  }
 }
 
 function formatAgentListRow(id: string, binding: AgentBindingConfig, isDefault: boolean): string {

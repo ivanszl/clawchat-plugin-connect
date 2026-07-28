@@ -2,7 +2,6 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RuntimeOutputEvent } from "../src/output-visibility";
 import { createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import type {
   CodexAppServerClient,
@@ -16,7 +15,7 @@ import type {
   CodexThreadStartParams,
   CodexTurnStartParams,
 } from "../src/runtime/codex-app-server";
-import type { ConnectRuntimeSession, ConnectRuntimeStartContext } from "../src/runtime/types";
+import type { ConnectRuntimeSession, ConnectRuntimeStartContext, RuntimeActivity } from "../src/runtime/types";
 import type { CodexAgentBindingConfig, RuntimeWorkspace } from "../src/types";
 
 const workspace: RuntimeWorkspace = {
@@ -128,11 +127,8 @@ class FakeAppServer implements CodexAppServerClient {
   }
 }
 
-async function collect(
-  session: ConnectRuntimeSession,
-  onAccepted?: () => Promise<void>,
-): Promise<RuntimeOutputEvent[]> {
-  const output: RuntimeOutputEvent[] = [];
+async function collect(session: ConnectRuntimeSession, onAccepted?: () => Promise<void>): Promise<RuntimeActivity[]> {
+  const output: RuntimeActivity[] = [];
   for await (const event of session.prompt({
     prompt: "hello",
     workspace,
@@ -431,9 +427,9 @@ describe("Codex app-server runtime adapter", () => {
         workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
       },
     ]);
-    await expect(adapter.readTranscript?.(agent, "thread-parent")).resolves.toEqual({
+    await expect(adapter.readActivity?.(agent, "thread-parent")).resolves.toMatchObject({
       completeness: "partial",
-      entries: [
+      activities: [
         {
           id: "activity-1",
           kind: "subagent",
@@ -513,10 +509,10 @@ describe("Codex app-server runtime adapter", () => {
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
 
     await expect(
-      adapter.readTranscript?.({ ...agent, env: { CODEX_HOME: codexHome } }, "thread-1"),
+      adapter.readActivity?.({ ...agent, env: { CODEX_HOME: codexHome } }, "thread-1"),
     ).resolves.toMatchObject({
       completeness: "complete",
-      entries: [
+      activities: [
         { id: "user-1", source: "history" },
         { id: "rollout:call-1", kind: "tool", source: "fallback" },
         { id: "agent-1", source: "history" },
@@ -563,7 +559,7 @@ describe("Codex app-server runtime adapter", () => {
     const session = await adapter.start(agent, started);
 
     await expect(collect(session, onAccepted)).resolves.toContainEqual(
-      expect.objectContaining({ kind: "final", text: "done", itemId: "a1", state: "complete" }),
+      expect.objectContaining({ kind: "assistant", text: "done", id: "a1", state: "complete" }),
     );
     expect(onAccepted).toHaveBeenCalledTimes(1);
     expect(client.startThread).toHaveBeenCalledWith({
@@ -755,12 +751,16 @@ describe("Codex app-server runtime adapter", () => {
     const session = await adapter.start(agent, context());
     const output = await collect(session);
 
-    expect(output).toContainEqual(expect.objectContaining({ kind: "reasoning", text: "thinking", itemId: "r1" }));
-    expect(output).toContainEqual(expect.objectContaining({ kind: "tool", text: expect.stringContaining("bun test") }));
-    expect(output).toContainEqual(expect.objectContaining({ kind: "tool", text: expect.stringContaining("src/a.ts") }));
-    expect(output).toContainEqual(expect.objectContaining({ kind: "assistant", text: "intermediate", itemId: "a1" }));
-    expect(output.filter((event) => event.kind === "final")).toEqual([
-      expect.objectContaining({ kind: "final", text: "final answer", itemId: "a2", state: "complete" }),
+    expect(output).toContainEqual(expect.objectContaining({ kind: "reasoning", text: "thinking", id: "r1" }));
+    expect(output).toContainEqual(
+      expect.objectContaining({ kind: "command", text: expect.stringContaining("bun test") }),
+    );
+    expect(output).toContainEqual(
+      expect.objectContaining({ kind: "file-change", text: expect.stringContaining("src/a.ts") }),
+    );
+    expect(output).toContainEqual(expect.objectContaining({ kind: "assistant", text: "intermediate", id: "a1" }));
+    expect(output.filter((event) => event.data?.outputKind === "final")).toEqual([
+      expect.objectContaining({ kind: "assistant", text: "final answer", id: "a2", state: "complete" }),
     ]);
   });
 
@@ -808,13 +808,13 @@ describe("Codex app-server runtime adapter", () => {
 
     const output = await outputPromise;
     expect(output).toContainEqual(
-      expect.objectContaining({ kind: "assistant", itemId: "agent-1", text: "Hello", state: "streaming" }),
+      expect.objectContaining({ kind: "assistant", id: "agent-1", text: "Hello", state: "streaming" }),
     );
     expect(output).toContainEqual(
-      expect.objectContaining({ kind: "assistant", itemId: "agent-1", text: "Hello world", state: "streaming" }),
+      expect.objectContaining({ kind: "assistant", id: "agent-1", text: "Hello world", state: "streaming" }),
     );
     expect(output).toContainEqual(
-      expect.objectContaining({ kind: "final", itemId: "agent-1", text: "Hello world", state: "complete" }),
+      expect.objectContaining({ kind: "assistant", id: "agent-1", text: "Hello world", state: "complete" }),
     );
   });
 
@@ -835,7 +835,11 @@ describe("Codex app-server runtime adapter", () => {
     ).resolves.toEqual({ decision: "cancel" });
     await expect(firstEvent).resolves.toMatchObject({
       done: false,
-      value: { kind: "control", requiredControl: true, text: expect.stringContaining("git push") },
+      value: {
+        kind: "error",
+        text: expect.stringContaining("git push"),
+        data: expect.objectContaining({ requiredControl: true, outputKind: "control" }),
+      },
     });
     client.emit("turn/completed", {
       threadId: "thread-new",
@@ -843,7 +847,7 @@ describe("Codex app-server runtime adapter", () => {
     });
     await expect(iterator.next()).resolves.toMatchObject({
       done: false,
-      value: { kind: "progress", state: "cancelled", itemId: "turn:turn-1" },
+      value: { kind: "progress", state: "cancelled", id: "turn:turn-1" },
     });
     await expect(iterator.next()).resolves.toMatchObject({ done: true });
   });
@@ -919,7 +923,7 @@ describe("Codex app-server runtime adapter", () => {
     expect(client.interruptTurn).toHaveBeenCalledWith({ threadId: "thread-new", turnId: "turn-1" });
     await expect(iterator.next()).resolves.toMatchObject({
       done: false,
-      value: { kind: "progress", state: "cancelled", itemId: "turn:turn-1" },
+      value: { kind: "progress", state: "cancelled", id: "turn:turn-1" },
     });
     await expect(iterator.next()).resolves.toMatchObject({ done: true });
     await expect(session.cancel?.()).resolves.toBe(false);
@@ -937,9 +941,9 @@ describe("Codex app-server runtime adapter", () => {
 
     await iterator.next();
     client.emit("$transport/exited", { message: "Codex app-server exited (code 1): boom" });
-    await expect(iterator.next()).resolves.toEqual({
+    await expect(iterator.next()).resolves.toMatchObject({
       done: false,
-      value: { kind: "final", text: "Codex app-server exited (code 1): boom" },
+      value: { kind: "error", text: "Codex app-server exited (code 1): boom" },
     });
     await expect(iterator.next()).resolves.toMatchObject({ done: true });
   });

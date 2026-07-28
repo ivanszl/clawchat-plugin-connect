@@ -6,7 +6,7 @@ import { TranscriptProjection } from "../../src/client-interface/transcript-proj
 import { defaultConfig } from "../../src/config";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../../src/runtime/runtime-interaction-coordinator";
-import type { RuntimeTranscriptEntry } from "../../src/runtime/types";
+import type { RuntimeActivity, RuntimeTranscriptEntry } from "../../src/runtime/types";
 import { createStateStore } from "../../src/state";
 
 const directory = await mkdtemp(join(tmpdir(), "connect-client-preview-"));
@@ -223,13 +223,28 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
         isArchived: true,
       },
     ],
-    readTranscript: async (_binding, runtimeThreadId) => ({
-      entries: transcripts.get(runtimeThreadId) ?? [],
+    readActivity: async (_binding, runtimeThreadId) => ({
+      activities: (transcripts.get(runtimeThreadId) ?? []).map((entry, index) => previewActivity(entry, `${index}`)),
       completeness: "complete",
+      limitations: [],
     }),
     start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
   },
 ]);
+
+function previewActivity(
+  entry: RuntimeTranscriptEntry,
+  position: string,
+  parentId: string | null = null,
+): RuntimeActivity {
+  return {
+    ...entry,
+    position,
+    parentId,
+    children: entry.children?.map((child, index) => previewActivity(child, `${position}.${index}`, entry.id)),
+  };
+}
+
 const config = defaultConfig();
 config.clientPort = Number(process.env.CONNECT_CLIENT_PREVIEW_PORT ?? 47_893);
 config.stateDbPath = stateStore.dbPath;
@@ -267,10 +282,15 @@ const runtime = {
     void (async () => {
       await transcriptProjection.appendUserMessage({ sessionRef, text: prompt, origin: "client", author: "You" });
       await Bun.sleep(250);
-      await transcriptProjection.appendRuntimeOutput(sessionRef, {
-        kind: "final",
+      await transcriptProjection.upsertRuntimeActivity(sessionRef, {
+        id: `preview:${turnId}`,
+        position: `preview:${turnId}`,
+        parentId: null,
+        kind: "assistant",
         text: "这是 Preview Runtime 的本地回复；它不会发送到 ClawChat。",
-        itemId: `preview:${turnId}`,
+        state: "complete",
+        source: "live",
+        data: { outputKind: "final" },
       });
       activityBySessionRef.set(sessionRef, "idle");
     })();

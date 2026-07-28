@@ -41,6 +41,17 @@ export function releasedRuntimeAdapters(): readonly ReleasedRuntimeAdapterMetada
   return RELEASED_RUNTIME_ADAPTERS.map((definition) => definition.metadata);
 }
 
+export function createReleasedAgentBinding(
+  kind: string | undefined,
+  options: { executablePath?: string } = {},
+): AgentBindingConfig {
+  const normalizedKind = kind?.trim().toLowerCase() ?? "";
+  return normalizeReleasedAgentBinding("CLI", {
+    kind: normalizedKind,
+    ...(options.executablePath?.trim() ? { codexPathOverride: options.executablePath.trim() } : {}),
+  });
+}
+
 export function normalizeReleasedAgentBinding(agentId: string, raw: unknown): AgentBindingConfig {
   const record = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const kind = readString(record.kind);

@@ -60,10 +60,13 @@ RuntimeAdapterRegistry → CodexRuntimeAdapter → private JSONL JSON-RPC client
                                       └────── versioned rollout fallback
 ```
 
-- `src/runtime/registry.ts` selects a Runtime Adapter from the Agent Binding's explicit `kind`.
+- `src/runtime/released-adapters.ts` is the released-adapter catalog. It owns released kinds, operator metadata,
+  Binding configuration normalization, defaults, validation, and Adapter construction.
+- `src/runtime/registry.ts` selects a constructed Runtime Adapter from the Agent Binding's explicit `kind`.
 - `src/runtime/codex-app-server.ts` owns the pinned `codex-cli 0.145.0` process and stable wire protocol; callers see only the Runtime Adapter interface.
 - `src/runtime/codex-rollout.ts` supplements persisted app-server history with displayable raw tool calls omitted by that API. It is a read-only, pinned-version fallback inside the Codex Adapter and never exposes raw rollout records across the runtime seam.
-- The Codex Runtime Adapter filters child threads from discovery and translates parent `subAgentActivity` items plus child history into recursive runtime-neutral transcript entries.
+- The Codex Runtime Adapter filters child threads from discovery and translates parent `subAgentActivity` items plus
+  child history into recursive Runtime Activities.
 - The Connect Service composition root registers and closes one shared Runtime Adapter registry. Binding runtimes close only their own Sessions, so stopping one Binding cannot tear down adapters used by another runtime kind.
 - The first release registers the Codex Runtime Adapter; `ConnectRuntime` has no Codex dependency.
 - `ConnectRuntime` owns queueing, Session lifecycle, workspace resolution, output visibility, reply delivery, and persisted Runtime Thread IDs.
@@ -92,7 +95,14 @@ Client Interface ── Session Catalog / Transcript Projection / safe preferenc
 
 The Client catalog is installation-wide. It merges Connect Sessions with `discoverAllThreads`, keeps one stable Session Ref for an unadopted Runtime Thread, nests Project and persistent native-workspace entries, and leaves Non-Project entries at the binding root. Runtime Adapters may classify generated scratch workspaces as transient so their readable Session names remain direct leaves instead of exposing meaningless directory labels. A first Web send adopts an unclaimed thread without replacing its native identity; persistent native workspaces become Projects, while transient scratch workspaces remain Non-Project. Creating a Session submits its Project, mode, model, and reasoning effort; the server validates those options before materializing an empty Session. Its first Client-local task is submitted later through the ordinary turn command.
 
-The Runtime Transcript remains authoritative for agent context and resume. The Transcript Projection is a SQLite materialized view for the browser: it keeps normalized message, plan, reasoning-summary, command, file-change, tool, progress, usage, interaction, error, and unknown blocks. Runtime-native item IDs become stable block IDs; repeated history reconciliation is idempotent. Runtime Adapters return a transcript snapshot with `complete`, `partial`, or `live-only` completeness and mark entries as ordinary history or fallback history. Session snapshot polling reconciles work performed by another Codex surface, while live Connect turns publish block upserts immediately through SSE.
+The Runtime Transcript remains authoritative for agent context and resume. The Transcript Projection is a SQLite
+materialized view for the browser: it keeps normalized message, plan, reasoning-summary, command, file-change, tool,
+progress, usage, interaction, error, and unknown blocks. Runtime Adapters translate live notifications, history, and
+fallback records into the same Runtime Activity contract before crossing the seam. Adapter-owned IDs, positions, and
+aliases become stable block identity and ordering; Projection never correlates runtime output by rendered text.
+Adapters report `complete`, `partial`, or `live-only` completeness plus explicit identity, correlation, or ordering
+limitations. Session snapshot polling reconciles work performed by another Codex surface, while live Connect turns
+publish the same Activity upserts immediately through SSE.
 
 Client-local turns and ClawChat turns share the logical Session queue. Only ClawChat-originated turns pass through reply materialization and the ClawChat WebSocket. Client-local output remains in the projection and SSE stream.
 
@@ -149,13 +159,19 @@ Runtime-ID callbacks are accepted only while the originating in-memory Session s
 
 ## Codex output mapping
 
-Stable app-server turn/item notifications are normalized into runtime output kinds:
+Stable app-server turn/item notifications are normalized inside the Codex Adapter into complete current-state Runtime
+Activities:
 
-- completed agent messages → `assistant`; the latest is held for one `final`
+- completed agent messages → `assistant`
 - reasoning → `reasoning`
-- commands, file changes, web searches, and MCP calls → `tool` or `progress`
-- task lists and lifecycle/usage → `progress`
-- app-server and turn failures → visible `final` output
+- commands → `command`
+- file changes → `file-change`
+- web searches and MCP calls → `tool`
+- task lists and lifecycle/usage → `plan` or `progress`
+- app-server and turn failures → `error`
+
+The Adapter attaches the output-visibility category used for ClawChat materialization as Activity metadata; it is not a
+second projection representation.
 
 The runtime applies `minimal`, `normal`, or `full` visibility and sends complete ClawChat `message.reply` frames. Protocol streaming lifecycle events are not used.
 

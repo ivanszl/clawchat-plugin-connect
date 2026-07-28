@@ -8,7 +8,6 @@ import type {
   TranscriptOrigin,
 } from "../client-contract";
 import { getAgentBinding } from "../config";
-import type { RuntimeOutputEvent } from "../output-visibility";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { RuntimeActivity, RuntimeTranscriptCompleteness } from "../runtime/types";
 import type { ConnectStateStore } from "../state";
@@ -121,12 +120,7 @@ export class TranscriptProjection {
     return (await this.options.stateStore.upsertTranscriptBlock(sessionRef, input)).block as RuntimeInteractionBlock;
   }
 
-  async appendRuntimeOutput(
-    sessionRef: string,
-    event: RuntimeOutputEvent,
-    id = event.itemId ?? randomUUID(),
-  ): Promise<TranscriptBlock> {
-    const activity = activityFromOutput(event, id);
+  async upsertRuntimeActivity(sessionRef: string, activity: RuntimeActivity): Promise<TranscriptBlock> {
     return (
       await this.options.stateStore.upsertTranscriptBlock(sessionRef, this.fromRuntimeActivity(sessionRef, activity))
     ).block;
@@ -207,44 +201,6 @@ export class TranscriptProjection {
   }
 }
 
-function activityFromOutput(event: RuntimeOutputEvent, id: string): RuntimeActivity {
-  const text = normalizeVisibleText(event.text);
-  const state =
-    event.state ??
-    (event.kind === "final" && /(?:failed|error|exited)/iu.test(text) ? ("error" as const) : ("complete" as const));
-  const itemType = stringEventData(event, "itemType");
-  const kind: RuntimeActivity["kind"] =
-    itemType === "commandExecution"
-      ? "command"
-      : itemType === "fileChange"
-        ? "file-change"
-        : itemType === "plan"
-          ? "plan"
-          : isToolItemType(itemType) || event.kind === "tool"
-            ? "tool"
-            : event.kind === "assistant" || (event.kind === "final" && state !== "error")
-              ? "assistant"
-              : event.kind === "reasoning"
-                ? "reasoning"
-                : event.kind === "control" || state === "error"
-                  ? "error"
-                  : "progress";
-  return {
-    id,
-    position: id,
-    parentId: null,
-    kind,
-    text,
-    state,
-    source: "live",
-    data: {
-      ...event.data,
-      ...(kind === "tool" ? { title: toolTitle(event, text) } : {}),
-      ...(event.kind === "control" ? { code: "runtime-interaction-unavailable" } : {}),
-    },
-  };
-}
-
 function subagentActivityKind(value: unknown): "started" | "interacted" | "interrupted" | "unknown" {
   return value === "started" || value === "interacted" || value === "interrupted" ? value : "unknown";
 }
@@ -302,27 +258,4 @@ function fileChanges(value: unknown): Array<{ path: string; kind: string; diff: 
       },
     ];
   });
-}
-
-function stringEventData(event: RuntimeOutputEvent, key: string): string {
-  const value = event.data?.[key];
-  return typeof value === "string" ? value : "";
-}
-
-function toolTitle(event: RuntimeOutputEvent, text: string): string {
-  const itemType = stringEventData(event, "itemType");
-  if (itemType === "mcpToolCall") {
-    const target = [stringEventData(event, "server"), stringEventData(event, "tool")].filter(Boolean).join("/");
-    return target ? `MCP · ${target}` : "MCP tool";
-  }
-  if (itemType === "webSearch") return `Web search · ${stringEventData(event, "query") || firstLine(text)}`;
-  if (itemType === "dynamicToolCall") {
-    const target = [stringEventData(event, "namespace"), stringEventData(event, "tool")].filter(Boolean).join("/");
-    return target || "Tool call";
-  }
-  return firstLine(text);
-}
-
-function isToolItemType(itemType: string): boolean {
-  return itemType === "mcpToolCall" || itemType === "dynamicToolCall" || itemType === "webSearch";
 }
