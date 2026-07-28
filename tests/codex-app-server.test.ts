@@ -5,8 +5,9 @@ import {
   type CodexAppServerNotification,
   type CodexAppServerProcess,
   createCodexAppServerClient,
-  SUPPORTED_CODEX_VERSION,
 } from "../src/runtime/codex-app-server";
+
+const CODEX_VERSION_FIXTURE = "codex-cli 0.145.0";
 
 class FakeProcess extends EventEmitter implements CodexAppServerProcess {
   readonly stdin = new PassThrough();
@@ -42,7 +43,7 @@ function startFakeServer(process: FakeProcess, received: Array<Record<string, un
       buffer = buffer.slice(newline + 1);
       const message = JSON.parse(line) as Record<string, unknown>;
       received.push(message);
-      if (message.method === "initialize") respond(process, message.id, { userAgent: SUPPORTED_CODEX_VERSION });
+      if (message.method === "initialize") respond(process, message.id, { userAgent: CODEX_VERSION_FIXTURE });
       if (message.method === "thread/list") respond(process, message.id, { data: [], nextCursor: null });
       if (message.method === "thread/archive" || message.method === "thread/delete") respond(process, message.id, {});
       if (message.method === "thread/unarchive") {
@@ -67,15 +68,28 @@ function respond(process: FakeProcess, id: unknown, result: unknown): void {
 }
 
 describe("Codex app-server stdio client", () => {
-  it("rejects any Codex executable version other than the pinned version", async () => {
-    const spawnAppServer = mock(() => new FakeProcess());
+  it("accepts any Codex CLI version that initializes app-server", async () => {
+    const process = new FakeProcess();
+    startFakeServer(process, []);
+    const spawnAppServer = mock(() => process);
+    const client = await createCodexAppServerClient(
+      { kind: "codex", codexPathOverride: "/opt/codex" },
+      { readVersion: async () => "codex-cli 99.0.0", spawnAppServer },
+    );
 
+    await expect(client.listThreads({ cwd: "/repo" })).resolves.toEqual({ data: [], nextCursor: null });
+    expect(spawnAppServer).toHaveBeenCalledTimes(1);
+    await client.close();
+  });
+
+  it("rejects an executable that returns no version output", async () => {
+    const spawnAppServer = mock(() => new FakeProcess());
     await expect(
       createCodexAppServerClient(
         { kind: "codex", codexPathOverride: "/opt/codex" },
-        { readVersion: async () => "codex-cli 0.144.5", spawnAppServer },
+        { readVersion: async () => "", spawnAppServer },
       ),
-    ).rejects.toThrow(`expected ${SUPPORTED_CODEX_VERSION}, received codex-cli 0.144.5`);
+    ).rejects.toThrow("Failed to read Codex version: empty output");
     expect(spawnAppServer).not.toHaveBeenCalled();
   });
 
@@ -86,7 +100,7 @@ describe("Codex app-server stdio client", () => {
     const client = await createCodexAppServerClient(
       { kind: "codex", codexPathOverride: "/opt/codex" },
       {
-        readVersion: async () => SUPPORTED_CODEX_VERSION,
+        readVersion: async () => CODEX_VERSION_FIXTURE,
         spawnAppServer: () => process,
       },
     );
@@ -96,7 +110,7 @@ describe("Codex app-server stdio client", () => {
       id: 1,
       method: "initialize",
       params: {
-        clientInfo: { name: "clawchat_connect", title: "ClawChat Connect", version: "0.1.0-alpha.13" },
+        clientInfo: { name: "clawchat_connect", title: "ClawChat Connect", version: "0.1.0-alpha.14" },
         capabilities: { experimentalApi: false, requestAttestation: false },
       },
     });
@@ -112,7 +126,7 @@ describe("Codex app-server stdio client", () => {
     startFakeServer(process, received);
     const client = await createCodexAppServerClient(
       { kind: "codex", codexPathOverride: "/opt/codex" },
-      { readVersion: async () => SUPPORTED_CODEX_VERSION, spawnAppServer: () => process },
+      { readVersion: async () => CODEX_VERSION_FIXTURE, spawnAppServer: () => process },
     );
     client.onRequest(async (request) => ({
       handled: request.method === "item/commandExecution/requestApproval",
@@ -143,12 +157,12 @@ describe("Codex app-server stdio client", () => {
         const message = JSON.parse(buffer.slice(0, newline)) as Record<string, unknown>;
         buffer = buffer.slice(newline + 1);
         received.push(message);
-        if (message.method === "initialize") respond(process, message.id, { userAgent: SUPPORTED_CODEX_VERSION });
+        if (message.method === "initialize") respond(process, message.id, { userAgent: CODEX_VERSION_FIXTURE });
       }
     });
     const client = await createCodexAppServerClient(
       { kind: "codex", codexPathOverride: "/opt/codex" },
-      { readVersion: async () => SUPPORTED_CODEX_VERSION, spawnAppServer: () => process },
+      { readVersion: async () => CODEX_VERSION_FIXTURE, spawnAppServer: () => process },
     );
 
     const first = client.listThreads({});
@@ -179,7 +193,7 @@ describe("Codex app-server stdio client", () => {
     const client = await createCodexAppServerClient(
       { kind: "codex", codexPathOverride: "/opt/codex" },
       {
-        readVersion: async () => SUPPORTED_CODEX_VERSION,
+        readVersion: async () => CODEX_VERSION_FIXTURE,
         spawnAppServer: () => process,
         requestTimeoutMs: 10,
       },
@@ -203,7 +217,7 @@ describe("Codex app-server stdio client", () => {
     startFakeServer(process, received);
     const client = await createCodexAppServerClient(
       { kind: "codex", codexPathOverride: "/opt/codex" },
-      { readVersion: async () => SUPPORTED_CODEX_VERSION, spawnAppServer: () => process },
+      { readVersion: async () => CODEX_VERSION_FIXTURE, spawnAppServer: () => process },
     );
 
     await expect(client.archiveThread({ threadId: "thread-1" })).resolves.toBeUndefined();
@@ -225,7 +239,7 @@ describe("Codex app-server stdio client", () => {
     startFakeServer(process, received);
     const client = await createCodexAppServerClient(
       { kind: "codex", codexPathOverride: "/opt/codex" },
-      { readVersion: async () => SUPPORTED_CODEX_VERSION, spawnAppServer: () => process },
+      { readVersion: async () => CODEX_VERSION_FIXTURE, spawnAppServer: () => process },
     );
     const notifications: CodexAppServerNotification[] = [];
     client.onNotification((notification) => notifications.push(notification));

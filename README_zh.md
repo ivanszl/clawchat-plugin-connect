@@ -50,7 +50,7 @@ ClawChat Connect 是连接 ClawChat 与本地编程 Agent 运行时的桥梁。A
 安装前需要：
 
 1. ClawChat 账号和 Agent 邀请码；
-2. 已在同一台电脑上安装并登录 `codex-cli 0.145.0`；
+2. 已在同一台电脑上安装并登录 Codex CLI；
 3. arm64 或 x64 架构的 macOS、Linux 或 Windows 10/11。
 
 检查 Codex 版本：
@@ -59,9 +59,11 @@ ClawChat Connect 是连接 ClawChat 与本地编程 Agent 运行时的桥梁。A
 codex --version
 ```
 
-Connect 严格要求 `codex-cli 0.145.0`。它会使用已有的 Codex 登录状态、配置、MCP Server 和 `~/.codex/sessions` 数据，不会安装或重新配置 Codex。
+Connect 接受任何能够启动所需 app-server 接口的 Codex CLI 版本。它会使用已有的 Codex 登录状态、配置、MCP Server 和 `~/.codex/sessions` 数据，不会安装或重新配置 Codex。
 
 ## 快速开始
+
+需要供 Agent 自动执行并验证 Liveware 启动的流程，请使用 [Agent 安装手册](./install.md)。
 
 ### 1. 安装 Connect
 
@@ -83,7 +85,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.13
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.14
 ```
 
 Windows PowerShell 用户应先下载安装脚本并检查其内容：
@@ -330,7 +332,7 @@ clawchat-connect service logs --lines 250
 
 常见原因：
 
-- **Codex 版本不兼容：** 必须安装 `codex-cli 0.145.0`，或通过 `--codex-path` 指向正确版本。
+- **Codex 无法启动：** 运行 `codex --version`，确认 Codex 已登录，并检查 app-server 初始化错误。需要使用其他可执行文件时，通过 `--codex-path` 指定。
 - **终端中 Codex 正常，但 Connect 无法启动：** 重新安装服务以捕获当前 `PATH`。
 - **修改配置后未生效：** 重启服务。
 - **浏览器 Client 无法打开：** 确认服务正在运行，再用 `clawchat-connect web --no-open` 获取地址。

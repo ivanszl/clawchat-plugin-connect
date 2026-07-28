@@ -50,7 +50,7 @@ Only the Codex Runtime Adapter is included today, so a current installation can 
 Before installing Connect, you need:
 
 1. A ClawChat account and an Agent invite code.
-2. `codex-cli 0.145.0` installed and authenticated on the same computer.
+2. Codex CLI installed and authenticated on the same computer.
 3. macOS, Linux, or Windows 10/11 on arm64 or x64.
 
 Check the Codex version:
@@ -59,9 +59,11 @@ Check the Codex version:
 codex --version
 ```
 
-Connect requires exactly `codex-cli 0.145.0`. It uses your existing Codex login, configuration, MCP servers, and `~/.codex/sessions` storage. Connect does not install or reconfigure Codex.
+Connect accepts any Codex CLI version that can start the required app-server interface. It uses your existing Codex login, configuration, MCP servers, and `~/.codex/sessions` storage. Connect does not install or reconfigure Codex.
 
 ## Quick start
+
+For an automation-ready installation flow with explicit Liveware startup checks, use the [Agent installation runbook](install.md).
 
 ### 1. Install Connect
 
@@ -85,7 +87,7 @@ To install a specific release or choose another directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.13
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.14
 ```
 
 On Windows PowerShell, download and inspect the installer before running it:
@@ -102,7 +104,7 @@ The Windows installer verifies the Release ZIP checksum, installs `clawchat-conn
 
 ```powershell
 .\install.ps1 `
-  -Version v0.1.0-alpha.13 `
+  -Version v0.1.0-alpha.14 `
   -InstallDirectory "D:\Tools\ClawChatConnect"
 ```
 
@@ -427,7 +429,7 @@ clawchat-connect service logs --lines 250
 
 Common causes:
 
-- **Codex version rejected:** install exactly `codex-cli 0.145.0`, or set `agents.<id>.codexPathOverride` to the correct executable.
+- **Codex cannot start:** run `codex --version`, confirm Codex is authenticated, and inspect the app-server initialization error. Use `agents.<id>.codexPathOverride` when Connect should launch a different executable.
 - **Codex works in a terminal but not in Connect:** reinstall the service so it captures the current `PATH`.
 - **Windows service does not start:** run `clawchat-connect service install` again from a terminal where `codex` works, then inspect `clawchat-connect service logs`.
 - **Configuration changed but behavior did not:** restart the service.
@@ -473,7 +475,7 @@ CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
 
 Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it beside the Connect executable under `dist/`. Windows builds use `.exe` names. Preview the browser client with `bun run preview:web`.
 
-Version tags such as `v0.1.0-alpha.13` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. Both installers resolve the latest published release unless a version is explicitly supplied. npm packages include all six assets so a global Bun install remains portable.
+Version tags such as `v0.1.0-alpha.14` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. Both installers resolve the latest published release unless a version is explicitly supplied. npm packages include all six assets so a global Bun install remains portable.
 
 ## License
 

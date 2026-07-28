@@ -1,5 +1,4 @@
 import { createCodexRuntimeAdapter } from "../../src/runtime/codex-adapter";
-import { SUPPORTED_CODEX_VERSION } from "../../src/runtime/codex-app-server";
 import type { ConnectRuntimePrompt } from "../../src/runtime/types";
 
 const executable = process.env.CODEX_INTEGRATION_PATH?.trim();
@@ -54,12 +53,10 @@ try {
     await prompt(inputFor(alternate));
     if (runtimeThreadId !== originalThreadId)
       throw new Error("Codex model switch did not resume the same Runtime Thread");
-    process.stdout.write(
-      `Verified ${SUPPORTED_CODEX_VERSION} model catalog and ${selected.id} → ${alternate.id} on one Runtime Thread.\n`,
-    );
+    process.stdout.write(`Verified Codex model catalog and ${selected.id} → ${alternate.id} on one Runtime Thread.\n`);
   } else {
     process.stdout.write(
-      `Verified ${SUPPORTED_CODEX_VERSION} model catalog and ${selected.id}; model switch skipped because only one model is advertised.\n`,
+      `Verified Codex model catalog and ${selected.id}; model switch skipped because only one model is advertised.\n`,
     );
   }
   await session.close();

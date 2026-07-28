@@ -2,6 +2,17 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.14] - 2026-07-28
+
+### Added
+
+- Added an automation-ready Agent installation runbook covering Connect setup, activation, native service installation, managed Liveware startup, readiness checks, and recovery.
+
+### Changed
+
+- Removed the exact Codex CLI version gate. Connect now accepts any installed Codex version that can initialize the required app-server interface.
+- Clarified that the release workflow's Codex version is a reproducible CI test fixture rather than a runtime requirement.
+
 ## [0.1.0-alpha.13] - 2026-07-28
 
 ### Added

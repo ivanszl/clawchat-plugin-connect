@@ -3,8 +3,6 @@ import { once } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { CodexAgentBindingConfig } from "../types";
 
-export const SUPPORTED_CODEX_VERSION = "codex-cli 0.145.0" as const;
-
 type RpcId = number | string;
 type JsonObject = Record<string, unknown>;
 
@@ -158,15 +156,11 @@ export async function createCodexAppServerClient(
   const executable = binding.codexPathOverride ?? Bun.which("codex", { PATH: env?.PATH ?? process.env.PATH });
   if (!executable) {
     throw new Error(
-      "Codex executable was not found in PATH; install codex-cli 0.145.0 or configure the Agent Binding with --codex-path",
+      "Codex executable was not found in PATH; install Codex CLI or configure the Agent Binding with --codex-path",
     );
   }
   const version = await (options.readVersion ?? readCodexVersion)(executable, env);
-  if (version !== SUPPORTED_CODEX_VERSION) {
-    throw new Error(
-      `Unsupported Codex version: expected ${SUPPORTED_CODEX_VERSION}, received ${version || "no version"}`,
-    );
-  }
+  if (!version.trim()) throw new Error("Failed to read Codex version: empty output");
   const child = (options.spawnAppServer ?? spawnCodexAppServer)(executable, env);
   const client = new StdioCodexAppServerClient(child, options.requestTimeoutMs);
   try {
@@ -274,7 +268,7 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
       clientInfo: {
         name: "clawchat_connect",
         title: "ClawChat Connect",
-        version: "0.1.0-alpha.13",
+        version: "0.1.0-alpha.14",
       },
       capabilities: {
         experimentalApi: false,

@@ -92,7 +92,7 @@ jobs:
       - name: Check
         run: bun run check
 
-      - name: Install pinned Codex
+      - name: Install CI-tested Codex
         run: bun add --global @openai/codex@0.145.0
 
       - name: Verify Codex app-server integration
