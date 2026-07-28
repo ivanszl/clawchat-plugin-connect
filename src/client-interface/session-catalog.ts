@@ -28,7 +28,7 @@ export interface SessionCatalogOptions {
   transcriptProjection: TranscriptProjection;
   projects?: ProjectCatalog;
   sessionActivity?: (bindingId: string, sessionRef: string) => SessionActivity | Promise<SessionActivity>;
-  coordinateSessionLifecycle?: (bindingId: string, sessionRef: string, run: () => Promise<void>) => Promise<void>;
+  claimSessionLifecycle?: (bindingId: string, sessionRef: string) => Promise<() => Promise<void>>;
 }
 
 interface CatalogState {
@@ -61,13 +61,15 @@ export class SessionCatalog {
         delete: async (bindingId, runtimeThreadId) =>
           await options.runtimeAdapters.deleteThread(getAgentBinding(options.config, bindingId), runtimeThreadId),
       },
-      coordinateRuntimeLifecycle: options.coordinateSessionLifecycle
-        ? async (sessionRef, run) => {
+      claimRuntimeLifecycle: options.claimSessionLifecycle
+        ? async (sessionRef) => {
             const session = await options.stateStore.getRuntimeSessionByRef(sessionRef);
             const target = session ? null : await options.stateStore.getSessionRefTarget(sessionRef);
             const bindingId = session?.agentId ?? target?.agentId;
             if (!bindingId) throw new Error(`Session ${sessionRef} was not found`);
-            await options.coordinateSessionLifecycle?.(bindingId, sessionRef, run);
+            const claim = options.claimSessionLifecycle;
+            if (!claim) return async () => undefined;
+            return await claim(bindingId, sessionRef);
           }
         : undefined,
     });
@@ -483,8 +485,8 @@ function catalogActions(
 ): SessionCatalogAction[] {
   const actions: SessionCatalogAction[] = ["open"];
   if (isArchived) {
-    if (hasRuntimeThread && capabilities.restore) actions.push("unarchive");
-    if (hasRuntimeThread && capabilities.delete) actions.push("delete");
+    if (activity === "idle" && hasRuntimeThread && capabilities.restore) actions.push("unarchive");
+    if (activity === "idle" && hasRuntimeThread && capabilities.delete) actions.push("delete");
     return actions;
   }
   if (isAdopted) {

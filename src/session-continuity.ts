@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { RuntimeLifecycleCapabilities } from "./runtime/types";
+import { type RuntimeLifecycleCapabilities, RuntimeLifecycleError } from "./runtime/types";
 import type { ConnectStateStore, SessionLifecycleAction, SessionLifecycleOperationRecord } from "./state";
 import type { RuntimeSessionRecord } from "./types";
 
@@ -86,7 +86,7 @@ export interface SessionContinuityOptions {
   operationIdFactory?: () => string;
   lifecycle?: RuntimeLifecycle;
   releaseRuntimeHandle?: (sessionRef: string) => Promise<void>;
-  coordinateRuntimeLifecycle?: (sessionRef: string, run: () => Promise<void>) => Promise<void>;
+  claimRuntimeLifecycle?: (sessionRef: string) => Promise<() => Promise<void>>;
   beforeLifecycleLocalCommit?: (operation: SessionLifecycleOperationRecord) => Promise<void>;
 }
 
@@ -94,6 +94,9 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
   const sessionIdFactory = options.sessionIdFactory ?? randomUUID;
   const operationIdFactory = options.operationIdFactory ?? randomUUID;
   const runLifecycle = async (sessionRef: string, action: SessionLifecycleAction): Promise<void> => {
+    const release = options.claimRuntimeLifecycle
+      ? await options.claimRuntimeLifecycle(sessionRef.toUpperCase())
+      : async () => undefined;
     const execute = async () => {
       const lifecycle = requireLifecycle(options.lifecycle);
       const session = await options.stateStore.getRuntimeSessionByRef(sessionRef);
@@ -115,11 +118,11 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
       });
       await executeLifecycleOperation(options, lifecycle, operation, session);
     };
-    if (options.coordinateRuntimeLifecycle) {
-      await options.coordinateRuntimeLifecycle(sessionRef.toUpperCase(), execute);
-      return;
+    try {
+      await execute();
+    } finally {
+      await release();
     }
-    await execute();
   };
   return {
     inConversation(scope) {
@@ -318,7 +321,20 @@ async function executeLifecycleOperation(
   session: RuntimeSessionRecord | null,
 ): Promise<void> {
   if (operation.state === "intent") {
-    await lifecycle[operation.action](operation.bindingId, operation.runtimeThreadId);
+    try {
+      await lifecycle[operation.action](operation.bindingId, operation.runtimeThreadId);
+    } catch (error) {
+      if (error instanceof RuntimeLifecycleError) {
+        const code =
+          error.code === "not-found"
+            ? "session-not-found"
+            : error.code === "unsupported"
+              ? "session-action-unsupported"
+              : "session-state-conflict";
+        throw new SessionLifecycleError(code, error.message);
+      }
+      throw error;
+    }
     await options.stateStore.setSessionLifecycleOperationState(operation.operationId, "native-confirmed");
   }
   const confirmed = { ...operation, state: "native-confirmed" as const };

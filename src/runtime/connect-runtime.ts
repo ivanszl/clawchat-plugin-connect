@@ -197,29 +197,32 @@ export class ConnectRuntime {
 
   async sessionActivity(sessionRef: string): Promise<SessionActivity> {
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
-    if (!current || current.agentId !== this.options.agentId) return "idle";
+    if (!current) {
+      const target = await this.options.stateStore.getSessionRefTarget(sessionRef);
+      if (!target || target.agentId !== this.options.agentId) return "idle";
+      return this.queue.activity(`discovered:${sessionRef.toUpperCase()}`);
+    }
+    if (current.agentId !== this.options.agentId) return "idle";
     return this.queue.activity(sessionKey(current.chatId, current.sessionId));
   }
 
-  async coordinateSessionLifecycle(sessionRef: string, run: () => Promise<void>): Promise<void> {
+  async claimSessionLifecycle(sessionRef: string): Promise<() => Promise<void>> {
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
     if (!current) {
       const target = await this.options.stateStore.getSessionRefTarget(sessionRef);
       if (!target || target.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
-      await run();
-      return;
+      return await this.queue.acquire(`discovered:${sessionRef.toUpperCase()}`, `Session ${sessionRef}`);
     }
     if (current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
     const key = sessionKey(current.chatId, current.sessionId);
-    await this.queue.claim(
+    return await this.queue.acquire(
       key,
-      async () => {
-        await this.executor.release(current.sessionRef);
-        await run();
-      },
       `Session ${current.sessionRef}`,
       async () => {
         await this.executor.cancel(current.sessionRef);
+      },
+      async () => {
+        await this.executor.release(current.sessionRef);
       },
     );
   }

@@ -69,7 +69,8 @@ RuntimeAdapterRegistry → CodexRuntimeAdapter → private JSONL JSON-RPC client
   child history into recursive Runtime Activities.
 - The Connect Service composition root registers and closes one shared Runtime Adapter registry. Binding runtimes close only their own Sessions, so stopping one Binding cannot tear down adapters used by another runtime kind.
 - The first release registers the Codex Runtime Adapter; `ConnectRuntime` has no Codex dependency.
-- `ConnectRuntime` owns queueing, Session lifecycle, workspace resolution, output visibility, reply delivery, and persisted Runtime Thread IDs.
+- `ConnectRuntime` owns turn queueing and exposes a narrow lifecycle claim that drains/cancels work and releases the
+  in-memory handle. Session Continuity retains lifecycle validation, journaling, native mutation, and local commit.
 - Runtime Adapters may expose a runtime-neutral model catalog. Connect resolves model inheritance as Session → Agent Binding → Runtime default. Reasoning effort resolves independently as strict Session effort → valid Agent Binding effort → the effective model's advertised default. Codex-native `model/list` pagination stays private to the Codex Adapter.
 - ClawChat media fragments remain structured across `ConnectRuntimePrompt`: the Codex Adapter downloads media into the Connect-owned cache, submits images and audio as native local app-server inputs, and submits files and videos as local file mentions. Configured API/media origins are trusted for private self-hosting; other URLs require HTTPS and public DNS answers. Every redirect is revalidated. Downloads are capped at 100 MiB and use path-safe cached names. The cache is bounded to 512 MiB, refreshes access time on reuse, evicts least-recently-used files when full, and expires files after 15 days without access.
 - Adapters receive a resolved `RuntimeWorkspace` and never access SQLite directly. They may discover resumable Runtime Threads scoped to that workspace through the same seam.
@@ -100,6 +101,8 @@ materialized view for the browser: it keeps normalized message, plan, reasoning-
 progress, usage, interaction, error, and unknown blocks. Runtime Adapters translate live notifications, history, and
 fallback records into the same Runtime Activity contract before crossing the seam. Adapter-owned IDs, positions, and
 aliases become stable block identity and ordering; Projection never correlates runtime output by rendered text.
+Codex positions use native turn and item ordinals across live and historical Activity, and Projection reserves
+per-turn sequence ranges so replay or out-of-order delivery converges to the same order.
 Adapters report `complete`, `partial`, or `live-only` completeness plus explicit identity, correlation, or ordering
 limitations. Session snapshot polling reconciles work performed by another Codex surface, while live Connect turns
 publish the same Activity upserts immediately through SSE.
@@ -156,6 +159,11 @@ The Codex adapter calls app-server `thread/list`, filters by the selected worksp
 Session Refs use eight characters from an unambiguous Base32 alphabet and contain 40 random bits. SQLite enforces global Ref uniqueness and stores mappings to both Connect Sessions and Runtime Threads. Existing databases are backfilled on startup. When a discovered Runtime Thread is adopted, its mapping is attached to the new Session; when a Session invalidates its Runtime Thread, the Session keeps its Ref and a later rediscovery of the old thread receives a different Ref.
 
 Runtime-ID callbacks are accepted only while the originating in-memory Session still owns its key, preventing a cancelled or stale turn from repopulating an invalidated ID. Cancellation calls app-server `turn/interrupt` with the active native thread and turn IDs.
+
+Session lifecycle uses an explicit acquire/release claim. The claim rejects new turns immediately, cancels and drains
+an active turn, releases its Runtime handle, and remains held while Session Continuity performs its journaled
+native/local operation. Discovered but unadopted Runtime Threads use the same per-Ref serialization key. Adapter
+lifecycle failures are normalized to stable not-found, conflict, or unsupported errors before reaching the Client.
 
 ## Codex output mapping
 

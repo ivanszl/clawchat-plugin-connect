@@ -8,6 +8,7 @@ import type {
   RuntimeModelOption,
   RuntimeThreadSummary,
 } from "./types";
+import { RuntimeLifecycleError } from "./types";
 
 export class RuntimeAdapterRegistry {
   private readonly adapters = new Map<string, ConnectRuntimeAdapter>();
@@ -74,33 +75,45 @@ export class RuntimeAdapterRegistry {
   async archiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
     const adapter = this.require(binding.kind);
     const operation = adapter.archiveThread;
-    if (!operation) throw new Error(`${binding.kind} Runtime Adapter does not support thread archiving`);
+    if (!operation)
+      throw new RuntimeLifecycleError(
+        "unsupported",
+        `${binding.kind} Runtime Adapter does not support thread archiving`,
+      );
     if (
       adapter.discoverArchivedThreads &&
       (await adapter.discoverArchivedThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId)
     ) {
       return;
     }
-    await operation(binding, runtimeThreadId);
+    await runLifecycleMutation("archive", () => operation(binding, runtimeThreadId));
   }
 
   async unarchiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
     const adapter = this.require(binding.kind);
     const operation = adapter.unarchiveThread;
-    if (!operation) throw new Error(`${binding.kind} Runtime Adapter does not support thread restoration`);
+    if (!operation)
+      throw new RuntimeLifecycleError(
+        "unsupported",
+        `${binding.kind} Runtime Adapter does not support thread restoration`,
+      );
     if (
       adapter.discoverAllThreads &&
       (await adapter.discoverAllThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId)
     ) {
       return;
     }
-    await operation(binding, runtimeThreadId);
+    await runLifecycleMutation("restore", () => operation(binding, runtimeThreadId));
   }
 
   async deleteThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
     const adapter = this.require(binding.kind);
     const operation = adapter.deleteThread;
-    if (!operation) throw new Error(`${binding.kind} Runtime Adapter does not support thread deletion`);
+    if (!operation)
+      throw new RuntimeLifecycleError(
+        "unsupported",
+        `${binding.kind} Runtime Adapter does not support thread deletion`,
+      );
     if (adapter.discoverAllThreads && adapter.discoverArchivedThreads) {
       const [active, archived] = await Promise.all([
         adapter.discoverAllThreads(binding),
@@ -108,7 +121,7 @@ export class RuntimeAdapterRegistry {
       ]);
       if (![...active, ...archived].some((thread) => thread.runtimeThreadId === runtimeThreadId)) return;
     }
-    await operation(binding, runtimeThreadId);
+    await runLifecycleMutation("delete", () => operation(binding, runtimeThreadId));
   }
 
   async close(): Promise<void> {
@@ -123,5 +136,16 @@ export class RuntimeAdapterRegistry {
     const adapter = this.adapters.get(kind);
     if (!adapter) throw new Error(`no Runtime Adapter registered for kind: ${kind}`);
     return adapter;
+  }
+}
+
+async function runLifecycleMutation(action: string, operation: () => Promise<void>): Promise<void> {
+  try {
+    await operation();
+  } catch (error) {
+    if (error instanceof RuntimeLifecycleError) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    const code = /(?:not[\s-]*found|unknown thread|404)/iu.test(message) ? "not-found" : "conflict";
+    throw new RuntimeLifecycleError(code, `Runtime Thread ${action} failed: ${message}`, { cause: error });
   }
 }

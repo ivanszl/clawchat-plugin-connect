@@ -145,10 +145,11 @@ it("keeps runtime lifecycle coordination claimed through native and local deleti
   const order: string[] = [];
   const continuity = createSessionContinuity({
     stateStore,
-    coordinateRuntimeLifecycle: async (sessionRef, run) => {
+    claimRuntimeLifecycle: async (sessionRef) => {
       order.push(`claim:${sessionRef}`);
-      await run();
-      order.push(`release:${sessionRef}`);
+      return async () => {
+        order.push(`release:${sessionRef}`);
+      };
     },
     lifecycle: {
       capabilities: () => ({ archive: true, restore: true, delete: true }),

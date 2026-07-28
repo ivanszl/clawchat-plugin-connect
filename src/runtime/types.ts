@@ -116,6 +116,19 @@ export interface RuntimeLifecycleCapabilities {
   delete: boolean;
 }
 
+export type RuntimeLifecycleErrorCode = "not-found" | "conflict" | "unsupported";
+
+export class RuntimeLifecycleError extends Error {
+  constructor(
+    readonly code: RuntimeLifecycleErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "RuntimeLifecycleError";
+  }
+}
+
 export interface SelectableRuntimeThread extends RuntimeThreadSummary {
   sessionRef: string;
 }
@@ -125,6 +138,7 @@ export type RuntimeTranscriptCompleteness = "complete" | "partial" | "live-only"
 
 export interface RuntimeTranscriptEntry {
   id: string;
+  position?: string;
   kind:
     | "user"
     | "assistant"

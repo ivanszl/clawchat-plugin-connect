@@ -208,6 +208,7 @@ export type ClientCommandClaim =
 export type TranscriptBlockInput<T extends TranscriptBlock = TranscriptBlock> = T extends TranscriptBlock
   ? Omit<T, "sequence" | "revision" | "createdAt" | "updatedAt"> & {
       id: string;
+      sequence?: number;
       revision?: number;
       createdAt?: string;
       updatedAt?: string;
@@ -1523,6 +1524,7 @@ export class ConnectStateStore {
     if (storedBlock && sameTranscriptPayload(storedBlock, projectedInput)) return { block: storedBlock, cursor: 0 };
     const now = Date.now();
     const sequence =
+      projectedInput.sequence ??
       existing?.sequence ??
       numberValue(
         (
@@ -1543,7 +1545,7 @@ export class ConnectStateStore {
       updatedAt: new Date(Number.isFinite(updatedAt) ? updatedAt : now).toISOString(),
     } as TranscriptBlock;
     await db.run(
-      `INSERT INTO transcript_blocks(session_ref, block_id, revision, sequence, block_type, origin, state, plain_text, block_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_ref, block_id) DO UPDATE SET revision = excluded.revision, block_type = excluded.block_type, origin = excluded.origin, state = excluded.state, plain_text = excluded.plain_text, block_json = excluded.block_json, updated_at = excluded.updated_at`,
+      `INSERT INTO transcript_blocks(session_ref, block_id, revision, sequence, block_type, origin, state, plain_text, block_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_ref, block_id) DO UPDATE SET revision = excluded.revision, sequence = excluded.sequence, block_type = excluded.block_type, origin = excluded.origin, state = excluded.state, plain_text = excluded.plain_text, block_json = excluded.block_json, updated_at = excluded.updated_at`,
       sessionRef,
       block.id,
       block.revision,

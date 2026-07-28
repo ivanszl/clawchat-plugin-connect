@@ -131,6 +131,7 @@ export class TranscriptProjection {
     const text = normalizeHistoryText(entry.text);
     const base = {
       id,
+      sequence: runtimeActivitySequence(entry.position),
       origin: historyOrigin(entry),
       runtimeSource: entry.source,
       state: entry.state,
@@ -199,6 +200,14 @@ export class TranscriptProjection {
     }
     return { ...base, type: "unknown" as const, label: entry.kind, detail: text };
   }
+}
+
+function runtimeActivitySequence(position: string): number | undefined {
+  const parts = position.split(".").map((part) => Number.parseInt(part, 10));
+  if (parts.length === 0 || parts.some((part) => !Number.isSafeInteger(part) || part < 0)) return undefined;
+  const [turn = 0, item = 0] = parts;
+  if (turn >= 9_000_000_000 || item >= 1_000_000) return undefined;
+  return (turn + 1) * 1_000_000 + item;
 }
 
 function subagentActivityKind(value: unknown): "started" | "interacted" | "interrupted" | "unknown" {

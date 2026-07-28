@@ -90,13 +90,9 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     projects,
     sessionActivity: async (bindingId, sessionRef) =>
       (await runtimes.get(bindingId)?.sessionActivity?.(sessionRef)) ?? "idle",
-    coordinateSessionLifecycle: async (bindingId, sessionRef, run) => {
-      const coordinate = runtimes.get(bindingId)?.coordinateSessionLifecycle;
-      if (coordinate) {
-        await coordinate(sessionRef, run);
-        return;
-      }
-      await run();
+    claimSessionLifecycle: async (bindingId, sessionRef) => {
+      const claim = runtimes.get(bindingId)?.claimSessionLifecycle;
+      return claim ? await claim(sessionRef) : async () => undefined;
     },
   });
   await catalog.reconcileLifecycle();

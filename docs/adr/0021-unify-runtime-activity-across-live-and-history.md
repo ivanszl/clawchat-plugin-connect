@@ -14,4 +14,6 @@ This decision refines ADR-0011, ADR-0012, and ADR-0019 without changing the Runt
 
 Implemented. Runtime Sessions emit Runtime Activity directly, history and rollout fallback are translated by the
 Runtime Adapter, and Connect Transcript Projection accepts only Runtime Activity. Correlation uses Adapter-provided
-identity or aliases; display-text matching and the legacy live-output projection path have been removed.
+identity or aliases; display-text matching and the legacy live-output projection path have been removed. Codex maps
+native turn/item ordinals consistently across live and history, while Transcript Projection maps those positions into
+reserved sequence ranges so reconnect, replay, and out-of-order arrival converge.

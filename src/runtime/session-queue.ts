@@ -59,6 +59,20 @@ export class SessionQueue {
     displayIdentity = `Session ${sessionIdentity}`,
     onClaim?: () => Promise<void>,
   ): Promise<T> {
+    const release = await this.acquire(sessionIdentity, displayIdentity, onClaim);
+    try {
+      return await run();
+    } finally {
+      await release();
+    }
+  }
+
+  async acquire(
+    sessionIdentity: string,
+    displayIdentity = `Session ${sessionIdentity}`,
+    onClaim?: () => Promise<void>,
+    onAcquired?: () => Promise<void>,
+  ): Promise<() => Promise<void>> {
     if (this.lifecycleClaims.has(sessionIdentity)) {
       throw new Error(`${displayIdentity} lifecycle operation is in progress`);
     }
@@ -74,18 +88,30 @@ export class SessionQueue {
       this.lifecycleClaims.delete(sessionIdentity);
       throw error;
     }
-    return await new Promise<T>((resolve, reject) => {
-      let value: T | undefined;
+    let releaseOperation: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      releaseOperation = resolve;
+    });
+    let settleOperation: () => void = () => undefined;
+    const settled = new Promise<void>((resolve) => {
+      settleOperation = resolve;
+    });
+    return await new Promise<() => Promise<void>>((resolve, reject) => {
       queue.push({
         run: async () => {
-          value = await run();
+          await onAcquired?.();
+          resolve(async () => {
+            releaseOperation();
+            await settled;
+          });
+          await released;
         },
         settle: (failure) => {
           try {
             if (failure) reject(failure);
-            else resolve(value as T);
           } finally {
             this.lifecycleClaims.delete(sessionIdentity);
+            settleOperation();
           }
         },
       });

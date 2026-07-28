@@ -140,19 +140,66 @@ async function collect(session: ConnectRuntimeSession, onAccepted?: () => Promis
   return output;
 }
 
-function emitCompletedTurn(client: FakeAppServer, threadId: string, items: Array<Record<string, unknown>>): void {
-  client.emit("turn/started", { threadId, turn: turn() });
+function emitCompletedTurn(
+  client: FakeAppServer,
+  threadId: string,
+  items: Array<Record<string, unknown>>,
+  turnId = "turn-1",
+): void {
+  client.emit("turn/started", { threadId, turn: turn(turnId) });
   for (const item of items) {
-    client.emit("item/started", { threadId, turnId: "turn-1", item });
-    client.emit("item/completed", { threadId, turnId: "turn-1", item });
+    client.emit("item/started", { threadId, turnId, item });
+    client.emit("item/completed", { threadId, turnId, item });
   }
   client.emit("turn/completed", {
     threadId,
-    turn: turn("turn-1", { status: "completed" }),
+    turn: turn(turnId, { status: "completed" }),
   });
 }
 
 describe("Codex app-server runtime adapter", () => {
+  it("keeps Runtime Activity positions stable across multiple live and historical turns", async () => {
+    const client = new FakeAppServer();
+    let completedTurns = 0;
+    client.readThread.mockImplementation(async (params) => ({
+      thread: thread(params.threadId, {
+        turns: Array.from({ length: completedTurns }, (_, index) => ({
+          id: `turn-${index + 1}`,
+          status: "completed" as const,
+          items: [
+            { type: "userMessage" as const, id: `u${index + 1}`, content: [] },
+            { type: "agentMessage" as const, id: `a${index + 1}`, text: `answer ${index + 1}` },
+          ],
+        })),
+      }),
+    }));
+    client.startTurn.mockImplementation(async () => {
+      const turnNumber = completedTurns + 1;
+      queueMicrotask(() => {
+        emitCompletedTurn(
+          client,
+          "thread-new",
+          [{ type: "agentMessage", id: `a${turnNumber}`, text: `answer ${turnNumber}` }],
+          `turn-${turnNumber}`,
+        );
+        completedTurns = turnNumber;
+      });
+      return { turn: turn(`turn-${turnNumber}`) };
+    });
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+    const session = await adapter.start(agent, context());
+
+    const first = await collect(session);
+    const second = await collect(session);
+    const history = await adapter.readActivity?.(agent, "thread-new");
+
+    expect(first.find((activity) => activity.id === "a1")?.position).toBe("0.1");
+    expect(second.find((activity) => activity.id === "a2")?.position).toBe("1.1");
+    expect(
+      history?.activities.filter((activity) => activity.kind === "assistant").map((activity) => activity.position),
+    ).toEqual(["0.1", "1.1"]);
+  });
+
   it("uses interactive approvals when a legacy Binding has no stored policy", async () => {
     const client = new FakeAppServer();
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
@@ -762,6 +809,43 @@ describe("Codex app-server runtime adapter", () => {
     expect(output.filter((event) => event.data?.outputKind === "final")).toEqual([
       expect.objectContaining({ kind: "assistant", text: "final answer", id: "a2", state: "complete" }),
     ]);
+    client.readThread.mockImplementation(async (params) => ({
+      thread: thread(params.threadId, {
+        turns: [
+          {
+            id: "turn-1",
+            status: "completed",
+            items: [
+              { type: "userMessage", id: "u1", content: [{ type: "text", text: "hello" }] },
+              { type: "reasoning", id: "r1", summary: ["thinking"], content: [] },
+              {
+                type: "commandExecution",
+                id: "c1",
+                command: "bun test",
+                aggregatedOutput: "ok",
+                exitCode: 0,
+                status: "completed",
+              },
+              { type: "agentMessage", id: "a1", text: "intermediate" },
+              {
+                type: "fileChange",
+                id: "f1",
+                changes: [{ path: "src/a.ts", kind: "update", diff: "" }],
+                status: "completed",
+              },
+              { type: "agentMessage", id: "a2", text: "final answer" },
+            ],
+          },
+        ],
+      }),
+    }));
+    const history = await adapter.readActivity?.(agent, "thread-new");
+    const livePositions = new Map(output.map((activity) => [activity.id, activity.position]));
+    expect(history?.activities.filter((activity) => activity.id !== "u1").map((activity) => activity.position)).toEqual(
+      history?.activities
+        .filter((activity) => activity.id !== "u1")
+        .map((activity) => livePositions.get(activity.id) ?? "missing"),
+    );
   });
 
   it("validates Codex sandbox modes supplied by the chat session", async () => {

@@ -1211,12 +1211,17 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
     await runtime.enqueueClientTurn(current.sessionRef, "long client turn");
     await started;
-    const lifecycle = runtime.coordinateSessionLifecycle(current.sessionRef, async () => {
-      order.push("lifecycle-commit");
-      markLifecycleClaimed?.();
-      await lifecycleGate;
-      await fixture.store.deleteSessionByRef(current.sessionRef);
-    });
+    const lifecycle = (async () => {
+      const release = await runtime.claimSessionLifecycle(current.sessionRef);
+      try {
+        order.push("lifecycle-commit");
+        markLifecycleClaimed?.();
+        await lifecycleGate;
+        await fixture.store.deleteSessionByRef(current.sessionRef);
+      } finally {
+        await release();
+      }
+    })();
     await cancelStarted;
     await expect(runtime.enqueueClientTurn(current.sessionRef, "during cancel")).rejects.toMatchObject({
       code: "session-state-conflict",
@@ -1256,13 +1261,11 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         },
       ]),
     });
-    let ran = false;
-
-    await runtime.coordinateSessionLifecycle(sessionRef, async () => {
-      ran = true;
-    });
-
-    expect(ran).toBe(true);
+    const firstRelease = await runtime.claimSessionLifecycle(sessionRef);
+    await expect(runtime.claimSessionLifecycle(sessionRef)).rejects.toThrow("lifecycle operation is in progress");
+    await firstRelease();
+    const secondRelease = await runtime.claimSessionLifecycle(sessionRef);
+    await secondRelease();
     await runtime.dispose();
     await fixture.store.close();
   });

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import type { ConnectRuntimeAdapter } from "../src/runtime/types";
+import { releasedRuntimeAdapters } from "../src/runtime/released-adapters";
+import { type ConnectRuntimeAdapter, RuntimeLifecycleError } from "../src/runtime/types";
 import type { AgentBindingConfig } from "../src/types";
 
 interface AdapterHarness {
@@ -9,10 +10,15 @@ interface AdapterHarness {
   binding: AgentBindingConfig;
   activateThread(): void;
   closeCount(): number;
+  failNextArchive(): void;
   lifecycleCalls(): string[];
+  startPendingOperation(): Promise<unknown>;
 }
 
-function runtimeAdapterConformance(name: string, createHarness: () => AdapterHarness): void {
+const conformantReleasedKinds = new Set<string>();
+
+function runtimeAdapterConformance(name: string, createHarness: () => AdapterHarness, releasedKind?: string): void {
+  if (releasedKind) conformantReleasedKinds.add(releasedKind);
   describe(`${name} Runtime Adapter conformance`, () => {
     it("reports capabilities and distinguishes unsupported from supported-empty results", async () => {
       const { adapter, binding } = createHarness();
@@ -51,6 +57,9 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
       expect(new Set(first.activities.map((activity) => activity.id))).toHaveProperty("size", 201);
       expect(new Set(first.activities.map((activity) => activity.position))).toHaveProperty("size", 201);
       expect(first.activities.every((activity) => activity.text === "same output")).toBe(true);
+      expect(
+        first.activities.flatMap((activity) => activity.aliases ?? []).every((alias) => alias.trim().length > 0),
+      ).toBe(true);
       await registry.close();
     });
 
@@ -70,6 +79,17 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
       await registry.close();
     });
 
+    it("normalizes native lifecycle failures into stable errors", async () => {
+      const harness = createHarness();
+      const registry = new RuntimeAdapterRegistry([harness.adapter]);
+      harness.activateThread();
+      harness.failNextArchive();
+
+      await expect(registry.archiveThread(harness.binding, "thread-1")).rejects.toBeInstanceOf(RuntimeLifecycleError);
+      await expect(registry.archiveThread(harness.binding, "thread-1")).resolves.toBeUndefined();
+      await registry.close();
+    });
+
     it("closes binding-owned resources exactly once", async () => {
       const harness = createHarness();
       const registry = new RuntimeAdapterRegistry([harness.adapter]);
@@ -80,6 +100,19 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
 
       expect(harness.closeCount()).toBe(1);
     });
+
+    it("settles pending binding operations when resources close", async () => {
+      const harness = createHarness();
+      const registry = new RuntimeAdapterRegistry([harness.adapter]);
+      await registry.prepare(harness.binding);
+      const pending = harness.startPendingOperation();
+      void pending.catch(() => undefined);
+      await Promise.resolve();
+
+      await registry.close();
+
+      await expect(pending).rejects.toThrow("binding closed");
+    });
   });
 }
 
@@ -87,6 +120,8 @@ runtimeAdapterConformance("reference", () => {
   let closes = 0;
   let closed = false;
   let state: "active" | "archived" | "deleted" = "deleted";
+  let failArchive = false;
+  let pendingReject: ((error: Error) => void) | null = null;
   const lifecycleCalls: string[] = [];
   return {
     binding: { kind: "codex" },
@@ -94,7 +129,14 @@ runtimeAdapterConformance("reference", () => {
       state = "active";
     },
     closeCount: () => closes,
+    failNextArchive: () => {
+      failArchive = true;
+    },
     lifecycleCalls: () => lifecycleCalls,
+    startPendingOperation: async () =>
+      await new Promise((_, reject) => {
+        pendingReject = reject;
+      }),
     adapter: {
       kind: "codex",
       modes: [],
@@ -104,6 +146,10 @@ runtimeAdapterConformance("reference", () => {
       discoverArchivedThreads: async () =>
         state === "archived" ? [{ runtimeThreadId: "thread-1", name: null, updatedAt: 1, isArchived: true }] : [],
       archiveThread: async () => {
+        if (failArchive) {
+          failArchive = false;
+          throw new Error("native mutation is busy");
+        }
         lifecycleCalls.push("archive");
         state = "archived";
       },
@@ -134,89 +180,123 @@ runtimeAdapterConformance("reference", () => {
         if (closed) return;
         closed = true;
         closes += 1;
+        pendingReject?.(new Error("binding closed"));
       },
     },
   };
 });
 
-runtimeAdapterConformance("Codex", () => {
-  let closes = 0;
-  let state: "active" | "archived" | "deleted" = "deleted";
-  const lifecycleCalls: string[] = [];
-  const appServer = {
-    listModels: async () => ({ data: [], nextCursor: null }),
-    listThreads: async (params: { archived?: boolean }) => ({
-      data:
-        (params.archived === true && state === "archived") || (params.archived !== true && state === "active")
-          ? [
-              {
-                id: "thread-1",
-                preview: "",
-                name: null,
-                createdAt: 1,
-                updatedAt: 1,
-                recencyAt: 1,
-                cwd: "/tmp",
-              },
-            ]
-          : [],
-      nextCursor: null,
-    }),
-    readThread: async () => ({
-      thread: {
-        id: "thread-1",
-        preview: "",
-        name: null,
-        createdAt: 1,
-        updatedAt: 1,
-        recencyAt: 1,
-        cwd: "/tmp",
-        turns: [
-          {
-            id: "turn-1",
-            status: "completed",
-            items: Array.from({ length: 201 }, (_, index) => ({
-              type: "agentMessage",
-              id: `activity-${index}`,
-              text: "same output",
-            })),
-          },
-        ],
+runtimeAdapterConformance(
+  "Codex",
+  () => {
+    let closes = 0;
+    let state: "active" | "archived" | "deleted" = "deleted";
+    let failArchive = false;
+    let pendingReject: ((error: Error) => void) | null = null;
+    const lifecycleCalls: string[] = [];
+    const appServer = {
+      listModels: async () =>
+        pendingReject
+          ? await new Promise((_, reject) => {
+              pendingReject = reject;
+            })
+          : { data: [], nextCursor: null },
+      listThreads: async (params: { archived?: boolean }) => ({
+        data:
+          (params.archived === true && state === "archived") || (params.archived !== true && state === "active")
+            ? [
+                {
+                  id: "thread-1",
+                  preview: "",
+                  name: null,
+                  createdAt: 1,
+                  updatedAt: 1,
+                  recencyAt: 1,
+                  cwd: "/tmp",
+                },
+              ]
+            : [],
+        nextCursor: null,
+      }),
+      readThread: async () => ({
+        thread: {
+          id: "thread-1",
+          preview: "",
+          name: null,
+          createdAt: 1,
+          updatedAt: 1,
+          recencyAt: 1,
+          cwd: "/tmp",
+          turns: [
+            {
+              id: "turn-1",
+              status: "completed",
+              items: Array.from({ length: 201 }, (_, index) => ({
+                type: "agentMessage",
+                id: `activity-${index}`,
+                text: "same output",
+              })),
+            },
+          ],
+        },
+      }),
+      archiveThread: async () => {
+        if (failArchive) {
+          failArchive = false;
+          throw new Error("native mutation is busy");
+        }
+        lifecycleCalls.push("archive");
+        state = "archived";
       },
-    }),
-    archiveThread: async () => {
-      lifecycleCalls.push("archive");
-      state = "archived";
-    },
-    unarchiveThread: async () => {
-      lifecycleCalls.push("restore");
-      state = "active";
-      return { thread: { id: "thread-1" } };
-    },
-    deleteThread: async () => {
-      lifecycleCalls.push("delete");
-      state = "deleted";
-    },
-    startThread: async () => ({ thread: { id: "thread-1" } }),
-    resumeThread: async () => ({ thread: { id: "thread-1" } }),
-    startTurn: async () => ({ turn: { id: "turn-1", status: "completed", error: null } }),
-    interruptTurn: async () => undefined,
-    onNotification: () => () => undefined,
-    onRequest: () => () => undefined,
-    close: async () => {
-      closes += 1;
-    },
-  };
-  return {
-    binding: { kind: "codex", env: { CODEX_HOME: "/tmp/connect-runtime-adapter-conformance" } },
-    activateThread: () => {
-      state = "active";
-    },
-    closeCount: () => closes,
-    lifecycleCalls: () => lifecycleCalls,
-    adapter: createCodexRuntimeAdapter({
-      createAppServer: async () =>
-        appServer as unknown as import("../src/runtime/codex-app-server").CodexAppServerClient,
-    }),
-  };
+      unarchiveThread: async () => {
+        lifecycleCalls.push("restore");
+        state = "active";
+        return { thread: { id: "thread-1" } };
+      },
+      deleteThread: async () => {
+        lifecycleCalls.push("delete");
+        state = "deleted";
+      },
+      startThread: async () => ({ thread: { id: "thread-1" } }),
+      resumeThread: async () => ({ thread: { id: "thread-1" } }),
+      startTurn: async () => ({ turn: { id: "turn-1", status: "completed", error: null } }),
+      interruptTurn: async () => undefined,
+      onNotification: () => () => undefined,
+      onRequest: () => () => undefined,
+      close: async () => {
+        closes += 1;
+        pendingReject?.(new Error("binding closed"));
+      },
+    };
+    return {
+      binding: { kind: "codex", env: { CODEX_HOME: "/tmp/connect-runtime-adapter-conformance" } },
+      activateThread: () => {
+        state = "active";
+      },
+      closeCount: () => closes,
+      failNextArchive: () => {
+        failArchive = true;
+      },
+      lifecycleCalls: () => lifecycleCalls,
+      startPendingOperation: async () => {
+        pendingReject = () => undefined;
+        return await appServer.listModels();
+      },
+      adapter: createCodexRuntimeAdapter({
+        createAppServer: async () =>
+          appServer as unknown as import("../src/runtime/codex-app-server").CodexAppServerClient,
+      }),
+    };
+  },
+  "codex",
+);
+
+describe("released Runtime Adapter conformance gate", () => {
+  it("registers every released Runtime Adapter kind in the shared suite", () => {
+    expect([...conformantReleasedKinds].sort()).toEqual(
+      releasedRuntimeAdapters()
+        .map((adapter) => adapter.kind)
+        .sort(),
+    );
+  });
 });

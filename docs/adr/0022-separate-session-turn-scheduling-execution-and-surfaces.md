@@ -8,4 +8,9 @@ Connect will separate accepted-turn targeting, scheduling, execution, and delive
 
 Every displayable Runtime Activity is committed to the Connect Transcript Projection before its Turn Surface attempts delivery. Session Continuity may request release or invalidation of an in-memory runtime handle through a small internal seam, while Session Turn Executor reports newly created Runtime Thread identity back through Session Continuity instead of writing persistence directly. This keeps Session Intent and identity rules out of execution, queue policy out of prompt handling, and surface-specific branches out of the shared turn implementation.
 
+Session lifecycle uses that seam as an acquire/release capability: Runtime orchestration claims the Session queue,
+drains and cancels active execution, and releases the handle; Session Continuity keeps ownership of validation,
+journaling, native mutation, and the local commit while the claim is held. The lifecycle operation itself is not
+tunneled through Runtime orchestration.
+
 This decision preserves existing Turn Origin behavior and input-projection timing while replacing the current combined `ConnectRuntime` orchestration shape. It refines ADR-0013 without allowing Client-originated output to reach ClawChat or treating the current Web implementation as a separate Turn Origin.

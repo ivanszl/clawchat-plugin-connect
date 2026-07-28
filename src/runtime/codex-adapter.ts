@@ -32,6 +32,7 @@ interface CodexOutputEvent {
   text: string;
   requiredControl?: boolean;
   itemId?: string;
+  position?: string;
   state?: "pending" | "streaming" | "complete" | "error" | "cancelled";
   data?: Record<string, unknown>;
 }
@@ -112,9 +113,9 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
         appServerEntries,
       });
       return {
-        activities: snapshot.entries.map((entry, index) => codexActivity(entry, `${index}`)),
+        activities: snapshot.entries.map((entry, index) => codexActivity(entry, entry.position ?? `${index}`)),
         completeness: snapshot.completeness,
-        limitations: snapshot.completeness === "complete" ? [] : ["correlation"],
+        limitations: snapshot.completeness === "complete" ? [] : ["correlation", "ordering"],
       };
     },
     async archiveThread(binding, runtimeThreadId) {
@@ -188,17 +189,21 @@ async function readCodexThreadTranscript(
   const entries: RuntimeTranscriptEntry[] = [];
   const lineage = new Set(ancestors).add(runtimeThreadId);
   const seenChildThreads = new Set<string>();
-  for (const turn of response.thread.turns ?? []) {
-    for (const item of turn.items) {
+  for (const [turnIndex, turn] of (response.thread.turns ?? []).entries()) {
+    for (const [itemIndex, item] of turn.items.entries()) {
+      const position = `${turnIndex}.${itemIndex}`;
       if (item.type === "subAgentActivity") {
         const childThreadId = stringField(item.agentThreadId);
         if (!childThreadId || lineage.has(childThreadId) || seenChildThreads.has(childThreadId)) continue;
         seenChildThreads.add(childThreadId);
-        entries.push(await subagentTranscriptEntry(client, item, childThreadId, lineage, reads));
+        entries.push({
+          ...(await subagentTranscriptEntry(client, item, childThreadId, lineage, reads)),
+          position,
+        });
         continue;
       }
       const entry = transcriptEntry(item, turn.status);
-      if (entry) entries.push(entry);
+      if (entry) entries.push({ ...entry, position });
     }
   }
   return { thread: response.thread, entries };
@@ -365,9 +370,11 @@ function codexActivity(
 ): RuntimeActivity {
   return {
     ...entry,
-    position,
+    position: entry.position ?? position,
     parentId,
-    children: entry.children?.map((child, index) => codexActivity(child, `${position}.${index}`, entry.id)),
+    children: entry.children?.map((child, index) =>
+      codexActivity(child, child.position ?? `${entry.position ?? position}.${index}`, entry.id),
+    ),
   };
 }
 
@@ -463,6 +470,7 @@ interface ActiveTurn {
   interactionControllers: Set<AbortController>;
   interactionControllersByRequestId: Map<string, AbortController>;
   activityPositions: Map<string, string>;
+  turnPositionPrefix: string;
   nextActivityPosition: number;
 }
 
@@ -489,7 +497,11 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     if (this.closed) throw new Error("Codex runtime session is closed");
     if (this.activeTurn) throw new Error("Codex already has an active turn for this session");
     const sandboxMode = resolveSandboxMode(input.mode, this.binding.sandboxMode);
+    const resumesMaterializedThread = Boolean(this.runtimeSessionId);
     const threadId = await this.ensureThread(input.workspace, sandboxMode, input.model, input.reasoningEffort);
+    const turnPositionPrefix = resumesMaterializedThread
+      ? `${(await this.client.readThread({ threadId, includeTurns: true })).thread.turns?.length ?? 0}`
+      : "0";
     const active: ActiveTurn = {
       threadId,
       turnId: null,
@@ -506,7 +518,8 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       interactionControllers: new Set(),
       interactionControllersByRequestId: new Map(),
       activityPositions: new Map(),
-      nextActivityPosition: 0,
+      turnPositionPrefix,
+      nextActivityPosition: 1,
     };
     this.activeTurn = active;
     const removeNotificationListener = this.client.onNotification((notification) => {
@@ -653,6 +666,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         kind: "progress",
         text: "Codex turn started.",
         itemId: active.turnId ? `turn:${active.turnId}` : undefined,
+        position: `${active.turnPositionPrefix}.0`,
         state: "streaming",
         data: { itemType: "turn" },
       });
@@ -661,7 +675,8 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     if (notification.method === "item/started") {
       const item = threadItem(notification.params.item);
       const event = item ? formatStartedItem(item) : null;
-      if (event) active.queue.push(event);
+      if (item) reserveActivityPosition(active, item.id);
+      if (item && event) active.queue.push({ ...event, position: reserveActivityPosition(active, item.id) });
       return;
     }
     if (notification.method === "item/agentMessage/delta") {
@@ -674,6 +689,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         kind: "assistant",
         text,
         itemId,
+        position: reserveActivityPosition(active, itemId),
         state: "streaming",
         data: { itemType: "agentMessage" },
       });
@@ -682,6 +698,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     if (notification.method === "item/completed") {
       const item = threadItem(notification.params.item);
       if (!item) return;
+      const position = reserveActivityPosition(active, item.id);
       if (item.type === "agentMessage") {
         const text = stringField(item.text);
         if (!text) return;
@@ -691,6 +708,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
             kind: "assistant",
             text: active.pendingAgentMessage.text,
             itemId: active.pendingAgentMessage.itemId,
+            position: reserveActivityPosition(active, active.pendingAgentMessage.itemId),
             state: "complete",
             data: { itemType: "agentMessage" },
           });
@@ -699,7 +717,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         return;
       }
       const event = formatCompletedItem(item);
-      if (event) active.queue.push(event);
+      if (event) active.queue.push({ ...event, position });
       return;
     }
     if (notification.method === "error") {
@@ -723,6 +741,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         kind: turn?.status === "completed" ? "final" : "assistant",
         text: active.pendingAgentMessage.text,
         itemId: active.pendingAgentMessage.itemId,
+        position: reserveActivityPosition(active, active.pendingAgentMessage.itemId),
         state: turn?.status === "completed" ? "complete" : turn?.status === "interrupted" ? "cancelled" : "error",
         data: { itemType: "agentMessage" },
       });
@@ -733,6 +752,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         kind: "progress",
         text: turn?.status === "interrupted" ? "Codex turn interrupted." : "Codex turn completed.",
         itemId: `turn:${active.turnId}`,
+        position: `${active.turnPositionPrefix}.0`,
         state: turn?.status === "interrupted" ? "cancelled" : turn?.status === "failed" ? "error" : "complete",
         data: { itemType: "turn" },
       });
@@ -892,12 +912,12 @@ function codexLiveActivity(active: ActiveTurn, event: CodexOutputEvent): Runtime
                 : event.kind === "control" || state === "error"
                   ? "error"
                   : "progress";
-  const nextPosition = `${active.nextActivityPosition}`;
+  const nextPosition = event.position ?? `${active.turnPositionPrefix}.${active.nextActivityPosition}`;
   const id = event.itemId ?? `turn:${active.connectTurnId}:activity:${nextPosition}`;
   let position = active.activityPositions.get(id);
   if (!position) {
     position = nextPosition;
-    active.nextActivityPosition += 1;
+    if (!event.position) active.nextActivityPosition += 1;
     active.activityPositions.set(id, position);
   }
   return {
@@ -916,6 +936,15 @@ function codexLiveActivity(active: ActiveTurn, event: CodexOutputEvent): Runtime
       ...(event.kind === "control" ? { code: "runtime-interaction-unavailable" } : {}),
     },
   };
+}
+
+function reserveActivityPosition(active: ActiveTurn, id: string): string {
+  const existing = active.activityPositions.get(id);
+  if (existing) return existing;
+  const position = `${active.turnPositionPrefix}.${active.nextActivityPosition}`;
+  active.nextActivityPosition += 1;
+  active.activityPositions.set(id, position);
+  return position;
 }
 
 function codexToolTitle(event: CodexOutputEvent, text: string): string {

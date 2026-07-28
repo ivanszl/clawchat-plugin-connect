@@ -68,7 +68,7 @@ export interface BindingRuntimeHandle {
   uploadClientMedia?(file: Blob, filename: string): Promise<ConnectRuntimeMedia>;
   cancelClientTurn?(sessionRef: string): Promise<boolean>;
   sessionActivity?(sessionRef: string): Promise<SessionActivity>;
-  coordinateSessionLifecycle?(sessionRef: string, run: () => Promise<void>): Promise<void>;
+  claimSessionLifecycle?(sessionRef: string): Promise<() => Promise<void>>;
 }
 
 export async function startBindingRuntime(options: BindingRuntimeOptions): Promise<BindingRuntimeHandle> {
@@ -164,7 +164,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     uploadClientMedia: async (file, filename) => await runtime.uploadClientMedia(file, filename),
     cancelClientTurn: async (sessionRef) => await runtime.cancelClientTurn(sessionRef),
     sessionActivity: async (sessionRef) => await runtime.sessionActivity(sessionRef),
-    coordinateSessionLifecycle: async (sessionRef, run) => await runtime.coordinateSessionLifecycle(sessionRef, run),
+    claimSessionLifecycle: async (sessionRef) => await runtime.claimSessionLifecycle(sessionRef),
     async close() {
       await inboundMessages.close();
       await interactionRouter.close();

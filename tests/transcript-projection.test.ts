@@ -19,6 +19,48 @@ function liveActivity(
 }
 
 describe("Connect Transcript Projection", () => {
+  it("maps Runtime Activity positions into stable sequence despite out-of-order arrival", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-ordering-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-ordering",
+        sessionId: "session-ordering",
+        agentId: "codex",
+        runtimeSessionId: "thread-ordering",
+        name: "Ordering",
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-ordering", "codex");
+      if (!session) throw new Error("test Session was not created");
+      const projection = new TranscriptProjection({
+        stateStore: store,
+        config: defaultConfig(),
+        runtimeAdapters: new RuntimeAdapterRegistry([]),
+      });
+      const positioned = (id: string, position: string): RuntimeActivity => ({
+        id,
+        position,
+        parentId: null,
+        kind: "assistant",
+        text: id,
+        state: "complete",
+        source: "live",
+      });
+
+      await projection.upsertRuntimeActivity(session.sessionRef, positioned("later", "1.2"));
+      await projection.upsertRuntimeActivity(session.sessionRef, positioned("earlier", "0.3"));
+      await projection.upsertRuntimeActivity(session.sessionRef, positioned("middle", "1.1"));
+
+      const blocks = await store.listTranscriptBlocks(session.sessionRef);
+      expect(blocks.map((block) => block.plainText)).toEqual(["earlier", "middle", "later"]);
+      expect(blocks.map((block) => block.sequence)).toEqual([1_000_003, 2_000_001, 2_000_002]);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("projects running app-server tool items as collapsible tool-call blocks", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-transcript-tool-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
