@@ -10,7 +10,7 @@ import type {
 import { getAgentBinding } from "../config";
 import type { RuntimeOutputEvent } from "../output-visibility";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
-import type { RuntimeTranscriptCompleteness, RuntimeTranscriptEntry } from "../runtime/types";
+import type { RuntimeActivity, RuntimeTranscriptCompleteness } from "../runtime/types";
 import type { ConnectStateStore } from "../state";
 import type { ConnectConfig, RuntimeSessionRecord } from "../types";
 
@@ -64,10 +64,10 @@ export class TranscriptProjection {
       return;
     }
     const binding = getAgentBinding(this.options.config, session.agentId);
-    const snapshot = await this.options.runtimeAdapters.readTranscript(binding, session.runtimeSessionId);
+    const snapshot = await this.options.runtimeAdapters.readActivity(binding, session.runtimeSessionId);
     this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), snapshot.completeness);
-    for (const entry of snapshot.entries) {
-      const input = this.fromRuntimeHistory(session.sessionRef, entry);
+    for (const activity of snapshot.activities) {
+      const input = this.fromRuntimeActivity(session.sessionRef, activity);
       const rekeyed = await this.options.stateStore.rekeyMatchingTranscriptBlock(session.sessionRef, input);
       if (rekeyed) continue;
       await this.options.stateStore.upsertTranscriptBlock(session.sessionRef, input);
@@ -108,93 +108,15 @@ export class TranscriptProjection {
   async appendRuntimeOutput(
     sessionRef: string,
     event: RuntimeOutputEvent,
-    id = event.itemId ? stableBlockId(sessionRef, event.itemId) : randomUUID(),
+    id = event.itemId ?? randomUUID(),
   ): Promise<TranscriptBlock> {
-    const text = normalizeVisibleText(event.text);
-    const base = {
-      id,
-      origin: "runtime" as const,
-      runtimeSource: event.source ?? ("live" as const),
-      state:
-        event.state ??
-        (event.kind === "final" && /(?:failed|error|exited)/iu.test(text) ? ("error" as const) : ("complete" as const)),
-      plainText: text,
-    };
-    const block = (() => {
-      const itemType = stringEventData(event, "itemType");
-      if (itemType === "commandExecution") {
-        return {
-          ...base,
-          type: "command" as const,
-          command: stringEventData(event, "command"),
-          output: stringEventData(event, "output") || text,
-          status: stringEventData(event, "status") || base.state,
-          exitCode: numberEventData(event, "exitCode"),
-        };
-      }
-      if (itemType === "fileChange") {
-        return {
-          ...base,
-          type: "file-change" as const,
-          status: stringEventData(event, "status") || base.state,
-          files: fileChanges(event.data?.changes),
-        };
-      }
-      if (itemType === "plan") return { ...base, type: "plan" as const, markdown: text };
-      if (isToolItemType(itemType)) {
-        return {
-          ...base,
-          type: "tool-call" as const,
-          title: toolTitle(event, text),
-          status: stringEventData(event, "status") || base.state,
-          detail: text,
-        };
-      }
-      if (event.kind === "assistant" || event.kind === "final") {
-        if (base.state === "error") {
-          return {
-            ...base,
-            type: "error" as const,
-            code: "runtime-failure",
-            message: text,
-            retryable: false,
-          };
-        }
-        return {
-          ...base,
-          type: "message" as const,
-          role: "assistant" as const,
-          author: "Agent",
-          markdown: text,
-        };
-      }
-      if (event.kind === "reasoning") {
-        return { ...base, type: "reasoning-summary" as const, markdown: text };
-      }
-      if (event.kind === "tool") {
-        return {
-          ...base,
-          type: "tool-call" as const,
-          title: toolTitle(event, text),
-          status: stringEventData(event, "status") || base.state,
-          detail: text,
-        };
-      }
-      if (event.kind === "control") {
-        return {
-          ...base,
-          type: "error" as const,
-          code: "runtime-interaction-unavailable",
-          message: text,
-          retryable: false,
-        };
-      }
-      return { ...base, type: "progress" as const, label: text };
-    })();
-    return (await this.options.stateStore.upsertTranscriptBlock(sessionRef, block)).block;
+    const activity = activityFromOutput(event, id);
+    return (
+      await this.options.stateStore.upsertTranscriptBlock(sessionRef, this.fromRuntimeActivity(sessionRef, activity))
+    ).block;
   }
 
-  private fromRuntimeHistory(sessionRef: string, entry: RuntimeTranscriptEntry): EmbeddedTranscriptBlock {
+  private fromRuntimeActivity(sessionRef: string, entry: RuntimeActivity): EmbeddedTranscriptBlock {
     const id = stableBlockId(sessionRef, entry.id);
     const text = normalizeHistoryText(entry.text);
     const base = {
@@ -253,11 +175,58 @@ export class TranscriptProjection {
         title: stringData(entry, "title") || "Sub-agent",
         role: stringData(entry, "role") || null,
         activityKind: subagentActivityKind(entry.data?.activityKind),
-        blocks: (entry.children ?? []).map((child) => this.fromRuntimeHistory(sessionRef, child)),
+        blocks: (entry.children ?? []).map((child) => this.fromRuntimeActivity(sessionRef, child)),
+      };
+    }
+    if (entry.kind === "error") {
+      return {
+        ...base,
+        type: "error" as const,
+        code: stringData(entry, "code") || "runtime-failure",
+        message: text,
+        retryable: false,
       };
     }
     return { ...base, type: "unknown" as const, label: entry.kind, detail: text };
   }
+}
+
+function activityFromOutput(event: RuntimeOutputEvent, id: string): RuntimeActivity {
+  const text = normalizeVisibleText(event.text);
+  const state =
+    event.state ??
+    (event.kind === "final" && /(?:failed|error|exited)/iu.test(text) ? ("error" as const) : ("complete" as const));
+  const itemType = stringEventData(event, "itemType");
+  const kind: RuntimeActivity["kind"] =
+    itemType === "commandExecution"
+      ? "command"
+      : itemType === "fileChange"
+        ? "file-change"
+        : itemType === "plan"
+          ? "plan"
+          : isToolItemType(itemType) || event.kind === "tool"
+            ? "tool"
+            : event.kind === "assistant" || (event.kind === "final" && state !== "error")
+              ? "assistant"
+              : event.kind === "reasoning"
+                ? "reasoning"
+                : event.kind === "control" || state === "error"
+                  ? "error"
+                  : "progress";
+  return {
+    id,
+    position: id,
+    parentId: null,
+    kind,
+    text,
+    state,
+    source: "live",
+    data: {
+      ...event.data,
+      ...(kind === "tool" ? { title: toolTitle(event, text) } : {}),
+      ...(event.kind === "control" ? { code: "runtime-interaction-unavailable" } : {}),
+    },
+  };
 }
 
 function subagentActivityKind(value: unknown): "started" | "interacted" | "interrupted" | "unknown" {
@@ -268,7 +237,7 @@ function stableBlockId(sessionRef: string, nativeId: string): string {
   return `b_${createHash("sha256").update(`${sessionRef}\0${nativeId}`).digest("base64url").slice(0, 22)}`;
 }
 
-function historyOrigin(entry: RuntimeTranscriptEntry): TranscriptOrigin {
+function historyOrigin(entry: RuntimeActivity): TranscriptOrigin {
   if (entry.kind !== "user") return "runtime";
   return /^ClawChat (?:direct|group) message from [^:]+:/u.test(entry.text) ? "clawchat" : "runtime";
 }
@@ -292,12 +261,12 @@ function firstLine(text: string): string {
   return line.length <= 120 ? line : `${line.slice(0, 119)}…`;
 }
 
-function stringData(entry: RuntimeTranscriptEntry, key: string): string {
+function stringData(entry: RuntimeActivity, key: string): string {
   const value = entry.data?.[key];
   return typeof value === "string" ? value : "";
 }
 
-function numberData(entry: RuntimeTranscriptEntry, key: string): number | null {
+function numberData(entry: RuntimeActivity, key: string): number | null {
   const value = entry.data?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -322,11 +291,6 @@ function fileChanges(value: unknown): Array<{ path: string; kind: string; diff: 
 function stringEventData(event: RuntimeOutputEvent, key: string): string {
   const value = event.data?.[key];
   return typeof value === "string" ? value : "";
-}
-
-function numberEventData(event: RuntimeOutputEvent, key: string): number | null {
-  const value = event.data?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function toolTitle(event: RuntimeOutputEvent, text: string): string {

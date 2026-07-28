@@ -53,12 +53,20 @@ A named, reusable local code workspace that a Session may use. A Project has a r
 _Avoid_: Directory, cwd, repository
 
 **Workspace Group**:
-A Connect Client navigation group derived from a Project root or a discovered Runtime Thread's persistent native working directory. Runtime Adapter-classified transient scratch workspaces remain direct Non-Project leaves. The group keeps native threads from unrelated durable workspaces visually separate without pretending every discovered directory is already a registered Project.
+A Connect Client navigation group derived from a Project or a discovered Runtime Workspace Identity. Runtime Adapter-classified transient scratch workspaces remain direct Non-Project leaves. The group keeps native threads from unrelated durable workspaces visually separate without pretending every discovered workspace is already a registered Project.
 _Avoid_: Project, when the group comes only from Runtime Thread discovery
+
+**Runtime Workspace Identity**:
+A stable runtime-neutral identity reported by a Runtime Adapter for grouping Runtime Threads that belong to the same native workspace. It may include a local root when one exists, but it is not a Connect Project and does not decide Project registration or association.
+_Avoid_: Working Directory, Runtime Project, Project
 
 **Session**:
 A continuous Connect conversation using one Agent Binding and optionally one Project. A Session owns conversation continuity, not project identity.
 _Avoid_: Project, Runtime Thread
+
+**Session Continuity**:
+The rules that preserve a conversation's selected Session or pending Session Intent, keep Session Ref identity stable as Runtime Threads are created or adopted, and prevent one Runtime Thread from belonging to multiple Sessions for an Agent Binding.
+_Avoid_: Session persistence, when referring to the domain rules rather than their storage
 
 **Session Intent**:
 The pending Project, mode, model, reasoning effort, and optional name selected for the next Session. It is not a Session and is consumed when the first ordinary message creates that Session.
@@ -96,9 +104,21 @@ _Avoid_: Session, Agent Binding
 The external agent runtime's native durable record for a Runtime Thread. It is authoritative for Agent context and native resume. Connect may read it only through the Runtime Adapter for discovery, backfill, and reconciliation; availability and fidelity vary by runtime.
 _Avoid_: Client Transcript, Connect Transcript Projection
 
+**Runtime Activity**:
+A runtime-neutral displayable occurrence within a Runtime Thread, such as a message, reasoning summary, plan, tool call, command, file change, progress update, usage report, error, or Runtime Interaction. A Runtime Adapter may observe the same Runtime Activity live or recover it from the Runtime Transcript; it is not itself a Client Transcript block.
+_Avoid_: Runtime Event, when implying a transport notification; Transcript Block
+
 **Turn Origin**:
 The interaction surface that submitted a turn, either Connect Client or ClawChat. It remains attached to the turn and governs where its Runtime Interactions may be answered.
 _Avoid_: Message Source, Channel
+
+**Turn Surface**:
+The Connect Client or ClawChat interaction surface through which a turn is submitted and whose origin-specific policy governs its Connect-owned input, output, failure, and Runtime Interaction routes. A ClawChat-originated Runtime Interaction may still have an authorized Connect Client response route. The current browser SPA, whether opened locally, on a trusted LAN, or through Liveware Exposure, is one Connect Client Turn Surface rather than separate Web or Liveware origins.
+_Avoid_: Web Origin, Transport, Runtime Adapter
+
+**Turn Target**:
+The immutable Session, Agent Binding, Project, Runtime Thread association, and Session selections captured when Connect accepts a turn for its Session queue. Later Session Intent, selection, or switch changes do not redirect that accepted turn.
+_Avoid_: Current Session, when referring to a turn that has already been accepted
 
 **Runtime Interaction**:
 A structured request for an authorized human decision or input emitted while a runtime turn is active. It has Connect-owned identity and settlement state independent of the runtime's native request identity.
@@ -113,31 +133,42 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - A Connect installation has one Connect Service; Agent Bindings and Runtime Adapters do not own background services.
 - Agent Binding IDs are arbitrary; Runtime Adapter selection comes only from the Binding's explicit `kind`.
 - The first release registers only the Codex Runtime Adapter; that is a release scope, not a domain invariant.
+- Connect defines Project, Session, and Runtime Thread semantics uniformly across Runtime Adapter kinds. Each Runtime Adapter translates its coding agent's native project, workspace, conversation, session, or thread concepts into that Connect model rather than changing the model for its kind.
 - Successful activation synchronizes the Agent Binding ID to the connected ClawChat Profile nickname.
 - Projects are global and reusable across Agent Bindings.
+- A Runtime Workspace Identity maps to at most one Project within its Agent Binding and Runtime Adapter kind. One global Project may be reused by Runtime Workspace Identities from multiple Agent Bindings or Runtime Adapter kinds.
 - Sessions are scoped by ClawChat conversation and Agent Binding.
+- A Session never changes Agent Binding or Runtime Adapter kind. Choosing a different coding agent creates a new Session that may reuse the same Project; Connect does not transfer Runtime Thread context between coding agents.
 - A Session has zero or one Project.
 - A Runtime Thread is associated with at most one Session for an Agent Binding. Connect Client and ClawChat operate that same Session rather than creating separate Session copies for one native thread.
 - ClawChat control commands create or replace a Session Intent; an ordinary message consumes it. Connect Client may explicitly create an empty Session, and adoption of an existing Runtime Thread also creates a Session.
 - Turns from ClawChat and Connect Client are strictly ordered per Session; different Sessions may run concurrently even when they belong to one ClawChat conversation.
+- Each accepted turn is bound to an immutable Turn Target before entering the Session queue. Later Session selection changes never redirect queued work to another Session, Project, Agent Binding, or Runtime Thread.
 - A Session model selection overrides its Agent Binding model default, which overrides the Runtime Adapter default. Reasoning effort resolves independently from a strict Session effort, then a valid Agent Binding effort for the effective model, then the model's advertised default. An unavailable persisted Session selection never silently falls back; an invalid Binding effort falls back because it is only a default.
 - Changing Project association creates a Session Intent whose eventual Session starts a new Runtime Thread boundary.
 - Connect Client Session Catalog discovery is installation-wide across Projects, Non-Project Sessions, ClawChat conversations, and Agent Bindings.
 - Client Interface binds to loopback by default; unauthenticated IPv4 LAN exposure requires an explicit wildcard Host configuration and is not an internet-facing mode.
-- Connect Client groups discovered Runtime Threads by persistent native working directory even when that workspace is not yet a registered Project; Runtime Adapter-classified transient scratch workspaces and genuine Non-Project Sessions remain direct catalog leaves.
-- Adopting a discovered Runtime Thread with a persistent native working directory, or explicitly selecting that discovered workspace for a new Session, registers or reuses the corresponding Project before Connect sends another turn. A transient scratch Runtime Thread is adopted as a Non-Project Session without creating a Project from its generated directory.
+- Connect Client groups discovered Runtime Threads by Runtime Workspace Identity even when that workspace is not yet mapped to a registered Project; Runtime Adapter-classified transient scratch workspaces and genuine Non-Project Sessions remain direct catalog leaves. Discovery alone never creates or maps a Project.
+- Adopting a discovered Runtime Thread from a persistent Runtime Workspace Identity, or explicitly selecting that workspace for a new Session, maps it to an existing Project or registers a Project from its usable local root before Connect sends another turn. An unmapped identity without a usable local root and a transient scratch Runtime Thread remain Non-Project instead of creating a Project.
 - ClawChat Session Catalog discovery spans Projects, Non-Project Sessions, and ClawChat conversations but is scoped to the Agent Binding that received the command.
 - Runtime Thread discovery uses only that Agent Binding's Runtime Adapter and remains scoped to the selected workspace from the Session Intent or current Session; an external Runtime Thread is adopted only through an explicit switch.
 - A Runtime Thread and its Runtime Transcript remain authoritative for Agent context and native resume; Connect does not replace them with its own thread or rebuild context by replaying the Client Transcript.
 - A Subagent Thread remains part of its parent Runtime Thread's Session tree. Connect does not list it as a standalone Session and projects its available transcript at the parent runtime activity that spawned it.
+- Runtime Adapters translate native child threads, delegated runs, and nested tasks into a runtime-neutral Runtime Activity hierarchy. Session association remains on the root Runtime Thread, while the Connect Client owns whether nested Activity is displayed collapsed or expanded.
 - Connect persists a Connect Transcript Projection in SQLite. It records every displayable normalized event observed live and reconciles history exposed by the Runtime Adapter without treating SQLite as Agent memory.
 - The Connect Transcript Projection is authoritative for Connect-owned metadata such as Session mapping, event provenance, and ClawChat visibility; the Runtime Transcript is authoritative for native Agent context and runtime history.
 - When a Runtime Adapter cannot backfill all displayable historical events, Connect preserves the events it observed and reports transcript completeness rather than presenting the projection as complete.
 - Runtime Adapter history reads return runtime-neutral entries plus `complete`, `partial`, or `live-only` completeness. Entry provenance distinguishes ordinary runtime history from an Adapter-owned fallback without exposing native storage formats.
+- A Runtime Adapter owns identity correlation between live and recovered observations of the same Runtime Activity. It supplies one stable runtime-neutral identity or an explicit alias and reports correlation limitations; the Connect Transcript Projection does not infer identity from matching display content.
+- Runtime Adapters expose Runtime Activities as complete current-state upserts. Native start, delta, completion, and fallback records remain inside the Adapter implementation; the Connect Transcript Projection does not reconstruct Activity state from runtime-native deltas.
+- Runtime Adapters provide a stable Runtime Thread-local position for each Runtime Activity across live and recovered observations. The Connect Transcript Projection maps that runtime-neutral order into Client Transcript sequence and treats an Adapter-declared ordering limitation as partial completeness instead of guessing from arrival time.
+- Runtime Activity kinds are runtime-neutral and closed over Connect's shared display semantics. An Adapter maps an unsupported native kind to a sanitized `unknown` Activity; adapter-specific kinds and raw native payloads never cross the Runtime Adapter seam.
 - The Codex Runtime Adapter uses app-server as its primary history interface and may supplement omitted displayable tool calls from the matching pinned-version rollout JSONL. Raw rollout records and private reasoning never cross the Runtime Adapter seam.
 - ClawChat `outputVisibility` filters remote delivery only and never discards an event from the Connect Transcript Projection.
+- Every displayable Runtime Activity is committed to the Connect Transcript Projection before Turn Surface delivery is attempted. A Turn Surface delivery failure does not remove or hide Activity already projected for the Client Transcript.
 - Session names are display and selection labels; Session Refs are stable unambiguous selectors, while internal Session and Runtime Thread IDs remain hidden.
 - Session lifecycle commands resolve a Session Ref to its native Runtime Thread and are delegated through that Agent Binding's Runtime Adapter.
+- Runtime Adapters report which native Runtime Thread lifecycle operations they support. Connect exposes only those operations and never simulates a missing native archive, restore, or permanent delete by changing local Session state alone.
 - An Archived Session remains readable in Connect Client but cannot accept a new turn until its Runtime Thread is restored.
 - Permanent deletion succeeds at the runtime before Connect removes the Session mapping and Connect Transcript Projection. Connect does not independently cascade deletion to Subagent Threads.
 - A Non-Project Session receives a deterministic isolated workspace and never inherits `process.cwd()`.
@@ -146,7 +177,9 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - A Codex Agent Binding without an explicit approval policy normalizes to `on-request`, allowing Connect to surface Runtime Interactions while still requiring a human decision before an escalation is granted.
 - A Client-originated Runtime Interaction is visible and answerable only in Connect Client.
 - A ClawChat-originated Runtime Interaction is visible in Connect Client and to the Agent Binding owner in ClawChat; the first authorized valid response settles it, and every surface that received it observes the same resolution.
+- Runtime Interaction settlement distinguishes an atomic local claim from confirmed native resolution. The first authorized valid response claims the Interaction; it becomes resolved only after the Runtime Adapter confirms delivery to the native request. Failed delivery ends as failed or expired and never silently reopens the claim.
 - Connect Client connection state does not own Runtime Interaction lifetime. A pending Client-originated interaction survives Client disconnect and never falls back to ClawChat.
+- Runtime Interaction settlement state belongs to the active runtime process and does not resume after the Connect process, Runtime Adapter connection, or native request ends. Connect persists its presentation and final result, marks a leftover pending presentation expired after restart, and never treats that record as a resumable native request.
 - Client Interface queries are shaped for Connect Client views, and its commands express user intent. Connect Client does not decode runtime-native payloads or reconstruct Connect state from runtime protocols.
 - Liveware Exposure changes only how Connect Client is reached and which ClawChat users may enter it; it does not replace or narrow Connect Client or Client Interface behavior.
 - Liveware Access Policy is the only remote-entry authorization for a Liveware Exposure. Connect adds no user roles or per-user capability filtering; every admitted user receives the complete Connect Client capability set.

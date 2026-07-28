@@ -211,8 +211,20 @@ describe("Codex app-server runtime adapter", () => {
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
 
     await expect(adapter.discoverThreads?.(agent, workspace)).resolves.toEqual([
-      { runtimeThreadId: "thread-newest", name: "Named thread", updatedAt: 30_000, workingDirectory: "/repo" },
-      { runtimeThreadId: "thread-old", name: "Older task", updatedAt: 20_000, workingDirectory: "/repo" },
+      {
+        runtimeThreadId: "thread-newest",
+        name: "Named thread",
+        updatedAt: 30_000,
+        workingDirectory: "/repo",
+        workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
+      },
+      {
+        runtimeThreadId: "thread-old",
+        name: "Older task",
+        updatedAt: 20_000,
+        workingDirectory: "/repo",
+        workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
+      },
     ]);
     expect(client.listThreads).toHaveBeenNthCalledWith(
       1,
@@ -264,18 +276,33 @@ describe("Codex app-server runtime adapter", () => {
         updatedAt: 30_000,
         workingDirectory: "/Users/test/Documents/Codex/2026-07-24/f",
         workspaceKind: "transient",
+        workspaceIdentity: {
+          key: "/Users/test/Documents/Codex/2026-07-24/f",
+          kind: "transient",
+          localRoot: "/Users/test/Documents/Codex/2026-07-24/f",
+        },
       },
       {
         runtimeThreadId: "thread-folder",
         name: "Folder task",
         updatedAt: 20_000,
         workingDirectory: "/Users/test/account",
+        workspaceIdentity: {
+          key: "/Users/test/account",
+          kind: "persistent",
+          localRoot: "/Users/test/account",
+        },
       },
       {
         runtimeThreadId: "thread-repository",
         name: "Repository task",
         updatedAt: 10_000,
         workingDirectory: "/Users/test/Documents/Codex/2026-07-24/repository",
+        workspaceIdentity: {
+          key: "/Users/test/Documents/Codex/2026-07-24/repository",
+          kind: "persistent",
+          localRoot: "/Users/test/Documents/Codex/2026-07-24/repository",
+        },
       },
     ]);
   });
@@ -397,7 +424,13 @@ describe("Codex app-server runtime adapter", () => {
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
 
     await expect(adapter.discoverAllThreads?.(agent)).resolves.toEqual([
-      { runtimeThreadId: "thread-parent", name: "Fix the runtime", updatedAt: 20_000, workingDirectory: "/repo" },
+      {
+        runtimeThreadId: "thread-parent",
+        name: "Fix the runtime",
+        updatedAt: 20_000,
+        workingDirectory: "/repo",
+        workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
+      },
     ]);
     await expect(adapter.readTranscript?.(agent, "thread-parent")).resolves.toEqual({
       completeness: "partial",
@@ -507,6 +540,7 @@ describe("Codex app-server runtime adapter", () => {
         updatedAt: 20_000,
         workingDirectory: "/repo",
         isArchived: true,
+        workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
       },
     ]);
     expect(client.listThreads).toHaveBeenCalledWith(expect.objectContaining({ archived: true }));

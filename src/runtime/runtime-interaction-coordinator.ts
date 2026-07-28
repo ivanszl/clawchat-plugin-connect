@@ -5,6 +5,7 @@ import type {
   RuntimeInteractionBlockContent,
 } from "../client-contract";
 import type { TranscriptProjection } from "../client-interface/transcript-projection";
+import { RuntimeInteractionSettlement } from "./runtime-interaction-settlement";
 import type { RuntimeInteractionPort, RuntimeInteractionRequest, RuntimeInteractionResponse } from "./types";
 
 interface PendingInteraction {
@@ -15,6 +16,7 @@ interface PendingInteraction {
   reject(error: Error): void;
   timeout: ReturnType<typeof setTimeout> | null;
   removeAbortListener(): void;
+  settlement: RuntimeInteractionSettlement<RuntimeInteractionResponse, RespondToRuntimeInteractionRequest>;
 }
 
 export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
@@ -76,6 +78,9 @@ export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
         reject,
         timeout,
         removeAbortListener: () => context.signal?.removeEventListener("abort", onAbort),
+        settlement: new RuntimeInteractionSettlement({
+          validate: (candidate) => validateResponse(request, candidate),
+        }),
       });
     });
   }
@@ -87,15 +92,19 @@ export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
   ): Promise<RuntimeInteractionBlock> {
     const pending = this.pending.get(interactionId);
     if (!pending) throw new RuntimeInteractionError("interaction-not-pending", "Runtime interaction is not pending");
-    const normalized = validateResponse(pending.request, response);
-    this.pending.delete(interactionId);
-    if (pending.timeout) clearTimeout(pending.timeout);
-    pending.removeAbortListener();
-    const block = await this.transcriptProjection.upsertRuntimeInteraction(
-      pending.sessionRef,
-      settledBlock(pending.block, normalized, resolvedBy),
-    );
-    pending.resolve(normalized);
+    let block: RuntimeInteractionBlock | null = null;
+    const claimed = await pending.settlement.claim(response, async (normalized) => {
+      block = await this.transcriptProjection.upsertRuntimeInteraction(
+        pending.sessionRef,
+        settledBlock(pending.block, normalized, resolvedBy),
+      );
+      pending.resolve(normalized);
+      this.pending.delete(interactionId);
+      if (pending.timeout) clearTimeout(pending.timeout);
+      pending.removeAbortListener();
+    });
+    if (!claimed || !block)
+      throw new RuntimeInteractionError("interaction-not-pending", "Runtime interaction is not pending");
     return block;
   }
 
@@ -106,6 +115,7 @@ export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
   async expire(interactionId: string, reason: string): Promise<void> {
     const pending = this.pending.get(interactionId);
     if (!pending) return;
+    if (!pending.settlement.expire()) return;
     this.pending.delete(interactionId);
     if (pending.timeout) clearTimeout(pending.timeout);
     pending.removeAbortListener();

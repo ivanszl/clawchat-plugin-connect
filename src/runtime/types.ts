@@ -101,6 +101,13 @@ export interface RuntimeThreadSummary {
   updatedAt: number;
   workingDirectory?: string | null;
   workspaceKind?: "persistent" | "transient";
+  workspaceIdentity?: RuntimeWorkspaceIdentity;
+}
+
+export interface RuntimeWorkspaceIdentity {
+  key: string;
+  kind: "persistent" | "transient";
+  localRoot: string | null;
 }
 
 export interface SelectableRuntimeThread extends RuntimeThreadSummary {
@@ -130,6 +137,24 @@ export interface RuntimeTranscriptEntry {
   children?: RuntimeTranscriptEntry[];
 }
 
+export interface RuntimeActivity {
+  id: string;
+  position: string;
+  parentId: string | null;
+  kind: RuntimeTranscriptEntry["kind"] | "error";
+  text: string;
+  state: RuntimeTranscriptEntry["state"] | "pending";
+  source: "live" | RuntimeTranscriptSource;
+  data?: Record<string, unknown>;
+  children?: RuntimeActivity[];
+}
+
+export interface RuntimeActivitySnapshot {
+  activities: RuntimeActivity[];
+  completeness: RuntimeTranscriptCompleteness;
+  limitations: Array<"identity" | "correlation" | "ordering">;
+}
+
 export interface RuntimeTranscriptSnapshot {
   entries: RuntimeTranscriptEntry[];
   completeness: RuntimeTranscriptCompleteness;
@@ -144,12 +169,18 @@ export interface ConnectRuntimeSession {
 export interface ConnectRuntimeAdapter {
   readonly kind: string;
   readonly modes: readonly string[];
+  readonly lifecycleCapabilities?: {
+    archive: boolean;
+    restore: boolean;
+    delete: boolean;
+  };
   prepare?(binding: AgentBindingConfig): Promise<void>;
   listModels?(binding: AgentBindingConfig): Promise<RuntimeModelOption[]>;
   discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   readTranscript?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeTranscriptSnapshot>;
+  readActivity?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeActivitySnapshot>;
   archiveThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;
   unarchiveThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;
   deleteThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;

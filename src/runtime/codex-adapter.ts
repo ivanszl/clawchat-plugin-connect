@@ -22,6 +22,7 @@ import type {
   ConnectRuntimePrompt,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
+  RuntimeActivity,
   RuntimeInteractionPort,
   RuntimeModelOption,
   RuntimeThreadSummary,
@@ -84,6 +85,7 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
   return {
     kind: "codex",
     modes: SANDBOX_MODES,
+    lifecycleCapabilities: { archive: true, restore: true, delete: true },
     async prepare(binding) {
       await clientFor(requireCodexBinding(binding), "runtime");
     },
@@ -111,6 +113,20 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
         runtimeThreadId,
         appServerEntries,
       });
+    },
+    async readActivity(binding, runtimeThreadId) {
+      const codexBinding = requireCodexBinding(binding);
+      const appServerEntries = await readCodexTranscript(await clientFor(codexBinding, "catalog"), runtimeThreadId);
+      const snapshot = await backfillCodexRolloutTranscript({
+        codexHome: codexHome(codexBinding),
+        runtimeThreadId,
+        appServerEntries,
+      });
+      return {
+        activities: snapshot.entries.map((entry, index) => codexActivity(entry, `${index}`)),
+        completeness: snapshot.completeness,
+        limitations: snapshot.completeness === "complete" ? [] : ["correlation"],
+      };
     },
     async archiveThread(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
@@ -356,6 +372,19 @@ function transcriptEntry(
   };
 }
 
+function codexActivity(
+  entry: RuntimeTranscriptEntry,
+  position: string,
+  parentId: string | null = null,
+): RuntimeActivity {
+  return {
+    ...entry,
+    position,
+    parentId,
+    children: entry.children?.map((child, index) => codexActivity(child, `${position}.${index}`, entry.id)),
+  };
+}
+
 function requireCodexBinding(binding: { kind: string }): CodexAgentBindingConfig {
   if (binding.kind !== "codex") throw new Error("Codex Runtime Adapter requires a Codex Agent Binding");
   return binding as CodexAgentBindingConfig;
@@ -391,6 +420,11 @@ async function discoverCodexThreads(
       ...page.data
         .filter((thread) => !thread.parentThreadId)
         .map((thread) => ({
+          workspaceIdentity: {
+            key: resolve(thread.cwd),
+            kind: isCodexAppScratchWorkspace(thread) ? ("transient" as const) : ("persistent" as const),
+            localRoot: thread.cwd || null,
+          },
           runtimeThreadId: thread.id,
           ...(archived ? { isArchived: true } : {}),
           name: normalizeThreadName(thread.name || thread.preview),

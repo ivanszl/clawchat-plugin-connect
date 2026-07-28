@@ -12,6 +12,7 @@ import { resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { SessionActivity } from "../runtime/session-queue";
 import type { RuntimeThreadSummary } from "../runtime/types";
+import { createSessionContinuity, type SessionContinuity } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { ConnectConfig, ProjectRecord, RuntimeSessionRecord, RuntimeStatus } from "../types";
 import type { TranscriptProjection } from "./transcript-projection";
@@ -31,19 +32,42 @@ interface CatalogState {
   view: SessionCatalogView;
   entriesByRef: Map<string, SessionCatalogEntryView>;
   workingDirectoryByRef: Map<string, string>;
+  workspaceIdentityByRef: Map<
+    string,
+    { bindingId: string; runtimeKind: string; identityKey: string; kind: "persistent" | "transient" }
+  >;
   expiresAt: number;
 }
 
 export class SessionCatalog {
   private state: CatalogState | null = null;
   private readonly projects: ProjectCatalog;
+  private readonly sessionContinuity: SessionContinuity;
 
   constructor(private readonly options: SessionCatalogOptions) {
     this.projects = options.projects ?? new ProjectCatalog(options.stateStore);
+    this.sessionContinuity = createSessionContinuity({
+      stateStore: options.stateStore,
+      lifecycle: {
+        capabilities: (bindingId) =>
+          options.runtimeAdapters.lifecycleCapabilities(getAgentBinding(options.config, bindingId)),
+        archive: async (bindingId, runtimeThreadId) =>
+          await options.runtimeAdapters.archiveThread(getAgentBinding(options.config, bindingId), runtimeThreadId),
+        restore: async (bindingId, runtimeThreadId) =>
+          await options.runtimeAdapters.unarchiveThread(getAgentBinding(options.config, bindingId), runtimeThreadId),
+        delete: async (bindingId, runtimeThreadId) =>
+          await options.runtimeAdapters.deleteThread(getAgentBinding(options.config, bindingId), runtimeThreadId),
+      },
+    });
   }
 
   invalidate(): void {
     this.state = null;
+  }
+
+  async reconcileLifecycle(): Promise<void> {
+    await this.sessionContinuity.reconcileLifecycle();
+    this.invalidate();
   }
 
   async view(force = false): Promise<SessionCatalogView> {
@@ -160,15 +184,16 @@ export class SessionCatalog {
       !entry.projectId && entry.workspaceId && workingDirectory
         ? await this.projects.ensureDiscoveredWorkspace(workingDirectory)
         : null;
+    if (discoveredProject) {
+      const identity = state.workspaceIdentityByRef.get(normalized);
+      if (identity?.kind === "persistent") {
+        await this.sessionContinuity.associateWorkspace({ ...identity, projectId: discoveredProject.projectId });
+      }
+    }
     const existing = await this.options.stateStore.getRuntimeSessionByRef(normalized);
     if (existing) {
       if (!existing.projectId && discoveredProject) {
-        await this.options.stateStore.setRuntimeSessionProject(
-          existing.chatId,
-          existing.agentId,
-          existing.sessionId,
-          discoveredProject.projectId,
-        );
+        await this.sessionContinuity.forSession(existing.sessionRef).associateProject(discoveredProject.projectId);
         this.invalidate();
         return await this.options.stateStore.getRuntimeSessionByRef(normalized);
       }
@@ -176,16 +201,16 @@ export class SessionCatalog {
     }
     const target = await this.options.stateStore.getSessionRefTarget(normalized);
     if (!target?.runtimeSessionId || !entry) return null;
-    const sessionId = randomUUID();
-    await this.options.stateStore.upsertRuntimeSession({
-      chatId: target.chatId,
-      sessionId,
-      agentId: target.agentId,
-      runtimeSessionId: target.runtimeSessionId,
-      projectId: entry.projectId ?? discoveredProject?.projectId ?? null,
-      name: entry.name,
-      hasMessages: true,
-      isCurrent: true,
+    await this.sessionContinuity.inConversation({ chatId: target.chatId, bindingId: target.agentId }).adopt({
+      sessionRef: normalized,
+      sessionId: randomUUID(),
+      selection: {
+        projectId: entry.projectId ?? discoveredProject?.projectId ?? null,
+        name: entry.name,
+        mode: null,
+        model: null,
+        reasoningEffort: null,
+      },
     });
     this.invalidate();
     return await this.options.stateStore.getRuntimeSessionByRef(normalized);
@@ -197,24 +222,19 @@ export class SessionCatalog {
       .find((binding) => binding.bindingId === bindingId)
       ?.entries.find((candidate) => candidate.workspaceId === workspaceId);
     const workingDirectory = entry ? state.workingDirectoryByRef.get(entry.sessionRef.toUpperCase()) : null;
-    return workingDirectory ? await this.projects.ensureDiscoveredWorkspace(workingDirectory) : null;
+    if (!workingDirectory) return null;
+    const project = await this.projects.ensureDiscoveredWorkspace(workingDirectory);
+    const identity = entry ? state.workspaceIdentityByRef.get(entry.sessionRef.toUpperCase()) : null;
+    if (project && identity?.kind === "persistent") {
+      await this.sessionContinuity.associateWorkspace({ ...identity, projectId: project.projectId });
+    }
+    return project;
   }
 
   async archive(sessionRef: string): Promise<boolean> {
     const target = await this.runtimeTarget(sessionRef);
     if (!target || target.entry.isArchived) return false;
-    await this.options.runtimeAdapters.archiveThread(target.binding, target.runtimeThreadId);
-    if (target.session?.isCurrent) {
-      await this.options.stateStore.setSessionIntent({
-        chatId: target.session.chatId,
-        agentId: target.session.agentId,
-        projectId: target.session.projectId,
-        name: target.session.name,
-        mode: target.session.mode,
-        model: target.session.model,
-        reasoningEffort: target.session.reasoningEffort,
-      });
-    }
+    await this.sessionContinuity.forSession(target.entry.sessionRef).archive();
     this.invalidate();
     return true;
   }
@@ -222,7 +242,7 @@ export class SessionCatalog {
   async unarchive(sessionRef: string): Promise<boolean> {
     const target = await this.runtimeTarget(sessionRef);
     if (!target?.entry.isArchived) return false;
-    await this.options.runtimeAdapters.unarchiveThread(target.binding, target.runtimeThreadId);
+    await this.sessionContinuity.forSession(target.entry.sessionRef).restore();
     this.invalidate();
     return true;
   }
@@ -230,22 +250,10 @@ export class SessionCatalog {
   async delete(sessionRef: string): Promise<boolean> {
     const target = await this.runtimeTarget(sessionRef);
     if (!target) return false;
-    await this.options.runtimeAdapters.deleteThread(target.binding, target.runtimeThreadId);
-    if (target.session?.isCurrent) {
-      await this.options.stateStore.setSessionIntent({
-        chatId: target.session.chatId,
-        agentId: target.session.agentId,
-        projectId: target.session.projectId,
-        name: target.session.name,
-        mode: target.session.mode,
-        model: target.session.model,
-        reasoningEffort: target.session.reasoningEffort,
-      });
-    }
-    const deleted = await this.options.stateStore.deleteSessionByRef(target.entry.sessionRef);
+    await this.sessionContinuity.forSession(target.entry.sessionRef).delete();
     this.options.transcriptProjection.invalidate(target.entry.sessionRef);
     this.invalidate();
-    return deleted;
+    return true;
   }
 
   private async runtimeTarget(sessionRef: string) {
@@ -272,6 +280,10 @@ export class SessionCatalog {
     const bindings: SessionCatalogBindingView[] = [];
     const entriesByRef = new Map<string, SessionCatalogEntryView>();
     const workingDirectoryByRef = new Map<string, string>();
+    const workspaceIdentityByRef = new Map<
+      string,
+      { bindingId: string; runtimeKind: string; identityKey: string; kind: "persistent" | "transient" }
+    >();
 
     for (const [bindingId, binding] of Object.entries(this.options.config.agents)) {
       const status = await this.options.stateStore.getRuntimeStatus(bindingId);
@@ -303,11 +315,25 @@ export class SessionCatalog {
       );
       for (const thread of discovered) {
         if (managedRuntimeIds.has(thread.runtimeThreadId)) continue;
-        const project = thread.workingDirectory ? findProjectForWorkspace(projects, thread.workingDirectory) : null;
+        const identity = thread.workspaceIdentity ?? {
+          key: thread.workingDirectory ? resolve(thread.workingDirectory) : `thread:${thread.runtimeThreadId}`,
+          kind: thread.workspaceKind ?? ("persistent" as const),
+          localRoot: thread.workingDirectory ?? null,
+        };
+        const mapping = await this.options.stateStore.getRuntimeWorkspaceMapping(bindingId, binding.kind, identity.key);
+        const project =
+          projectById.get(mapping?.projectId ?? "") ??
+          (identity.localRoot ? findProjectForWorkspace(projects, identity.localRoot) : null);
         const sessionRef = await this.options.stateStore.getOrCreateSessionRef({
           chatId: CLIENT_CATALOG_CHAT,
           agentId: bindingId,
           runtimeSessionId: thread.runtimeThreadId,
+        });
+        workspaceIdentityByRef.set(sessionRef.toUpperCase(), {
+          bindingId,
+          runtimeKind: binding.kind,
+          identityKey: identity.key,
+          kind: identity.kind,
         });
         if (thread.workingDirectory) workingDirectoryByRef.set(sessionRef.toUpperCase(), thread.workingDirectory);
         const workspace =
@@ -356,6 +382,7 @@ export class SessionCatalog {
       view: { revision: Date.now(), bindings },
       entriesByRef,
       workingDirectoryByRef,
+      workspaceIdentityByRef,
       expiresAt: Date.now() + 2_000,
     };
     return this.state;

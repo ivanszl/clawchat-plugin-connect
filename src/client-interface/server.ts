@@ -23,6 +23,7 @@ import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
+import { createSessionContinuity } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig } from "../types";
 import { SessionCatalog } from "./session-catalog";
@@ -82,6 +83,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   const origin = `http://${hostname}:${port}`;
   const assetsPath = options.assetsPath ?? (await resolveClientAssetsPath());
   const projects = options.projects ?? new ProjectCatalog(options.stateStore);
+  const sessionContinuity = createSessionContinuity({ stateStore: options.stateStore });
   const runtimes = new Map(options.runtimes.map((runtime) => [runtime.agentId, runtime]));
   const catalog = new SessionCatalog({
     ...options,
@@ -89,6 +91,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     sessionActivity: async (bindingId, sessionRef) =>
       (await runtimes.get(bindingId)?.sessionActivity?.(sessionRef)) ?? "idle",
   });
+  await catalog.reconcileLifecycle();
   const runtimeInteractions =
     options.runtimeInteractions ?? new RuntimeInteractionCoordinator(options.transcriptProjection);
 
@@ -216,26 +219,19 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
                 }
                 const chatId = `__connect_client_session__:${randomUUID()}`;
-                await options.stateStore.setSessionIntent({
-                  chatId,
-                  agentId: body.bindingId,
+                const session = await sessionContinuity.inConversation({ chatId, bindingId: body.bindingId }).create({
                   projectId,
                   name,
                   mode: body.mode,
                   model,
                   reasoningEffort,
                 });
-                const session = await options.stateStore.resolveOrMaterializeRuntimeSession({
-                  chatId,
-                  agentId: body.bindingId,
-                  sessionId: randomUUID(),
-                });
                 catalog.invalidate();
                 let view: SessionView | null;
                 try {
                   view = await catalog.sessionView(session.sessionRef);
                 } catch (error) {
-                  await options.stateStore.deleteSessionByRef(session.sessionRef);
+                  await sessionContinuity.forSession(session.sessionRef).discardEmpty();
                   catalog.invalidate();
                   throw new ClientRequestError(
                     503,
@@ -245,7 +241,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   );
                 }
                 if (!view) {
-                  await options.stateStore.deleteSessionByRef(session.sessionRef);
+                  await sessionContinuity.forSession(session.sessionRef).discardEmpty();
                   catalog.invalidate();
                   throw new ClientRequestError(503, "session-create-failed", "Session could not be created", true);
                 }
@@ -503,14 +499,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 } catch (error) {
                   return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
                 }
-                const updated = await options.stateStore.setRuntimeSessionModelSelection(
-                  session.chatId,
-                  session.agentId,
-                  session.sessionId,
-                  model,
-                  reasoningEffort,
-                );
-                if (!updated) return commandError(404, "session-not-found", "Session was not found");
+                await sessionContinuity.forSession(session.sessionRef).changeModel(model, reasoningEffort);
                 catalog.invalidate();
                 const view = await catalog.sessionView(sessionRef);
                 return view

@@ -14,6 +14,7 @@ import {
 } from "../output-visibility";
 import { ProjectCatalog } from "../projects";
 import { type ChatType, EVENT, type NormalizedInboundMessage } from "../protocol";
+import { createSessionContinuity, type SessionContinuity, type TurnTarget } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig, RuntimeSessionRecord, RuntimeWorkspace } from "../types";
 import type { ConnectWsClient } from "../ws-client";
@@ -21,13 +22,9 @@ import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
 import type { RuntimeAdapterRegistry } from "./registry";
 import { type QueueStats, type SessionActivity, SessionQueue } from "./session-queue";
-import type {
-  ConnectRuntimeMedia,
-  ConnectRuntimeSession,
-  RuntimeInteractionPort,
-  RuntimeModelOption,
-  SelectableRuntimeThread,
-} from "./types";
+import { SessionTurnExecutor } from "./session-turn-executor";
+import { ClawChatTurnSurface, ClientTurnSurface } from "./turn-surface";
+import type { ConnectRuntimeMedia, RuntimeInteractionPort, RuntimeModelOption, SelectableRuntimeThread } from "./types";
 
 export interface ConnectRuntimeOptions {
   agentId: string;
@@ -44,7 +41,8 @@ export interface ConnectRuntimeOptions {
 export class ConnectRuntime {
   private readonly runtimeAdapters: RuntimeAdapterRegistry;
   private readonly projects: ProjectCatalog;
-  private readonly sessions = new Map<string, ConnectRuntimeSession>();
+  private readonly sessionContinuity: SessionContinuity;
+  private readonly executor: SessionTurnExecutor;
   private readonly activeTurnSessionChats = new Map<string, string>();
   private readonly routingTails = new Map<string, Promise<void>>();
   private readonly queue: SessionQueue;
@@ -53,6 +51,15 @@ export class ConnectRuntime {
     getAgentBinding(options.config, options.agentId);
     this.runtimeAdapters = options.runtimeAdapters;
     this.projects = options.projects ?? new ProjectCatalog(options.stateStore);
+    this.sessionContinuity = createSessionContinuity({ stateStore: options.stateStore });
+    this.executor = new SessionTurnExecutor({
+      configPath: options.configPath ?? defaultConfigPath(),
+      stateDbPath: options.config.stateDbPath,
+      bindingFor: (bindingId) => getAgentBinding(options.config, bindingId),
+      start: async (binding, context) => await this.runtimeAdapters.start(binding, context),
+      attachRuntimeThread: async (sessionRef, runtimeThreadId) =>
+        await this.sessionContinuity.forSession(sessionRef).attachRuntimeThread(runtimeThreadId),
+    });
     this.queue = new SessionQueue({
       maxConcurrentTurns: options.config.maxConcurrentTurns,
       maxPendingPerSession: options.config.maxPendingPerSession,
@@ -147,6 +154,7 @@ export class ConnectRuntime {
     if (!text) throw new Error("prompt is required");
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
     if (!current || current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
+    const target = await this.sessionContinuity.forSession(current.sessionRef).targetForTurn("client");
     const turnId = randomUUID();
     const key = sessionKey(current.chatId, current.sessionId);
     void this.queue
@@ -156,7 +164,7 @@ export class ConnectRuntime {
           this.activeTurnSessionChats.set(key, current.chatId);
           await this.recordRuntimeStatus(this.queue.stats());
           try {
-            await this.runClientTurn(current, text, turnId, media);
+            await this.runClientTurn(target, text, turnId, media);
           } finally {
             this.activeTurnSessionChats.delete(key);
             await this.recordRuntimeStatus(this.queue.stats());
@@ -176,8 +184,7 @@ export class ConnectRuntime {
   async cancelClientTurn(sessionRef: string): Promise<boolean> {
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
     if (!current || current.agentId !== this.options.agentId) return false;
-    const session = this.sessions.get(sessionKey(current.chatId, current.sessionId));
-    return (await session?.cancel?.()) ?? false;
+    return await this.executor.cancel(current.sessionRef);
   }
 
   async sessionActivity(sessionRef: string): Promise<SessionActivity> {
@@ -187,11 +194,7 @@ export class ConnectRuntime {
   }
 
   async dispose(): Promise<void> {
-    const sessions = [...this.sessions.values()];
-    this.sessions.clear();
-    const results = await Promise.allSettled(sessions.map(async (session) => await session.close()));
-    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failure) throw failure.reason;
+    await this.executor.close();
   }
 
   async closeSession(chatId: string): Promise<boolean> {
@@ -204,9 +207,8 @@ export class ConnectRuntime {
 
   async cancelTurn(chatId: string): Promise<boolean> {
     const current = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
-    const key = sessionKey(chatId, current?.sessionId ?? "default");
-    const session = this.sessions.get(key);
-    return (await session?.cancel?.()) ?? false;
+    const sessionRef = current?.sessionRef;
+    return sessionRef ? await this.executor.cancel(sessionRef) : false;
   }
 
   runtimeModesFor(binding: AgentBindingConfig): readonly string[] {
@@ -259,14 +261,11 @@ export class ConnectRuntime {
 
   private async releaseSession(chatId: string, invalidateRuntimeId: boolean): Promise<boolean> {
     const current = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
-    const key = sessionKey(chatId, current?.sessionId ?? "default");
-    const session = this.sessions.get(key);
-    this.sessions.delete(key);
-    if (session) await session.close();
-    if (invalidateRuntimeId && current) {
-      await this.options.stateStore.setRuntimeSessionId(chatId, this.options.agentId, current.sessionId, null);
-    }
-    return Boolean(session) || Boolean(current?.runtimeSessionId);
+    if (!current) return false;
+    const released = invalidateRuntimeId
+      ? await this.executor.invalidate(current.sessionRef)
+      : await this.executor.release(current.sessionRef);
+    return released || Boolean(current.runtimeSessionId);
   }
 
   private async runTurn(
@@ -277,15 +276,21 @@ export class ConnectRuntime {
     const activeAgentId = current.agentId || this.options.agentId;
     const workspace = await this.projects.resolveWorkspace(current);
     const model = await this.modelFor(current, activeAgentId);
-    const session = await this.sessionForChat(current, activeAgentId);
+    const target = await this.sessionContinuity.forSession(current.sessionRef).targetForTurn("clawchat");
     const mode = await resolveOutputVisibility({
       config: this.options.config,
       store: this.options.stateStore,
       chatId: message.chatId,
     });
     const policy = policyForOutputVisibility(mode);
-    const buffered: MaterializedRuntimeReply[] = [];
-    for await (const event of session.prompt({
+    const surface = new ClawChatTurnSurface({
+      project: async (event) => {
+        await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, event);
+      },
+      materialize: (event) => materializeRuntimeOutput(event, policy),
+      deliver: async (reply) => await this.sendReply(message, reply, activeAgentId, workspace),
+    });
+    for await (const event of this.executor.execute(target, {
       prompt: renderPrompt(message),
       media: runtimeMedia(message),
       trustedMediaOrigins: configuredMediaOrigins(this.options.config),
@@ -294,7 +299,6 @@ export class ConnectRuntime {
       model: model.model,
       reasoningEffort: model.reasoningEffort,
       turnId: message.messageId,
-      turnOrigin: "clawchat",
       interactionPort: this.options.runtimeInteractions,
       onAccepted: onTurnAccepted,
       metadata: {
@@ -306,25 +310,21 @@ export class ConnectRuntime {
       },
       outputPolicy: { mode: policy.mode, allowedKinds: allowedRuntimeKinds(policy) },
     })) {
-      await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, event);
-      const reply = materializeRuntimeOutput(event, policy);
-      if (!reply) continue;
-      if (reply.requiredControl) await this.sendReply(message, reply, activeAgentId, workspace);
-      else buffered.push(reply);
+      await surface.accept(event);
     }
-    for (const reply of buffered) await this.sendReply(message, reply, activeAgentId, workspace);
+    await surface.complete();
   }
 
   private async runClientTurn(
-    current: RuntimeSessionRecord,
+    target: TurnTarget,
     prompt: string,
     turnId: string,
     media: ConnectRuntimeMedia[],
   ): Promise<void> {
-    const activeAgentId = current.agentId || this.options.agentId;
+    const current = runtimeSessionFromTurnTarget(target);
+    const activeAgentId = target.bindingId || this.options.agentId;
     const workspace = await this.projects.resolveWorkspace(current);
     const model = await this.modelFor(current, activeAgentId);
-    const session = await this.sessionForChat(current, activeAgentId);
     await this.options.transcriptProjection?.appendUserMessage({
       sessionRef: current.sessionRef,
       text: prompt,
@@ -340,7 +340,12 @@ export class ConnectRuntime {
         height: item.height ?? null,
       })),
     });
-    for await (const event of session.prompt({
+    const surface = new ClientTurnSurface({
+      project: async (event) => {
+        await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, event);
+      },
+    });
+    for await (const event of this.executor.execute(target, {
       prompt,
       media,
       trustedMediaOrigins: configuredMediaOrigins(this.options.config),
@@ -349,7 +354,6 @@ export class ConnectRuntime {
       model: model.model,
       reasoningEffort: model.reasoningEffort,
       turnId,
-      turnOrigin: "client",
       interactionPort: this.options.runtimeInteractions,
       metadata: {
         sessionRef: current.sessionRef,
@@ -365,8 +369,9 @@ export class ConnectRuntime {
         allowedKinds: ["final", "assistant", "tool", "progress", "reasoning", "control"],
       },
     })) {
-      await this.options.transcriptProjection?.appendRuntimeOutput(current.sessionRef, event);
+      await surface.accept(event);
     }
+    await surface.complete();
   }
 
   private async recordRuntimeStatus(stats: QueueStats): Promise<void> {
@@ -421,11 +426,10 @@ export class ConnectRuntime {
   }
 
   private async materializeCurrentSession(chatId: string): Promise<RuntimeSessionRecord> {
-    return await this.options.stateStore.resolveOrMaterializeRuntimeSession({
-      chatId,
-      agentId: this.options.agentId,
-      sessionId: randomUUID(),
-    });
+    const target = await this.sessionContinuity
+      .inConversation({ chatId, bindingId: this.options.agentId })
+      .targetForOrdinaryTurn("clawchat");
+    return runtimeSessionFromTurnTarget(target);
   }
 
   private async projectClawChatMessage(
@@ -475,37 +479,28 @@ export class ConnectRuntime {
     }
   }
 
-  private async sessionForChat(current: RuntimeSessionRecord, agentId: string): Promise<ConnectRuntimeSession> {
-    const key = sessionKey(current.chatId, current.sessionId);
-    const existing = this.sessions.get(key);
-    if (existing) return existing;
-    const binding = getAgentBinding(this.options.config, agentId);
-    let session: ConnectRuntimeSession | null = null;
-    session = await this.runtimeAdapters.start(binding, {
-      agentId,
-      chatId: current.chatId,
-      sessionId: current.sessionId,
-      runtimeSessionId: current.runtimeSessionId,
-      configPath: this.options.configPath ?? defaultConfigPath(),
-      stateDbPath: this.options.config.stateDbPath,
-      onRuntimeSessionId: async (runtimeSessionId) => {
-        if (!session || this.sessions.get(key) !== session) return;
-        await this.options.stateStore.setRuntimeSessionId(
-          current.chatId,
-          current.agentId,
-          current.sessionId,
-          runtimeSessionId,
-        );
-      },
-    });
-    this.sessions.set(key, session);
-    return session;
-  }
-
   private async modelFor(current: RuntimeSessionRecord, agentId: string) {
     const binding = getAgentBinding(this.options.config, agentId);
     return resolveModelSelection(binding, current, await this.runtimeAdapters.listModels(binding));
   }
+}
+
+function runtimeSessionFromTurnTarget(target: TurnTarget): RuntimeSessionRecord {
+  return {
+    chatId: target.chatId,
+    sessionId: target.sessionId,
+    sessionRef: target.sessionRef,
+    agentId: target.bindingId,
+    runtimeSessionId: target.runtimeThreadId,
+    projectId: target.projectId,
+    name: target.name,
+    mode: target.mode,
+    model: target.model,
+    reasoningEffort: target.reasoningEffort,
+    hasMessages: true,
+    isCurrent: true,
+    updatedAt: Date.now(),
+  };
 }
 
 interface LocalReplyMediaFile {

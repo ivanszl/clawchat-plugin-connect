@@ -170,6 +170,29 @@ export interface ResolveOrMaterializeRuntimeSessionInput {
   sessionId: string;
 }
 
+export type SessionLifecycleAction = "archive" | "restore" | "delete";
+export type SessionLifecycleOperationState = "intent" | "native-confirmed" | "complete";
+
+export interface SessionLifecycleOperationRecord {
+  operationId: string;
+  sessionRef: string;
+  action: SessionLifecycleAction;
+  bindingId: string;
+  runtimeThreadId: string;
+  state: SessionLifecycleOperationState;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RuntimeWorkspaceMappingRecord {
+  bindingId: string;
+  runtimeKind: string;
+  identityKey: string;
+  projectId: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface StoredClientEvent {
   cursor: number;
   event: ClientViewEvent;
@@ -757,23 +780,21 @@ export class ConnectStateStore {
   async setSessionIntent(input: SetSessionIntentInput): Promise<void> {
     const now = Date.now();
     const db = await this.requireDb();
-    await db.run(
-      "UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?",
-      input.chatId,
-      input.agentId,
-    );
-    await db.run(
-      `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, model, reasoning_effort, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, updated_at = excluded.updated_at`,
-      input.chatId,
-      input.agentId,
-      input.projectId,
-      input.name ?? null,
-      input.mode ?? null,
-      input.model ?? null,
-      input.reasoningEffort ?? null,
-      now,
-      now,
-    );
+    db.transaction((run) => {
+      run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
+      run(
+        `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, model, reasoning_effort, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, updated_at = excluded.updated_at`,
+        input.chatId,
+        input.agentId,
+        input.projectId,
+        input.name ?? null,
+        input.mode ?? null,
+        input.model ?? null,
+        input.reasoningEffort ?? null,
+        now,
+        now,
+      );
+    });
   }
   async getSessionIntent(chatId: string, agentId: string): Promise<SessionIntentRecord | null> {
     const db = await this.requireDb();
@@ -1083,6 +1104,113 @@ export class ConnectStateStore {
       const result = run("DELETE FROM session_refs WHERE session_ref = ? COLLATE NOCASE", sessionRef);
       return result.changes > 0;
     });
+  }
+
+  async createSessionLifecycleOperation(input: {
+    operationId: string;
+    sessionRef: string;
+    action: SessionLifecycleAction;
+    bindingId: string;
+    runtimeThreadId: string;
+  }): Promise<SessionLifecycleOperationRecord> {
+    const db = await this.requireDb();
+    const now = Date.now();
+    await db.run(
+      `INSERT INTO session_lifecycle_operations(
+        operation_id, session_ref, action, binding_id, runtime_thread_id, state, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'intent', ?, ?)`,
+      input.operationId,
+      input.sessionRef.toUpperCase(),
+      input.action,
+      input.bindingId,
+      input.runtimeThreadId,
+      now,
+      now,
+    );
+    return {
+      ...input,
+      sessionRef: input.sessionRef.toUpperCase(),
+      state: "intent",
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  async setSessionLifecycleOperationState(
+    operationId: string,
+    state: SessionLifecycleOperationState,
+  ): Promise<boolean> {
+    const db = await this.requireDb();
+    const result = await db.run(
+      "UPDATE session_lifecycle_operations SET state = ?, updated_at = ? WHERE operation_id = ?",
+      state,
+      Date.now(),
+      operationId,
+    );
+    return result.changes > 0;
+  }
+
+  async listIncompleteSessionLifecycleOperations(): Promise<SessionLifecycleOperationRecord[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<Record<string, unknown>[]>(
+      "SELECT * FROM session_lifecycle_operations WHERE state != 'complete' ORDER BY created_at ASC",
+    );
+    return rows.map(sessionLifecycleOperationFromRow);
+  }
+
+  async mapRuntimeWorkspaceIdentity(input: {
+    bindingId: string;
+    runtimeKind: string;
+    identityKey: string;
+    projectId: string;
+  }): Promise<RuntimeWorkspaceMappingRecord> {
+    const db = await this.requireDb();
+    const now = Date.now();
+    const existing = await this.getRuntimeWorkspaceMapping(input.bindingId, input.runtimeKind, input.identityKey);
+    if (existing && existing.projectId !== input.projectId) {
+      throw new Error(
+        `Runtime Workspace Identity ${input.identityKey} is already mapped to Project ${existing.projectId}`,
+      );
+    }
+    await db.run(
+      `INSERT INTO runtime_workspace_mappings(
+        binding_id, runtime_kind, identity_key, project_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(binding_id, runtime_kind, identity_key)
+      DO UPDATE SET updated_at = excluded.updated_at`,
+      input.bindingId,
+      input.runtimeKind,
+      input.identityKey,
+      input.projectId,
+      now,
+      now,
+    );
+    return { ...input, createdAt: now, updatedAt: now };
+  }
+
+  async getRuntimeWorkspaceMapping(
+    bindingId: string,
+    runtimeKind: string,
+    identityKey: string,
+  ): Promise<RuntimeWorkspaceMappingRecord | null> {
+    const db = await this.requireDb();
+    const row = await db.get<Record<string, unknown>>(
+      `SELECT * FROM runtime_workspace_mappings
+       WHERE binding_id = ? AND runtime_kind = ? AND identity_key = ?`,
+      bindingId,
+      runtimeKind,
+      identityKey,
+    );
+    return row
+      ? {
+          bindingId: stringValue(row.binding_id),
+          runtimeKind: stringValue(row.runtime_kind),
+          identityKey: stringValue(row.identity_key),
+          projectId: stringValue(row.project_id),
+          createdAt: numberValue(row.created_at),
+          updatedAt: numberValue(row.updated_at),
+        }
+      : null;
   }
 
   async claimMessageOnce(input: MessageInput): Promise<boolean> {
@@ -1722,6 +1850,27 @@ export class ConnectStateStore {
         UNIQUE(chat_id, agent_id, session_id),
         UNIQUE(chat_id, agent_id, runtime_session_id)
       );
+      CREATE TABLE IF NOT EXISTS session_lifecycle_operations(
+        operation_id TEXT PRIMARY KEY,
+        session_ref TEXT NOT NULL COLLATE NOCASE,
+        action TEXT NOT NULL CHECK(action IN ('archive', 'restore', 'delete')),
+        binding_id TEXT NOT NULL,
+        runtime_thread_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('intent', 'native-confirmed', 'complete')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_lifecycle_incomplete
+        ON session_lifecycle_operations(state, created_at);
+      CREATE TABLE IF NOT EXISTS runtime_workspace_mappings(
+        binding_id TEXT NOT NULL,
+        runtime_kind TEXT NOT NULL,
+        identity_key TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(binding_id, runtime_kind, identity_key)
+      );
       CREATE TABLE IF NOT EXISTS output_visibility(
         chat_id TEXT PRIMARY KEY,
         mode TEXT NOT NULL,
@@ -1985,6 +2134,19 @@ function runtimeSessionFromRow(row: Record<string, unknown>): RuntimeSessionReco
     reasoningEffort: nullableString(row.reasoning_effort),
     hasMessages: Boolean(row.has_messages),
     isCurrent: Boolean(row.is_current),
+    updatedAt: numberValue(row.updated_at),
+  };
+}
+
+function sessionLifecycleOperationFromRow(row: Record<string, unknown>): SessionLifecycleOperationRecord {
+  return {
+    operationId: stringValue(row.operation_id),
+    sessionRef: stringValue(row.session_ref),
+    action: stringValue(row.action) as SessionLifecycleAction,
+    bindingId: stringValue(row.binding_id),
+    runtimeThreadId: stringValue(row.runtime_thread_id),
+    state: stringValue(row.state) as SessionLifecycleOperationState,
+    createdAt: numberValue(row.created_at),
     updatedAt: numberValue(row.updated_at),
   };
 }

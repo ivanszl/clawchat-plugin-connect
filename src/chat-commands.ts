@@ -4,6 +4,7 @@ import type { ProjectCatalog } from "./projects";
 import type { NormalizedInboundMessage } from "./protocol";
 import { requireModel, resolveEffort, resolveModelSelection } from "./runtime/model-selection";
 import type { RuntimeModelOption, SelectableRuntimeThread } from "./runtime/types";
+import { createSessionContinuity } from "./session-continuity";
 import type { ConnectStateStore } from "./state";
 import type {
   AgentBindingConfig,
@@ -160,15 +161,15 @@ async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult>
 async function handleNew(ctx: ChatCommandContext, name: string): Promise<ChatCommandResult> {
   const selected = await selectedSessionContext(ctx);
   await closeRuntimeSession(ctx);
-  await ctx.stateStore.setSessionIntent({
-    chatId: ctx.message.chatId,
-    agentId: ctx.agentId,
-    projectId: selected?.projectId ?? null,
-    mode: selected?.mode ?? null,
-    model: selected?.model ?? null,
-    reasoningEffort: selected?.reasoningEffort ?? null,
-    name: name.trim() || null,
-  });
+  await createSessionContinuity({ stateStore: ctx.stateStore })
+    .inConversation({ chatId: ctx.message.chatId, bindingId: ctx.agentId })
+    .planNext({
+      projectId: selected?.projectId ?? null,
+      mode: selected?.mode ?? null,
+      model: selected?.model ?? null,
+      reasoningEffort: selected?.reasoningEffort ?? null,
+      name: name.trim() || null,
+    });
   return {
     handled: true,
     text: `The next message will start${name.trim() ? ` Session \`${name.trim()}\`` : " a new Session"}.`,
@@ -220,7 +221,7 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
   const matched = matches[0];
   if (matched) {
     await closeRuntimeSession(ctx);
-    const switched = await ctx.stateStore.switchRuntimeSession(ctx.message.chatId, ctx.agentId, matched.sessionId);
+    const switched = await conversationSessions(ctx).switchTo(matched.sessionId);
     return {
       handled: true,
       text: switched
@@ -240,15 +241,10 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
       const selected = await selectedSessionContext(ctx);
       if (!selected) return { handled: true, text: "Select a Project before importing a Runtime Thread." };
       await closeRuntimeSession(ctx);
-      const adopted = await ctx.stateStore.adoptRuntimeThreadRef({
+      const adopted = await conversationSessions(ctx).adopt({
         sessionRef: target.sessionRef,
-        chatId: ctx.message.chatId,
         sessionId: randomUUID(),
-        agentId: ctx.agentId,
-        projectId: selected.projectId,
-        mode: selected.mode,
-        model: selected.model,
-        reasoningEffort: selected.reasoningEffort,
+        selection: { ...selected, name: selected.name ?? null },
       });
       return {
         handled: true,
@@ -267,18 +263,10 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
   const selected = await selectedSessionContext(ctx);
   if (!selected) return { handled: true, text: "Select a Project before importing a Runtime Thread." };
   await closeRuntimeSession(ctx);
-  await ctx.stateStore.upsertRuntimeSession({
-    chatId: ctx.message.chatId,
+  await conversationSessions(ctx).adopt({
+    sessionRef: thread.sessionRef,
     sessionId: randomUUID(),
-    agentId: ctx.agentId,
-    runtimeSessionId: thread.runtimeThreadId,
-    projectId: selected.projectId,
-    name: thread.name,
-    mode: selected.mode,
-    model: selected.model,
-    reasoningEffort: selected.reasoningEffort,
-    hasMessages: true,
-    isCurrent: true,
+    selection: { ...selected, name: thread.name },
   });
   return {
     handled: true,
@@ -310,9 +298,7 @@ async function handleProject(ctx: ChatCommandContext, args: string[]): Promise<C
     const selected = await selectedSessionContext(ctx);
     const project = reference.toLowerCase() === "none" ? null : await ctx.projects.require(reference);
     await closeRuntimeSession(ctx);
-    await ctx.stateStore.setSessionIntent({
-      chatId: ctx.message.chatId,
-      agentId: ctx.agentId,
+    await conversationSessions(ctx).planNext({
       projectId: project?.projectId ?? null,
       name: selected?.name ?? null,
       mode: selected?.mode ?? null,
@@ -349,30 +335,10 @@ async function handleMode(ctx: ChatCommandContext, mode: string | undefined): Pr
     }
   }
   if (intent || !current) {
-    await ctx.stateStore.setSessionIntent({
-      chatId: ctx.message.chatId,
-      agentId: intent?.agentId || ctx.agentId,
-      projectId: intent?.projectId ?? null,
-      name: intent?.name ?? null,
-      mode: selectedMode,
-      model: intent?.model ?? null,
-      reasoningEffort: intent?.reasoningEffort ?? null,
-    });
+    await conversationSessions(ctx).changeMode(selectedMode);
     return { handled: true, text: `Next Session mode set to \`${selectedMode ?? "default"}\`.` };
   }
-  await ctx.stateStore.upsertRuntimeSession({
-    chatId: ctx.message.chatId,
-    sessionId: current?.sessionId ?? randomUUID(),
-    agentId: current?.agentId || ctx.agentId,
-    runtimeSessionId: current?.runtimeSessionId ?? null,
-    projectId: current?.projectId ?? null,
-    name: current?.name ?? null,
-    mode: selectedMode,
-    model: current?.model ?? null,
-    reasoningEffort: current?.reasoningEffort ?? null,
-    hasMessages: current?.hasMessages ?? true,
-    isCurrent: true,
-  });
+  await conversationSessions(ctx).changeMode(selectedMode);
   await invalidateRuntimeSession(ctx);
   return {
     handled: true,
@@ -387,7 +353,7 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
   const binding = getAgentBinding(ctx.config, intent?.agentId || current?.agentId || ctx.agentId);
   const modelReference = args[0]?.trim();
   if (modelReference?.toLowerCase() === "default") {
-    await persistModelSelection(ctx, intent, current, null, null);
+    await persistModelSelection(ctx, null, null);
     return { handled: true, text: "Session model now inherits the Agent Binding or runtime default." };
   }
 
@@ -413,7 +379,7 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
   try {
     const model = requireModel(models, modelReference);
     const reasoningEffort = resolveEffort(model, args[1], true);
-    await persistModelSelection(ctx, intent, current, model.id, reasoningEffort);
+    await persistModelSelection(ctx, model.id, reasoningEffort);
     return {
       handled: true,
       text: `${intent || !current ? "Next Session" : "Current Session"} model set to \`${model.id}\` with \`${reasoningEffort}\` reasoning.`,
@@ -425,31 +391,10 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
 
 async function persistModelSelection(
   ctx: ChatCommandContext,
-  intent: SessionIntentRecord | null,
-  current: RuntimeSessionRecord | null,
   model: string | null,
   reasoningEffort: string | null,
 ): Promise<void> {
-  if (intent || !current) {
-    await ctx.stateStore.setSessionIntent({
-      chatId: ctx.message.chatId,
-      agentId: intent?.agentId ?? ctx.agentId,
-      projectId: intent?.projectId ?? null,
-      name: intent?.name ?? null,
-      mode: intent?.mode ?? null,
-      model,
-      reasoningEffort,
-    });
-    return;
-  }
-  const updated = await ctx.stateStore.setRuntimeSessionModelSelection(
-    current.chatId,
-    current.agentId,
-    current.sessionId,
-    model,
-    reasoningEffort,
-  );
-  if (!updated) throw new Error(`Session ${current.sessionRef} no longer exists`);
+  await conversationSessions(ctx).changeModel(model, reasoningEffort);
 }
 
 async function handleCancel(ctx: ChatCommandContext): Promise<ChatCommandResult> {
@@ -533,6 +478,13 @@ async function closeRuntimeSession(ctx: ChatCommandContext): Promise<boolean> {
 
 async function invalidateRuntimeSession(ctx: ChatCommandContext): Promise<boolean> {
   return (await ctx.invalidateRuntimeSession?.(ctx.message.chatId)) ?? false;
+}
+
+function conversationSessions(ctx: ChatCommandContext) {
+  return createSessionContinuity({ stateStore: ctx.stateStore }).inConversation({
+    chatId: ctx.message.chatId,
+    bindingId: ctx.agentId,
+  });
 }
 
 function parseOutputVisibility(value: unknown): OutputVisibility | null {

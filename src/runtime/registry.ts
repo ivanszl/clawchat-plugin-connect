@@ -3,6 +3,8 @@ import type {
   ConnectRuntimeAdapter,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
+  RuntimeActivity,
+  RuntimeActivitySnapshot,
   RuntimeModelOption,
   RuntimeThreadSummary,
   RuntimeTranscriptSnapshot,
@@ -32,6 +34,17 @@ export class RuntimeAdapterRegistry {
     return this.require(binding.kind).modes;
   }
 
+  lifecycleCapabilities(binding: AgentBindingConfig): { archive: boolean; restore: boolean; delete: boolean } {
+    const adapter = this.require(binding.kind);
+    return (
+      adapter.lifecycleCapabilities ?? {
+        archive: Boolean(adapter.archiveThread),
+        restore: Boolean(adapter.unarchiveThread),
+        delete: Boolean(adapter.deleteThread),
+      }
+    );
+  }
+
   async listModels(binding: AgentBindingConfig): Promise<RuntimeModelOption[] | null> {
     const operation = this.require(binding.kind).listModels;
     return operation ? await operation(binding) : null;
@@ -58,21 +71,54 @@ export class RuntimeAdapterRegistry {
     );
   }
 
+  async readActivity(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeActivitySnapshot> {
+    const adapter = this.require(binding.kind);
+    if (adapter.readActivity) return await adapter.readActivity(binding, runtimeThreadId);
+    const snapshot = await this.readTranscript(binding, runtimeThreadId);
+    return {
+      activities: snapshot.entries.map((entry, index) => activityFromLegacyEntry(entry, `${index}`)),
+      completeness: snapshot.completeness,
+      limitations: ["identity", "correlation", "ordering"],
+    };
+  }
+
   async archiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
-    const operation = this.require(binding.kind).archiveThread;
+    const adapter = this.require(binding.kind);
+    const operation = adapter.archiveThread;
     if (!operation) throw new Error(`${binding.kind} Runtime Adapter does not support thread archiving`);
+    if (
+      adapter.discoverArchivedThreads &&
+      (await adapter.discoverArchivedThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId)
+    ) {
+      return;
+    }
     await operation(binding, runtimeThreadId);
   }
 
   async unarchiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
-    const operation = this.require(binding.kind).unarchiveThread;
+    const adapter = this.require(binding.kind);
+    const operation = adapter.unarchiveThread;
     if (!operation) throw new Error(`${binding.kind} Runtime Adapter does not support thread restoration`);
+    if (
+      adapter.discoverAllThreads &&
+      (await adapter.discoverAllThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId)
+    ) {
+      return;
+    }
     await operation(binding, runtimeThreadId);
   }
 
   async deleteThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
-    const operation = this.require(binding.kind).deleteThread;
+    const adapter = this.require(binding.kind);
+    const operation = adapter.deleteThread;
     if (!operation) throw new Error(`${binding.kind} Runtime Adapter does not support thread deletion`);
+    if (adapter.discoverAllThreads && adapter.discoverArchivedThreads) {
+      const [active, archived] = await Promise.all([
+        adapter.discoverAllThreads(binding),
+        adapter.discoverArchivedThreads(binding),
+      ]);
+      if (![...active, ...archived].some((thread) => thread.runtimeThreadId === runtimeThreadId)) return;
+    }
     await operation(binding, runtimeThreadId);
   }
 
@@ -89,4 +135,17 @@ export class RuntimeAdapterRegistry {
     if (!adapter) throw new Error(`no Runtime Adapter registered for kind: ${kind}`);
     return adapter;
   }
+}
+
+function activityFromLegacyEntry(
+  entry: RuntimeTranscriptSnapshot["entries"][number],
+  position: string,
+  parentId: string | null = null,
+): RuntimeActivity {
+  return {
+    ...entry,
+    position,
+    parentId,
+    children: entry.children?.map((child, index) => activityFromLegacyEntry(child, `${position}.${index}`, entry.id)),
+  };
 }

@@ -1,0 +1,11 @@
+---
+status: accepted
+---
+
+# Unify Runtime Activity across live and history
+
+Every Runtime Adapter will translate native live notifications, Runtime Transcript history, and Adapter-owned fallback records into one runtime-neutral Runtime Activity model before they cross the Runtime Adapter seam. A Runtime Activity is a complete current-state upsert with a stable identity, stable Runtime Thread-local position, explicit parent-child hierarchy, shared Connect kind, and sanitized `unknown` fallback; the Adapter owns native delta reconstruction and identity correlation across sources.
+
+The Connect Transcript Projection maps Runtime Activities into Connect-owned blocks, sequence, origin, provenance, and persistence without interpreting native event types, guessing identity from display content, or branching on Runtime Adapter kind. Adapters report completeness, ordering, or correlation limitations rather than hiding them. This concentrates more implementation in each Adapter and may repeat complete Activity state during streaming, but it keeps native protocols and fallback formats behind the seam and gives live rendering, reconnect recovery, and future coding agents one stable interface.
+
+This decision refines ADR-0011, ADR-0012, and ADR-0019 without changing the Runtime Transcript's authority for Agent context or the Connect Transcript Projection's authority for Connect-owned metadata.

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Envelope, Fragment, NormalizedInboundMessage } from "../protocol";
+import { RuntimeInteractionSettlement } from "./runtime-interaction-settlement";
 import type { RuntimeInteractionPort, RuntimeInteractionRequest, RuntimeInteractionResponse } from "./types";
 
 interface RouterOptions {
@@ -19,6 +20,7 @@ interface PendingClawChatInteraction {
   reject(error: Error): void;
   timeout: ReturnType<typeof setTimeout> | null;
   removeAbortListener(): void;
+  settlement: RuntimeInteractionSettlement<RuntimeInteractionResponse>;
 }
 
 interface ConnectInteractionAction {
@@ -69,6 +71,9 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
         reject,
         timeout,
         removeAbortListener: () => context.signal?.removeEventListener("abort", onAbort),
+        settlement: new RuntimeInteractionSettlement({
+          validate: (response) => validateRuntimeResponse(request, response),
+        }),
       });
     });
     const pending = this.pending.get(id);
@@ -93,7 +98,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     if (pending.request.kind === "approval") {
       const option = pending.request.options.find((candidate) => candidate.id === action.option_id);
       if (!option) return true;
-      this.settle(pending, { kind: "approval", optionId: option.id });
+      await this.settle(pending, { kind: "approval", optionId: option.id });
       return true;
     }
 
@@ -160,7 +165,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
 
     const question = pending.request.questions[pending.questionIndex];
     if (!question) {
-      this.settle(pending, { kind: "user-input", answers: pending.answers });
+      await this.settle(pending, { kind: "user-input", answers: pending.answers });
       return;
     }
     if (question.secret) {
@@ -213,21 +218,45 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     ]);
   }
 
-  private settle(pending: PendingClawChatInteraction, response: RuntimeInteractionResponse): void {
-    this.pending.delete(pending.id);
-    if (pending.timeout) clearTimeout(pending.timeout);
-    pending.removeAbortListener();
-    pending.resolve(response);
+  private async settle(pending: PendingClawChatInteraction, response: RuntimeInteractionResponse): Promise<void> {
+    await pending.settlement.claim(response, async (validated) => {
+      this.pending.delete(pending.id);
+      if (pending.timeout) clearTimeout(pending.timeout);
+      pending.removeAbortListener();
+      pending.resolve(validated);
+    });
   }
 
   private cancel(id: string, reason: string): void {
     const pending = this.pending.get(id);
     if (!pending) return;
+    if (!pending.settlement.expire()) return;
     this.pending.delete(id);
     if (pending.timeout) clearTimeout(pending.timeout);
     pending.removeAbortListener();
     pending.reject(new Error(reason));
   }
+}
+
+function validateRuntimeResponse(
+  request: RuntimeInteractionRequest,
+  response: RuntimeInteractionResponse,
+): RuntimeInteractionResponse {
+  if (request.kind !== response.kind) throw new Error("Runtime Interaction response kind does not match request");
+  if (request.kind === "approval") {
+    if (response.kind !== "approval" || !request.options.some((option) => option.id === response.optionId)) {
+      throw new Error("Runtime Interaction approval decision is invalid");
+    }
+    return response;
+  }
+  if (response.kind !== "user-input") throw new Error("Runtime Interaction answers are invalid");
+  for (const question of request.questions) {
+    const answers = response.answers[question.id];
+    if (!answers?.length || answers.some((answer) => !answer.trim())) {
+      throw new Error(`Runtime Interaction answer is required: ${question.header}`);
+    }
+  }
+  return response;
 }
 
 function interactionAction(
