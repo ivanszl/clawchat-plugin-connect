@@ -2,9 +2,8 @@
 
 set -eu
 
-repository="${CLAWCHAT_CONNECT_REPOSITORY:-XMethues/clawchat-plugin-connect}"
-default_version="v0.1.0-alpha.6"
-version="${1:-${CLAWCHAT_CONNECT_VERSION:-$default_version}}"
+repository="${CLAWCHAT_CONNECT_REPOSITORY:-clawling/clawchat-plugin-connect}"
+version="${1:-${CLAWCHAT_CONNECT_VERSION:-}}"
 install_dir="${CLAWCHAT_CONNECT_INSTALL_DIR:-${HOME}/.local/bin}"
 license_dir="${CLAWCHAT_CONNECT_LICENSE_DIR:-${install_dir}/clawchat-connect-licenses}"
 
@@ -16,13 +15,24 @@ fail() {
 command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 
+if [ -z "$version" ]; then
+  releases_url="https://api.github.com/repos/${repository}/releases?per_page=100"
+  version="$(
+    curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3 "$releases_url" |
+      tr ',' '\n' |
+      sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
+      awk 'NR == 1 { print; exit }'
+  )"
+  [ -n "$version" ] || fail "latest published release was not found for ${repository}"
+fi
+
 case "$version" in
   v*) ;;
   *) version="v$version" ;;
 esac
 
-printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$' ||
-  fail "only alpha versions are available (for example: v0.1.0-alpha.6)"
+printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ||
+  fail "invalid release version: ${version}"
 
 case "$(uname -s)" in
   Darwin) os="darwin" ;;

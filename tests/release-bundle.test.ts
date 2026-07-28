@@ -106,6 +106,8 @@ describe("standalone release bundle", () => {
 
   it("ships a checksum-verifying PowerShell installer and Windows release targets", async () => {
     const installer = await readFile("install.ps1", "utf8");
+    expect(installer).toContain("api.github.com/repos/$repository/releases?per_page=100");
+    expect(installer).toContain("Select-Object -First 1");
     expect(installer).toContain("Get-FileHash");
     expect(installer).toContain("Expand-Archive");
     expect(installer).toContain("clawchat-connect.exe");
@@ -164,6 +166,21 @@ describe("standalone release bundle", () => {
     const checksum = (await new Response(checksumProcess.stdout).text()).split(/\s+/u)[0];
     expect(await checksumProcess.exited).toBe(0);
     await writeFile(join(fixtureDirectory, "checksums.txt"), `${checksum}  ${asset}\n`);
+    await writeFile(
+      join(fixtureDirectory, "releases.json"),
+      JSON.stringify([
+        {
+          tag_name: "v0.1.0-alpha.12",
+          draft: false,
+          prerelease: true,
+        },
+        {
+          tag_name: "v0.1.0-alpha.11",
+          draft: false,
+          prerelease: true,
+        },
+      ]),
+    );
     const curlPath = join(commandDirectory, "curl");
     await writeFile(
       curlPath,
@@ -178,13 +195,24 @@ describe("standalone release bundle", () => {
         "    *) shift ;;",
         "  esac",
         "done",
-        'cp "$CONNECT_INSTALL_FIXTURES/$' + '{url##*/}" "$output"',
+        'case "$url" in',
+        "  *api.github.com*)",
+        '    if [ -n "$output" ]; then',
+        '      cp "$CONNECT_INSTALL_FIXTURES/releases.json" "$output"',
+        "    else",
+        '      cat "$CONNECT_INSTALL_FIXTURES/releases.json"',
+        "    fi",
+        "    ;;",
+        '  *) cp "$CONNECT_INSTALL_FIXTURES/$' + '{url##*/}" "$output" ;;',
+        "esac",
+        'printf "%s\\n" "$url" >> "$CONNECT_INSTALL_REQUESTS"',
         "",
       ].join("\n"),
     );
     await chmod(curlPath, 0o755);
 
-    const installProcess = Bun.spawn(["sh", "install.sh", "v0.1.0-alpha.6"], {
+    const requestsPath = join(directory, "requests.log");
+    const installProcess = Bun.spawn(["sh", "install.sh"], {
       cwd: process.cwd(),
       env: {
         ...process.env,
@@ -192,6 +220,7 @@ describe("standalone release bundle", () => {
         CLAWCHAT_CONNECT_INSTALL_DIR: installDirectory,
         CLAWCHAT_CONNECT_LICENSE_DIR: join(installDirectory, "licenses"),
         CONNECT_INSTALL_FIXTURES: fixtureDirectory,
+        CONNECT_INSTALL_REQUESTS: requestsPath,
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -205,6 +234,9 @@ describe("standalone release bundle", () => {
     );
     await expect(readFile(join(installDirectory, "licenses", "CHANGELOG.md"), "utf8")).resolves.toContain(
       "# Changelog",
+    );
+    await expect(readFile(requestsPath, "utf8")).resolves.toContain(
+      "/releases/download/v0.1.0-alpha.12/clawchat-connect-",
     );
   });
 });

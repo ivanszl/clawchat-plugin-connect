@@ -8,16 +8,6 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-if ([string]::IsNullOrWhiteSpace($Version)) {
-  $Version = if ($env:CLAWCHAT_CONNECT_VERSION) { $env:CLAWCHAT_CONNECT_VERSION } else { "v0.1.0-alpha.6" }
-}
-if (-not $Version.StartsWith("v")) {
-  $Version = "v$Version"
-}
-if ($Version -notmatch "^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$") {
-  throw "Only alpha versions are available (for example: v0.1.0-alpha.6)"
-}
-
 $localApplicationData = if ($env:LOCALAPPDATA) {
   $env:LOCALAPPDATA
 } else {
@@ -41,7 +31,26 @@ if ([string]::IsNullOrWhiteSpace($LicenseDirectory)) {
 $repository = if ($env:CLAWCHAT_CONNECT_REPOSITORY) {
   $env:CLAWCHAT_CONNECT_REPOSITORY
 } else {
-  "XMethues/clawchat-plugin-connect"
+  "clawling/clawchat-plugin-connect"
+}
+if ([string]::IsNullOrWhiteSpace($Version)) {
+  $Version = $env:CLAWCHAT_CONNECT_VERSION
+}
+if ([string]::IsNullOrWhiteSpace($Version)) {
+  $releasesUrl = "https://api.github.com/repos/$repository/releases?per_page=100"
+  $release = Invoke-RestMethod -UseBasicParsing -Uri $releasesUrl | Where-Object {
+    -not $_.draft -and $_.tag_name -match "^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+  } | Select-Object -First 1
+  if ($null -eq $release) {
+    throw "Latest published release was not found for $repository"
+  }
+  $Version = $release.tag_name
+}
+if (-not $Version.StartsWith("v")) {
+  $Version = "v$Version"
+}
+if ($Version -notmatch "^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$") {
+  throw "Invalid release version: $Version"
 }
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 $releaseArchitecture = switch ($architecture) {

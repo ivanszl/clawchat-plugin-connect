@@ -4,7 +4,7 @@
   <h1>ClawChat Connect</h1>
   <p><strong>Bring a coding agent running on your computer into any ClawChat conversation.</strong></p>
   <p>
-    <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
+    <a href="https://github.com/clawling/clawchat-plugin-connect/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/clawling/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
     <img alt="Platforms: macOS, Linux, and Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
     <img alt="Runtime: Codex CLI" src="https://img.shields.io/badge/runtime-Codex%20CLI-f97316?style=flat-square">
@@ -68,10 +68,12 @@ Connect requires exactly `codex-cli 0.145.0`. It uses your existing Codex login,
 On macOS or Linux, the standalone installer does not require Bun or Node.js:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | sh
 ```
 
 Standalone releases include the pinned, unmodified Liveware companion for the selected platform. Connect installs it beside `clawchat-connect`; no separate Liveware repository checkout, build, login, or installation is required.
+
+The installer resolves the latest published GitHub release at runtime, including prereleases. Pass a version explicitly only when you need to pin an installation.
 
 The default executable location is `~/.local/bin`. If it is not already on `PATH`:
 
@@ -82,15 +84,15 @@ export PATH="$HOME/.local/bin:$PATH"
 To install a specific release or choose another directory:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.6
+curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | \
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.13
 ```
 
 On Windows PowerShell, download and inspect the installer before running it:
 
 ```powershell
 Invoke-WebRequest `
-  https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.ps1 `
+  https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.ps1 `
   -OutFile install.ps1
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
@@ -100,7 +102,7 @@ The Windows installer verifies the Release ZIP checksum, installs `clawchat-conn
 
 ```powershell
 .\install.ps1 `
-  -Version v0.1.0-alpha.6 `
+  -Version v0.1.0-alpha.13 `
   -InstallDirectory "D:\Tools\ClawChatConnect"
 ```
 
@@ -471,7 +473,7 @@ CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
 
 Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it beside the Connect executable under `dist/`. Windows builds use `.exe` names. Preview the browser client with `bun run preview:web`.
 
-Version tags such as `v0.1.0-alpha.6` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. npm packages include all six assets so a global Bun install remains portable.
+Version tags such as `v0.1.0-alpha.13` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. Both installers resolve the latest published release unless a version is explicitly supplied. npm packages include all six assets so a global Bun install remains portable.
 
 ## License
 

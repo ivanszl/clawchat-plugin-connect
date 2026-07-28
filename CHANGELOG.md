@@ -2,6 +2,22 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.13] - 2026-07-28
+
+### Added
+
+- Added a complete Chinese README and official ClawChat branding to the repository landing page.
+
+### Changed
+
+- Made the macOS, Linux, and Windows installers resolve the latest published GitHub Release at runtime, including prereleases, while preserving explicit version pinning.
+- Published version-agnostic installers without rewriting embedded versions during the release workflow.
+- Moved repository, installer, badge, homepage, and issue links to `clawling/clawchat-plugin-connect`.
+
+### Fixed
+
+- Fixed the Codex app-server client metadata reporting the obsolete `0.1.0-alpha.6` version.
+
 ## [0.1.0-alpha.12] - 2026-07-28
 
 ### Added

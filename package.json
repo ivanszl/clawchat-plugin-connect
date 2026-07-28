@@ -1,14 +1,14 @@
 {
   "name": "@clawling/clawchat-plugin-connect",
-  "version": "0.1.0-alpha.12",
+  "version": "0.1.0-alpha.13",
   "description": "Bun-native bridge from ClawChat Agent Bindings to local coding agent runtimes.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/XMethues/clawchat-plugin-connect.git"
+    "url": "git+https://github.com/clawling/clawchat-plugin-connect.git"
   },
-  "homepage": "https://github.com/XMethues/clawchat-plugin-connect#readme",
+  "homepage": "https://github.com/clawling/clawchat-plugin-connect#readme",
   "bugs": {
-    "url": "https://github.com/XMethues/clawchat-plugin-connect/issues"
+    "url": "https://github.com/clawling/clawchat-plugin-connect/issues"
   },
   "type": "module",
   "main": "./dist/src/index.js",
