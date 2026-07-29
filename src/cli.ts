@@ -31,6 +31,8 @@ import type {
   LivewareAccessPolicy,
   OutputVisibility,
 } from "./types";
+import { updateConnect as updateConnectDefault } from "./update";
+import { CONNECT_VERSION } from "./version";
 
 export interface CliIo {
   writeStdout(value: string): void;
@@ -45,6 +47,7 @@ export interface ConnectCliDeps extends Partial<CliIo> {
   waitUntilShutdown?: () => Promise<void>;
   openUrl?: (url: string) => Promise<void>;
   resolveLivewareExecutablePath?: typeof resolveLivewareExecutablePathDefault;
+  updateConnect?: typeof updateConnectDefault;
 }
 
 interface AgentCliOptions {
@@ -72,6 +75,7 @@ const HELP_TEXT = `${[
   "  config get [key] [--config <path>]",
   "  config set <key> <value> [--config <path>]",
   "  doctor [--config <path>]",
+  "  update [--version <release>] [--config <path>]",
 ].join("\n")}\n`;
 
 const defaultIo: CliIo = {
@@ -84,6 +88,10 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     writeStdout: deps.writeStdout ?? defaultIo.writeStdout,
     writeStderr: deps.writeStderr ?? defaultIo.writeStderr,
   };
+  if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-v")) {
+    io.writeStdout(`clawchat-connect v${CONNECT_VERSION}\n`);
+    return 0;
+  }
   if (argv.includes("--help") || argv.includes("-h")) {
     io.writeStdout(HELP_TEXT);
     return 0;
@@ -115,6 +123,8 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   if (nestedConfigResult !== null) return nestedConfigResult;
   const webResult = await maybeRunWebCommand(argv, io, deps.openUrl ?? openUrlDefault);
   if (webResult !== null) return webResult;
+  const updateResult = await maybeRunUpdateCommand(argv, io, deps.updateConnect ?? updateConnectDefault);
+  if (updateResult !== null) return updateResult;
 
   const cli = cac("clawchat-connect");
   const releasedKinds = releasedRuntimeAdapters()
@@ -230,6 +240,25 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       io.writeStdout(HELP_TEXT);
       return 1;
     }
+    return 0;
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+async function maybeRunUpdateCommand(
+  argv: string[],
+  io: CliIo,
+  updateConnect: typeof updateConnectDefault,
+): Promise<number | null> {
+  if (argv[0] !== "update") return null;
+  try {
+    const result = await updateConnect({
+      version: optionValue(argv, "--version"),
+      configPath: optionValue(argv, "--config"),
+    });
+    io.writeStdout(`Updated ClawChat Connect to ${result.version}: ${result.executablePath}\n`);
     return 0;
   } catch (error) {
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);

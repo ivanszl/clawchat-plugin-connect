@@ -10,6 +10,7 @@ import { ProjectCatalog } from "../src/projects";
 import type { NormalizedInboundMessage } from "../src/protocol";
 import type { SelectableRuntimeThread } from "../src/runtime/types";
 import { type ConnectStateStore, createStateStore } from "../src/state";
+import { CONNECT_VERSION } from "../src/version";
 import { workspaceView } from "../src/workspace-catalog";
 
 async function tempConfig(): Promise<string> {
@@ -48,6 +49,16 @@ function message(text: string, chatType: "direct" | "group" = "direct"): Normali
 }
 
 describe("runConnectCli", () => {
+  it("reports the build version pinned by the release manifest", async () => {
+    const output = io();
+    const manifest = (await Bun.file(new URL("../package.json", import.meta.url)).json()) as { version: string };
+
+    await expect(runConnectCli(["--version"], output.deps)).resolves.toBe(0);
+
+    expect(CONNECT_VERSION).toBe(manifest.version);
+    expect(output.stdout).toEqual([`clawchat-connect v${manifest.version}\n`]);
+  });
+
   it("initializes minimal config without unsupported config surfaces", async () => {
     const path = await tempConfig();
     const output = io();
@@ -165,6 +176,27 @@ describe("runConnectCli", () => {
     ).resolves.toBe(0);
     expect(resolveLivewareExecutablePath).toHaveBeenCalledTimes(1);
     expect(output.stdout.join("")).toContain("liveware: /bundle/liveware");
+  });
+
+  it("updates Connect through the release installer and refreshes the configured service", async () => {
+    const output = io();
+    const updateConnect = mock(async () => ({
+      version: "v0.1.0-alpha.16",
+      executablePath: "/opt/connect/clawchat-connect",
+    }));
+
+    await expect(
+      runConnectCli(["update", "--version", "v0.1.0-alpha.16", "--config", "/tmp/connect.json"], {
+        ...output.deps,
+        updateConnect,
+      }),
+    ).resolves.toBe(0);
+
+    expect(updateConnect).toHaveBeenCalledWith({
+      version: "v0.1.0-alpha.16",
+      configPath: "/tmp/connect.json",
+    });
+    expect(output.stdout.join("")).toContain("Updated ClawChat Connect to v0.1.0-alpha.16");
   });
 
   it("manages Projects only through the local CLI", async () => {

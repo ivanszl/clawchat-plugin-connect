@@ -2,6 +2,24 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.16] - 2026-07-29
+
+### Added
+
+- Added `clawchat-connect update` with optional release pinning and automatic native service refresh.
+
+### Changed
+
+- Synchronized Connect Projects with persistent Codex Runtime Workspaces and improved Session navigation continuity.
+- Resolved ClawChat sender profile names through the authenticated user API.
+
+### Fixed
+
+- Fixed short Web messages appearing twice after Runtime history reconciliation.
+- Fixed Web-uploaded images returning authorization errors or disappearing after a Turn completed.
+- Fixed Transcript follow mode stopping after streamed content, tools, or images changed the rendered height.
+- Fixed stalled ClawChat reconnects, transcript sequence collisions, and full-page Session navigation reloads.
+
 ## [0.1.0-alpha.15] - 2026-07-29
 
 ### Added

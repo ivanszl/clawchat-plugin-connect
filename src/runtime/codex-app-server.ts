@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import type { CodexAgentBindingConfig } from "../types";
+import { CONNECT_VERSION } from "../version";
 
 type RpcId = number | string;
 type JsonObject = Record<string, unknown>;
@@ -268,7 +269,7 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
       clientInfo: {
         name: "clawchat_connect",
         title: "ClawChat Connect",
-        version: "0.1.0-alpha.15",
+        version: CONNECT_VERSION,
       },
       capabilities: {
         experimentalApi: false,
