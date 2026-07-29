@@ -14,6 +14,22 @@ export class ClientInterfaceError extends Error {
 }
 
 export async function clientFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return (await clientFetchResponse<T>(path, init)).value;
+}
+
+export async function clientFetchSnapshot<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<{ value: T; watermark: number }> {
+  const result = await clientFetchResponse<T>(path, init);
+  const watermark = Number(result.response.headers.get("X-Client-View-Watermark"));
+  if (!Number.isSafeInteger(watermark) || watermark < 0) {
+    throw new ClientInterfaceError(502, "missing-snapshot-watermark", "Connect Client 快照缺少有效水位", true);
+  }
+  return { value: result.value, watermark };
+}
+
+async function clientFetchResponse<T>(path: string, init: RequestInit): Promise<{ value: T; response: Response }> {
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
@@ -34,7 +50,7 @@ export async function clientFetch<T>(path: string, init: RequestInit = {}): Prom
       view?.error.diagnosticRef,
     );
   }
-  return (await response.json()) as T;
+  return { value: (await response.json()) as T, response };
 }
 
 export function requestId(): string {

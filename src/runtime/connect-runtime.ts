@@ -23,7 +23,7 @@ import {
 import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig, RuntimeSessionRecord, RuntimeWorkspace } from "../types";
 import type { ConnectWsClient } from "../ws-client";
-import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
+import { MAX_RUNTIME_MEDIA_BYTES, releaseConnectStagedMedia } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
 import type { RuntimeAdapterRegistry } from "./registry";
 import { type QueueStats, type SessionActivity, SessionQueue } from "./session-queue";
@@ -156,7 +156,7 @@ export class ConnectRuntime {
     media: ConnectRuntimeMedia[] = [],
   ): Promise<{ turnId: string; sessionRef: string }> {
     const text = prompt.trim();
-    if (!text) throw new Error("prompt is required");
+    if (!text && media.length === 0) throw new Error("prompt or media is required");
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
     if (!current || current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
     const target = await this.sessionContinuity.forSession(current.sessionRef).targetForTurn("client");
@@ -170,22 +170,23 @@ export class ConnectRuntime {
         `Session ${current.sessionRef} lifecycle operation is in progress`,
       );
     }
-    void this.queue
-      .enqueue(
-        key,
-        async () => {
-          this.activeTurnSessionChats.set(key, current.chatId);
+    const completion = this.queue.enqueue(
+      key,
+      async () => {
+        this.activeTurnSessionChats.set(key, current.chatId);
+        await this.recordRuntimeStatus(this.queue.stats());
+        try {
+          await this.runClientTurn(target, text, turnId, media);
+        } finally {
+          this.activeTurnSessionChats.delete(key);
           await this.recordRuntimeStatus(this.queue.stats());
-          try {
-            await this.runClientTurn(target, text, turnId, media);
-          } finally {
-            this.activeTurnSessionChats.delete(key);
-            await this.recordRuntimeStatus(this.queue.stats());
-          }
-        },
-        `Session ${current.sessionRef}`,
-      )
-      .catch(() => undefined);
+        }
+      },
+      `Session ${current.sessionRef}`,
+    );
+    void completion
+      .catch(() => undefined)
+      .finally(async () => await releaseConnectStagedMedia(media, this.options.config.stateDbPath));
     return { turnId, sessionRef: current.sessionRef };
   }
 

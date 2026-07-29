@@ -28,6 +28,10 @@ _Avoid_: Connect Console, Frontend
 The Connect Service HTTP contract tailored to Connect Client views and user intents. It is loopback-bound by default and may be explicitly exposed to a trusted IPv4 LAN. It exposes Connect-owned presentation models and capabilities rather than runtime-native protocols or UI-framework types.
 _Avoid_: Runtime API, app-server API, Astryx API
 
+**Client View Continuity**:
+The rule that a reconnecting Connect Client restores the complete latest Client view without replaying transient streaming states. Every committed displayable occurrence remains present, and an older view never replaces a newer view.
+_Avoid_: Stream Replay, Exactly-Once Streaming
+
 **Liveware Exposure**:
 An optional publication of Connect Client inside ClawChat through a Liveware App. It adds a ClawChat interaction surface without replacing Connect Service, Connect Client, or Client Interface ownership.
 _Avoid_: Connect deployment, Liveware Client, when referring to the publication boundary
@@ -119,6 +123,14 @@ _Avoid_: Author, when referring to an authorization identity; Turn Origin
 **Turn Surface**:
 The Connect Client or ClawChat interaction surface through which a turn is submitted and whose origin-specific policy governs its Connect-owned input, output, failure, and Runtime Interaction routes. A ClawChat-originated Runtime Interaction may still have an authorized Connect Client response route. The current browser SPA, whether opened locally, on a trusted LAN, or through Liveware Exposure, is one Connect Client Turn Surface rather than separate Web or Liveware origins.
 _Avoid_: Web Origin, Transport, Runtime Adapter
+
+**Turn Submission**:
+A Turn Surface's attempt to submit one prompt and its attachments as a single Turn. The submission is accepted as a whole or rejected as a whole; a failed submission never creates a partial Turn or retains partial uploaded media.
+_Avoid_: Message Upload, when referring only to one attachment transfer; Partial Turn
+
+**Turn Submission Capability**:
+The effective prompt and attachment constraints for a Turn Submission. It is the intersection of the Runtime Adapter's native input capabilities and the submitting Turn Surface's delivery constraints; the Connect Client consumes the effective result rather than defining its own limits.
+_Avoid_: Client Upload Limit, Runtime Limit, when either describes only one source of the effective constraint
 
 **Turn Target**:
 The immutable Session, Agent Binding, Project, Runtime Thread association, and Session selections captured when Connect accepts a turn for its Session queue. Later Session Intent, selection, or switch changes do not redirect that accepted turn.

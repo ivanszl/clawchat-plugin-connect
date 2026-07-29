@@ -70,11 +70,29 @@ export interface RuntimeModelOption {
   defaultReasoningEffort: string;
   supportedReasoningEfforts: string[];
   inputModalities: Array<"text" | "image" | "audio">;
+  turnSubmissionCapability?: RuntimeTurnSubmissionCapability;
+}
+
+export interface RuntimeTurnSubmissionCapability {
+  prompt: {
+    allowed: boolean;
+    required: boolean;
+    maxCharacters?: number;
+  };
+  attachments: {
+    allowedKinds: Array<"image" | "file" | "audio" | "video">;
+    allowedMediaTypes: string[];
+    maxCount?: number;
+    maxBytesEach?: number;
+    maxBytesTotal?: number;
+  };
 }
 
 export interface ConnectRuntimeMedia {
   kind: "image" | "file" | "audio" | "video";
   url: string;
+  /** Connect-owned local input accepted with a Client Turn; never supplied by a remote Turn Surface. */
+  stagedPath?: string;
   name?: string;
   mime?: string;
   size?: number;

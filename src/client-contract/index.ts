@@ -234,8 +234,24 @@ export interface SessionView {
   activeTurnId: string | null;
   transcriptCompleteness: "complete" | "partial" | "live-only";
   pendingInteractions: RuntimeInteractionBlock[];
+  turnSubmissionCapability: TurnSubmissionCapability;
   allowedActions: SessionAction[];
   updatedAt: string;
+}
+
+export interface TurnSubmissionCapability {
+  prompt: {
+    allowed: boolean;
+    required: boolean;
+    maxCharacters: number;
+  };
+  attachments: {
+    allowedKinds: Array<"image" | "file" | "audio" | "video">;
+    allowedMediaTypes: string[];
+    maxCount: number;
+    maxBytesEach: number;
+    maxBytesTotal: number;
+  };
 }
 
 export interface RuntimeModelOptionView {
@@ -278,28 +294,30 @@ export interface BootstrapView {
   };
 }
 
-export type ClientViewEvent =
-  | { type: "catalog.changed"; cursor: number; revision: number; catalog: SessionCatalogView }
-  | { type: "session.changed"; cursor: number; sessionRef: string; revision: number; session: SessionView }
+export type ClientViewEvent = {
+  cursor: number;
+  /** Cursor of the immediately preceding committed event; cursors need not be numerically adjacent. */
+  previousCursor?: number;
+} & (
+  | { type: "catalog.changed"; revision: number; catalog: SessionCatalogView }
+  | { type: "session.changed"; sessionRef: string; revision: number; session: SessionView }
   | {
       type: "transcript.block-upserted";
-      cursor: number;
       sessionRef: string;
       revision: number;
       block: TranscriptBlock;
     }
   | {
       type: "transcript.block-removed";
-      cursor: number;
       sessionRef: string;
       revision: number;
       blockId: string;
     }
   | {
       type: "snapshot-required";
-      cursor: number;
       reason: "cursor-expired" | "revision-gap";
-    };
+    }
+);
 
 export interface ClientEventBatchView {
   cursor: number;

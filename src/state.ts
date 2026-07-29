@@ -1760,10 +1760,35 @@ export class ConnectStateStore {
     );
   }
 
+  async appendClientViewEvent(event: ClientViewEvent): Promise<number> {
+    if (event.type !== "catalog.changed" && event.type !== "session.changed") {
+      throw new Error(`Client view event ${event.type} must be committed by its owning projection`);
+    }
+    const db = await this.requireDb();
+    const inserted = await db.run(
+      "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+      event.type,
+      event.type === "session.changed" ? event.sessionRef : "catalog",
+      event.revision,
+      JSON.stringify({ ...event, cursor: 0, previousCursor: undefined }),
+      Date.now(),
+    );
+    return Number(inserted.lastInsertRowid);
+  }
+
   async listClientEvents(afterCursor: number, limit = 500): Promise<StoredClientEvent[]> {
     const db = await this.requireDb();
-    const rows = await db.all<Array<{ cursor: number; event_json: string; created_at: number }>>(
-      "SELECT cursor, event_json, created_at FROM client_events WHERE cursor > ? ORDER BY cursor ASC LIMIT ?",
+    const rows = await db.all<
+      Array<{ cursor: number; previous_cursor: number | null; event_json: string; created_at: number }>
+    >(
+      `SELECT current.cursor,
+        (SELECT MAX(previous.cursor) FROM client_events AS previous WHERE previous.cursor < current.cursor) AS previous_cursor,
+        current.event_json,
+        current.created_at
+       FROM client_events AS current
+       WHERE current.cursor > ?
+       ORDER BY current.cursor ASC
+       LIMIT ?`,
       afterCursor,
       Math.max(1, Math.min(1_000, Math.trunc(limit))),
     );
@@ -1771,7 +1796,15 @@ export class ConnectStateStore {
       try {
         const event = JSON.parse(row.event_json) as ClientViewEvent;
         return [
-          { cursor: row.cursor, event: { ...event, cursor: row.cursor } as ClientViewEvent, createdAt: row.created_at },
+          {
+            cursor: row.cursor,
+            event: {
+              ...event,
+              cursor: row.cursor,
+              previousCursor: row.previous_cursor ?? 0,
+            } as ClientViewEvent,
+            createdAt: row.created_at,
+          },
         ];
       } catch {
         return [];

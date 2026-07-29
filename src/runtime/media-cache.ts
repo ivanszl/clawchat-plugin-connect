@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { mkdir, open, readdir, rename, rm, stat, utimes } from "node:fs/promises";
+import { mkdir, open, readdir, realpath, rename, rm, stat, utimes } from "node:fs/promises";
 import { isIP } from "node:net";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { ConnectRuntimeMedia } from "./types";
 
 export const MAX_RUNTIME_MEDIA_BYTES = 100 * 1024 * 1024;
@@ -48,6 +48,9 @@ export async function cacheRuntimeMedia(
   }
   if (media.size !== undefined && media.size > maxTotalBytes) {
     throw new Error(`ClawChat media ${displayName(media)} exceeds the ${maxTotalBytes}-byte total cache limit`);
+  }
+  if (media.stagedPath) {
+    return await requireConnectStagedMedia(media.stagedPath, stateDbPath, maxBytes);
   }
   const source = parseMediaUrl(media.url);
   const requestPolicy = createRequestPolicy(options);
@@ -108,6 +111,36 @@ export async function cacheRuntimeMedia(
     await rm(temporary, { force: true }).catch(() => undefined);
     throw error;
   }
+}
+
+export async function releaseConnectStagedMedia(
+  media: readonly ConnectRuntimeMedia[],
+  stateDbPath: string,
+): Promise<void> {
+  const root = await realpath(join(dirname(stateDbPath), "turn-submissions")).catch(() => null);
+  if (!root) return;
+  const directories = new Set<string>();
+  for (const item of media) {
+    if (!item.stagedPath) continue;
+    const candidate = await realpath(item.stagedPath).catch(() => null);
+    if (!candidate) continue;
+    const directory = dirname(candidate);
+    const nested = relative(root, directory);
+    if (directory !== root && !nested.startsWith("..") && !isAbsolute(nested)) directories.add(directory);
+  }
+  await Promise.all([...directories].map(async (directory) => await rm(directory, { recursive: true, force: true })));
+}
+
+async function requireConnectStagedMedia(path: string, stateDbPath: string, maxBytes: number): Promise<string> {
+  const root = await realpath(join(dirname(stateDbPath), "turn-submissions")).catch(() => null);
+  const candidate = await realpath(path).catch(() => null);
+  if (!root || !candidate) throw new Error("Connect-staged media is unavailable");
+  const nested = relative(root, candidate);
+  if (nested.startsWith("..") || isAbsolute(nested)) throw new Error("Connect-staged media escaped its owned root");
+  const details = await stat(candidate);
+  if (!details.isFile() || details.size === 0) throw new Error("Connect-staged media is empty");
+  if (details.size > maxBytes) throw new Error(`Connect-staged media exceeds the ${maxBytes}-byte limit`);
+  return candidate;
 }
 
 function createRequestPolicy(options: CacheRuntimeMediaOptions): RuntimeMediaRequestPolicy {

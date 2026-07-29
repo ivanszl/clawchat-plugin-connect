@@ -150,7 +150,10 @@ async function verifyImeConfirmationDoesNotSubmit(
   try {
     let submittedTurns = 0;
     page.on("request", (request) => {
-      if (request.method() === "POST" && new URL(request.url()).pathname === "/client/v1/sessions/ABCDEFGH/turns") {
+      if (
+        request.method() === "POST" &&
+        new URL(request.url()).pathname === "/client/v1/sessions/ABCDEFGH/turn-submissions"
+      ) {
         submittedTurns += 1;
       }
     });
@@ -216,12 +219,12 @@ async function verifyComposerReturnsIdleAfterTurn(
 ) {
   const page = await browser.newPage();
   try {
-    await page.goto(`${previewOrigin}/sessions/JKLMNPQR`);
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     const input = page.locator(".session-composer [contenteditable='true']");
     await input.fill("状态收敛测试");
     await input.press("Enter");
     await expect(page.getByText("正在工作", { exact: true })).toBeVisible();
-    await expect(page.getByText("这是 Preview Runtime 的本地回复；它不会发送到 ClawChat。")).toBeVisible();
+    await expect(page.getByText("这是 Preview Runtime 的本地回复；它不会发送到 ClawChat。").last()).toBeVisible();
     await expect(page.getByText("正在工作", { exact: true })).toHaveCount(0, { timeout: 5_000 });
   } finally {
     await page.close();
@@ -414,10 +417,12 @@ async function verifyTranscriptPresentation(
 async function postPreviewTurn(page: Page, sessionRef: string, prompt: string) {
   const response = await page.evaluate(
     async ({ ref, text }) => {
-      const request = await fetch(`/client/v1/sessions/${ref}/turns`, {
+      const body = new FormData();
+      body.append("submissionId", crypto.randomUUID());
+      body.append("prompt", text);
+      const request = await fetch(`/client/v1/sessions/${ref}/turn-submissions`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ requestId: crypto.randomUUID(), prompt: text }),
+        body,
       });
       return { ok: request.ok, status: request.status };
     },

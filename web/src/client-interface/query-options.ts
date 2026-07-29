@@ -3,7 +3,6 @@ import type {
   BindingPreferenceView,
   BootstrapView,
   CancelTurnResponse,
-  ClientMediaAttachment,
   CreateSessionRequest,
   ProjectView,
   RespondToRuntimeInteractionRequest,
@@ -12,12 +11,12 @@ import type {
   SessionCatalogView,
   SessionDeleteResponse,
   SessionView,
-  StartTurnResponse,
   TranscriptPageView,
   UpdateBindingPreferencesRequest,
 } from "../../../src/client-contract";
 import { CLIENT_API_PREFIX } from "../../../src/client-contract";
-import { clientFetch, requestId } from "./http";
+import { installClientViewSnapshot } from "./client-events";
+import { clientFetch, clientFetchSnapshot, requestId } from "./http";
 
 export const clientKeys = {
   bootstrap: ["client", "bootstrap"] as const,
@@ -35,19 +34,30 @@ export const bootstrapQueryOptions = queryOptions({
 
 export const catalogQueryOptions = queryOptions({
   queryKey: clientKeys.catalog,
-  queryFn: async () => await clientFetch<SessionCatalogView>(`${CLIENT_API_PREFIX}/session-catalog`),
+  queryFn: async ({ client }) => {
+    const snapshot = await clientFetchSnapshot<SessionCatalogView>(`${CLIENT_API_PREFIX}/session-catalog`);
+    await installClientViewSnapshot(client, { watermark: snapshot.watermark, catalog: snapshot.value });
+    return snapshot.value;
+  },
 });
 
-export async function refreshSessionCatalog(): Promise<SessionCatalogView> {
-  return await clientFetch<SessionCatalogView>(`${CLIENT_API_PREFIX}/session-catalog?refresh=1`);
+export async function refreshSessionCatalog(client: import("@tanstack/react-query").QueryClient): Promise<void> {
+  const snapshot = await clientFetchSnapshot<SessionCatalogView>(`${CLIENT_API_PREFIX}/session-catalog?refresh=1`);
+  await installClientViewSnapshot(client, { watermark: snapshot.watermark, catalog: snapshot.value });
+  await Promise.all([
+    client.invalidateQueries({ queryKey: ["client", "session"], refetchType: "active" }),
+    client.invalidateQueries({ queryKey: ["client", "transcript"], refetchType: "active" }),
+  ]);
 }
 
 export function sessionQueryOptions(sessionRef: string) {
   return queryOptions({
     queryKey: clientKeys.session(sessionRef),
-    queryFn: async () => await clientFetch<SessionView>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}?refresh=1`),
-    refetchInterval: 2_000,
-    refetchIntervalInBackground: false,
+    queryFn: async ({ client }) => {
+      const snapshot = await clientFetchSnapshot<SessionView>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}?refresh=1`);
+      await installClientViewSnapshot(client, { watermark: snapshot.watermark, sessions: [snapshot.value] });
+      return snapshot.value;
+    },
   });
 }
 
@@ -60,34 +70,21 @@ export function transcriptQueryOptions(sessionRef: string) {
   return infiniteQueryOptions({
     queryKey: clientKeys.transcript(sessionRef),
     initialPageParam: null as string | null,
-    queryFn: async ({ pageParam }) => {
+    queryFn: async ({ pageParam, client }) => {
       const search = new URLSearchParams({ limit: "100" });
       if (pageParam) search.set("before", pageParam);
-      return await clientFetch<TranscriptPageView>(
+      const snapshot = await clientFetchSnapshot<TranscriptPageView>(
         `${CLIENT_API_PREFIX}/sessions/${sessionRef}/transcript?${search.toString()}`,
       );
+      if (!pageParam) {
+        await installClientViewSnapshot(client, {
+          watermark: snapshot.watermark,
+          transcripts: [snapshot.value],
+        });
+      }
+      return snapshot.value;
     },
     getNextPageParam: (page) => page.beforeCursor ?? undefined,
-  });
-}
-
-export async function uploadMedia(sessionRef: string, file: File): Promise<ClientMediaAttachment> {
-  const body = new FormData();
-  body.append("file", file, file.name);
-  return await clientFetch<ClientMediaAttachment>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}/media`, {
-    method: "POST",
-    body,
-  });
-}
-
-export async function startTurn(
-  sessionRef: string,
-  prompt: string,
-  media: ClientMediaAttachment[] = [],
-): Promise<StartTurnResponse> {
-  return await clientFetch<StartTurnResponse>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}/turns`, {
-    method: "POST",
-    body: JSON.stringify({ requestId: requestId(), prompt, media }),
   });
 }
 

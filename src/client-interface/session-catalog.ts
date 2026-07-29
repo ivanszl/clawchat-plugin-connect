@@ -7,13 +7,14 @@ import type {
   SessionCatalogEntryView,
   SessionCatalogView,
   SessionView,
+  TurnSubmissionCapability,
 } from "../client-contract";
 import { getAgentBinding } from "../config";
 import { ProjectCatalog } from "../projects";
 import { resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { SessionActivity } from "../runtime/session-queue";
-import type { RuntimeLifecycleCapabilities, RuntimeThreadSummary } from "../runtime/types";
+import type { RuntimeLifecycleCapabilities, RuntimeModelOption, RuntimeThreadSummary } from "../runtime/types";
 import { createSessionContinuity, type SessionContinuity } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { ConnectConfig, ProjectRecord, RuntimeSessionRecord, RuntimeStatus } from "../types";
@@ -145,6 +146,10 @@ export class SessionCatalog {
     }
     const pendingInteractions = await this.options.stateStore.listPendingRuntimeInteractions(normalized);
     const lifecycleCapabilities = this.options.runtimeAdapters.lifecycleCapabilities(binding);
+    const effectiveModelOption =
+      modelOptions.find((candidate) => candidate.id === effectiveModel) ??
+      modelOptions.find((candidate) => candidate.isDefault) ??
+      modelOptions[0];
     return {
       revision: Math.max(1, Date.parse(entry.updatedAt) || 1),
       sessionRef: normalized,
@@ -170,6 +175,7 @@ export class SessionCatalog {
         this.options.transcriptProjection.completeness(normalized) ??
         (runtimeThreadAvailable ? "partial" : "live-only"),
       pendingInteractions,
+      turnSubmissionCapability: clientTurnSubmissionCapability(effectiveModelOption, modelAvailable),
       allowedActions: sessionActions(entry.isArchived, runtimeThreadAvailable, activity, lifecycleCapabilities),
       updatedAt: entry.updatedAt,
     };
@@ -421,6 +427,35 @@ export class SessionCatalog {
     };
     return this.state;
   }
+}
+
+function clientTurnSubmissionCapability(
+  model: RuntimeModelOption | undefined,
+  modelAvailable: boolean,
+): TurnSubmissionCapability {
+  const modalities = modelAvailable ? (model?.inputModalities ?? ["text"]) : [];
+  const native = modelAvailable ? model?.turnSubmissionCapability : undefined;
+  const modalityKinds: TurnSubmissionCapability["attachments"]["allowedKinds"] = [];
+  if (modalities.includes("image")) modalityKinds.push("image");
+  if (modalities.includes("audio")) modalityKinds.push("audio");
+  const allowedKinds = (native?.attachments.allowedKinds ?? modalityKinds).filter((kind) =>
+    modalityKinds.includes(kind),
+  );
+  const maxCount = allowedKinds.length > 0 ? Math.min(10, native?.attachments.maxCount ?? 10) : 0;
+  return {
+    prompt: {
+      allowed: modalities.includes("text") && (native?.prompt.allowed ?? true),
+      required: native?.prompt.required ?? false,
+      maxCharacters: Math.min(64_000, native?.prompt.maxCharacters ?? 64_000),
+    },
+    attachments: {
+      allowedKinds,
+      allowedMediaTypes: native?.attachments.allowedMediaTypes ?? allowedKinds.map((kind) => `${kind}/*`),
+      maxCount,
+      maxBytesEach: Math.min(100 * 1024 * 1024, native?.attachments.maxBytesEach ?? Number.POSITIVE_INFINITY),
+      maxBytesTotal: Math.min(100 * 1024 * 1024, native?.attachments.maxBytesTotal ?? Number.POSITIVE_INFINITY),
+    },
+  };
 }
 
 function managedEntry(

@@ -577,7 +577,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
   }
 
   private async buildTurnInput(input: ConnectRuntimePrompt): Promise<CodexUserInput[]> {
-    const turnInput: CodexUserInput[] = [{ type: "text", text: input.prompt, text_elements: [] }];
+    const turnInput: CodexUserInput[] = input.prompt ? [{ type: "text", text: input.prompt, text_elements: [] }] : [];
     for (const media of input.media ?? []) {
       const path = input.trustedMediaOrigins
         ? await this.cacheMedia(media, this.context.stateDbPath, input.trustedMediaOrigins)

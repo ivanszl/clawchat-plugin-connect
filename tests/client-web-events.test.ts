@@ -10,10 +10,9 @@ import {
 } from "../web/src/client-interface/query-options";
 
 describe("Connect Client event fallback", () => {
-  it("polls persisted Client events and only checks the active Session for external Runtime updates", async () => {
+  it("polls persisted Client events without a parallel active-Session polling writer", async () => {
     expect(catalogQueryOptions.refetchInterval).toBeUndefined();
-    expect(sessionQueryOptions("NKEP79B8").refetchInterval).toBe(2_000);
-    expect(sessionQueryOptions("NKEP79B8").refetchIntervalInBackground).toBe(false);
+    expect(sessionQueryOptions("NKEP79B8").refetchInterval).toBeUndefined();
     expect(transcriptQueryOptions("NKEP79B8").refetchInterval).toBeUndefined();
 
     const queryClient = new QueryClient();
@@ -45,6 +44,7 @@ describe("Connect Client event fallback", () => {
     const event = {
       type: "transcript.block-upserted",
       cursor: 6,
+      previousCursor: 5,
       sessionRef: "NKEP79B8",
       revision: 1,
       block: {
@@ -71,5 +71,67 @@ describe("Connect Client event fallback", () => {
     expect(
       queryClient.getQueryData<{ pages: TranscriptPageView[] }>(clientKeys.transcript("NKEP79B8"))?.pages[0]?.blocks,
     ).toContainEqual(event.block);
+  });
+
+  it("merges a newer block revision into its loaded older Transcript page", async () => {
+    const queryClient = new QueryClient();
+    const olderBlock = {
+      id: "message-old",
+      type: "message" as const,
+      origin: "runtime" as const,
+      state: "streaming" as const,
+      plainText: "partial",
+      role: "assistant" as const,
+      author: "Agent",
+      markdown: "partial",
+      revision: 1,
+      sequence: 2,
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    };
+    queryClient.setQueryData(clientKeys.transcript("NKEP79B8"), {
+      pageParams: [null, "s:3"],
+      pages: [
+        {
+          sessionRef: "NKEP79B8",
+          blocks: [],
+          beforeCursor: "s:3",
+          hasOlder: true,
+          completeness: "complete",
+        },
+        {
+          sessionRef: "NKEP79B8",
+          blocks: [olderBlock],
+          beforeCursor: null,
+          hasOlder: false,
+          completeness: "complete",
+        },
+      ] satisfies TranscriptPageView[],
+    });
+    const completed = {
+      ...olderBlock,
+      state: "complete" as const,
+      plainText: "complete",
+      markdown: "complete",
+      revision: 2,
+    };
+
+    await pollClientEventBatch(queryClient, 5, async () => ({
+      cursor: 8,
+      events: [
+        {
+          type: "transcript.block-upserted",
+          cursor: 8,
+          previousCursor: 5,
+          sessionRef: "NKEP79B8",
+          revision: 2,
+          block: completed,
+        },
+      ],
+    }));
+
+    const pages = queryClient.getQueryData<{ pages: TranscriptPageView[] }>(clientKeys.transcript("NKEP79B8"))?.pages;
+    expect(pages?.[0]?.blocks).toEqual([]);
+    expect(pages?.[1]?.blocks).toEqual([completed]);
   });
 });

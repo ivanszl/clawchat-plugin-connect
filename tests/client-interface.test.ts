@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { mkdir, mkdtemp, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindingRuntimeHandle } from "../src/binding-runtime";
@@ -84,6 +84,16 @@ describe("Connect Client Interface", () => {
           defaultReasoningEffort: "high",
           supportedReasoningEfforts: ["high", "xhigh"],
           inputModalities: ["text", "image"],
+          turnSubmissionCapability: {
+            prompt: { allowed: true, required: false, maxCharacters: 8_000 },
+            attachments: {
+              allowedKinds: ["image"],
+              allowedMediaTypes: ["image/png"],
+              maxCount: 2,
+              maxBytesEach: 1_024,
+              maxBytesTotal: 1_500,
+            },
+          },
         },
       ],
       discoverAllThreads: async () => (!isArchived && !isDeleted ? [summary, discoveredSummary] : [discoveredSummary]),
@@ -161,20 +171,17 @@ describe("Connect Client Interface", () => {
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     config.defaultAgent = "codex";
     config.stateDbPath = store.dbPath;
-    const enqueueClientTurn = mock(async (sessionRef: string) => ({ turnId: "turn-123", sessionRef }));
-    const uploadClientMedia = mock(async (_file: Blob, filename: string) => ({
-      kind: "image" as const,
-      url: "https://media.clawling.chat/media/uploaded-photo",
-      name: filename,
-      mime: "image/png",
-      size: 5,
-    }));
+    const enqueueClientTurn = mock(
+      async (sessionRef: string, _prompt: string, _media: import("../src/runtime/types").ConnectRuntimeMedia[]) => ({
+        turnId: "turn-123",
+        sessionRef,
+      }),
+    );
     const runtime: BindingRuntimeHandle = {
       agentId: "codex",
       websocketUrl: config.websocketUrl,
       deviceId: "device-1",
       enqueueClientTurn,
-      uploadClientMedia,
       close: async () => undefined,
     };
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
@@ -397,6 +404,15 @@ describe("Connect Client Interface", () => {
       model: string;
       reasoningEffort: string;
       runtimeThreadAvailable: boolean;
+      turnSubmissionCapability: {
+        prompt: { maxCharacters: number };
+        attachments: {
+          allowedMediaTypes: string[];
+          maxCount: number;
+          maxBytesEach: number;
+          maxBytesTotal: number;
+        };
+      };
     };
     expect(createdSessionView).toMatchObject({
       projectId: sessionProject.projectId,
@@ -404,6 +420,15 @@ describe("Connect Client Interface", () => {
       model: "gpt-deep",
       reasoningEffort: "xhigh",
       runtimeThreadAvailable: false,
+      turnSubmissionCapability: {
+        prompt: { maxCharacters: 8_000 },
+        attachments: {
+          allowedMediaTypes: ["image/png"],
+          maxCount: 2,
+          maxBytesEach: 1_024,
+          maxBytesTotal: 1_500,
+        },
+      },
     });
     await expect(store.getRuntimeSessionByRef(createdSessionView.sessionRef)).resolves.toMatchObject({
       projectId: sessionProject.projectId,
@@ -487,73 +512,89 @@ describe("Connect Client Interface", () => {
     });
     const eventBatch = await localRequest(fetchHandler, handle.origin, `/client/v1/events/batch?after=${eventCursor}`);
     expect(eventBatch.status).toBe(200);
-    await expect(eventBatch.json()).resolves.toMatchObject({
-      events: [
-        {
-          type: "transcript.block-upserted",
-          sessionRef: session.sessionRef,
-          block: {
-            type: "message",
-            origin: "clawchat",
-            markdown: "from ClawChat",
-            sender: { id: "usr_opaque", displayName: "Alice" },
-            conversationType: "group",
-            media: [
-              {
-                kind: "image",
-                url: "https://media.clawling.chat/media/example.jpg",
-                name: "example.jpg",
-              },
-            ],
+    const eventBatchView = (await eventBatch.json()) as {
+      events: Array<{ type: string; cursor: number; previousCursor: number; [key: string]: unknown }>;
+    };
+    expect(eventBatchView.events.find((event) => event.type === "transcript.block-upserted")).toMatchObject({
+      type: "transcript.block-upserted",
+      sessionRef: session.sessionRef,
+      block: {
+        type: "message",
+        origin: "clawchat",
+        markdown: "from ClawChat",
+        sender: { id: "usr_opaque", displayName: "Alice" },
+        conversationType: "group",
+        media: [
+          {
+            kind: "image",
+            url: "https://media.clawling.chat/media/example.jpg",
+            name: "example.jpg",
           },
-        },
-      ],
-    });
-
-    const uploadBody = new FormData();
-    uploadBody.append("file", new File(["photo"], "photo.png", { type: "image/png" }));
-    const upload = await localRequest(fetchHandler, handle.origin, `/client/v1/sessions/${session.sessionRef}/media`, {
-      method: "POST",
-      headers: { origin: handle.origin },
-      body: uploadBody,
-    });
-    expect(upload.status).toBe(201);
-    const uploadedMedia = await upload.json();
-    expect(uploadClientMedia).toHaveBeenCalledTimes(1);
-    expect(uploadedMedia).toEqual({
-      kind: "image",
-      url: "https://media.clawling.chat/media/uploaded-photo",
-      name: "photo.png",
-      mime: "image/png",
-      size: 5,
-    });
-
-    const turn = await localRequest(fetchHandler, handle.origin, `/client/v1/sessions/${session.sessionRef}/turns`, {
-      method: "POST",
-      headers: {
-        origin: handle.origin,
-        "content-type": "application/json",
+        ],
       },
-      body: JSON.stringify({ requestId: "request_123", prompt: "from web", media: [uploadedMedia] }),
     });
+    expect(
+      eventBatchView.events.every(
+        (event, index, events) => index === 0 || event.previousCursor === events[index - 1]?.cursor,
+      ),
+    ).toBe(true);
+
+    const submissionBody = (prompt = "from web") => {
+      const body = new FormData();
+      body.append("submissionId", "request_123");
+      body.append("prompt", prompt);
+      body.append("attachments", new File(["photo"], "photo.png", { type: "image/png" }));
+      return body;
+    };
+    const turn = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin },
+        body: submissionBody(),
+      },
+    );
     expect(turn.status).toBe(202);
     await expect(turn.json()).resolves.toEqual({ accepted: true, turnId: "turn-123", sessionRef: session.sessionRef });
-    expect(enqueueClientTurn).toHaveBeenCalledWith(session.sessionRef, "from web", [uploadedMedia]);
+    expect(enqueueClientTurn).toHaveBeenCalledWith(session.sessionRef, "from web", [
+      expect.objectContaining({
+        kind: "image",
+        name: "photo.png",
+        mime: "image/png",
+        size: 5,
+        stagedPath: expect.any(String),
+      }),
+    ]);
+    const acceptedMedia = enqueueClientTurn.mock.calls[0]?.[2]?.[0];
+    if (!acceptedMedia?.stagedPath) throw new Error("accepted media was not Connect-staged");
+    await expect(Bun.file(acceptedMedia.stagedPath).text()).resolves.toBe("photo");
 
     const replayedTurn = await localRequest(
       fetchHandler,
       handle.origin,
-      `/client/v1/sessions/${session.sessionRef}/turns`,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions`,
       {
         method: "POST",
-        headers: {
-          origin: handle.origin,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ requestId: "request_123", prompt: "from web", media: [uploadedMedia] }),
+        headers: { origin: handle.origin },
+        body: submissionBody(),
       },
     );
     expect(replayedTurn.status).toBe(202);
+    expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
+
+    const conflictingSubmission = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin },
+        body: submissionBody("different content"),
+      },
+    );
+    expect(conflictingSubmission.status).toBe(409);
     expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
 
     const conflictingRequestId = await localRequest(
@@ -603,17 +644,24 @@ describe("Connect Client Interface", () => {
     const blockedTurn = await localRequest(
       fetchHandler,
       handle.origin,
-      `/client/v1/sessions/${session.sessionRef}/turns`,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions`,
       {
         method: "POST",
-        headers: { origin: handle.origin, "content-type": "application/json" },
-        body: JSON.stringify({ requestId: "request_blocked_by_approval", prompt: "must wait" }),
+        headers: { origin: handle.origin },
+        body: (() => {
+          const body = new FormData();
+          body.append("submissionId", "request_blocked_by_approval");
+          body.append("prompt", "must wait");
+          return body;
+        })(),
       },
     );
     expect(blockedTurn.status).toBe(409);
     await expect(blockedTurn.json()).resolves.toMatchObject({
       error: { code: "runtime-interaction-pending" },
     });
+    const stagingEntries = await readdir(join(directory, "turn-submissions"));
+    expect(stagingEntries.some((entry) => entry.startsWith("request_blocked_by_approval-"))).toBe(false);
     const pending = (await store.listPendingRuntimeInteractions(session.sessionRef))[0];
     if (!pending) throw new Error("pending interaction was not projected");
     const approval = await localRequest(
@@ -637,7 +685,7 @@ describe("Connect Client Interface", () => {
     const rejected = await localRequest(
       fetchHandler,
       handle.origin,
-      `/client/v1/sessions/${session.sessionRef}/turns`,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions`,
       {
         method: "POST",
         headers: { origin: "http://evil.invalid" },

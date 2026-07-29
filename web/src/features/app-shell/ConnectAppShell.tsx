@@ -6,7 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Settings } from "lucide-react";
 import type { ReactNode } from "react";
-import { catalogQueryOptions, clientKeys, refreshSessionCatalog } from "../../client-interface/query-options";
+import { catalogQueryOptions, refreshSessionCatalog } from "../../client-interface/query-options";
 import { RefreshIcon } from "../../components/icons";
 import { SessionNavigation } from "../session-catalog/SessionNavigation";
 
@@ -14,11 +14,7 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
   const catalog = useQuery(catalogQueryOptions);
   const queryClient = useQueryClient();
   const refresh = useMutation({
-    mutationFn: refreshSessionCatalog,
-    onSuccess: async (view) => {
-      queryClient.setQueryData(clientKeys.catalog, view);
-      await queryClient.invalidateQueries({ queryKey: ["client", "session"], refetchType: "active" });
-    },
+    mutationFn: async () => await refreshSessionCatalog(queryClient),
   });
   const navigate = useNavigate();
   const isSettings = useRouterState({ select: (state) => state.location.pathname === "/settings" });

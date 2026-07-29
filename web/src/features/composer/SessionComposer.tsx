@@ -5,10 +5,9 @@ import { Spinner } from "@astryxdesign/core/Spinner";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { MessageCircle, Paperclip, Square, X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { cancelTurn, clientKeys, startTurn, uploadMedia } from "../../client-interface/query-options";
-
-const MAX_ATTACHMENTS = 10;
-const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
+import type { TurnSubmissionCapability } from "../../../../src/client-contract";
+import { cancelTurn, clientKeys } from "../../client-interface/query-options";
+import { useTurnSubmission } from "./useTurnSubmission";
 
 export interface SessionComposerProps {
   sessionRef: string;
@@ -16,6 +15,7 @@ export interface SessionComposerProps {
   continueInClawChatHref: string | null;
   canSend: boolean;
   isRuntimeActive: boolean;
+  capability: TurnSubmissionCapability;
   hasPendingInteraction?: boolean;
   modelControl?: ReactNode;
 }
@@ -26,6 +26,7 @@ export function SessionComposer({
   continueInClawChatHref,
   canSend,
   isRuntimeActive,
+  capability,
   hasPendingInteraction = false,
   modelControl,
 }: SessionComposerProps) {
@@ -50,42 +51,31 @@ export function SessionComposer({
   useEffect(() => {
     if (!isRuntimeActive) setAcceptedTurnId(null);
   }, [isRuntimeActive]);
-  useEffect(() => {
-    if (!acceptedTurnId && !isRuntimeActive) return;
-    const refresh = () => {
-      void queryClient.invalidateQueries({ queryKey: clientKeys.session(sessionRef), refetchType: "active" });
-      void queryClient.invalidateQueries({ queryKey: clientKeys.catalog, refetchType: "active" });
-    };
-    refresh();
-    const timer = window.setInterval(refresh, 1_000);
-    return () => window.clearInterval(timer);
-  }, [acceptedTurnId, isRuntimeActive, queryClient, sessionRef]);
-
-  const send = useMutation({
-    mutationFn: async ({ prompt, files }: { prompt: string; files: File[] }) => {
-      const media = await Promise.all(files.map(async (file) => await uploadMedia(sessionRef, file)));
-      return await startTurn(sessionRef, prompt || "请查看附件。", media);
-    },
-    onSuccess: (response) => {
-      setValue("");
-      setAttachments([]);
-      setAttachmentError(null);
-      setAcceptedTurnId(response.turnId);
-      void queryClient.invalidateQueries({ queryKey: clientKeys.session(sessionRef) });
-      void queryClient.invalidateQueries({ queryKey: clientKeys.catalog });
-    },
-  });
+  const send = useTurnSubmission(sessionRef);
   const addFiles = (files: File[]) => {
     setAttachmentError(null);
-    const oversized = files.find((file) => file.size > MAX_ATTACHMENT_BYTES);
+    const oversized = files.find((file) => file.size > capability.attachments.maxBytesEach);
     if (oversized) {
-      setAttachmentError(`${oversized.name} 超过 100 MiB，无法上传`);
+      setAttachmentError(`${oversized.name} 超过单个附件限制，无法上传`);
+      return;
+    }
+    const unsupported = files.find(
+      (file) =>
+        !capability.attachments.allowedKinds.includes(fileKind(file)) ||
+        !matchesMediaType(file.type, capability.attachments.allowedMediaTypes),
+    );
+    if (unsupported) {
+      setAttachmentError(`${unsupported.name} 不受当前模型支持`);
       return;
     }
     setAttachments((current) => {
       const next = [...current, ...files];
-      if (next.length > MAX_ATTACHMENTS) {
-        setAttachmentError(`每条消息最多上传 ${MAX_ATTACHMENTS} 个文件`);
+      if (next.length > capability.attachments.maxCount) {
+        setAttachmentError(`每条消息最多上传 ${capability.attachments.maxCount} 个文件`);
+        return current;
+      }
+      if (next.reduce((total, file) => total + file.size, 0) > capability.attachments.maxBytesTotal) {
+        setAttachmentError("附件总大小超过当前提交限制");
         return current;
       }
       return next;
@@ -93,7 +83,17 @@ export function SessionComposer({
   };
   const submit = (prompt: string) => {
     if (!send.isPending && (prompt.trim() || attachments.length > 0)) {
-      send.mutate({ prompt: prompt.trim(), files: attachments });
+      send.mutate(
+        { prompt: prompt.trim(), files: attachments },
+        {
+          onSuccess: (response) => {
+            setValue("");
+            setAttachments([]);
+            setAttachmentError(null);
+            setAcceptedTurnId(response.turnId);
+          },
+        },
+      );
     }
   };
   const stop = useMutation({
@@ -103,8 +103,21 @@ export function SessionComposer({
   const error = attachmentError ?? send.error?.message ?? stop.error?.message;
   const composerDisabled = !canSend || hasPendingInteraction || send.isPending;
   const isAgentWorking = Boolean(acceptedTurnId) || isRuntimeActive;
+  const attachmentLimitLabel =
+    capability.attachments.maxCount === 0
+      ? "当前模型不支持附件"
+      : `最多 ${capability.attachments.maxCount} 个附件，单个 ${formatBytes(
+          capability.attachments.maxBytesEach,
+        )}，合计 ${formatBytes(capability.attachments.maxBytesTotal)}`;
   return (
     <div className="composer-region">
+      {send.isPending && send.progress ? (
+        <div className="composer-submission-progress" role="status">
+          {send.progress.phase === "accepting"
+            ? "附件传输完成，正在等待 Session 队列接收"
+            : `正在传输 ${formatBytes(send.progress.transferredBytes)} / ${formatBytes(send.progress.totalBytes)}`}
+        </div>
+      ) : null}
       <ChatComposer
         className="session-composer"
         value={value}
@@ -174,6 +187,7 @@ export function SessionComposer({
               className="composer-file-input"
               type="file"
               multiple
+              accept={capability.attachments.allowedMediaTypes.join(",")}
               onChange={(event) => {
                 addFiles(Array.from(event.currentTarget.files ?? []));
                 event.currentTarget.value = "";
@@ -181,12 +195,12 @@ export function SessionComposer({
             />
             <Button
               label="上传媒体文件"
-              tooltip="上传媒体文件"
+              tooltip={attachmentLimitLabel}
               icon={<Icon icon={Paperclip} size="sm" />}
               isIconOnly
               size="sm"
               variant="ghost"
-              isDisabled={composerDisabled}
+              isDisabled={composerDisabled || capability.attachments.maxCount === 0}
               onClick={() => fileInputRef.current?.click()}
             />
           </>
@@ -219,7 +233,13 @@ export function SessionComposer({
         sendActions={modelControl}
         sendButton={
           send.isPending ? (
-            <Button label="发送中" isLoading isDisabled size="md" variant="primary" />
+            <Button
+              label={send.progress?.phase === "accepting" ? "等待队列接收" : "取消提交"}
+              isLoading={send.progress?.phase === "accepting"}
+              size="md"
+              variant="secondary"
+              onClick={send.cancel}
+            />
           ) : isAgentWorking ? (
             <div className="composer-working-control">
               <span className="composer-working-indicator">
@@ -246,8 +266,35 @@ export function SessionComposer({
         }
       />
       <div className="sr-only" aria-live="polite">
-        {send.isPending ? "消息正在提交" : isAgentWorking ? "Agent 正在工作，可以点击停止" : ""}
+        {send.isPending
+          ? send.progress?.phase === "accepting"
+            ? "附件传输完成，正在等待 Session 队列接收"
+            : `正在传输 ${send.progress?.transferredBytes ?? 0} / ${send.progress?.totalBytes ?? 0} 字节`
+          : isAgentWorking
+            ? "Agent 正在工作，可以点击停止"
+            : ""}
       </div>
     </div>
   );
+}
+
+function fileKind(file: File): "image" | "file" | "audio" | "video" {
+  if (file.type.startsWith("image/")) return "image";
+  if (file.type.startsWith("audio/")) return "audio";
+  if (file.type.startsWith("video/")) return "video";
+  return "file";
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function matchesMediaType(mediaType: string, allowed: readonly string[]): boolean {
+  return allowed.some((pattern) => {
+    if (pattern === "*/*") return true;
+    if (pattern.endsWith("/*")) return mediaType.startsWith(pattern.slice(0, -1));
+    return pattern === mediaType;
+  });
 }

@@ -7,13 +7,21 @@ import type {
   TranscriptPageView,
 } from "../../../src/client-contract";
 import { CLIENT_API_PREFIX } from "../../../src/client-contract";
+import {
+  ClientViewContinuity,
+  type ClientViewSnapshot,
+  type DeliveredClientViewEvent,
+} from "../../../src/client-interface/client-view-continuity";
 import { clientFetch } from "./http";
 import { clientKeys } from "./query-options";
 
+const continuities = new WeakMap<QueryClient, ClientViewContinuity>();
+
 export function connectClientEvents(queryClient: QueryClient, cursor: number): () => void {
-  let currentCursor = cursor;
+  const continuity = continuityFor(queryClient);
+  void continuity.install({ watermark: cursor });
   let polling = false;
-  const events = new EventSource(`${CLIENT_API_PREFIX}/events?after=${cursor}`);
+  const events = new EventSource(`${CLIENT_API_PREFIX}/events?after=${continuity.current().cursor}`);
   const handle = (message: MessageEvent<string>) => {
     let event: ClientViewEvent;
     try {
@@ -21,8 +29,7 @@ export function connectClientEvents(queryClient: QueryClient, cursor: number): (
     } catch {
       return;
     }
-    currentCursor = Math.max(currentCursor, event.cursor);
-    applyClientEvent(queryClient, event);
+    void applyClientEvent(queryClient, event);
   };
   for (const type of [
     "catalog.changed",
@@ -37,7 +44,7 @@ export function connectClientEvents(queryClient: QueryClient, cursor: number): (
     if (polling) return;
     polling = true;
     try {
-      currentCursor = await pollClientEventBatch(queryClient, currentCursor);
+      await pollClientEventBatch(queryClient, continuity.current().cursor);
     } catch {
       // Liveware may temporarily reconnect its HTTP relay; the next poll retries.
     } finally {
@@ -52,33 +59,88 @@ export function connectClientEvents(queryClient: QueryClient, cursor: number): (
   };
 }
 
+export async function installClientViewSnapshot(queryClient: QueryClient, snapshot: ClientViewSnapshot): Promise<void> {
+  const continuity = continuityFor(queryClient);
+  const committed = await continuity.install(snapshot);
+  syncContinuityState(queryClient, continuity, true);
+  for (const event of committed) mergeTranscriptEvent(queryClient, event);
+}
+
 export async function pollClientEventBatch(
   queryClient: QueryClient,
   cursor: number,
   fetchBatch: (after: number) => Promise<ClientEventBatchView> = fetchClientEventBatch,
 ): Promise<number> {
+  await continuityFor(queryClient).install({ watermark: cursor });
   const batch = await fetchBatch(cursor);
-  for (const event of batch.events) applyClientEvent(queryClient, event);
-  return Math.max(cursor, batch.cursor);
+  for (const event of batch.events) await applyClientEvent(queryClient, event);
+  return continuityFor(queryClient).current().cursor;
 }
 
 async function fetchClientEventBatch(after: number): Promise<ClientEventBatchView> {
   return await clientFetch<ClientEventBatchView>(`${CLIENT_API_PREFIX}/events/batch?after=${after}`);
 }
 
-export function applyClientEvent(queryClient: QueryClient, event: ClientViewEvent): void {
-  if (event.type === "catalog.changed") {
-    queryClient.setQueryData(clientKeys.catalog, event.catalog);
+export async function applyClientEvent(queryClient: QueryClient, event: ClientViewEvent): Promise<void> {
+  const continuity = continuityFor(queryClient);
+  if (!Number.isSafeInteger(event.previousCursor) || (event.previousCursor ?? -1) < 0) {
+    await recoverClientViews(queryClient);
     return;
   }
-  if (event.type === "session.changed") {
-    queryClient.setQueryData(clientKeys.session(event.sessionRef), event.session);
-    return;
+  const committed = await continuity.receive(event as DeliveredClientViewEvent);
+  syncContinuityState(queryClient, continuity, false);
+  for (const changed of committed) mergeTranscriptEvent(queryClient, changed);
+  if (continuity.current().status === "recovering") await recoverClientViews(queryClient);
+}
+
+function continuityFor(queryClient: QueryClient): ClientViewContinuity {
+  let continuity = continuities.get(queryClient);
+  if (!continuity) {
+    continuity = new ClientViewContinuity();
+    const catalog = queryClient.getQueryData<SessionCatalogView>(clientKeys.catalog);
+    const sessions = queryClient
+      .getQueriesData<SessionView>({ queryKey: ["client", "session"] })
+      .flatMap(([, session]) => (session ? [session] : []));
+    const transcripts = queryClient
+      .getQueriesData<InfiniteData<TranscriptPageView, string | null>>({ queryKey: ["client", "transcript"] })
+      .flatMap(([, transcript]) => (transcript?.pages[0] ? [transcript.pages[0]] : []));
+    void continuity.install({
+      watermark: 0,
+      ...(catalog ? { catalog } : {}),
+      sessions,
+      transcripts,
+    });
+    continuities.set(queryClient, continuity);
   }
-  if (event.type === "snapshot-required") {
-    void queryClient.invalidateQueries({ queryKey: ["client"] });
-    return;
+  return continuity;
+}
+
+function syncContinuityState(
+  queryClient: QueryClient,
+  continuity: ClientViewContinuity,
+  installTranscripts: boolean,
+): void {
+  const state = continuity.current();
+  if (state.catalog) queryClient.setQueryData<SessionCatalogView>(clientKeys.catalog, state.catalog);
+  for (const [sessionRef, session] of state.sessions) {
+    queryClient.setQueryData<SessionView>(clientKeys.session(sessionRef), session);
   }
+  if (!installTranscripts) return;
+  for (const [sessionRef, transcript] of state.transcripts) {
+    queryClient.setQueryData<InfiniteData<TranscriptPageView, string | null>>(
+      clientKeys.transcript(sessionRef),
+      (current) => {
+        if (!current) return current;
+        const pages = [...current.pages];
+        pages[0] = transcript;
+        return { ...current, pages };
+      },
+    );
+  }
+}
+
+function mergeTranscriptEvent(queryClient: QueryClient, event: DeliveredClientViewEvent): void {
+  if (event.type !== "transcript.block-upserted" && event.type !== "transcript.block-removed") return;
   queryClient.setQueryData<InfiniteData<TranscriptPageView, string | null>>(
     clientKeys.transcript(event.sessionRef),
     (current) => {
@@ -88,20 +150,22 @@ export function applyClientEvent(queryClient: QueryClient, event: ClientViewEven
           ...current,
           pages: current.pages.map((page) => ({
             ...page,
-            blocks: page.blocks.filter((block) => block.id !== event.blockId),
+            blocks: page.blocks.filter((block) => block.id !== event.blockId || block.revision > event.revision),
           })),
         };
       }
-      let replaced = false;
-      const pages = current.pages.map((page) => ({
-        ...page,
-        blocks: page.blocks.map((block) => {
-          if (block.id !== event.block.id) return block;
-          replaced = true;
-          return event.block;
-        }),
-      }));
-      if (!replaced && pages[0]) {
+      let found = false;
+      const pages = current.pages.map((page) => {
+        const existing = page.blocks.find((block) => block.id === event.block.id);
+        if (!existing) return page;
+        found = true;
+        if (existing.revision >= event.block.revision) return page;
+        return {
+          ...page,
+          blocks: page.blocks.map((block) => (block.id === event.block.id ? event.block : block)),
+        };
+      });
+      if (!found && pages[0]) {
         pages[0] = {
           ...pages[0],
           blocks: [...pages[0].blocks, event.block].sort((left, right) => left.sequence - right.sequence),
@@ -110,45 +174,8 @@ export function applyClientEvent(queryClient: QueryClient, event: ClientViewEven
       return { ...current, pages };
     },
   );
-  const catalog = queryClient.getQueryData<SessionCatalogView>(clientKeys.catalog);
-  if (event.type === "transcript.block-upserted" && event.block.type === "runtime-interaction") {
-    const interaction = event.block;
-    queryClient.setQueryData<SessionView>(clientKeys.session(event.sessionRef), (current) => {
-      if (!current) return current;
-      const pendingInteractions = current.pendingInteractions.filter(
-        (candidate) => candidate.interactionId !== interaction.interactionId,
-      );
-      if (interaction.responseState === "pending") pendingInteractions.push(interaction);
-      return { ...current, pendingInteractions };
-    });
-    const pendingCount = queryClient.getQueryData<SessionView>(clientKeys.session(event.sessionRef))
-      ?.pendingInteractions.length;
-    queryClient.setQueryData<SessionCatalogView>(clientKeys.catalog, (current) => {
-      if (!current) return current;
-      return {
-        ...current,
-        bindings: current.bindings.map((binding) => ({
-          ...binding,
-          entries: binding.entries.map((entry) =>
-            entry.sessionRef === event.sessionRef
-              ? {
-                  ...entry,
-                  pendingInteractionCount:
-                    pendingCount ??
-                    (interaction.responseState === "pending"
-                      ? entry.pendingInteractionCount + 1
-                      : Math.max(0, entry.pendingInteractionCount - 1)),
-                }
-              : entry,
-          ),
-        })),
-      };
-    });
-  }
-  const knownSession = catalog?.bindings.some((binding) =>
-    binding.entries.some((entry) => entry.sessionRef === event.sessionRef),
-  );
-  if (catalog && !knownSession) {
-    void queryClient.invalidateQueries({ queryKey: clientKeys.catalog, refetchType: "active" });
-  }
+}
+
+async function recoverClientViews(queryClient: QueryClient): Promise<void> {
+  await queryClient.invalidateQueries({ queryKey: ["client"], refetchType: "active" });
 }

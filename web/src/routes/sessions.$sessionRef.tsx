@@ -172,6 +172,7 @@ function SessionPage() {
         continueInClawChatHref={clawChatHref}
         canSend={view.allowedActions.includes("send") && view.status !== "offline"}
         isRuntimeActive={view.status === "running" || view.status === "queued"}
+        capability={view.turnSubmissionCapability}
         hasPendingInteraction={view.pendingInteractions.length > 0}
         modelControl={<SessionModelControls view={view} />}
       />
@@ -220,8 +221,8 @@ function SessionModelControls({ view }: { view: SessionView }) {
         model === "default" ? null : model,
         model === "default" ? null : effort,
       ),
-    onSuccess: (updated) => {
-      queryClient.setQueryData(clientKeys.session(view.sessionRef), updated);
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: clientKeys.session(view.sessionRef), refetchType: "active" });
       setIsOpen(false);
     },
   });

@@ -19,7 +19,6 @@ import type {
 import {
   bootstrapQueryOptions,
   catalogQueryOptions,
-  clientKeys,
   createSession,
   projectsQueryOptions,
 } from "../../client-interface/query-options";
@@ -166,7 +165,6 @@ function NewSessionDialog({
       }),
     onSuccess: (session) => {
       void queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
-      queryClient.setQueryData(clientKeys.session(session.sessionRef), session);
       onCreated(session.sessionRef);
     },
   });

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import type { BindingRuntimeHandle } from "../binding-runtime";
@@ -8,12 +8,10 @@ import {
   type CancelTurnRequest,
   CLIENT_API_PREFIX,
   type ClientErrorView,
-  type ClientMediaAttachment,
   type CreateSessionRequest,
   normalizeSessionRef,
   type SessionMutationRequest,
   type SessionView,
-  type StartTurnRequest,
   type UpdateBindingPreferencesRequest,
   type UpdateSessionPreferencesRequest,
 } from "../client-contract";
@@ -28,9 +26,10 @@ import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig } from "../types";
 import { SessionCatalog } from "./session-catalog";
 import type { TranscriptProjection } from "./transcript-projection";
+import { TurnSubmission, type TurnSubmissionDraft, TurnSubmissionError } from "./turn-submission";
+import { FileTurnSubmissionStaging } from "./turn-submission-staging";
 
 const MAX_JSON_BODY_BYTES = 128 * 1_024;
-const MAX_CLIENT_MEDIA_ATTACHMENTS = 10;
 const OUTPUT_VISIBILITIES = new Set(["minimal", "normal", "full"]);
 
 class ClientRequestError extends Error {
@@ -98,6 +97,46 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   await catalog.reconcileLifecycle();
   const runtimeInteractions =
     options.runtimeInteractions ?? new RuntimeInteractionCoordinator(options.transcriptProjection);
+  const submissionStaging = new FileTurnSubmissionStaging(options.config.stateDbPath);
+  await submissionStaging.cleanupExpired();
+  const turnSubmissions = new TurnSubmission({
+    capabilityFor: async (sessionRef) => {
+      const view = await catalog.sessionView(sessionRef);
+      if (!view) throw new ClientRequestError(404, "session-not-found", "Session was not found");
+      if (view.isArchived)
+        throw new ClientRequestError(409, "session-archived", "Archived Sessions cannot accept turns");
+      if (!view.allowedActions.includes("send")) {
+        throw new ClientRequestError(409, "session-state-conflict", "Session cannot accept a turn right now");
+      }
+      return view.turnSubmissionCapability;
+    },
+    staging: submissionStaging,
+    accept: async (sessionRef, prompt, media, signal) => {
+      signal?.throwIfAborted();
+      if (runtimeInteractions.hasPending(sessionRef)) {
+        throw new ClientRequestError(
+          409,
+          "runtime-interaction-pending",
+          "Complete the pending Runtime interaction before sending another message",
+        );
+      }
+      const session = await catalog.adopt(sessionRef);
+      if (!session) throw new ClientRequestError(404, "session-not-found", "Session was not found");
+      const view = await catalog.sessionView(sessionRef);
+      if (!view || view.isArchived || !view.allowedActions.includes("send")) {
+        throw new ClientRequestError(409, "session-state-conflict", "Session cannot accept a turn right now");
+      }
+      const runtime = runtimes.get(session.agentId);
+      if (!runtime?.enqueueClientTurn) {
+        throw new ClientRequestError(503, "runtime-offline", "Runtime is unavailable", true);
+      }
+      const accepted = await runtime.enqueueClientTurn(sessionRef, prompt, media);
+      catalog.invalidate();
+      return { accepted: true, ...accepted };
+    },
+  });
+  const publishClientViews = clientViewPublisher(options.stateStore, catalog);
+  await publishClientViews();
 
   const serverFactory: ClientHttpServerFactory = options.serverFactory ?? ((serverOptions) => Bun.serve(serverOptions));
   const server = serverFactory({
@@ -140,7 +179,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             return jsonResponse(view);
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/session-catalog` && request.method === "GET") {
-            return jsonResponse(await catalog.view(url.searchParams.get("refresh") === "1"));
+            const watermark = await options.stateStore.getClientEventCursor();
+            return snapshotResponse(await catalog.view(url.searchParams.get("refresh") === "1"), watermark);
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/projects` && request.method === "GET") {
             return jsonResponse(await projects.list());
@@ -283,10 +323,11 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/events` && request.method === "GET") {
             const after = eventCursor(request, url);
-            return eventStreamResponse(options.stateStore, request, after);
+            return eventStreamResponse(options.stateStore, request, after, publishClientViews);
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/events/batch` && request.method === "GET") {
             const after = eventCursor(request, url);
+            await publishClientViews();
             const events = await options.stateStore.listClientEvents(after);
             return jsonResponse({
               cursor: events.at(-1)?.cursor ?? after,
@@ -298,8 +339,11 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             const sessionRef = normalizeSessionRef(sessionMatch[1] ?? "");
             if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
             await catalog.ensureProjection(sessionRef, url.searchParams.get("refresh") === "1");
+            const watermark = await options.stateStore.getClientEventCursor();
             const view = await catalog.sessionView(sessionRef);
-            return view ? jsonResponse(view) : errorResponse(404, "session-not-found", "Session was not found");
+            return view
+              ? snapshotResponse(view, watermark)
+              : errorResponse(404, "session-not-found", "Session was not found");
           }
           const transcriptMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/transcript$/u);
           if (transcriptMatch && request.method === "GET") {
@@ -310,19 +354,23 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             }
             const before = parseBeforeCursor(url.searchParams.get("before"));
             const limit = parseLimit(url.searchParams.get("limit"));
+            const watermark = await options.stateStore.getClientEventCursor();
             const blocks = await options.stateStore.listTranscriptBlocks(sessionRef, { beforeSequence: before, limit });
             const firstSequence = blocks[0]?.sequence ?? null;
             const hasOlder = firstSequence
               ? (await options.stateStore.listTranscriptBlocks(sessionRef, { beforeSequence: firstSequence, limit: 1 }))
                   .length > 0
               : false;
-            return jsonResponse({
-              sessionRef,
-              blocks,
-              beforeCursor: hasOlder && firstSequence ? `s:${firstSequence}` : null,
-              hasOlder,
-              completeness: options.transcriptProjection.completeness(sessionRef) ?? "live-only",
-            });
+            return snapshotResponse(
+              {
+                sessionRef,
+                blocks,
+                beforeCursor: hasOlder && firstSequence ? `s:${firstSequence}` : null,
+                hasOlder,
+                completeness: options.transcriptProjection.completeness(sessionRef) ?? "live-only",
+              },
+              watermark,
+            );
           }
           const archiveMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/archive$/u);
           if (archiveMatch && request.method === "POST") {
@@ -390,66 +438,71 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               },
             );
           }
-          const turnsMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turns$/u);
-          const mediaMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/media$/u);
-          if (mediaMatch && request.method === "POST") {
-            const sessionRef = normalizeSessionRef(mediaMatch[1] ?? "");
+          const submissionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turn-submissions$/u);
+          if (submissionMatch && request.method === "POST") {
+            const sessionRef = normalizeSessionRef(submissionMatch[1] ?? "");
             if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
             const declaredLength = Number(request.headers.get("content-length") ?? "0");
             if (Number.isFinite(declaredLength) && declaredLength > MAX_RUNTIME_MEDIA_BYTES + 1_048_576) {
-              return errorResponse(413, "media-too-large", "Media files may not exceed 100 MiB");
+              return errorResponse(413, "submission-too-large", "Turn Submission may not exceed 101 MiB");
             }
             const form = await request.formData();
-            const file = form.get("file");
-            if (!(file instanceof File) || file.size === 0) {
-              return errorResponse(400, "invalid-media", "A non-empty media file is required");
+            const submissionId = form.get("submissionId");
+            const prompt = form.get("prompt");
+            if (typeof submissionId !== "string" || !validRequestId(submissionId)) {
+              return errorResponse(400, "invalid-submission-id", "submissionId is required");
             }
-            if (file.size > MAX_RUNTIME_MEDIA_BYTES) {
-              return errorResponse(413, "media-too-large", "Media files may not exceed 100 MiB");
+            if (typeof prompt !== "string") return errorResponse(400, "invalid-prompt", "prompt must be text");
+            const files = form.getAll("attachments");
+            if (!files.every((file): file is File => file instanceof File && file.size > 0)) {
+              return errorResponse(400, "invalid-attachment", "Attachments must be non-empty files");
             }
-            const session = await catalog.adopt(sessionRef);
-            if (!session) return errorResponse(404, "session-not-found", "Session was not found");
-            const runtime = runtimes.get(session.agentId);
-            if (!runtime?.uploadClientMedia) {
-              return errorResponse(503, "runtime-offline", "Runtime media upload is unavailable", true);
-            }
-            const media = await runtime.uploadClientMedia(file, file.name || "attachment");
-            return jsonResponse(media, 201);
-          }
-          if (turnsMatch && request.method === "POST") {
-            const sessionRef = normalizeSessionRef(turnsMatch[1] ?? "");
-            if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
-            const body = await readJsonBody<StartTurnRequest>(request);
-            if (!validRequestId(body.requestId))
-              return errorResponse(400, "invalid-request-id", "requestId is required");
-            if (typeof body.prompt !== "string" || !body.prompt.trim() || body.prompt.length > 64_000) {
-              return errorResponse(400, "invalid-prompt", "Prompt must contain 1 to 64,000 characters");
-            }
-            const media = validClientMedia(body.media);
-            if (!media) {
-              return errorResponse(
-                400,
-                "invalid-media",
-                `Media must contain at most ${MAX_CLIENT_MEDIA_ATTACHMENTS} valid attachments`,
-              );
-            }
-            return await idempotentCommand(options.stateStore, body.requestId, "turn.start", sessionRef, async () => {
-              if (runtimeInteractions.hasPending(sessionRef)) {
-                return commandError(
-                  409,
-                  "runtime-interaction-pending",
-                  "Complete the pending Runtime interaction before sending another message",
-                );
-              }
-              const session = await catalog.adopt(sessionRef);
-              if (!session) return commandError(404, "session-not-found", "Session was not found");
-              const runtime = runtimes.get(session.agentId);
-              if (!runtime?.enqueueClientTurn)
-                return commandError(503, "runtime-offline", "Runtime is unavailable", true);
-              const accepted = await runtime.enqueueClientTurn(sessionRef, body.prompt, media);
-              catalog.invalidate();
-              return { status: 202, body: { accepted: true, ...accepted } };
-            });
+            const draft: TurnSubmissionDraft = {
+              submissionId,
+              sessionRef,
+              prompt,
+              attachments: files.map((file) => ({
+                name: file.name || "attachment",
+                mime: file.type,
+                size: file.size,
+                bytes: file,
+              })),
+            };
+            const digest = await turnSubmissionDigest(draft);
+            return await idempotentCommand(
+              options.stateStore,
+              submissionId,
+              "turn.submit",
+              `${sessionRef}:${digest}`,
+              async () => {
+                try {
+                  return {
+                    status: 202,
+                    body: await turnSubmissions.submit(draft, request.signal),
+                  };
+                } catch (error) {
+                  if (error instanceof TurnSubmissionError) {
+                    return commandError(400, error.code, error.message);
+                  }
+                  if (error instanceof ClientRequestError) {
+                    return commandError(error.status, error.code, error.message, error.retryable);
+                  }
+                  if (error instanceof SessionLifecycleError) {
+                    return commandError(error.code === "session-not-found" ? 404 : 409, error.code, error.message);
+                  }
+                  if (error instanceof DOMException && error.name === "AbortError") {
+                    return commandError(409, "submission-cancelled", "Turn Submission was cancelled");
+                  }
+                  return commandError(
+                    500,
+                    "submission-failed",
+                    error instanceof Error ? error.message : "Turn Submission failed",
+                    true,
+                  );
+                }
+              },
+              { preserveClaimOnError: true },
+            );
           }
           const interactionMatch = url.pathname.match(/^\/client\/v1\/runtime-interactions\/([^/]+)\/respond$/u);
           if (interactionMatch && request.method === "POST") {
@@ -687,7 +740,70 @@ async function isRegisteredLivewareOrigin(
   }
 }
 
-function eventStreamResponse(store: ConnectStateStore, request: Request, afterCursor: number): Response {
+function clientViewPublisher(store: ConnectStateStore, catalog: SessionCatalog): () => Promise<void> {
+  let catalogFingerprint: string | null = null;
+  const sessionFingerprints = new Map<string, string>();
+  let publishing: Promise<void> | null = null;
+  let lastRevision = Date.now();
+  const nextRevision = (floor: number) => {
+    lastRevision = Math.max(Date.now(), lastRevision + 1, floor + 1);
+    return lastRevision;
+  };
+  return async () => {
+    if (publishing) return await publishing;
+    publishing = (async () => {
+      const catalogView = await catalog.view();
+      const nextCatalogFingerprint = viewFingerprint(catalogView);
+      if (catalogFingerprint !== null && nextCatalogFingerprint !== catalogFingerprint) {
+        const revision = nextRevision(catalogView.revision);
+        await store.appendClientViewEvent({
+          type: "catalog.changed",
+          cursor: 0,
+          revision,
+          catalog: { ...catalogView, revision },
+        });
+      }
+      catalogFingerprint = nextCatalogFingerprint;
+      const sessionRefs = new Set(
+        catalogView.bindings.flatMap((binding) => binding.entries.map((entry) => entry.sessionRef)),
+      );
+      for (const sessionRef of sessionRefs) {
+        const view = await catalog.sessionView(sessionRef);
+        if (!view) continue;
+        const fingerprint = viewFingerprint(view);
+        const previous = sessionFingerprints.get(sessionRef);
+        if (previous !== undefined && previous !== fingerprint) {
+          const revision = nextRevision(view.revision);
+          await store.appendClientViewEvent({
+            type: "session.changed",
+            cursor: 0,
+            sessionRef,
+            revision,
+            session: { ...view, revision },
+          });
+        }
+        sessionFingerprints.set(sessionRef, fingerprint);
+      }
+      for (const sessionRef of sessionFingerprints.keys()) {
+        if (!sessionRefs.has(sessionRef)) sessionFingerprints.delete(sessionRef);
+      }
+    })().finally(() => {
+      publishing = null;
+    });
+    await publishing;
+  };
+}
+
+function viewFingerprint(view: { revision: number }): string {
+  return JSON.stringify({ ...view, revision: 0 });
+}
+
+function eventStreamResponse(
+  store: ConnectStateStore,
+  request: Request,
+  afterCursor: number,
+  publishClientViews: () => Promise<void>,
+): Response {
   const encoder = new TextEncoder();
   let cursor = afterCursor;
   let pumping = false;
@@ -711,6 +827,7 @@ function eventStreamResponse(store: ConnectStateStore, request: Request, afterCu
         if (closed || pumping) return;
         pumping = true;
         try {
+          await publishClientViews();
           const events = await store.listClientEvents(cursor);
           for (const stored of events) {
             if (closed) return;
@@ -812,6 +929,7 @@ async function idempotentCommand(
   commandKind: string,
   entityRef: string,
   execute: () => Promise<{ status: number; body: unknown }>,
+  options: { preserveClaimOnError?: boolean } = {},
 ): Promise<Response> {
   const claim = await store.claimClientCommand(requestId, commandKind, entityRef);
   if (claim.state === "conflict")
@@ -824,7 +942,7 @@ async function idempotentCommand(
     await store.completeClientCommand(requestId, result.status, result.body);
     return jsonResponse(result.body, result.status);
   } catch (error) {
-    await store.abandonClientCommand(requestId).catch(() => undefined);
+    if (!options.preserveClaimOnError) await store.abandonClientCommand(requestId).catch(() => undefined);
     throw error;
   }
 }
@@ -833,11 +951,34 @@ function commandError(status: number, code: string, message: string, retryable =
   return { status, body: clientErrorView(code, message, retryable) };
 }
 
+async function turnSubmissionDigest(draft: TurnSubmissionDraft): Promise<string> {
+  const hash = createHash("sha256");
+  hash.update(draft.sessionRef);
+  hash.update("\0");
+  hash.update(draft.prompt);
+  for (const attachment of draft.attachments) {
+    hash.update("\0");
+    hash.update(attachment.name);
+    hash.update("\0");
+    hash.update(attachment.mime);
+    hash.update("\0");
+    hash.update(String(attachment.size));
+    hash.update(new Uint8Array(await attachment.bytes.arrayBuffer()));
+  }
+  return hash.digest("hex");
+}
+
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
     status,
     headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }),
   });
+}
+
+function snapshotResponse(value: unknown, watermark: number): Response {
+  const response = jsonResponse(value);
+  response.headers.set("X-Client-View-Watermark", String(watermark));
+  return response;
 }
 
 function errorResponse(
@@ -888,26 +1029,6 @@ function parseLimit(value: string | null): number {
 
 function validRequestId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{8,100}$/u.test(value);
-}
-
-function validClientMedia(value: unknown): ClientMediaAttachment[] | null {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > MAX_CLIENT_MEDIA_ATTACHMENTS) return null;
-  const media: ClientMediaAttachment[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
-    const record = item as Record<string, unknown>;
-    if (!["image", "file", "audio", "video"].includes(String(record.kind))) return null;
-    if (typeof record.url !== "string" || !record.url || record.url.length > 8_192) return null;
-    if (typeof record.name !== "string" || !record.name || record.name.length > 255) return null;
-    if (record.mime !== undefined && (typeof record.mime !== "string" || record.mime.length > 200)) return null;
-    for (const field of ["size", "width", "height", "duration"] as const) {
-      const number = record[field];
-      if (number !== undefined && (typeof number !== "number" || !Number.isFinite(number) || number < 0)) return null;
-    }
-    media.push(record as unknown as ClientMediaAttachment);
-  }
-  return media;
 }
 
 function requireDisplayName(value: unknown): string {

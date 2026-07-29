@@ -423,6 +423,13 @@ textarea {
   background: linear-gradient(0deg, var(--color-background-surface) 76%, transparent);
 }
 
+.composer-submission-progress {
+  margin-bottom: var(--spacing-1);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  text-align: center;
+}
+
 .composer-context-actions {
   display: flex;
   flex: 1 1 auto;
