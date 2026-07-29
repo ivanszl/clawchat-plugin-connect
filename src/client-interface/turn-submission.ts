@@ -1,14 +1,12 @@
 import type { TurnSubmissionCapability } from "../client-contract";
-import type { ConnectRuntimeMedia } from "../runtime/types";
-
-export type TurnSubmissionAttachmentKind = ConnectRuntimeMedia["kind"];
+export type TurnSubmissionAttachmentKind = "image" | "file" | "audio" | "video";
 export type { TurnSubmissionCapability } from "../client-contract";
 
 export interface TurnSubmissionAttachment {
   name: string;
   mime: string;
   size: number;
-  bytes: Blob;
+  readBytes(): Promise<Uint8Array>;
 }
 
 export interface TurnSubmissionDraft {
@@ -19,7 +17,6 @@ export interface TurnSubmissionDraft {
 }
 
 export interface StagedTurnSubmission {
-  media: ConnectRuntimeMedia[];
   rollback(): Promise<void>;
   transfer(): void;
 }
@@ -40,7 +37,7 @@ export interface TurnSubmissionOptions {
   accept(
     sessionRef: string,
     prompt: string,
-    media: ConnectRuntimeMedia[],
+    staged: StagedTurnSubmission,
     signal?: AbortSignal,
   ): Promise<AcceptedTurnSubmission>;
 }
@@ -75,7 +72,7 @@ export class TurnSubmission {
     try {
       signal?.throwIfAborted();
       validateDraft(immutable, await this.options.capabilityFor(immutable.sessionRef));
-      const accepted = await this.options.accept(immutable.sessionRef, immutable.prompt.trim(), staged.media, signal);
+      const accepted = await this.options.accept(immutable.sessionRef, immutable.prompt.trim(), staged, signal);
       staged.transfer();
       return accepted;
     } catch (error) {
@@ -127,13 +124,7 @@ export function validateDraft(draft: TurnSubmissionDraft, capability: TurnSubmis
     ) {
       throw new TurnSubmissionError(
         "attachment-unsupported",
-        `${attachment.name} is not supported by the selected model`,
-      );
-    }
-    if (attachment.size !== attachment.bytes.size) {
-      throw new TurnSubmissionError(
-        "attachment-size-mismatch",
-        `${attachment.name} size did not match the transferred bytes`,
+        `${attachment.name} is not supported by the current Turn Submission`,
       );
     }
     if (attachment.size > capability.attachments.maxBytesEach) {
@@ -146,7 +137,7 @@ export function validateDraft(draft: TurnSubmissionDraft, capability: TurnSubmis
   }
 }
 
-function mediaTypeAllowed(mediaType: string, allowed: readonly string[]): boolean {
+export function mediaTypeAllowed(mediaType: string, allowed: readonly string[]): boolean {
   return allowed.some((pattern) => {
     if (pattern === "*/*") return true;
     if (pattern.endsWith("/*")) return mediaType.startsWith(pattern.slice(0, -1));

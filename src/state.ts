@@ -205,6 +205,17 @@ export type ClientCommandClaim =
   | { state: "conflict" }
   | { state: "complete"; responseStatus: number; responseBody: unknown };
 
+export type ClientCommandOutcome =
+  | { state: "missing" }
+  | { state: "pending"; commandKind: string; entityRef: string }
+  | {
+      state: "complete";
+      commandKind: string;
+      entityRef: string;
+      responseStatus: number;
+      responseBody: unknown;
+    };
+
 export type TranscriptBlockInput<T extends TranscriptBlock = TranscriptBlock> = T extends TranscriptBlock
   ? Omit<T, "sequence" | "revision" | "createdAt" | "updatedAt"> & {
       id: string;
@@ -1481,6 +1492,34 @@ export class ConnectStateStore {
     if (row.response_status == null || row.response_json == null) return { state: "pending" };
     try {
       return { state: "complete", responseStatus: row.response_status, responseBody: JSON.parse(row.response_json) };
+    } catch {
+      throw new Error("stored Client command response is invalid");
+    }
+  }
+
+  async getClientCommandOutcome(requestId: string): Promise<ClientCommandOutcome> {
+    const db = await this.requireDb();
+    const row = await db.get<{
+      command_kind: string;
+      entity_ref: string;
+      response_status: number | null;
+      response_json: string | null;
+    }>(
+      "SELECT command_kind, entity_ref, response_status, response_json FROM client_commands WHERE request_id = ?",
+      requestId,
+    );
+    if (!row) return { state: "missing" };
+    if (row.response_status == null || row.response_json == null) {
+      return { state: "pending", commandKind: row.command_kind, entityRef: row.entity_ref };
+    }
+    try {
+      return {
+        state: "complete",
+        commandKind: row.command_kind,
+        entityRef: row.entity_ref,
+        responseStatus: row.response_status,
+        responseBody: JSON.parse(row.response_json),
+      };
     } catch {
       throw new Error("stored Client command response is invalid");
     }

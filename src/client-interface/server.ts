@@ -89,6 +89,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     projects,
     sessionActivity: async (bindingId, sessionRef) =>
       (await runtimes.get(bindingId)?.sessionActivity?.(sessionRef)) ?? "idle",
+    activeTurnId: (bindingId, sessionRef) => runtimes.get(bindingId)?.activeClientTurnId?.(sessionRef) ?? null,
     claimSessionLifecycle: async (bindingId, sessionRef) => {
       const claim = runtimes.get(bindingId)?.claimSessionLifecycle;
       return claim ? await claim(sessionRef) : async () => undefined;
@@ -98,6 +99,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   const runtimeInteractions =
     options.runtimeInteractions ?? new RuntimeInteractionCoordinator(options.transcriptProjection);
   const submissionStaging = new FileTurnSubmissionStaging(options.config.stateDbPath);
+  const activeTurnSubmissions = new Map<string, AbortController>();
+  const cancelledTurnSubmissions = new Map<string, number>();
   await submissionStaging.cleanupExpired();
   const turnSubmissions = new TurnSubmission({
     capabilityFor: async (sessionRef) => {
@@ -111,7 +114,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       return view.turnSubmissionCapability;
     },
     staging: submissionStaging,
-    accept: async (sessionRef, prompt, media, signal) => {
+    accept: async (sessionRef, prompt, staged, signal) => {
       signal?.throwIfAborted();
       if (runtimeInteractions.hasPending(sessionRef)) {
         throw new ClientRequestError(
@@ -130,7 +133,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       if (!runtime?.enqueueClientTurn) {
         throw new ClientRequestError(503, "runtime-offline", "Runtime is unavailable", true);
       }
-      const accepted = await runtime.enqueueClientTurn(sessionRef, prompt, media);
+      const accepted = await runtime.enqueueClientTurn(sessionRef, prompt, submissionStaging.mediaFor(staged));
       catalog.invalidate();
       return { accepted: true, ...accepted };
     },
@@ -438,20 +441,51 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               },
             );
           }
-          const submissionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turn-submissions$/u);
+          const submissionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turn-submissions\/([^/]+)$/u);
+          if (submissionMatch && (request.method === "GET" || request.method === "DELETE")) {
+            const sessionRef = normalizeSessionRef(submissionMatch[1] ?? "");
+            const submissionId = decodeURIComponent(submissionMatch[2] ?? "");
+            if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
+            if (!validRequestId(submissionId))
+              return errorResponse(400, "invalid-submission-id", "Invalid submission identity");
+            const submissionTarget = `${sessionRef}:${submissionId}`;
+            const outcome = await options.stateStore.getClientCommandOutcome(submissionId);
+            const belongsToSession =
+              outcome.state !== "missing" &&
+              outcome.commandKind === "turn.submit" &&
+              outcome.entityRef.startsWith(`${sessionRef}:`);
+            if (request.method === "DELETE") {
+              if (cancelledTurnSubmissions.size >= 1_000) {
+                const oldest = cancelledTurnSubmissions.keys().next().value;
+                if (oldest) cancelledTurnSubmissions.delete(oldest);
+              }
+              cancelledTurnSubmissions.set(submissionTarget, Date.now());
+              activeTurnSubmissions.get(submissionTarget)?.abort();
+            }
+            if (outcome.state === "complete" && belongsToSession) {
+              return jsonResponse(outcome.responseBody, outcome.responseStatus);
+            }
+            if (outcome.state === "pending" && belongsToSession) {
+              return jsonResponse({ pending: true, submissionId, sessionRef }, 202);
+            }
+            if (request.method === "DELETE") {
+              return jsonResponse({ cancelled: true, submissionId, sessionRef }, 200);
+            }
+            return errorResponse(404, "submission-not-found", "Turn Submission was not found");
+          }
           if (submissionMatch && request.method === "POST") {
             const sessionRef = normalizeSessionRef(submissionMatch[1] ?? "");
+            const submissionId = decodeURIComponent(submissionMatch[2] ?? "");
             if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
+            if (!validRequestId(submissionId))
+              return errorResponse(400, "invalid-submission-id", "Invalid submission identity");
+            const submissionTarget = `${sessionRef}:${submissionId}`;
             const declaredLength = Number(request.headers.get("content-length") ?? "0");
             if (Number.isFinite(declaredLength) && declaredLength > MAX_RUNTIME_MEDIA_BYTES + 1_048_576) {
               return errorResponse(413, "submission-too-large", "Turn Submission may not exceed 101 MiB");
             }
             const form = await request.formData();
-            const submissionId = form.get("submissionId");
             const prompt = form.get("prompt");
-            if (typeof submissionId !== "string" || !validRequestId(submissionId)) {
-              return errorResponse(400, "invalid-submission-id", "submissionId is required");
-            }
             if (typeof prompt !== "string") return errorResponse(400, "invalid-prompt", "prompt must be text");
             const files = form.getAll("attachments");
             if (!files.every((file): file is File => file instanceof File && file.size > 0)) {
@@ -465,44 +499,53 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 name: file.name || "attachment",
                 mime: file.type,
                 size: file.size,
-                bytes: file,
+                readBytes: async () => new Uint8Array(await file.arrayBuffer()),
               })),
             };
             const digest = await turnSubmissionDigest(draft);
-            return await idempotentCommand(
-              options.stateStore,
-              submissionId,
-              "turn.submit",
-              `${sessionRef}:${digest}`,
-              async () => {
-                try {
-                  return {
-                    status: 202,
-                    body: await turnSubmissions.submit(draft, request.signal),
-                  };
-                } catch (error) {
-                  if (error instanceof TurnSubmissionError) {
-                    return commandError(400, error.code, error.message);
+            const controller = new AbortController();
+            activeTurnSubmissions.set(submissionTarget, controller);
+            if (cancelledTurnSubmissions.delete(submissionTarget)) controller.abort();
+            try {
+              return await idempotentCommand(
+                options.stateStore,
+                submissionId,
+                "turn.submit",
+                `${sessionRef}:${digest}`,
+                async () => {
+                  try {
+                    return {
+                      status: 202,
+                      body: await turnSubmissions.submit(draft, controller.signal),
+                    };
+                  } catch (error) {
+                    if (error instanceof TurnSubmissionError) {
+                      return commandError(400, error.code, error.message);
+                    }
+                    if (error instanceof ClientRequestError) {
+                      return commandError(error.status, error.code, error.message, error.retryable);
+                    }
+                    if (error instanceof SessionLifecycleError) {
+                      return commandError(error.code === "session-not-found" ? 404 : 409, error.code, error.message);
+                    }
+                    if (error instanceof DOMException && error.name === "AbortError") {
+                      return commandError(409, "submission-cancelled", "Turn Submission was cancelled");
+                    }
+                    return commandError(
+                      500,
+                      "submission-failed",
+                      error instanceof Error ? error.message : "Turn Submission failed",
+                      true,
+                    );
                   }
-                  if (error instanceof ClientRequestError) {
-                    return commandError(error.status, error.code, error.message, error.retryable);
-                  }
-                  if (error instanceof SessionLifecycleError) {
-                    return commandError(error.code === "session-not-found" ? 404 : 409, error.code, error.message);
-                  }
-                  if (error instanceof DOMException && error.name === "AbortError") {
-                    return commandError(409, "submission-cancelled", "Turn Submission was cancelled");
-                  }
-                  return commandError(
-                    500,
-                    "submission-failed",
-                    error instanceof Error ? error.message : "Turn Submission failed",
-                    true,
-                  );
-                }
-              },
-              { preserveClaimOnError: true },
-            );
+                },
+                { preserveClaimOnError: true },
+              );
+            } finally {
+              if (activeTurnSubmissions.get(submissionTarget) === controller) {
+                activeTurnSubmissions.delete(submissionTarget);
+              }
+            }
           }
           const interactionMatch = url.pathname.match(/^\/client\/v1\/runtime-interactions\/([^/]+)\/respond$/u);
           if (interactionMatch && request.method === "POST") {
@@ -963,7 +1006,7 @@ async function turnSubmissionDigest(draft: TurnSubmissionDraft): Promise<string>
     hash.update(attachment.mime);
     hash.update("\0");
     hash.update(String(attachment.size));
-    hash.update(new Uint8Array(await attachment.bytes.arrayBuffer()));
+    hash.update(await attachment.readBytes());
   }
   return hash.digest("hex");
 }

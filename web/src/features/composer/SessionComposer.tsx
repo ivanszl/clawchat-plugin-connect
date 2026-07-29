@@ -6,6 +6,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { MessageCircle, Paperclip, Square, X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { TurnSubmissionCapability } from "../../../../src/client-contract";
+import { attachmentKind, mediaTypeAllowed } from "../../../../src/client-interface/turn-submission";
 import { cancelTurn, clientKeys } from "../../client-interface/query-options";
 import { useTurnSubmission } from "./useTurnSubmission";
 
@@ -61,11 +62,11 @@ export function SessionComposer({
     }
     const unsupported = files.find(
       (file) =>
-        !capability.attachments.allowedKinds.includes(fileKind(file)) ||
-        !matchesMediaType(file.type, capability.attachments.allowedMediaTypes),
+        !capability.attachments.allowedKinds.includes(attachmentKind(file.type) ?? "file") ||
+        !mediaTypeAllowed(file.type, capability.attachments.allowedMediaTypes),
     );
     if (unsupported) {
-      setAttachmentError(`${unsupported.name} 不受当前模型支持`);
+      setAttachmentError(`${unsupported.name} 不受当前 Turn Submission 支持`);
       return;
     }
     setAttachments((current) => {
@@ -105,7 +106,7 @@ export function SessionComposer({
   const isAgentWorking = Boolean(acceptedTurnId) || isRuntimeActive;
   const attachmentLimitLabel =
     capability.attachments.maxCount === 0
-      ? "当前模型不支持附件"
+      ? "当前 Turn Submission 不支持附件"
       : `最多 ${capability.attachments.maxCount} 个附件，单个 ${formatBytes(
           capability.attachments.maxBytesEach,
         )}，合计 ${formatBytes(capability.attachments.maxBytesTotal)}`;
@@ -278,23 +279,8 @@ export function SessionComposer({
   );
 }
 
-function fileKind(file: File): "image" | "file" | "audio" | "video" {
-  if (file.type.startsWith("image/")) return "image";
-  if (file.type.startsWith("audio/")) return "audio";
-  if (file.type.startsWith("video/")) return "video";
-  return "file";
-}
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
-function matchesMediaType(mediaType: string, allowed: readonly string[]): boolean {
-  return allowed.some((pattern) => {
-    if (pattern === "*/*") return true;
-    if (pattern.endsWith("/*")) return mediaType.startsWith(pattern.slice(0, -1));
-    return pattern === mediaType;
-  });
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import type { ClientViewEvent, TranscriptPageView } from "../src/client-contract";
-import { pollClientEventBatch } from "../web/src/client-interface/client-events";
+import { pollClientEventBatch, recoverClientViews } from "../web/src/client-interface/client-events";
 import {
   catalogQueryOptions,
   clientKeys,
@@ -133,5 +133,22 @@ describe("Connect Client event fallback", () => {
     const pages = queryClient.getQueryData<{ pages: TranscriptPageView[] }>(clientKeys.transcript("NKEP79B8"))?.pages;
     expect(pages?.[0]?.blocks).toEqual([]);
     expect(pages?.[1]?.blocks).toEqual([completed]);
+  });
+
+  it("retains every visible view when an atomic recovery bundle cannot be loaded", async () => {
+    const queryClient = new QueryClient();
+    const visibleCatalog = { revision: 7, bindings: [] };
+    const visibleSession = { sessionRef: "NKEP79B8", revision: 9 };
+    queryClient.setQueryData(clientKeys.catalog, visibleCatalog);
+    queryClient.setQueryData(clientKeys.session("NKEP79B8"), visibleSession);
+
+    await expect(
+      recoverClientViews(queryClient, async () => {
+        throw new Error("transcript snapshot failed");
+      }),
+    ).rejects.toThrow("transcript snapshot failed");
+
+    expect(queryClient.getQueryData<unknown>(clientKeys.catalog)).toEqual(visibleCatalog);
+    expect(queryClient.getQueryData<unknown>(clientKeys.session("NKEP79B8"))).toEqual(visibleSession);
   });
 });

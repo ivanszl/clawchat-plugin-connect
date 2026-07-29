@@ -251,6 +251,7 @@ describe("Session Catalog workspace grouping", () => {
       runtimeAdapters,
       transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
       sessionActivity: (_bindingId, sessionRef) => (sessionRef === "ABCDEFGH" ? "running" : "idle"),
+      activeTurnId: (_bindingId, sessionRef) => (sessionRef === "ABCDEFGH" ? "turn-active" : null),
     });
 
     const entries = (await catalog.view()).bindings[0]?.entries ?? [];
@@ -259,6 +260,7 @@ describe("Session Catalog workspace grouping", () => {
     expect(entries.find((entry) => entry.sessionRef === "JKLMNPQR")?.status).toBe("idle");
     expect(entries.find((entry) => entry.sessionRef === "ABCDEFGH")?.allowedActions).not.toContain("archive");
     expect(entries.find((entry) => entry.sessionRef === "ABCDEFGH")?.allowedActions).not.toContain("delete");
+    await expect(catalog.sessionView("ABCDEFGH")).resolves.toMatchObject({ activeTurnId: "turn-active" });
   });
 
   it("derives lifecycle actions from Runtime Adapter capabilities and Runtime Thread availability", async () => {

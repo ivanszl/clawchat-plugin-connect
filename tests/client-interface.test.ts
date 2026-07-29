@@ -541,7 +541,6 @@ describe("Connect Client Interface", () => {
 
     const submissionBody = (prompt = "from web") => {
       const body = new FormData();
-      body.append("submissionId", "request_123");
       body.append("prompt", prompt);
       body.append("attachments", new File(["photo"], "photo.png", { type: "image/png" }));
       return body;
@@ -549,7 +548,7 @@ describe("Connect Client Interface", () => {
     const turn = await localRequest(
       fetchHandler,
       handle.origin,
-      `/client/v1/sessions/${session.sessionRef}/turn-submissions`,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_123`,
       {
         method: "POST",
         headers: { origin: handle.origin },
@@ -574,7 +573,7 @@ describe("Connect Client Interface", () => {
     const replayedTurn = await localRequest(
       fetchHandler,
       handle.origin,
-      `/client/v1/sessions/${session.sessionRef}/turn-submissions`,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_123`,
       {
         method: "POST",
         headers: { origin: handle.origin },
@@ -584,10 +583,46 @@ describe("Connect Client Interface", () => {
     expect(replayedTurn.status).toBe(202);
     expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
 
+    const acceptedOutcome = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_123`,
+    );
+    expect(acceptedOutcome.status).toBe(202);
+    await expect(acceptedOutcome.json()).resolves.toMatchObject({ accepted: true, turnId: "turn-123" });
+
+    const acceptedCancelRace = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_123`,
+      { method: "DELETE", headers: { origin: handle.origin } },
+    );
+    expect(acceptedCancelRace.status).toBe(202);
+    await expect(acceptedCancelRace.json()).resolves.toMatchObject({ accepted: true, turnId: "turn-123" });
+
+    const cancelledBeforeUpload = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_cancelled`,
+      { method: "DELETE", headers: { origin: handle.origin } },
+    );
+    expect(cancelledBeforeUpload.status).toBe(200);
+    const cancelledBody = new FormData();
+    cancelledBody.append("prompt", "must not enter the queue");
+    const cancelledTurn = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_cancelled`,
+      { method: "POST", headers: { origin: handle.origin }, body: cancelledBody },
+    );
+    expect(cancelledTurn.status).toBe(409);
+    await expect(cancelledTurn.json()).resolves.toMatchObject({ error: { code: "submission-cancelled" } });
+    expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
+
     const conflictingSubmission = await localRequest(
       fetchHandler,
       handle.origin,
-      `/client/v1/sessions/${session.sessionRef}/turn-submissions`,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_123`,
       {
         method: "POST",
         headers: { origin: handle.origin },
@@ -644,13 +679,12 @@ describe("Connect Client Interface", () => {
     const blockedTurn = await localRequest(
       fetchHandler,
       handle.origin,
-      `/client/v1/sessions/${session.sessionRef}/turn-submissions`,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_blocked_by_approval`,
       {
         method: "POST",
         headers: { origin: handle.origin },
         body: (() => {
           const body = new FormData();
-          body.append("submissionId", "request_blocked_by_approval");
           body.append("prompt", "must wait");
           return body;
         })(),
@@ -685,7 +719,7 @@ describe("Connect Client Interface", () => {
     const rejected = await localRequest(
       fetchHandler,
       handle.origin,
-      `/client/v1/sessions/${session.sessionRef}/turn-submissions`,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_rejected`,
       {
         method: "POST",
         headers: { origin: "http://evil.invalid" },

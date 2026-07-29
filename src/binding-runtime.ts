@@ -68,6 +68,7 @@ export interface BindingRuntimeHandle {
   uploadClientMedia?(file: Blob, filename: string): Promise<ConnectRuntimeMedia>;
   cancelClientTurn?(sessionRef: string): Promise<boolean>;
   sessionActivity?(sessionRef: string): Promise<SessionActivity>;
+  activeClientTurnId?(sessionRef: string): string | null;
   claimSessionLifecycle?(sessionRef: string): Promise<() => Promise<void>>;
 }
 
@@ -164,6 +165,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     uploadClientMedia: async (file, filename) => await runtime.uploadClientMedia(file, filename),
     cancelClientTurn: async (sessionRef) => await runtime.cancelClientTurn(sessionRef),
     sessionActivity: async (sessionRef) => await runtime.sessionActivity(sessionRef),
+    activeClientTurnId: (sessionRef) => runtime.activeClientTurnId(sessionRef),
     claimSessionLifecycle: async (sessionRef) => await runtime.claimSessionLifecycle(sessionRef),
     async close() {
       await inboundMessages.close();

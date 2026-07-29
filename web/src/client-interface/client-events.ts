@@ -12,10 +12,11 @@ import {
   type ClientViewSnapshot,
   type DeliveredClientViewEvent,
 } from "../../../src/client-interface/client-view-continuity";
-import { clientFetch } from "./http";
+import { clientFetch, clientFetchSnapshot } from "./http";
 import { clientKeys } from "./query-options";
 
 const continuities = new WeakMap<QueryClient, ClientViewContinuity>();
+const recoveries = new WeakMap<QueryClient, Promise<void>>();
 
 export function connectClientEvents(queryClient: QueryClient, cursor: number): () => void {
   const continuity = continuityFor(queryClient);
@@ -59,11 +60,10 @@ export function connectClientEvents(queryClient: QueryClient, cursor: number): (
   };
 }
 
-export async function installClientViewSnapshot(queryClient: QueryClient, snapshot: ClientViewSnapshot): Promise<void> {
+export function mergeClientViewSnapshot(queryClient: QueryClient, snapshot: ClientViewSnapshot): void {
   const continuity = continuityFor(queryClient);
-  const committed = await continuity.install(snapshot);
+  continuity.merge(snapshot);
   syncContinuityState(queryClient, continuity, true);
-  for (const event of committed) mergeTranscriptEvent(queryClient, event);
 }
 
 export async function pollClientEventBatch(
@@ -84,13 +84,15 @@ async function fetchClientEventBatch(after: number): Promise<ClientEventBatchVie
 export async function applyClientEvent(queryClient: QueryClient, event: ClientViewEvent): Promise<void> {
   const continuity = continuityFor(queryClient);
   if (!Number.isSafeInteger(event.previousCursor) || (event.previousCursor ?? -1) < 0) {
-    await recoverClientViews(queryClient);
+    await recoverClientViews(queryClient).catch(() => undefined);
     return;
   }
   const committed = await continuity.receive(event as DeliveredClientViewEvent);
   syncContinuityState(queryClient, continuity, false);
   for (const changed of committed) mergeTranscriptEvent(queryClient, changed);
-  if (continuity.current().status === "recovering") await recoverClientViews(queryClient);
+  if (continuity.current().status === "recovering") {
+    await recoverClientViews(queryClient).catch(() => undefined);
+  }
 }
 
 function continuityFor(queryClient: QueryClient): ClientViewContinuity {
@@ -176,6 +178,70 @@ function mergeTranscriptEvent(queryClient: QueryClient, event: DeliveredClientVi
   );
 }
 
-async function recoverClientViews(queryClient: QueryClient): Promise<void> {
-  await queryClient.invalidateQueries({ queryKey: ["client"], refetchType: "active" });
+export async function recoverClientViews(
+  queryClient: QueryClient,
+  load: (client: QueryClient) => Promise<ClientViewSnapshot> = loadActiveClientViews,
+): Promise<void> {
+  const existing = recoveries.get(queryClient);
+  if (existing) return await existing;
+  const recovery = (async () => {
+    const snapshot = await load(queryClient);
+    const continuity = continuityFor(queryClient);
+    const committed = await continuity.install(snapshot);
+    syncContinuityState(queryClient, continuity, true);
+    for (const event of committed) mergeTranscriptEvent(queryClient, event);
+  })();
+  recoveries.set(queryClient, recovery);
+  try {
+    await recovery;
+  } finally {
+    if (recoveries.get(queryClient) === recovery) recoveries.delete(queryClient);
+  }
+}
+
+async function loadActiveClientViews(queryClient: QueryClient): Promise<ClientViewSnapshot> {
+  const queries = queryClient
+    .getQueryCache()
+    .findAll({ queryKey: ["client"] })
+    .filter((query) => query.getObserversCount() > 0);
+  const sessionRefs = new Set<string>();
+  const transcriptRefs = new Set<string>();
+  let catalogActive = false;
+  for (const query of queries) {
+    const [scope, kind, ref] = query.queryKey;
+    if (scope !== "client") continue;
+    if (kind === "session-catalog") catalogActive = true;
+    if (kind === "session" && typeof ref === "string") sessionRefs.add(ref);
+    if (kind === "transcript" && typeof ref === "string") transcriptRefs.add(ref);
+  }
+  const catalog = catalogActive
+    ? clientFetchSnapshot<SessionCatalogView>(`${CLIENT_API_PREFIX}/session-catalog?refresh=1`)
+    : Promise.resolve(null);
+  const sessions = [...sessionRefs].map(
+    async (sessionRef) =>
+      await clientFetchSnapshot<SessionView>(
+        `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(sessionRef)}?refresh=1`,
+      ),
+  );
+  const transcripts = [...transcriptRefs].map(
+    async (sessionRef) =>
+      await clientFetchSnapshot<TranscriptPageView>(
+        `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(sessionRef)}/transcript?limit=100`,
+      ),
+  );
+  const [catalogSnapshot, sessionSnapshots, transcriptSnapshots] = await Promise.all([
+    catalog,
+    Promise.all(sessions),
+    Promise.all(transcripts),
+  ]);
+  const snapshots = [...(catalogSnapshot ? [catalogSnapshot] : []), ...sessionSnapshots, ...transcriptSnapshots];
+  if (snapshots.length === 0) {
+    return { watermark: continuityFor(queryClient).current().cursor };
+  }
+  return {
+    watermark: Math.min(...snapshots.map((snapshot) => snapshot.watermark)),
+    ...(catalogSnapshot ? { catalog: catalogSnapshot.value } : {}),
+    sessions: sessionSnapshots.map((snapshot) => snapshot.value),
+    transcripts: transcriptSnapshots.map((snapshot) => snapshot.value),
+  };
 }

@@ -29,6 +29,7 @@ export interface SessionCatalogOptions {
   transcriptProjection: TranscriptProjection;
   projects?: ProjectCatalog;
   sessionActivity?: (bindingId: string, sessionRef: string) => SessionActivity | Promise<SessionActivity>;
+  activeTurnId?: (bindingId: string, sessionRef: string) => string | null | Promise<string | null>;
   claimSessionLifecycle?: (bindingId: string, sessionRef: string) => Promise<() => Promise<void>>;
 }
 
@@ -170,7 +171,7 @@ export class SessionCatalog {
       modelOptions,
       status: sessionStatus(runtimeStatus, activity),
       runtimeThreadAvailable,
-      activeTurnId: null,
+      activeTurnId: (await this.options.activeTurnId?.(entry.bindingId, normalized)) ?? null,
       transcriptCompleteness:
         this.options.transcriptProjection.completeness(normalized) ??
         (runtimeThreadAvailable ? "partial" : "live-only"),

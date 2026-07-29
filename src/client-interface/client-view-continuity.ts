@@ -57,6 +57,15 @@ export class ClientViewContinuity {
     return this.drain();
   }
 
+  merge(snapshot: Omit<ClientViewSnapshot, "watermark">): void {
+    this.state = {
+      ...this.state,
+      catalog: newerView(this.state.catalog, snapshot.catalog),
+      sessions: mergeSessions(this.state.sessions, snapshot.sessions),
+      transcripts: mergeTranscripts(this.state.transcripts, snapshot.transcripts, this.tombstones, false),
+    };
+  }
+
   async receive(event: DeliveredClientViewEvent): Promise<readonly DeliveredClientViewEvent[]> {
     if (event.cursor <= this.state.cursor) return [];
     const duplicate = this.buffered.get(event.cursor);

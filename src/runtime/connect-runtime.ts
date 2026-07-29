@@ -49,6 +49,7 @@ export class ConnectRuntime {
   private readonly sessionContinuity: SessionContinuity;
   private readonly executor: SessionTurnExecutor;
   private readonly activeTurnSessionChats = new Map<string, string>();
+  private readonly acceptedClientTurnIds = new Map<string, string>();
   private readonly routingTails = new Map<string, Promise<void>>();
   private readonly queue: SessionQueue;
 
@@ -184,9 +185,15 @@ export class ConnectRuntime {
       },
       `Session ${current.sessionRef}`,
     );
+    this.acceptedClientTurnIds.set(current.sessionRef, turnId);
     void completion
       .catch(() => undefined)
-      .finally(async () => await releaseConnectStagedMedia(media, this.options.config.stateDbPath));
+      .finally(async () => {
+        if (this.acceptedClientTurnIds.get(current.sessionRef) === turnId) {
+          this.acceptedClientTurnIds.delete(current.sessionRef);
+        }
+        await releaseConnectStagedMedia(media, this.options.config.stateDbPath);
+      });
     return { turnId, sessionRef: current.sessionRef };
   }
 
@@ -205,6 +212,10 @@ export class ConnectRuntime {
     }
     if (current.agentId !== this.options.agentId) return "idle";
     return this.queue.activity(sessionKey(current.chatId, current.sessionId));
+  }
+
+  activeClientTurnId(sessionRef: string): string | null {
+    return this.acceptedClientTurnIds.get(sessionRef.toUpperCase()) ?? null;
   }
 
   async claimSessionLifecycle(sessionRef: string): Promise<() => Promise<void>> {

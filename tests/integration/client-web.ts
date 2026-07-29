@@ -152,7 +152,7 @@ async function verifyImeConfirmationDoesNotSubmit(
     page.on("request", (request) => {
       if (
         request.method() === "POST" &&
-        new URL(request.url()).pathname === "/client/v1/sessions/ABCDEFGH/turn-submissions"
+        new URL(request.url()).pathname.startsWith("/client/v1/sessions/ABCDEFGH/turn-submissions/")
       ) {
         submittedTurns += 1;
       }
@@ -418,9 +418,9 @@ async function postPreviewTurn(page: Page, sessionRef: string, prompt: string) {
   const response = await page.evaluate(
     async ({ ref, text }) => {
       const body = new FormData();
-      body.append("submissionId", crypto.randomUUID());
+      const submissionId = crypto.randomUUID();
       body.append("prompt", text);
-      const request = await fetch(`/client/v1/sessions/${ref}/turn-submissions`, {
+      const request = await fetch(`/client/v1/sessions/${ref}/turn-submissions/${submissionId}`, {
         method: "POST",
         body,
       });

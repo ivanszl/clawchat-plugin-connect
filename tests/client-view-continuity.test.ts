@@ -61,6 +61,16 @@ describe("ClientViewContinuity", () => {
     expect(continuity.current().catalog?.bindings[0]?.entries[0]?.name).toBe("Current");
   });
 
+  test("merges an independently loaded view without claiming global event coverage", async () => {
+    const continuity = new ClientViewContinuity();
+    await continuity.install({ watermark: 8, catalog: catalog(3, "Before") });
+
+    continuity.merge({ catalog: catalog(4, "Loaded independently") });
+
+    expect(continuity.current().cursor).toBe(8);
+    expect(continuity.current().catalog?.revision).toBe(4);
+  });
+
   test("commits a continuous event only after its newer catalog view is merged", async () => {
     const continuity = new ClientViewContinuity();
     await continuity.install({ watermark: 8, catalog: catalog(3, "Before") });

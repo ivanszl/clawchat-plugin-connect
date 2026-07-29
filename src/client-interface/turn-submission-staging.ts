@@ -14,6 +14,7 @@ const STAGING_TTL_MS = 24 * 60 * 60 * 1_000;
 
 export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
   readonly root: string;
+  private readonly stagedMedia = new WeakMap<StagedTurnSubmission, ConnectRuntimeMedia[]>();
 
   constructor(stateDbPath: string) {
     this.root = join(dirname(stateDbPath), "turn-submissions");
@@ -31,7 +32,7 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
         const kind = attachmentKind(attachment.mime);
         if (!kind) throw new TurnSubmissionError("attachment-unsupported", `${attachment.name} has no media type`);
         const path = join(directory, `${index}-${randomUUID()}`);
-        await Bun.write(path, attachment.bytes);
+        await Bun.write(path, await attachment.readBytes());
         const actual = (await stat(path)).size;
         if (actual !== attachment.size) {
           throw new TurnSubmissionError(
@@ -48,8 +49,7 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
           size: actual,
         });
       }
-      return {
-        media,
+      const staged: StagedTurnSubmission = {
         transfer() {
           transferred = true;
         },
@@ -57,10 +57,18 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
           if (!transferred) await rm(directory, { recursive: true, force: true });
         },
       };
+      this.stagedMedia.set(staged, media);
+      return staged;
     } catch (error) {
       await rm(directory, { recursive: true, force: true }).catch(() => undefined);
       throw error;
     }
+  }
+
+  mediaFor(staged: StagedTurnSubmission): ConnectRuntimeMedia[] {
+    const media = this.stagedMedia.get(staged);
+    if (!media) throw new Error("Turn Submission staging handle is invalid");
+    return media;
   }
 
   async cleanupExpired(now = Date.now()): Promise<void> {

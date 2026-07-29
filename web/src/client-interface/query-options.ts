@@ -15,7 +15,7 @@ import type {
   UpdateBindingPreferencesRequest,
 } from "../../../src/client-contract";
 import { CLIENT_API_PREFIX } from "../../../src/client-contract";
-import { installClientViewSnapshot } from "./client-events";
+import { mergeClientViewSnapshot } from "./client-events";
 import { clientFetch, clientFetchSnapshot, requestId } from "./http";
 
 export const clientKeys = {
@@ -36,14 +36,14 @@ export const catalogQueryOptions = queryOptions({
   queryKey: clientKeys.catalog,
   queryFn: async ({ client }) => {
     const snapshot = await clientFetchSnapshot<SessionCatalogView>(`${CLIENT_API_PREFIX}/session-catalog`);
-    await installClientViewSnapshot(client, { watermark: snapshot.watermark, catalog: snapshot.value });
+    mergeClientViewSnapshot(client, { watermark: snapshot.watermark, catalog: snapshot.value });
     return snapshot.value;
   },
 });
 
 export async function refreshSessionCatalog(client: import("@tanstack/react-query").QueryClient): Promise<void> {
   const snapshot = await clientFetchSnapshot<SessionCatalogView>(`${CLIENT_API_PREFIX}/session-catalog?refresh=1`);
-  await installClientViewSnapshot(client, { watermark: snapshot.watermark, catalog: snapshot.value });
+  mergeClientViewSnapshot(client, { watermark: snapshot.watermark, catalog: snapshot.value });
   await Promise.all([
     client.invalidateQueries({ queryKey: ["client", "session"], refetchType: "active" }),
     client.invalidateQueries({ queryKey: ["client", "transcript"], refetchType: "active" }),
@@ -55,7 +55,7 @@ export function sessionQueryOptions(sessionRef: string) {
     queryKey: clientKeys.session(sessionRef),
     queryFn: async ({ client }) => {
       const snapshot = await clientFetchSnapshot<SessionView>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}?refresh=1`);
-      await installClientViewSnapshot(client, { watermark: snapshot.watermark, sessions: [snapshot.value] });
+      mergeClientViewSnapshot(client, { watermark: snapshot.watermark, sessions: [snapshot.value] });
       return snapshot.value;
     },
   });
@@ -77,7 +77,7 @@ export function transcriptQueryOptions(sessionRef: string) {
         `${CLIENT_API_PREFIX}/sessions/${sessionRef}/transcript?${search.toString()}`,
       );
       if (!pageParam) {
-        await installClientViewSnapshot(client, {
+        mergeClientViewSnapshot(client, {
           watermark: snapshot.watermark,
           transcripts: [snapshot.value],
         });
