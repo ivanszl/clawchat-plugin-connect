@@ -629,6 +629,44 @@ describe("state store", () => {
     await store.close();
   });
 
+  it("backfills an opaque ClawChat sender id with its resolved display name", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({
+      dbPath: join(dir, "state.sqlite"),
+      sessionRefFactory: () => "ABCDEFGH",
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "codex",
+      runtimeSessionId: "thread-1",
+      hasMessages: true,
+    });
+    const session = await store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!session) throw new Error("test session was not created");
+    await store.upsertTranscriptBlock(session.sessionRef, {
+      id: "message-1",
+      type: "message",
+      origin: "clawchat",
+      state: "complete",
+      plainText: "commit",
+      role: "user",
+      author: "usr_owner",
+      sender: { id: "usr_owner", displayName: "usr_owner" },
+      conversationType: "direct",
+      markdown: "commit",
+    });
+
+    await expect(store.updateTranscriptSenderDisplayName("usr_owner", "ColinShen")).resolves.toBe(1);
+    await expect(store.listTranscriptBlocks(session.sessionRef)).resolves.toEqual([
+      expect.objectContaining({
+        author: "ColinShen",
+        sender: { id: "usr_owner", displayName: "ColinShen" },
+      }),
+    ]);
+    await store.close();
+  });
+
   it("deletes a Session Ref together with its managed Session and transcript projection", async () => {
     const dir = await tempDir();
     const store = createStateStore({

@@ -1711,6 +1711,41 @@ export class ConnectStateStore {
     return numberValue(row?.count);
   }
 
+  async updateTranscriptSenderDisplayName(senderId: string, displayName: string): Promise<number> {
+    const db = await this.requireDb();
+    const normalizedSenderId = requireStateString(senderId, "senderId");
+    const normalizedDisplayName = requireStateString(displayName, "displayName");
+    const rows = await db.all<Array<{ session_ref: string; block_json: string }>>(
+      `SELECT session_ref, block_json
+         FROM transcript_blocks
+        WHERE block_type = 'message'
+          AND json_extract(block_json, '$.sender.id') = ?
+          AND (
+            json_extract(block_json, '$.sender.displayName') IS NULL
+            OR json_extract(block_json, '$.sender.displayName') = ?
+          )`,
+      normalizedSenderId,
+      normalizedSenderId,
+    );
+    let updated = 0;
+    for (const row of rows) {
+      let block: TranscriptBlock;
+      try {
+        block = JSON.parse(row.block_json) as TranscriptBlock;
+      } catch {
+        continue;
+      }
+      if (block.type !== "message" || block.sender?.id !== normalizedSenderId) continue;
+      await this.upsertTranscriptBlock(row.session_ref, {
+        ...block,
+        author: normalizedDisplayName,
+        sender: { ...block.sender, displayName: normalizedDisplayName },
+      });
+      updated += 1;
+    }
+    return updated;
+  }
+
   async listPendingRuntimeInteractions(sessionRef: string): Promise<RuntimeInteractionBlock[]> {
     const db = await this.requireDb();
     const rows = await db.all<{ block_json: string }[]>(

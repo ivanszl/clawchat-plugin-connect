@@ -224,8 +224,12 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       wsClient: fixture.wsClient,
       runtimeAdapters,
       transcriptProjection,
+      resolveSenderDisplayName: async (senderId) => (senderId === "user-1" ? "ColinShen" : null),
     });
-    const firstInbound = message("commit");
+    const firstInbound = {
+      ...message("commit"),
+      sender: { id: "user-1", type: "direct" as const, nick_name: "user-1" },
+    };
     const secondInbound = {
       ...message("push"),
       messageId: "message-2",
@@ -251,7 +255,8 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             role: "user",
             origin: "clawchat",
             plainText: "commit",
-            sender: { id: "user-1", displayName: "User" },
+            author: "ColinShen",
+            sender: { id: "user-1", displayName: "ColinShen" },
             conversationType: "direct",
           }),
           expect.objectContaining({

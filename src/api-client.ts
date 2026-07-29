@@ -17,8 +17,12 @@ export interface AgentConnectResult {
   agent?: { id?: string; user_id?: string; owner_id?: string };
   conversation?: { id?: string } | null;
 }
+export interface ClawChatUserProfile {
+  nickname: string | null;
+}
 export interface ClawChatApiClient {
   agentsConnect(params: { code: string; existingUserId?: string | null }): Promise<AgentConnectResult>;
+  getUserProfile(userId: string): Promise<ClawChatUserProfile>;
   updateMyProfile(patch: unknown): Promise<unknown>;
 }
 
@@ -108,6 +112,13 @@ export function createClawChatApiClient(options: {
       };
       if (params.existingUserId?.trim()) body.user_id = params.existingUserId.trim();
       return await call<AgentConnectResult>("POST", "/v1/agents/connect", json(body));
+    },
+    async getUserProfile(userId) {
+      const profile = await call<Record<string, unknown>>(
+        "GET",
+        `/v1/users/${encodeURIComponent(requireId(userId, "getUserProfile: userId"))}`,
+      );
+      return { nickname: optionalTrimmedString(profile.nickname) };
     },
     async updateMyProfile(patch) {
       return await call<unknown>("PATCH", "/v1/users/me", json(patch));

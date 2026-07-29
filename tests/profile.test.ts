@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createClawChatApiClient } from "../src/api-client";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import { updateAccountProfile } from "../src/profile";
 import { createStateStore } from "../src/state";
@@ -9,6 +10,30 @@ import { createStateStore } from "../src/state";
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 }
+
+describe("ClawChat user profiles", () => {
+  it("resolves a user's presentation nickname by stable user id", async () => {
+    const fetchImpl = mock(async () => response({ code: 0, data: { nickname: "ColinShen" } }));
+    const client = createClawChatApiClient({
+      baseUrl: "https://app.clawling.com",
+      deviceId: "device-local",
+      token: "secret-token",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await expect(client.getUserProfile("usr_owner")).resolves.toEqual({ nickname: "ColinShen" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://app.clawling.com/v1/users/usr_owner",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({
+          authorization: "Bearer secret-token",
+          "x-device-id": "device-local",
+        }),
+      }),
+    );
+  });
+});
 
 describe("updateAccountProfile", () => {
   it("updates the activated account with its stored access token", async () => {

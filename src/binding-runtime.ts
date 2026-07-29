@@ -1,3 +1,4 @@
+import { createClawChatApiClient } from "./api-client";
 import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
 import type { TranscriptProjection } from "./client-interface/transcript-projection";
 import { getAgentBinding } from "./config";
@@ -75,6 +76,25 @@ export interface BindingRuntimeHandle {
 
 export async function startBindingRuntime(options: BindingRuntimeOptions): Promise<BindingRuntimeHandle> {
   const binding = getAgentBinding(options.config, options.agentId);
+  const clawChatApi = createClawChatApiClient({
+    baseUrl: options.config.baseUrl,
+    deviceId: options.deviceId,
+    token: options.activation.accessToken,
+  });
+  const senderDisplayNames = new Map<string, Promise<string | null>>();
+  const resolveSenderDisplayName = async (senderId: string): Promise<string | null> => {
+    const active = senderDisplayNames.get(senderId);
+    if (active) return await active;
+    const resolution = clawChatApi
+      .getUserProfile(senderId)
+      .then((profile) => profile.nickname)
+      .catch(() => {
+        senderDisplayNames.delete(senderId);
+        return null;
+      });
+    senderDisplayNames.set(senderId, resolution);
+    return await resolution;
+  };
   let runtime: ConnectRuntime;
   let inboundMessages: InboundMessageProcessor;
   let wsClient: ConnectWsClient;
@@ -127,6 +147,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     runtimeAdapters: options.runtimeAdapters,
     transcriptProjection: options.transcriptProjection,
     runtimeInteractions: interactionRouter,
+    resolveSenderDisplayName,
   });
   inboundMessages = new InboundMessageProcessor(options, wsClient, runtime, interactionRouter);
   wireQuarantineEvents(wsClient, options);
@@ -150,6 +171,17 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   try {
     await options.runtimeAdapters.prepare(binding);
     await wsClient.connect();
+    void resolveSenderDisplayName(options.activation.ownerUserId)
+      .then(async (ownerDisplayName) => {
+        if (ownerDisplayName) {
+          await options.stateStore.updateTranscriptSenderDisplayName(options.activation.ownerUserId, ownerDisplayName);
+        }
+      })
+      .catch((error) =>
+        options.writeError(
+          `${options.agentId}: sender display name backfill failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        ),
+      );
     await inboundMessages.recover();
     await recordConnectionStatus(options, true, null);
     try {

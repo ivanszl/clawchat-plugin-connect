@@ -49,6 +49,7 @@ export interface ConnectRuntimeOptions {
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection?: TranscriptProjection;
   runtimeInteractions?: RuntimeInteractionPort;
+  resolveSenderDisplayName?: (senderId: string) => Promise<string | null>;
 }
 
 export class ConnectRuntime {
@@ -59,6 +60,7 @@ export class ConnectRuntime {
   private readonly activeTurnSessionChats = new Map<string, string>();
   private readonly acceptedClientTurnIds = new Map<string, string>();
   private readonly routingTails = new Map<string, Promise<void>>();
+  private readonly hydratedSenderIds = new Set<string>();
   private readonly queue: SessionQueue;
 
   constructor(private readonly options: ConnectRuntimeOptions) {
@@ -87,6 +89,7 @@ export class ConnectRuntime {
     orderedControl = false,
     onTurnAccepted?: () => Promise<void>,
   ): Promise<void> {
+    message = await this.withResolvedSenderDisplayName(message);
     try {
       if (orderedControl) {
         await this.withRoutingGate(message.chatId, async () => {
@@ -139,6 +142,28 @@ export class ConnectRuntime {
         `ClawChat runtime turn failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+  }
+
+  private async withResolvedSenderDisplayName(message: NormalizedInboundMessage): Promise<NormalizedInboundMessage> {
+    const resolveDisplayName = this.options.resolveSenderDisplayName;
+    if (!resolveDisplayName || (message.sender.nick_name && message.sender.nick_name !== message.sender.id)) {
+      return message;
+    }
+    let displayName: string | null;
+    try {
+      displayName = (await resolveDisplayName(message.sender.id))?.trim() || null;
+    } catch {
+      return message;
+    }
+    if (!displayName || displayName === message.sender.id) return message;
+    if (!this.hydratedSenderIds.has(message.sender.id)) {
+      await this.options.stateStore.updateTranscriptSenderDisplayName(message.sender.id, displayName);
+      this.hydratedSenderIds.add(message.sender.id);
+    }
+    return {
+      ...message,
+      sender: { ...message.sender, nick_name: displayName },
+    };
   }
 
   async uploadClientMedia(file: Blob, filename: string): Promise<ConnectRuntimeMedia> {
