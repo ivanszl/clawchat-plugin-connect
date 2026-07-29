@@ -1576,74 +1576,130 @@ export class ConnectStateStore {
     input: TranscriptBlockInput,
   ): Promise<{ block: TranscriptBlock; cursor: number }> {
     const db = await this.requireDb();
-    const existing = await db.get<{ sequence: number; revision: number; created_at: number; block_json: string }>(
-      "SELECT sequence, revision, created_at, block_json FROM transcript_blocks WHERE session_ref = ? AND block_id = ?",
-      sessionRef,
-      input.id,
-    );
-    let storedBlock: TranscriptBlock | null = null;
-    if (existing) {
-      try {
-        storedBlock = JSON.parse(existing.block_json) as TranscriptBlock;
-      } catch {
-        // Replace malformed projection JSON below.
+    return db.transaction((run, get) => {
+      const existing = get<{ sequence: number; revision: number; created_at: number; block_json: string }>(
+        "SELECT sequence, revision, created_at, block_json FROM transcript_blocks WHERE session_ref = ? AND block_id = ?",
+        sessionRef,
+        input.id,
+      );
+      let storedBlock: TranscriptBlock | null = null;
+      if (existing) {
+        try {
+          storedBlock = JSON.parse(existing.block_json) as TranscriptBlock;
+        } catch {
+          // Replace malformed projection JSON below.
+        }
       }
-    }
-    const projectedInput = preserveConnectOwnedMessageMetadata(storedBlock, input);
-    if (storedBlock && sameTranscriptPayload(storedBlock, projectedInput)) return { block: storedBlock, cursor: 0 };
-    const now = Date.now();
-    const sequence =
-      projectedInput.sequence ??
-      existing?.sequence ??
-      numberValue(
-        (
-          await db.get<{ sequence?: number }>(
+      const projectedInput = preserveConnectOwnedMessageMetadata(storedBlock, input);
+      const keepsExistingSequence =
+        projectedInput.sequence === undefined || projectedInput.sequence === existing?.sequence;
+      if (storedBlock && keepsExistingSequence && sameTranscriptPayload(storedBlock, projectedInput)) {
+        return { block: storedBlock, cursor: 0 };
+      }
+      const now = Date.now();
+      if (projectedInput.sequence !== undefined) {
+        const occupant = get<{
+          block_id: string;
+          revision: number;
+          block_json: string;
+        }>(
+          "SELECT block_id, revision, block_json FROM transcript_blocks WHERE session_ref = ? AND sequence = ?",
+          sessionRef,
+          projectedInput.sequence,
+        );
+        if (occupant && occupant.block_id !== projectedInput.id) {
+          const nextSequence = numberValue(
+            get<{ sequence?: number }>(
+              "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM transcript_blocks WHERE session_ref = ?",
+              sessionRef,
+            )?.sequence,
+          );
+          const previous = JSON.parse(occupant.block_json) as TranscriptBlock;
+          const relocated: TranscriptBlock = {
+            ...previous,
+            revision: occupant.revision + 1,
+            sequence: nextSequence,
+            updatedAt: new Date(now).toISOString(),
+          };
+          run(
+            "UPDATE transcript_blocks SET revision = ?, sequence = ?, block_json = ?, updated_at = ? WHERE session_ref = ? AND block_id = ?",
+            relocated.revision,
+            relocated.sequence,
+            JSON.stringify(relocated),
+            now,
+            sessionRef,
+            occupant.block_id,
+          );
+          const relocatedEvent = {
+            type: "transcript.block-upserted",
+            cursor: 0,
+            sessionRef,
+            revision: relocated.revision,
+            block: relocated,
+          } satisfies ClientViewEvent;
+          run(
+            "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            relocatedEvent.type,
+            sessionRef,
+            relocated.revision,
+            JSON.stringify(relocatedEvent),
+            now,
+          );
+        }
+      }
+      const sequence =
+        projectedInput.sequence ??
+        existing?.sequence ??
+        numberValue(
+          get<{ sequence?: number }>(
             "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM transcript_blocks WHERE session_ref = ?",
             sessionRef,
-          )
-        )?.sequence,
+          )?.sequence,
+        );
+      const revision = Math.max(
+        projectedInput.revision ?? (existing?.revision ?? 0) + 1,
+        (existing?.revision ?? 0) + 1,
       );
-    const revision = Math.max(projectedInput.revision ?? (existing?.revision ?? 0) + 1, (existing?.revision ?? 0) + 1);
-    const createdAt = projectedInput.createdAt ? Date.parse(projectedInput.createdAt) : (existing?.created_at ?? now);
-    const updatedAt = projectedInput.updatedAt ? Date.parse(projectedInput.updatedAt) : now;
-    const block = {
-      ...projectedInput,
-      revision,
-      sequence,
-      createdAt: new Date(Number.isFinite(createdAt) ? createdAt : now).toISOString(),
-      updatedAt: new Date(Number.isFinite(updatedAt) ? updatedAt : now).toISOString(),
-    } as TranscriptBlock;
-    await db.run(
-      `INSERT INTO transcript_blocks(session_ref, block_id, revision, sequence, block_type, origin, state, plain_text, block_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_ref, block_id) DO UPDATE SET revision = excluded.revision, sequence = excluded.sequence, block_type = excluded.block_type, origin = excluded.origin, state = excluded.state, plain_text = excluded.plain_text, block_json = excluded.block_json, updated_at = excluded.updated_at`,
-      sessionRef,
-      block.id,
-      block.revision,
-      block.sequence,
-      block.type,
-      block.origin,
-      block.state,
-      block.plainText,
-      JSON.stringify(block),
-      Date.parse(block.createdAt),
-      Date.parse(block.updatedAt),
-    );
-    const eventWithoutCursor = {
-      type: "transcript.block-upserted",
-      cursor: 0,
-      sessionRef,
-      revision: block.revision,
-      block,
-    } satisfies ClientViewEvent;
-    const eventInsert = await db.run(
-      "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
-      eventWithoutCursor.type,
-      sessionRef,
-      block.revision,
-      JSON.stringify(eventWithoutCursor),
-      now,
-    );
-    const cursor = Number(eventInsert.lastInsertRowid);
-    return { block, cursor };
+      const createdAt = projectedInput.createdAt ? Date.parse(projectedInput.createdAt) : (existing?.created_at ?? now);
+      const updatedAt = projectedInput.updatedAt ? Date.parse(projectedInput.updatedAt) : now;
+      const block = {
+        ...projectedInput,
+        revision,
+        sequence,
+        createdAt: new Date(Number.isFinite(createdAt) ? createdAt : now).toISOString(),
+        updatedAt: new Date(Number.isFinite(updatedAt) ? updatedAt : now).toISOString(),
+      } as TranscriptBlock;
+      run(
+        `INSERT INTO transcript_blocks(session_ref, block_id, revision, sequence, block_type, origin, state, plain_text, block_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(session_ref, block_id) DO UPDATE SET revision = excluded.revision, sequence = excluded.sequence, block_type = excluded.block_type, origin = excluded.origin, state = excluded.state, plain_text = excluded.plain_text, block_json = excluded.block_json, updated_at = excluded.updated_at`,
+        sessionRef,
+        block.id,
+        block.revision,
+        block.sequence,
+        block.type,
+        block.origin,
+        block.state,
+        block.plainText,
+        JSON.stringify(block),
+        Date.parse(block.createdAt),
+        Date.parse(block.updatedAt),
+      );
+      const eventWithoutCursor = {
+        type: "transcript.block-upserted",
+        cursor: 0,
+        sessionRef,
+        revision: block.revision,
+        block,
+      } satisfies ClientViewEvent;
+      const eventInsert = run(
+        "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        eventWithoutCursor.type,
+        sessionRef,
+        block.revision,
+        JSON.stringify(eventWithoutCursor),
+        now,
+      );
+      return { block, cursor: Number(eventInsert.lastInsertRowid) };
+    });
   }
 
   async countTranscriptBlocks(sessionRef: string): Promise<number> {

@@ -61,6 +61,51 @@ describe("Connect Transcript Projection", () => {
     }
   });
 
+  it("relocates an unpositioned fallback block when a native position later claims its sequence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-sequence-collision-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-sequence-collision",
+        sessionId: "session-sequence-collision",
+        agentId: "codex",
+        runtimeSessionId: "thread-sequence-collision",
+        name: "Sequence collision",
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-sequence-collision", "codex");
+      if (!session) throw new Error("test Session was not created");
+      const projection = new TranscriptProjection({
+        stateStore: store,
+        config: defaultConfig(),
+        runtimeAdapters: new RuntimeAdapterRegistry([]),
+      });
+      const positioned = (id: string, position: string): RuntimeActivity => ({
+        id,
+        position,
+        parentId: null,
+        kind: "assistant",
+        text: id,
+        state: "complete",
+        source: "history",
+      });
+
+      await projection.upsertRuntimeActivity(session.sessionRef, positioned("native-eight", "0.8"));
+      await projection.upsertRuntimeActivity(session.sessionRef, positioned("fallback", "rollout:1"));
+      await projection.upsertRuntimeActivity(session.sessionRef, positioned("native-nine", "0.9"));
+
+      const blocks = await store.listTranscriptBlocks(session.sessionRef);
+      expect(blocks.map((block) => [block.plainText, block.sequence])).toEqual([
+        ["native-eight", 1_000_008],
+        ["native-nine", 1_000_009],
+        ["fallback", 1_000_010],
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("projects running app-server tool items as collapsible tool-call blocks", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-transcript-tool-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
