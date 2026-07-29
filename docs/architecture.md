@@ -47,7 +47,7 @@ Agent Binding.kind ── Runtime Adapter Registry ── Runtime Adapter
 - A **Runtime Thread** is the external runtime's resumable conversation ID persisted on one Session.
 - A **Session Ref** is the Connect-owned user-facing selector for a Session or discovered Runtime Thread; internal IDs are not displayed or derived into Refs.
 
-`/new` and `/project <name-or-id|none>` create or replace a Session Intent, not an empty Session. The first ordinary ClawChat message materializes the intent as a Session. Connect Client may explicitly create an empty Session after choosing its workspace and runtime options. Explicitly adopting a discovered Runtime Thread also creates a Session immediately because the external thread already contains conversation history. No Runtime Thread crosses a Project boundary.
+`/new` and `/project <workspace-id|none>` create or replace a Session Intent, not an empty Session. The first ordinary ClawChat message materializes the intent as a Session. Connect Client may explicitly create an empty Session after choosing its workspace and runtime options. Explicitly adopting a discovered Runtime Thread also creates a Session immediately because the external thread already contains conversation history. No Runtime Thread crosses a Project boundary.
 
 ## Direct runtime adapter
 
@@ -134,7 +134,7 @@ For Non-Project Sessions it:
 
 The runtime never uses `process.cwd()` as an implicit workspace.
 
-Projects are global across Agent Bindings. Project names are case-insensitively unique, roots are unique, and deletion is rejected while any Session or Session Intent still references the Project.
+Projects are global across Agent Bindings. Their display names and user-facing Workspace IDs are derived from canonical roots; names are not independently customizable, and roots are unique. Active persistent Runtime Workspace Identities with usable local roots are synchronized one-way into Projects. Deletion removes only the unused Connect record and its Runtime Workspace mappings; files and Runtime Threads are unchanged, and later active discovery may recreate the Project.
 
 ## Runtime Thread lifecycle
 

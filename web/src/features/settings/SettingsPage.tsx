@@ -133,15 +133,13 @@ function BindingSettings({
   );
 }
 
-function ProjectSettings({ projects }: { projects: Array<{ projectId: string; name: string; rootPath: string }> }) {
+function ProjectSettings({ projects }: { projects: Array<{ workspaceId: string; name: string; rootPath: string }> }) {
   const queryClient = useQueryClient();
-  const [name, setName] = useState("");
   const [rootPath, setRootPath] = useState("");
   const [additionalDirectories, setAdditionalDirectories] = useState("");
   const add = useMutation({
     mutationFn: async () =>
       await addProject(
-        name,
         rootPath,
         additionalDirectories
           .split(/[\n,]/u)
@@ -149,7 +147,6 @@ function ProjectSettings({ projects }: { projects: Array<{ projectId: string; na
           .filter(Boolean),
       ),
     onSuccess: () => {
-      setName("");
       setRootPath("");
       setAdditionalDirectories("");
       void queryClient.invalidateQueries({ queryKey: clientKeys.projects });
@@ -174,7 +171,7 @@ function ProjectSettings({ projects }: { projects: Array<{ projectId: string; na
           label="添加 Project"
           variant="primary"
           isLoading={add.isPending}
-          isDisabled={!name.trim() || !rootPath.trim()}
+          isDisabled={!rootPath.trim()}
           onClick={() => add.mutate()}
         />
       </div>
@@ -185,7 +182,6 @@ function ProjectSettings({ projects }: { projects: Array<{ projectId: string; na
         <Banner status="error" title="移除失败" description={remove.error.message} container="section" />
       ) : null}
       <div className="settings-fields">
-        <TextInput label="名称" value={name} onChange={setName} width="100%" />
         <TextInput label="根目录绝对路径" value={rootPath} onChange={setRootPath} width="100%" />
         <TextInput
           label="附加目录"
@@ -199,7 +195,7 @@ function ProjectSettings({ projects }: { projects: Array<{ projectId: string; na
       <div className="project-settings-list">
         {projects.length === 0 ? <p>尚未注册 Project。</p> : null}
         {projects.map((project) => (
-          <div className="project-settings-row" key={project.projectId}>
+          <div className="project-settings-row" key={project.workspaceId}>
             <div>
               <strong>{project.name}</strong>
               <code>{project.rootPath}</code>
@@ -207,8 +203,8 @@ function ProjectSettings({ projects }: { projects: Array<{ projectId: string; na
             <Button
               label="移除"
               size="sm"
-              isLoading={remove.isPending && remove.variables === project.projectId}
-              onClick={() => remove.mutate(project.projectId)}
+              isLoading={remove.isPending && remove.variables === project.workspaceId}
+              onClick={() => remove.mutate(project.workspaceId)}
             />
           </div>
         ))}

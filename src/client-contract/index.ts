@@ -266,6 +266,7 @@ export interface RuntimeModelOptionView {
 
 export interface ProjectView {
   projectId: string;
+  workspaceId: string;
   name: string;
   rootPath: string;
   additionalDirectories: string[];
@@ -353,8 +354,7 @@ export interface ClientMediaAttachment {
 export interface CreateSessionRequest {
   requestId: string;
   bindingId: string;
-  projectId: string | null;
-  workspaceId?: string | null;
+  workspaceId: string | null;
   name: string | null;
   mode: string | null;
   model: string | null;
@@ -388,7 +388,6 @@ export interface UpdateSessionPreferencesRequest {
 
 export interface AddProjectRequest {
   requestId: string;
-  name: string;
   rootPath: string;
   additionalDirectories: string[];
 }

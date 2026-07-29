@@ -10,6 +10,7 @@ import type {
   TurnSubmissionCapability,
 } from "../client-contract";
 import { getAgentBinding } from "../config";
+import { synchronizeRuntimeProjects } from "../project-synchronizer";
 import { ProjectCatalog } from "../projects";
 import { resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
@@ -42,6 +43,7 @@ interface CatalogState {
     string,
     { bindingId: string; runtimeKind: string; identityKey: string; kind: "persistent" | "transient" }
   >;
+  runtimeRevisionByRef: Map<string, string>;
   expiresAt: number;
 }
 
@@ -185,11 +187,13 @@ export class SessionCatalog {
 
   async ensureProjection(sessionRef: string, refreshRuntime = false): Promise<boolean> {
     const normalized = sessionRef.toUpperCase();
-    const entry = await this.entry(normalized, refreshRuntime);
+    const state = await this.load(refreshRuntime);
+    const entry = state.entriesByRef.get(normalized) ?? null;
     if (!entry) return false;
+    const sourceRevision = state.runtimeRevisionByRef.get(normalized) ?? entry.updatedAt;
     const session = await this.options.stateStore.getRuntimeSessionByRef(normalized);
     if (session) {
-      await this.options.transcriptProjection.reconcile(session, entry.updatedAt);
+      await this.options.transcriptProjection.reconcile(session, sourceRevision);
       return true;
     }
     const target = await this.options.stateStore.getSessionRefTarget(normalized);
@@ -210,7 +214,7 @@ export class SessionCatalog {
         isCurrent: false,
         updatedAt: Date.parse(entry.updatedAt) || Date.now(),
       },
-      entry.updatedAt,
+      sourceRevision,
     );
     return true;
   }
@@ -315,8 +319,7 @@ export class SessionCatalog {
 
   private async load(force = false): Promise<CatalogState> {
     if (!force && this.state && this.state.expiresAt > Date.now()) return this.state;
-    const projects = await this.options.stateStore.listProjects();
-    const projectById = new Map(projects.map((project) => [project.projectId, project]));
+    let projects = await this.projects.list();
     const sessions = await this.options.stateStore.listAllRuntimeSessions();
     const bindings: SessionCatalogBindingView[] = [];
     const entriesByRef = new Map<string, SessionCatalogEntryView>();
@@ -325,6 +328,7 @@ export class SessionCatalog {
       string,
       { bindingId: string; runtimeKind: string; identityKey: string; kind: "persistent" | "transient" }
     >();
+    const runtimeRevisionByRef = new Map<string, string>();
 
     for (const [bindingId, binding] of Object.entries(this.options.config.agents)) {
       const lifecycleCapabilities = this.options.runtimeAdapters.lifecycleCapabilities(binding);
@@ -339,6 +343,20 @@ export class SessionCatalog {
       const discoveredArchived = (
         await this.options.runtimeAdapters.discoverArchivedThreads(getAgentBinding(this.options.config, bindingId))
       ).filter((thread) => !thread.parentRuntimeThreadId);
+      try {
+        projects = (
+          await synchronizeRuntimeProjects({
+            bindingId,
+            runtimeKind: binding.kind,
+            threads: discoveredActive,
+            projects: this.projects,
+            stateStore: this.options.stateStore,
+          })
+        ).projects;
+      } catch {
+        projects = await this.projects.list();
+      }
+      const projectById = new Map(projects.map((project) => [project.projectId, project]));
       const discovered = [
         ...new Map(
           [...discoveredActive, ...discoveredArchived].map((thread) => [thread.runtimeThreadId, thread]),
@@ -349,6 +367,12 @@ export class SessionCatalog {
         managed.map(async (session) => {
           const project = projectById.get(session.projectId ?? "") ?? null;
           const runtimeThread = session.runtimeSessionId ? discoveredById.get(session.runtimeSessionId) : undefined;
+          if (runtimeThread) {
+            runtimeRevisionByRef.set(
+              session.sessionRef.toUpperCase(),
+              `${runtimeThread.runtimeThreadId}:${runtimeThread.updatedAt}`,
+            );
+          }
           const workingDirectory = runtimeThread?.workingDirectory ?? null;
           if (workingDirectory) workingDirectoryByRef.set(session.sessionRef.toUpperCase(), workingDirectory);
           const activity = (await this.options.sessionActivity?.(bindingId, session.sessionRef)) ?? "idle";
@@ -371,6 +395,7 @@ export class SessionCatalog {
           agentId: bindingId,
           runtimeSessionId: thread.runtimeThreadId,
         });
+        runtimeRevisionByRef.set(sessionRef.toUpperCase(), `${thread.runtimeThreadId}:${thread.updatedAt}`);
         workspaceIdentityByRef.set(sessionRef.toUpperCase(), {
           bindingId,
           runtimeKind: binding.kind,
@@ -379,9 +404,7 @@ export class SessionCatalog {
         });
         if (thread.workingDirectory) workingDirectoryByRef.set(sessionRef.toUpperCase(), thread.workingDirectory);
         const workspace =
-          project || thread.workspaceKind !== "transient"
-            ? workspaceView(project?.rootPath ?? thread.workingDirectory)
-            : null;
+          project || identity.kind !== "transient" ? workspaceView(project?.rootPath ?? thread.workingDirectory) : null;
         entries.push({
           sessionRef,
           entryKind: "runtime-thread",
@@ -425,6 +448,7 @@ export class SessionCatalog {
       entriesByRef,
       workingDirectoryByRef,
       workspaceIdentityByRef,
+      runtimeRevisionByRef,
       expiresAt: Date.now() + 2_000,
     };
     return this.state;

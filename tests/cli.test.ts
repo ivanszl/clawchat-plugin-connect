@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "../src/chat-commands";
@@ -10,6 +10,7 @@ import { ProjectCatalog } from "../src/projects";
 import type { NormalizedInboundMessage } from "../src/protocol";
 import type { SelectableRuntimeThread } from "../src/runtime/types";
 import { type ConnectStateStore, createStateStore } from "../src/state";
+import { workspaceView } from "../src/workspace-catalog";
 
 async function tempConfig(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "clawchat-connect-cli-"));
@@ -179,19 +180,21 @@ describe("runConnectCli", () => {
     const output = io();
 
     await expect(
-      runConnectCli(
-        ["project", "add", "connect", root, "--additional-directory", shared, "--config", configPath],
-        output.deps,
-      ),
+      runConnectCli(["project", "add", root, "--additional-directory", shared, "--config", configPath], output.deps),
     ).resolves.toBe(0);
     output.stdout.length = 0;
     await expect(runConnectCli(["project", "list", "--config", configPath], output.deps)).resolves.toBe(0);
-    expect(output.stdout.join("")).toContain(`connect`);
+    expect(output.stdout.join("")).toContain("repo");
     expect(output.stdout.join("")).toContain(root);
+    const workspaceId = workspaceView(await realpath(root))?.id;
+    expect(workspaceId).toBeTruthy();
+    if (!workspaceId) throw new Error("expected Workspace ID");
 
     output.stdout.length = 0;
-    await expect(runConnectCli(["project", "remove", "connect", "--config", configPath], output.deps)).resolves.toBe(0);
-    expect(output.stdout.join("")).toContain("Removed Project connect");
+    await expect(runConnectCli(["project", "remove", workspaceId, "--config", configPath], output.deps)).resolves.toBe(
+      0,
+    );
+    expect(output.stdout.join("")).toContain("Removed Project repo");
   });
 
   it("activates through injectable activation action without printing invite code", async () => {
@@ -426,7 +429,8 @@ describe("handleChatCommand", () => {
     await mkdir(root);
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    await projects.add("repo", root);
+    const project = await projects.add(root);
+    const workspaceId = projects.workspaceId(project);
     const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     const closeRuntimeSession = mock(async () => true);
     const invalidateRuntimeSession = mock(async () => true);
@@ -435,7 +439,7 @@ describe("handleChatCommand", () => {
       "/new",
       "/sessions",
       "/project",
-      "/project repo",
+      `/project ${workspaceId}`,
       "/project none",
       "/mode read-only",
       "/cancel",
@@ -489,7 +493,8 @@ describe("handleChatCommand", () => {
     await mkdir(root);
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    await projects.add("repo", root);
+    const project = await projects.add(root);
+    const workspaceId = projects.workspaceId(project);
     const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
     await store.upsertRuntimeSession({
       chatId: "chat-1",
@@ -501,7 +506,7 @@ describe("handleChatCommand", () => {
     const closeRuntimeSession = mock(async () => true);
 
     const selected = await handleChatCommand({
-      message: message("/project repo"),
+      message: message(`/project ${workspaceId}`),
       agentId: "work",
       ownerUserId: "usr",
       config,
@@ -553,29 +558,30 @@ describe("handleChatCommand", () => {
     await store.close();
   });
 
-  it("uses the same Runtime Workspace choices and labels as Connect Client", async () => {
+  it("uses synchronized Project Workspace IDs and labels from Connect Client", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-workspace-command-"));
     const registeredRoot = join(directory, "clawchat-plugin-connect");
     const discoveredRoot = join(directory, "clawpet");
     await Promise.all([mkdir(registeredRoot), mkdir(discoveredRoot)]);
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    const registered = await projects.add("connect-qa", registeredRoot);
+    const registered = await projects.add(registeredRoot);
+    const discovered = await projects.add(discoveredRoot);
     const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     const listRuntimeWorkspaces = async () => [
       {
-        workspaceId: "workspace-connect",
+        workspaceId: projects.workspaceId(registered),
         name: "clawchat-plugin-connect",
         rootPath: registeredRoot,
         projectId: registered.projectId,
         projectName: registered.name,
       },
       {
-        workspaceId: "workspace-clawpet",
+        workspaceId: projects.workspaceId(discovered),
         name: "clawpet",
         rootPath: discoveredRoot,
-        projectId: null,
-        projectName: null,
+        projectId: discovered.projectId,
+        projectName: discovered.name,
       },
     ];
 
@@ -590,9 +596,22 @@ describe("handleChatCommand", () => {
     });
     expect(listed.text).toContain("clawchat-plugin-connect");
     expect(listed.text).toContain("clawpet");
+    expect(listed.text).not.toContain("Runtime Workspace");
+
+    const rejectedName = await handleChatCommand({
+      message: message("/project clawpet"),
+      agentId: "codex",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      listRuntimeWorkspaces,
+    });
+    expect(rejectedName.text).toContain("Unknown Workspace ID");
+    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toBeNull();
 
     await handleChatCommand({
-      message: message("/project clawpet"),
+      message: message(`/project ${projects.workspaceId(discovered)}`),
       agentId: "codex",
       ownerUserId: "usr",
       config,
@@ -762,7 +781,7 @@ describe("handleChatCommand", () => {
     await mkdir(root);
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    const project = await projects.add("repo", root);
+    const project = await projects.add(root);
     const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     await store.upsertRuntimeSession({
       chatId: "chat-1",
@@ -880,7 +899,7 @@ describe("handleChatCommand", () => {
       sessionRefFactory: () => generatedRefs.shift() ?? "JKLMNPQR",
     });
     const projects = new ProjectCatalog(store);
-    const project = await projects.add("repo", root);
+    const project = await projects.add(root);
     const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     await store.upsertRuntimeSession({
       chatId: "chat-1",

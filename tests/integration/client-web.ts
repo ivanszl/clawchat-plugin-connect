@@ -34,6 +34,11 @@ try {
       createRequests.push(request.postDataJSON());
     });
     await page.goto(origin);
+    const projectViews = await page.evaluate(async () => await (await fetch("/client/v1/projects")).json());
+    const connectWorkspaceId = (projectViews as Array<{ workspaceId: string; name: string }>).find(
+      (project) => project.name === "clawchat-plugin-connect",
+    )?.workspaceId;
+    assert(connectWorkspaceId, "preview Project must expose its Workspace ID");
     await expect(page.getByRole("heading", { name: "选择一个 Session" })).toBeVisible();
     const navigation = page.locator(".session-nav");
     await navigation.getByText("clawchat-plugin-connect", { exact: true }).click();
@@ -80,8 +85,7 @@ try {
     assert.equal(createRequests.length, 1, "new Session UI must submit one semantic request");
     assert.deepEqual(withoutRequestId(createRequests[0]), {
       bindingId: "codex",
-      projectId: "connect",
-      workspaceId: null,
+      workspaceId: connectWorkspaceId,
       name: "Browser-created Session",
       mode: "read-only",
       model: "gpt-deep",
@@ -101,7 +105,11 @@ try {
     await verifyLongSessionNameDoesNotOverflow(page);
     await page.getByRole("button", { name: "设置", exact: true }).click();
     await expect(page.getByRole("heading", { name: "安全偏好设置" })).toBeVisible();
-    await page.getByRole("button", { name: "移除", exact: true }).click();
+    await page
+      .locator(".project-settings-row")
+      .filter({ hasText: "clawchat-plugin-connect" })
+      .getByRole("button", { name: "移除", exact: true })
+      .click();
     await expect(page.getByRole("alert").filter({ hasText: "移除失败" })).toContainText("still reference this Project");
 
     process.stdout.write(
@@ -366,7 +374,11 @@ async function verifyTranscriptAlwaysFollowsLatest(
 async function verifyExternalTuiRefresh(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
   const page = await browser.newPage();
   try {
+    const initialEventBatch = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/client/v1/events/batch",
+    );
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    await initialEventBatch;
     await expect(page.getByText("来自 Codex TUI 的外部消息。", { exact: true })).toHaveCount(0);
     await page.evaluate(async () => await fetch("/__preview/external-tui-turn", { method: "POST" }));
     await expect(page.getByText("来自 Codex TUI 的外部消息。", { exact: true })).toBeVisible({ timeout: 5_000 });
@@ -520,12 +532,17 @@ async function verifyLongSessionNameDoesNotOverflow(page: Page) {
     .repeat(2)
     .trim();
   const response = await page.evaluate(async (name) => {
+    const projects = (await (await fetch("/client/v1/projects")).json()) as Array<{
+      workspaceId: string;
+      name: string;
+    }>;
+    const workspaceId = projects.find((project) => project.name === "clawchat-plugin-connect")?.workspaceId;
     const request = await fetch("/client/v1/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         bindingId: "codex",
-        projectId: "connect",
+        workspaceId,
         name,
         mode: null,
         model: null,

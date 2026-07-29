@@ -13,7 +13,7 @@ All notable changes to ClawChat Connect are documented in this file.
 
 - Unified Client event application across SSE and persisted batch fallback while removing foreground Session and Composer polling writers.
 - Exposed the active accepted Turn and effective Turn Submission Capability through the Client Interface.
-- Unified ClawChat `/project` choices and labels with Connect Client Workspace Groups, including persistent Runtime Workspaces that are registered only when selected.
+- Unified ClawChat, Connect Client, and CLI Project choices around root-derived names and Workspace IDs, with active persistent Runtime Workspaces synchronized one-way into Connect Projects.
 
 ### Fixed
 

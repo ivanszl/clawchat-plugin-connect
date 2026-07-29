@@ -670,6 +670,10 @@ export class ConnectStateStore {
     const result = await db.run(`DELETE FROM projects WHERE project_id = ?`, projectId);
     return result.changes > 0;
   }
+  async deleteRuntimeWorkspaceMappingsForProject(projectId: string): Promise<void> {
+    const db = await this.requireDb();
+    await db.run(`DELETE FROM runtime_workspace_mappings WHERE project_id = ?`, projectId);
+  }
 
   async upsertRuntimeSession(input: UpsertRuntimeSessionInput): Promise<void> {
     const now = Date.now();

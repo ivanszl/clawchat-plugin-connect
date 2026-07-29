@@ -52,7 +52,7 @@ describe("Session Catalog workspace grouping", () => {
     expect(entries.map((entry) => entry.name)).toEqual(["Parent task"]);
   });
 
-  it("groups discovered Runtime Threads by their native working directory", async () => {
+  it("synchronizes active persistent Runtime Workspaces into root-derived Projects", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-"));
     const firstWorkspace = join(directory, "first-project");
     const secondWorkspace = join(directory, "second-project");
@@ -95,6 +95,8 @@ describe("Session Catalog workspace grouping", () => {
     expect(entries[0]?.workspaceId).toBeTruthy();
     expect(entries[1]?.workspaceId).toBeTruthy();
     expect(entries[0]?.workspaceId).not.toBe(entries[1]?.workspaceId);
+    expect(entries.map((entry) => entry.projectId)).toEqual([expect.any(String), expect.any(String)]);
+    await expect(store.listProjects()).resolves.toHaveLength(2);
     await expect(catalog.sessionView(entries[0]?.sessionRef ?? "")).resolves.toMatchObject({
       workspaceName: basename(firstWorkspace),
     });
@@ -102,6 +104,43 @@ describe("Session Catalog workspace grouping", () => {
     const adopted = await catalog.adopt(entries[0]?.sessionRef ?? "");
     const adoptedProject = adopted?.projectId ? await store.getProject(adopted.projectId) : null;
     expect(adoptedProject?.rootPath).toBe(await realpath(firstWorkspace));
+  });
+
+  it("does not synchronize a workspace discovered only through archived Runtime Threads", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-archived-workspace-"));
+    const workspace = join(directory, "archived-project");
+    await mkdir(workspace);
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    stores.push(store);
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      discoverAllThreads: async () => [],
+      discoverArchivedThreads: async () => [
+        {
+          runtimeThreadId: "thread-archived",
+          name: "Archived task",
+          updatedAt: 1,
+          workingDirectory: workspace,
+          isArchived: true,
+        },
+      ],
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const config = defaultConfig();
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+
+    const entry = (await catalog.view()).bindings[0]?.entries[0];
+
+    expect(entry).toMatchObject({ isArchived: true, projectId: null });
+    await expect(store.listProjects()).resolves.toEqual([]);
   });
 
   it("keeps Codex App scratch threads as direct Non-Project leaves", async () => {

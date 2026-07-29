@@ -149,19 +149,15 @@ export async function updateSessionPreferences(
   });
 }
 
-export async function addProject(
-  name: string,
-  rootPath: string,
-  additionalDirectories: string[],
-): Promise<ProjectView> {
+export async function addProject(rootPath: string, additionalDirectories: string[]): Promise<ProjectView> {
   return await clientFetch<ProjectView>(`${CLIENT_API_PREFIX}/projects`, {
     method: "POST",
-    body: JSON.stringify({ requestId: requestId(), name, rootPath, additionalDirectories }),
+    body: JSON.stringify({ requestId: requestId(), rootPath, additionalDirectories }),
   });
 }
 
-export async function removeProject(projectId: string): Promise<{ projectId: string; removed: true }> {
-  return await clientFetch(`${CLIENT_API_PREFIX}/projects/${encodeURIComponent(projectId)}`, {
+export async function removeProject(workspaceId: string): Promise<{ workspaceId: string; removed: true }> {
+  return await clientFetch(`${CLIENT_API_PREFIX}/projects/${encodeURIComponent(workspaceId)}`, {
     method: "DELETE",
     body: JSON.stringify({ requestId: requestId() }),
   });

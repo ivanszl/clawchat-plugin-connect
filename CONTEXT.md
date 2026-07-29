@@ -53,8 +53,8 @@ The Connect-owned normalized event record persisted in SQLite for Client renderi
 _Avoid_: Runtime Transcript, Agent Memory, Message Backup
 
 **Project**:
-A named, reusable local code workspace that a Session may use. A Project has a root location, but it is not merely a directory path.
-_Avoid_: Directory, cwd, repository
+A reusable local code workspace that a Session may use. A Project has a canonical root location and a display name derived from that root; it has no independently customizable alias, but it is not merely a directory path.
+_Avoid_: Directory, cwd, repository, custom Project name
 
 **Workspace Group**:
 A Connect Client navigation group derived from a Project or a discovered Runtime Workspace Identity. Runtime Adapter-classified transient scratch workspaces remain direct Non-Project leaves. The group keeps native threads from unrelated durable workspaces visually separate without pretending every discovered workspace is already a registered Project.
@@ -63,6 +63,10 @@ _Avoid_: Project, when the group comes only from Runtime Thread discovery
 **Runtime Workspace Identity**:
 A stable runtime-neutral identity reported by a Runtime Adapter for grouping Runtime Threads that belong to the same native workspace. It may include a local root when one exists, but it is not a Connect Project and does not decide Project registration or association.
 _Avoid_: Working Directory, Runtime Project, Project
+
+**Workspace ID**:
+A stable Connect-owned user-facing identifier derived from a Project's canonical root. It selects Projects consistently across ClawChat controls, Connect Client, and CLI, while the persisted Project ID remains an internal association key.
+_Avoid_: Project name, Project ID, when referring to the user-facing selector
 
 **Session**:
 A continuous Connect conversation using one Agent Binding and optionally one Project. A Session owns conversation continuity, not project identity.
@@ -164,10 +168,12 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Changing Project association creates a Session Intent whose eventual Session starts a new Runtime Thread boundary.
 - Connect Client Session Catalog discovery is installation-wide across Projects, Non-Project Sessions, ClawChat conversations, and Agent Bindings.
 - Client Interface binds to loopback by default; unauthenticated IPv4 LAN exposure requires an explicit wildcard Host configuration and is not an internet-facing mode.
-- Connect Client groups discovered Runtime Threads by Runtime Workspace Identity even when that workspace is not yet mapped to a registered Project; Runtime Adapter-classified transient scratch workspaces and genuine Non-Project Sessions remain direct catalog leaves. Discovery alone never creates or maps a Project.
-- Adopting a discovered Runtime Thread from a persistent Runtime Workspace Identity, or explicitly selecting that workspace for a new Session, maps it to an existing Project or registers a Project from its usable local root before Connect sends another turn. An unmapped identity without a usable local root and a transient scratch Runtime Thread remain Non-Project instead of creating a Project.
+- Connect synchronizes every active persistent Runtime Workspace Identity with a usable local root into a Project, reusing an existing Project with the same canonical root and creating only missing Projects. Synchronization never deletes a Project merely because its Runtime Threads are inactive or archived.
+- Project synchronization is a one-way projection from Runtime Workspace Identity into Connect; changing or removing a Connect Project does not mutate the runtime's workspace or Runtime Threads.
+- Runtime Adapter-classified transient scratch workspaces, archived-only workspaces, identities without a usable local root, and genuine Non-Project Sessions remain outside Project synchronization and appear as direct Non-Project catalog leaves.
 - ClawChat Session Catalog discovery spans Projects, Non-Project Sessions, and ClawChat conversations but is scoped to the Agent Binding that received the command.
-- The ClawChat `/project` control and Connect Client use the same active persistent Workspace Group candidates and labels for that Agent Binding; archived-only and transient workspaces are excluded, while registered Projects remain selectable without an active Runtime Thread. Selecting an unmapped Runtime Workspace registers its usable local root as a Project before planning the next Session.
+- The ClawChat `/project` control and Connect Client use the same synchronized Project candidates and root-derived labels for that Agent Binding; archived-only and transient workspaces are excluded, while registered Projects remain selectable without an active Runtime Thread.
+- Project names are presentation-only values derived from canonical roots. User-facing Project selection uses Workspace ID rather than Project name, path, or internal Project ID; `/project none` remains the explicit Non-Project control.
 - Runtime Thread discovery uses only that Agent Binding's Runtime Adapter and remains scoped to the selected workspace from the Session Intent or current Session; an external Runtime Thread is adopted only through an explicit switch.
 - A Runtime Thread and its Runtime Transcript remain authoritative for Agent context and native resume; Connect does not replace them with its own thread or rebuild context by replaying the Client Transcript.
 - A Subagent Thread remains part of its parent Runtime Thread's Session tree. Connect does not list it as a standalone Session and projects its available transcript at the parent runtime activity that spawned it.

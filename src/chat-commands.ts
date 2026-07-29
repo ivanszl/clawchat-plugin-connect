@@ -58,7 +58,7 @@ const HELP = [
   "- `/new [name]` — prepare a new Session for the next message using the selected Project.",
   "- `/sessions` — list Sessions in the selected workspace.",
   "- `/switch <name-or-ref>` — switch or import a Session by name or 8-character Ref.",
-  "- `/project [name-or-id|none]` — inspect or select the next Session workspace.",
+  "- `/project [workspace-id|none]` — inspect or select the next Session Project.",
   "- `/model [model-id [reasoning-effort]|default]` — inspect or select the Session model.",
   "- `/mode [mode|default]` — inspect or select the Session runtime mode.",
   "- `/cancel` — cancel an active turn when supported.",
@@ -309,10 +309,7 @@ async function handleProject(ctx: ChatCommandContext, args: string[]): Promise<C
           `Current: ${currentWorkspace ? `\`${currentWorkspace.name}\`` : "none (isolated workspace)"}`,
           "",
           ...(workspaces.length > 0
-            ? workspaces.map(
-                (workspace) =>
-                  `- \`${workspace.name}\` (${workspace.workspaceId})${workspace.projectName ? ` — Project \`${workspace.projectName}\`` : " — Runtime Workspace"}`,
-              )
+            ? workspaces.map((workspace) => `- \`${workspace.name}\` (${workspace.workspaceId}) — Project`)
             : ["No workspaces discovered."]),
         ].join("\n"),
       };
@@ -323,28 +320,31 @@ async function handleProject(ctx: ChatCommandContext, args: string[]): Promise<C
     let project: ProjectRecord | null = null;
     let workspaceName: string | null = null;
     if (reference.toLowerCase() !== "none") {
-      const workspaces = (await ctx.listRuntimeWorkspaces?.()) ?? [];
-      const needle = reference.toLowerCase();
-      const matches = workspaces.filter((workspace) =>
-        [workspace.workspaceId, workspace.name, workspace.projectId, workspace.projectName].some(
-          (value) => value?.toLowerCase() === needle,
-        ),
-      );
-      if (matches.length > 1) {
+      const workspaces =
+        (await ctx.listRuntimeWorkspaces?.()) ??
+        (await ctx.projects.list()).flatMap((candidate) => {
+          const workspace = workspaceView(candidate.rootPath);
+          return workspace
+            ? [
+                {
+                  workspaceId: workspace.id,
+                  name: workspace.name,
+                  rootPath: candidate.rootPath,
+                  projectId: candidate.projectId,
+                  projectName: candidate.name,
+                },
+              ]
+            : [];
+        });
+      const workspace = workspaces.find((candidate) => candidate.workspaceId.toLowerCase() === reference.toLowerCase());
+      if (!workspace) {
         return {
           handled: true,
-          text: `Workspace \`${reference}\` is ambiguous: ${matches
-            .map((workspace) => `\`${workspace.name}\` (${workspace.workspaceId})`)
-            .join(", ")}`,
+          text: `Unknown Workspace ID \`${reference}\`. Use /project to see Projects.`,
         };
       }
-      const workspace = matches[0];
-      project = workspace
-        ? workspace.projectId
-          ? await ctx.projects.require(workspace.projectId)
-          : await ctx.projects.ensureDiscoveredWorkspace(workspace.rootPath)
-        : await ctx.projects.require(reference);
-      workspaceName = workspace?.name ?? null;
+      project = await ctx.projects.require(workspace.projectId);
+      workspaceName = workspace.name;
     }
     await closeRuntimeSession(ctx);
     await conversationSessions(ctx).planNext({

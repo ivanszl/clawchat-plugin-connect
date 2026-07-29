@@ -156,8 +156,7 @@ function NewSessionDialog({
     mutationFn: async () =>
       await createSession({
         bindingId,
-        projectId: workspaceSelection.startsWith("project:") ? workspaceSelection.slice("project:".length) : null,
-        workspaceId: workspaceSelection.startsWith("workspace:") ? workspaceSelection.slice("workspace:".length) : null,
+        workspaceId: workspaceSelection === "none" ? null : workspaceSelection,
         name: name.trim() || null,
         mode: mode === "default" ? null : mode,
         model: model === "default" ? null : model,
@@ -274,19 +273,16 @@ function newSessionWorkspaceOptions(
   projects: ProjectView[],
 ): { value: string; label: string }[] {
   const options = new Map<string, { value: string; label: string }>();
-  const representedProjects = new Set<string>();
   for (const entry of bindings.find((binding) => binding.bindingId === bindingId)?.entries ?? []) {
     if (entry.isArchived || !entry.workspaceId || !entry.workspaceName) continue;
-    if (entry.projectId) representedProjects.add(entry.projectId);
-    if (options.has(entry.workspaceId) && !entry.projectId) continue;
     options.set(entry.workspaceId, {
-      value: entry.projectId ? `project:${entry.projectId}` : `workspace:${entry.workspaceId}`,
+      value: entry.workspaceId,
       label: entry.workspaceName,
     });
   }
   for (const project of projects) {
-    if (representedProjects.has(project.projectId)) continue;
-    options.set(`project:${project.projectId}`, { value: `project:${project.projectId}`, label: project.name });
+    if (options.has(project.workspaceId)) continue;
+    options.set(project.workspaceId, { value: project.workspaceId, label: project.name });
   }
   return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
 }

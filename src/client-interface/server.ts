@@ -186,28 +186,43 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             return snapshotResponse(await catalog.view(url.searchParams.get("refresh") === "1"), watermark);
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/projects` && request.method === "GET") {
-            return jsonResponse(await projects.list());
+            return jsonResponse(
+              (await projects.list()).map((project) => ({
+                ...project,
+                workspaceId: projects.workspaceId(project),
+              })),
+            );
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/projects` && request.method === "POST") {
             const body = await readJsonBody<AddProjectRequest>(request);
             if (!validRequestId(body.requestId))
               return errorResponse(400, "invalid-request-id", "requestId is required");
-            if (typeof body.name !== "string" || typeof body.rootPath !== "string")
-              return errorResponse(400, "invalid-project", "Project name and rootPath are required");
+            if ("name" in body) return errorResponse(400, "invalid-project", "Project names are derived from rootPath");
+            if (typeof body.rootPath !== "string")
+              return errorResponse(400, "invalid-project", "Project rootPath is required");
             if (
               !Array.isArray(body.additionalDirectories) ||
               !body.additionalDirectories.every((path) => typeof path === "string")
             )
               return errorResponse(400, "invalid-project", "additionalDirectories must be an array of paths");
-            return await idempotentCommand(options.stateStore, body.requestId, "project.add", body.name, async () => {
-              try {
-                const project = await projects.add(body.name, body.rootPath, body.additionalDirectories);
-                catalog.invalidate();
-                return { status: 201, body: project };
-              } catch (error) {
-                return commandError(409, "project-conflict", error instanceof Error ? error.message : String(error));
-              }
-            });
+            return await idempotentCommand(
+              options.stateStore,
+              body.requestId,
+              "project.add",
+              body.rootPath,
+              async () => {
+                try {
+                  const project = await projects.add(body.rootPath, body.additionalDirectories);
+                  catalog.invalidate();
+                  return {
+                    status: 201,
+                    body: { ...project, workspaceId: projects.workspaceId(project) },
+                  };
+                } catch (error) {
+                  return commandError(409, "project-conflict", error instanceof Error ? error.message : String(error));
+                }
+              },
+            );
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/sessions` && request.method === "POST") {
             const body = await readJsonBody<CreateSessionRequest>(request);
@@ -215,12 +230,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-request-id", "requestId is required");
             if (typeof body.bindingId !== "string" || !body.bindingId.trim())
               return errorResponse(400, "invalid-binding", "bindingId is required");
-            if (body.projectId !== null && typeof body.projectId !== "string")
-              return errorResponse(400, "invalid-project", "projectId must be a string or null");
-            if (body.workspaceId !== undefined && body.workspaceId !== null && typeof body.workspaceId !== "string")
+            if (body.workspaceId !== null && typeof body.workspaceId !== "string")
               return errorResponse(400, "invalid-workspace", "workspaceId must be a string or null");
-            if (body.projectId && body.workspaceId)
-              return errorResponse(400, "invalid-workspace", "projectId and workspaceId are mutually exclusive");
             if (body.name !== null && typeof body.name !== "string")
               return errorResponse(400, "invalid-name", "name must be a string or null");
             if (body.mode !== null && typeof body.mode !== "string")
@@ -237,15 +248,9 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               async () => {
                 const binding = options.config.agents[body.bindingId];
                 if (!binding) return commandError(404, "binding-not-found", "Agent Binding was not found");
-                let projectId = body.projectId;
-                if (body.workspaceId) {
-                  const workspaceProject = await catalog.ensureWorkspaceProject(body.bindingId, body.workspaceId);
-                  if (!workspaceProject)
-                    return commandError(400, "invalid-workspace", "Discovered workspace was not found");
-                  projectId = workspaceProject.projectId;
-                } else if (projectId && !(await projects.get(projectId))) {
-                  return commandError(400, "invalid-project", "Project was not found");
-                }
+                const workspaceProject = body.workspaceId ? await projects.get(body.workspaceId) : null;
+                if (body.workspaceId && !workspaceProject)
+                  return commandError(400, "invalid-workspace", "Project Workspace ID was not found");
                 const name = body.name?.trim() || null;
                 if (name && name.length > 200)
                   return commandError(400, "invalid-name", "Session name must be at most 200 characters");
@@ -267,7 +272,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 }
                 const chatId = `__connect_client_session__:${randomUUID()}`;
                 const session = await sessionContinuity.inConversation({ chatId, bindingId: body.bindingId }).create({
-                  projectId,
+                  projectId: workspaceProject?.projectId ?? null,
                   name,
                   mode: body.mode,
                   model,
@@ -317,7 +322,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                       `${result.referencedSessions} Session(s) and ${result.pendingIntents} Session Intent(s) still reference this Project`,
                     );
                   catalog.invalidate();
-                  return { status: 200, body: { projectId: result.project.projectId, removed: true } };
+                  return {
+                    status: 200,
+                    body: { workspaceId: projects.workspaceId(result.project), removed: true },
+                  };
                 } catch (error) {
                   return commandError(404, "project-not-found", error instanceof Error ? error.message : String(error));
                 }
@@ -829,6 +837,7 @@ function clientViewPublisher(store: ConnectStateStore, catalog: SessionCatalog):
         catalogView.bindings.flatMap((binding) => binding.entries.map((entry) => entry.sessionRef)),
       );
       for (const sessionRef of sessionRefs) {
+        await catalog.ensureProjection(sessionRef);
         const view = await catalog.sessionView(sessionRef);
         if (!view) continue;
         const fingerprint = viewFingerprint(view);

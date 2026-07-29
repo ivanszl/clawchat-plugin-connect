@@ -6,8 +6,12 @@ export interface RuntimeWorkspaceChoice {
   workspaceId: string;
   name: string;
   rootPath: string;
-  projectId: string | null;
-  projectName: string | null;
+  projectId: string;
+  projectName: string;
+}
+
+export function isWorkspaceId(value: string): boolean {
+  return /^[a-f0-9]{24}$/iu.test(value);
 }
 
 export function workspaceView(workingDirectory: string | null | undefined): { id: string; name: string } | null {

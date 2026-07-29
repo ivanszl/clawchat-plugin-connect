@@ -152,6 +152,16 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     await wsClient.connect();
     await inboundMessages.recover();
     await recordConnectionStatus(options, true, null);
+    try {
+      const synchronization = await runtime.synchronizeRuntimeProjects();
+      for (const failure of synchronization.failures) {
+        options.writeError(`${options.agentId}: Project synchronization skipped ${failure}\n`);
+      }
+    } catch (error) {
+      options.writeError(
+        `${options.agentId}: Project synchronization unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
   } catch (error) {
     wsClient.close();
     await runtime.dispose();

@@ -321,27 +321,48 @@ describe("Connect Client Interface", () => {
     });
     const projectRoot = join(directory, "project-root");
     await mkdir(projectRoot);
+    const customNamedProject = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", {
+      method: "POST",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "project_custom_name_request",
+        name: "connect-qa",
+        rootPath: projectRoot,
+        additionalDirectories: [],
+      }),
+    });
+    expect(customNamedProject.status).toBe(400);
     const registeredProject = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", {
       method: "POST",
       headers: { origin: handle.origin, "content-type": "application/json" },
       body: JSON.stringify({
         requestId: "project_add_request",
-        name: "connect",
         rootPath: projectRoot,
         additionalDirectories: [],
       }),
     });
     expect(registeredProject.status).toBe(201);
-    const registeredProjectView = (await registeredProject.json()) as { projectId: string };
+    const registeredProjectView = (await registeredProject.json()) as { projectId: string; workspaceId: string };
     const projects = await localRequest(fetchHandler, handle.origin, "/client/v1/projects");
-    const projectViews = (await projects.json()) as Array<{ projectId: string; name: string; rootPath: string }>;
-    expect(projectViews).toHaveLength(1);
-    expect(projectViews[0]).toMatchObject({ projectId: registeredProjectView.projectId, name: "connect" });
-    expect(projectViews[0]?.rootPath).toBe(await realpath(projectRoot));
+    const projectViews = (await projects.json()) as Array<{
+      projectId: string;
+      workspaceId: string;
+      name: string;
+      rootPath: string;
+    }>;
+    expect(projectViews).toHaveLength(2);
+    expect(projectViews).toContainEqual(
+      expect.objectContaining({
+        projectId: registeredProjectView.projectId,
+        workspaceId: registeredProjectView.workspaceId,
+        name: "project-root",
+        rootPath: await realpath(projectRoot),
+      }),
+    );
     const removedProject = await localRequest(
       fetchHandler,
       handle.origin,
-      `/client/v1/projects/${registeredProjectView.projectId}`,
+      `/client/v1/projects/${registeredProjectView.workspaceId}`,
       {
         method: "DELETE",
         headers: { origin: handle.origin, "content-type": "application/json" },
@@ -350,7 +371,7 @@ describe("Connect Client Interface", () => {
     );
     expect(removedProject.status).toBe(200);
     await expect(removedProject.json()).resolves.toEqual({
-      projectId: registeredProjectView.projectId,
+      workspaceId: registeredProjectView.workspaceId,
       removed: true,
     });
     const sessionProjectRoot = join(directory, "session-project-root");
@@ -360,12 +381,11 @@ describe("Connect Client Interface", () => {
       headers: { origin: handle.origin, "content-type": "application/json" },
       body: JSON.stringify({
         requestId: "session_project_add_request",
-        name: "session-project",
         rootPath: sessionProjectRoot,
         additionalDirectories: [],
       }),
     });
-    const sessionProject = (await sessionProjectResponse.json()) as { projectId: string };
+    const sessionProject = (await sessionProjectResponse.json()) as { projectId: string; workspaceId: string };
     const sessionsBeforeInvalidCreate = await store.listAllRuntimeSessions();
     const invalidCreatedSession = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
       method: "POST",
@@ -374,7 +394,7 @@ describe("Connect Client Interface", () => {
         requestId: "session_invalid_create_request",
         prompt: "This must not run",
         bindingId: "codex",
-        projectId: sessionProject.projectId,
+        workspaceId: sessionProject.workspaceId,
         name: "Invalid model",
         mode: "workspace-write",
         model: "missing-model",
@@ -389,7 +409,7 @@ describe("Connect Client Interface", () => {
       body: JSON.stringify({
         requestId: "session_create_request",
         bindingId: "codex",
-        projectId: sessionProject.projectId,
+        workspaceId: sessionProject.workspaceId,
         name: "Planned from Client",
         mode: "workspace-write",
         model: "gpt-deep",
@@ -453,7 +473,6 @@ describe("Connect Client Interface", () => {
       body: JSON.stringify({
         requestId: "workspace_session_create_request",
         bindingId: "codex",
-        projectId: null,
         workspaceId: discoveredWorkspace?.workspaceId,
         name: "Created in discovered workspace",
         mode: "workspace-write",
@@ -849,7 +868,7 @@ describe("Connect Client Interface", () => {
     const request = {
       requestId: "session_retry_request",
       bindingId: "codex",
-      projectId: null,
+      workspaceId: null,
       name: "Retry safely",
       mode: "workspace-write",
       model: null,

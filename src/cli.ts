@@ -60,9 +60,9 @@ const HELP_TEXT = `${[
   "  agent add <id> --kind codex [--codex-path <path>] [--config <path>]",
   "  agent list [--config <path>]",
   "  agent remove <id> [--config <path>]",
-  "  project add <name> <absolute-path> [--additional-directory <absolute-path>] [--config <path>]",
+  "  project add <absolute-path> [--additional-directory <absolute-path>] [--config <path>]",
   "  project list [--config <path>]",
-  "  project remove <name-or-id> [--config <path>]",
+  "  project remove <workspace-id> [--config <path>]",
   "  activate <agentId> <code> [--config <path>]",
   "  profile update [--agent <id>] [--nickname <text>] [--avatar-url <url>] [--bio <text>] [--config <path>]",
   "  service install|start|stop|restart|status [--config <path>]",
@@ -247,25 +247,24 @@ async function maybeRunNestedProjectCommand(argv: string[], io: CliIo): Promise<
     store = createStateStore({ dbPath: config.stateDbPath });
     const projects = new ProjectCatalog(store);
     if (action === "add") {
-      const name = argv[2];
-      const rootPath = argv[3];
-      if (!name || !rootPath || name.startsWith("--") || rootPath.startsWith("--"))
-        throw new Error("project add requires a name and absolute path");
-      const project = await projects.add(name, rootPath, optionValues(argv, "--additional-directory"));
+      const rootPath = argv[2];
+      if (!rootPath || rootPath.startsWith("--")) throw new Error("project add requires an absolute path");
+      const project = await projects.add(rootPath, optionValues(argv, "--additional-directory"));
       io.writeStdout(`Registered Project ${project.name} at ${project.rootPath}.\n`);
       return 0;
     }
     if (action === "list") {
       const rows = (await projects.list()).map(
         (project) =>
-          `- ${project.name} (${project.projectId}): ${project.rootPath}${project.additionalDirectories.length > 0 ? `; additional: ${project.additionalDirectories.join(", ")}` : ""}`,
+          `- ${project.name} (${projects.workspaceId(project)}): ${project.rootPath}${project.additionalDirectories.length > 0 ? `; additional: ${project.additionalDirectories.join(", ")}` : ""}`,
       );
       io.writeStdout(rows.length > 0 ? `${rows.join("\n")}\n` : "No Projects registered.\n");
       return 0;
     }
     if (action === "remove") {
       const reference = argv[2];
-      if (!reference || reference.startsWith("--")) throw new Error("project remove requires a name or id");
+      if (!reference || reference.startsWith("--")) throw new Error("project remove requires a Workspace ID");
+      if (!/^[a-f0-9]{24}$/iu.test(reference)) throw new Error("project remove requires a valid Workspace ID");
       const result = await projects.remove(reference);
       if (!result.removed)
         throw new Error(

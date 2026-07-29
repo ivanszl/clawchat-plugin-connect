@@ -87,13 +87,13 @@ async function runtimeFixture() {
 }
 
 describe("ConnectRuntime Agent Binding sessions", () => {
-  it("exposes the same persistent Runtime Workspace groups used by Connect Client", async () => {
+  it("synchronizes the persistent Runtime Workspace groups used by Connect Client into Projects", async () => {
     const fixture = await runtimeFixture();
     const registeredRoot = join(dirname(fixture.config.stateDbPath), "clawchat-plugin-connect");
     const discoveredRoot = join(dirname(fixture.config.stateDbPath), "clawpet");
     await Promise.all([mkdir(registeredRoot), mkdir(discoveredRoot)]);
     const projects = new ProjectCatalog(fixture.store);
-    const registered = await projects.add("connect-qa", registeredRoot);
+    const registered = await projects.add(registeredRoot);
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
@@ -142,12 +142,12 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       expect.objectContaining({
         name: "clawchat-plugin-connect",
         projectId: registered.projectId,
-        projectName: "connect-qa",
+        projectName: "clawchat-plugin-connect",
       }),
       expect.objectContaining({
         name: "clawpet",
-        projectId: null,
-        projectName: null,
+        projectId: expect.any(String),
+        projectName: "clawpet",
       }),
     ]);
 
@@ -806,7 +806,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     const projects = new ProjectCatalog(fixture.store);
     const projectRoot = await mkdtemp(join(tmpdir(), "clawchat-connect-selected-project-"));
     const canonicalProjectRoot = await realpath(projectRoot);
-    const project = await projects.add("selected", projectRoot);
+    const project = await projects.add(projectRoot);
     await fixture.store.setSessionIntent({
       chatId: "chat-1",
       agentId: "codex",
@@ -1022,7 +1022,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       const projects = new ProjectCatalog(fixture.store);
       const projectRoot = join(dirname(fixture.configPath), `repo-${scenario}`);
       await mkdir(projectRoot);
-      const project = await projects.add(`repo-${scenario}`, projectRoot);
+      const project = await projects.add(projectRoot);
       if (scenario === "switch") {
         await fixture.store.upsertRuntimeSession({
           chatId: "chat-1",
@@ -1072,7 +1072,9 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
       const first = runtime.handleInboundMessage(message("first turn"));
       await firstStarted;
-      const controlMessage = message(scenario === "project" ? `/project ${project.name}` : "/switch Target Session");
+      const controlMessage = message(
+        scenario === "project" ? `/project ${projects.workspaceId(project)}` : "/switch Target Session",
+      );
       controlMessage.messageId = `${scenario}-control`;
       const control = runtime.handleInboundMessage(
         controlMessage,

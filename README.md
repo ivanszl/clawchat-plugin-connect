@@ -178,7 +178,7 @@ Explain what this repository does and suggest the first improvement.
 Project paths are local-machine administration, so register them in the terminal or Connect Client—not in ClawChat:
 
 ```bash
-clawchat-connect project add connect /absolute/path/to/clawchat-plugin-connect
+clawchat-connect project add /absolute/path/to/clawchat-plugin-connect
 clawchat-connect project list
 ```
 
@@ -199,9 +199,9 @@ Local Project administration:
 
 | Command | Purpose |
 | --- | --- |
-| `clawchat-connect project add <name> <absolute-path> [--additional-directory <path>]` | Register a Project and optional trusted additional directories. |
+| `clawchat-connect project add <absolute-path> [--additional-directory <path>]` | Register a root-named Project and optional trusted additional directories. |
 | `clawchat-connect project list` | List Projects with their local paths. |
-| `clawchat-connect project remove <name-or-id>` | Remove an unused Project definition; files are never deleted. |
+| `clawchat-connect project remove <workspace-id>` | Remove an unused Project definition; files and Runtime Threads are never deleted. |
 
 A Project cannot be removed while a Session or pending Session selection references it.
 
@@ -218,7 +218,7 @@ Send these as standalone ClawChat messages:
 | `/new [name]` | Prepare a new Session for the next ordinary message. |
 | `/sessions` | List Sessions and available Runtime Threads in the selected workspace. |
 | `/switch <name-or-ref>` | Resume a Session or adopt an available Runtime Thread. |
-| `/project [name-or-id\|none]` | Show registered Project names, select one, or select an isolated Non-Project workspace. |
+| `/project [workspace-id\|none]` | Show synchronized Projects, select one by Workspace ID, or select an isolated Non-Project workspace. |
 | `/model [model-id [reasoning-effort]\|default]` | Show or set the Session model and effort; `default` restores inheritance. |
 | `/mode [mode\|default]` | Show or set `read-only`, `workspace-write`, or `danger-full-access`; `default` restores inheritance. |
 | `/cancel` | Interrupt the active Codex turn when possible. |
