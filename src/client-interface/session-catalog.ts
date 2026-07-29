@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import type {
   SessionAction,
   SessionCatalogAction,
@@ -18,6 +18,7 @@ import type { RuntimeLifecycleCapabilities, RuntimeModelOption, RuntimeThreadSum
 import { createSessionContinuity, type SessionContinuity } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { ConnectConfig, ProjectRecord, RuntimeSessionRecord, RuntimeStatus } from "../types";
+import { findProjectForWorkspace, workspaceView } from "../workspace-catalog";
 import type { TranscriptProjection } from "./transcript-projection";
 
 const CLIENT_CATALOG_CHAT = "__connect_client_catalog__";
@@ -534,31 +535,6 @@ function catalogActions(
   if (activity === "idle" && hasRuntimeThread && capabilities.archive) actions.push("archive");
   if (activity === "idle" && hasRuntimeThread && capabilities.delete) actions.push("delete");
   return actions;
-}
-
-function workspaceView(workingDirectory: string | null | undefined): { id: string; name: string } | null {
-  if (!workingDirectory) return null;
-  const root = resolve(workingDirectory);
-  const name = basename(root) || root;
-  const parentName = basename(dirname(root));
-  return {
-    id: createHash("sha256").update(root).digest("hex").slice(0, 24),
-    name: /^\d{4}-\d{2}-\d{2}$/u.test(parentName) ? `${parentName}/${name}` : name,
-  };
-}
-
-function findProjectForWorkspace(projects: ProjectRecord[], workingDirectory: string): ProjectRecord | null {
-  const workspace = resolve(workingDirectory);
-  return (
-    projects
-      .filter((project) => pathContains(resolve(project.rootPath), workspace))
-      .sort((left, right) => resolve(right.rootPath).length - resolve(left.rootPath).length)[0] ?? null
-  );
-}
-
-function pathContains(root: string, candidate: string): boolean {
-  const nestedPath = relative(root, candidate);
-  return nestedPath === "" || (!nestedPath.startsWith("..") && !isAbsolute(nestedPath));
 }
 
 function sessionStatus(status: RuntimeStatus | null, activity: SessionActivity): SessionCatalogEntryView["status"] {

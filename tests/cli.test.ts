@@ -553,6 +553,61 @@ describe("handleChatCommand", () => {
     await store.close();
   });
 
+  it("uses the same Runtime Workspace choices and labels as Connect Client", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-workspace-command-"));
+    const registeredRoot = join(directory, "clawchat-plugin-connect");
+    const discoveredRoot = join(directory, "clawpet");
+    await Promise.all([mkdir(registeredRoot), mkdir(discoveredRoot)]);
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const projects = new ProjectCatalog(store);
+    const registered = await projects.add("connect-qa", registeredRoot);
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const listRuntimeWorkspaces = async () => [
+      {
+        workspaceId: "workspace-connect",
+        name: "clawchat-plugin-connect",
+        rootPath: registeredRoot,
+        projectId: registered.projectId,
+        projectName: registered.name,
+      },
+      {
+        workspaceId: "workspace-clawpet",
+        name: "clawpet",
+        rootPath: discoveredRoot,
+        projectId: null,
+        projectName: null,
+      },
+    ];
+
+    const listed = await handleChatCommand({
+      message: message("/project"),
+      agentId: "codex",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      listRuntimeWorkspaces,
+    });
+    expect(listed.text).toContain("clawchat-plugin-connect");
+    expect(listed.text).toContain("clawpet");
+
+    await handleChatCommand({
+      message: message("/project clawpet"),
+      agentId: "codex",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      listRuntimeWorkspaces,
+      closeRuntimeSession: async () => true,
+    });
+    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
+      projectId: expect.any(String),
+    });
+    await expect(projects.list()).resolves.toHaveLength(2);
+    await store.close();
+  });
+
   it("records /new without creating an empty Session", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-new-intent-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });

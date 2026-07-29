@@ -22,6 +22,7 @@ import {
 } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig, RuntimeSessionRecord, RuntimeWorkspace } from "../types";
+import { findProjectForWorkspace, type RuntimeWorkspaceChoice, workspaceView } from "../workspace-catalog";
 import type { ConnectWsClient } from "../ws-client";
 import { MAX_RUNTIME_MEDIA_BYTES, releaseConnectStagedMedia } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
@@ -280,6 +281,53 @@ export class ConnectRuntime {
 
   async listRuntimeModels(binding: AgentBindingConfig): Promise<RuntimeModelOption[] | null> {
     return await this.runtimeAdapters.listModels(binding);
+  }
+
+  async listRuntimeWorkspaces(): Promise<RuntimeWorkspaceChoice[]> {
+    const binding = getAgentBinding(this.options.config, this.options.agentId);
+    const [projects, active, archived] = await Promise.all([
+      this.projects.list(),
+      this.runtimeAdapters.discoverAllThreads(binding),
+      this.runtimeAdapters.discoverArchivedThreads(binding),
+    ]);
+    const choices = new Map<string, RuntimeWorkspaceChoice>();
+    for (const thread of [...active, ...archived]) {
+      if (thread.parentRuntimeThreadId) continue;
+      const reportedRoot = thread.workspaceIdentity?.localRoot ?? thread.workingDirectory;
+      if (!reportedRoot || (thread.workspaceIdentity?.kind ?? thread.workspaceKind) === "transient") continue;
+      const rootPath = await realpath(reportedRoot).catch(() => resolve(reportedRoot));
+      const identityKey = thread.workspaceIdentity?.key ?? resolve(reportedRoot);
+      const mapping = await this.options.stateStore.getRuntimeWorkspaceMapping(
+        this.options.agentId,
+        binding.kind,
+        identityKey,
+      );
+      const project =
+        projects.find((candidate) => candidate.projectId === mapping?.projectId) ??
+        findProjectForWorkspace(projects, rootPath);
+      const effectiveRoot = project?.rootPath ?? rootPath;
+      const workspace = workspaceView(effectiveRoot);
+      if (!workspace) continue;
+      choices.set(workspace.id, {
+        workspaceId: workspace.id,
+        name: workspace.name,
+        rootPath: effectiveRoot,
+        projectId: project?.projectId ?? null,
+        projectName: project?.name ?? null,
+      });
+    }
+    for (const project of projects) {
+      const workspace = workspaceView(project.rootPath);
+      if (!workspace) continue;
+      choices.set(workspace.id, {
+        workspaceId: workspace.id,
+        name: workspace.name,
+        rootPath: project.rootPath,
+        projectId: project.projectId,
+        projectName: project.name,
+      });
+    }
+    return [...choices.values()].sort((left, right) => left.name.localeCompare(right.name));
   }
 
   async discoverRuntimeThreads(chatId: string): Promise<SelectableRuntimeThread[]> {

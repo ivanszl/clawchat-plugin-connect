@@ -87,6 +87,59 @@ async function runtimeFixture() {
 }
 
 describe("ConnectRuntime Agent Binding sessions", () => {
+  it("exposes the same persistent Runtime Workspace groups used by Connect Client", async () => {
+    const fixture = await runtimeFixture();
+    const registeredRoot = join(dirname(fixture.config.stateDbPath), "clawchat-plugin-connect");
+    const discoveredRoot = join(dirname(fixture.config.stateDbPath), "clawpet");
+    await Promise.all([mkdir(registeredRoot), mkdir(discoveredRoot)]);
+    const projects = new ProjectCatalog(fixture.store);
+    const registered = await projects.add("connect-qa", registeredRoot);
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      discoverAllThreads: async () => [
+        {
+          runtimeThreadId: "thread-connect",
+          name: "Connect task",
+          updatedAt: 2,
+          workingDirectory: registeredRoot,
+        },
+        {
+          runtimeThreadId: "thread-clawpet",
+          name: "Clawpet task",
+          updatedAt: 1,
+          workingDirectory: discoveredRoot,
+        },
+      ],
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      projects,
+      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+    });
+
+    await expect(runtime.listRuntimeWorkspaces()).resolves.toEqual([
+      expect.objectContaining({
+        name: "clawchat-plugin-connect",
+        projectId: registered.projectId,
+        projectName: "connect-qa",
+      }),
+      expect.objectContaining({
+        name: "clawpet",
+        projectId: null,
+        projectName: null,
+      }),
+    ]);
+
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
   it("uploads Web media and includes it in the client Runtime turn", async () => {
     const fixture = await runtimeFixture();
     const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");

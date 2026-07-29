@@ -14,6 +14,7 @@ import type {
   RuntimeSessionRecord,
   SessionIntentRecord,
 } from "./types";
+import { type RuntimeWorkspaceChoice, workspaceView } from "./workspace-catalog";
 
 export interface ChatCommandContext {
   message: NormalizedInboundMessage;
@@ -28,6 +29,7 @@ export interface ChatCommandContext {
   runtimeModesFor?: (binding: AgentBindingConfig) => readonly string[];
   listRuntimeModels?: (binding: AgentBindingConfig) => Promise<RuntimeModelOption[] | null>;
   discoverRuntimeThreads?: (chatId: string) => Promise<SelectableRuntimeThread[]>;
+  listRuntimeWorkspaces?: () => Promise<RuntimeWorkspaceChoice[]>;
 }
 
 export interface ChatCommandResult {
@@ -279,24 +281,71 @@ async function handleProject(ctx: ChatCommandContext, args: string[]): Promise<C
   try {
     if (!reference) {
       const projects = await ctx.projects.list();
+      const workspaces =
+        (await ctx.listRuntimeWorkspaces?.()) ??
+        projects.flatMap((project) => {
+          const workspace = workspaceView(project.rootPath);
+          return workspace
+            ? [
+                {
+                  workspaceId: workspace.id,
+                  name: workspace.name,
+                  rootPath: project.rootPath,
+                  projectId: project.projectId,
+                  projectName: project.name,
+                },
+              ]
+            : [];
+        });
       const selected = await selectedSessionContext(ctx);
       const current = selected?.projectId ? await ctx.projects.get(selected.projectId) : null;
+      const currentWorkspace = current
+        ? workspaces.find((workspace) => workspace.projectId === current.projectId)
+        : null;
       return {
         handled: true,
         text: [
-          "**ClawChat Connect Projects**",
-          `Current: ${current ? `\`${current.name}\`` : "none (isolated workspace)"}`,
+          "**ClawChat Connect Workspaces**",
+          `Current: ${currentWorkspace ? `\`${currentWorkspace.name}\`` : "none (isolated workspace)"}`,
           "",
-          ...(projects.length > 0
-            ? projects.map((project) => `- \`${project.name}\` (${project.projectId})`)
-            : ["No Projects registered. Add one in Connect Client or with the local CLI."]),
+          ...(workspaces.length > 0
+            ? workspaces.map(
+                (workspace) =>
+                  `- \`${workspace.name}\` (${workspace.workspaceId})${workspace.projectName ? ` — Project \`${workspace.projectName}\`` : " — Runtime Workspace"}`,
+              )
+            : ["No workspaces discovered."]),
         ].join("\n"),
       };
     }
     if (["add", "list", "use", "current", "clear", "remove"].includes(args[0]?.toLowerCase() ?? ""))
       return { handled: true, text: "This Project command was removed. Use `/help` for the supported commands." };
     const selected = await selectedSessionContext(ctx);
-    const project = reference.toLowerCase() === "none" ? null : await ctx.projects.require(reference);
+    let project: ProjectRecord | null = null;
+    let workspaceName: string | null = null;
+    if (reference.toLowerCase() !== "none") {
+      const workspaces = (await ctx.listRuntimeWorkspaces?.()) ?? [];
+      const needle = reference.toLowerCase();
+      const matches = workspaces.filter((workspace) =>
+        [workspace.workspaceId, workspace.name, workspace.projectId, workspace.projectName].some(
+          (value) => value?.toLowerCase() === needle,
+        ),
+      );
+      if (matches.length > 1) {
+        return {
+          handled: true,
+          text: `Workspace \`${reference}\` is ambiguous: ${matches
+            .map((workspace) => `\`${workspace.name}\` (${workspace.workspaceId})`)
+            .join(", ")}`,
+        };
+      }
+      const workspace = matches[0];
+      project = workspace
+        ? workspace.projectId
+          ? await ctx.projects.require(workspace.projectId)
+          : await ctx.projects.ensureDiscoveredWorkspace(workspace.rootPath)
+        : await ctx.projects.require(reference);
+      workspaceName = workspace?.name ?? null;
+    }
     await closeRuntimeSession(ctx);
     await conversationSessions(ctx).planNext({
       projectId: project?.projectId ?? null,
@@ -308,7 +357,7 @@ async function handleProject(ctx: ChatCommandContext, args: string[]): Promise<C
     return {
       handled: true,
       text: project
-        ? `Selected Project \`${project.name}\`; the next message will start a Session.`
+        ? `Selected workspace \`${workspaceName ?? workspaceView(project.rootPath)?.name ?? project.name}\`; the next message will start a Session.`
         : "Selected an isolated Non-Project workspace; the next message will start a Session.",
     };
   } catch (error) {

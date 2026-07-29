@@ -312,6 +312,7 @@ async function dispatchInboundMessage(
       runtimeModesFor: (binding) => params.runtime.runtimeModesFor(binding),
       listRuntimeModels: (binding) => params.runtime.listRuntimeModels(binding),
       discoverRuntimeThreads: (chatId) => params.runtime.discoverRuntimeThreads(chatId),
+      listRuntimeWorkspaces: () => params.runtime.listRuntimeWorkspaces(),
     });
     if (!command.handled) return false;
     if (command.text) {
