@@ -19,6 +19,144 @@ function liveActivity(
 }
 
 describe("Connect Transcript Projection", () => {
+  it("reconciles a Web user message with its Runtime history item without losing media", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-web-user-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-web-user",
+        sessionId: "session-web-user",
+        agentId: "codex",
+        runtimeSessionId: "thread-web-user",
+        name: "Web user reconciliation",
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-web-user", "codex");
+      if (!session) throw new Error("test Session was not created");
+      const projection = new TranscriptProjection({
+        stateStore: store,
+        config: defaultConfig(),
+        runtimeAdapters: new RuntimeAdapterRegistry([]),
+      });
+
+      await projection.appendUserMessage({
+        sessionRef: session.sessionRef,
+        text: "small message",
+        origin: "client",
+        author: "You",
+        id: "turn_submission-1_user",
+        media: [
+          {
+            kind: "image",
+            url: "/client/v1/media/submission-1/0",
+            name: "image.png",
+            mime: "image/png",
+            width: null,
+            height: null,
+          },
+        ],
+      });
+      await projection.upsertRuntimeActivity(session.sessionRef, {
+        id: "runtime-user-item",
+        position: "0.1",
+        parentId: null,
+        kind: "user",
+        text: "small message",
+        state: "complete",
+        source: "history",
+      });
+
+      await expect(store.listTranscriptBlocks(session.sessionRef)).resolves.toMatchObject([
+        {
+          id: expect.stringMatching(/^b_/u),
+          origin: "client",
+          runtimeSource: "history",
+          plainText: "small message",
+          media: [{ kind: "image", url: "/client/v1/media/submission-1/0", name: "image.png" }],
+        },
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("repairs stored Web and Runtime history duplicates during reconciliation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-stored-web-user-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-stored-web-user",
+        sessionId: "session-stored-web-user",
+        agentId: "codex",
+        runtimeSessionId: "thread-stored-web-user",
+        name: "Stored Web user reconciliation",
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-stored-web-user", "codex");
+      if (!session) throw new Error("test Session was not created");
+      await store.upsertTranscriptBlock(session.sessionRef, {
+        id: "turn_submission-1_user",
+        type: "message",
+        origin: "client",
+        state: "complete",
+        plainText: "small message",
+        role: "user",
+        author: "You",
+        markdown: "small message",
+        media: [
+          {
+            kind: "image",
+            url: "/client/v1/media/submission-1/0",
+            name: "image.png",
+            mime: "image/png",
+            width: null,
+            height: null,
+          },
+        ],
+      });
+      await store.upsertTranscriptBlock(session.sessionRef, {
+        id: "b_runtime_user",
+        type: "message",
+        origin: "runtime",
+        runtimeSource: "history",
+        state: "complete",
+        plainText: "small message",
+        role: "user",
+        author: "You",
+        markdown: "small message",
+      });
+      const config = defaultConfig();
+      config.agents = { codex: { kind: "codex" } };
+      const projection = new TranscriptProjection({
+        stateStore: store,
+        config,
+        runtimeAdapters: new RuntimeAdapterRegistry([
+          {
+            kind: "codex",
+            modes: [],
+            readActivity: async () => ({ activities: [], completeness: "complete", limitations: [] }),
+            start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+          },
+        ]),
+      });
+
+      await projection.reconcile(session);
+
+      await expect(store.listTranscriptBlocks(session.sessionRef)).resolves.toMatchObject([
+        {
+          id: "b_runtime_user",
+          origin: "client",
+          runtimeSource: "history",
+          media: [{ kind: "image", url: "/client/v1/media/submission-1/0", name: "image.png" }],
+        },
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("maps Runtime Activity positions into stable sequence despite out-of-order arrival", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-transcript-ordering-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });

@@ -449,6 +449,23 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               },
             );
           }
+          const attachmentMatch = url.pathname.match(/^\/client\/v1\/turn-submissions\/([^/]+)\/attachments\/(\d+)$/u);
+          if (attachmentMatch && request.method === "GET") {
+            const submissionId = decodeURIComponent(attachmentMatch[1] ?? "");
+            const index = Number(attachmentMatch[2]);
+            if (!validRequestId(submissionId))
+              return errorResponse(400, "invalid-submission-id", "Invalid submission identity");
+            const attachment = await submissionStaging.attachment(submissionId, index);
+            if (!attachment) return errorResponse(404, "attachment-not-found", "Attachment was not found");
+            return new Response(Bun.file(attachment.path), {
+              headers: securityHeaders({
+                "Content-Type": attachment.mime || "application/octet-stream",
+                "Content-Length": String(attachment.size),
+                "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(attachment.name)}`,
+                "Cache-Control": "private, max-age=3600",
+              }),
+            });
+          }
           const submissionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turn-submissions\/([^/]+)$/u);
           if (submissionMatch && (request.method === "GET" || request.method === "DELETE")) {
             const sessionRef = normalizeSessionRef(submissionMatch[1] ?? "");

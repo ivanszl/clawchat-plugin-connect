@@ -18,6 +18,7 @@ export interface TranscriptViewportProps {
 
 export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder }: TranscriptViewportProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const columnRef = useRef<HTMLDivElement>(null);
   const loadingOlderRef = useRef(false);
   const followLatestRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
@@ -63,6 +64,25 @@ export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder 
     return () => window.cancelAnimationFrame(frame);
   }, [latestBlockRevision, virtualizer]);
 
+  useLayoutEffect(() => {
+    const column = columnRef.current;
+    if (!column) return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (!followLatestRef.current) return;
+      virtualizer.measure();
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        if (followLatestRef.current) virtualizer.scrollToEnd({ behavior: "auto" });
+      });
+    });
+    observer.observe(column);
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
+  }, [virtualizer]);
+
   const onScroll = () => {
     const element = scrollRef.current;
     if (!element) return;
@@ -91,7 +111,7 @@ export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder 
   return (
     <div className="transcript-frame">
       <div className="transcript-scroll" ref={scrollRef} onScroll={onScroll} role="log" aria-live="off">
-        <div className="transcript-column">
+        <div className="transcript-column" ref={columnRef}>
           {isLoadingOlder ? (
             <div className="older-loading">
               <Spinner size="sm" label="正在载入更早的消息" />

@@ -15,6 +15,14 @@ describe("Connect Client transcript scrolling", () => {
     expect(jumpButton).not.toContain('scrollToEnd({ behavior: "smooth" })');
   });
 
+  it("keeps following when rendered transcript content changes height", async () => {
+    const source = await Bun.file(viewportUrl).text();
+
+    expect(source).toContain("new ResizeObserver");
+    expect(source).toContain("followLatestRef.current");
+    expect(source).toContain('scrollToEnd({ behavior: "auto" })');
+  });
+
   it("passes consecutive Runtime tools to one Astryx ChatToolCalls group", () => {
     const blocks = [
       transcriptBlock("tool-1", "tool-call"),

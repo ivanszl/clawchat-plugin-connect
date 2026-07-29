@@ -593,6 +593,10 @@ describe("Connect Client Interface", () => {
     const acceptedMedia = enqueueClientTurn.mock.calls[0]?.[2]?.[0];
     if (!acceptedMedia?.stagedPath) throw new Error("accepted media was not Connect-staged");
     await expect(Bun.file(acceptedMedia.stagedPath).text()).resolves.toBe("photo");
+    const renderedMedia = await localRequest(fetchHandler, handle.origin, acceptedMedia.url);
+    expect(renderedMedia.status).toBe(200);
+    expect(renderedMedia.headers.get("content-type")).toBe("image/png");
+    await expect(renderedMedia.text()).resolves.toBe("photo");
 
     const replayedTurn = await localRequest(
       fetchHandler,

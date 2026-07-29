@@ -31,7 +31,7 @@ import type {
 } from "../types";
 import { type RuntimeWorkspaceChoice, workspaceView } from "../workspace-catalog";
 import type { ConnectWsClient } from "../ws-client";
-import { MAX_RUNTIME_MEDIA_BYTES, releaseConnectStagedMedia } from "./media-cache";
+import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
 import type { RuntimeAdapterRegistry } from "./registry";
 import { type QueueStats, type SessionActivity, SessionQueue } from "./session-queue";
@@ -226,11 +226,10 @@ export class ConnectRuntime {
     this.acceptedClientTurnIds.set(current.sessionRef, turnId);
     void completion
       .catch(() => undefined)
-      .finally(async () => {
+      .finally(() => {
         if (this.acceptedClientTurnIds.get(current.sessionRef) === turnId) {
           this.acceptedClientTurnIds.delete(current.sessionRef);
         }
-        await releaseConnectStagedMedia(media, this.options.config.stateDbPath);
       });
     return { turnId, sessionRef: current.sessionRef };
   }

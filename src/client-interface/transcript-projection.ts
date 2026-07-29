@@ -58,6 +58,7 @@ export class TranscriptProjection {
   }
 
   private async reconcileFromRuntime(session: RuntimeSessionRecord): Promise<void> {
+    await this.reconcileStoredClientUserMessages(session.sessionRef);
     if (!session.runtimeSessionId) {
       this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), "live-only");
       return;
@@ -67,6 +68,39 @@ export class TranscriptProjection {
     this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), snapshot.completeness);
     for (const activity of snapshot.activities) {
       await this.upsertRuntimeActivity(session.sessionRef, activity);
+    }
+  }
+
+  private async reconcileStoredClientUserMessages(sessionRef: string): Promise<void> {
+    const blocks: TranscriptBlock[] = [];
+    let beforeSequence: number | null = null;
+    while (true) {
+      const page = await this.options.stateStore.listTranscriptBlocks(sessionRef, { beforeSequence, limit: 200 });
+      blocks.unshift(...page);
+      if (page.length < 200) break;
+      beforeSequence = page[0]?.sequence ?? null;
+      if (beforeSequence === null) break;
+    }
+    const optimistic = blocks.filter(
+      (block) =>
+        block.type === "message" &&
+        block.role === "user" &&
+        block.origin === "client" &&
+        block.runtimeSource === undefined,
+    );
+    const history = blocks.filter(
+      (block) =>
+        block.type === "message" &&
+        block.role === "user" &&
+        block.origin === "runtime" &&
+        block.runtimeSource === "history",
+    );
+    const claimed = new Set<string>();
+    for (const candidate of optimistic) {
+      const stable = history.find((block) => !claimed.has(block.id) && block.plainText === candidate.plainText);
+      if (!stable) continue;
+      claimed.add(stable.id);
+      await this.options.stateStore.rekeyTranscriptBlock(sessionRef, candidate.id, stable);
     }
   }
 
@@ -115,6 +149,20 @@ export class TranscriptProjection {
         input,
       );
       if (block) return block;
+    }
+    if (activity.kind === "user" && activity.source === "history") {
+      const optimistic = (await this.options.stateStore.listTranscriptBlocks(sessionRef)).find(
+        (block) =>
+          block.type === "message" &&
+          block.role === "user" &&
+          block.origin === "client" &&
+          block.runtimeSource === undefined &&
+          block.plainText === input.plainText,
+      );
+      if (optimistic) {
+        const block = await this.options.stateStore.rekeyTranscriptBlock(sessionRef, optimistic.id, input);
+        if (block) return block;
+      }
     }
     return (await this.options.stateStore.upsertTranscriptBlock(sessionRef, input)).block;
   }
