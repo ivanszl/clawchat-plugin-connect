@@ -34,6 +34,28 @@ it("projects every Runtime Activity before a ClawChat delivery failure", async (
   expect(order).toEqual(["project:approval required", "deliver:approval required"]);
 });
 
+it("delivers only the completed current state when a Runtime Activity streamed before turn completion", async () => {
+  const projected: string[] = [];
+  const delivered: string[] = [];
+  const surface = new ClawChatTurnSurface({
+    project: async (event) => {
+      projected.push(`${event.state}:${event.text}`);
+    },
+    materialize: (event) => ({ text: event.text, requiredControl: false }),
+    deliver: async (reply) => {
+      delivered.push(reply.text);
+    },
+  });
+
+  await surface.accept({ ...activity("agent-message", "assistant", "hel", "assistant"), state: "streaming" });
+  await surface.accept({ ...activity("agent-message", "assistant", "hello", "assistant"), state: "streaming" });
+  await surface.accept(activity("agent-message", "assistant", "hello", "final"));
+  await surface.complete();
+
+  expect(projected).toEqual(["streaming:hel", "streaming:hello", "complete:hello"]);
+  expect(delivered).toEqual(["hello"]);
+});
+
 it("keeps Client-originated Runtime Activity local", async () => {
   const projected: string[] = [];
   const surface = new ClientTurnSurface({

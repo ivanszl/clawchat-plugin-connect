@@ -44,19 +44,24 @@ export interface ClawChatTurnSurfaceOptions {
 
 export class ClawChatTurnSurface implements TurnSurface {
   readonly origin = "clawchat" as const;
-  private readonly buffered: MaterializedRuntimeReply[] = [];
+  private readonly buffered = new Map<string, MaterializedRuntimeReply>();
 
   constructor(private readonly options: ClawChatTurnSurfaceOptions) {}
 
   async accept(event: RuntimeActivity): Promise<void> {
     await this.options.project(event);
     const reply = this.options.materialize(event);
-    if (!reply) return;
+    if (!reply) {
+      this.buffered.delete(event.id);
+      return;
+    }
     if (reply.requiredControl) await this.options.deliver(reply);
-    else this.buffered.push(reply);
+    else this.buffered.set(event.id, reply);
   }
 
   async complete(): Promise<void> {
-    for (const reply of this.buffered.splice(0)) await this.options.deliver(reply);
+    const replies = [...this.buffered.values()];
+    this.buffered.clear();
+    for (const reply of replies) await this.options.deliver(reply);
   }
 }
