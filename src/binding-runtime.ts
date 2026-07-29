@@ -64,6 +64,7 @@ export interface BindingRuntimeHandle {
     sessionRef: string,
     prompt: string,
     media?: ConnectRuntimeMedia[],
+    signal?: AbortSignal,
   ): Promise<{ turnId: string; sessionRef: string }>;
   uploadClientMedia?(file: Blob, filename: string): Promise<ConnectRuntimeMedia>;
   cancelClientTurn?(sessionRef: string): Promise<boolean>;
@@ -161,7 +162,8 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     agentId: options.agentId,
     websocketUrl: options.config.websocketUrl,
     deviceId: options.deviceId,
-    enqueueClientTurn: async (sessionRef, prompt, media) => await runtime.enqueueClientTurn(sessionRef, prompt, media),
+    enqueueClientTurn: async (sessionRef, prompt, media, signal) =>
+      await runtime.enqueueClientTurn(sessionRef, prompt, media, signal),
     uploadClientMedia: async (file, filename) => await runtime.uploadClientMedia(file, filename),
     cancelClientTurn: async (sessionRef) => await runtime.cancelClientTurn(sessionRef),
     sessionActivity: async (sessionRef) => await runtime.sessionActivity(sessionRef),

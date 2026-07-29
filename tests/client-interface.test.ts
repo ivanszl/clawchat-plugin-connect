@@ -557,15 +557,20 @@ describe("Connect Client Interface", () => {
     );
     expect(turn.status).toBe(202);
     await expect(turn.json()).resolves.toEqual({ accepted: true, turnId: "turn-123", sessionRef: session.sessionRef });
-    expect(enqueueClientTurn).toHaveBeenCalledWith(session.sessionRef, "from web", [
-      expect.objectContaining({
-        kind: "image",
-        name: "photo.png",
-        mime: "image/png",
-        size: 5,
-        stagedPath: expect.any(String),
-      }),
-    ]);
+    expect(enqueueClientTurn).toHaveBeenCalledWith(
+      session.sessionRef,
+      "from web",
+      [
+        expect.objectContaining({
+          kind: "image",
+          name: "photo.png",
+          mime: "image/png",
+          size: 5,
+          stagedPath: expect.any(String),
+        }),
+      ],
+      expect.any(AbortSignal),
+    );
     const acceptedMedia = enqueueClientTurn.mock.calls[0]?.[2]?.[0];
     if (!acceptedMedia?.stagedPath) throw new Error("accepted media was not Connect-staged");
     await expect(Bun.file(acceptedMedia.stagedPath).text()).resolves.toBe("photo");

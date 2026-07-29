@@ -132,7 +132,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       if (!runtime?.enqueueClientTurn) {
         throw new ClientRequestError(503, "runtime-offline", "Runtime is unavailable", true);
       }
-      const accepted = await runtime.enqueueClientTurn(sessionRef, prompt, submissionStaging.mediaFor(staged));
+      signal?.throwIfAborted();
+      const accepted = await runtime.enqueueClientTurn(sessionRef, prompt, submissionStaging.mediaFor(staged), signal);
       catalog.invalidate();
       return { accepted: true, ...accepted };
     },

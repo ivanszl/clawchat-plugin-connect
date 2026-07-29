@@ -155,12 +155,16 @@ export class ConnectRuntime {
     sessionRef: string,
     prompt: string,
     media: ConnectRuntimeMedia[] = [],
+    signal?: AbortSignal,
   ): Promise<{ turnId: string; sessionRef: string }> {
+    signal?.throwIfAborted();
     const text = prompt.trim();
     if (!text && media.length === 0) throw new Error("prompt or media is required");
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
+    signal?.throwIfAborted();
     if (!current || current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
     const target = await this.sessionContinuity.forSession(current.sessionRef).targetForTurn("client");
+    signal?.throwIfAborted();
     const turnId = randomUUID();
     const key = sessionKey(current.chatId, current.sessionId);
     try {
@@ -171,6 +175,7 @@ export class ConnectRuntime {
         `Session ${current.sessionRef} lifecycle operation is in progress`,
       );
     }
+    signal?.throwIfAborted();
     const completion = this.queue.enqueue(
       key,
       async () => {
