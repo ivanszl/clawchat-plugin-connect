@@ -1,6 +1,7 @@
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
+import { LinkProvider } from "@astryxdesign/core/Link";
 import { Selector } from "@astryxdesign/core/Selector";
 import { SideNav, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Spinner } from "@astryxdesign/core/Spinner";
@@ -8,7 +9,7 @@ import { StatusDot } from "@astryxdesign/core/StatusDot";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { TreeList, type TreeListItemData } from "@astryxdesign/core/TreeList";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import type {
   BindingPreferenceView,
@@ -47,68 +48,74 @@ export function SessionNavigation() {
 
   return (
     <>
-      <SideNav
-        className="session-nav"
-        collapsible={{ buttonLabel: "折叠 Session 导航" }}
-        resizable={{ defaultWidth: 304, minWidth: 248, maxWidth: 440, autoSaveId: "connect-client-session-nav" }}
-        topContent={
-          <div className="session-nav-tools">
-            <TextInput
-              label="搜索 Session"
-              isLabelHidden
-              value={search}
-              onChange={setSearch}
-              placeholder="搜索 session 或 project"
-              hasClear
-              width="100%"
-            />
-            <Button
-              label="新建 Session"
-              isIconOnly
-              icon={<AddIcon />}
-              size="sm"
-              variant="primary"
-              onClick={() => setNewSessionOpen(true)}
-            />
-          </div>
-        }
-      >
-        {catalog.isPending ? (
-          <div className="nav-loading">
-            <Spinner label="正在加载 Session" />
-          </div>
-        ) : catalog.isError ? (
-          <p className="nav-error">无法加载 Session。Connect Service 可能尚未就绪。</p>
-        ) : (
-          sections.map(({ binding, items }) => (
-            <SideNavSection
-              key={binding.bindingId}
-              title={binding.displayName}
-              endContent={
-                <StatusDot
-                  variant={
-                    binding.status === "connected" ? "success" : binding.status === "disconnected" ? "error" : "neutral"
-                  }
-                  label={
-                    binding.status === "connected"
-                      ? "已连接"
-                      : binding.status === "disconnected"
-                        ? "已断开"
-                        : "状态未知"
-                  }
-                  isPulsing={binding.status === "connected"}
-                />
-              }
-            >
-              {items.length > 0 ? (
-                <TreeList items={items} density="compact" />
-              ) : (
-                <p className="nav-empty">没有匹配的 Session</p>
-              )}
-            </SideNavSection>
-          ))
-        )}
-      </SideNav>
+      <LinkProvider component={Link}>
+        <SideNav
+          className="session-nav"
+          collapsible={{ buttonLabel: "折叠 Session 导航" }}
+          resizable={{ defaultWidth: 304, minWidth: 248, maxWidth: 440, autoSaveId: "connect-client-session-nav" }}
+          topContent={
+            <div className="session-nav-tools">
+              <TextInput
+                label="搜索 Session"
+                isLabelHidden
+                value={search}
+                onChange={setSearch}
+                placeholder="搜索 session 或 project"
+                hasClear
+                width="100%"
+              />
+              <Button
+                label="新建 Session"
+                isIconOnly
+                icon={<AddIcon />}
+                size="sm"
+                variant="primary"
+                onClick={() => setNewSessionOpen(true)}
+              />
+            </div>
+          }
+        >
+          {catalog.isPending ? (
+            <div className="nav-loading">
+              <Spinner label="正在加载 Session" />
+            </div>
+          ) : catalog.isError ? (
+            <p className="nav-error">无法加载 Session。Connect Service 可能尚未就绪。</p>
+          ) : (
+            sections.map(({ binding, items }) => (
+              <SideNavSection
+                key={binding.bindingId}
+                title={binding.displayName}
+                endContent={
+                  <StatusDot
+                    variant={
+                      binding.status === "connected"
+                        ? "success"
+                        : binding.status === "disconnected"
+                          ? "error"
+                          : "neutral"
+                    }
+                    label={
+                      binding.status === "connected"
+                        ? "已连接"
+                        : binding.status === "disconnected"
+                          ? "已断开"
+                          : "状态未知"
+                    }
+                    isPulsing={binding.status === "connected"}
+                  />
+                }
+              >
+                {items.length > 0 ? (
+                  <TreeList items={items} density="compact" />
+                ) : (
+                  <p className="nav-empty">没有匹配的 Session</p>
+                )}
+              </SideNavSection>
+            ))
+          )}
+        </SideNav>
+      </LinkProvider>
       <NewSessionDialog
         isOpen={newSessionOpen}
         bindings={bootstrap.data?.bindings ?? []}

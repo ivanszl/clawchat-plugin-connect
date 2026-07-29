@@ -19,6 +19,7 @@ try {
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   try {
     await verifyRuntimeApproval(browser, origin);
+    await verifySessionNavigationStaysInSpa(browser, origin);
     await verifyExternalTuiRefresh(browser, origin);
     await verifySmallWindowNavigation(browser, origin);
     await verifyTranscriptAlwaysFollowsLatest(browser, origin);
@@ -121,6 +122,32 @@ try {
 } finally {
   server.kill("SIGTERM");
   await server.exited;
+}
+
+async function verifySessionNavigationStaysInSpa(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(() => {
+      const key = "connect-document-load-count";
+      const count = Number(sessionStorage.getItem(key) ?? "0");
+      sessionStorage.setItem(key, String(count + 1));
+    });
+    await page.goto(previewOrigin);
+    const navigation = page.locator(".session-nav");
+    await navigation.getByText("clawchat-plugin-connect", { exact: true }).click();
+    await navigation.getByText("App Server 与 Web Client", { exact: true }).click();
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    assert.equal(
+      await page.evaluate(() => Number(sessionStorage.getItem("connect-document-load-count"))),
+      1,
+      "opening a Session from navigation must not reload the document",
+    );
+  } finally {
+    await page.close();
+  }
 }
 
 async function verifyRuntimeApproval(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
