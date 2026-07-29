@@ -1465,6 +1465,32 @@ export class ConnectStateStore {
   async deleteExpiredClientCommands(now = Date.now()): Promise<void> {
     const db = await this.requireDb();
     await db.run("DELETE FROM client_commands WHERE created_at < ?", now - 24 * 60 * 60 * 1_000);
+    await db.run("DELETE FROM turn_submission_cancellations WHERE created_at < ?", now - 24 * 60 * 60 * 1_000);
+  }
+
+  async cancelTurnSubmission(submissionId: string, sessionRef: string): Promise<boolean> {
+    const db = await this.requireDb();
+    await db.run(
+      "INSERT OR IGNORE INTO turn_submission_cancellations(submission_id, session_ref, created_at) VALUES (?, ?, ?)",
+      submissionId,
+      sessionRef,
+      Date.now(),
+    );
+    const row = await db.get<{ session_ref: string }>(
+      "SELECT session_ref FROM turn_submission_cancellations WHERE submission_id = ?",
+      submissionId,
+    );
+    return row?.session_ref === sessionRef;
+  }
+
+  async isTurnSubmissionCancelled(submissionId: string, sessionRef: string): Promise<boolean> {
+    const db = await this.requireDb();
+    const row = await db.get<{ present: number }>(
+      "SELECT 1 AS present FROM turn_submission_cancellations WHERE submission_id = ? AND session_ref = ?",
+      submissionId,
+      sessionRef,
+    );
+    return row?.present === 1;
   }
 
   async claimClientCommand(requestId: string, commandKind: string, entityRef: string): Promise<ClientCommandClaim> {
@@ -2039,6 +2065,13 @@ export class ConnectStateStore {
       );
       CREATE INDEX IF NOT EXISTS idx_client_commands_created
         ON client_commands(created_at);
+      CREATE TABLE IF NOT EXISTS turn_submission_cancellations(
+        submission_id TEXT PRIMARY KEY,
+        session_ref TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_turn_submission_cancellations_created
+        ON turn_submission_cancellations(created_at);
       CREATE TABLE IF NOT EXISTS transcript_blocks(
         session_ref TEXT NOT NULL REFERENCES session_refs(session_ref) ON DELETE CASCADE,
         block_id TEXT NOT NULL,

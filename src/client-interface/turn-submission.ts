@@ -97,7 +97,7 @@ export function validateDraft(draft: TurnSubmissionDraft, capability: TurnSubmis
     throw new TurnSubmissionError("empty-submission", "A prompt or at least one attachment is required");
   }
   if (prompt && !capability.prompt.allowed) {
-    throw new TurnSubmissionError("prompt-unsupported", "The selected model does not accept text");
+    throw new TurnSubmissionError("prompt-unsupported", "The current Turn Submission does not accept text");
   }
   if (!prompt && capability.prompt.required) {
     throw new TurnSubmissionError("prompt-required", "A prompt is required");

@@ -66,6 +66,10 @@ export function mergeClientViewSnapshot(queryClient: QueryClient, snapshot: Clie
   syncContinuityState(queryClient, continuity, true);
 }
 
+export function observeClientTranscriptPage(queryClient: QueryClient, transcript: TranscriptPageView): void {
+  continuityFor(queryClient).observeTranscriptPage(transcript);
+}
+
 export async function pollClientEventBatch(
   queryClient: QueryClient,
   cursor: number,
@@ -103,15 +107,20 @@ function continuityFor(queryClient: QueryClient): ClientViewContinuity {
     const sessions = queryClient
       .getQueriesData<SessionView>({ queryKey: ["client", "session"] })
       .flatMap(([, session]) => (session ? [session] : []));
-    const transcripts = queryClient
+    const transcriptPages = queryClient
       .getQueriesData<InfiniteData<TranscriptPageView, string | null>>({ queryKey: ["client", "transcript"] })
-      .flatMap(([, transcript]) => (transcript?.pages[0] ? [transcript.pages[0]] : []));
+      .flatMap(([, transcript]) => transcript?.pages ?? []);
+    const transcripts = transcriptPages.filter(
+      (transcript, index) =>
+        transcriptPages.findIndex((candidate) => candidate.sessionRef === transcript.sessionRef) === index,
+    );
     void continuity.install({
       watermark: 0,
       ...(catalog ? { catalog } : {}),
       sessions,
       transcripts,
     });
+    for (const transcript of transcriptPages) continuity.observeTranscriptPage(transcript);
     continuities.set(queryClient, continuity);
   }
   return continuity;

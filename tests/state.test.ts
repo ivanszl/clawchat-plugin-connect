@@ -703,4 +703,17 @@ describe("state store", () => {
     });
     await store.close();
   });
+
+  it("keeps a cancelled Turn Submission terminal across a state-store restart", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const first = createStateStore({ dbPath });
+    await expect(first.cancelTurnSubmission("submission-restart", "NKEP79B8")).resolves.toBe(true);
+    await first.close();
+
+    const restarted = createStateStore({ dbPath });
+    await expect(restarted.isTurnSubmissionCancelled("submission-restart", "NKEP79B8")).resolves.toBe(true);
+    await expect(restarted.cancelTurnSubmission("submission-restart", "OTHER123")).resolves.toBe(false);
+    await restarted.close();
+  });
 });

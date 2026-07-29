@@ -100,7 +100,6 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     options.runtimeInteractions ?? new RuntimeInteractionCoordinator(options.transcriptProjection);
   const submissionStaging = new FileTurnSubmissionStaging(options.config.stateDbPath);
   const activeTurnSubmissions = new Map<string, AbortController>();
-  const cancelledTurnSubmissions = new Map<string, number>();
   await submissionStaging.cleanupExpired();
   const turnSubmissions = new TurnSubmission({
     capabilityFor: async (sessionRef) => {
@@ -454,16 +453,17 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               outcome.state !== "missing" &&
               outcome.commandKind === "turn.submit" &&
               outcome.entityRef.startsWith(`${sessionRef}:`);
-            if (request.method === "DELETE") {
-              if (cancelledTurnSubmissions.size >= 1_000) {
-                const oldest = cancelledTurnSubmissions.keys().next().value;
-                if (oldest) cancelledTurnSubmissions.delete(oldest);
-              }
-              cancelledTurnSubmissions.set(submissionTarget, Date.now());
-              activeTurnSubmissions.get(submissionTarget)?.abort();
-            }
             if (outcome.state === "complete" && belongsToSession) {
               return jsonResponse(outcome.responseBody, outcome.responseStatus);
+            }
+            if (outcome.state !== "missing" && !belongsToSession) {
+              return errorResponse(404, "submission-not-found", "Turn Submission was not found");
+            }
+            if (request.method === "DELETE") {
+              if (!(await options.stateStore.cancelTurnSubmission(submissionId, sessionRef))) {
+                return errorResponse(409, "submission-id-conflict", "Submission identity belongs to another Session");
+              }
+              activeTurnSubmissions.get(submissionTarget)?.abort();
             }
             if (outcome.state === "pending" && belongsToSession) {
               return jsonResponse({ pending: true, submissionId, sessionRef }, 202);
@@ -505,8 +505,25 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             const digest = await turnSubmissionDigest(draft);
             const controller = new AbortController();
             activeTurnSubmissions.set(submissionTarget, controller);
-            if (cancelledTurnSubmissions.delete(submissionTarget)) controller.abort();
             try {
+              if (await options.stateStore.isTurnSubmissionCancelled(submissionId, sessionRef)) {
+                const cancelled = clientErrorView(
+                  "submission-cancelled",
+                  "Turn Submission was cancelled before acceptance",
+                  false,
+                );
+                const claim = await options.stateStore.claimClientCommand(
+                  submissionId,
+                  "turn.submit",
+                  `${sessionRef}:${digest}`,
+                );
+                if (claim.state === "conflict") {
+                  return errorResponse(409, "request-id-conflict", "requestId was used by another command");
+                }
+                if (claim.state === "complete") return jsonResponse(claim.responseBody, claim.responseStatus);
+                await options.stateStore.completeClientCommand(submissionId, 409, cancelled);
+                return jsonResponse(cancelled, 409);
+              }
               return await idempotentCommand(
                 options.stateStore,
                 submissionId,

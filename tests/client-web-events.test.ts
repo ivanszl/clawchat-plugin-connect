@@ -151,4 +151,60 @@ describe("Connect Client event fallback", () => {
     expect(queryClient.getQueryData<unknown>(clientKeys.catalog)).toEqual(visibleCatalog);
     expect(queryClient.getQueryData<unknown>(clientKeys.session("NKEP79B8"))).toEqual(visibleSession);
   });
+
+  it("does not bypass an equal-revision conflict in a loaded older Transcript page", async () => {
+    const queryClient = new QueryClient();
+    const olderBlock = {
+      id: "older-message",
+      type: "message" as const,
+      origin: "runtime" as const,
+      state: "complete" as const,
+      plainText: "trusted",
+      role: "assistant" as const,
+      author: "Agent",
+      markdown: "trusted",
+      revision: 4,
+      sequence: 2,
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    };
+    queryClient.setQueryData(clientKeys.transcript("NKEP79B8"), {
+      pageParams: [null, "s:3"],
+      pages: [
+        {
+          sessionRef: "NKEP79B8",
+          blocks: [],
+          beforeCursor: "s:3",
+          hasOlder: true,
+          completeness: "complete",
+        },
+        {
+          sessionRef: "NKEP79B8",
+          blocks: [olderBlock],
+          beforeCursor: null,
+          hasOlder: false,
+          completeness: "complete",
+        },
+      ] satisfies TranscriptPageView[],
+    });
+
+    await expect(
+      pollClientEventBatch(queryClient, 5, async () => ({
+        cursor: 8,
+        events: [
+          {
+            type: "transcript.block-upserted",
+            cursor: 8,
+            previousCursor: 5,
+            sessionRef: "NKEP79B8",
+            revision: 4,
+            block: { ...olderBlock, plainText: "conflict", markdown: "conflict" },
+          },
+        ],
+      })),
+    ).resolves.toBe(5);
+    expect(
+      queryClient.getQueryData<{ pages: TranscriptPageView[] }>(clientKeys.transcript("NKEP79B8"))?.pages[1]?.blocks[0],
+    ).toEqual(olderBlock);
+  });
 });

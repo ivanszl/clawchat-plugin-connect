@@ -15,7 +15,7 @@ import type {
   UpdateBindingPreferencesRequest,
 } from "../../../src/client-contract";
 import { CLIENT_API_PREFIX } from "../../../src/client-contract";
-import { mergeClientViewSnapshot } from "./client-events";
+import { mergeClientViewSnapshot, observeClientTranscriptPage } from "./client-events";
 import { clientFetch, clientFetchSnapshot, requestId } from "./http";
 
 export const clientKeys = {
@@ -81,6 +81,8 @@ export function transcriptQueryOptions(sessionRef: string) {
           watermark: snapshot.watermark,
           transcripts: [snapshot.value],
         });
+      } else {
+        observeClientTranscriptPage(client, snapshot.value);
       }
       return snapshot.value;
     },

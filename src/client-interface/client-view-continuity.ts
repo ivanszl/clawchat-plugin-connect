@@ -26,6 +26,7 @@ export interface ClientViewContinuityState {
 export class ClientViewContinuity {
   private readonly buffered = new Map<number, DeliveredClientViewEvent>();
   private readonly tombstones = new Map<string, Map<string, number>>();
+  private readonly observedTranscriptBlocks = new Map<string, Map<string, TranscriptBlock>>();
   private state: ClientViewContinuityState = {
     cursor: 0,
     status: "offline",
@@ -49,7 +50,12 @@ export class ClientViewContinuity {
       transcripts: mergeTranscripts(this.state.transcripts, snapshot.transcripts, this.tombstones, replacesTranscript),
     };
     if (replacesTranscript) {
-      for (const transcript of snapshot.transcripts ?? []) this.tombstones.delete(transcript.sessionRef);
+      for (const transcript of snapshot.transcripts ?? []) {
+        this.tombstones.delete(transcript.sessionRef);
+        this.observeTranscriptPage(transcript, !transcript.hasOlder);
+      }
+    } else {
+      for (const transcript of snapshot.transcripts ?? []) this.observeTranscriptPage(transcript);
     }
     for (const cursor of this.buffered.keys()) {
       if (cursor <= snapshot.watermark) this.buffered.delete(cursor);
@@ -64,6 +70,18 @@ export class ClientViewContinuity {
       sessions: mergeSessions(this.state.sessions, snapshot.sessions),
       transcripts: mergeTranscripts(this.state.transcripts, snapshot.transcripts, this.tombstones, false),
     };
+    for (const transcript of snapshot.transcripts ?? []) this.observeTranscriptPage(transcript);
+  }
+
+  observeTranscriptPage(transcript: TranscriptPageView, replace = false): void {
+    const blocks = replace
+      ? new Map<string, TranscriptBlock>()
+      : (this.observedTranscriptBlocks.get(transcript.sessionRef) ?? new Map<string, TranscriptBlock>());
+    for (const block of transcript.blocks) {
+      const existing = blocks.get(block.id);
+      if (!existing || block.revision > existing.revision) blocks.set(block.id, block);
+    }
+    this.observedTranscriptBlocks.set(transcript.sessionRef, blocks);
   }
 
   async receive(event: DeliveredClientViewEvent): Promise<readonly DeliveredClientViewEvent[]> {
@@ -131,6 +149,9 @@ export class ClientViewContinuity {
     if (event.type === "transcript.block-removed") {
       const currentTombstone = tombstones.get(event.blockId) ?? 0;
       if (event.revision > currentTombstone) tombstones.set(event.blockId, event.revision);
+      const observed = this.observedTranscriptBlocks.get(event.sessionRef);
+      const observedBlock = observed?.get(event.blockId);
+      if (observedBlock && observedBlock.revision <= event.revision) observed?.delete(event.blockId);
       const transcripts = new Map(this.state.transcripts);
       if (transcript) {
         transcripts.set(event.sessionRef, {
@@ -147,12 +168,23 @@ export class ClientViewContinuity {
       return "unchanged";
     }
     const transcripts = new Map(this.state.transcripts);
+    const observedExisting = this.observedTranscriptBlocks.get(event.sessionRef)?.get(event.block.id);
+    if (
+      observedExisting &&
+      observedExisting.revision === event.block.revision &&
+      !sameValue(observedExisting, event.block)
+    ) {
+      return "conflict";
+    }
     if (transcript) {
-      const existing = transcript.blocks.find((block) => block.id === event.block.id);
+      const existing = transcript.blocks.find((block) => block.id === event.block.id) ?? observedExisting;
       if (existing && existing.revision === event.block.revision && !sameValue(existing, event.block))
         return "conflict";
       const changed = !existing || event.block.revision > existing.revision;
       if (changed) {
+        const observed = this.observedTranscriptBlocks.get(event.sessionRef) ?? new Map<string, TranscriptBlock>();
+        observed.set(event.block.id, event.block);
+        this.observedTranscriptBlocks.set(event.sessionRef, observed);
         transcripts.set(event.sessionRef, {
           ...transcript,
           blocks: [...transcript.blocks.filter((block) => block.id !== event.block.id), event.block].sort(
@@ -163,6 +195,13 @@ export class ClientViewContinuity {
       this.state = { ...this.state, cursor: event.cursor, transcripts };
       return changed ? "changed" : "unchanged";
     }
+    if (observedExisting && observedExisting.revision >= event.block.revision) {
+      this.state = { ...this.state, cursor: event.cursor, transcripts };
+      return "unchanged";
+    }
+    const observed = this.observedTranscriptBlocks.get(event.sessionRef) ?? new Map<string, TranscriptBlock>();
+    observed.set(event.block.id, event.block);
+    this.observedTranscriptBlocks.set(event.sessionRef, observed);
     this.state = { ...this.state, cursor: event.cursor, transcripts };
     return "changed";
   }
