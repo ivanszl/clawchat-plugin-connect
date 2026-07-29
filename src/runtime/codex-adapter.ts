@@ -412,25 +412,32 @@ async function discoverCodexThreads(
     summaries.push(
       ...page.data
         .filter((thread) => !thread.parentThreadId)
-        .map((thread) => ({
-          workspaceIdentity: {
-            key: resolve(thread.cwd),
-            kind: isCodexAppScratchWorkspace(thread) ? ("transient" as const) : ("persistent" as const),
-            localRoot: thread.cwd || null,
-          },
-          runtimeThreadId: thread.id,
-          ...(archived ? { isArchived: true } : {}),
-          name: normalizeThreadName(thread.name || thread.preview),
-          updatedAt: thread.updatedAt * 1_000,
-          workingDirectory: thread.cwd,
-          ...(isCodexAppScratchWorkspace(thread) ? { workspaceKind: "transient" as const } : {}),
-        })),
+        .map((thread) => {
+          const workspaceKind = isTransientWorkspace(thread) ? ("transient" as const) : ("persistent" as const);
+          return {
+            workspaceIdentity: {
+              key: resolve(thread.cwd),
+              kind: workspaceKind,
+              localRoot: thread.cwd || null,
+            },
+            runtimeThreadId: thread.id,
+            ...(archived ? { isArchived: true } : {}),
+            name: normalizeThreadName(thread.name || thread.preview),
+            updatedAt: thread.updatedAt * 1_000,
+            workingDirectory: thread.cwd,
+            ...(workspaceKind === "transient" ? { workspaceKind } : {}),
+          };
+        }),
     );
     cursor = page.nextCursor;
     if (cursor && seenCursors.has(cursor)) throw new Error("Codex app-server returned a repeated thread/list cursor");
     if (cursor) seenCursors.add(cursor);
   } while (cursor);
   return summaries.sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+function isTransientWorkspace(thread: CodexAppServerThread): boolean {
+  return isCodexAppScratchWorkspace(thread) || isConnectManagedScratchWorkspace(thread.cwd);
 }
 
 function isCodexAppScratchWorkspace(thread: CodexAppServerThread): boolean {
@@ -443,6 +450,14 @@ function isCodexAppScratchWorkspace(thread: CodexAppServerThread): boolean {
     basename(codexDirectory) === "Codex" &&
     /^\d{4}-\d{2}-\d{2}$/u.test(basename(dateDirectory))
   );
+}
+
+function isConnectManagedScratchWorkspace(workingDirectory: string): boolean {
+  const parts = resolve(workingDirectory).split(/[\\/]/u);
+  if (parts.length < 5 || parts.at(-4) !== "workspaces") return false;
+  const owner = parts.at(-5) ?? "";
+  if (owner !== ".clawchat-connect" && !owner.startsWith("clawchat-connect-live.")) return false;
+  return parts.slice(-3).every((part) => /^[a-f0-9]{24}$/iu.test(part));
 }
 
 function normalizeThreadName(value: string): string | null {

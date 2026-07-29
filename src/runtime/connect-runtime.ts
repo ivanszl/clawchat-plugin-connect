@@ -285,13 +285,12 @@ export class ConnectRuntime {
 
   async listRuntimeWorkspaces(): Promise<RuntimeWorkspaceChoice[]> {
     const binding = getAgentBinding(this.options.config, this.options.agentId);
-    const [projects, active, archived] = await Promise.all([
+    const [projects, active] = await Promise.all([
       this.projects.list(),
       this.runtimeAdapters.discoverAllThreads(binding),
-      this.runtimeAdapters.discoverArchivedThreads(binding),
     ]);
     const choices = new Map<string, RuntimeWorkspaceChoice>();
-    for (const thread of [...active, ...archived]) {
+    for (const thread of active) {
       if (thread.parentRuntimeThreadId) continue;
       const reportedRoot = thread.workspaceIdentity?.localRoot ?? thread.workingDirectory;
       if (!reportedRoot || (thread.workspaceIdentity?.kind ?? thread.workspaceKind) === "transient") continue;

@@ -306,6 +306,20 @@ describe("Codex app-server runtime adapter", () => {
           gitInfo: { sha: "abc" },
           updatedAt: 10,
         }),
+        thread("thread-connect-workspace", {
+          name: "Connect scratch task",
+          cwd: "/Users/test/.clawchat-connect/workspaces/57de4cf40144bdf7d00010f2/a958e6097c7590a995e8507c/4b9efa2cb28ba7783bb95ae8",
+          source: "vscode",
+          gitInfo: null,
+          updatedAt: 5,
+        }),
+        thread("thread-connect-live-workspace", {
+          name: "Connect live scratch task",
+          cwd: "/private/tmp/clawchat-connect-live.Ku5dMU/workspaces/57de4cf40144bdf7d00010f2/a90ec25770b003c317041a4f/819fe744e7eafb83a81277d4",
+          source: "exec",
+          gitInfo: null,
+          updatedAt: 4,
+        }),
       ],
       nextCursor: null,
     });
@@ -344,6 +358,34 @@ describe("Codex app-server runtime adapter", () => {
           key: "/Users/test/Documents/Codex/2026-07-24/repository",
           kind: "persistent",
           localRoot: "/Users/test/Documents/Codex/2026-07-24/repository",
+        },
+      },
+      {
+        runtimeThreadId: "thread-connect-workspace",
+        name: "Connect scratch task",
+        updatedAt: 5_000,
+        workingDirectory:
+          "/Users/test/.clawchat-connect/workspaces/57de4cf40144bdf7d00010f2/a958e6097c7590a995e8507c/4b9efa2cb28ba7783bb95ae8",
+        workspaceKind: "transient",
+        workspaceIdentity: {
+          key: "/Users/test/.clawchat-connect/workspaces/57de4cf40144bdf7d00010f2/a958e6097c7590a995e8507c/4b9efa2cb28ba7783bb95ae8",
+          kind: "transient",
+          localRoot:
+            "/Users/test/.clawchat-connect/workspaces/57de4cf40144bdf7d00010f2/a958e6097c7590a995e8507c/4b9efa2cb28ba7783bb95ae8",
+        },
+      },
+      {
+        runtimeThreadId: "thread-connect-live-workspace",
+        name: "Connect live scratch task",
+        updatedAt: 4_000,
+        workingDirectory:
+          "/private/tmp/clawchat-connect-live.Ku5dMU/workspaces/57de4cf40144bdf7d00010f2/a90ec25770b003c317041a4f/819fe744e7eafb83a81277d4",
+        workspaceKind: "transient",
+        workspaceIdentity: {
+          key: "/private/tmp/clawchat-connect-live.Ku5dMU/workspaces/57de4cf40144bdf7d00010f2/a90ec25770b003c317041a4f/819fe744e7eafb83a81277d4",
+          kind: "transient",
+          localRoot:
+            "/private/tmp/clawchat-connect-live.Ku5dMU/workspaces/57de4cf40144bdf7d00010f2/a90ec25770b003c317041a4f/819fe744e7eafb83a81277d4",
         },
       },
     ]);

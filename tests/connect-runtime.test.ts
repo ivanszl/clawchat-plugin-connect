@@ -111,6 +111,21 @@ describe("ConnectRuntime Agent Binding sessions", () => {
           workingDirectory: discoveredRoot,
         },
       ],
+      discoverArchivedThreads: async () => [
+        {
+          runtimeThreadId: "thread-archived-worktree",
+          name: "Archived worktree task",
+          updatedAt: 1,
+          workingDirectory: join(
+            dirname(fixture.config.stateDbPath),
+            ".codex",
+            "worktrees",
+            "0ed0",
+            "clawchat-plugin-connect",
+          ),
+          isArchived: true,
+        },
+      ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const runtime = new ConnectRuntime({
