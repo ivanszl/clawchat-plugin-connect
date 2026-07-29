@@ -2,6 +2,23 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.15] - 2026-07-29
+
+### Added
+
+- Added revision-aware Client View Continuity with atomic snapshot recovery across the active Session Catalog, Session, and Transcript views.
+- Added atomic Turn Submission with capability negotiation, Connect-owned attachment staging, stable submission identities, and durable cancellation outcomes.
+
+### Changed
+
+- Unified Client event application across SSE and persisted batch fallback while removing foreground Session and Composer polling writers.
+- Exposed the active accepted Turn and effective Turn Submission Capability through the Client Interface.
+
+### Fixed
+
+- Fixed Codex agent-message streaming states being delivered as multiple cumulative ClawChat messages; ClawChat now receives only the latest completed state.
+- Fixed cancellation and queue-acceptance races, stale Transcript revisions, recovery gaps, and duplicate Turn Submission retries.
+
 ## [0.1.0-alpha.14] - 2026-07-28
 
 ### Added
