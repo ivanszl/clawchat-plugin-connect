@@ -381,6 +381,7 @@ async function verifyExternalTuiRefresh(browser: Awaited<ReturnType<typeof chrom
     await initialEventBatch;
     await expect(page.getByText("来自 Codex TUI 的外部消息。", { exact: true })).toHaveCount(0);
     await page.evaluate(async () => await fetch("/__preview/external-tui-turn", { method: "POST" }));
+    await page.getByRole("button", { name: "刷新全部 Session" }).click();
     await expect(page.getByText("来自 Codex TUI 的外部消息。", { exact: true })).toBeVisible({ timeout: 5_000 });
     await expect(page.getByText("这条回复应在刷新 Session 后同步到 Web。", { exact: true })).toBeVisible();
   } finally {

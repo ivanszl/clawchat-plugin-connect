@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import type { ClientViewEvent, TranscriptPageView } from "../src/client-contract";
-import { applyClientEvent, pollClientEventBatch, recoverClientViews } from "../web/src/client-interface/client-events";
+import { pollClientEventBatch, recoverClientViews } from "../web/src/client-interface/client-events";
 import {
   catalogQueryOptions,
   clientKeys,
@@ -133,26 +133,6 @@ describe("Connect Client event fallback", () => {
     const pages = queryClient.getQueryData<{ pages: TranscriptPageView[] }>(clientKeys.transcript("NKEP79B8"))?.pages;
     expect(pages?.[0]?.blocks).toEqual([]);
     expect(pages?.[1]?.blocks).toEqual([completed]);
-  });
-
-  it("refreshes an active Transcript snapshot when its Session revision changes", async () => {
-    const queryClient = new QueryClient();
-    queryClient.setQueryData(clientKeys.session("NKEP79B8"), { sessionRef: "NKEP79B8", revision: 1 });
-    queryClient.setQueryData(clientKeys.transcript("NKEP79B8"), {
-      pageParams: [null],
-      pages: [],
-    });
-
-    await applyClientEvent(queryClient, {
-      type: "session.changed",
-      cursor: 2,
-      previousCursor: 1,
-      sessionRef: "NKEP79B8",
-      revision: 2,
-      session: { sessionRef: "NKEP79B8", revision: 2 },
-    } as ClientViewEvent);
-
-    expect(queryClient.getQueryState(clientKeys.transcript("NKEP79B8"))?.isInvalidated).toBe(true);
   });
 
   it("retains every visible view when an atomic recovery bundle cannot be loaded", async () => {

@@ -94,12 +94,6 @@ export async function applyClientEvent(queryClient: QueryClient, event: ClientVi
   const committed = await continuity.receive(event as DeliveredClientViewEvent);
   syncContinuityState(queryClient, continuity, false);
   for (const changed of committed) mergeTranscriptEvent(queryClient, changed);
-  if (event.type === "session.changed") {
-    await queryClient.invalidateQueries({
-      queryKey: clientKeys.transcript(event.sessionRef),
-      refetchType: "active",
-    });
-  }
   if (continuity.current().status === "recovering") {
     await recoverClientViews(queryClient).catch(() => undefined);
   }

@@ -180,7 +180,7 @@ export interface ConnectWsClientOptions {
     maxRetries?: number;
     jitterRatio?: number;
   };
-  heartbeat?: { enabled?: boolean; intervalMs?: number; timeoutMs?: number };
+  heartbeat?: { enabled?: boolean; intervalMs?: number; timeoutMs?: number; closeGraceMs?: number };
   reliability?: { ackDebounceMs?: number; ackResendMs?: number };
   protocolEventHandler?: (type: ConnectProtocolEventType, envelope: Envelope) => void | Promise<void>;
   messageHandler?: (message: NormalizedInboundMessage) => MessageHandlingResult | Promise<MessageHandlingResult>;
@@ -208,6 +208,7 @@ export class ConnectWsClient extends EventEmitter {
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
+  private heartbeatCloseTimer: ReturnType<typeof setTimeout> | null = null;
   private syncAckTimer: ReturnType<typeof setTimeout> | null = null;
   private syncAckResendTimer: ReturnType<typeof setInterval> | null = null;
   private lastPingTraceId: string | null = null;
@@ -528,6 +529,7 @@ export class ConnectWsClient extends EventEmitter {
       },
       onMessage: (data) => this.enqueueRawFrame(data),
       onClose: (code, reason) => {
+        this.clearHeartbeatCloseTimer();
         this.clearHandshakeTimeout();
         this.resetReliableConnection();
         this.clearHeartbeat();
@@ -908,7 +910,13 @@ export class ConnectWsClient extends EventEmitter {
   }
 
   private startHeartbeat(): void {
-    const cfg = { enabled: true, intervalMs: 30_000, timeoutMs: 10_000, ...this.options.heartbeat };
+    const cfg = {
+      enabled: true,
+      intervalMs: 30_000,
+      timeoutMs: 10_000,
+      closeGraceMs: 1_000,
+      ...this.options.heartbeat,
+    };
     if (!cfg.enabled) return;
     this.clearHeartbeat();
     this.heartbeatTimer = setInterval(() => {
@@ -926,6 +934,17 @@ export class ConnectWsClient extends EventEmitter {
       this.pongTimer = setTimeout(() => {
         this.emit("error", new TransportError(`pong timed out for trace ${traceId}`));
         this.transport.close(4000, "pong timeout");
+        this.clearHeartbeatCloseTimer();
+        this.heartbeatCloseTimer = setTimeout(() => {
+          this.heartbeatCloseTimer = null;
+          if (this.closing || this.state !== "connected") return;
+          this.resetReliableConnection();
+          this.clearHeartbeat();
+          this.rejectPending(new TransportError("closed 4000: pong timeout"));
+          this.transition("disconnected");
+          this.emit("close", { code: 4000, reason: "pong timeout" });
+          this.scheduleReconnect();
+        }, cfg.closeGraceMs);
       }, cfg.timeoutMs);
     }, cfg.intervalMs);
   }
@@ -1209,12 +1228,18 @@ export class ConnectWsClient extends EventEmitter {
     this.lastPingTraceId = null;
   }
 
+  private clearHeartbeatCloseTimer(): void {
+    if (this.heartbeatCloseTimer) clearTimeout(this.heartbeatCloseTimer);
+    this.heartbeatCloseTimer = null;
+  }
+
   private clearTimers(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.clearHandshakeTimeout();
     this.clearReliabilityTimers();
     this.clearHeartbeat();
+    this.clearHeartbeatCloseTimer();
   }
 
   private transition(next: ConnState): void {

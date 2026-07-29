@@ -837,7 +837,6 @@ function clientViewPublisher(store: ConnectStateStore, catalog: SessionCatalog):
         catalogView.bindings.flatMap((binding) => binding.entries.map((entry) => entry.sessionRef)),
       );
       for (const sessionRef of sessionRefs) {
-        await catalog.ensureProjection(sessionRef);
         const view = await catalog.sessionView(sessionRef);
         if (!view) continue;
         const fingerprint = viewFingerprint(view);

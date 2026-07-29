@@ -399,6 +399,29 @@ describe("ConnectWsClient", () => {
     client.close();
   });
 
+  it("reconnects when a heartbeat close never produces a transport close event", async () => {
+    const transport = new MemoryTransport();
+    const connect = mock(transport.connect.bind(transport));
+    transport.connect = connect;
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport,
+      traceIdFactory: () => "trace-heartbeat",
+      heartbeat: { intervalMs: 1, timeoutMs: 1, closeGraceMs: 1 },
+      reconnect: { initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+    });
+    client.on("error", () => undefined);
+
+    await handshake(client, transport, "trace-heartbeat");
+    await Bun.sleep(10);
+
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(client.connectionState).toBe("challenging");
+    client.close();
+  });
+
   it("uploads media with the WebSocket bearer token and returns the response Fragment", async () => {
     const transport = new MemoryTransport();
     const mediaFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
