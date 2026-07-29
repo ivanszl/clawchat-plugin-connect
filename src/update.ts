@@ -35,6 +35,14 @@ export async function updateConnect(options: UpdateConnectOptions = {}): Promise
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "clawchat-connect-update-"));
   try {
     const windows = platform === "win32";
+    if (!windows && isConnectExecutable(executablePath)) {
+      await runCommand([
+        executablePath,
+        "service",
+        "stop",
+        ...(options.configPath ? ["--config", options.configPath] : []),
+      ]).catch(() => undefined);
+    }
     const installerName = windows ? "install.ps1" : "install.sh";
     const installerUrl = `https://raw.githubusercontent.com/${REPOSITORY}/main/${installerName}`;
     const response = await fetchInstaller(installerUrl, { signal: AbortSignal.timeout(30_000) });
@@ -71,13 +79,17 @@ export async function updateConnect(options: UpdateConnectOptions = {}): Promise
   }
 }
 
+function isConnectExecutable(executablePath: string): boolean {
+  const executableName = basename(executablePath).toLowerCase();
+  return executableName === "clawchat-connect" || executableName === "clawchat-connect.exe";
+}
+
 function resolveInstallDirectory(
   executablePath: string,
   platform: NodeJS.Platform,
   environment: NodeJS.ProcessEnv,
 ): string {
-  const executableName = basename(executablePath).toLowerCase();
-  if (executableName === "clawchat-connect" || executableName === "clawchat-connect.exe") {
+  if (isConnectExecutable(executablePath)) {
     return dirname(executablePath);
   }
   if (platform === "win32") {

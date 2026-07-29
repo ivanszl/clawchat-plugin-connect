@@ -23,11 +23,18 @@ describe("Connect update", () => {
       "https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(commands).toHaveLength(2);
-    expect(commands[0]?.command[0]).toBe("sh");
-    expect(commands[0]?.command.at(-1)).toBe("v0.1.0-alpha.16");
-    expect(commands[0]?.environment?.CLAWCHAT_CONNECT_INSTALL_DIR).toBe("/opt/connect");
-    expect(commands[1]?.command).toEqual([
+    expect(commands).toHaveLength(3);
+    expect(commands[0]?.command).toEqual([
+      "/opt/connect/clawchat-connect",
+      "service",
+      "stop",
+      "--config",
+      "/tmp/connect.json",
+    ]);
+    expect(commands[1]?.command[0]).toBe("sh");
+    expect(commands[1]?.command.at(-1)).toBe("v0.1.0-alpha.16");
+    expect(commands[1]?.environment?.CLAWCHAT_CONNECT_INSTALL_DIR).toBe("/opt/connect");
+    expect(commands[2]?.command).toEqual([
       "/opt/connect/clawchat-connect",
       "service",
       "install",
