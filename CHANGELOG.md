@@ -2,6 +2,19 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.21] - 2026-07-30
+
+### Changed
+
+- Refined Agent and Session status indicators so only meaningful connected, active, queued, or failed states display a dot.
+- Replaced persistent transcript completeness banners with deduplicated informational toasts for partial and live-only history.
+- Improved settings-field alignment and compact Composer working controls.
+
+### Fixed
+
+- Closed the mobile Session drawer automatically after navigation.
+- Resolved default updates through the release-channel pointer instead of GitHub's prerelease-blind latest-release endpoint.
+
 ## [0.1.0-alpha.20] - 2026-07-30
 
 ### Changed
