@@ -31,7 +31,7 @@ if ([string]::IsNullOrWhiteSpace($LicenseDirectory)) {
 $repository = if ($env:CLAWCHAT_CONNECT_REPOSITORY) {
   $env:CLAWCHAT_CONNECT_REPOSITORY
 } else {
-  "clawling/clawchat-plugin-connect"
+  "XMethues/clawchat-plugin-connect"
 }
 if ([string]::IsNullOrWhiteSpace($Version)) {
   $Version = $env:CLAWCHAT_CONNECT_VERSION

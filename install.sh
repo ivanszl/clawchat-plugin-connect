@@ -2,7 +2,7 @@
 
 set -eu
 
-repository="${CLAWCHAT_CONNECT_REPOSITORY:-clawling/clawchat-plugin-connect}"
+repository="${CLAWCHAT_CONNECT_REPOSITORY:-XMethues/clawchat-plugin-connect}"
 version="${1:-${CLAWCHAT_CONNECT_VERSION:-}}"
 install_dir="${CLAWCHAT_CONNECT_INSTALL_DIR:-${HOME}/.local/bin}"
 license_dir="${CLAWCHAT_CONNECT_LICENSE_DIR:-${install_dir}/clawchat-connect-licenses}"

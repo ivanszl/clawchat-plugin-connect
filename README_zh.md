@@ -4,7 +4,7 @@
   <h1>ClawChat Connect</h1>
   <p><strong>把运行在你电脑上的编程 Agent 接入任意 ClawChat 对话。</strong></p>
   <p>
-    <a href="https://github.com/clawling/clawchat-plugin-connect/releases"><img alt="GitHub 版本" src="https://img.shields.io/github/v/release/clawling/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
+    <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub 版本" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
     <img alt="支持 macOS、Linux 和 Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
     <img alt="运行时：Codex CLI" src="https://img.shields.io/badge/runtime-Codex%20CLI-f97316?style=flat-square">
@@ -68,7 +68,7 @@ Connect 接受任何能够启动所需 app-server 接口的 Codex CLI 版本。�
 复制以下提示词并发送给你的编程 Agent：
 
 ```text
-在这台电脑上安装最新版本的 ClawChat Connect。开始操作前，先阅读并严格执行 https://github.com/clawling/clawchat-plugin-connect/blob/main/install.md。若已存在配置，应复用现有配置，不要覆盖；安装并启动系统原生的 Connect Service 及其托管的 Liveware，然后验证 doctor、后台服务状态、Runtime 连接和 Liveware Exposure。仅在需要激活时向我索取 Agent 邀请码，并且不得打印、保存或提交邀请码。持续处理直到 install.md 中的所有成功条件均通过，最后报告安装版本和完整运行状态。
+在这台电脑上安装最新版本的 ClawChat Connect。开始操作前，先阅读并严格执行 https://github.com/XMethues/clawchat-plugin-connect/blob/main/install.md。若已存在配置，应复用现有配置，不要覆盖；安装并启动系统原生的 Connect Service 及其托管的 Liveware，然后验证 doctor、后台服务状态、Runtime 连接和 Liveware Exposure。仅在需要激活时向我索取 Agent 邀请码，并且不得打印、保存或提交邀请码。持续处理直到 install.md 中的所有成功条件均通过，最后报告安装版本和完整运行状态。
 ```
 
 ### 1. 安装 Connect
@@ -76,7 +76,7 @@ Connect 接受任何能够启动所需 app-server 接口的 Codex CLI 版本。�
 macOS 或 Linux 的独立安装包不需要 Bun 或 Node.js：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
 ```
 
 独立发行包包含对应平台的 Liveware companion，并会与 `clawchat-connect` 一起安装。默认安装目录为 `~/.local/bin`；如果该目录不在 `PATH` 中：
@@ -90,7 +90,7 @@ export PATH="$HOME/.local/bin:$PATH"
 安装指定版本或自定义目录：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | \
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
   CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.18
 ```
 
@@ -98,7 +98,7 @@ Windows PowerShell 用户应先下载安装脚本并检查其内容：
 
 ```powershell
 Invoke-WebRequest `
-  https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.ps1 `
+  https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.ps1 `
   -OutFile install.ps1
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1

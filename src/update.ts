@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
-const REPOSITORY = "clawling/clawchat-plugin-connect";
+const REPOSITORY = "XMethues/clawchat-plugin-connect";
 
 export interface UpdateConnectOptions {
   version?: string;

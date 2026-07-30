@@ -48,7 +48,7 @@ if ! actual_codex_version="$(codex --version 2>&1)" || [ -z "$actual_codex_versi
 fi
 printf 'Using %s\n' "$actual_codex_version"
 
-curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
 
 connect_bin="${CLAWCHAT_CONNECT_BIN:-$HOME/.local/bin/clawchat-connect}"
 if command -v clawchat-connect >/dev/null 2>&1; then
@@ -130,7 +130,7 @@ if ($CodexExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($ActualCodexVersion)) 
 Write-Output "Using $ActualCodexVersion"
 
 Invoke-WebRequest `
-  https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.ps1 `
+  https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.ps1 `
   -OutFile install.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
@@ -191,7 +191,7 @@ exit 1
 To update Connect and restart its managed Liveware agent:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
 clawchat-connect service install
 clawchat-connect service status
 clawchat-connect status

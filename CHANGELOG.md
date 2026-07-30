@@ -2,6 +2,18 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.22] - 2026-07-30
+
+### Changed
+
+- Routed group commands only when an exact `@Agent /command` message is used, while continuing to accept ordinary mentioned messages as Runtime Turns.
+- Kept group approvals and numbered choices in the originating group Session.
+- Moved repository, installer, update, badge, homepage, and issue links to `XMethues/clawchat-plugin-connect`.
+
+### Fixed
+
+- Kept active transcript Turn keys stable while folded tool output streams, preventing avoidable page jumps.
+
 ## [0.1.0-alpha.21] - 2026-07-30
 
 ### Changed

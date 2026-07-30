@@ -4,7 +4,7 @@
   <h1>ClawChat Connect</h1>
   <p><strong>Bring a coding agent running on your computer into any ClawChat conversation.</strong></p>
   <p>
-    <a href="https://github.com/clawling/clawchat-plugin-connect/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/clawling/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
+    <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
     <img alt="Platforms: macOS, Linux, and Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
     <img alt="Runtime: Codex CLI" src="https://img.shields.io/badge/runtime-Codex%20CLI-f97316?style=flat-square">
@@ -68,7 +68,7 @@ Connect accepts any Codex CLI version that can start the required app-server int
 Copy and send this prompt to your coding Agent:
 
 ```text
-Install the latest ClawChat Connect release on this computer. Read and follow https://github.com/clawling/clawchat-plugin-connect/blob/main/install.md before taking action. Reuse an existing configuration when present; do not overwrite it. Install and start the native Connect Service and its managed Liveware, then verify doctor, service status, runtime connection, and Liveware exposure. Ask me for an Agent invite code only if activation is required, and never print, store, or commit the invite code. Continue until every success criterion in install.md passes, then report the installed version and final status.
+Install the latest ClawChat Connect release on this computer. Read and follow https://github.com/XMethues/clawchat-plugin-connect/blob/main/install.md before taking action. Reuse an existing configuration when present; do not overwrite it. Install and start the native Connect Service and its managed Liveware, then verify doctor, service status, runtime connection, and Liveware exposure. Ask me for an Agent invite code only if activation is required, and never print, store, or commit the invite code. Continue until every success criterion in install.md passes, then report the installed version and final status.
 ```
 
 ### 1. Install Connect
@@ -76,7 +76,7 @@ Install the latest ClawChat Connect release on this computer. Read and follow ht
 On macOS or Linux, the standalone installer does not require Bun or Node.js:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
 ```
 
 Standalone releases include the pinned, unmodified Liveware companion for the selected platform. Connect installs it beside `clawchat-connect`; no separate Liveware repository checkout, build, login, or installation is required.
@@ -92,15 +92,15 @@ export PATH="$HOME/.local/bin:$PATH"
 To install a specific release or choose another directory:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.21
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.22
 ```
 
 On Windows PowerShell, download and inspect the installer before running it:
 
 ```powershell
 Invoke-WebRequest `
-  https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.ps1 `
+  https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.ps1 `
   -OutFile install.ps1
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
@@ -110,7 +110,7 @@ The Windows installer verifies the Release ZIP checksum, installs `clawchat-conn
 
 ```powershell
 .\install.ps1 `
-  -Version v0.1.0-alpha.21 `
+  -Version v0.1.0-alpha.22 `
   -InstallDirectory "D:\Tools\ClawChatConnect"
 ```
 
@@ -126,7 +126,7 @@ Update an existing installation to the latest published release:
 clawchat-connect update
 ```
 
-Use `clawchat-connect update --version v0.1.0-alpha.21` to install a specific release. The update command preserves the existing configuration and refreshes the native Connect Service.
+Use `clawchat-connect update --version v0.1.0-alpha.22` to install a specific release. The update command preserves the existing configuration and refreshes the native Connect Service.
 
 ### 2. Create the first Agent Binding
 
@@ -497,7 +497,7 @@ CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
 
 Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it beside the Connect executable under `dist/`. Windows builds use `.exe` names. Preview the browser client with `bun run preview:web`.
 
-Version tags such as `v0.1.0-alpha.21` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. After all assets are published, the workflow advances the API-independent `release-channel/latest-alpha.txt` pointer used by default installs and updates. npm packages include all six assets so a global Bun install remains portable.
+Version tags such as `v0.1.0-alpha.22` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. After all assets are published, the workflow advances the API-independent `release-channel/latest-alpha.txt` pointer used by default installs and updates. npm packages include all six assets so a global Bun install remains portable.
 
 ## License
 

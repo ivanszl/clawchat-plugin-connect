@@ -20,7 +20,7 @@ describe("Connect update", () => {
     });
 
     expect(fetchInstaller).toHaveBeenCalledWith(
-      "https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh",
+      "https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh",
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(commands).toHaveLength(3);
