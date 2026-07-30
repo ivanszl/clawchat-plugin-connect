@@ -56,6 +56,10 @@ _Avoid_: Runtime Tool, MCP Server, repository skill
 Connect-derived Agent-visible metadata attached to one ClawChat-originated turn. It identifies the exact conversation, message, sender, conversation type, and known mentions without treating user-authored text as authoritative metadata.
 _Avoid_: Prompt text, process environment, Client Turn context
 
+**ClawChat Addressing Mention**:
+The single leading structured mention whose stable user identity identifies the activated ClawChat Agent intended to receive a group message. It is addressing metadata rather than user-authored prompt content and is distinct from display-name text or any other mention in the message.
+_Avoid_: Prompt mention, command prefix
+
 **Client View Continuity**:
 The rule that a reconnecting Connect Client restores the complete latest Client view without replaying transient streaming states. Every committed displayable occurrence remains present, and an older view never replaces a newer view.
 _Avoid_: Stream Replay, Exactly-Once Streaming
@@ -157,7 +161,7 @@ The stable ClawChat user identity and optional display name attached to a ClawCh
 _Avoid_: Author, when referring to an authorization identity; Turn Origin
 
 **Turn Surface**:
-The Connect Client or ClawChat interaction surface through which a turn is submitted and whose origin-specific policy governs its Connect-owned input, output, failure, and Runtime Interaction routes. A ClawChat-originated Runtime Interaction may still have an authorized Connect Client response route. The current browser SPA, whether opened locally, on a trusted LAN, or through Liveware Exposure, is one Connect Client Turn Surface rather than separate Web or Liveware origins.
+The Connect Client or ClawChat interaction surface through which a turn is submitted and whose origin-specific policy governs its Connect-owned input, output, failure, and Runtime Interaction routes. A Runtime Interaction remains exclusively on the Turn Surface that originated its turn. The current browser SPA, whether opened locally, on a trusted LAN, or through Liveware Exposure, is one Connect Client Turn Surface rather than separate Web or Liveware origins.
 _Avoid_: Web Origin, Transport, Runtime Adapter
 
 **Turn Submission**:
@@ -229,11 +233,11 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Permanent deletion succeeds at the runtime before Connect removes the Session mapping and Connect Transcript Projection. Connect does not independently cascade deletion to Subagent Threads.
 - A Non-Project Session receives a deterministic isolated workspace and never inherits `process.cwd()`.
 - Connect control commands are restricted to the Connect Owner.
-- Direct messages are addressed to the Agent Binding without a mention. Group messages enter Connect command, interaction, and Runtime Turn routing only when they explicitly mention the activated ClawChat Agent; unmentioned group messages are acknowledged and ignored.
+- Direct messages are addressed to the Agent Binding without a mention. A group message enters Connect routing when it explicitly mentions the activated ClawChat Agent; only a ClawChat Addressing Mention expresses control-command or textual Runtime Interaction response intent and is excluded from effective prompt content.
 - Every runtime turn records its Turn Origin, and every Runtime Interaction inherits that origin.
 - A Codex Agent Binding without an explicit approval policy normalizes to `on-request`, allowing Connect to surface Runtime Interactions while still requiring a human decision before an escalation is granted.
-- A Client-originated Runtime Interaction is visible and answerable only in Connect Client.
-- A ClawChat-originated Runtime Interaction is visible in Connect Client and to the Agent Binding owner in ClawChat; the first authorized valid response settles it, and every surface that received it observes the same resolution.
+- A Runtime Interaction is visible and answerable only through its originating Turn Surface and, for ClawChat, its originating direct or group conversation; it never falls back or duplicates into another response route.
+- Any participant in an originating group may submit a Runtime Interaction response in the current release, including a Session-scoped approval; restricting group response authority is a deferred release concern rather than a domain invariant.
 - Runtime Interaction settlement distinguishes an atomic local claim from confirmed native resolution. The first authorized valid response claims the Interaction; it becomes resolved only after the Runtime Adapter confirms delivery to the native request. Failed delivery ends as failed or expired and never silently reopens the claim.
 - Connect Client connection state does not own Runtime Interaction lifetime. A pending Client-originated interaction survives Client disconnect and never falls back to ClawChat.
 - Runtime Interaction settlement state belongs to the active runtime process and does not resume after the Connect process, Runtime Adapter connection, or native request ends. Connect persists its presentation and final result, marks a leftover pending presentation expired after restart, and never treats that record as a resumable native request.

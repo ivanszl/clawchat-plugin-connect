@@ -805,7 +805,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         });
         return { handled: true, result: { decision: "cancel" } } as const;
       }
-      const response = await this.requestInteraction(active, request.id, {
+      const delivery = await this.requestInteraction(active, request.id, {
         kind: "approval",
         action: "command",
         title: "允许 Codex 运行命令？",
@@ -816,7 +816,11 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       });
       return {
         handled: true,
-        result: { decision: approvalDecision(response.kind === "approval" ? response.optionId : "cancel") },
+        result: {
+          decision: approvalDecision(delivery.response.kind === "approval" ? delivery.response.optionId : "cancel"),
+        },
+        onDelivered: delivery.confirm,
+        onDeliveryFailed: delivery.fail,
       } as const;
     }
     if (request.method === "item/fileChange/requestApproval") {
@@ -829,7 +833,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         return { handled: true, result: { decision: "cancel" } } as const;
       }
       const grantRoot = stringField(request.params.grantRoot);
-      const response = await this.requestInteraction(active, request.id, {
+      const delivery = await this.requestInteraction(active, request.id, {
         kind: "approval",
         action: "file-change",
         title: "允许 Codex 修改文件？",
@@ -839,7 +843,11 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       });
       return {
         handled: true,
-        result: { decision: approvalDecision(response.kind === "approval" ? response.optionId : "cancel") },
+        result: {
+          decision: approvalDecision(delivery.response.kind === "approval" ? delivery.response.optionId : "cancel"),
+        },
+        onDelivered: delivery.confirm,
+        onDeliveryFailed: delivery.fail,
       } as const;
     }
     if (request.method === "item/tool/requestUserInput") {
@@ -852,7 +860,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         return { handled: true, result: { answers: {} } } as const;
       }
       const questions = Array.isArray(request.params.questions) ? request.params.questions : [];
-      const response = await this.requestInteraction(active, request.id, {
+      const delivery = await this.requestInteraction(active, request.id, {
         kind: "user-input",
         title: "Codex 需要你的回答",
         description:
@@ -875,7 +883,11 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       });
       return {
         handled: true,
-        result: { answers: response.kind === "user-input" ? mapAnswers(response.answers) : {} },
+        result: {
+          answers: delivery.response.kind === "user-input" ? mapAnswers(delivery.response.answers) : {},
+        },
+        onDelivered: delivery.confirm,
+        onDeliveryFailed: delivery.fail,
       } as const;
     }
     return { handled: false } as const;
@@ -885,23 +897,43 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     active: ActiveTurn,
     nativeRequestId: unknown,
     request: import("./types").RuntimeInteractionRequest,
-  ): Promise<import("./types").RuntimeInteractionResponse> {
-    if (!active.interactionPort) return { kind: "approval", optionId: "cancel" };
+  ): Promise<{
+    response: import("./types").RuntimeInteractionResponse;
+    confirm(): void;
+    fail(error: Error): void;
+  }> {
+    const interactionPort = active.interactionPort;
+    if (!interactionPort) throw new Error("Runtime Interaction port is unavailable");
     const controller = new AbortController();
+    let confirm: () => void = () => undefined;
+    let fail: (error: Error) => void = () => undefined;
+    const deliveryConfirmation = new Promise<void>((resolve, reject) => {
+      confirm = resolve;
+      fail = reject;
+    });
+    void deliveryConfirmation.catch(() => undefined);
     active.interactionControllers.add(controller);
     const requestId = requestIdKey(nativeRequestId);
     if (requestId) active.interactionControllersByRequestId.set(requestId, controller);
     try {
-      return await active.interactionPort.request(request, {
-        sessionRef: active.sessionRef,
-        turnId: active.connectTurnId,
-        origin: active.turnOrigin,
-        signal: controller.signal,
-      });
+      return {
+        response: await interactionPort.request(request, {
+          sessionRef: active.sessionRef,
+          turnId: active.connectTurnId,
+          origin: active.turnOrigin,
+          signal: controller.signal,
+          deliveryConfirmation,
+        }),
+        confirm,
+        fail,
+      };
     } catch {
-      return request.kind === "approval"
-        ? { kind: "approval", optionId: "cancel" }
-        : { kind: "user-input", answers: {} };
+      return {
+        response:
+          request.kind === "approval" ? { kind: "approval", optionId: "cancel" } : { kind: "user-input", answers: {} },
+        confirm,
+        fail,
+      };
     } finally {
       active.interactionControllers.delete(controller);
       if (requestId) active.interactionControllersByRequestId.delete(requestId);

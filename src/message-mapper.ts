@@ -17,6 +17,16 @@ export interface BuildTextMessagePayloadOptions {
   replyPreview?: { id: string; nickName: string; fragments: Fragment[] } | null;
 }
 
+export interface AddressedInboundMessage {
+  message: NormalizedInboundMessage;
+  hasAddressingMention: boolean;
+  acceptsCommands: boolean;
+}
+
+export function commandAddressPrefix(chatType: NormalizedInboundMessage["chatType"]): string {
+  return chatType === "group" ? "@Agent " : "";
+}
+
 export function fragmentsToText(fragments: Fragment[]): string {
   return fragments
     .map((fragment) => {
@@ -75,7 +85,47 @@ export function normalizeInboundMessage(envelope: Envelope): NormalizedInboundMe
 }
 
 export function isMessageAddressedToAgent(message: NormalizedInboundMessage, agentUserId: string): boolean {
-  return message.chatType === "direct" || message.mentions.includes(agentUserId);
+  return (
+    message.chatType === "direct" ||
+    message.fragments.some(
+      (fragment) => fragment.kind === "mention" && (fragment as Record<string, unknown>).user_id === agentUserId,
+    )
+  );
+}
+
+export function addressInboundMessage(
+  message: NormalizedInboundMessage,
+  agentUserId: string,
+): AddressedInboundMessage | null {
+  if (!isMessageAddressedToAgent(message, agentUserId)) return null;
+  if (message.chatType === "direct") {
+    return {
+      message: { ...message, text: fragmentsToPromptText(message.fragments) },
+      hasAddressingMention: false,
+      acceptsCommands: true,
+    };
+  }
+
+  const firstContentIndex = message.fragments.findIndex(
+    (fragment) => fragment.kind !== "text" || fragmentsToText([fragment]).trim().length > 0,
+  );
+  const firstContent = firstContentIndex >= 0 ? message.fragments[firstContentIndex] : null;
+  if (firstContent?.kind !== "mention" || (firstContent as Record<string, unknown>).user_id !== agentUserId) {
+    return { message, hasAddressingMention: false, acceptsCommands: false };
+  }
+
+  const remainder = fragmentsToPromptText(message.fragments.slice(firstContentIndex + 1));
+  const acceptsCommands = /^[\t ]+/u.test(remainder);
+  const addressedText = remainder.replace(/^[\t ]+/u, "");
+  return {
+    message: { ...message, text: addressedText },
+    hasAddressingMention: true,
+    acceptsCommands,
+  };
+}
+
+function fragmentsToPromptText(fragments: Fragment[]): string {
+  return fragmentsToText(fragments.filter((fragment) => fragment.kind === "text" || fragment.kind === "mention"));
 }
 
 export function buildTextMessagePayload(text: string, options: BuildTextMessagePayloadOptions = {}): MessagePayload {

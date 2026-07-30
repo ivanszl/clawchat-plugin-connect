@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildReplyTextMessagePayload, isMessageAddressedToAgent } from "../src/message-mapper";
+import { addressInboundMessage, buildReplyTextMessagePayload, isMessageAddressedToAgent } from "../src/message-mapper";
 import type { NormalizedInboundMessage } from "../src/protocol";
 
 function inboundMessage(chatType: "direct" | "group"): NormalizedInboundMessage {
@@ -47,9 +47,28 @@ describe("ClawChat inbound addressing", () => {
 
   it("accepts only group messages that mention the activated Agent", () => {
     const unmentioned = inboundMessage("group");
-    const mentioned = { ...unmentioned, mentions: ["agent-1"] };
+    const contextOnly = { ...unmentioned, mentions: ["agent-1"] };
+    const mentioned = {
+      ...contextOnly,
+      fragments: [{ kind: "mention", user_id: "agent-1", display: "Agent" }],
+    };
 
     expect(isMessageAddressedToAgent(unmentioned, "agent-1")).toBe(false);
+    expect(isMessageAddressedToAgent(contextOnly, "agent-1")).toBe(false);
     expect(isMessageAddressedToAgent(mentioned, "agent-1")).toBe(true);
+  });
+
+  it("keeps attachment-only addressed input free of synthetic prompt text", () => {
+    const message = {
+      ...inboundMessage("group"),
+      text: "@Agent[file: report.txt]",
+      fragments: [
+        { kind: "mention", user_id: "agent-1", display: "Agent" },
+        { kind: "file", url: "https://media.example/report.txt", name: "report.txt" },
+      ],
+      mentions: ["agent-1"],
+    } satisfies NormalizedInboundMessage;
+
+    expect(addressInboundMessage(message, "agent-1")?.message.text).toBe("");
   });
 });

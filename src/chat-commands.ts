@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getAgentBinding } from "./config";
+import { commandAddressPrefix } from "./message-mapper";
 import type { ProjectCatalog } from "./projects";
 import type { NormalizedInboundMessage } from "./protocol";
 import { requireModel, resolveEffort, resolveModelSelection } from "./runtime/model-selection";
@@ -49,20 +50,41 @@ const CONTROL_COMMANDS = new Set([
   "/cancel",
 ]);
 const REMOVED_COMMANDS = new Set(["/clawchat-status", "/list", "/current"]);
-const HELP = [
-  "**ClawChat Connect commands**",
-  "",
-  "- `/help` — show this help.",
-  "- `/status` — show runtime and current Session status.",
-  "- `/clawchat-output minimal|normal|full` — set output visibility.",
-  "- `/new [name]` — prepare a new Session for the next message using the selected Project.",
-  "- `/sessions` — list Sessions in the selected workspace.",
-  "- `/switch <name-or-ref>` — switch or import a Session by name or 8-character Ref.",
-  "- `/project [workspace-id|none]` — inspect or select the next Session Project.",
-  "- `/model [model-id [reasoning-effort]|default]` — inspect or select the Session model.",
-  "- `/mode [mode|default]` — inspect or select the Session runtime mode.",
-  "- `/cancel` — cancel an active turn when supported.",
-].join("\n");
+const COMMAND_USAGE = new Map([
+  ["/help", "/help"],
+  ["/status", "/status"],
+  ["/clawchat-output", "/clawchat-output minimal|normal|full"],
+  ["/new", "/new [name]"],
+  ["/sessions", "/sessions"],
+  ["/switch", "/switch <name-or-ref>"],
+  ["/project", "/project [workspace-id|none]"],
+  ["/mode", "/mode [mode|default]"],
+  ["/model", "/model [model-id [reasoning-effort]|default]"],
+  ["/cancel", "/cancel"],
+]);
+function helpText(chatType: NormalizedInboundMessage["chatType"]): string {
+  const prefix = commandAddressPrefix(chatType);
+  return [
+    "**ClawChat Connect commands**",
+    "",
+    `- \`${prefix}/help\` — show this help.`,
+    `- \`${prefix}/status\` — show runtime and current Session status (Connect Owner only).`,
+    `- \`${prefix}/clawchat-output minimal|normal|full\` — set output visibility (Connect Owner only).`,
+    `- \`${prefix}/new [name]\` — prepare a new Session for the next message (Connect Owner only).`,
+    `- \`${prefix}/sessions\` — list Sessions in the selected workspace (Connect Owner only).`,
+    `- \`${prefix}/switch <name-or-ref>\` — switch or import a Session (Connect Owner only).`,
+    `- \`${prefix}/project [workspace-id|none]\` — inspect or select the next Project (Connect Owner only).`,
+    `- \`${prefix}/model [model-id [reasoning-effort]|default]\` — inspect or select the model (Connect Owner only).`,
+    `- \`${prefix}/mode [mode|default]\` — inspect or select the runtime mode (Connect Owner only).`,
+    `- \`${prefix}/cancel\` — cancel an active turn when supported (Connect Owner only).`,
+    "",
+    "**Runtime Interaction responses (only when requested)**",
+    "",
+    `- \`${prefix}/approve\`, \`${prefix}/approve session\`, or \`${prefix}/deny\`.`,
+    `- \`${prefix}/N\` — select a numbered option.`,
+    `- \`${prefix}/answer <text>\` — answer a non-secret free-text question.`,
+  ].join("\n");
+}
 
 export function isConnectControlMessage(text: string): boolean {
   const [command = ""] = text.trim().split(/\s+/u);
@@ -91,7 +113,9 @@ export async function handleChatCommand(ctx: ChatCommandContext): Promise<ChatCo
   const text = ctx.message.text.trim();
   if (!text.startsWith("/")) return { handled: false };
   const [command = "", ...args] = text.split(/\s+/u);
-  if (command === "/help") return { handled: true, text: HELP };
+  const invalidUsage = invalidCommandUsage(ctx.message, command, args);
+  if (invalidUsage) return { handled: true, text: invalidUsage };
+  if (command === "/help") return { handled: true, text: helpText(ctx.message.chatType) };
   if (CONTROL_COMMANDS.has(command) && ctx.message.sender.id !== ctx.ownerUserId) {
     return { handled: true, text: "Only the Agent Binding owner can run ClawChat Connect control commands." };
   }
@@ -104,15 +128,38 @@ export async function handleChatCommand(ctx: ChatCommandContext): Promise<ChatCo
   if (command === "/mode") return await handleMode(ctx, args[0]);
   if (command === "/model") return await handleModel(ctx, args);
   if (command === "/cancel") return await handleCancel(ctx);
-  if (REMOVED_COMMANDS.has(command)) return { handled: true, text: `Unknown Connect command: ${command}\n\n${HELP}` };
+  if (COMMAND_USAGE.has(command.toLowerCase())) return { handled: false };
+  if (REMOVED_COMMANDS.has(command))
+    return { handled: true, text: `Unknown Connect command: ${command}\n\n${helpText(ctx.message.chatType)}` };
   if (command.startsWith("/clawchat-"))
-    return { handled: true, text: `Unknown ClawChat command: ${command}\n\n${HELP}` };
+    return { handled: true, text: `Unknown ClawChat command: ${command}\n\n${helpText(ctx.message.chatType)}` };
   return { handled: false };
+}
+
+function commandUsage(chatType: NormalizedInboundMessage["chatType"], command: string): string {
+  return `Usage: ${commandAddressPrefix(chatType)}${COMMAND_USAGE.get(command) ?? command}`;
+}
+
+function invalidCommandUsage(message: NormalizedInboundMessage, command: string, args: string[]): string | null {
+  if (!COMMAND_USAGE.has(command)) return null;
+  if (/[\r\n]/u.test(message.text)) return commandUsage(message.chatType, command);
+  if (message.fragments.some((fragment) => ["image", "file", "audio", "video"].includes(fragment.kind))) {
+    return commandUsage(message.chatType, command);
+  }
+  const valid =
+    command === "/new" ||
+    (["/help", "/status", "/sessions", "/cancel"].includes(command) && args.length === 0) ||
+    (command === "/clawchat-output" && args.length === 1 && parseOutputVisibility(args[0]) !== null) ||
+    (command === "/switch" && args.length >= 1) ||
+    (command === "/project" && args.length <= 1) ||
+    (command === "/mode" && args.length <= 1) ||
+    (command === "/model" && args.length <= 2 && (args[0]?.toLowerCase() !== "default" || args.length === 1));
+  return valid ? null : commandUsage(message.chatType, command);
 }
 
 async function handleOutput(ctx: ChatCommandContext, rawMode: string | undefined): Promise<ChatCommandResult> {
   const mode = parseOutputVisibility(rawMode);
-  if (!mode) return { handled: true, text: "Usage: /clawchat-output minimal|normal|full" };
+  if (!mode) return { handled: true, text: commandUsage(ctx.message.chatType, "/clawchat-output") };
   await ctx.stateStore.setOutputVisibility(ctx.message.chatId, mode);
   const detail: Record<OutputVisibility, string> = {
     minimal: "final only",
@@ -380,7 +427,7 @@ async function handleMode(ctx: ChatCommandContext, mode: string | undefined): Pr
     if (modes.length === 0)
       return { handled: true, text: `Runtime ${binding.kind} does not support configurable modes.` };
     if (selectedMode && !modes.includes(selectedMode)) {
-      return { handled: true, text: `Usage for ClawChat Connect: /mode ${modes.join("|")}|default` };
+      return { handled: true, text: commandUsage(ctx.message.chatType, "/mode") };
     }
   }
   if (intent || !current) {

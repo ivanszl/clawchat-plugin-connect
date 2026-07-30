@@ -58,7 +58,14 @@ export interface CodexAppServerRequest {
   params: JsonObject;
 }
 
-export type CodexAppServerRequestResult = { handled: true; result: unknown } | { handled: false };
+export type CodexAppServerRequestResult =
+  | {
+      handled: true;
+      result: unknown;
+      onDelivered?: () => Promise<void> | void;
+      onDeliveryFailed?: (error: Error) => Promise<void> | void;
+    }
+  | { handled: false };
 
 export type CodexAppServerRequestHandler = (
   request: CodexAppServerRequest,
@@ -460,7 +467,13 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
       for (const handler of this.requestHandlers) {
         const handled = await handler(request);
         if (handled.handled) {
-          await this.write({ id: request.id, result: handled.result });
+          try {
+            await this.write({ id: request.id, result: handled.result });
+            await handled.onDelivered?.();
+          } catch (error) {
+            await handled.onDeliveryFailed?.(error instanceof Error ? error : new Error(String(error)));
+            throw error;
+          }
           return;
         }
       }

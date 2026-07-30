@@ -3,7 +3,12 @@ import { createClawChatApiClient } from "./api-client";
 import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
 import type { TranscriptProjection } from "./client-interface/transcript-projection";
 import { getAgentBinding } from "./config";
-import { buildTextMessagePayload, isMessageAddressedToAgent, normalizeInboundMessage } from "./message-mapper";
+import {
+  addressInboundMessage,
+  buildReplyTextMessagePayload,
+  buildTextMessagePayload,
+  normalizeInboundMessage,
+} from "./message-mapper";
 import type { ProjectCatalog } from "./projects";
 import { type Envelope, EVENT, type NormalizedInboundMessage, type Transport } from "./protocol";
 import { ConnectRuntime } from "./runtime/connect-runtime";
@@ -133,18 +138,26 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     clientPort: options.runtimeInteractions,
     ownerUserId: options.activation.ownerUserId,
     ownerConversationId: options.activation.conversationId,
-    sendClawChatMessage: async (fragments) => {
-      const conversationId = options.activation.conversationId;
-      if (!conversationId) throw new Error("ClawChat owner direct conversation is unavailable");
-      await wsClient.sendMessageEnvelope(
-        EVENT.MESSAGE_REPLY,
-        conversationId,
-        {
-          message_mode: "normal",
-          message: { body: { fragments }, context: { mentions: [], reply: null } },
-        },
-        { toType: "direct" },
+    agentUserId: options.activation.userId,
+    sendClawChatMessage: async (delivery) => {
+      const payload = buildTextMessagePayload(
+        "",
+        delivery.sourceMessageId
+          ? {
+              replyToMessageId: delivery.sourceMessageId,
+              replyPreview:
+                delivery.sourceSender && delivery.sourceFragments
+                  ? {
+                      id: delivery.sourceSender.id,
+                      nickName: delivery.sourceSender.displayName,
+                      fragments: delivery.sourceFragments,
+                    }
+                  : null,
+            }
+          : {},
       );
+      payload.message.body.fragments = delivery.fragments;
+      await wsClient.sendMessageEnvelope(EVENT.MESSAGE_REPLY, delivery.chatId, payload, { toType: delivery.chatType });
     },
   });
   runtime = new ConnectRuntime({
@@ -367,15 +380,34 @@ async function dispatchInboundMessage(
     onTurnAccepted: () => Promise<void>;
   },
 ): Promise<boolean> {
-  if (!isMessageAddressedToAgent(params.message, params.activation.userId)) return true;
+  const addressed = addressInboundMessage(params.message, params.activation.userId);
+  if (!addressed) return true;
+  const message = addressed.message;
+  const malformedLineBreakCommand =
+    message.chatType === "group" && addressed.hasAddressingMention && /^[\r\n]+[ \t]*\//u.test(message.text);
+  const canRouteCommand = addressed.acceptsCommands || malformedLineBreakCommand;
+  const hasAttachment = message.fragments.some((fragment) =>
+    ["image", "file", "audio", "video"].includes(fragment.kind),
+  );
+  if (message.chatType === "group" && addressed.hasAddressingMention && !message.text.trim() && !hasAttachment) {
+    await params.wsClient.sendMessageEnvelope(
+      EVENT.MESSAGE_REPLY,
+      message.chatId,
+      buildReplyTextMessagePayload("Please include a message, attachment, or use @Agent /help.", message),
+      { toType: message.chatType },
+    );
+    await params.onTurnAccepted();
+    return true;
+  }
 
-  if (await params.interactionRouter.handleMessage(params.message)) {
+  if (await params.interactionRouter.handleMessage(message)) {
     await params.onTurnAccepted();
     return true;
   }
   const routeCommand = async (): Promise<boolean> => {
+    if (!canRouteCommand) return false;
     const command = await handleChatCommand({
-      message: params.message,
+      message,
       agentId: params.agentId,
       ownerUserId: params.activation.ownerUserId,
       config: params.config,
@@ -393,27 +425,27 @@ async function dispatchInboundMessage(
     if (command.text) {
       await params.wsClient.sendMessageEnvelope(
         EVENT.MESSAGE_REPLY,
-        params.message.chatId,
-        buildTextMessagePayload(command.text),
-        { toType: params.message.chatType },
+        message.chatId,
+        buildReplyTextMessagePayload(command.text, message),
+        { toType: message.chatType },
       );
     }
     await params.onTurnAccepted();
     return true;
   };
   if (
-    params.message.text.trim().split(/\s+/u)[0] === "/cancel" ||
-    (isConnectControlMessage(params.message.text) &&
-      (params.message.sender.id !== params.activation.ownerUserId ||
-        !requiresOrderedSessionControl(params.message.text)))
+    (canRouteCommand && message.text.trim().split(/\s+/u)[0] === "/cancel") ||
+    (canRouteCommand &&
+      isConnectControlMessage(message.text) &&
+      (message.sender.id !== params.activation.ownerUserId || !requiresOrderedSessionControl(message.text)))
   ) {
     await routeCommand();
     return true;
   }
   await params.runtime.handleInboundMessage(
-    params.message,
+    message,
     routeCommand,
-    requiresOrderedSessionControl(params.message.text),
+    canRouteCommand && requiresOrderedSessionControl(message.text),
     params.onTurnAccepted,
   );
   return false;

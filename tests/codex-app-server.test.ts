@@ -128,9 +128,11 @@ describe("Codex app-server stdio client", () => {
       { kind: "codex", codexPathOverride: "/opt/codex" },
       { readVersion: async () => CODEX_VERSION_FIXTURE, spawnAppServer: () => process },
     );
+    const onDelivered = mock(async () => undefined);
     client.onRequest(async (request) => ({
       handled: request.method === "item/commandExecution/requestApproval",
       result: { decision: "cancel" },
+      onDelivered,
     }));
 
     process.stdout.write(
@@ -142,6 +144,7 @@ describe("Codex app-server stdio client", () => {
     );
     await Bun.sleep(0);
     expect(received.at(-1)).toEqual({ id: "approval-1", result: { decision: "cancel" } });
+    expect(onDelivered).toHaveBeenCalledTimes(1);
     await client.close();
   });
 

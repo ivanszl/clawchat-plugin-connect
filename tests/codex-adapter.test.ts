@@ -122,7 +122,10 @@ class FakeAppServer implements CodexAppServerClient {
     const request: CodexAppServerRequest = { id: 99, method, params };
     for (const handler of this.requests) {
       const result = await handler(request);
-      if (result.handled) return result.result;
+      if (result.handled) {
+        await result.onDelivered?.();
+        return result.result;
+      }
     }
     throw new Error(`unhandled request: ${method}`);
   }

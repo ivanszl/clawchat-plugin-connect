@@ -50,16 +50,25 @@ export type RuntimeInteractionResponse =
   | { kind: "approval"; optionId: "approve-once" | "approve-session" | "deny" | "cancel" }
   | { kind: "user-input"; answers: Record<string, string[]> };
 
+export interface ClawChatInteractionRoute {
+  chatId: string;
+  chatType: "direct" | "group";
+  sourceMessageId: string | null;
+  sourceSender?: { id: string; displayName: string };
+  sourceFragments?: import("../protocol").Fragment[];
+}
+
+export interface RuntimeInteractionContext {
+  sessionRef: string;
+  turnId: string;
+  origin: "client" | "clawchat";
+  signal?: AbortSignal;
+  clawchat?: ClawChatInteractionRoute;
+  deliveryConfirmation?: Promise<void>;
+}
+
 export interface RuntimeInteractionPort {
-  request(
-    request: RuntimeInteractionRequest,
-    context: {
-      sessionRef: string;
-      turnId: string;
-      origin: "client" | "clawchat";
-      signal?: AbortSignal;
-    },
-  ): Promise<RuntimeInteractionResponse>;
+  request(request: RuntimeInteractionRequest, context: RuntimeInteractionContext): Promise<RuntimeInteractionResponse>;
 }
 
 export interface RuntimeModelOption {

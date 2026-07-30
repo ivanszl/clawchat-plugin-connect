@@ -581,6 +581,50 @@ describe("handleChatCommand", () => {
     });
   });
 
+  it("validates the exact single-line command grammar before authorization", async () => {
+    const context = {
+      agentId: "codex",
+      ownerUserId: "owner-user",
+      config: upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" }),
+      stateStore: {} as ConnectStateStore,
+      projects: {} as ProjectCatalog,
+    };
+
+    await expect(handleChatCommand({ ...context, message: message("/status extra", "group") })).resolves.toMatchObject({
+      handled: true,
+      text: "Usage: @Agent /status",
+    });
+    await expect(handleChatCommand({ ...context, message: message("/help\n/status") })).resolves.toMatchObject({
+      handled: true,
+      text: "Usage: /help",
+    });
+    await expect(
+      handleChatCommand({
+        ...context,
+        message: {
+          ...message("/cancel"),
+          fragments: [
+            { kind: "text", text: "/cancel" },
+            { kind: "file", url: "https://media.example/file.txt" },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({
+      handled: true,
+      text: "Usage: /cancel",
+    });
+    await expect(handleChatCommand({ ...context, message: message("/clawchat-output bogus") })).resolves.toMatchObject({
+      handled: true,
+      text: "Usage: /clawchat-output minimal|normal|full",
+    });
+    await expect(handleChatCommand({ ...context, message: message("/STATUS") })).resolves.toEqual({
+      handled: false,
+    });
+    await expect(handleChatCommand({ ...context, message: message("/clawchat-OUTPUT full") })).resolves.toEqual({
+      handled: false,
+    });
+  });
+
   it("persists /clawchat-output overrides", async () => {
     const store = { setOutputVisibility: mock(async () => undefined) } as unknown as ConnectStateStore;
     const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
@@ -673,7 +717,7 @@ describe("handleChatCommand", () => {
         projects,
         runtimeModesFor: () => ["read-only", "workspace-write", "danger-full-access"],
       }),
-    ).resolves.toMatchObject({ handled: true, text: expect.stringContaining("Usage for ClawChat Connect") });
+    ).resolves.toMatchObject({ handled: true, text: "Usage: /mode [mode|default]" });
     await store.close();
   });
 

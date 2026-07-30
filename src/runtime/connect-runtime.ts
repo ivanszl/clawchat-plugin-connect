@@ -14,7 +14,7 @@ import {
 } from "../output-visibility";
 import { synchronizeRuntimeProjects as synchronizeProjects } from "../project-synchronizer";
 import { ProjectCatalog } from "../projects";
-import { type ChatType, EVENT, type NormalizedInboundMessage } from "../protocol";
+import { EVENT, type NormalizedInboundMessage } from "../protocol";
 import {
   createSessionContinuity,
   type SessionContinuity,
@@ -417,8 +417,9 @@ export class ConnectRuntime {
         await this.options.transcriptProjection?.upsertRuntimeActivity(current.sessionRef, event);
       },
       materialize: (event) => materializeRuntimeOutput(event, policy),
-      deliver: async (reply) => await this.sendReply(message, reply, activeAgentId, workspace),
+      deliver: async (reply) => await this.sendReply(message, reply, workspace),
     });
+    const runtimeInteractions = this.options.runtimeInteractions;
     for await (const event of this.executor.execute(target, {
       prompt: renderPrompt(message),
       media: runtimeMedia(message),
@@ -428,7 +429,24 @@ export class ConnectRuntime {
       model: model.model,
       reasoningEffort: model.reasoningEffort,
       turnId: message.messageId,
-      interactionPort: this.options.runtimeInteractions,
+      interactionPort: runtimeInteractions
+        ? {
+            request: async (request, context) =>
+              await runtimeInteractions.request(request, {
+                ...context,
+                clawchat: {
+                  chatId: message.chatId,
+                  chatType: message.chatType,
+                  sourceMessageId: message.messageId,
+                  sourceSender: {
+                    id: message.sender.id,
+                    displayName: message.sender.nick_name || message.sender.id,
+                  },
+                  sourceFragments: message.fragments,
+                },
+              }),
+          }
+        : undefined,
       onAccepted: onTurnAccepted,
       metadata: {
         sessionRef: current.sessionRef,
@@ -519,16 +537,15 @@ export class ConnectRuntime {
   }
 
   private async sendVisibleFailure(message: NormalizedInboundMessage, text: string): Promise<void> {
-    await this.sendReply(message, { text, requiredControl: false }, this.options.agentId);
+    await this.sendReply(message, { text, requiredControl: false });
   }
 
   private async sendReply(
     message: NormalizedInboundMessage,
     reply: MaterializedRuntimeReply,
-    agentId: string,
     workspace?: RuntimeWorkspace,
   ): Promise<void> {
-    const route = await this.resolveReplyRoute(message, reply, agentId);
+    const route = { chatId: message.chatId, chatType: message.chatType };
     const localMedia = workspace
       ? await resolveLocalReplyMedia(reply.text, this.options.config.stateDbPath, workspace)
       : { text: reply.text, files: [] };
@@ -542,20 +559,6 @@ export class ConnectRuntime {
     await this.options.wsClient.sendMessageEnvelope(EVENT.MESSAGE_REPLY, route.chatId, payload, {
       toType: route.chatType,
     });
-  }
-
-  private async resolveReplyRoute(
-    message: NormalizedInboundMessage,
-    reply: MaterializedRuntimeReply,
-    agentId: string,
-  ): Promise<{ chatId: string; chatType: ChatType }> {
-    if (!reply.requiredControl || message.chatType !== "group") {
-      return { chatId: message.chatId, chatType: message.chatType };
-    }
-    const activation = await this.options.stateStore.getActivation(agentId).catch(() => null);
-    const ownerDirectChatId = activation?.conversationId ?? null;
-    if (!ownerDirectChatId) throw new Error("owner direct conversation is unavailable for required control delivery");
-    return { chatId: ownerDirectChatId, chatType: "direct" };
   }
 
   private async materializeCurrentSession(chatId: string): Promise<RuntimeSessionRecord> {

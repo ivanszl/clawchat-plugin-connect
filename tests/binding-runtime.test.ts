@@ -599,6 +599,350 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     await stateStore.close();
   });
 
+  it("routes group messages addressed by a leading Agent mention", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-group-command-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    const prompts: ConnectRuntimePrompt[] = [];
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        start: async () => ({
+          prompt: async function* (input: ConnectRuntimePrompt) {
+            prompts.push(input);
+            yield {
+              id: "unexpected-runtime-turn",
+              position: "0",
+              parentId: null,
+              kind: "assistant",
+              text: "unexpected",
+              state: "complete",
+              source: "live",
+              data: { outputKind: "final" },
+            } as const;
+          },
+          close: mock(async () => undefined),
+        }),
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    await flush();
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 1,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 2,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AB" },
+    });
+    const handle = await starting;
+
+    transport.receive({
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "group-help",
+      emitted_at: 3,
+      dseq: 1,
+      chat_id: "chat-group",
+      chat_type: "group",
+      sender: { id: "usr_member", type: "direct", nick_name: "Member" },
+      payload: {
+        message_id: "msg-group-help",
+        message_mode: "normal",
+        message: {
+          body: {
+            fragments: [
+              { kind: "mention", user_id: "usr_alice", display: "Alice" },
+              { kind: "text", text: " /help" },
+            ],
+          },
+          context: {
+            mentions: [{ user_id: "usr_alice", display: "Alice" }],
+            reply: null,
+          },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    });
+
+    let reply = transport.sent.find((event) => event.event === EVENT.MESSAGE_REPLY && event.chat_id === "chat-group");
+    for (let attempt = 0; attempt < 50 && !reply; attempt += 1) {
+      await Bun.sleep(2);
+      reply = transport.sent.find((event) => event.event === EVENT.MESSAGE_REPLY && event.chat_id === "chat-group");
+    }
+
+    try {
+      expect(prompts).toEqual([]);
+      expect(reply?.payload).toMatchObject({
+        message: {
+          body: {
+            fragments: [expect.objectContaining({ kind: "text", text: expect.stringContaining("@Agent /help") })],
+          },
+          context: {
+            reply: {
+              reply_to_msg_id: "msg-group-help",
+            },
+          },
+        },
+      });
+      if (!reply) throw new Error("group help reply was not sent");
+      transport.receive({
+        version: "2",
+        event: EVENT.MESSAGE_ACK,
+        trace_id: reply.trace_id,
+        emitted_at: 4,
+        chat_id: "chat-group",
+        payload: { message_id: "reply-group-help", accepted_at: 4 },
+      });
+      await flush();
+
+      transport.receive({
+        version: "2",
+        event: EVENT.MESSAGE_SEND,
+        trace_id: "group-invalid-status",
+        emitted_at: 5,
+        dseq: 2,
+        chat_id: "chat-group",
+        chat_type: "group",
+        sender: { id: "usr_owner", type: "direct", nick_name: "Owner" },
+        payload: {
+          message_id: "msg-group-invalid-status",
+          message_mode: "normal",
+          message: {
+            body: {
+              fragments: [
+                { kind: "mention", user_id: "usr_alice", display: "Alice" },
+                { kind: "text", text: " /status extra" },
+              ],
+            },
+            context: {
+              mentions: [{ user_id: "usr_alice", display: "Alice" }],
+              reply: null,
+            },
+            streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+          },
+        },
+      });
+      let invalidReply = transport.sent.find(
+        (event) =>
+          event.event === EVENT.MESSAGE_REPLY && event.chat_id === "chat-group" && event.trace_id !== reply?.trace_id,
+      );
+      for (let attempt = 0; attempt < 50 && !invalidReply; attempt += 1) {
+        await Bun.sleep(2);
+        invalidReply = transport.sent.find(
+          (event) =>
+            event.event === EVENT.MESSAGE_REPLY && event.chat_id === "chat-group" && event.trace_id !== reply?.trace_id,
+        );
+      }
+      if (invalidReply) {
+        transport.receive({
+          version: "2",
+          event: EVENT.MESSAGE_ACK,
+          trace_id: invalidReply.trace_id,
+          emitted_at: 6,
+          chat_id: "chat-group",
+          payload: { message_id: "reply-invalid-status", accepted_at: 6 },
+        });
+      }
+      expect(invalidReply?.payload).toMatchObject({
+        message: {
+          body: {
+            fragments: [expect.objectContaining({ kind: "text", text: "Usage: @Agent /status" })],
+          },
+          context: { reply: { reply_to_msg_id: "msg-group-invalid-status" } },
+        },
+      });
+
+      transport.receive({
+        version: "2",
+        event: EVENT.MESSAGE_SEND,
+        trace_id: "group-empty",
+        emitted_at: 7,
+        dseq: 3,
+        chat_id: "chat-group",
+        chat_type: "group",
+        sender: { id: "usr_member", type: "direct", nick_name: "Member" },
+        payload: {
+          message_id: "msg-group-empty",
+          message_mode: "normal",
+          message: {
+            body: {
+              fragments: [{ kind: "mention", user_id: "usr_alice", display: "Alice" }],
+            },
+            context: {
+              mentions: [{ user_id: "usr_alice", display: "Alice" }],
+              reply: null,
+            },
+            streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+          },
+        },
+      });
+      let emptyReply = transport.sent.find(
+        (event) =>
+          event.event === EVENT.MESSAGE_REPLY &&
+          event.chat_id === "chat-group" &&
+          event.trace_id !== reply?.trace_id &&
+          event.trace_id !== invalidReply?.trace_id,
+      );
+      for (let attempt = 0; attempt < 50 && !emptyReply; attempt += 1) {
+        await Bun.sleep(2);
+        emptyReply = transport.sent.find(
+          (event) =>
+            event.event === EVENT.MESSAGE_REPLY &&
+            event.chat_id === "chat-group" &&
+            event.trace_id !== reply?.trace_id &&
+            event.trace_id !== invalidReply?.trace_id,
+        );
+      }
+      if (emptyReply) {
+        transport.receive({
+          version: "2",
+          event: EVENT.MESSAGE_ACK,
+          trace_id: emptyReply.trace_id,
+          emitted_at: 8,
+          chat_id: "chat-group",
+          payload: { message_id: "reply-group-empty", accepted_at: 8 },
+        });
+      }
+      expect(prompts).toEqual([]);
+      expect(emptyReply?.payload).toMatchObject({
+        message: {
+          body: {
+            fragments: [
+              expect.objectContaining({
+                kind: "text",
+                text: "Please include a message, attachment, or use @Agent /help.",
+              }),
+            ],
+          },
+          context: { reply: { reply_to_msg_id: "msg-group-empty" } },
+        },
+      });
+
+      const repliesBeforeContextOnlyMention = transport.sent.filter(
+        (event) => event.event === EVENT.MESSAGE_REPLY,
+      ).length;
+      transport.receive({
+        version: "2",
+        event: EVENT.MESSAGE_SEND,
+        trace_id: "group-context-only-mention",
+        emitted_at: 9,
+        dseq: 4,
+        chat_id: "chat-group",
+        chat_type: "group",
+        sender: { id: "usr_member", type: "direct", nick_name: "Member" },
+        payload: {
+          message_id: "msg-group-context-only-mention",
+          message_mode: "normal",
+          message: {
+            body: {
+              fragments: [{ kind: "text", text: "inspect this metadata" }],
+            },
+            context: {
+              mentions: [{ user_id: "usr_alice", display: "Alice" }],
+              reply: null,
+            },
+            streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+          },
+        },
+      });
+      await flush();
+      expect(prompts).toEqual([]);
+      expect(transport.sent.filter((event) => event.event === EVENT.MESSAGE_REPLY)).toHaveLength(
+        repliesBeforeContextOnlyMention,
+      );
+
+      const sentBeforeOrdinaryTurn = transport.sent.length;
+      transport.receive({
+        version: "2",
+        event: EVENT.MESSAGE_SEND,
+        trace_id: "group-ordinary",
+        emitted_at: 10,
+        dseq: 5,
+        chat_id: "chat-group",
+        chat_type: "group",
+        sender: { id: "usr_member", type: "direct", nick_name: "Member" },
+        payload: {
+          message_id: "msg-group-ordinary",
+          message_mode: "normal",
+          message: {
+            body: {
+              fragments: [
+                { kind: "mention", user_id: "usr_alice", display: "Alice" },
+                { kind: "text", text: " inspect this" },
+              ],
+            },
+            context: {
+              mentions: [{ user_id: "usr_alice", display: "Alice" }],
+              reply: null,
+            },
+            streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+          },
+        },
+      });
+      for (let attempt = 0; attempt < 50 && prompts.length === 0; attempt += 1) await Bun.sleep(2);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]?.prompt).toEndWith("\n\ninspect this");
+
+      let ordinaryReply = transport.sent
+        .slice(sentBeforeOrdinaryTurn)
+        .find((event) => event.event === EVENT.MESSAGE_REPLY && event.chat_id === "chat-group");
+      for (let attempt = 0; attempt < 50 && !ordinaryReply; attempt += 1) {
+        await Bun.sleep(2);
+        ordinaryReply = transport.sent
+          .slice(sentBeforeOrdinaryTurn)
+          .find((event) => event.event === EVENT.MESSAGE_REPLY && event.chat_id === "chat-group");
+      }
+      if (ordinaryReply) {
+        transport.receive({
+          version: "2",
+          event: EVENT.MESSAGE_ACK,
+          trace_id: ordinaryReply.trace_id,
+          emitted_at: 11,
+          chat_id: "chat-group",
+          payload: { message_id: "reply-group-ordinary", accepted_at: 11 },
+        });
+      }
+    } finally {
+      await handle.close();
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
   it("routes typed WS events and poison-frame quarantine through the production event seam", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-runtime-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });

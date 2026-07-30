@@ -1,24 +1,41 @@
 import { randomUUID } from "node:crypto";
+import { addressInboundMessage, commandAddressPrefix } from "../message-mapper";
 import type { Envelope, Fragment, NormalizedInboundMessage } from "../protocol";
 import { RuntimeInteractionSettlement } from "./runtime-interaction-settlement";
-import type { RuntimeInteractionPort, RuntimeInteractionRequest, RuntimeInteractionResponse } from "./types";
+import type {
+  ClawChatInteractionRoute,
+  RuntimeInteractionContext,
+  RuntimeInteractionPort,
+  RuntimeInteractionRequest,
+  RuntimeInteractionResponse,
+} from "./types";
 
 interface RouterOptions {
   clientPort?: RuntimeInteractionPort;
   ownerUserId: string;
   ownerConversationId: string | null;
-  sendClawChatMessage(fragments: Fragment[]): Promise<void>;
+  agentUserId?: string;
+  sendClawChatMessage(delivery: ClawChatInteractionDelivery): Promise<void>;
+}
+
+export interface ClawChatInteractionDelivery extends ClawChatInteractionRoute {
+  interactionId: string | null;
+  fragments: Fragment[];
 }
 
 interface PendingClawChatInteraction {
   id: string;
+  sessionRef: string;
+  route: ClawChatInteractionRoute;
   request: RuntimeInteractionRequest;
   answers: Record<string, string[]>;
   questionIndex: number;
   waitingForText: boolean;
+  lastAnswerResponder: { id: string; displayName: string } | null;
   resolve(response: RuntimeInteractionResponse): void;
   reject(error: Error): void;
   timeout: ReturnType<typeof setTimeout> | null;
+  deliveryConfirmation: Promise<void>;
   removeAbortListener(): void;
   settlement: RuntimeInteractionSettlement<RuntimeInteractionResponse>;
 }
@@ -31,45 +48,64 @@ interface ConnectInteractionAction {
   answer?: string;
 }
 
+type RuntimeInteractionQuestion = Extract<RuntimeInteractionRequest, { kind: "user-input" }>["questions"][number];
+
 export class RuntimeInteractionRouter implements RuntimeInteractionPort {
   private readonly pending = new Map<string, PendingClawChatInteraction>();
+  private readonly terminalResponses = new Map<string, string>();
+  private readonly terminalInteractions = new Map<
+    string,
+    {
+      route: Pick<ClawChatInteractionRoute, "chatId" | "chatType">;
+      responderId: string | null;
+      text: string;
+    }
+  >();
 
   constructor(private readonly options: RouterOptions) {}
 
   async request(
     request: RuntimeInteractionRequest,
-    context: {
-      sessionRef: string;
-      turnId: string;
-      origin: "client" | "clawchat";
-      signal?: AbortSignal;
-    },
+    context: RuntimeInteractionContext,
   ): Promise<RuntimeInteractionResponse> {
     if (context.origin === "client") {
       if (!this.options.clientPort) throw new Error("Connect Client Runtime Interaction service is unavailable");
       return await this.options.clientPort.request(request, context);
     }
-    if (!this.options.ownerConversationId) {
+    const route =
+      context.clawchat ??
+      (this.options.ownerConversationId
+        ? {
+            chatId: this.options.ownerConversationId,
+            chatType: "direct" as const,
+            sourceMessageId: null,
+          }
+        : null);
+    if (!route) {
       throw new Error("ClawChat owner direct conversation is unavailable");
     }
 
     const id = randomUUID();
     const result = new Promise<RuntimeInteractionResponse>((resolve, reject) => {
-      const onAbort = () => this.cancel(id, "Runtime request ended");
+      const onAbort = () => void this.cancel(id, "Runtime request ended");
       context.signal?.addEventListener("abort", onAbort, { once: true });
       const timeout =
         request.kind === "user-input" && request.autoResolutionMs !== null
-          ? setTimeout(() => this.cancel(id, "Response deadline expired"), request.autoResolutionMs)
+          ? setTimeout(() => void this.cancel(id, "Response deadline expired"), request.autoResolutionMs)
           : null;
       this.pending.set(id, {
         id,
+        sessionRef: context.sessionRef,
+        route,
         request,
         answers: {},
         questionIndex: 0,
         waitingForText: false,
+        lastAnswerResponder: null,
         resolve,
         reject,
         timeout,
+        deliveryConfirmation: context.deliveryConfirmation ?? Promise.resolve(),
         removeAbortListener: () => context.signal?.removeEventListener("abort", onAbort),
         settlement: new RuntimeInteractionSettlement({
           validate: (response) => validateRuntimeResponse(request, response),
@@ -81,7 +117,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     try {
       await this.present(pending);
     } catch (error) {
-      this.cancel(id, error instanceof Error ? error.message : String(error));
+      await this.cancel(id, error instanceof Error ? error.message : String(error));
     }
     return await result;
   }
@@ -90,23 +126,70 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     const action = findConnectAction(envelope.payload);
     if (!action) return false;
     const pending = this.pending.get(action.interaction_id);
-    if (!pending) return true;
-    if (envelope.sender?.id !== this.options.ownerUserId || envelope.chat_id !== this.options.ownerConversationId) {
+    if (!pending) {
+      const terminal = this.terminalInteractions.get(action.interaction_id);
+      if (terminal && envelope.chat_id === terminal.route.chatId && envelope.chat_type === terminal.route.chatType) {
+        const text =
+          terminal.responderId && terminal.responderId === envelope.sender?.id
+            ? `Your response was already recorded. ${terminal.text}`
+            : terminal.text;
+        await this.options.sendClawChatMessage({
+          chatId: terminal.route.chatId,
+          chatType: terminal.route.chatType,
+          sourceMessageId: null,
+          interactionId: action.interaction_id,
+          fragments: [{ kind: "text", text }],
+        });
+      }
+      return true;
+    }
+    if (
+      envelope.chat_id !== pending.route.chatId ||
+      envelope.chat_type !== pending.route.chatType ||
+      (pending.route.chatType === "direct" && envelope.sender?.id !== this.options.ownerUserId)
+    ) {
       return true;
     }
 
     if (pending.request.kind === "approval") {
       const option = pending.request.options.find((candidate) => candidate.id === action.option_id);
       if (!option) return true;
-      await this.settle(pending, { kind: "approval", optionId: option.id });
+      await this.settle(
+        pending,
+        { kind: "approval", optionId: option.id },
+        envelope.sender
+          ? { id: envelope.sender.id, displayName: envelope.sender.nick_name || envelope.sender.id }
+          : undefined,
+      );
       return true;
     }
 
     const question = pending.request.questions[pending.questionIndex];
     if (!question || action.question_id !== question.id) return true;
+    const structuredAnswer = typeof action.answer === "string" ? action.answer.trim() : "";
+    if (
+      structuredAnswer &&
+      !question.secret &&
+      (!question.options?.length || question.allowOther) &&
+      action.option_id !== "__other__"
+    ) {
+      pending.answers[question.id] = [structuredAnswer];
+      pending.questionIndex += 1;
+      if (envelope.sender) {
+        await this.acknowledgeAnswer(pending, question, envelope.sender, null);
+      }
+      await this.present(pending);
+      return true;
+    }
     if (action.option_id === "__other__") {
       pending.waitingForText = true;
-      await this.options.sendClawChatMessage([{ kind: "text", text: `${question.header}：请直接回复你的答案。` }]);
+      const prefix = commandAddressPrefix(pending.route.chatType);
+      await this.send(pending, [
+        {
+          kind: "text",
+          text: `${questionPresentationHeader(pending)}：请使用 ${prefix}/answer <答案>。`,
+        },
+      ]);
       return true;
     }
     const option = question.options?.find(
@@ -115,61 +198,213 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     if (!option) return true;
     pending.answers[question.id] = [option.label];
     pending.questionIndex += 1;
+    if (envelope.sender) {
+      await this.acknowledgeAnswer(pending, question, envelope.sender, option.label);
+    }
     await this.present(pending);
     return true;
   }
 
   async handleMessage(message: NormalizedInboundMessage): Promise<boolean> {
     if (
-      message.sender.id !== this.options.ownerUserId ||
-      message.chatId !== this.options.ownerConversationId ||
-      message.chatType !== "direct"
+      message.chatType === "direct" &&
+      (message.sender.id !== this.options.ownerUserId || message.chatId !== this.options.ownerConversationId)
     ) {
       return false;
     }
-    const approval = [...this.pending.values()].find((candidate) => candidate.request.kind === "approval");
-    if (approval?.request.kind === "approval") {
-      const optionId = approvalOptionId(message.text);
-      if (!optionId) return false;
-      await this.settle(approval, { kind: "approval", optionId });
+    const routedMessage =
+      message.chatType === "group" && this.options.agentUserId
+        ? addressInboundMessage(message, this.options.agentUserId)
+        : { message, hasAddressingMention: false, acceptsCommands: message.chatType === "direct" };
+    const malformedLineBreakResponse = Boolean(
+      routedMessage?.hasAddressingMention && /^[\r\n]+[ \t]*\//u.test(routedMessage.message.text),
+    );
+    if (!routedMessage || (!routedMessage.acceptsCommands && !malformedLineBreakResponse)) return false;
+    const eligible = [...this.pending.values()].filter(
+      (candidate) =>
+        candidate.route.chatId === message.chatId &&
+        candidate.route.chatType === message.chatType &&
+        (message.chatType === "group" || message.sender.id === this.options.ownerUserId),
+    );
+    const responseText = routedMessage.message.text;
+    const responseKind = runtimeResponseKind(responseText);
+    const hasAttachment = message.fragments.some((fragment) =>
+      ["image", "file", "audio", "video"].includes(fragment.kind),
+    );
+    if (responseKind && (hasAttachment || /[\r\n]/u.test(responseText))) {
+      await this.sendForMessage(message, [
+        { kind: "text", text: runtimeResponseUsage(message.chatType, responseKind) },
+      ]);
       return true;
     }
-    const selection = [...this.pending.values()].find((candidate) => {
+    const optionId = approvalOptionId(responseText);
+    if (!optionId && approvalOptionId(responseText.toLowerCase())) {
+      const canonical = responseText
+        .trim()
+        .toLowerCase()
+        .replace(/[ \t]+/gu, " ");
+      await this.sendForMessage(message, [
+        {
+          kind: "text",
+          text: `Usage: ${commandAddressPrefix(message.chatType)}${canonical}`,
+        },
+      ]);
+      return true;
+    }
+    if (optionId) {
+      const approvals = eligible.filter((candidate) => candidate.request.kind === "approval");
+      if (approvals.length === 0) {
+        const terminal = this.terminalResponses.get(routeResponseKey(message, "approval"));
+        await this.sendForMessage(message, [
+          {
+            kind: "text",
+            text: terminal ?? "No pending approval is waiting in this conversation.",
+          },
+        ]);
+        return true;
+      }
+      if (approvals.length > 1) {
+        await this.send(approvals[0], [
+          {
+            kind: "text",
+            text: "Cannot respond: multiple pending approvals are waiting in this conversation. Use a structured action.",
+          },
+        ]);
+        return true;
+      }
+      const approval = approvals[0];
+      if (approval.request.kind !== "approval") return true;
+      await this.settle(
+        approval,
+        { kind: "approval", optionId },
+        {
+          id: message.sender.id,
+          displayName: message.sender.nick_name || message.sender.id,
+        },
+      );
+      return true;
+    }
+    if (responseKind === "approval") {
+      await this.sendForMessage(message, [
+        { kind: "text", text: runtimeResponseUsage(message.chatType, responseKind) },
+      ]);
+      return true;
+    }
+    const customAnswer = freeTextAnswer(responseText);
+    if (customAnswer !== null) {
+      const questions = eligible.filter(
+        (candidate) =>
+          candidate.request.kind === "user-input" && Boolean(candidate.request.questions[candidate.questionIndex]),
+      );
+      const answerable = questions.filter((candidate) => {
+        if (candidate.request.kind !== "user-input") return false;
+        const question = candidate.request.questions[candidate.questionIndex];
+        return Boolean(question && !question.secret && (!question.options?.length || question.allowOther));
+      });
+      if (answerable.length > 1) {
+        await this.send(answerable[0], [
+          {
+            kind: "text",
+            text: "Cannot respond: multiple pending questions are waiting in this conversation. Use a structured action.",
+          },
+        ]);
+        return true;
+      }
+      const pendingAnswer = answerable[0];
+      if (pendingAnswer?.request.kind === "user-input") {
+        const question = pendingAnswer.request.questions[pendingAnswer.questionIndex];
+        if (!question) return true;
+        pendingAnswer.answers[question.id] = [customAnswer];
+        pendingAnswer.waitingForText = false;
+        pendingAnswer.questionIndex += 1;
+        await this.acknowledgeAnswer(pendingAnswer, question, message.sender, null);
+        await this.present(pendingAnswer);
+        return true;
+      }
+      const disallowed = questions[0];
+      if (disallowed) {
+        await this.present(disallowed);
+      } else {
+        const terminal = this.terminalResponses.get(routeResponseKey(message, "question"));
+        await this.sendForMessage(message, [
+          {
+            kind: "text",
+            text: terminal ?? "No pending free-text question is waiting in this conversation.",
+          },
+        ]);
+      }
+      return true;
+    }
+    if (responseKind === "answer") {
+      await this.sendForMessage(message, [
+        { kind: "text", text: runtimeResponseUsage(message.chatType, responseKind) },
+      ]);
+      return true;
+    }
+    const numberedResponse = /^\/\d/iu.test(responseText.trim());
+    const selections = eligible.filter((candidate) => {
       if (candidate.request.kind !== "user-input") return false;
       return Boolean(candidate.request.questions[candidate.questionIndex]?.options?.length);
     });
-    if (selection?.request.kind === "user-input") {
+    if (numberedResponse && selections.length > 1) {
+      await this.send(selections[0], [
+        {
+          kind: "text",
+          text: "Cannot respond: multiple pending choices are waiting in this conversation. Use a structured action.",
+        },
+      ]);
+      return true;
+    }
+    const selection = selections[0];
+    if (numberedResponse && selection?.request.kind === "user-input") {
       const question = selection.request.questions[selection.questionIndex];
-      const option = numberedOption(message.text, question?.options ?? null);
-      if (!option || !question) return false;
+      const option = numberedOption(responseText, question?.options ?? null);
+      if (!option || !question) {
+        await this.present(selection);
+        return true;
+      }
       selection.answers[question.id] = [option.label];
       selection.questionIndex += 1;
+      await this.acknowledgeAnswer(selection, question, message.sender, option.label);
       await this.present(selection);
       return true;
     }
-    const pending = [...this.pending.values()].find((candidate) => candidate.waitingForText);
-    if (pending?.request.kind !== "user-input") return false;
-    const answer = message.text.trim();
-    if (!answer) return true;
-    const question = pending.request.questions[pending.questionIndex];
-    if (!question) return false;
-    pending.answers[question.id] = [answer];
-    pending.waitingForText = false;
-    pending.questionIndex += 1;
-    await this.present(pending);
-    return true;
+    if (numberedResponse && selections.length === 0) {
+      const terminal = this.terminalResponses.get(routeResponseKey(message, "question"));
+      await this.sendForMessage(message, [
+        {
+          kind: "text",
+          text: terminal ?? "No pending choice is waiting in this conversation.",
+        },
+      ]);
+      return true;
+    }
+    return false;
   }
 
   async close(): Promise<void> {
-    for (const pending of [...this.pending.values()]) this.cancel(pending.id, "Connect stopped");
+    await Promise.all(
+      [...this.pending.values()].map(async (pending) => await this.cancel(pending.id, "Connect stopped")),
+    );
   }
 
   private async present(pending: PendingClawChatInteraction): Promise<void> {
+    const commandPrefix = commandAddressPrefix(pending.route.chatType);
     if (pending.request.kind === "approval") {
-      await this.options.sendClawChatMessage([
+      const title =
+        pending.route.chatType === "group"
+          ? pending.request.action === "file-change"
+            ? "Runtime file-change approval requested"
+            : "Runtime command approval requested"
+          : pending.request.title;
+      const description =
+        pending.route.chatType === "group"
+          ? "Review the Runtime request and choose one of the Connect decisions below."
+          : pending.request.description;
+      await this.send(pending, [
         {
           kind: "text",
-          text: `${pending.request.title}\n${pending.request.description}\n\n/approve 仅此次允许\n/approve session 本 Session 允许\n/deny 拒绝`,
+          text: `${groupSessionPrefix(pending)}${title}\n${description}\n\n${commandPrefix}/approve 仅此次允许\n${commandPrefix}/approve session 本 Session 允许\n${commandPrefix}/deny 拒绝`,
         },
       ]);
       return;
@@ -181,66 +416,321 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
       return;
     }
     if (question.secret) {
-      await this.options.sendClawChatMessage([
+      await this.send(pending, [
         {
           kind: "text",
-          text: `${question.header}：ClawChat 当前没有安全输入控件，本次请求已取消，答案不会通过普通消息收集。`,
+          text: `${groupSessionPrefix(pending)}${questionPresentationHeader(pending)}：ClawChat 当前没有安全输入控件，本次请求已取消，答案不会通过普通消息收集。`,
         },
       ]);
-      this.cancel(pending.id, "ClawChat does not provide a secure input control");
+      await this.cancel(pending.id, "ClawChat does not provide a secure input control");
       return;
     }
     if (!question.options?.length) {
       pending.waitingForText = true;
-      await this.options.sendClawChatMessage([
-        { kind: "text", text: `${question.header}：${question.prompt}\n请直接回复你的答案。` },
+      const header = questionPresentationHeader(pending);
+      const prompt =
+        pending.route.chatType === "group"
+          ? "Provide a free-text answer."
+          : presentationText(question.prompt, "Enter an answer", 500);
+      await this.send(pending, [
+        {
+          kind: "text",
+          text: `${groupSessionPrefix(pending)}${header}：${prompt}\n请使用 ${commandPrefix}/answer <答案>。`,
+        },
       ]);
       return;
     }
-    const choices = question.options.map((option, index) => `/${index + 1} ${option.label}`).join("\n");
-    await this.options.sendClawChatMessage([
+    const header = questionPresentationHeader(pending);
+    const prompt =
+      pending.route.chatType === "group"
+        ? "Choose one of the available options."
+        : presentationText(question.prompt, "Choose an option", 500);
+    const choices = question.options
+      .map(
+        (option, index) =>
+          `${commandPrefix}/${index + 1} ${
+            pending.route.chatType === "group"
+              ? `Option ${index + 1}`
+              : presentationText(option.label, `Option ${index + 1}`, 120)
+          }`,
+      )
+      .join("\n");
+    await this.send(pending, [
       {
         kind: "text",
-        text: `${question.header}：${question.prompt}\n\n${choices}${
-          question.allowOther ? "\n直接回复其他答案。" : ""
+        text: `${groupSessionPrefix(pending)}${header}：${prompt}\n\n${choices}${
+          question.allowOther ? `\n使用 ${commandPrefix}/answer <答案> 提交其他答案。` : ""
         }`,
       },
     ]);
   }
 
-  private async settle(pending: PendingClawChatInteraction, response: RuntimeInteractionResponse): Promise<void> {
-    await pending.settlement.claim(response, async (validated) => {
-      this.pending.delete(pending.id);
-      if (pending.timeout) clearTimeout(pending.timeout);
-      pending.removeAbortListener();
-      pending.resolve(validated);
+  private async send(pending: PendingClawChatInteraction, fragments: Fragment[]): Promise<void> {
+    await this.options.sendClawChatMessage({ ...pending.route, interactionId: pending.id, fragments });
+  }
+
+  private async sendForMessage(message: NormalizedInboundMessage, fragments: Fragment[]): Promise<void> {
+    await this.options.sendClawChatMessage({
+      chatId: message.chatId,
+      chatType: message.chatType,
+      sourceMessageId: message.messageId,
+      sourceSender: {
+        id: message.sender.id,
+        displayName: message.sender.nick_name || message.sender.id,
+      },
+      sourceFragments: message.fragments,
+      interactionId: null,
+      fragments,
     });
   }
 
-  private cancel(id: string, reason: string): void {
+  private async acknowledgeAnswer(
+    pending: PendingClawChatInteraction,
+    question: RuntimeInteractionQuestion,
+    sender: { id: string; nick_name: string },
+    selectedLabel: string | null,
+  ): Promise<void> {
+    if (pending.route.chatType !== "group") return;
+    const displayName = presentationText(sender.nick_name || sender.id, "Participant", 80);
+    pending.lastAnswerResponder = { id: sender.id, displayName };
+    if (pending.request.kind === "user-input" && pending.questionIndex >= pending.request.questions.length) return;
+    const header = questionPresentationHeader(pending, question);
+    const optionIndex =
+      selectedLabel && pending.request.kind === "user-input"
+        ? (pending.request.questions.find((candidate) => candidate === question)?.options ?? []).findIndex(
+            (option) => option.label === selectedLabel,
+          )
+        : -1;
+    const text = selectedLabel
+      ? `${displayName} submitted “Option ${optionIndex + 1}” for ${header} in Session ${pending.sessionRef}.`
+      : `${displayName} submitted an answer for ${header} in Session ${pending.sessionRef}.`;
+    this.recordTerminal(pending, "question", text, sender.id);
+    await this.send(pending, [
+      {
+        kind: "text",
+        text,
+      },
+    ]);
+  }
+
+  private async settle(
+    pending: PendingClawChatInteraction,
+    response: RuntimeInteractionResponse,
+    responder?: { id: string; displayName: string },
+  ): Promise<void> {
+    try {
+      const claimed = await pending.settlement.claim(response, async (validated) => {
+        const displayName = responder ? presentationText(responder.displayName, "Participant", 80) : null;
+        const decision =
+          validated.kind === "approval"
+            ? {
+                "approve-once": { submitted: "approve once", confirmed: "approved once" },
+                "approve-session": {
+                  submitted: "approve for the Session",
+                  confirmed: "approved for the Session",
+                },
+                deny: { submitted: "deny", confirmed: "denied" },
+                cancel: { submitted: "cancel", confirmed: "cancelled" },
+              }[validated.optionId]
+            : null;
+        const acceptedText =
+          pending.route.chatType === "group" && displayName && decision
+            ? `${displayName} ${decision.confirmed} for Session ${pending.sessionRef}.`
+            : pending.route.chatType === "group" && validated.kind === "user-input" && pending.lastAnswerResponder
+              ? `${pending.lastAnswerResponder.displayName}'s answers were delivered for Session ${pending.sessionRef}.`
+              : null;
+        if (pending.route.chatType === "group" && displayName && decision) {
+          this.recordTerminal(
+            pending,
+            "approval",
+            `${displayName} submitted “${decision.submitted}” for Session ${pending.sessionRef}; waiting for Runtime confirmation.`,
+            responder?.id ?? null,
+          );
+        }
+        if (pending.route.chatType === "group" && validated.kind === "user-input" && pending.lastAnswerResponder) {
+          this.recordTerminal(
+            pending,
+            "question",
+            `${pending.lastAnswerResponder.displayName} submitted answers for Session ${pending.sessionRef}; waiting for Runtime confirmation.`,
+            pending.lastAnswerResponder.id,
+          );
+        }
+        pending.resolve(validated);
+        await pending.deliveryConfirmation;
+        this.finishPending(pending);
+        if (acceptedText) {
+          this.recordTerminal(
+            pending,
+            validated.kind === "approval" ? "approval" : "question",
+            acceptedText,
+            validated.kind === "approval" ? (responder?.id ?? null) : (pending.lastAnswerResponder?.id ?? null),
+          );
+          await this.send(pending, [{ kind: "text", text: acceptedText }]);
+        }
+      });
+      if (!claimed && pending.route.chatType === "group") {
+        const kind = pending.request.kind === "approval" ? "approval" : "question";
+        const terminal = this.terminalResponses.get(routeResponseKey(pending.route, kind));
+        if (terminal) await this.send(pending, [{ kind: "text", text: terminal }]);
+      }
+    } catch {
+      this.finishPending(pending);
+      if (pending.route.chatType === "group") {
+        const text = `Session ${pending.sessionRef} failed: Runtime response delivery was not confirmed.`;
+        this.recordTerminal(
+          pending,
+          pending.request.kind === "approval" ? "approval" : "question",
+          text,
+          pending.request.kind === "approval" ? (responder?.id ?? null) : (pending.lastAnswerResponder?.id ?? null),
+        );
+        await this.send(pending, [{ kind: "text", text }]).catch(() => undefined);
+      }
+    }
+  }
+
+  private async cancel(id: string, reason: string): Promise<void> {
     const pending = this.pending.get(id);
     if (!pending) return;
     if (!pending.settlement.expire()) return;
     this.pending.delete(id);
     if (pending.timeout) clearTimeout(pending.timeout);
     pending.removeAbortListener();
-    pending.reject(new Error(reason));
+    try {
+      if (pending.route.chatType === "group") {
+        const state = /deadline|expired/iu.test(reason) ? "expired" : "cancelled";
+        const text = `Session ${pending.sessionRef} ${state}: ${reason}.`;
+        this.recordTerminal(pending, pending.request.kind === "approval" ? "approval" : "question", text);
+        await this.send(pending, [
+          {
+            kind: "text",
+            text,
+          },
+        ]);
+      }
+    } finally {
+      pending.reject(new Error(reason));
+    }
+  }
+
+  private recordTerminal(
+    pending: PendingClawChatInteraction,
+    kind: "approval" | "question",
+    text: string,
+    responderId: string | null = null,
+  ): void {
+    this.terminalResponses.set(routeResponseKey(pending.route, kind), text);
+    this.terminalInteractions.set(pending.id, {
+      route: { chatId: pending.route.chatId, chatType: pending.route.chatType },
+      responderId,
+      text,
+    });
+    if (this.terminalResponses.size > 100) {
+      const oldest = this.terminalResponses.keys().next().value;
+      if (oldest) this.terminalResponses.delete(oldest);
+    }
+    if (this.terminalInteractions.size > 100) {
+      const oldest = this.terminalInteractions.keys().next().value;
+      if (oldest) this.terminalInteractions.delete(oldest);
+    }
+  }
+
+  private finishPending(pending: PendingClawChatInteraction): void {
+    this.pending.delete(pending.id);
+    if (pending.timeout) clearTimeout(pending.timeout);
+    pending.removeAbortListener();
   }
 }
 
 function approvalOptionId(text: string): "approve-once" | "approve-session" | "deny" | null {
-  const command = text.trim().toLowerCase().replace(/\s+/gu, " ");
+  if (/[\r\n]/u.test(text)) return null;
+  const command = text.trim().replace(/[ \t]+/gu, " ");
   if (command === "/approve") return "approve-once";
   if (command === "/approve session") return "approve-session";
   if (command === "/deny") return "deny";
   return null;
 }
 
+function runtimeResponseKind(text: string): "approval" | "answer" | "number" | null {
+  const token =
+    text
+      .trim()
+      .split(/[ \t\r\n]+/u)[0]
+      ?.toLowerCase() ?? "";
+  if (token === "/approve" || token === "/deny") return "approval";
+  if (token === "/answer") return "answer";
+  if (/^\/\d/u.test(token)) return "number";
+  return null;
+}
+
+function runtimeResponseUsage(
+  chatType: NormalizedInboundMessage["chatType"],
+  kind: "approval" | "answer" | "number",
+): string {
+  const prefix = commandAddressPrefix(chatType);
+  if (kind === "approval") return `Usage: ${prefix}/approve | ${prefix}/approve session | ${prefix}/deny`;
+  if (kind === "answer") return `Usage: ${prefix}/answer <text>`;
+  return `Usage: ${prefix}/N`;
+}
+
+function groupSessionPrefix(pending: PendingClawChatInteraction): string {
+  return pending.route.chatType === "group" ? `Session ${pending.sessionRef}\n` : "";
+}
+
+function questionPresentationHeader(
+  pending: PendingClawChatInteraction,
+  question?: RuntimeInteractionQuestion,
+): string {
+  const current =
+    question ?? (pending.request.kind === "user-input" ? pending.request.questions[pending.questionIndex] : undefined);
+  if (pending.route.chatType !== "group") return presentationText(current?.header ?? "", "Question", 80);
+  const index =
+    pending.request.kind === "user-input" && current
+      ? pending.request.questions.indexOf(current)
+      : pending.questionIndex;
+  return `Question ${Math.max(0, index) + 1}`;
+}
+
+function routeResponseKey(
+  route: Pick<ClawChatInteractionRoute, "chatId" | "chatType">,
+  kind: "approval" | "question",
+): string {
+  return `${route.chatType}\u0000${route.chatId}\u0000${kind}`;
+}
+
+function presentationText(value: string, fallback: string, maxLength: number): string {
+  const withoutControlCharacters = [...value.normalize("NFKC")]
+    .map((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint < 32 || codePoint === 127 ? " " : character;
+    })
+    .join("");
+  const normalized = withoutControlCharacters.replace(/\s+/gu, " ").trim();
+  if (!normalized) return fallback;
+  if (
+    [
+      /\b(api[-_ ]?key|authorization|bearer|password|secret|token)\b\s*[:=]\s*\S+/iu,
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
+      /\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}\b/u,
+      /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/u,
+      /https?:\/\/\S+\?\S+/iu,
+      /\b[A-Za-z0-9_+/=-]{32,}\b/u,
+    ].some((pattern) => pattern.test(normalized))
+  ) {
+    return fallback;
+  }
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 1)}…`;
+}
+
 function numberedOption<T>(text: string, options: T[] | null): T | null {
   if (!options) return null;
-  const match = /^\/(\d+)$/u.exec(text.trim());
+  const match = /^\/([1-9]\d*)$/u.exec(text.trim());
   const index = Number(match?.[1] ?? 0) - 1;
   return Number.isSafeInteger(index) && index >= 0 ? (options[index] ?? null) : null;
+}
+
+function freeTextAnswer(text: string): string | null {
+  const match = /^\/answer[ \t]+([^\r\n]+)$/u.exec(text.trim());
+  return match?.[1]?.trim() || null;
 }
 
 function validateRuntimeResponse(

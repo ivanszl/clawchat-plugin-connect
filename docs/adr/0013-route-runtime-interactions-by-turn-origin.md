@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0033
 ---
 
 # Route Runtime Interactions by Turn Origin

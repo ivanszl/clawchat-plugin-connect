@@ -203,7 +203,7 @@ clawchat-connect project list
 
 Connect 会为每个 ClawChat 对话和 Agent Binding 保留一个当前 Session。Session 具有稳定的 8 位 Ref；启动后会关联一个可恢复的 Codex Runtime Thread。
 
-以下命令需要作为独立 ClawChat 消息发送：
+以下命令需要作为独立 ClawChat 消息发送。私聊直接使用表中形式；群聊需要在命令前放置 Agent 的结构化 mention 并保留一个空格，例如 `@Agent /help`。群聊中未使用该寻址 mention 的 slash 内容不会被识别为控制命令，可以作为普通 Agent 输入处理。
 
 | 命令 | 用途 |
 | --- | --- |
@@ -219,6 +219,8 @@ Connect 会为每个 ClawChat 对话和 Agent Binding 保留一个当前 Session
 | `/clawchat-output <mode>` | 将 ClawChat 输出设为 `minimal`、`normal` 或 `full`。 |
 
 `/help` 对所有参与者开放；其他控制命令仅限 Connect Owner。模型按“Session 覆盖值 → Agent Binding 默认值 → Runtime Adapter 默认值”解析。更换模型会继续使用同一个 Runtime Thread；更改已创建 Session 的 mode 会开启新的 Runtime Thread 边界。
+
+Runtime 审批和问题只会出现在发起该 Turn 的私聊或群聊中。私聊使用 `/approve`、`/approve session`、`/deny`、`/N` 或 `/answer <文本>`；群聊在这些精确小写、单行形式前加 `@Agent `。当前阶段，原群聊中的任何参与者都可以回答 Interaction，包括 Session 级审批；Connect 控制命令仍然仅限 Connect Owner。
 
 ## Connect Client
 
