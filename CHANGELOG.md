@@ -2,6 +2,21 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.18] - 2026-07-30
+
+### Changed
+
+- Centralized ClawChat Tool Command execution policy and handlers in the generated Tool Catalog.
+- Isolated stateful Runtime Adapter instances, cached clients, and shutdown lifecycle per Agent Binding.
+
+### Fixed
+
+- Fixed Linux x64 releases crashing with `Illegal instruction` on CPUs without AVX2 by publishing the baseline Bun target.
+- Made POSIX and Windows upgrades preflight managed Skill targets before replacing an existing installation, with transactional rollback on later failure.
+- Fixed duplicate Web messages by correlating Codex history through native turn structure instead of display text.
+- Fixed group message reactions, deterministic Liveware error classification, managed Liveware App protection, Tool Call Record redaction and size bounds, and terminal CLI envelopes.
+- Added independent managed Skill verification at Agent Binding startup and completed CLI, retention, WebSocket mention/reaction, Liveware registration, and Windows installer behavior coverage.
+
 ## [0.1.0-alpha.17] - 2026-07-30
 
 ### Added
