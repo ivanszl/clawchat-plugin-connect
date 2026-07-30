@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { installManagedSkillsFromPackage } from "../scripts/postinstall";
 import { livewareAssetName } from "../src/liveware-exposure";
 import { CONNECT_VERSION } from "../src/version";
 
@@ -156,8 +157,15 @@ describe("standalone release bundle", () => {
       scripts: Record<string, string>;
     };
     expect(packageManifest.files).toContain("vendor/liveware");
+    expect(packageManifest.files).toContain("scripts/postinstall.ts");
     expect(packageManifest.scripts.prepack).toContain("verify-liveware-bundle.ts");
     expect(packageManifest.scripts["build:binary"]).toContain("build-binary.ts");
+    expect(packageManifest.scripts.postinstall).toBe("bun scripts/postinstall.ts");
+  });
+
+  it("skips managed Skill installation when a source checkout has not been built", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-postinstall-"));
+    expect(installManagedSkillsFromPackage(join(directory, "dist", "src", "bin.js"))).toBe(0);
   });
 
   it("installs Connect Client and its Liveware companion as sibling executables", async () => {
