@@ -127,6 +127,26 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     ) {
       return false;
     }
+    const approval = [...this.pending.values()].find((candidate) => candidate.request.kind === "approval");
+    if (approval?.request.kind === "approval") {
+      const optionId = approvalOptionId(message.text);
+      if (!optionId) return false;
+      await this.settle(approval, { kind: "approval", optionId });
+      return true;
+    }
+    const selection = [...this.pending.values()].find((candidate) => {
+      if (candidate.request.kind !== "user-input") return false;
+      return Boolean(candidate.request.questions[candidate.questionIndex]?.options?.length);
+    });
+    if (selection?.request.kind === "user-input") {
+      const question = selection.request.questions[selection.questionIndex];
+      const option = numberedOption(message.text, question?.options ?? null);
+      if (!option || !question) return false;
+      selection.answers[question.id] = [option.label];
+      selection.questionIndex += 1;
+      await this.present(selection);
+      return true;
+    }
     const pending = [...this.pending.values()].find((candidate) => candidate.waitingForText);
     if (pending?.request.kind !== "user-input") return false;
     const answer = message.text.trim();
@@ -148,16 +168,8 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     if (pending.request.kind === "approval") {
       await this.options.sendClawChatMessage([
         {
-          kind: "approval_request",
-          title: pending.request.title,
-          fallback_text: `${pending.request.title}\n${pending.request.description}`.trim(),
-          state: "pending",
-          actions: pending.request.options.map((option) => ({
-            id: option.id,
-            label: option.label,
-            style: option.id === "deny" ? "danger" : option.id === "approve-once" ? "primary" : "secondary",
-            payload: interactionAction(pending.id, { option_id: option.id }),
-          })),
+          kind: "text",
+          text: `${pending.request.title}\n${pending.request.description}\n\n/approve 仅此次允许\n/approve session 本 Session 允许\n/deny 拒绝`,
         },
       ]);
       return;
@@ -185,35 +197,13 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
       ]);
       return;
     }
+    const choices = question.options.map((option, index) => `/${index + 1} ${option.label}`).join("\n");
     await this.options.sendClawChatMessage([
       {
-        kind: "action_card",
-        title: question.header,
-        description: question.prompt,
-        fallback_text: `${question.header}：${question.prompt}`,
-        actions: [
-          ...question.options.map((option) => ({
-            id: option.id,
-            label: option.label,
-            payload: interactionAction(pending.id, {
-              question_id: question.id,
-              option_id: option.id,
-              answer: option.label,
-            }),
-          })),
-          ...(question.allowOther
-            ? [
-                {
-                  id: "__other__",
-                  label: "其他",
-                  payload: interactionAction(pending.id, {
-                    question_id: question.id,
-                    option_id: "__other__",
-                  }),
-                },
-              ]
-            : []),
-        ],
+        kind: "text",
+        text: `${question.header}：${question.prompt}\n\n${choices}${
+          question.allowOther ? "\n直接回复其他答案。" : ""
+        }`,
       },
     ]);
   }
@@ -238,6 +228,21 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
   }
 }
 
+function approvalOptionId(text: string): "approve-once" | "approve-session" | "deny" | null {
+  const command = text.trim().toLowerCase().replace(/\s+/gu, " ");
+  if (command === "/approve") return "approve-once";
+  if (command === "/approve session") return "approve-session";
+  if (command === "/deny") return "deny";
+  return null;
+}
+
+function numberedOption<T>(text: string, options: T[] | null): T | null {
+  if (!options) return null;
+  const match = /^\/(\d+)$/u.exec(text.trim());
+  const index = Number(match?.[1] ?? 0) - 1;
+  return Number.isSafeInteger(index) && index >= 0 ? (options[index] ?? null) : null;
+}
+
 function validateRuntimeResponse(
   request: RuntimeInteractionRequest,
   response: RuntimeInteractionResponse,
@@ -257,17 +262,6 @@ function validateRuntimeResponse(
     }
   }
   return response;
-}
-
-function interactionAction(
-  interactionId: string,
-  fields: Omit<ConnectInteractionAction, "type" | "interaction_id">,
-): ConnectInteractionAction {
-  return {
-    type: "connect_runtime_interaction",
-    interaction_id: interactionId,
-    ...fields,
-  };
 }
 
 function findConnectAction(value: unknown, depth = 0): ConnectInteractionAction | null {

@@ -69,7 +69,7 @@ describe("Runtime Interaction surface routing", () => {
     expect(sendClawChatMessage).not.toHaveBeenCalled();
   });
 
-  it("renders a ClawChat approval card and accepts only the owner's selected action", async () => {
+  it("renders ClawChat approval commands and accepts only the owner's matching reply", async () => {
     const sent: Fragment[][] = [];
     const router = new RuntimeInteractionRouter({
       clientPort: { request: mock() } as RuntimeInteractionPort,
@@ -85,43 +85,15 @@ describe("Runtime Interaction surface routing", () => {
       origin: "clawchat",
     });
     while (sent.length === 0) await Bun.sleep(0);
-    const card = sent[0]?.find((fragment) => fragment.kind === "approval_request") as
-      | { actions?: Array<{ payload?: Record<string, unknown> }> }
-      | undefined;
-    const actionPayload = card?.actions?.[0]?.payload;
-
-    expect(card).toMatchObject({
-      title: "允许运行命令？",
-      state: "pending",
-      actions: [
-        { id: "approve-once", label: "仅此次允许" },
-        { id: "approve-session", label: "本 Session 允许" },
-        { id: "deny", label: "拒绝" },
-      ],
-    });
-    await expect(
-      router.handleInteractionSubmit({
-        version: "2",
-        event: "interaction.submit",
-        trace_id: "submit-non-owner",
-        emitted_at: Date.now(),
-        chat_id: "owner-conversation",
-        sender: { id: "other-user", type: "direct", nick_name: "Other" },
-        payload: { interaction: { payload: actionPayload } },
-      }),
-    ).resolves.toBe(true);
-    await expect(
-      router.handleInteractionSubmit({
-        version: "2",
-        event: "interaction.submit",
-        trace_id: "submit-owner",
-        emitted_at: Date.now(),
-        chat_id: "owner-conversation",
-        sender: { id: "owner-1", type: "direct", nick_name: "Owner" },
-        payload: { interaction: { payload: actionPayload } },
-      }),
-    ).resolves.toBe(true);
-    await expect(result).resolves.toEqual({ kind: "approval", optionId: "approve-once" });
+    expect(sent[0]).toEqual([
+      {
+        kind: "text",
+        text: "允许运行命令？\n更新本地 Connect\n\n/approve 仅此次允许\n/approve session 本 Session 允许\n/deny 拒绝",
+      },
+    ]);
+    await expect(router.handleMessage(message("other-user", "/approve"))).resolves.toBe(false);
+    await expect(router.handleMessage(message("owner-1", "/approve session"))).resolves.toBe(true);
+    await expect(result).resolves.toEqual({ kind: "approval", optionId: "approve-session" });
   });
 
   it("collects multi-step Agent answers in ClawChat before resuming Codex", async () => {
@@ -165,20 +137,8 @@ describe("Runtime Interaction surface routing", () => {
       { sessionRef: "ABCDEFGH", turnId: "turn-question", origin: "clawchat" },
     );
     while (sent.length === 0) await Bun.sleep(0);
-    const firstCard = sent[0]?.find((fragment) => fragment.kind === "action_card") as
-      | { actions?: Array<{ id?: string; payload?: Record<string, unknown> }> }
-      | undefined;
-    const blue = firstCard?.actions?.find((action) => action.id === "blue");
-
-    await router.handleInteractionSubmit({
-      version: "2",
-      event: "interaction.submit",
-      trace_id: "submit-blue",
-      emitted_at: Date.now(),
-      chat_id: "owner-conversation",
-      sender: { id: "owner-1", type: "direct", nick_name: "Owner" },
-      payload: { action: { payload: blue?.payload } },
-    });
+    expect(sent[0]).toEqual([{ kind: "text", text: "颜色：选择颜色\n\n/1 红色\n/2 蓝色" }]);
+    await expect(router.handleMessage(message("owner-1", "/2"))).resolves.toBe(true);
     while (sent.length < 2) await Bun.sleep(0);
     expect(sent[1]).toEqual([expect.objectContaining({ kind: "text", text: expect.stringContaining("请输入备注") })]);
     await expect(router.handleMessage(message("owner-1", "今天发布"))).resolves.toBe(true);
