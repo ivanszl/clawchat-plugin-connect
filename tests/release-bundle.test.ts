@@ -149,6 +149,8 @@ describe("standalone release bundle", () => {
     const workflow = await readFile(".github/workflows/release-alpha.yml", "utf8");
     expect(workflow).toContain("bun-windows-x64 windows x64");
     expect(workflow).toContain("bun-windows-arm64 windows arm64");
+    expect(workflow).toContain("bun-linux-x64-baseline linux x64");
+    expect(workflow).not.toMatch(/^\s*bun-linux-x64 linux x64$/mu);
     expect(workflow).toContain("install.ps1");
     expect(workflow).toContain("--notes-file build/release-notes.md");
   });
