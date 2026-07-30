@@ -229,6 +229,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Permanent deletion succeeds at the runtime before Connect removes the Session mapping and Connect Transcript Projection. Connect does not independently cascade deletion to Subagent Threads.
 - A Non-Project Session receives a deterministic isolated workspace and never inherits `process.cwd()`.
 - Connect control commands are restricted to the Connect Owner.
+- Direct messages are addressed to the Agent Binding without a mention. Group messages enter Connect command, interaction, and Runtime Turn routing only when they explicitly mention the activated ClawChat Agent; unmentioned group messages are acknowledged and ignored.
 - Every runtime turn records its Turn Origin, and every Runtime Interaction inherits that origin.
 - A Codex Agent Binding without an explicit approval policy normalizes to `on-request`, allowing Connect to surface Runtime Interactions while still requiring a human decision before an escalation is granted.
 - A Client-originated Runtime Interaction is visible and answerable only in Connect Client.

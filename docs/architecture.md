@@ -182,7 +182,7 @@ Activities:
 The Adapter attaches the output-visibility category used for ClawChat materialization as Activity metadata; it is not a
 second projection representation.
 
-The runtime applies `minimal`, `normal`, or `full` visibility and sends complete ClawChat `message.reply` frames. Protocol streaming lifecycle events are not used.
+The runtime applies `minimal`, `normal`, or `full` visibility and sends complete ClawChat `message.reply` frames. Direct-message responses do not quote the triggering message. Group responses retain that reply context, and only group messages that explicitly mention the activated ClawChat Agent enter Connect routing. Protocol streaming lifecycle events are not used.
 
 Local Markdown images become outbound media only when their canonical path is inside the media cache or resolved Runtime Workspace and their extension plus binary signature identify PNG, JPEG, GIF, or WebP content. Arbitrary Markdown file references remain text.
 

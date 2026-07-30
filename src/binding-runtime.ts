@@ -3,7 +3,7 @@ import { createClawChatApiClient } from "./api-client";
 import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
 import type { TranscriptProjection } from "./client-interface/transcript-projection";
 import { getAgentBinding } from "./config";
-import { buildTextMessagePayload, normalizeInboundMessage } from "./message-mapper";
+import { buildTextMessagePayload, isMessageAddressedToAgent, normalizeInboundMessage } from "./message-mapper";
 import type { ProjectCatalog } from "./projects";
 import { type Envelope, EVENT, type NormalizedInboundMessage, type Transport } from "./protocol";
 import { ConnectRuntime } from "./runtime/connect-runtime";
@@ -367,6 +367,8 @@ async function dispatchInboundMessage(
     onTurnAccepted: () => Promise<void>;
   },
 ): Promise<boolean> {
+  if (!isMessageAddressedToAgent(params.message, params.activation.userId)) return true;
+
   if (await params.interactionRouter.handleMessage(params.message)) {
     await params.onTurnAccepted();
     return true;

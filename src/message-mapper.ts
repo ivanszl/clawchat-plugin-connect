@@ -74,6 +74,10 @@ export function normalizeInboundMessage(envelope: Envelope): NormalizedInboundMe
   };
 }
 
+export function isMessageAddressedToAgent(message: NormalizedInboundMessage, agentUserId: string): boolean {
+  return message.chatType === "direct" || message.mentions.includes(agentUserId);
+}
+
 export function buildTextMessagePayload(text: string, options: BuildTextMessagePayloadOptions = {}): MessagePayload {
   const mentionFragments: Fragment[] = (options.mentions ?? []).map((mention) => ({
     kind: "mention",
@@ -110,6 +114,8 @@ export function buildTextMessagePayload(text: string, options: BuildTextMessageP
 }
 
 export function buildReplyTextMessagePayload(text: string, source: NormalizedInboundMessage): MessagePayload {
+  if (source.chatType === "direct") return buildTextMessagePayload(text);
+
   return buildTextMessagePayload(text, {
     replyToMessageId: source.messageId,
     replyPreview: {
