@@ -1,0 +1,6 @@
+interface:
+  display_name: "ClawChat Core"
+  short_description: "Use ClawChat account, social, message, and moment actions"
+  default_prompt: "Use $clawchat-core to carry out this ClawChat action safely."
+policy:
+  allow_implicit_invocation: true

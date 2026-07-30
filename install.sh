@@ -71,10 +71,11 @@ fi
 [ "$actual_checksum" = "$expected_checksum" ] || fail "checksum verification failed for $asset"
 
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" \
-  clawchat-connect clawchat-connect-client liveware CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md
+  clawchat-connect clawchat-connect-client liveware skills CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md
 [ -f "$tmp_dir/clawchat-connect" ] || fail "release archive does not contain clawchat-connect"
 [ -f "$tmp_dir/clawchat-connect-client/index.html" ] || fail "release archive does not contain Connect Client"
 [ -f "$tmp_dir/liveware" ] || fail "release archive does not contain Liveware"
+[ -f "$tmp_dir/skills/manifest.json" ] || fail "release archive does not contain Agent skills"
 [ -f "$tmp_dir/CHANGELOG.md" ] || fail "release archive does not contain the Changelog"
 [ -f "$tmp_dir/LICENSE" ] || fail "release archive does not contain LICENSE"
 [ -f "$tmp_dir/THIRD_PARTY_NOTICES.md" ] || fail "release archive does not contain third-party notices"
@@ -91,15 +92,22 @@ else
 fi
 mkdir -p "$install_dir/clawchat-connect-client"
 cp -R "$tmp_dir/clawchat-connect-client/." "$install_dir/clawchat-connect-client/"
+skills_staging="$install_dir/skills.new.$$"
+rm -rf "$skills_staging"
+cp -R "$tmp_dir/skills" "$skills_staging"
+rm -rf "$install_dir/skills"
+mv "$skills_staging" "$install_dir/skills"
 mkdir -p "$license_dir"
 cp "$tmp_dir/CHANGELOG.md" "$tmp_dir/LICENSE" "$tmp_dir/THIRD_PARTY_NOTICES.md" "$license_dir/"
 
 "$install_dir/clawchat-connect" --help >/dev/null
 "$install_dir/liveware" --help >/dev/null
+"$install_dir/clawchat-connect" skills install >/dev/null
 
 printf 'Installed clawchat-connect to %s/clawchat-connect\n' "$install_dir"
 printf 'Installed bundled Liveware to %s/liveware\n' "$install_dir"
 printf 'Installed Connect Client assets to %s/clawchat-connect-client\n' "$install_dir"
+printf 'Installed managed Agent skills to %s/.agents/skills\n' "$HOME"
 printf 'Installed license notices to %s\n' "$license_dir"
 case ":${PATH}:" in
   *":${install_dir}:"*) ;;

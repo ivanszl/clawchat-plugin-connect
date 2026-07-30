@@ -1,3 +1,4 @@
+import { executeAgentLiveware, isAgentLivewareOperation } from "./agent-liveware";
 import { createClawChatApiClient } from "./api-client";
 import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
 import type { TranscriptProjection } from "./client-interface/transcript-projection";
@@ -12,6 +13,7 @@ import { RuntimeInteractionRouter } from "./runtime/runtime-interaction-router";
 import type { SessionActivity } from "./runtime/session-queue";
 import type { ConnectRuntimeMedia } from "./runtime/types";
 import type { ConnectStateStore } from "./state";
+import { executeConnectTool } from "./tool-executor";
 import type { ActivationCredentials, ConnectConfig } from "./types";
 import { ConnectWsClient } from "./ws-client";
 
@@ -72,10 +74,15 @@ export interface BindingRuntimeHandle {
   sessionActivity?(sessionRef: string): Promise<SessionActivity>;
   activeClientTurnId?(sessionRef: string): string | null;
   claimSessionLifecycle?(sessionRef: string): Promise<() => Promise<void>>;
+  executeTool?(toolName: string, input: Record<string, unknown>): Promise<unknown>;
 }
 
 export async function startBindingRuntime(options: BindingRuntimeOptions): Promise<BindingRuntimeHandle> {
   const binding = getAgentBinding(options.config, options.agentId);
+  const runtimeConfig: ConnectConfig = {
+    ...options.config,
+    agents: { ...options.config.agents, [options.agentId]: binding },
+  };
   const clawChatApi = createClawChatApiClient({
     baseUrl: options.config.baseUrl,
     deviceId: options.deviceId,
@@ -139,7 +146,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   });
   runtime = new ConnectRuntime({
     agentId: options.agentId,
-    config: options.config,
+    config: runtimeConfig,
     configPath: options.configPath,
     stateStore: options.stateStore,
     wsClient,
@@ -211,6 +218,25 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     sessionActivity: async (sessionRef) => await runtime.sessionActivity(sessionRef),
     activeClientTurnId: (sessionRef) => runtime.activeClientTurnId(sessionRef),
     claimSessionLifecycle: async (sessionRef) => await runtime.claimSessionLifecycle(sessionRef),
+    executeTool: async (toolName, input) => {
+      const toolOptions = {
+        baseUrl: options.config.baseUrl,
+        deviceId: options.deviceId,
+        activation: options.activation,
+        wsClient,
+      };
+      if (isAgentLivewareOperation(toolName)) {
+        return await executeAgentLiveware(toolName, input, {
+          activation: options.activation,
+          clawChatBaseUrl: options.config.baseUrl,
+          deviceId: options.deviceId,
+          registerApp: async (name, appId, url) =>
+            await executeConnectTool("clawchat_register_app", { name, appId, url }, toolOptions),
+          unregisterApp: async (appId) => await executeConnectTool("clawchat_unregister_app", { appId }, toolOptions),
+        });
+      }
+      return await executeConnectTool(toolName, input, toolOptions);
+    },
     async close() {
       await inboundMessages.close();
       await interactionRouter.close();

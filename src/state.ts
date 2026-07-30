@@ -20,6 +20,22 @@ export interface ConnectStateOptions {
   sessionRefFactory?: () => string;
 }
 
+export type ToolRequestState = "pending" | "running" | "succeeded" | "failed" | "expired" | "indeterminate";
+export interface ToolRequestRecord {
+  requestId: string;
+  bindingId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  state: ToolRequestState;
+  result: unknown;
+  error: string | null;
+  createdAt: number;
+  claimedAt: number | null;
+  settledAt: number | null;
+  expiresAt: number;
+  attemptCount: number;
+}
+
 export interface SessionRefTarget {
   chatId: string;
   agentId: string;
@@ -1971,6 +1987,114 @@ export class ConnectStateStore {
       }
     });
   }
+
+  async submitToolRequest(input: {
+    requestId: string;
+    bindingId: string;
+    toolName: string;
+    normalizedInput: Record<string, unknown>;
+    timeoutMs: number;
+  }): Promise<ToolRequestRecord> {
+    const db = await this.requireDb();
+    const now = Date.now();
+    await db.run(
+      `INSERT INTO tool_requests(request_id, binding_id, tool_name, input_json, state, created_at, expires_at)
+       VALUES (?, ?, ?, ?, 'pending', ?, ?)
+       ON CONFLICT(request_id) DO NOTHING`,
+      input.requestId,
+      input.bindingId,
+      input.toolName,
+      JSON.stringify(input.normalizedInput),
+      now,
+      now + input.timeoutMs,
+    );
+    const record = await this.getToolRequest(input.requestId);
+    if (!record) throw new Error(`failed to persist tool request ${input.requestId}`);
+    if (record.bindingId !== input.bindingId || record.toolName !== input.toolName)
+      throw new Error(`request id ${input.requestId} already belongs to another tool call`);
+    return record;
+  }
+
+  async getToolRequest(requestId: string): Promise<ToolRequestRecord | null> {
+    const db = await this.requireDb();
+    const row = await db.get<Record<string, unknown>>("SELECT * FROM tool_requests WHERE request_id = ?", requestId);
+    return row ? toolRequestRecord(row) : null;
+  }
+
+  async claimNextToolRequest(bindingId: string): Promise<ToolRequestRecord | null> {
+    const db = await this.requireDb();
+    const now = Date.now();
+    return db.transaction((run, get) => {
+      run(
+        `UPDATE tool_requests SET state = 'expired', error = 'request expired before execution', settled_at = ?
+         WHERE binding_id = ? AND state = 'pending' AND expires_at <= ?`,
+        now,
+        bindingId,
+        now,
+      );
+      const row = get<Record<string, unknown>>(
+        `SELECT * FROM tool_requests WHERE binding_id = ? AND state = 'pending' AND expires_at > ?
+         ORDER BY created_at ASC LIMIT 1`,
+        bindingId,
+        now,
+      );
+      if (!row) return null;
+      const updated = run(
+        "UPDATE tool_requests SET state = 'running', claimed_at = ?, attempt_count = attempt_count + 1 WHERE request_id = ? AND state = 'pending'",
+        now,
+        stringValue(row.request_id),
+      );
+      if (updated.changes !== 1) return null;
+      return toolRequestRecord({ ...row, state: "running", claimed_at: now, attempt_count: 1 });
+    });
+  }
+
+  async settleToolRequest(
+    requestId: string,
+    outcome: { state: "succeeded"; result: unknown } | { state: "failed" | "indeterminate"; error: string },
+  ): Promise<void> {
+    const db = await this.requireDb();
+    const boundedResult = outcome.state === "succeeded" ? boundedJson(outcome.result) : null;
+    const boundedError = outcome.state === "succeeded" ? null : outcome.error.slice(0, 8_192);
+    await db.run(
+      `UPDATE tool_requests SET state = ?, result_json = ?, error = ?, settled_at = ?
+       WHERE request_id = ? AND state = 'running'`,
+      outcome.state,
+      boundedResult,
+      boundedError,
+      Date.now(),
+      requestId,
+    );
+  }
+
+  async markInterruptedToolRequestsIndeterminate(bindingId: string): Promise<void> {
+    const db = await this.requireDb();
+    await db.run(
+      `UPDATE tool_requests
+       SET state = 'indeterminate', error = 'Connect Service stopped after claiming this request; it will not be retried', settled_at = ?
+       WHERE binding_id = ? AND state = 'running'`,
+      Date.now(),
+      bindingId,
+    );
+  }
+
+  async pruneSettledToolRequests(bindingId: string, now = Date.now()): Promise<void> {
+    const db = await this.requireDb();
+    const cutoff = now - 90 * 24 * 60 * 60 * 1_000;
+    await db.run(
+      "DELETE FROM tool_requests WHERE binding_id = ? AND settled_at IS NOT NULL AND state != 'indeterminate' AND settled_at < ?",
+      bindingId,
+      cutoff,
+    );
+    await db.run(
+      `DELETE FROM tool_requests WHERE request_id IN (
+         SELECT request_id FROM tool_requests WHERE binding_id = ? AND settled_at IS NOT NULL AND state != 'indeterminate'
+         ORDER BY settled_at DESC LIMIT -1 OFFSET 10000
+       )`,
+      bindingId,
+    );
+  }
+
   private async requireDb(): Promise<SqliteDb> {
     if (!this.db) await this.initialize();
     if (!this.db) throw new Error("clawchat-connect sqlite database is not open");
@@ -2160,6 +2284,24 @@ export class ConnectStateStore {
       );
       CREATE INDEX IF NOT EXISTS idx_client_commands_created
         ON client_commands(created_at);
+      CREATE TABLE IF NOT EXISTS tool_requests(
+        request_id TEXT PRIMARY KEY,
+        binding_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('pending', 'running', 'succeeded', 'failed', 'expired', 'indeterminate')),
+        result_json TEXT,
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        claimed_at INTEGER,
+        settled_at INTEGER,
+        expires_at INTEGER NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_tool_requests_claim
+        ON tool_requests(binding_id, state, created_at);
+      CREATE INDEX IF NOT EXISTS idx_tool_requests_retention
+        ON tool_requests(binding_id, settled_at);
       CREATE TABLE IF NOT EXISTS turn_submission_cancellations(
         submission_id TEXT PRIMARY KEY,
         session_ref TEXT NOT NULL,
@@ -2218,6 +2360,9 @@ export class ConnectStateStore {
       await db.exec("ALTER TABLE clawchat_messages ADD COLUMN handled_content_json TEXT");
     if (!messageColumns.some((column) => column.name === "handled_at"))
       await db.exec("ALTER TABLE clawchat_messages ADD COLUMN handled_at INTEGER");
+    const toolRequestColumns = await db.all<{ name: string }[]>("PRAGMA table_info(tool_requests)");
+    if (!toolRequestColumns.some((column) => column.name === "attempt_count"))
+      await db.exec("ALTER TABLE tool_requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
     await db.run(
       `UPDATE runtime_sessions AS rs SET has_messages = 1 WHERE has_messages = 0 AND (runtime_session_id IS NOT NULL OR EXISTS (SELECT 1 FROM clawchat_messages AS message WHERE message.local_agent_id = rs.agent_id AND message.chat_id = rs.chat_id AND message.direction = 'inbound' AND message.kind = 'message' AND COALESCE(message.text, '') NOT LIKE '/%' AND message.created_at >= rs.created_at AND NOT EXISTS (SELECT 1 FROM runtime_sessions AS newer WHERE newer.chat_id = rs.chat_id AND newer.agent_id = rs.agent_id AND newer.created_at > rs.created_at AND newer.created_at <= message.created_at)))`,
     );
@@ -2279,6 +2424,33 @@ function parseJsonValue(value: unknown): unknown {
   } catch {
     return null;
   }
+}
+
+function toolRequestRecord(row: Record<string, unknown>): ToolRequestRecord {
+  const parsedInput = parseJsonValue(row.input_json);
+  return {
+    requestId: stringValue(row.request_id),
+    bindingId: stringValue(row.binding_id),
+    toolName: stringValue(row.tool_name),
+    input:
+      parsedInput && typeof parsedInput === "object" && !Array.isArray(parsedInput)
+        ? (parsedInput as Record<string, unknown>)
+        : {},
+    state: stringValue(row.state) as ToolRequestState,
+    result: row.result_json == null ? null : parseJsonValue(row.result_json),
+    error: nullableString(row.error),
+    createdAt: numberValue(row.created_at),
+    claimedAt: row.claimed_at == null ? null : numberValue(row.claimed_at),
+    settledAt: row.settled_at == null ? null : numberValue(row.settled_at),
+    expiresAt: numberValue(row.expires_at),
+    attemptCount: numberValue(row.attempt_count),
+  };
+}
+
+function boundedJson(value: unknown, maximumBytes = 64 * 1024): string {
+  const serialized = toJson(value) ?? "null";
+  if (Buffer.byteLength(serialized, "utf8") <= maximumBytes) return serialized;
+  return JSON.stringify({ truncated: true, preview: serialized.slice(0, maximumBytes - 128) });
 }
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : String(value ?? "");

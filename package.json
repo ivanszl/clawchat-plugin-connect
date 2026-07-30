@@ -1,6 +1,6 @@
 {
   "name": "@clawling/clawchat-plugin-connect",
-  "version": "0.1.0-alpha.16",
+  "version": "0.1.0-alpha.17",
   "description": "Bun-native bridge from ClawChat Agent Bindings to local coding agent runtimes.",
   "repository": {
     "type": "git",
@@ -30,6 +30,7 @@
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
     "vendor/liveware",
+    "skills",
     "docs",
     "LICENSE"
   ],
@@ -42,15 +43,17 @@
     "build:web": "vite build --config vite.config.ts",
     "build:binary": "bun scripts/build-binary.ts",
     "clean": "bun -e 'import { rm } from \"node:fs/promises\"; await rm(\"dist\", { recursive: true, force: true })'",
-    "prepack": "bun run clean && bun scripts/verify-liveware-bundle.ts && bun run build",
+    "prepack": "bun run clean && bun scripts/generate-tool-reference.ts && bun scripts/generate-skills-manifest.ts && bun scripts/verify-liveware-bundle.ts && bun run build",
+    "postinstall": "bun dist/src/bin.js skills install",
     "test": "bun test",
     "test:client-web": "bun run build:web && bun tests/integration/client-web.ts",
     "test:integration:codex": "bun tests/integration/codex-app-server.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
+    "check:generated": "bun scripts/check-generated.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
-    "check": "biome check . && bun run typecheck && bun test && bun run test:client-web"
+    "check": "bun run check:generated && biome check . && bun run typecheck && bun test && bun run test:client-web"
   },
   "dependencies": {
     "@astryxdesign/core": "0.1.7",

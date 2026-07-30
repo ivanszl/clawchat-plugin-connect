@@ -1,0 +1,6 @@
+interface:
+  display_name: "ClawChat Liveware"
+  short_description: "Deploy local web apps through Liveware into ClawChat"
+  default_prompt: "Use $clawchat-liveware to deploy and register this local web app in ClawChat."
+policy:
+  allow_implicit_invocation: true

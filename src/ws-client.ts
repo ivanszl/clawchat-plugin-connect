@@ -366,6 +366,28 @@ export class ConnectWsClient extends EventEmitter {
     });
   }
 
+  sendReaction(
+    chatId: string,
+    targetMessageId: string,
+    emoji: string,
+    removed = false,
+    options: { toType?: ChatType } = {},
+  ): void {
+    if (!chatId.trim()) throw new StateError("chatId is required");
+    if (!targetMessageId.trim()) throw new StateError("targetMessageId is required");
+    if (!emoji.trim()) throw new StateError("emoji is required");
+    if (this.state !== "connected") throw new StateError("cannot send business traffic before hello-ok");
+    this.sendEnvelope({
+      version: "2",
+      event: EVENT.MESSAGE_REACTION,
+      trace_id: this.traceIdFactory(),
+      emitted_at: Date.now(),
+      chat_id: chatId,
+      to: { id: chatId, type: options.toType ?? "direct" },
+      payload: { target_message_id: targetMessageId, emoji, removed },
+    });
+  }
+
   sendStreamCreated(chatId: string, payload: MessageCreatedPayload, options: { toType?: ChatType } = {}): void {
     this.assertBusinessSendAllowed(chatId);
     if (!isMessageCreatedPayload(payload)) throw new ProtocolError("invalid message.created payload");

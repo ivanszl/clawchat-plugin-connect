@@ -23,6 +23,20 @@ function activation(agentId: string): ActivationCredentials {
 }
 
 describe("Connect Service", () => {
+  it("rejects startup when the release-managed Agent skills do not match", async () => {
+    const config = serviceConfig(["codex"]);
+    await expect(
+      startConnectService(
+        { config, writeOutput: () => undefined, writeError: () => undefined },
+        {
+          verifyInstalledSkills: async () => {
+            throw new Error("managed skills mismatch");
+          },
+        },
+      ),
+    ).rejects.toThrow("managed skills mismatch");
+  });
+
   it("starts every activated Agent Binding in one process and closes them together", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
@@ -66,7 +80,12 @@ describe("Connect Service", () => {
         writeOutput: () => undefined,
         protocolEventHandlers: { notify: notifyHandler },
       },
-      { startBindingRuntime, startClientInterface, createRuntimeAdapterRegistry },
+      {
+        startBindingRuntime,
+        startClientInterface,
+        createRuntimeAdapterRegistry,
+        verifyInstalledSkills: async () => undefined,
+      },
     );
 
     expect(result.startedAgentIds).toEqual(["codex-work", "codex-review"]);
@@ -113,7 +132,7 @@ describe("Connect Service", () => {
           writeOutput: () => undefined,
           writeError: (message) => errors.push(message),
         },
-        { startBindingRuntime, startClientInterface },
+        { startBindingRuntime, startClientInterface, verifyInstalledSkills: async () => undefined },
       ),
     ).resolves.toEqual({ startedAgentIds: ["healthy"] });
     expect(errors.join("")).toContain("broken: invalid credentials");
@@ -181,6 +200,7 @@ describe("Connect Service", () => {
           };
         },
         livewareDependencies: { controlPlane, clawChat },
+        verifyInstalledSkills: async () => undefined,
       },
     );
 
@@ -227,6 +247,7 @@ describe("Connect Service", () => {
             unregister: async () => undefined,
           },
         },
+        verifyInstalledSkills: async () => undefined,
       },
     );
 

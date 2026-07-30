@@ -150,7 +150,13 @@ export function getAgentBinding(config: ConnectConfig, agentId = config.defaultA
   }
   const agent = config.agents[agentId];
   if (!agent) throw new Error(`Unknown clawchat-connect agent: ${agentId}`);
-  return agent;
+  return {
+    ...agent,
+    env: {
+      ...(agent.env ?? {}),
+      CLAWCHAT_CONNECT_AGENT_ID: agentId,
+    },
+  };
 }
 
 export function upsertAgentBinding(config: ConnectConfig, agentId: string, binding: AgentBindingConfig): ConnectConfig {

@@ -763,7 +763,25 @@ function pendingIntentKey(chatId: string, agentId: string): string {
 
 function renderPrompt(message: NormalizedInboundMessage): string {
   const sender = message.sender.nick_name || message.sender.id;
-  return [`ClawChat ${message.chatType} message from ${sender}:`, message.text].join("\n");
+  const mentionedUsers = message.fragments.flatMap((fragment) =>
+    fragment.kind === "mention" && typeof fragment.user_id === "string"
+      ? [{ user_id: fragment.user_id, display: typeof fragment.display === "string" ? fragment.display : null }]
+      : [],
+  );
+  return [
+    "<clawchat_turn_context>",
+    JSON.stringify({
+      origin: "clawchat",
+      chat_id: message.chatId,
+      chat_type: message.chatType,
+      message_id: message.messageId,
+      sender: { user_id: message.sender.id, display: sender },
+      mentioned_users: mentionedUsers,
+    }),
+    "</clawchat_turn_context>",
+    "",
+    message.text,
+  ].join("\n");
 }
 
 function runtimeMedia(message: NormalizedInboundMessage): ConnectRuntimeMedia[] {

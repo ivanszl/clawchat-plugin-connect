@@ -93,7 +93,7 @@ To install a specific release or choose another directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.16
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.17
 ```
 
 On Windows PowerShell, download and inspect the installer before running it:
@@ -110,7 +110,7 @@ The Windows installer verifies the Release ZIP checksum, installs `clawchat-conn
 
 ```powershell
 .\install.ps1 `
-  -Version v0.1.0-alpha.16 `
+  -Version v0.1.0-alpha.17 `
   -InstallDirectory "D:\Tools\ClawChatConnect"
 ```
 
@@ -126,7 +126,7 @@ Update an existing installation to the latest published release:
 clawchat-connect update
 ```
 
-Use `clawchat-connect update --version v0.1.0-alpha.16` to install a specific release. The update command preserves the existing configuration and refreshes the native Connect Service.
+Use `clawchat-connect update --version v0.1.0-alpha.17` to install a specific release. The update command preserves the existing configuration and refreshes the native Connect Service.
 
 ### 2. Create the first Agent Binding
 
@@ -412,6 +412,12 @@ clawchat-connect config set mediaUploadUrl https://media.example.com/media/uploa
 | --- | --- |
 | `clawchat-connect status [--agent <id>]` | Show activation, runtime, and Liveware Exposure status. |
 | `clawchat-connect doctor` | Check basic configuration and the bundled Liveware executable. |
+| `clawchat-connect tool list` | List the 24 Agent-callable ClawChat tool names. |
+| `clawchat-connect tool describe <name>` | Show one tool's generated input schema. |
+| `clawchat-connect tool call <name> --input-json <json-or->` | Submit one at-most-once tool request to the running Service. |
+| `clawchat-connect liveware app ...` | Manage an additional Agent-owned Liveware App through the Service. |
+| `clawchat-connect liveware tunnel ...` | Bind or unbind a loopback service and synchronize its ClawChat registration. |
+| `clawchat-connect skills install` | Force-repair the two bundled user-scope Agent skills. |
 | `clawchat-connect agent list` | List configured Agent Bindings. |
 | `clawchat-connect agent remove <id>` | Remove a local Binding configuration. |
 | `clawchat-connect service start` | Start the installed service. |
@@ -489,7 +495,7 @@ CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
 
 Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it beside the Connect executable under `dist/`. Windows builds use `.exe` names. Preview the browser client with `bun run preview:web`.
 
-Version tags such as `v0.1.0-alpha.16` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. Both installers resolve the latest published release unless a version is explicitly supplied. npm packages include all six assets so a global Bun install remains portable.
+Version tags such as `v0.1.0-alpha.17` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. Both installers resolve the latest published release unless a version is explicitly supplied. npm packages include all six assets so a global Bun install remains portable.
 
 ## License
 

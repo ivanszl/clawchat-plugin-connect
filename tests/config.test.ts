@@ -18,6 +18,23 @@ describe("Agent Binding configuration", () => {
     expect(getAgentBinding(config, "codex")).toMatchObject({
       kind: "codex",
       approvalPolicy: "on-request",
+      env: { CLAWCHAT_CONNECT_AGENT_ID: "codex" },
+    });
+  });
+
+  it("injects the selected Binding identity after user environment merging", () => {
+    const config = normalizeConfig({
+      defaultAgent: "work",
+      agents: {
+        work: {
+          kind: "codex",
+          env: { CLAWCHAT_CONNECT_AGENT_ID: "redirected", CUSTOM: "kept" },
+        },
+      },
+    });
+    expect(getAgentBinding(config, "work").env).toEqual({
+      CLAWCHAT_CONNECT_AGENT_ID: "work",
+      CUSTOM: "kept",
     });
   });
 

@@ -1,6 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { cac } from "cac";
 import { type ActivateConnectResult, activateConnect as activateConnectDefault } from "./activation";
+import { type AgentLivewareOperation, isAgentLivewareOperation, validateAgentLivewareInput } from "./agent-liveware";
 import {
   BACKGROUND_SERVICE_PROCESS_ACTION,
   type BackgroundServiceAction,
@@ -19,7 +21,9 @@ import { resolveLivewareExecutablePath as resolveLivewareExecutablePathDefault }
 import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "./profile";
 import { ProjectCatalog } from "./projects";
 import { createReleasedAgentBinding, releasedRuntimeAdapters } from "./runtime/released-adapters";
+import { installManagedSkills, verifyInstalledSkills } from "./skills";
 import { type ConnectStateStore, createStateStore } from "./state";
+import { CONNECT_TOOL_CATALOG, getConnectTool, toolJsonSchema, validateToolInput } from "./tool-catalog";
 import type {
   AgentBindingConfig,
   CodexAgentBindingConfig,
@@ -48,6 +52,8 @@ export interface ConnectCliDeps extends Partial<CliIo> {
   openUrl?: (url: string) => Promise<void>;
   resolveLivewareExecutablePath?: typeof resolveLivewareExecutablePathDefault;
   updateConnect?: typeof updateConnectDefault;
+  createStateStore?: typeof createStateStore;
+  readStdin?: () => Promise<string>;
 }
 
 interface AgentCliOptions {
@@ -68,6 +74,12 @@ const HELP_TEXT = `${[
   "  project remove <workspace-id> [--config <path>]",
   "  activate <agentId> <code> [--config <path>]",
   "  profile update [--agent <id>] [--nickname <text>] [--avatar-url <url>] [--bio <text>] [--config <path>]",
+  "  tool list",
+  "  tool describe <tool-name>",
+  "  tool call <tool-name> --input-json <json-or-> [--request-id <id>] [--agent <id>] [--config <path>]",
+  "  liveware app list|inspect|create|access|delete [options]",
+  "  liveware tunnel bind|unbind [options]",
+  "  skills install",
   "  service install|start|stop|restart|status [--config <path>]",
   "  service logs [--lines <count>] [--follow] [--config <path>]",
   "  web [--no-open] [--config <path>]",
@@ -106,6 +118,12 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     deps.updateAccountProfile ?? updateAccountProfileDefault,
   );
   if (nestedProfileResult !== null) return nestedProfileResult;
+  const nestedToolResult = await maybeRunToolCommand(argv, io, deps);
+  if (nestedToolResult !== null) return nestedToolResult;
+  const livewareResult = await maybeRunAgentLivewareCommand(argv, io, deps);
+  if (livewareResult !== null) return livewareResult;
+  const skillsResult = await maybeRunSkillsCommand(argv, io);
+  if (skillsResult !== null) return skillsResult;
   const serviceProcessResult = await maybeRunServiceProcessCommand(
     argv,
     io,
@@ -226,6 +244,11 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
           problems.push(error instanceof Error ? error.message : String(error));
         }
       }
+      try {
+        await verifyInstalledSkills();
+      } catch (error) {
+        problems.push(error instanceof Error ? error.message : String(error));
+      }
       io.writeStdout(
         problems.length === 0
           ? `clawchat-connect doctor: ok${livewarePath ? `\nliveware: ${livewarePath}` : ""}\n`
@@ -245,6 +268,172 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+}
+
+async function maybeRunSkillsCommand(argv: string[], io: CliIo): Promise<number | null> {
+  if (argv[0] !== "skills") return null;
+  try {
+    if (argv[1] !== "install") throw new Error("usage: clawchat-connect skills install");
+    const result = await installManagedSkills();
+    io.writeStdout(
+      `${JSON.stringify({ installed: result.skills, targetRoot: result.targetRoot, forceOverwritten: true })}\n`,
+    );
+    return 0;
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+async function maybeRunAgentLivewareCommand(argv: string[], io: CliIo, deps: ConnectCliDeps): Promise<number | null> {
+  if (argv[0] !== "liveware") return null;
+  try {
+    const area = argv[1];
+    const action = argv[2];
+    const operation = `${area === "tunnel" ? "liveware_tunnel" : "liveware_app"}_${action}` as AgentLivewareOperation;
+    if (!isAgentLivewareOperation(operation))
+      throw new Error("usage: clawchat-connect liveware app list|inspect|create|access|delete or tunnel bind|unbind");
+    const input: Record<string, unknown> =
+      operation === "liveware_app_list"
+        ? {}
+        : operation === "liveware_app_create"
+          ? {
+              name: requiredOption(argv, "--name"),
+              policy: optionValue(argv, "--policy") ?? "private",
+            }
+          : operation === "liveware_app_access"
+            ? {
+                appId: requiredOption(argv, "--app-id"),
+                policy: requiredOption(argv, "--policy"),
+              }
+            : operation === "liveware_tunnel_bind"
+              ? {
+                  appId: requiredOption(argv, "--app-id"),
+                  upstream: requiredOption(argv, "--upstream"),
+                }
+              : { appId: requiredOption(argv, "--app-id") };
+    const normalizedInput = validateAgentLivewareInput(operation, input);
+    const config = await loadConfig(optionValue(argv, "--config"));
+    const bindingId = optionValue(argv, "--agent") ?? process.env.CLAWCHAT_CONNECT_AGENT_ID ?? config.defaultAgent;
+    if (!bindingId) throw new Error("no Agent Binding selected; pass --agent or configure defaultAgent");
+    getAgentBinding(config, bindingId);
+    const store = (deps.createStateStore ?? createStateStore)({ dbPath: config.stateDbPath });
+    try {
+      const requestId = optionValue(argv, "--request-id")?.trim() || randomUUID();
+      let record = await store.submitToolRequest({
+        requestId,
+        bindingId,
+        toolName: operation,
+        normalizedInput,
+        timeoutMs: 120_000,
+      });
+      const deadline = Date.now() + 121_000;
+      while (record.state === "pending" || record.state === "running") {
+        if (Date.now() >= deadline) break;
+        await Bun.sleep(50);
+        record = (await store.getToolRequest(requestId)) ?? record;
+      }
+      const success = record.state === "succeeded";
+      io.writeStdout(
+        `${JSON.stringify({
+          requestId,
+          agent: bindingId,
+          operation,
+          status: record.state,
+          ...(success
+            ? { result: record.result }
+            : { error: record.error ?? "Connect Service did not settle the request before the deadline" }),
+        })}\n`,
+      );
+      return success ? 0 : 1;
+    } finally {
+      await store.close();
+    }
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+function requiredOption(argv: string[], name: string): string {
+  const value = optionValue(argv, name);
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+async function maybeRunToolCommand(argv: string[], io: CliIo, deps: ConnectCliDeps): Promise<number | null> {
+  if (argv[0] !== "tool") return null;
+  try {
+    if (argv[1] === "list") {
+      io.writeStdout(
+        `${JSON.stringify({ tools: CONNECT_TOOL_CATALOG.map(({ name, description, timeoutMs }) => ({ name, description, timeoutMs })) })}\n`,
+      );
+      return 0;
+    }
+    const toolName = argv[2] ?? "";
+    const tool = getConnectTool(toolName);
+    if (!tool) throw new Error(`unknown ClawChat tool: ${toolName || "(missing)"}`);
+    if (argv[1] === "describe") {
+      io.writeStdout(
+        `${JSON.stringify({ name: tool.name, description: tool.description, timeoutMs: tool.timeoutMs, inputSchema: toolJsonSchema(tool) })}\n`,
+      );
+      return 0;
+    }
+    if (argv[1] !== "call") throw new Error("usage: clawchat-connect tool list|describe|call");
+    const config = await loadConfig(optionValue(argv, "--config"));
+    const bindingId = optionValue(argv, "--agent") ?? process.env.CLAWCHAT_CONNECT_AGENT_ID ?? config.defaultAgent;
+    if (!bindingId) throw new Error("no Agent Binding selected; pass --agent or configure defaultAgent");
+    getAgentBinding(config, bindingId);
+    const inputOption = optionValue(argv, "--input-json");
+    if (inputOption == null) throw new Error("tool call requires --input-json <json-or->");
+    const inputText = inputOption === "-" ? await (deps.readStdin ?? readStdinDefault)() : inputOption;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(inputText);
+    } catch (error) {
+      throw new Error(`invalid --input-json: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const normalizedInput = validateToolInput(tool, parsed);
+    const requestId = optionValue(argv, "--request-id")?.trim() || randomUUID();
+    const store = (deps.createStateStore ?? createStateStore)({ dbPath: config.stateDbPath });
+    try {
+      let record = await store.submitToolRequest({
+        requestId,
+        bindingId,
+        toolName,
+        normalizedInput,
+        timeoutMs: tool.timeoutMs,
+      });
+      const deadline = Date.now() + tool.timeoutMs + 1_000;
+      while (record.state === "pending" || record.state === "running") {
+        if (Date.now() >= deadline) break;
+        await Bun.sleep(50);
+        record = (await store.getToolRequest(requestId)) ?? record;
+      }
+      const success = record.state === "succeeded";
+      io.writeStdout(
+        `${JSON.stringify({
+          requestId,
+          agent: bindingId,
+          toolName,
+          status: record.state,
+          ...(success
+            ? { result: record.result }
+            : { error: record.error ?? "Connect Service did not settle the request before the deadline" }),
+        })}\n`,
+      );
+      return success ? 0 : 1;
+    } finally {
+      await store.close();
+    }
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+async function readStdinDefault(): Promise<string> {
+  return await new Response(Bun.stdin.stream()).text();
 }
 
 async function maybeRunUpdateCommand(

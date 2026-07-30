@@ -62,22 +62,17 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     options.cacheMedia ??
     (async (media: ConnectRuntimeMedia, stateDbPath: string, trustedOrigins?: readonly string[]) =>
       await cacheRuntimeMedia(media, stateDbPath, { trustedOrigins }));
-  let bindingIdentity: string | null = null;
-  let clientPromise: Promise<CodexAppServerClient> | null = null;
+  const clients = new Map<string, Promise<CodexAppServerClient>>();
 
   const clientFor = async (binding: CodexAgentBindingConfig): Promise<CodexAppServerClient> => {
     const identity = processIdentity(binding);
-    if (bindingIdentity && bindingIdentity !== identity) {
-      throw new Error("The shared Codex app-server cannot be reused with a different executable or environment");
-    }
-    bindingIdentity = identity;
-    if (clientPromise) return await clientPromise;
+    const active = clients.get(identity);
+    if (active) return await active;
     const created = createAppServer(binding).catch((error) => {
-      clientPromise = null;
-      bindingIdentity = null;
+      clients.delete(identity);
       throw error;
     });
-    clientPromise = created;
+    clients.set(identity, created);
     return await created;
   };
 
@@ -135,10 +130,11 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
       return new CodexRuntimeSession(await clientFor(codexBinding), codexBinding, context, cacheMedia);
     },
     async close() {
-      const client = clientPromise;
-      clientPromise = null;
-      bindingIdentity = null;
-      if (client) await (await client).close();
+      const active = [...clients.values()];
+      clients.clear();
+      const results = await Promise.allSettled(active.map(async (client) => await (await client).close()));
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) throw failure.reason;
     },
   };
 }
@@ -462,6 +458,7 @@ function isConnectManagedScratchWorkspace(workingDirectory: string): boolean {
 
 function normalizeThreadName(value: string): string | null {
   const normalized = value
+    .replace(/^<clawchat_turn_context>\n[\s\S]*?\n<\/clawchat_turn_context>\n*/u, "")
     .replace(/^ClawChat (?:direct|group) message from [^:]+:\s*/u, "")
     .replace(/\s+/gu, " ")
     .trim();

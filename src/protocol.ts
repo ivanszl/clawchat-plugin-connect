@@ -8,6 +8,7 @@ export const EVENT = {
   MESSAGE_ERROR: "message.error",
   MESSAGE_DELIVERED: "message.delivered",
   MESSAGE_REPLY: "message.reply",
+  MESSAGE_REACTION: "message.reaction",
   MESSAGE_CREATED: "message.created",
   MESSAGE_ADD: "message.add",
   MESSAGE_DONE: "message.done",

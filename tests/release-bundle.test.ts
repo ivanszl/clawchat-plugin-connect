@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { livewareAssetName } from "../src/liveware-exposure";
+import { CONNECT_VERSION } from "../src/version";
 
 describe("standalone release bundle", () => {
   it("packages the Connect executable, Client assets, and pinned Liveware executable together", async () => {
@@ -36,6 +37,20 @@ describe("standalone release bundle", () => {
         "clawchat-connect-client/",
         "clawchat-connect-client/index.html",
         "liveware",
+        "skills/",
+        "skills/clawchat-core/",
+        "skills/clawchat-core/SKILL.md",
+        "skills/clawchat-core/agents/",
+        "skills/clawchat-core/agents/openai.yaml",
+        "skills/clawchat-core/references/",
+        "skills/clawchat-core/references/tools.md",
+        "skills/clawchat-liveware/",
+        "skills/clawchat-liveware/SKILL.md",
+        "skills/clawchat-liveware/agents/",
+        "skills/clawchat-liveware/agents/openai.yaml",
+        "skills/clawchat-liveware/references/",
+        "skills/clawchat-liveware/references/commands.md",
+        "skills/manifest.json",
       ].sort(),
     );
   });
@@ -100,6 +115,20 @@ describe("standalone release bundle", () => {
         "clawchat-connect-client/index.html",
         "clawchat-connect.exe",
         "liveware.exe",
+        "skills/",
+        "skills/clawchat-core/",
+        "skills/clawchat-core/SKILL.md",
+        "skills/clawchat-core/agents/",
+        "skills/clawchat-core/agents/openai.yaml",
+        "skills/clawchat-core/references/",
+        "skills/clawchat-core/references/tools.md",
+        "skills/clawchat-liveware/",
+        "skills/clawchat-liveware/SKILL.md",
+        "skills/clawchat-liveware/agents/",
+        "skills/clawchat-liveware/agents/openai.yaml",
+        "skills/clawchat-liveware/references/",
+        "skills/clawchat-liveware/references/commands.md",
+        "skills/manifest.json",
       ].sort(),
     );
   });
@@ -151,7 +180,7 @@ describe("standalone release bundle", () => {
     const connectBinary = join(sourceDirectory, "clawchat-connect");
     const livewareBinary = join(sourceDirectory, "liveware");
     await Promise.all([
-      writeFile(connectBinary, '#!/bin/sh\n[ "$' + '{1:-}" = --help ]\n'),
+      writeFile(connectBinary, '#!/bin/sh\n[ "$' + '{1:-}" = --help ] || [ "$' + '{1:-}" = skills ]\n'),
       writeFile(livewareBinary, '#!/bin/sh\n[ "$' + '{1:-}" = --help ]\n'),
       writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n"),
     ]);
@@ -231,6 +260,9 @@ describe("standalone release bundle", () => {
     await expect(readFile(join(installDirectory, "liveware"), "utf8")).resolves.toContain("--help");
     await expect(readFile(join(installDirectory, "clawchat-connect-client", "index.html"), "utf8")).resolves.toContain(
       "<!doctype html>",
+    );
+    await expect(readFile(join(installDirectory, "skills", "manifest.json"), "utf8")).resolves.toContain(
+      CONNECT_VERSION,
     );
     await expect(readFile(join(installDirectory, "licenses", "CHANGELOG.md"), "utf8")).resolves.toContain(
       "# Changelog",

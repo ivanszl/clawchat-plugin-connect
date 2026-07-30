@@ -7,8 +7,9 @@ This document is written for an automation Agent installing ClawChat Connect on 
 The installation is complete only when:
 
 1. `clawchat-connect doctor` reports `ok` and shows a bundled Liveware path.
-2. `clawchat-connect service status` reports the native user service as running.
-3. `clawchat-connect status --agent <id>` reports:
+2. `$HOME/.agents/skills/clawchat-core` and `$HOME/.agents/skills/clawchat-liveware` match the installed release manifest. `doctor` checks this; `clawchat-connect skills install` repairs both by force-overwriting them from the offline bundle.
+3. `clawchat-connect service status` reports the native user service as running.
+4. `clawchat-connect status --agent <id>` reports:
    - `activated: yes`;
    - `runtime: connected`;
    - a URL for `liveware exposure`.

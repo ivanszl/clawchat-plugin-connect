@@ -239,6 +239,26 @@ describe("Codex app-server runtime adapter", () => {
     expect(client.close).toHaveBeenCalledTimes(1);
   });
 
+  it("owns a separate app-server process for each injected Agent Binding identity", async () => {
+    const clients = [new FakeAppServer(), new FakeAppServer()];
+    const createAppServer = mock(async () => {
+      const client = clients.shift();
+      if (!client) throw new Error("unexpected extra app-server");
+      return client;
+    });
+    const adapter = createCodexRuntimeAdapter({ createAppServer });
+    const work = { ...agent, env: { CLAWCHAT_CONNECT_AGENT_ID: "work" } };
+    const review = { ...agent, env: { CLAWCHAT_CONNECT_AGENT_ID: "review" } };
+
+    await adapter.discoverThreads?.(work, workspace);
+    await adapter.discoverThreads?.(review, workspace);
+    await adapter.discoverAllThreads?.(work);
+
+    expect(createAppServer).toHaveBeenCalledTimes(2);
+    await adapter.close?.();
+    expect(createAppServer.mock.results).toHaveLength(2);
+  });
+
   it("discovers persisted threads through paginated thread/list", async () => {
     const client = new FakeAppServer();
     client.listThreads

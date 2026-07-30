@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { isAgentLivewareOperation } from "./agent-liveware";
 import {
   type BindingProtocolEventHandlers,
   type BindingRuntimeHandle,
@@ -24,7 +25,10 @@ import { ProjectCatalog } from "./projects";
 import type { RuntimeAdapterRegistry } from "./runtime/registry";
 import { createReleasedRuntimeAdapterRegistry } from "./runtime/released-adapters";
 import { RuntimeInteractionCoordinator } from "./runtime/runtime-interaction-coordinator";
+import { verifyInstalledSkills } from "./skills";
 import { type ConnectStateStore, createStateStore } from "./state";
+import { getConnectTool } from "./tool-catalog";
+import { isIndeterminateToolError } from "./tool-executor";
 import type { ConnectConfig } from "./types";
 
 export interface ConnectServiceOptions {
@@ -42,6 +46,7 @@ export interface ConnectServiceDependencies {
   startClientInterface?: (options: ClientInterfaceOptions) => Promise<ClientInterfaceHandle>;
   createRuntimeAdapterRegistry?: () => RuntimeAdapterRegistry;
   livewareDependencies?: LivewareExposureDependencies;
+  verifyInstalledSkills?: () => Promise<void>;
 }
 
 export interface ConnectServiceResult {
@@ -54,6 +59,7 @@ export async function startConnectService(
 ): Promise<ConnectServiceResult> {
   const configPath = resolve(options.configPath ?? defaultConfigPath());
   const config = options.config ?? (await loadConfig(configPath));
+  await (dependencies.verifyInstalledSkills ?? verifyInstalledSkills)();
   const store = options.stateStore ?? createStateStore({ dbPath: config.stateDbPath });
   const writeOutput = options.writeOutput ?? ((message: string) => process.stdout.write(message));
   const writeError = options.writeError ?? ((message: string) => process.stderr.write(message));
@@ -62,6 +68,7 @@ export async function startConnectService(
   let clientInterface: ClientInterfaceHandle | null = null;
   let livewareExposure: LivewareExposureHandle | null = null;
   let runtimeInteractions: RuntimeInteractionCoordinator | null = null;
+  let stopToolWorkers: (() => Promise<void>) | null = null;
   try {
     const activatedBindings = (
       await Promise.all(
@@ -128,6 +135,7 @@ export async function startConnectService(
     if (handles.length === 0) {
       throw new Error(`Connect could not start any activated Agent Bindings:\n- ${failures.join("\n- ")}`);
     }
+    stopToolWorkers = startToolRequestWorkers(handles, store, writeError);
     clientInterface = await (dependencies.startClientInterface ?? startClientInterface)({
       config,
       configPath,
@@ -193,6 +201,7 @@ export async function startConnectService(
     await (options.waitUntilShutdown ?? waitForShutdown)();
     return { startedAgentIds: handles.map((handle) => handle.agentId) };
   } finally {
+    await stopToolWorkers?.();
     const shutdownFailures: unknown[] = [];
     try {
       await livewareExposure?.close();
@@ -225,6 +234,69 @@ export async function startConnectService(
     for (const failure of shutdownFailures) {
       writeError(`Connect shutdown cleanup failed: ${failure instanceof Error ? failure.message : String(failure)}\n`);
     }
+  }
+}
+
+function startToolRequestWorkers(
+  handles: BindingRuntimeHandle[],
+  store: ConnectStateStore,
+  writeError: (message: string) => void,
+): () => Promise<void> {
+  let stopping = false;
+  const workers = handles.map(async (handle) => {
+    await store.markInterruptedToolRequestsIndeterminate(handle.agentId);
+    while (!stopping) {
+      const request = await store.claimNextToolRequest(handle.agentId);
+      if (!request) {
+        await Bun.sleep(100);
+        continue;
+      }
+      const tool = getConnectTool(request.toolName);
+      const timeoutMs = tool?.timeoutMs ?? (isAgentLivewareOperation(request.toolName) ? 120_000 : null);
+      if (!timeoutMs || !handle.executeTool) {
+        await store.settleToolRequest(request.requestId, {
+          state: "failed",
+          error: `unsupported tool ${request.toolName}`,
+        });
+        continue;
+      }
+      const remainingMs = Math.max(1, Math.min(timeoutMs, request.expiresAt - Date.now()));
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      try {
+        const result = await Promise.race([
+          handle.executeTool(request.toolName, request.input),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new ToolExecutionTimeout()), remainingMs);
+          }),
+        ]);
+        await store.settleToolRequest(request.requestId, { state: "succeeded", result });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        await store.settleToolRequest(request.requestId, {
+          state:
+            error instanceof ToolExecutionTimeout ||
+            isIndeterminateToolError(error) ||
+            isAgentLivewareOperation(request.toolName)
+              ? "indeterminate"
+              : "failed",
+          error: detail,
+        });
+        writeError(`${handle.agentId}: tool ${request.toolName} failed: ${detail}\n`);
+      } finally {
+        if (timer) clearTimeout(timer);
+        await store.pruneSettledToolRequests(handle.agentId);
+      }
+    }
+  });
+  return async () => {
+    stopping = true;
+    await Promise.allSettled(workers);
+  };
+}
+
+class ToolExecutionTimeout extends Error {
+  constructor() {
+    super("tool execution timed out after submission; outcome is indeterminate");
   }
 }
 

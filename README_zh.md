@@ -91,7 +91,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/clawling/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.16
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.17
 ```
 
 Windows PowerShell 用户应先下载安装脚本并检查其内容：
@@ -118,7 +118,7 @@ bun add --global @clawling/clawchat-plugin-connect
 clawchat-connect update
 ```
 
-使用 `clawchat-connect update --version v0.1.0-alpha.16` 可安装指定版本。更新命令会保留现有配置并刷新系统原生的 Connect Service。
+使用 `clawchat-connect update --version v0.1.0-alpha.17` 可安装指定版本。更新命令会保留现有配置并刷新系统原生的 Connect Service。
 
 ### 2. 创建 Agent Binding
 
@@ -328,6 +328,12 @@ clawchat-connect service restart
 | --- | --- |
 | `clawchat-connect status [--agent <id>]` | 显示激活、运行时和 Liveware Exposure 状态。 |
 | `clawchat-connect doctor` | 检查基本配置和内置 Liveware。 |
+| `clawchat-connect tool list` | 列出 24 个可供 Agent 调用的 ClawChat tool name。 |
+| `clawchat-connect tool describe <name>` | 显示工具的生成输入 Schema。 |
+| `clawchat-connect tool call <name> --input-json <json-or->` | 向运行中的 Service 提交一次至多执行一次的工具请求。 |
+| `clawchat-connect liveware app ...` | 通过 Service 管理额外的 Agent Liveware App。 |
+| `clawchat-connect liveware tunnel ...` | 绑定或解绑本地回环服务并同步 ClawChat 注册。 |
+| `clawchat-connect skills install` | 强制修复内置的两份用户级 Agent skill。 |
 | `clawchat-connect agent list` | 列出 Agent Binding。 |
 | `clawchat-connect service start` | 启动服务。 |
 | `clawchat-connect service stop` | 停止服务但不卸载。 |

@@ -754,4 +754,68 @@ describe("state store", () => {
     await expect(restarted.cancelTurnSubmission("submission-restart", "OTHER123")).resolves.toBe(false);
     await restarted.close();
   });
+
+  it("claims each Tool Request once and returns the settled record for a reused request id", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await store.submitToolRequest({
+      requestId: "request-1",
+      bindingId: "codex",
+      toolName: "clawchat_get_account_profile",
+      normalizedInput: {},
+      timeoutMs: 30_000,
+    });
+    await expect(store.claimNextToolRequest("codex")).resolves.toMatchObject({
+      requestId: "request-1",
+      state: "running",
+    });
+    await expect(store.claimNextToolRequest("codex")).resolves.toBeNull();
+    await store.settleToolRequest("request-1", { state: "succeeded", result: { nickname: "Agent" } });
+    await expect(
+      store.submitToolRequest({
+        requestId: "request-1",
+        bindingId: "codex",
+        toolName: "clawchat_get_account_profile",
+        normalizedInput: {},
+        timeoutMs: 30_000,
+      }),
+    ).resolves.toMatchObject({
+      state: "succeeded",
+      result: { nickname: "Agent" },
+    });
+    await store.close();
+  });
+
+  it("expires unclaimed Tool Requests and never retries requests interrupted after claim", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await store.submitToolRequest({
+      requestId: "expired-request",
+      bindingId: "codex",
+      toolName: "clawchat_get_account_profile",
+      normalizedInput: {},
+      timeoutMs: -1,
+    });
+    await expect(store.claimNextToolRequest("codex")).resolves.toBeNull();
+    await expect(store.getToolRequest("expired-request")).resolves.toMatchObject({
+      state: "expired",
+      attemptCount: 0,
+    });
+
+    await store.submitToolRequest({
+      requestId: "interrupted-request",
+      bindingId: "codex",
+      toolName: "clawchat_get_account_profile",
+      normalizedInput: {},
+      timeoutMs: 30_000,
+    });
+    await store.claimNextToolRequest("codex");
+    await store.markInterruptedToolRequestsIndeterminate("codex");
+    await expect(store.getToolRequest("interrupted-request")).resolves.toMatchObject({
+      state: "indeterminate",
+      attemptCount: 1,
+    });
+    await expect(store.claimNextToolRequest("codex")).resolves.toBeNull();
+    await store.close();
+  });
 });

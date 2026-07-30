@@ -20,9 +20,11 @@ export interface LivewareApp {
 
 export interface LivewareControlSession {
   listApps(): Promise<LivewareApp[]>;
+  inspectApp?(appId: string): Promise<LivewareApp>;
   createApp(name: string, accessPolicy: EnabledLivewareAccessPolicy): Promise<LivewareApp>;
   setAccessPolicy(appId: string, accessPolicy: EnabledLivewareAccessPolicy): Promise<void>;
   bindTunnel(appId: string, upstream: string): Promise<string>;
+  unbindTunnel?(appId: string): Promise<void>;
   deleteApp(appId: string): Promise<void>;
   startAgent(): Promise<LivewareAgentProcess>;
 }
@@ -353,8 +355,12 @@ class CliLivewareControlSession implements LivewareControlSession {
     );
   }
 
-  private async inspectApp(appId: string): Promise<LivewareApp> {
+  async inspectApp(appId: string): Promise<LivewareApp> {
     return readLivewareApp(await this.command(["app", "inspect", appId]));
+  }
+
+  async unbindTunnel(appId: string): Promise<void> {
+    await this.command(["tunnel", "unbind", appId]);
   }
 
   private async command(args: string[]): Promise<unknown> {

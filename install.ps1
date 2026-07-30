@@ -90,10 +90,12 @@ try {
   $connectSource = Join-Path $extractedDirectory "clawchat-connect.exe"
   $livewareSource = Join-Path $extractedDirectory "liveware.exe"
   $clientSource = Join-Path $extractedDirectory "clawchat-connect-client"
+  $skillsSource = Join-Path $extractedDirectory "skills"
   foreach ($requiredPath in @(
     $connectSource,
     $livewareSource,
     (Join-Path $clientSource "index.html"),
+    (Join-Path $skillsSource "manifest.json"),
     (Join-Path $extractedDirectory "CHANGELOG.md"),
     (Join-Path $extractedDirectory "LICENSE"),
     (Join-Path $extractedDirectory "THIRD_PARTY_NOTICES.md")
@@ -130,6 +132,17 @@ try {
   }
   Move-Item -LiteralPath $clientStaging -Destination $clientTarget
 
+  $skillsBundleTarget = Join-Path $InstallDirectory "skills"
+  $skillsBundleStaging = "$skillsBundleTarget.new"
+  if (Test-Path -LiteralPath $skillsBundleStaging) {
+    Remove-Item -LiteralPath $skillsBundleStaging -Recurse -Force
+  }
+  Copy-Item -LiteralPath $skillsSource -Destination $skillsBundleStaging -Recurse
+  if (Test-Path -LiteralPath $skillsBundleTarget) {
+    Remove-Item -LiteralPath $skillsBundleTarget -Recurse -Force
+  }
+  Move-Item -LiteralPath $skillsBundleStaging -Destination $skillsBundleTarget
+
   New-Item -ItemType Directory -Path $LicenseDirectory -Force | Out-Null
   Copy-Item -LiteralPath (Join-Path $extractedDirectory "CHANGELOG.md") -Destination $LicenseDirectory -Force
   Copy-Item -LiteralPath (Join-Path $extractedDirectory "LICENSE") -Destination $LicenseDirectory -Force
@@ -161,10 +174,15 @@ try {
   if ($LASTEXITCODE -ne 0) {
     throw "Installed liveware.exe failed its startup check"
   }
+  & $connectTarget "skills" "install" | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Managed Agent skill installation failed"
+  }
 
   Write-Host "Installed clawchat-connect.exe to $connectTarget"
   Write-Host "Installed bundled Liveware to $livewareTarget"
   Write-Host "Installed Connect Client assets to $clientTarget"
+  Write-Host "Installed managed Agent skills to $HOME\.agents\skills"
   Write-Host "Run 'clawchat-connect init --agent work --kind codex' to begin."
 } finally {
   if (Test-Path -LiteralPath $temporaryDirectory) {

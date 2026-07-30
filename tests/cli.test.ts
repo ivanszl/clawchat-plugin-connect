@@ -375,6 +375,56 @@ describe("runConnectCli", () => {
     await expect(runConnectCli(["mcp-server", "--agent", "work"], output.deps)).resolves.toBe(1);
     expect(output.stdout.join("")).not.toContain("mcp-server");
   });
+
+  it("exposes tool-name calls through the SQLite request record and returns reused settled results", async () => {
+    const path = await tempConfig();
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    config.stateDbPath = `${path}.sqlite`;
+    await saveConfig(config, path);
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    await store.submitToolRequest({
+      requestId: "known-request",
+      bindingId: "codex",
+      toolName: "clawchat_get_account_profile",
+      normalizedInput: {},
+      timeoutMs: 30_000,
+    });
+    await store.claimNextToolRequest("codex");
+    await store.settleToolRequest("known-request", { state: "succeeded", result: { nickname: "Connect" } });
+    await store.close();
+    const output = io();
+
+    await expect(
+      runConnectCli(
+        [
+          "tool",
+          "call",
+          "clawchat_get_account_profile",
+          "--input-json",
+          "{}",
+          "--request-id",
+          "known-request",
+          "--config",
+          path,
+        ],
+        output.deps,
+      ),
+    ).resolves.toBe(0);
+
+    expect(JSON.parse(output.stdout.at(-1) ?? "{}")).toMatchObject({
+      requestId: "known-request",
+      agent: "codex",
+      toolName: "clawchat_get_account_profile",
+      status: "succeeded",
+      result: { nickname: "Connect" },
+    });
+  });
+
+  it("lists the static 24-entry tool catalog without opening state", async () => {
+    const output = io();
+    await expect(runConnectCli(["tool", "list"], output.deps)).resolves.toBe(0);
+    expect(JSON.parse(output.stdout[0] ?? "{}").tools).toHaveLength(24);
+  });
 });
 
 describe("handleChatCommand", () => {

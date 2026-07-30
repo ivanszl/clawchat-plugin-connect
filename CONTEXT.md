@@ -12,6 +12,10 @@ _Avoid_: Agent, when referring to the configured association rather than the ext
 A concrete integration that lets Connect start and operate one kind of coding agent runtime. Codex is the first Runtime Adapter, not the definition of Connect or Agent Binding.
 _Avoid_: Agent Binding, Codex, when referring to the adapter role
 
+**Binding Runtime Instance**:
+The stateful runtime process and adapter state owned by one Agent Binding. Instances of the same Runtime Adapter kind remain isolated even when that kind supports multiple Agent Bindings.
+_Avoid_: Runtime Adapter, shared runtime process
+
 **Connect Service**:
 The single host-level Connect process that operates every activated Agent Binding, regardless of Runtime Adapter kind.
 _Avoid_: Agent Service, Codex Service, per-agent service
@@ -28,6 +32,30 @@ _Avoid_: Connect Console, Frontend
 The Connect Service HTTP contract tailored to Connect Client views and user intents. It is loopback-bound by default and may be explicitly exposed to a trusted IPv4 LAN. It exposes Connect-owned presentation models and capabilities rather than runtime-native protocols or UI-framework types.
 _Avoid_: Runtime API, app-server API, Astryx API
 
+**ClawChat Tool Command**:
+An explicit authenticated local CLI request addressed by its canonical `clawchat_*` tool name so a local Agent can request one ClawChat capability from Connect Service.
+_Avoid_: Grouped CLI command, Runtime Tool, MCP Tool
+
+**Tool Request**:
+A durable local request submitted by the CLI for Connect Service to validate and execute as one ClawChat Tool Command or Agent-managed Liveware operation for a selected Agent Binding. Its terminal state remains as the Tool Call Record.
+_Avoid_: Client Interface command, direct CLI API call, Runtime Tool call
+
+**Tool Call Record**:
+The retained lifecycle, normalized input, bounded outcome, Binding and optional Turn provenance, and timing of one settled Tool Request. Authentication credentials are never part of the record.
+_Avoid_: Runtime Activity, Client Transcript block, ClawChat message history
+
+**Tool Catalog**:
+The single authoritative collection of Agent-callable ClawChat tool names, descriptions, schemas, execution policy, and handlers from which CLI discovery and skill references are derived.
+_Avoid_: Skill tool table, handwritten CLI registry, generated tool reference
+
+**Connect Agent Skill**:
+One of Connect's user-scoped instruction packages that teaches a local Agent to use ClawChat Tool Commands or deploy Agent-Managed Liveware Apps without registering runtime-native tools.
+_Avoid_: Runtime Tool, MCP Server, repository skill
+
+**ClawChat Turn Context**:
+Connect-derived Agent-visible metadata attached to one ClawChat-originated turn. It identifies the exact conversation, message, sender, conversation type, and known mentions without treating user-authored text as authoritative metadata.
+_Avoid_: Prompt text, process environment, Client Turn context
+
 **Client View Continuity**:
 The rule that a reconnecting Connect Client restores the complete latest Client view without replaying transient streaming states. Every committed displayable occurrence remains present, and an older view never replaces a newer view.
 _Avoid_: Stream Replay, Exactly-Once Streaming
@@ -35,6 +63,10 @@ _Avoid_: Stream Replay, Exactly-Once Streaming
 **Liveware Exposure**:
 An optional publication of Connect Client inside ClawChat through a Liveware App. It adds a ClawChat interaction surface without replacing Connect Service, Connect Client, or Client Interface ownership.
 _Avoid_: Connect deployment, Liveware Client, when referring to the publication boundary
+
+**Agent-Managed Liveware App**:
+An additional Liveware App that a local Agent deploys for a user-requested local web service through Connect's credential-safe Liveware command boundary and registers into ClawChat. It is independent of the Liveware Exposure managed for Connect Client.
+_Avoid_: Liveware Exposure, ClawChat Connect App
 
 **Liveware Access Policy**:
 The Liveware-owned rule governing which authenticated ClawChat users may enter a Liveware Exposure. `private` admits only the App owner; `public` admits any authenticated ClawChat WebView user.
@@ -147,7 +179,8 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 ## Invariants
 
 - Connect binds and manages multiple Agent Bindings independently of any one runtime kind.
-- A Connect installation has at most one Agent Binding for each Runtime Adapter kind.
+- The current release accepts at most one Agent Binding for each Runtime Adapter kind; this is a temporary release constraint rather than a domain invariant.
+- Every Agent Binding owns an independent Binding Runtime Instance. Runtime process, environment, cached client state, and shutdown lifecycle are never shared between Agent Bindings, including Bindings of the same Runtime Adapter kind.
 - A Connect installation has one Connect Owner shared by all activated Agent Bindings; a different owner's activation replaces the existing owner instead of coexisting with it.
 - Replacing the Connect Owner transfers the existing Projects, Sessions, and Runtime Threads to the new owner; replacement does not clear or isolate prior local data.
 - A Connect installation has one Connect Service; Agent Bindings and Runtime Adapters do not own background services.
@@ -210,5 +243,32 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - A launcher-visible Liveware Exposure requires both a Liveware Control Plane App and a ClawChat Liveware Registration; creating the App alone does not register it in ClawChat.
 - Connect uses its activated ClawChat Agent token for Liveware Control Plane login and ClawChat Liveware Registration. ClawChat and Liveware own the separate user-token and WebView-ticket flow used when a person opens the App.
 - Replacing the Connect Owner unregisters the previous ClawChat Liveware Registration, retires the previous owner's Liveware App, creates a new App for the new owner with the existing Liveware Access Policy, and registers the new App in ClawChat; the public URL is not preserved.
-- Connect does not expose ClawChat tools or inject a bundled MCP server into Runtime Threads.
+- Agent-Managed Liveware Apps never reuse, modify, or retire the Connect-managed Liveware Exposure.
+- Every successfully bound Agent-Managed Liveware App is registered into ClawChat; Connect Agent Skills do not expose a tunnel-only workflow.
+- A local Agent operates the bundled Liveware executable only through Connect's credential-safe command boundary; Connect does not reveal or persist the activated ClawChat access token for Agent use.
+- The Agent-facing Liveware command boundary accepts only explicit app inspection, creation, access-policy, deletion, and loopback tunnel operations. It rejects authentication, agent-process, unknown, shell-composed, reserved-name, and Connect-managed App mutations.
+- Every ClawChat-originated runtime turn carries a ClawChat Turn Context derived from its normalized ClawChat envelope. A Client-originated turn never claims a current ClawChat message context.
+- A ClawChat Tool Command that targets a conversation, message, sender, or mention uses an explicit identifier from ClawChat Turn Context or another authoritative result; it never infers an identifier from a display name or user-authored text.
+- The CLI is only the local entrypoint for an Agent-callable ClawChat or Liveware operation. Every actual invocation persists a Tool Request in Connect's owner-only local state; Connect Service claims and executes it with the selected Agent Binding's active authenticated transports or bundled Liveware executable and persists the result for the waiting CLI.
+- A settled Tool Request is retained as one Tool Call Record rather than deleted after the CLI receives its result.
+- Tool Call Records retain secret-scrubbed normalized arguments and bounded JSON outcomes with explicit truncation metadata, together with request, Binding, optional Session and Turn, state, attempt, and timing provenance. They never retain activation credentials, authorization headers, Liveware tokens, uploaded file contents, or internal authentication responses.
+- Settled Tool Call Records are retained for at most 90 days and at most 10,000 records per Agent Binding; cleanup removes the oldest settled records when either limit is exceeded. Pending, running, and indeterminate records are never removed automatically.
+- Tool Call Records have no Agent-facing or user-facing history, show, or prune interface and are never exposed through Client Interface. Connect uses them only for request settlement, internal audit, diagnostics, and automatic retention cleanup.
+- A Tool Request is attempted at most once after claim. Any transport error, operation error, timeout, process interruption, or indeterminate outcome becomes terminal and is never retried automatically, regardless of whether the operation is read-only or mutating.
+- Reusing a request ID returns its existing Tool Call Record and never starts another attempt. A deliberate retry is a new explicit Tool Request with a new request ID.
+- Ordinary ClawChat Tool Requests expire after 30 seconds; file-transfer and Agent-managed Liveware requests expire after 120 seconds. An unclaimed expired request never executes. A claimed timeout settles as failed only when no external effect occurred, otherwise as indeterminate.
+- Tool Requests are not part of Client Interface, trusted-LAN access, or Liveware Exposure. The CLI never falls back to direct ClawChat access or opens a second ClawChat WebSocket.
+- Connect does not register ClawChat runtime tools or inject a bundled MCP server into Runtime Threads. A local Agent instead invokes explicit ClawChat Tool Commands under guidance from an installed skill.
+- Connect distributes separate `clawchat-core` and `clawchat-liveware` Connect Agent Skills and installs them by default in the current user's Agent skill directory so they apply across repositories.
+- Both Connect Agent Skills allow implicit invocation. `clawchat-core` matches explicit ClawChat social, profile, message, moment, and attachment intents; `clawchat-liveware` matches explicit Liveware or ClawChat App publication intents and never substitutes itself for an unrelated generic Web deployment workflow.
+- Connect installation and update atomically replace the installed `clawchat-core` and `clawchat-liveware` directories with the release copies. Installed Connect Agent Skills are managed artifacts rather than user customization surfaces, so local edits are not preserved.
+- Connect Agent Skills are required release artifacts. Installation and update validate and preflight all managed targets before replacement; a missing, invalid, or unwritable skill fails the whole operation rather than reporting a partial success with mismatched CLI and skill contracts.
+- Every user-facing Connect installation and update channel carries, installs, and validates the same Connect Agent Skills. A package-manager path that skips its installation lifecycle is incomplete and must fail a runtime preflight until the bundled local repair command installs them.
+- Installed Connect Agent Skills must match the running Connect release manifest and checksums exactly. Doctor, Connect Service, and Agent Binding startup reject a mismatch; the offline `clawchat-connect skills install` command repairs it by atomically replacing both skills from the installed release.
+- ClawChat Tool Commands are addressed only by canonical tool name; Connect does not define grouped CLI command families for them.
+- The Agent-facing command is `clawchat-connect tool call <tool-name> --input-json <json-or-stdin>`, with optional explicit request and Agent Binding identifiers. Binding selection resolves explicit CLI input, then the Binding Runtime Instance context, then the configured default.
+- Every accepted Tool Command prints one JSON Tool Call Record envelope to stdout. Failed, expired, and indeterminate outcomes also use a non-zero exit status; pre-submission CLI errors use stderr.
+- ClawChat Tool Commands do not add a generic confirmation parameter beyond their canonical schemas. Connect Agent Skills require explicit user intent and authoritative target identifiers for mutating operations, while Connect Service enforces structural, Binding, and reserved-resource constraints.
+- ClawChat Tool Commands do not add Turn-correlation CLI parameters or Service-level normal-reply suppression. After a successful mention or message reaction, the Connect Agent Skill instructs the Agent not to emit a duplicate ordinary reply.
+- Tool Catalog is the sole definition of the first release's 24 ClawChat Tool Commands. CLI validation and routing, static discovery, and generated skill references consume it directly; CI rejects a generated-reference diff.
 - ClawChat Profile updates are explicit authenticated CLI operations.

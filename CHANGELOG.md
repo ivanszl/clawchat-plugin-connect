@@ -2,6 +2,20 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.17] - 2026-07-30
+
+### Added
+
+- Added database-backed ClawChat tool calls through the canonical `clawchat-connect tool call <tool-name>` CLI entry point, with durable request records, idempotent request IDs, binding-aware routing, and no automatic retries.
+- Added automatically installed `clawchat-core` and `clawchat-liveware` Agent Skills, generated tool references, and integrity-checked force replacement during installation and updates.
+- Added Agent-managed Liveware deployment commands with loopback-only upstreams, allowlisted operations, automatic ClawChat app registration, and protection for the Connect-managed app.
+- Added authoritative ClawChat turn context and per-binding Runtime process identities in preparation for multiple Agent Bindings per Runtime Adapter.
+
+### Changed
+
+- Routed Agent tool execution through the Connect Service and persistent SQLite request lifecycle while retaining settled request history.
+- Added WebSocket reaction delivery alongside the existing message reply path.
+
 ## [0.1.0-alpha.16] - 2026-07-29
 
 ### Added
