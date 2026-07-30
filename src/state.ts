@@ -99,6 +99,8 @@ class BunSqliteAdapter {
 }
 
 type SqliteDb = BunSqliteAdapter;
+const SQLITE_BUSY_TIMEOUT_MS = 5_000;
+
 export interface MessageInput {
   agentId?: string | null;
   direction: "inbound" | "outbound";
@@ -261,6 +263,7 @@ export class ConnectStateStore {
     await mkdir(dirname(this.dbPath), { recursive: true, mode: 0o700 });
     this.db = new BunSqliteAdapter(new Database(this.dbPath, { create: true }));
     try {
+      await this.db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
       await this.db.exec("PRAGMA journal_mode = WAL");
       await this.db.exec("PRAGMA foreign_keys = ON");
       await this.createSchema();

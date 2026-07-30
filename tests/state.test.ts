@@ -772,6 +772,36 @@ describe("state store", () => {
     await store.close();
   });
 
+  it("waits for a transient external writer instead of failing the Connect Service", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath });
+    await store.initialize();
+    const holder = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "fixtures", "sqlite-lock-holder.ts"), dbPath, "250"],
+      {
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const reader = holder.stdout.getReader();
+    const started = await reader.read();
+    expect(new TextDecoder().decode(started.value).trim()).toBe("locked");
+
+    await expect(
+      store.upsertRuntimeStatus({
+        websocketConnected: true,
+        activeAgent: "codex",
+        activeChats: 0,
+        globalRunning: 0,
+        globalQueued: 0,
+        recentError: null,
+      }),
+    ).resolves.toBeUndefined();
+    expect(await holder.exited).toBe(0);
+    await store.close();
+  });
+
   it("keeps a cancelled Turn Submission terminal across a state-store restart", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");
