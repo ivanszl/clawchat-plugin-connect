@@ -360,7 +360,9 @@ function sessionItem(
     id: entry.sessionRef,
     label: entry.name,
     startContent: <ThreadIcon />,
-    endContent: <StatusDot variant={status.variant} label={status.label} isPulsing={status.isPulsing} />,
+    endContent: status ? (
+      <StatusDot variant={status.variant} label={status.label} isPulsing={status.isPulsing} />
+    ) : undefined,
     isSelected: entry.sessionRef === selectedRef,
     href: `/sessions/${entry.sessionRef}`,
     onClick: (event) => {
@@ -371,19 +373,17 @@ function sessionItem(
 }
 
 type SessionStatusView = {
-  variant: "success" | "warning" | "error" | "accent" | "neutral";
+  variant: "success" | "warning" | "error";
   label: string;
   isPulsing?: boolean;
 };
 
-function sessionStatus(entry: SessionCatalogEntryView): SessionStatusView {
-  if (entry.isArchived) return { variant: "neutral", label: "已归档" };
-  const statuses: Record<SessionCatalogEntryView["status"], SessionStatusView> = {
-    idle: { variant: "success", label: "空闲" },
-    running: { variant: "accent", label: "运行中", isPulsing: true },
-    queued: { variant: "neutral", label: "排队中" },
-    offline: { variant: "warning", label: "离线" },
+function sessionStatus(entry: SessionCatalogEntryView): SessionStatusView | null {
+  if (entry.isArchived || entry.status === "idle" || entry.status === "offline") return null;
+  const statuses: Partial<Record<SessionCatalogEntryView["status"], SessionStatusView>> = {
+    running: { variant: "success", label: "运行中", isPulsing: true },
+    queued: { variant: "warning", label: "排队中" },
     error: { variant: "error", label: "错误" },
   };
-  return statuses[entry.status];
+  return statuses[entry.status] ?? null;
 }

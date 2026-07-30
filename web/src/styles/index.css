@@ -508,25 +508,6 @@ textarea {
   max-width: min(280px, 42vw);
 }
 
-.composer-working-control,
-.composer-working-indicator {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-}
-
-.composer-working-control {
-  gap: var(--spacing-2);
-}
-
-.composer-working-indicator {
-  gap: 6px;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: 500;
-  white-space: nowrap;
-}
-
 .settings-page {
   height: 100%;
   overflow: auto;
@@ -582,6 +563,19 @@ textarea {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacing-4);
   margin-top: var(--spacing-4);
+}
+
+.settings-field {
+  display: grid;
+  align-content: start;
+  gap: var(--spacing-1);
+  min-width: 0;
+}
+
+.settings-field-description {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
 }
 
 .project-settings-list {

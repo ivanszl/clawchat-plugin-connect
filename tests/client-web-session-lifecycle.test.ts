@@ -24,7 +24,7 @@ describe("Connect Client Session lifecycle", () => {
     expect(source).toContain('label: "已归档"');
   });
 
-  it("keeps Session Refs out of navigation rows and represents state with a compact status dot", async () => {
+  it("keeps Session Refs out of navigation rows and shows status dots only for active work", async () => {
     const source = await Bun.file(navigationUrl).text();
     const itemSource = source.slice(
       source.indexOf("function sessionItem("),
@@ -32,8 +32,12 @@ describe("Connect Client Session lifecycle", () => {
     );
 
     expect(itemSource).not.toContain("description:");
-    expect(itemSource).toContain("endContent: <StatusDot");
-    expect(source).toContain('idle: { variant: "success", label: "空闲" }');
-    expect(source).toContain('running: { variant: "accent", label: "运行中", isPulsing: true }');
+    expect(itemSource).toContain("endContent: status ? (");
+    expect(itemSource).toContain("<StatusDot");
+    expect(source).toContain(
+      'if (entry.isArchived || entry.status === "idle" || entry.status === "offline") return null',
+    );
+    expect(source).toContain('running: { variant: "success", label: "运行中", isPulsing: true }');
+    expect(source).toContain('queued: { variant: "warning", label: "排队中" }');
   });
 });

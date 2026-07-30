@@ -1,9 +1,10 @@
 import { strict as assert } from "node:assert";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
+import { createServer } from "node:net";
 import { chromium, expect, type Locator, type Page } from "@playwright/test";
 
-const port = 20_000 + Math.floor(Math.random() * 10_000);
+const port = await availablePort();
 const origin = `http://127.0.0.1:${port}`;
 const server = Bun.spawn({
   cmd: [process.execPath, "tests/fixtures/client-preview-server.ts"],
@@ -21,12 +22,12 @@ try {
     await verifyRuntimeApproval(browser, origin);
     await verifySessionNavigationStaysInSpa(browser, origin);
     await verifyExternalTuiRefresh(browser, origin);
+    await verifyComposerWorkingState(browser, origin);
     await verifySmallWindowNavigation(browser, origin);
     await verifyTranscriptAlwaysFollowsLatest(browser, origin);
     await verifyTranscriptPresentation(browser, origin);
     await verifyContinueInClawChat(browser, origin);
     await verifyImeConfirmationDoesNotSubmit(browser, origin);
-    await verifyComposerWorkingState(browser, origin);
     await verifyComposerReturnsIdleAfterTurn(browser, origin);
     const page = await browser.newPage();
     const createRequests: unknown[] = [];
@@ -45,7 +46,8 @@ try {
     await navigation.getByText("clawchat-plugin-connect", { exact: true }).click();
     await expect(navigation.getByText("ABCDEFGH", { exact: false })).toHaveCount(0);
     await expect(navigation.getByText("JKLMNPQR", { exact: false })).toHaveCount(0);
-    await expect(navigation.getByRole("img", { name: "空闲" })).toHaveCount(2);
+    await expect(navigation.getByRole("img", { name: "空闲" })).toHaveCount(0);
+    await expect(navigation.getByRole("img", { name: "已连接" })).toHaveCount(1);
 
     await page.getByRole("button", { name: "新建 Session" }).click();
     const dialog = page.getByRole("dialog");
@@ -226,8 +228,9 @@ async function verifyImeConfirmationDoesNotSubmit(
 }
 
 async function verifyComposerWorkingState(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
-  const page = await browser.newPage();
+  const page = await browser.newPage({ viewport: { width: 320, height: 704 } });
   try {
+    await page.route(/\/client\/v1\/events/u, async (route) => await route.abort("blockedbyclient"));
     await page.route(/\/client\/v1\/sessions\/ABCDEFGH(?:\?refresh=1)?$/u, async (route) => {
       const response = await route.fetch();
       const body = (await response.json()) as Record<string, unknown>;
@@ -235,14 +238,19 @@ async function verifyComposerWorkingState(browser: Awaited<ReturnType<typeof chr
     });
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
-    await expect(page.getByText("正在工作", { exact: true })).toBeVisible();
     const stop = page.getByRole("button", { name: "停止", exact: true });
     await expect(stop).toBeVisible();
-    const stopBox = await stop.boundingBox();
+    await expect(stop.getByTestId("agent-working-spinner")).toBeVisible();
+    await expect(page.locator(".composer-working-indicator")).toHaveCount(0);
+    const [stopBox, composerBox] = await Promise.all([
+      stop.boundingBox(),
+      page.locator(".session-composer").boundingBox(),
+    ]);
     assert(
-      stopBox && stopBox.width > stopBox.height,
-      "working state must show a visible Stop label, not an icon alone",
+      stopBox && composerBox && stopBox.x + stopBox.width <= composerBox.x + composerBox.width,
+      `working control must remain inside the small-window composer: ${JSON.stringify({ stopBox, composerBox })}`,
     );
+    assert(stopBox.width > stopBox.height, "working state must show a visible Stop label, not an icon alone");
   } finally {
     await page.close();
   }
@@ -258,9 +266,9 @@ async function verifyComposerReturnsIdleAfterTurn(
     const input = page.locator(".session-composer [contenteditable='true']");
     await input.fill("状态收敛测试");
     await input.press("Enter");
-    await expect(page.getByText("正在工作", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("agent-working-spinner")).toBeVisible();
     await expect(page.getByText("这是 Preview Runtime 的本地回复；它不会发送到 ClawChat。").last()).toBeVisible();
-    await expect(page.getByText("正在工作", { exact: true })).toHaveCount(0, { timeout: 5_000 });
+    await expect(page.getByTestId("agent-working-spinner")).toHaveCount(0, { timeout: 5_000 });
   } finally {
     await page.close();
   }
@@ -537,6 +545,13 @@ async function verifySmallWindowNavigation(browser: Awaited<ReturnType<typeof ch
       `Session search must use the drawer width: ${JSON.stringify({ drawerBox, searchBox })}`,
     );
 
+    await dialog.getByText("clawchat-plugin-connect", { exact: true }).first().click();
+    await dialog.getByText("App Server 与 Web Client", { exact: true }).click();
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    await expect(dialog).toHaveCount(0);
+
+    await page.getByTestId("mobile-nav-toggle").click();
+    await expect(dialog).toBeVisible();
     await createButton.click();
     const createDialog = page.locator("dialog.new-session-dialog");
     await expect(createDialog).toBeVisible();
@@ -639,6 +654,18 @@ function withoutRequestId(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const { requestId: _requestId, ...body } = value as Record<string, unknown>;
   return body;
+}
+
+async function availablePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Could not allocate a preview server port");
+  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  return address.port;
 }
 
 async function waitForServer(url: string): Promise<void> {

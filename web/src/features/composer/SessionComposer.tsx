@@ -242,22 +242,24 @@ export function SessionComposer({
               onClick={send.cancel}
             />
           ) : isAgentWorking ? (
-            <div className="composer-working-control">
-              <span className="composer-working-indicator">
-                <Spinner size="sm" aria-label="Agent 正在工作" />
-                正在工作
-              </span>
-              <Button
-                label="停止"
-                tooltip="停止当前任务"
-                icon={<Icon icon={Square} size="sm" />}
-                size="md"
-                variant="secondary"
-                isLoading={stop.isPending}
-                isDisabled={stop.isPending}
-                onClick={() => stop.mutate()}
-              />
-            </div>
+            <Button
+              label="停止"
+              tooltip="停止当前任务"
+              icon={
+                stop.isPending ? (
+                  <Icon icon={Square} size="sm" />
+                ) : (
+                  <span data-testid="agent-working-spinner" aria-hidden="true">
+                    <Spinner size="sm" />
+                  </span>
+                )
+              }
+              size="md"
+              variant="secondary"
+              isLoading={stop.isPending}
+              isDisabled={stop.isPending}
+              onClick={() => stop.mutate()}
+            />
           ) : (
             <ChatSendButton
               isDisabled={composerDisabled || (!value.trim() && attachments.length === 0)}

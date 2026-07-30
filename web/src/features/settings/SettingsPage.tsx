@@ -4,7 +4,7 @@ import { Card } from "@astryxdesign/core/Card";
 import { Selector } from "@astryxdesign/core/Selector";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import type { BindingPreferenceView, BootstrapView } from "../../../../src/client-contract";
 import {
   addProject,
@@ -90,44 +90,50 @@ function BindingSettings({
         <Banner status="error" title="保存失败" description={save.error.message} container="section" />
       ) : null}
       <div className="settings-fields">
-        <TextInput label="显示名称" value={displayName} onChange={setDisplayName} width="100%" />
-        <Selector
-          label="模型"
-          description="默认值会跟随 Runtime Adapter；Session 仍可单独覆盖。"
-          options={[
-            { value: "default", label: "Runtime 默认值" },
-            ...binding.modelOptions.map((option) => ({
-              value: option.id,
-              label: `${option.displayName} (${option.id})`,
-            })),
-          ]}
-          value={model || "default"}
-          onChange={(value) => {
-            const option = binding.modelOptions.find((candidate) => candidate.id === value);
-            setModel(value === "default" ? "" : value);
-            setEffort(option?.defaultReasoningEffort ?? "default");
-          }}
-          isDisabled={binding.modelOptions.length === 0}
-          disabledMessage="Runtime Adapter 不支持模型选择。"
-          width="100%"
-        />
-        <Selector
-          label="推理强度"
-          options={effortOptions}
-          value={effort}
-          onChange={setEffort}
-          isDisabled={!selectedModel}
-          disabledMessage="Runtime Adapter 未提供可用模型。"
-          width="100%"
-        />
-        <Selector
-          label="ClawChat 输出可见性"
-          description="Web 始终尽可能展示完整的结构化输出。"
-          options={["minimal", "normal", "full"]}
-          value={visibility}
-          onChange={(value) => setVisibility(value as BootstrapView["outputVisibility"])}
-          width="100%"
-        />
+        <SettingsField>
+          <TextInput label="显示名称" value={displayName} onChange={setDisplayName} width="100%" />
+        </SettingsField>
+        <SettingsField description="默认值会跟随 Runtime Adapter；Session 仍可单独覆盖。">
+          <Selector
+            label="模型"
+            options={[
+              { value: "default", label: "Runtime 默认值" },
+              ...binding.modelOptions.map((option) => ({
+                value: option.id,
+                label: `${option.displayName} (${option.id})`,
+              })),
+            ]}
+            value={model || "default"}
+            onChange={(value) => {
+              const option = binding.modelOptions.find((candidate) => candidate.id === value);
+              setModel(value === "default" ? "" : value);
+              setEffort(option?.defaultReasoningEffort ?? "default");
+            }}
+            isDisabled={binding.modelOptions.length === 0}
+            disabledMessage="Runtime Adapter 不支持模型选择。"
+            width="100%"
+          />
+        </SettingsField>
+        <SettingsField>
+          <Selector
+            label="推理强度"
+            options={effortOptions}
+            value={effort}
+            onChange={setEffort}
+            isDisabled={!selectedModel}
+            disabledMessage="Runtime Adapter 未提供可用模型。"
+            width="100%"
+          />
+        </SettingsField>
+        <SettingsField description="Web 始终尽可能展示完整的结构化输出。">
+          <Selector
+            label="ClawChat 输出可见性"
+            options={["minimal", "normal", "full"]}
+            value={visibility}
+            onChange={(value) => setVisibility(value as BootstrapView["outputVisibility"])}
+            width="100%"
+          />
+        </SettingsField>
       </div>
     </Card>
   );
@@ -182,15 +188,18 @@ function ProjectSettings({ projects }: { projects: Array<{ workspaceId: string; 
         <Banner status="error" title="移除失败" description={remove.error.message} container="section" />
       ) : null}
       <div className="settings-fields">
-        <TextInput label="根目录绝对路径" value={rootPath} onChange={setRootPath} width="100%" />
-        <TextInput
-          label="附加目录"
-          description="可选；用逗号分隔多个绝对路径。"
-          value={additionalDirectories}
-          onChange={setAdditionalDirectories}
-          isOptional
-          width="100%"
-        />
+        <SettingsField>
+          <TextInput label="根目录绝对路径" value={rootPath} onChange={setRootPath} width="100%" />
+        </SettingsField>
+        <SettingsField description="可选；用逗号分隔多个绝对路径。">
+          <TextInput
+            label="附加目录"
+            value={additionalDirectories}
+            onChange={setAdditionalDirectories}
+            isOptional
+            width="100%"
+          />
+        </SettingsField>
       </div>
       <div className="project-settings-list">
         {projects.length === 0 ? <p>尚未注册 Project。</p> : null}
@@ -210,5 +219,14 @@ function ProjectSettings({ projects }: { projects: Array<{ workspaceId: string; 
         ))}
       </div>
     </Card>
+  );
+}
+
+function SettingsField({ children, description }: { children: ReactNode; description?: string }) {
+  return (
+    <div className="settings-field">
+      {children}
+      {description ? <p className="settings-field-description">{description}</p> : null}
+    </div>
   );
 }

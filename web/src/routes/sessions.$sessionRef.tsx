@@ -6,6 +6,7 @@ import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
 import { Popover } from "@astryxdesign/core/Popover";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { useToast } from "@astryxdesign/core/Toast";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -35,7 +36,18 @@ function SessionPage() {
   const bootstrap = useQuery(bootstrapQueryOptions);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const toast = useToast();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const transcriptCompleteness = session.data?.transcriptCompleteness;
+  useEffect(() => {
+    if (!transcriptCompleteness || transcriptCompleteness === "complete") return;
+    toast({
+      body: transcriptCompletenessMessage(transcriptCompleteness),
+      type: "info",
+      uniqueID: `transcript-completeness:${sessionRef}`,
+      collisionBehavior: "overwrite",
+    });
+  }, [sessionRef, toast, transcriptCompleteness]);
   const lifecycle = useMutation({
     mutationFn: async (action: "archive" | "unarchive" | "delete") => {
       if (action === "archive") return await archiveSession(sessionRef);
@@ -137,14 +149,6 @@ function SessionPage() {
             status="info"
             title="此 Session 已归档"
             description="历史消息仍可查看；恢复后才能继续发送消息。"
-            container="section"
-          />
-        ) : null}
-        {view.transcriptCompleteness !== "complete" ? (
-          <Banner
-            status="warning"
-            title="历史消息可能不完整"
-            description="Connect 会继续显示本次运行期间捕获的消息。"
             container="section"
           />
         ) : null}
@@ -295,4 +299,12 @@ function SessionModelControls({ view }: { view: SessionView }) {
 
 function statusLabel(status: "idle" | "running" | "queued" | "offline" | "error"): string {
   return { idle: "空闲", running: "运行中", queued: "排队中", offline: "离线", error: "错误" }[status];
+}
+
+function transcriptCompletenessMessage(
+  completeness: Exclude<SessionView["transcriptCompleteness"], "complete">,
+): string {
+  return completeness === "partial"
+    ? "部分工具执行细节可能缺失。"
+    : "仅显示 Connect 已同步的消息；此 Session 的早期 Runtime 历史不可用。";
 }

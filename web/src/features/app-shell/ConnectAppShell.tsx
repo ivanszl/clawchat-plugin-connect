@@ -5,7 +5,7 @@ import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { Settings } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { catalogQueryOptions, refreshSessionCatalog } from "../../client-interface/query-options";
 import { RefreshIcon } from "../../components/icons";
 import { SessionNavigation } from "../session-catalog/SessionNavigation";
@@ -17,7 +17,10 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
     mutationFn: async () => await refreshSessionCatalog(queryClient),
   });
   const navigate = useNavigate();
-  const isSettings = useRouterState({ select: (state) => state.location.pathname === "/settings" });
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const isSettings = pathname === "/settings";
+  const [mobileNav, setMobileNav] = useState({ isOpen: false, openedAtPath: pathname });
+  const isMobileNavOpen = mobileNav.openedAtPath === pathname && mobileNav.isOpen;
   return (
     <AppShell
       variant="elevated"
@@ -51,7 +54,11 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
         />
       }
       sideNav={<SessionNavigation />}
-      mobileNav={{ breakpoint: "md" }}
+      mobileNav={{
+        breakpoint: "md",
+        isOpen: isMobileNavOpen,
+        onOpenChange: (isOpen) => setMobileNav({ isOpen, openedAtPath: pathname }),
+      }}
     >
       {children}
     </AppShell>
