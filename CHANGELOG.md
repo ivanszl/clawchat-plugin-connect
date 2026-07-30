@@ -2,6 +2,17 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.19] - 2026-07-30
+
+### Changed
+
+- Replaced unsupported ClawChat approval and question cards with owner-authorized text commands: `/approve`, `/approve session`, `/deny`, and numbered answers such as `/1` and `/2`.
+- Identified `/mode` as a ClawChat Connect sandbox command instead of a Codex command.
+
+### Fixed
+
+- Made SQLite wait for transient external writers instead of crashing the Connect Service immediately with `SQLITE_BUSY`.
+
 ## [0.1.0-alpha.18] - 2026-07-30
 
 ### Changed
