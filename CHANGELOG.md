@@ -2,6 +2,13 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.20] - 2026-07-30
+
+### Changed
+
+- Required an explicit mention of the activated ClawChat Agent before group messages can enter Connect command, interaction, or Runtime Turn routing.
+- Removed reply quotes from direct-message responses while preserving reply context in groups.
+
 ## [0.1.0-alpha.19] - 2026-07-30
 
 ### Changed
