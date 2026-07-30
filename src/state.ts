@@ -2342,12 +2342,17 @@ export class ConnectStateStore {
   private async migrateSchema(): Promise<void> {
     const db = await this.requireDb();
     const columns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_sessions)");
+    if (!columns.some((column) => column.name === "project_id"))
+      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT REFERENCES projects(project_id)");
     if (!columns.some((column) => column.name === "has_messages"))
       await db.exec("ALTER TABLE runtime_sessions ADD COLUMN has_messages INTEGER NOT NULL DEFAULT 0");
     if (!columns.some((column) => column.name === "model"))
       await db.exec("ALTER TABLE runtime_sessions ADD COLUMN model TEXT");
     if (!columns.some((column) => column.name === "reasoning_effort"))
       await db.exec("ALTER TABLE runtime_sessions ADD COLUMN reasoning_effort TEXT");
+    await db.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_sessions_identity ON runtime_sessions(chat_id, agent_id, session_id)",
+    );
     const intentColumns = await db.all<{ name: string }[]>("PRAGMA table_info(session_intents)");
     if (!intentColumns.some((column) => column.name === "model"))
       await db.exec("ALTER TABLE session_intents ADD COLUMN model TEXT");

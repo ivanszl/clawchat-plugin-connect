@@ -487,6 +487,36 @@ describe("state store", () => {
     await store.close();
   });
 
+  it("upgrades the pre-Project runtime Session schema without replacing local state", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const legacy = new Database(dbPath, { create: true });
+    legacy.exec(
+      "CREATE TABLE runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, name TEXT, mode TEXT, cwd TEXT, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, session_id)); INSERT INTO runtime_sessions VALUES ('chat-1', 'session-1', 'codex', 'thread-1', 'Legacy Session', NULL, '/legacy/workspace', 1, 1, 1);",
+    );
+    legacy.close();
+
+    const store = createStateStore({ dbPath });
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      name: "Legacy Session",
+      projectId: null,
+      runtimeSessionId: "thread-1",
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "codex",
+      runtimeSessionId: "thread-1",
+      projectId: null,
+      name: "Migrated Session",
+    });
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
+      name: "Migrated Session",
+      projectId: null,
+    });
+    await store.close();
+  });
+
   it("migrates the current legacy empty Session to an Intent and removes empty history", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");
