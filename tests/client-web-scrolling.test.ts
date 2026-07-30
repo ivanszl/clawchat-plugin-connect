@@ -1,6 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import type { TranscriptBlock } from "../src/client-contract";
-import { groupBlocksForRendering } from "../web/src/features/transcript/transcript-render-groups";
+import {
+  groupBlocksForRendering,
+  groupTranscriptBlocks,
+} from "../web/src/features/transcript/transcript-render-groups";
 
 const viewportUrl = new URL("../web/src/features/transcript/TranscriptViewport.tsx", import.meta.url);
 
@@ -41,6 +44,20 @@ describe("Connect Client transcript scrolling", () => {
       "files-1",
     ]);
   });
+
+  it("keeps the active Turn DOM key stable while folded tool output streams in", () => {
+    const user = transcriptBlock("user-1", "message");
+    const firstTool = transcriptBlock("tool-1", "tool-call");
+    const initialGroup = groupTranscriptBlocks([user, firstTool])[0];
+    const updatedGroup = groupTranscriptBlocks([
+      user,
+      { ...firstTool, revision: 2 },
+      transcriptBlock("tool-2", "tool-call"),
+    ])[0];
+
+    expect(initialGroup?.id).toBe("user-1");
+    expect(updatedGroup?.id).toBe(initialGroup?.id);
+  });
 });
 
 function transcriptBlock(id: string, type: TranscriptBlock["type"]): TranscriptBlock {
@@ -58,5 +75,11 @@ function transcriptBlock(id: string, type: TranscriptBlock["type"]): TranscriptB
   if (type === "tool-call") return { ...base, type, title: "update", status: "complete", detail: "" };
   if (type === "command") return { ...base, type, command: "git status", output: "", status: "complete", exitCode: 0 };
   if (type === "file-change") return { ...base, type, status: "complete", files: [] };
-  return { ...base, type: "message", role: "assistant", author: "Agent", markdown: "" };
+  return {
+    ...base,
+    type: "message",
+    role: id.startsWith("user-") ? "user" : "assistant",
+    author: id.startsWith("user-") ? "User" : "Agent",
+    markdown: "",
+  };
 }

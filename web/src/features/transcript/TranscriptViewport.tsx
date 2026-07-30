@@ -7,7 +7,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { TranscriptBlock, TranscriptPageView } from "../../../../src/client-contract";
 import { ThreadIcon } from "../../components/icons";
 import { TranscriptBlockView, TranscriptToolCallsView } from "./TranscriptBlockView";
-import { groupBlocksForRendering } from "./transcript-render-groups";
+import { groupBlocksForRendering, groupTranscriptBlocks, type TranscriptGroup } from "./transcript-render-groups";
 
 export interface TranscriptViewportProps {
   pages: TranscriptPageView[];
@@ -177,27 +177,6 @@ export function mergePages(pages: TranscriptPageView[]): TranscriptBlock[] {
     }
   }
   return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
-}
-
-export interface TranscriptGroup {
-  id: string;
-  createdAt: string;
-  blocks: TranscriptBlock[];
-}
-
-export function groupTranscriptBlocks(blocks: TranscriptBlock[]): TranscriptGroup[] {
-  const groups: TranscriptGroup[] = [];
-  for (const block of blocks) {
-    const beginsTurn = block.type === "message" && block.role === "user";
-    let group = groups.at(-1);
-    if (!group || beginsTurn) {
-      group = { id: block.id, createdAt: block.createdAt, blocks: [] };
-      groups.push(group);
-    }
-    group.blocks.push(block);
-    group.id = group.blocks.at(-1)?.id ?? group.id;
-  }
-  return groups;
 }
 
 function formatTranscriptDate(value: string): string {
