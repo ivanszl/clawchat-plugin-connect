@@ -30,7 +30,7 @@ printf '%s' '<json>' | clawchat-connect tool call <tool-name> --input-json -
 ## Message rules
 
 - For mentions, put visible labels in `mentions[].display`, not in `text`.
-- For reactions, always pass the exact `targetMessageId` from turn context or a prior result.
+- For reactions, always pass the exact `targetMessageId` and `chatType` from turn context or a prior result.
 - After a successful mention or reaction that fully answers the request, do not emit a duplicate ordinary reply.
 - Use `clawchat_leave_group` only with a concrete group `conversationId`.
 

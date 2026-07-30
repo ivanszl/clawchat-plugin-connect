@@ -29,6 +29,11 @@ export interface ToolRequestRecord {
   state: ToolRequestState;
   result: unknown;
   error: string | null;
+  resultTruncated: boolean;
+  errorTruncated: boolean;
+  sessionRef: string | null;
+  turnId: string | null;
+  origin: string | null;
   createdAt: number;
   claimedAt: number | null;
   settledAt: number | null;
@@ -1993,20 +1998,29 @@ export class ConnectStateStore {
     bindingId: string;
     toolName: string;
     normalizedInput: Record<string, unknown>;
+    recordedInput?: Record<string, unknown>;
     timeoutMs: number;
+    provenance?: { sessionRef?: string; turnId?: string; origin?: string };
   }): Promise<ToolRequestRecord> {
     const db = await this.requireDb();
     const now = Date.now();
     await db.run(
-      `INSERT INTO tool_requests(request_id, binding_id, tool_name, input_json, state, created_at, expires_at)
-       VALUES (?, ?, ?, ?, 'pending', ?, ?)
+      `INSERT INTO tool_requests(
+         request_id, binding_id, tool_name, input_json, record_input_json, state, created_at, expires_at,
+         session_ref, turn_id, origin
+       )
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
        ON CONFLICT(request_id) DO NOTHING`,
       input.requestId,
       input.bindingId,
       input.toolName,
       JSON.stringify(input.normalizedInput),
+      JSON.stringify(input.recordedInput ?? input.normalizedInput),
       now,
       now + input.timeoutMs,
+      input.provenance?.sessionRef ?? null,
+      input.provenance?.turnId ?? null,
+      input.provenance?.origin ?? null,
     );
     const record = await this.getToolRequest(input.requestId);
     if (!record) throw new Error(`failed to persist tool request ${input.requestId}`);
@@ -2026,7 +2040,8 @@ export class ConnectStateStore {
     const now = Date.now();
     return db.transaction((run, get) => {
       run(
-        `UPDATE tool_requests SET state = 'expired', error = 'request expired before execution', settled_at = ?
+        `UPDATE tool_requests SET state = 'expired', error = 'request expired before execution',
+         input_json = record_input_json, settled_at = ?
          WHERE binding_id = ? AND state = 'pending' AND expires_at <= ?`,
         now,
         bindingId,
@@ -2055,23 +2070,48 @@ export class ConnectStateStore {
   ): Promise<void> {
     const db = await this.requireDb();
     const boundedResult = outcome.state === "succeeded" ? boundedJson(outcome.result) : null;
-    const boundedError = outcome.state === "succeeded" ? null : outcome.error.slice(0, 8_192);
+    const boundedError = outcome.state === "succeeded" ? null : boundedText(outcome.error, 8_192);
     await db.run(
-      `UPDATE tool_requests SET state = ?, result_json = ?, error = ?, settled_at = ?
+      `UPDATE tool_requests SET state = ?, result_json = ?, error = ?, result_truncated = ?,
+       error_truncated = ?, input_json = record_input_json, settled_at = ?
        WHERE request_id = ? AND state = 'running'`,
       outcome.state,
-      boundedResult,
-      boundedError,
+      boundedResult?.value ?? null,
+      boundedError?.value ?? null,
+      boundedResult?.truncated ? 1 : 0,
+      boundedError?.truncated ? 1 : 0,
       Date.now(),
       requestId,
     );
+  }
+
+  async expireToolRequest(requestId: string): Promise<ToolRequestRecord | null> {
+    const db = await this.requireDb();
+    const now = Date.now();
+    await db.run(
+      `UPDATE tool_requests SET
+         state = CASE state WHEN 'pending' THEN 'expired' ELSE 'indeterminate' END,
+         error = CASE state
+           WHEN 'pending' THEN 'request expired before execution'
+           ELSE 'local deadline elapsed after execution began; outcome is indeterminate'
+         END,
+         input_json = record_input_json,
+         settled_at = ?
+       WHERE request_id = ? AND state IN ('pending', 'running')`,
+      now,
+      requestId,
+    );
+    return await this.getToolRequest(requestId);
   }
 
   async markInterruptedToolRequestsIndeterminate(bindingId: string): Promise<void> {
     const db = await this.requireDb();
     await db.run(
       `UPDATE tool_requests
-       SET state = 'indeterminate', error = 'Connect Service stopped after claiming this request; it will not be retried', settled_at = ?
+       SET state = 'indeterminate',
+         error = 'Connect Service stopped after claiming this request; it will not be retried',
+         input_json = record_input_json,
+         settled_at = ?
        WHERE binding_id = ? AND state = 'running'`,
       Date.now(),
       bindingId,
@@ -2296,7 +2336,13 @@ export class ConnectStateStore {
         claimed_at INTEGER,
         settled_at INTEGER,
         expires_at INTEGER NOT NULL,
-        attempt_count INTEGER NOT NULL DEFAULT 0
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        record_input_json TEXT NOT NULL,
+        result_truncated INTEGER NOT NULL DEFAULT 0,
+        error_truncated INTEGER NOT NULL DEFAULT 0,
+        session_ref TEXT,
+        turn_id TEXT,
+        origin TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_tool_requests_claim
         ON tool_requests(binding_id, state, created_at);
@@ -2368,6 +2414,20 @@ export class ConnectStateStore {
     const toolRequestColumns = await db.all<{ name: string }[]>("PRAGMA table_info(tool_requests)");
     if (!toolRequestColumns.some((column) => column.name === "attempt_count"))
       await db.exec("ALTER TABLE tool_requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
+    if (!toolRequestColumns.some((column) => column.name === "record_input_json")) {
+      await db.exec("ALTER TABLE tool_requests ADD COLUMN record_input_json TEXT");
+      await db.exec("UPDATE tool_requests SET record_input_json = input_json WHERE record_input_json IS NULL");
+    }
+    if (!toolRequestColumns.some((column) => column.name === "result_truncated"))
+      await db.exec("ALTER TABLE tool_requests ADD COLUMN result_truncated INTEGER NOT NULL DEFAULT 0");
+    if (!toolRequestColumns.some((column) => column.name === "error_truncated"))
+      await db.exec("ALTER TABLE tool_requests ADD COLUMN error_truncated INTEGER NOT NULL DEFAULT 0");
+    if (!toolRequestColumns.some((column) => column.name === "session_ref"))
+      await db.exec("ALTER TABLE tool_requests ADD COLUMN session_ref TEXT");
+    if (!toolRequestColumns.some((column) => column.name === "turn_id"))
+      await db.exec("ALTER TABLE tool_requests ADD COLUMN turn_id TEXT");
+    if (!toolRequestColumns.some((column) => column.name === "origin"))
+      await db.exec("ALTER TABLE tool_requests ADD COLUMN origin TEXT");
     await db.run(
       `UPDATE runtime_sessions AS rs SET has_messages = 1 WHERE has_messages = 0 AND (runtime_session_id IS NOT NULL OR EXISTS (SELECT 1 FROM clawchat_messages AS message WHERE message.local_agent_id = rs.agent_id AND message.chat_id = rs.chat_id AND message.direction = 'inbound' AND message.kind = 'message' AND COALESCE(message.text, '') NOT LIKE '/%' AND message.created_at >= rs.created_at AND NOT EXISTS (SELECT 1 FROM runtime_sessions AS newer WHERE newer.chat_id = rs.chat_id AND newer.agent_id = rs.agent_id AND newer.created_at > rs.created_at AND newer.created_at <= message.created_at)))`,
     );
@@ -2444,6 +2504,11 @@ function toolRequestRecord(row: Record<string, unknown>): ToolRequestRecord {
     state: stringValue(row.state) as ToolRequestState,
     result: row.result_json == null ? null : parseJsonValue(row.result_json),
     error: nullableString(row.error),
+    resultTruncated: numberValue(row.result_truncated) === 1,
+    errorTruncated: numberValue(row.error_truncated) === 1,
+    sessionRef: nullableString(row.session_ref),
+    turnId: nullableString(row.turn_id),
+    origin: nullableString(row.origin),
     createdAt: numberValue(row.created_at),
     claimedAt: row.claimed_at == null ? null : numberValue(row.claimed_at),
     settledAt: row.settled_at == null ? null : numberValue(row.settled_at),
@@ -2452,10 +2517,35 @@ function toolRequestRecord(row: Record<string, unknown>): ToolRequestRecord {
   };
 }
 
-function boundedJson(value: unknown, maximumBytes = 64 * 1024): string {
+function boundedJson(value: unknown, maximumBytes = 64 * 1024): { value: string; truncated: boolean } {
   const serialized = toJson(value) ?? "null";
-  if (Buffer.byteLength(serialized, "utf8") <= maximumBytes) return serialized;
-  return JSON.stringify({ truncated: true, preview: serialized.slice(0, maximumBytes - 128) });
+  if (Buffer.byteLength(serialized, "utf8") <= maximumBytes) return { value: serialized, truncated: false };
+  let lower = 0;
+  let upper = serialized.length;
+  let bounded = JSON.stringify({ truncated: true, preview: "" });
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const candidate = JSON.stringify({ truncated: true, preview: serialized.slice(0, middle) });
+    if (Buffer.byteLength(candidate, "utf8") <= maximumBytes) {
+      bounded = candidate;
+      lower = middle + 1;
+    } else {
+      upper = middle - 1;
+    }
+  }
+  return {
+    value: bounded,
+    truncated: true,
+  };
+}
+function boundedText(value: string, maximumBytes: number): { value: string; truncated: boolean } {
+  if (Buffer.byteLength(value, "utf8") <= maximumBytes) return { value, truncated: false };
+  return { value: truncateUtf8(value, maximumBytes), truncated: true };
+}
+function truncateUtf8(value: string, maximumBytes: number): string {
+  let end = Math.min(value.length, maximumBytes);
+  while (Buffer.byteLength(value.slice(0, end), "utf8") > maximumBytes) end -= 1;
+  return value.slice(0, end);
 }
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : String(value ?? "");

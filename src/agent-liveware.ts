@@ -50,14 +50,17 @@ export async function executeAgentLiveware(
     deviceId: string;
     registerApp(name: string, appId: string, url: string): Promise<unknown>;
     unregisterApp(appId: string): Promise<unknown>;
+    managedAppId?: string | null;
+    connectControl?: (accessToken: string) => Promise<LivewareControlSession>;
   },
 ): Promise<unknown> {
   const input = validateAgentLivewareInput(operation, rawInput);
-  const dependencies = createLivewareExposureDependencies({
-    livewarePath: await resolveLivewareExecutablePath(),
-    clawChatBaseUrl: options.clawChatBaseUrl,
-  });
-  const control = await dependencies.controlPlane.connect(options.activation.accessToken);
+  const control = options.connectControl
+    ? await options.connectControl(options.activation.accessToken)
+    : await createLivewareExposureDependencies({
+        livewarePath: await resolveLivewareExecutablePath(),
+        clawChatBaseUrl: options.clawChatBaseUrl,
+      }).controlPlane.connect(options.activation.accessToken);
   const appId = typeof input.appId === "string" ? input.appId : "";
   switch (operation) {
     case "liveware_app_list":
@@ -67,22 +70,22 @@ export async function executeAgentLiveware(
     case "liveware_app_create":
       return await control.createApp(String(input.name), input.policy as "private" | "public");
     case "liveware_app_access":
-      await assertMutable(control, appId);
+      await assertMutable(control, appId, options.managedAppId);
       await control.setAccessPolicy(appId, input.policy as "private" | "public");
       return await inspect(control, appId);
     case "liveware_app_delete":
-      await assertMutable(control, appId);
+      await assertMutable(control, appId, options.managedAppId);
       await options.unregisterApp(appId);
       await control.deleteApp(appId);
       return { deleted: true, appId };
     case "liveware_tunnel_bind": {
-      const app = await assertMutable(control, appId);
+      const app = await assertMutable(control, appId, options.managedAppId);
       const publicUrl = await control.bindTunnel(appId, String(input.upstream));
       await options.registerApp(app.name, appId, publicUrl);
       return { appId, name: app.name, publicUrl, registeredInClawChat: true };
     }
     case "liveware_tunnel_unbind":
-      await assertMutable(control, appId);
+      await assertMutable(control, appId, options.managedAppId);
       await options.unregisterApp(appId);
       if (!control.unbindTunnel) throw new Error("bundled Liveware does not support tunnel unbind");
       await control.unbindTunnel(appId);
@@ -90,9 +93,10 @@ export async function executeAgentLiveware(
   }
 }
 
-async function assertMutable(control: LivewareControlSession, appId: string) {
+async function assertMutable(control: LivewareControlSession, appId: string, managedAppId?: string | null) {
   const app = await inspect(control, appId);
-  if (app.name === LIVEWARE_APP_NAME) throw new Error(`the managed ${LIVEWARE_APP_NAME} app cannot be changed`);
+  if (app.appId === managedAppId || app.name === LIVEWARE_APP_NAME)
+    throw new Error(`the managed ${LIVEWARE_APP_NAME} app cannot be changed`);
   return app;
 }
 

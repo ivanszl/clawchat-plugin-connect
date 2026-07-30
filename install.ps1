@@ -67,6 +67,14 @@ $extractedDirectory = Join-Path $temporaryDirectory "extracted"
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
+$transactionStarted = $false
+$transactionCommitted = $false
+$backupDirectory = Join-Path $temporaryDirectory "backup"
+$connectExisted = $false
+$livewareExisted = $false
+$clientExisted = $false
+$skillsExisted = $false
+$licensesExisted = $false
 
 try {
   Write-Host "Downloading ClawChat Connect $Version for Windows $releaseArchitecture..."
@@ -108,6 +116,18 @@ try {
   New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
   $connectTarget = Join-Path $InstallDirectory "clawchat-connect.exe"
   $livewareTarget = Join-Path $InstallDirectory "liveware.exe"
+  & $connectSource "--help" | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Staged clawchat-connect.exe failed its startup check"
+  }
+  & $livewareSource "--help" | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Staged liveware.exe failed its startup check"
+  }
+  & $connectSource "skills" "preflight" | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Managed Agent skill target failed its preflight check"
+  }
   if (Test-Path -LiteralPath $connectTarget) {
     $stopArguments = @("service", "stop")
     & $connectTarget @stopArguments 2>$null | Out-Null
@@ -118,35 +138,56 @@ try {
   $livewareStaging = "$livewareTarget.new"
   Copy-Item -LiteralPath $connectSource -Destination $connectStaging -Force
   Copy-Item -LiteralPath $livewareSource -Destination $livewareStaging -Force
-  Move-Item -LiteralPath $connectStaging -Destination $connectTarget -Force
-  Move-Item -LiteralPath $livewareStaging -Destination $livewareTarget -Force
-
   $clientTarget = Join-Path $InstallDirectory "clawchat-connect-client"
   $clientStaging = "$clientTarget.new"
   if (Test-Path -LiteralPath $clientStaging) {
     Remove-Item -LiteralPath $clientStaging -Recurse -Force
   }
   Copy-Item -LiteralPath $clientSource -Destination $clientStaging -Recurse
-  if (Test-Path -LiteralPath $clientTarget) {
-    Remove-Item -LiteralPath $clientTarget -Recurse -Force
-  }
-  Move-Item -LiteralPath $clientStaging -Destination $clientTarget
-
   $skillsBundleTarget = Join-Path $InstallDirectory "skills"
   $skillsBundleStaging = "$skillsBundleTarget.new"
   if (Test-Path -LiteralPath $skillsBundleStaging) {
     Remove-Item -LiteralPath $skillsBundleStaging -Recurse -Force
   }
   Copy-Item -LiteralPath $skillsSource -Destination $skillsBundleStaging -Recurse
-  if (Test-Path -LiteralPath $skillsBundleTarget) {
-    Remove-Item -LiteralPath $skillsBundleTarget -Recurse -Force
-  }
-  Move-Item -LiteralPath $skillsBundleStaging -Destination $skillsBundleTarget
+  $licenseStaging = Join-Path $temporaryDirectory "licenses-new"
+  New-Item -ItemType Directory -Path $licenseStaging | Out-Null
+  Copy-Item -LiteralPath (Join-Path $extractedDirectory "CHANGELOG.md") -Destination $licenseStaging
+  Copy-Item -LiteralPath (Join-Path $extractedDirectory "LICENSE") -Destination $licenseStaging
+  Copy-Item -LiteralPath (Join-Path $extractedDirectory "THIRD_PARTY_NOTICES.md") -Destination $licenseStaging
 
-  New-Item -ItemType Directory -Path $LicenseDirectory -Force | Out-Null
-  Copy-Item -LiteralPath (Join-Path $extractedDirectory "CHANGELOG.md") -Destination $LicenseDirectory -Force
-  Copy-Item -LiteralPath (Join-Path $extractedDirectory "LICENSE") -Destination $LicenseDirectory -Force
-  Copy-Item -LiteralPath (Join-Path $extractedDirectory "THIRD_PARTY_NOTICES.md") -Destination $LicenseDirectory -Force
+  New-Item -ItemType Directory -Path $backupDirectory | Out-Null
+  $targets = @(
+    @{ Target = $connectTarget; Backup = (Join-Path $backupDirectory "connect"); Name = "connect" },
+    @{ Target = $livewareTarget; Backup = (Join-Path $backupDirectory "liveware"); Name = "liveware" },
+    @{ Target = $clientTarget; Backup = (Join-Path $backupDirectory "client"); Name = "client" },
+    @{ Target = $skillsBundleTarget; Backup = (Join-Path $backupDirectory "skills"); Name = "skills" },
+    @{ Target = $LicenseDirectory; Backup = (Join-Path $backupDirectory "licenses"); Name = "licenses" }
+  )
+  foreach ($entry in $targets) {
+    if (Test-Path -LiteralPath $entry.Target) {
+      Copy-Item -LiteralPath $entry.Target -Destination $entry.Backup -Recurse
+      Set-Variable -Name ($entry.Name + "Existed") -Value $true
+    }
+  }
+  $transactionStarted = $true
+  foreach ($entry in $targets) {
+    if (Test-Path -LiteralPath $entry.Target) {
+      Remove-Item -LiteralPath $entry.Target -Recurse -Force
+    }
+  }
+  Move-Item -LiteralPath $connectStaging -Destination $connectTarget
+  Move-Item -LiteralPath $livewareStaging -Destination $livewareTarget
+  Move-Item -LiteralPath $clientStaging -Destination $clientTarget
+  Move-Item -LiteralPath $skillsBundleStaging -Destination $skillsBundleTarget
+  New-Item -ItemType Directory -Path (Split-Path -Parent $LicenseDirectory) -Force | Out-Null
+  Move-Item -LiteralPath $licenseStaging -Destination $LicenseDirectory
+
+  & $connectTarget "skills" "install" | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Managed Agent skill installation failed"
+  }
+  $transactionCommitted = $true
 
   $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
   if ($null -eq $userPath) {
@@ -166,24 +207,24 @@ try {
   }
   $env:PATH = "$InstallDirectory;$env:PATH"
 
-  & $connectTarget "--help" | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Installed clawchat-connect.exe failed its startup check"
-  }
-  & $livewareTarget "--help" | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Installed liveware.exe failed its startup check"
-  }
-  & $connectTarget "skills" "install" | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Managed Agent skill installation failed"
-  }
-
   Write-Host "Installed clawchat-connect.exe to $connectTarget"
   Write-Host "Installed bundled Liveware to $livewareTarget"
   Write-Host "Installed Connect Client assets to $clientTarget"
   Write-Host "Installed managed Agent skills to $HOME\.agents\skills"
   Write-Host "Run 'clawchat-connect init --agent work --kind codex' to begin."
+} catch {
+  if ($transactionStarted -and -not $transactionCommitted) {
+    foreach ($entry in $targets) {
+      if (Test-Path -LiteralPath $entry.Target) {
+        Remove-Item -LiteralPath $entry.Target -Recurse -Force
+      }
+      $existed = Get-Variable -Name ($entry.Name + "Existed") -ValueOnly
+      if ($existed) {
+        Copy-Item -LiteralPath $entry.Backup -Destination $entry.Target -Recurse
+      }
+    }
+  }
+  throw
 } finally {
   if (Test-Path -LiteralPath $temporaryDirectory) {
     Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force

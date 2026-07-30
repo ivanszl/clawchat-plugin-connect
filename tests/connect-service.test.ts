@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindingRuntimeHandle } from "../src/binding-runtime";
-import { defaultConfig } from "../src/config";
+import { defaultConfig, getAgentBinding } from "../src/config";
 import { startConnectService } from "../src/connect-service";
 import type { ClawChatLivewarePort, LivewareControlPlanePort, LivewareControlSession } from "../src/liveware-exposure";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
@@ -43,18 +43,20 @@ describe("Connect Service", () => {
     await stateStore.upsertActivation(activation("codex-work"));
     await stateStore.upsertActivation(activation("codex-review"));
     const config = serviceConfig(["codex-work", "codex-review", "not-activated"]);
+    config.agents["codex-review"] = { kind: "codex" };
     config.stateDbPath = stateStore.dbPath;
     const closed: string[] = [];
-    const startBindingRuntime = mock(
-      async (options): Promise<BindingRuntimeHandle> => ({
+    const startBindingRuntime = mock(async (options): Promise<BindingRuntimeHandle> => {
+      await options.runtimeAdapters.prepare(getAgentBinding(options.config, options.agentId));
+      return {
         agentId: options.agentId,
         websocketUrl: config.websocketUrl,
         deviceId: "device-1",
         close: async () => {
           closed.push(options.agentId);
         },
-      }),
-    );
+      };
+    });
     const stopClientInterface = mock(async () => undefined);
     const startClientInterface = mock(async () => ({ origin: "http://127.0.0.1:47823", stop: stopClientInterface }));
     const closeRuntimeAdapter = mock(async () => undefined);
@@ -63,11 +65,14 @@ describe("Connect Service", () => {
       new RuntimeAdapterRegistry([
         {
           kind: "codex",
-          modes: ["read-only"],
-          start: async () => {
-            throw new Error("not used by this service lifecycle test");
-          },
-          close: closeRuntimeAdapter,
+          create: () => ({
+            kind: "codex",
+            modes: ["read-only"],
+            start: async () => {
+              throw new Error("not used by this service lifecycle test");
+            },
+            close: closeRuntimeAdapter,
+          }),
         },
       ]);
 
@@ -97,7 +102,7 @@ describe("Connect Service", () => {
     expect(closed).toEqual(["codex-work", "codex-review"]);
     expect(startClientInterface).toHaveBeenCalledTimes(1);
     expect(stopClientInterface).toHaveBeenCalledTimes(1);
-    expect(closeRuntimeAdapter).toHaveBeenCalledTimes(1);
+    expect(closeRuntimeAdapter).toHaveBeenCalledTimes(2);
   });
 
   it("keeps healthy Bindings running when another activated Binding fails to start", async () => {

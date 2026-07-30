@@ -141,6 +141,14 @@ export class TranscriptProjection {
 
   async upsertRuntimeActivity(sessionRef: string, activity: RuntimeActivity): Promise<TranscriptBlock> {
     const input = this.fromRuntimeActivity(sessionRef, activity);
+    const clawchatMessageId =
+      activity.kind === "user" && typeof activity.data?.clawchatMessageId === "string"
+        ? activity.data.clawchatMessageId
+        : null;
+    if (clawchatMessageId) {
+      const block = await this.options.stateStore.rekeyTranscriptBlock(sessionRef, clawchatMessageId, input);
+      if (block) return block;
+    }
     for (const alias of activity.aliases ?? []) {
       if (alias === activity.id) continue;
       const block = await this.options.stateStore.rekeyTranscriptBlock(
@@ -265,7 +273,9 @@ function historyOrigin(entry: RuntimeActivity): TranscriptOrigin {
 }
 
 function normalizeHistoryText(text: string): string {
-  return normalizeVisibleText(text).replace(/^ClawChat (?:direct|group) message from [^:]+:\s*/u, "");
+  return normalizeVisibleText(text)
+    .replace(/^<clawchat_turn_context>\n[\s\S]*?\n<\/clawchat_turn_context>\n*/u, "")
+    .replace(/^ClawChat (?:direct|group) message from [^:]+:\s*/u, "");
 }
 
 function normalizeVisibleText(text: string): string {

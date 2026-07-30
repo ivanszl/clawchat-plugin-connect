@@ -848,4 +848,100 @@ describe("state store", () => {
     await expect(store.claimNextToolRequest("codex")).resolves.toBeNull();
     await store.close();
   });
+
+  it("redacts settled Tool Request inputs and records truncation and provenance", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await store.submitToolRequest({
+      requestId: "record-request",
+      bindingId: "codex",
+      toolName: "clawchat_upload_avatar_image",
+      normalizedInput: { filePath: "/private/secret/avatar.png" },
+      recordedInput: { filePath: "avatar.png" },
+      timeoutMs: 30_000,
+      provenance: { sessionRef: "ABC12345", turnId: "turn-1", origin: "clawchat" },
+    });
+    await expect(store.claimNextToolRequest("codex")).resolves.toMatchObject({
+      input: { filePath: "/private/secret/avatar.png" },
+    });
+    await store.settleToolRequest("record-request", {
+      state: "failed",
+      error: "失败".repeat(5_000),
+    });
+    await expect(store.getToolRequest("record-request")).resolves.toMatchObject({
+      input: { filePath: "avatar.png" },
+      state: "failed",
+      errorTruncated: true,
+      resultTruncated: false,
+      sessionRef: "ABC12345",
+      turnId: "turn-1",
+      origin: "clawchat",
+    });
+    await store.close();
+  });
+
+  it("bounds the final encoded Tool Request result after JSON escaping", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    await store.submitToolRequest({
+      requestId: "oversized-result",
+      bindingId: "codex",
+      toolName: "clawchat_get_account_profile",
+      normalizedInput: {},
+      timeoutMs: 30_000,
+    });
+    await store.claimNextToolRequest("codex");
+    await store.settleToolRequest("oversized-result", {
+      state: "succeeded",
+      result: { escaped: "\\".repeat(100_000) },
+    });
+
+    const record = await store.getToolRequest("oversized-result");
+    expect(record?.resultTruncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(record?.result), "utf8")).toBeLessThanOrEqual(64 * 1024);
+    await store.close();
+  });
+
+  it("retains at most 10,000 settled Tool Requests for 90 days without pruning indeterminate outcomes", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const initializingStore = createStateStore({ dbPath });
+    await initializingStore.getToolRequest("initialize");
+    await initializingStore.close();
+    const db = new Database(dbPath);
+    const insert = db.prepare(
+      `INSERT INTO tool_requests(
+         request_id, binding_id, tool_name, input_json, record_input_json, state, result_json,
+         created_at, claimed_at, settled_at, expires_at, attempt_count
+       ) VALUES (?, ?, 'clawchat_get_account_profile', '{}', '{}', ?, '{}', ?, ?, ?, ?, 1)`,
+    );
+    const now = Date.now();
+    db.transaction(() => {
+      for (let index = 0; index < 10_001; index += 1) {
+        const timestamp = now + index;
+        insert.run(
+          `count-${String(index).padStart(5, "0")}`,
+          "codex",
+          "succeeded",
+          timestamp,
+          timestamp,
+          timestamp,
+          timestamp,
+        );
+      }
+      const old = now - 91 * 24 * 60 * 60 * 1_000;
+      insert.run("aged-settled", "aged", "failed", old, old, old, now);
+      insert.run("aged-indeterminate", "aged", "indeterminate", old, old, old, now);
+    })();
+    db.close();
+
+    const store = createStateStore({ dbPath });
+    await store.pruneSettledToolRequests("codex", now);
+    await expect(store.getToolRequest("count-00000")).resolves.toBeNull();
+    await expect(store.getToolRequest("count-10000")).resolves.toMatchObject({ state: "succeeded" });
+    await store.pruneSettledToolRequests("aged", now);
+    await expect(store.getToolRequest("aged-settled")).resolves.toBeNull();
+    await expect(store.getToolRequest("aged-indeterminate")).resolves.toMatchObject({ state: "indeterminate" });
+    await store.close();
+  });
 });

@@ -21,9 +21,35 @@ function adapter(kind = "codex"): ConnectRuntimeAdapter {
 }
 
 describe("RuntimeAdapterRegistry", () => {
+  it("owns one Runtime Adapter instance and shutdown lifecycle per Agent Binding", async () => {
+    const instances: ConnectRuntimeAdapter[] = [];
+    const registry = new RuntimeAdapterRegistry([
+      {
+        kind: "codex",
+        create: () => {
+          const instance = adapter();
+          instances.push(instance);
+          return instance;
+        },
+      },
+    ]);
+    const work = { kind: "codex", env: { CLAWCHAT_CONNECT_AGENT_ID: "work" } } as AgentBindingConfig;
+    const review = { kind: "codex", env: { CLAWCHAT_CONNECT_AGENT_ID: "review" } } as AgentBindingConfig;
+
+    registry.modesFor(work);
+    registry.modesFor(review);
+    registry.modesFor(work);
+    expect(instances).toHaveLength(2);
+
+    await registry.close();
+    expect(instances.every((instance) => (instance.close as ReturnType<typeof mock>).mock.calls.length === 1)).toBe(
+      true,
+    );
+  });
+
   it("selects a Runtime Adapter from the Agent Binding kind", async () => {
     const codex = adapter();
-    const registry = new RuntimeAdapterRegistry([codex]);
+    const registry = new RuntimeAdapterRegistry([{ kind: codex.kind, create: () => codex }]);
     const binding: AgentBindingConfig = { kind: "codex" };
     const context = {
       agentId: "work",
@@ -54,8 +80,14 @@ describe("RuntimeAdapterRegistry", () => {
   });
 
   it("rejects duplicate and unregistered Runtime Adapter kinds", async () => {
-    expect(() => new RuntimeAdapterRegistry([adapter(), adapter()])).toThrow("duplicate Runtime Adapter kind: codex");
-    const registry = new RuntimeAdapterRegistry([adapter()]);
+    expect(
+      () =>
+        new RuntimeAdapterRegistry([
+          { kind: "codex", create: () => adapter() },
+          { kind: "codex", create: () => adapter() },
+        ]),
+    ).toThrow("duplicate Runtime Adapter kind: codex");
+    const registry = new RuntimeAdapterRegistry([{ kind: "codex", create: () => adapter() }]);
     const unsupported = { kind: "claude" } as unknown as AgentBindingConfig;
 
     expect(() => registry.modesFor(unsupported)).toThrow("no Runtime Adapter registered for kind: claude");

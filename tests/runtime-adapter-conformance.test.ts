@@ -10,6 +10,7 @@ import { releasedRuntimeAdapters } from "../src/runtime/released-adapters";
 import { type ConnectRuntimeAdapter, RuntimeLifecycleError, runtimeActivityOrdinal } from "../src/runtime/types";
 import { createStateStore } from "../src/state";
 import type { AgentBindingConfig } from "../src/types";
+import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 interface AdapterHarness {
   adapter: ConnectRuntimeAdapter;
@@ -28,7 +29,7 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
   describe(`${name} Runtime Adapter conformance`, () => {
     it("reports capabilities and distinguishes unsupported from supported-empty results", async () => {
       const { adapter, binding } = createHarness();
-      const registry = new RuntimeAdapterRegistry([adapter]);
+      const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
 
       expect(registry.lifecycleCapabilities(binding)).toEqual(
         adapter.lifecycleCapabilities ?? {
@@ -53,7 +54,7 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
 
     it("returns stable Runtime Activity identity and ordering", async () => {
       const { adapter, binding } = createHarness();
-      const registry = new RuntimeAdapterRegistry([adapter]);
+      const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
 
       const first = await registry.readActivity(binding, "thread-1");
       const second = await registry.readActivity(binding, "thread-1");
@@ -72,7 +73,7 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
 
     it("converges alias, current-state, replay, and out-of-order Activity through Projection", async () => {
       const { adapter, binding } = createHarness();
-      const registry = new RuntimeAdapterRegistry([adapter]);
+      const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
       const directory = await mkdtemp(join(tmpdir(), "connect-adapter-conformance-projection-"));
       const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
       try {
@@ -135,7 +136,7 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
 
     it("applies supported lifecycle operations idempotently", async () => {
       const harness = createHarness();
-      const registry = new RuntimeAdapterRegistry([harness.adapter]);
+      const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(harness.adapter)]);
       harness.activateThread();
 
       await registry.archiveThread(harness.binding, "thread-1");
@@ -152,7 +153,7 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
 
     it("normalizes native lifecycle failures into stable errors", async () => {
       const harness = createHarness();
-      const registry = new RuntimeAdapterRegistry([harness.adapter]);
+      const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(harness.adapter)]);
       harness.activateThread();
       harness.failNextArchive();
 
@@ -163,7 +164,7 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
 
     it("closes binding-owned resources exactly once", async () => {
       const harness = createHarness();
-      const registry = new RuntimeAdapterRegistry([harness.adapter]);
+      const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(harness.adapter)]);
 
       await registry.prepare(harness.binding);
       await registry.close();
@@ -174,7 +175,7 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
 
     it("settles pending binding operations when resources close", async () => {
       const harness = createHarness();
-      const registry = new RuntimeAdapterRegistry([harness.adapter]);
+      const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(harness.adapter)]);
       await registry.prepare(harness.binding);
       const pending = harness.startPendingOperation();
       void pending.catch(() => undefined);

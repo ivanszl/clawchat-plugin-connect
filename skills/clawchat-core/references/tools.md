@@ -342,6 +342,14 @@ Input:
       "type": "string",
       "description": "Exact conversation ID."
     },
+    "chatType": {
+      "type": "string",
+      "description": "Conversation type.",
+      "enum": [
+        "direct",
+        "group"
+      ]
+    },
     "emoji": {
       "type": "string",
       "description": "Single emoji."
@@ -357,6 +365,7 @@ Input:
   },
   "required": [
     "chatId",
+    "chatType",
     "emoji",
     "targetMessageId"
   ]

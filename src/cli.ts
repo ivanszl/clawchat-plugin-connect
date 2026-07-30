@@ -21,9 +21,15 @@ import { resolveLivewareExecutablePath as resolveLivewareExecutablePathDefault }
 import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "./profile";
 import { ProjectCatalog } from "./projects";
 import { createReleasedAgentBinding, releasedRuntimeAdapters } from "./runtime/released-adapters";
-import { installManagedSkills, verifyInstalledSkills } from "./skills";
-import { type ConnectStateStore, createStateStore } from "./state";
-import { CONNECT_TOOL_CATALOG, getConnectTool, toolJsonSchema, validateToolInput } from "./tool-catalog";
+import { installManagedSkills, preflightManagedSkills, verifyInstalledSkills } from "./skills";
+import { type ConnectStateStore, createStateStore, type ToolRequestRecord } from "./state";
+import {
+  CONNECT_TOOL_CATALOG,
+  getConnectTool,
+  recordToolInput,
+  toolJsonSchema,
+  validateToolInput,
+} from "./tool-catalog";
 import type {
   AgentBindingConfig,
   CodexAgentBindingConfig,
@@ -54,6 +60,8 @@ export interface ConnectCliDeps extends Partial<CliIo> {
   updateConnect?: typeof updateConnectDefault;
   createStateStore?: typeof createStateStore;
   readStdin?: () => Promise<string>;
+  toolRequestWaitMs?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
 }
 
 interface AgentCliOptions {
@@ -273,7 +281,12 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
 async function maybeRunSkillsCommand(argv: string[], io: CliIo): Promise<number | null> {
   if (argv[0] !== "skills") return null;
   try {
-    if (argv[1] !== "install") throw new Error("usage: clawchat-connect skills install");
+    if (argv[1] === "preflight") {
+      const result = await preflightManagedSkills();
+      io.writeStdout(`${JSON.stringify({ ready: true, targetRoot: result.targetRoot })}\n`);
+      return 0;
+    }
+    if (argv[1] !== "install") throw new Error("usage: clawchat-connect skills install|preflight");
     const result = await installManagedSkills();
     io.writeStdout(
       `${JSON.stringify({ installed: result.skills, targetRoot: result.targetRoot, forceOverwritten: true })}\n`,
@@ -325,19 +338,14 @@ async function maybeRunAgentLivewareCommand(argv: string[], io: CliIo, deps: Con
         bindingId,
         toolName: operation,
         normalizedInput,
+        recordedInput: normalizedInput,
         timeoutMs: 120_000,
       });
-      const deadline = Date.now() + 121_000;
-      while (record.state === "pending" || record.state === "running") {
-        if (Date.now() >= deadline) break;
-        await Bun.sleep(50);
-        record = (await store.getToolRequest(requestId)) ?? record;
-      }
+      record = await waitForTerminalToolRequest(store, record, deps.toolRequestWaitMs ?? 121_000, deps.sleep);
       const success = record.state === "succeeded";
       io.writeStdout(
         `${JSON.stringify({
           requestId,
-          agent: bindingId,
           operation,
           status: record.state,
           ...(success
@@ -402,19 +410,19 @@ async function maybeRunToolCommand(argv: string[], io: CliIo, deps: ConnectCliDe
         bindingId,
         toolName,
         normalizedInput,
+        recordedInput: recordToolInput(tool, normalizedInput),
         timeoutMs: tool.timeoutMs,
       });
-      const deadline = Date.now() + tool.timeoutMs + 1_000;
-      while (record.state === "pending" || record.state === "running") {
-        if (Date.now() >= deadline) break;
-        await Bun.sleep(50);
-        record = (await store.getToolRequest(requestId)) ?? record;
-      }
+      record = await waitForTerminalToolRequest(
+        store,
+        record,
+        deps.toolRequestWaitMs ?? tool.timeoutMs + 1_000,
+        deps.sleep,
+      );
       const success = record.state === "succeeded";
       io.writeStdout(
         `${JSON.stringify({
           requestId,
-          agent: bindingId,
           toolName,
           status: record.state,
           ...(success
@@ -430,6 +438,22 @@ async function maybeRunToolCommand(argv: string[], io: CliIo, deps: ConnectCliDe
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+}
+
+async function waitForTerminalToolRequest(
+  store: ConnectStateStore,
+  initial: ToolRequestRecord,
+  waitMs: number,
+  sleep: (milliseconds: number) => Promise<void> = Bun.sleep,
+): Promise<ToolRequestRecord> {
+  let record = initial;
+  const deadline = Date.now() + Math.max(0, waitMs);
+  while (record.state === "pending" || record.state === "running") {
+    if (Date.now() >= deadline) return (await store.expireToolRequest(record.requestId)) ?? record;
+    await sleep(50);
+    record = (await store.getToolRequest(record.requestId)) ?? record;
+  }
+  return record;
 }
 
 async function readStdinDefault(): Promise<string> {

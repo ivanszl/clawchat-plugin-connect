@@ -144,6 +144,8 @@ describe("standalone release bundle", () => {
     expect(installer).toContain("liveware.exe");
     expect(installer).toContain("CHANGELOG.md");
     expect(installer).toContain('service", "stop');
+    expect(installer).toContain("$transactionStarted");
+    expect(installer).toContain("if ($transactionStarted -and -not $transactionCommitted)");
     const workflow = await readFile(".github/workflows/release-alpha.yml", "utf8");
     expect(workflow).toContain("bun-windows-x64 windows x64");
     expect(workflow).toContain("bun-windows-arm64 windows arm64");
@@ -277,6 +279,64 @@ describe("standalone release bundle", () => {
     );
     await expect(readFile(requestsPath, "utf8")).resolves.toContain(
       "/releases/download/v0.1.0-alpha.12/clawchat-connect-",
+    );
+
+    const installedConnectBeforeFailure = await readFile(join(installDirectory, "clawchat-connect"), "utf8");
+    await writeFile(
+      connectBinary,
+      [
+        "#!/bin/sh",
+        '[ "$' + '{1:-}" = --help ] && exit 0',
+        'if [ "$' + '{1:-}" = skills ] && [ "$' + '{2:-}" = preflight ]; then',
+        '  if grep -q "mkdir -p" "$CLAWCHAT_CONNECT_INSTALL_DIR/clawchat-connect"; then',
+        '    printf "replaced\\n" > "$CONNECT_PREFLIGHT_OBSERVATION"',
+        "  else",
+        '    printf "old\\n" > "$CONNECT_PREFLIGHT_OBSERVATION"',
+        "  fi",
+        '  mkdir -p "$HOME/.agents/skills" || exit 17',
+        "  exit 0",
+        "fi",
+        '[ "$' + '{1:-}" = skills ] && [ "$' + '{2:-}" = install ] && exit 0',
+        "exit 1",
+        "",
+      ].join("\n"),
+    );
+    await chmod(connectBinary, 0o755);
+    const failingPackage = Bun.spawn(
+      ["sh", "scripts/package-release-archive.sh", connectBinary, clientDirectory, livewareBinary, archive],
+      { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await failingPackage.exited).toBe(0);
+    const failingChecksumProcess = Bun.spawn(["shasum", "-a", "256", archive], { stdout: "pipe" });
+    const failingChecksum = (await new Response(failingChecksumProcess.stdout).text()).split(/\s+/u)[0];
+    expect(await failingChecksumProcess.exited).toBe(0);
+    await writeFile(join(fixtureDirectory, "checksums.txt"), `${failingChecksum}  ${asset}\n`);
+    const invalidSkillHome = join(directory, "invalid-skill-home");
+    await writeFile(invalidSkillHome, "not a directory");
+    const preflightObservation = join(directory, "preflight-observation.txt");
+
+    const failedInstall = Bun.spawn(["sh", "install.sh"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: `${commandDirectory}:${process.env.PATH ?? ""}`,
+        CLAWCHAT_CONNECT_INSTALL_DIR: installDirectory,
+        CLAWCHAT_CONNECT_LICENSE_DIR: join(installDirectory, "licenses"),
+        CONNECT_INSTALL_FIXTURES: fixtureDirectory,
+        CONNECT_INSTALL_REQUESTS: requestsPath,
+        CONNECT_PREFLIGHT_OBSERVATION: preflightObservation,
+        HOME: invalidSkillHome,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await failedInstall.exited).not.toBe(0);
+    await expect(readFile(preflightObservation, "utf8")).resolves.toBe("old\n");
+    await expect(readFile(join(installDirectory, "clawchat-connect"), "utf8")).resolves.toBe(
+      installedConnectBeforeFailure,
+    );
+    await expect(readFile(join(installDirectory, "clawchat-connect-client", "index.html"), "utf8")).resolves.toContain(
+      "<!doctype html>",
     );
   });
 });

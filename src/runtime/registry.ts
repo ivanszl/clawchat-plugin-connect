@@ -10,32 +10,40 @@ import type {
 } from "./types";
 import { RuntimeLifecycleError } from "./types";
 
-export class RuntimeAdapterRegistry {
-  private readonly adapters = new Map<string, ConnectRuntimeAdapter>();
+export interface RuntimeAdapterDefinition {
+  kind: string;
+  create(): ConnectRuntimeAdapter;
+}
 
-  constructor(adapters: readonly ConnectRuntimeAdapter[]) {
-    for (const adapter of adapters) {
-      const kind = adapter.kind.trim();
+export class RuntimeAdapterRegistry {
+  private readonly definitions = new Map<string, RuntimeAdapterDefinition>();
+  private readonly adaptersByBinding = new Map<string, ConnectRuntimeAdapter>();
+  private readonly anonymousBindingIds = new WeakMap<object, string>();
+  private nextAnonymousBindingId = 1;
+
+  constructor(definitions: readonly RuntimeAdapterDefinition[]) {
+    for (const definition of definitions) {
+      const kind = definition.kind.trim();
       if (!kind) throw new Error("Runtime Adapter kind is required");
-      if (this.adapters.has(kind)) throw new Error(`duplicate Runtime Adapter kind: ${kind}`);
-      this.adapters.set(kind, adapter);
+      if (this.definitions.has(kind)) throw new Error(`duplicate Runtime Adapter kind: ${kind}`);
+      this.definitions.set(kind, definition);
     }
   }
 
   async start(binding: AgentBindingConfig, context: ConnectRuntimeStartContext): Promise<ConnectRuntimeSession> {
-    return await this.require(binding.kind).start(binding, context);
+    return await this.require(binding).start(binding, context);
   }
 
   async prepare(binding: AgentBindingConfig): Promise<void> {
-    await this.require(binding.kind).prepare?.(binding);
+    await this.require(binding).prepare?.(binding);
   }
 
   modesFor(binding: AgentBindingConfig): readonly string[] {
-    return this.require(binding.kind).modes;
+    return this.require(binding).modes;
   }
 
   lifecycleCapabilities(binding: AgentBindingConfig): RuntimeLifecycleCapabilities {
-    const adapter = this.require(binding.kind);
+    const adapter = this.require(binding);
     return (
       adapter.lifecycleCapabilities ?? {
         archive: Boolean(adapter.archiveThread),
@@ -46,24 +54,24 @@ export class RuntimeAdapterRegistry {
   }
 
   async listModels(binding: AgentBindingConfig): Promise<RuntimeModelOption[] | null> {
-    const operation = this.require(binding.kind).listModels;
+    const operation = this.require(binding).listModels;
     return operation ? await operation(binding) : null;
   }
 
   async discoverThreads(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]> {
-    return (await this.require(binding.kind).discoverThreads?.(binding, workspace)) ?? [];
+    return (await this.require(binding).discoverThreads?.(binding, workspace)) ?? [];
   }
 
   async discoverAllThreads(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]> {
-    return (await this.require(binding.kind).discoverAllThreads?.(binding)) ?? [];
+    return (await this.require(binding).discoverAllThreads?.(binding)) ?? [];
   }
 
   async discoverArchivedThreads(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]> {
-    return (await this.require(binding.kind).discoverArchivedThreads?.(binding)) ?? [];
+    return (await this.require(binding).discoverArchivedThreads?.(binding)) ?? [];
   }
 
   async readActivity(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeActivitySnapshot> {
-    const adapter = this.require(binding.kind);
+    const adapter = this.require(binding);
     if (adapter.readActivity) return await adapter.readActivity(binding, runtimeThreadId);
     return {
       activities: [],
@@ -73,7 +81,7 @@ export class RuntimeAdapterRegistry {
   }
 
   async archiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
-    const adapter = this.require(binding.kind);
+    const adapter = this.require(binding);
     const operation = adapter.archiveThread;
     if (!operation)
       throw new RuntimeLifecycleError(
@@ -94,7 +102,7 @@ export class RuntimeAdapterRegistry {
   }
 
   async unarchiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
-    const adapter = this.require(binding.kind);
+    const adapter = this.require(binding);
     const operation = adapter.unarchiveThread;
     if (!operation)
       throw new RuntimeLifecycleError(
@@ -115,7 +123,7 @@ export class RuntimeAdapterRegistry {
   }
 
   async deleteThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
-    const adapter = this.require(binding.kind);
+    const adapter = this.require(binding);
     const operation = adapter.deleteThread;
     if (!operation)
       throw new RuntimeLifecycleError(
@@ -134,16 +142,38 @@ export class RuntimeAdapterRegistry {
 
   async close(): Promise<void> {
     const results = await Promise.allSettled(
-      [...this.adapters.values()].map(async (adapter) => await adapter.close?.()),
+      [...this.adaptersByBinding.values()].map(async (adapter) => await adapter.close?.()),
     );
+    this.adaptersByBinding.clear();
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failure) throw failure.reason;
   }
 
-  private require(kind: string): ConnectRuntimeAdapter {
-    const adapter = this.adapters.get(kind);
-    if (!adapter) throw new Error(`no Runtime Adapter registered for kind: ${kind}`);
+  private require(binding: AgentBindingConfig): ConnectRuntimeAdapter {
+    const definition = this.definitions.get(binding.kind);
+    if (!definition) throw new Error(`no Runtime Adapter registered for kind: ${binding.kind}`);
+    const bindingId = this.bindingId(binding);
+    const existing = this.adaptersByBinding.get(bindingId);
+    if (existing) {
+      if (existing.kind !== binding.kind) throw new Error(`Agent Binding ${bindingId} changed Runtime Adapter kind`);
+      return existing;
+    }
+    const adapter = definition.create();
+    if (adapter.kind !== binding.kind)
+      throw new Error(`Runtime Adapter factory for ${binding.kind} created ${adapter.kind}`);
+    this.adaptersByBinding.set(bindingId, adapter);
     return adapter;
+  }
+
+  private bindingId(binding: AgentBindingConfig): string {
+    const injected = binding.env?.CLAWCHAT_CONNECT_AGENT_ID?.trim();
+    if (injected) return injected;
+    const existing = this.anonymousBindingIds.get(binding);
+    if (existing) return existing;
+    const created = `anonymous-${this.nextAnonymousBindingId}`;
+    this.nextAnonymousBindingId += 1;
+    this.anonymousBindingIds.set(binding, created);
+    return created;
   }
 }
 

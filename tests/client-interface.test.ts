@@ -10,6 +10,7 @@ import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
 import { type ConnectStateStore, createStateStore } from "../src/state";
+import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 const openHandles: ClientInterfaceHandle[] = [];
 const openStores: ConnectStateStore[] = [];
@@ -166,7 +167,7 @@ describe("Connect Client Interface", () => {
       }),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
-    const registry = new RuntimeAdapterRegistry([adapter]);
+    const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     config.defaultAgent = "codex";
@@ -821,7 +822,7 @@ describe("Connect Client Interface", () => {
     config.defaultAgent = "codex";
     let catalogUnavailable = true;
     const registry = new RuntimeAdapterRegistry([
-      {
+      fixedRuntimeAdapter({
         kind: "codex",
         modes: ["workspace-write"],
         listModels: async () => {
@@ -839,7 +840,7 @@ describe("Connect Client Interface", () => {
           ];
         },
         start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
-      },
+      }),
     ]);
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
     const enqueueClientTurn = mock(async (sessionRef: string) => ({ turnId: "turn-created", sessionRef }));

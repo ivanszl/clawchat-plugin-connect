@@ -18,6 +18,7 @@ import type {
 } from "../src/runtime/types";
 import { createStateStore } from "../src/state";
 import type { ConnectWsClient } from "../src/ws-client";
+import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 function message(text = "hello"): NormalizedInboundMessage {
   return {
@@ -135,7 +136,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
       projects,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await expect(runtime.listRuntimeWorkspaces()).resolves.toEqual([
@@ -177,7 +178,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     const media = await runtime.uploadClientMedia(new Blob(["image"], { type: "image/jpeg" }), "photo.jpg");
@@ -210,7 +211,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         };
       }),
     };
-    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const transcriptProjection = new TranscriptProjection({
       stateStore: fixture.store,
       config: fixture.config,
@@ -299,7 +300,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await runtime.handleInboundMessage(message());
@@ -364,7 +365,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
     const firstMessage = message("first");
     firstMessage.messageId = "message-1";
@@ -411,7 +412,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
     const inbound = message("describe the attachments");
     inbound.fragments = [
@@ -508,7 +509,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await runtime.handleInboundMessage(message("use the session choice"));
@@ -574,7 +575,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
       projects,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     const first = runtime.handleInboundMessage(message("first turn"));
@@ -655,7 +656,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await runtime.handleInboundMessage(message("do not fall back"));
@@ -688,7 +689,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await runtime.handleInboundMessage(message("send the image back"));
@@ -746,7 +747,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await runtime.handleInboundMessage(message("send the result"));
@@ -786,7 +787,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await runtime.handleInboundMessage(message("send a private file"));
@@ -856,7 +857,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
       projects,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toBeNull();
@@ -919,7 +920,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     const turn = runtime.handleInboundMessage(message());
@@ -983,7 +984,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
       projects,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     const first = runtime.handleInboundMessage(message("first turn"));
@@ -1072,7 +1073,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         stateStore: fixture.store,
         wsClient: fixture.wsClient,
         projects,
-        runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+        runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
       });
 
       const first = runtime.handleInboundMessage(message("first turn"));
@@ -1158,7 +1159,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     const clawChatTurn = runtime.handleInboundMessage(message("from clawchat"));
@@ -1203,7 +1204,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     const turn = runtime.handleInboundMessage(message("long turn"));
@@ -1268,7 +1269,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         },
       }),
     };
-    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const transcriptProjection = new TranscriptProjection({
       stateStore: fixture.store,
       config: fixture.config,
@@ -1329,11 +1330,11 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
       runtimeAdapters: new RuntimeAdapterRegistry([
-        {
+        fixedRuntimeAdapter({
           kind: "codex",
           modes: [],
           start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
-        },
+        }),
       ]),
     });
     const firstRelease = await runtime.claimSessionLifecycle(sessionRef);
@@ -1384,7 +1385,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
     const firstMessage = message("first");
     const secondMessage = message("second");
@@ -1453,7 +1454,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await Promise.all(refs.map(async (sessionRef) => await runtime.enqueueClientTurn(sessionRef, sessionRef)));
@@ -1486,7 +1487,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
     await first.handleInboundMessage(message());
     await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
@@ -1500,7 +1501,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
     await second.handleInboundMessage(message("again"));
 
@@ -1529,7 +1530,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     const discovered = await runtime.discoverRuntimeThreads("chat-1");
@@ -1569,7 +1570,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([adapter]),
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await runtime.handleInboundMessage(message());

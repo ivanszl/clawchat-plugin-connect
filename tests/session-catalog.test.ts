@@ -8,6 +8,7 @@ import { defaultConfig } from "../src/config";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
 import { type ConnectStateStore, createStateStore } from "../src/state";
+import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 const stores: ConnectStateStore[] = [];
 
@@ -37,7 +38,7 @@ describe("Session Catalog workspace grouping", () => {
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
-    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     const catalog = new SessionCatalog({
@@ -78,7 +79,7 @@ describe("Session Catalog workspace grouping", () => {
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
-    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     const catalog = new SessionCatalog({
@@ -127,7 +128,7 @@ describe("Session Catalog workspace grouping", () => {
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
-    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     const catalog = new SessionCatalog({
@@ -171,7 +172,7 @@ describe("Session Catalog workspace grouping", () => {
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
-    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     const catalog = new SessionCatalog({
@@ -226,7 +227,7 @@ describe("Session Catalog workspace grouping", () => {
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
-    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     const catalog = new SessionCatalog({
@@ -281,7 +282,7 @@ describe("Session Catalog workspace grouping", () => {
       discoverAllThreads: async () => [],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
-    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     const catalog = new SessionCatalog({
@@ -341,7 +342,7 @@ describe("Session Catalog workspace grouping", () => {
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
-    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     const catalog = new SessionCatalog({
@@ -416,7 +417,7 @@ describe("Session Catalog workspace grouping", () => {
       },
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
-    const runtimeAdapters = new RuntimeAdapterRegistry([adapter]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     const catalog = new SessionCatalog({

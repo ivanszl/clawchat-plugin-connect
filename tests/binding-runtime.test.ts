@@ -16,6 +16,7 @@ import {
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimePrompt } from "../src/runtime/types";
 import { createStateStore } from "../src/state";
+import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 class MemoryTransport implements Transport {
   state: TransportState = "closed";
@@ -46,6 +47,53 @@ async function flush(): Promise<void> {
 }
 
 describe("Binding Runtime Protocol v2 assembly", () => {
+  it("rejects Binding startup before opening transport when managed skills do not match", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-skills-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex" } };
+    const transport = new MemoryTransport();
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        start: async () => {
+          throw new Error("not used");
+        },
+      }),
+    ]);
+
+    await expect(
+      startBindingRuntime({
+        agentId: "codex",
+        activation: {
+          localAgentId: "codex",
+          accessToken: "token",
+          refreshToken: null,
+          serverAgentId: "agt_server",
+          userId: "usr_alice",
+          ownerUserId: "usr_owner",
+          conversationId: "chat-owner",
+        },
+        config,
+        configPath: join(directory, "config.json"),
+        deviceId: "device-local",
+        stateStore,
+        projects: new ProjectCatalog(stateStore),
+        runtimeAdapters,
+        wsTransport: transport,
+        verifyInstalledSkills: async () => {
+          throw new Error("managed skills mismatch");
+        },
+        writeError: () => undefined,
+      }),
+    ).rejects.toThrow("managed skills mismatch");
+    expect(transport.state).toBe("closed");
+    await runtimeAdapters.close();
+    await stateStore.close();
+  });
+
   it("advertises each optional capability only when its production handler is installed", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-capabilities-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
@@ -53,13 +101,13 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     config.defaultAgent = "codex";
     config.agents = { codex: { kind: "codex", displayName: "Alice" } };
     const runtimeAdapters = new RuntimeAdapterRegistry([
-      {
+      fixedRuntimeAdapter({
         kind: "codex",
         modes: ["read-only"],
         start: async () => {
           throw new Error("not used by this assembly test");
         },
-      },
+      }),
     ]);
     const transport = new MemoryTransport();
     const starting = startBindingRuntime({
@@ -83,6 +131,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       protocolEventHandlers: {
         notify: async () => undefined,
       },
+      verifyInstalledSkills: async () => undefined,
       writeError: () => undefined,
     });
     await flush();
@@ -117,13 +166,13 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     config.defaultAgent = "codex";
     config.agents = { codex: { kind: "codex", displayName: "Alice" } };
     const runtimeAdapters = new RuntimeAdapterRegistry([
-      {
+      fixedRuntimeAdapter({
         kind: "codex",
         modes: ["read-only"],
         start: async () => {
           throw new Error("not used by this assembly test");
         },
-      },
+      }),
     ]);
     const transport = new MemoryTransport();
     let handlerStarted = false;
@@ -155,6 +204,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
           await handlerGate;
         },
       },
+      verifyInstalledSkills: async () => undefined,
       writeError: () => undefined,
     });
     await flush();
@@ -294,7 +344,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       releaseFirstPrompt = resolve;
     });
     const runtimeAdapters = new RuntimeAdapterRegistry([
-      {
+      fixedRuntimeAdapter({
         kind: "codex",
         modes: ["read-only"],
         start: async () => ({
@@ -315,7 +365,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
           },
           close: mock(async () => undefined),
         }),
-      },
+      }),
     ]);
     const transport = new MemoryTransport();
     const errors: string[] = [];
@@ -337,6 +387,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       projects: new ProjectCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
+      verifyInstalledSkills: async () => undefined,
       writeError: (message) => errors.push(message),
     });
     await flush();
@@ -419,7 +470,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     config.agents = { codex: { kind: "codex", displayName: "Alice" } };
     const prompts: ConnectRuntimePrompt[] = [];
     const runtimeAdapters = new RuntimeAdapterRegistry([
-      {
+      fixedRuntimeAdapter({
         kind: "codex",
         modes: ["read-only"],
         start: async () => ({
@@ -439,7 +490,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
           },
           close: mock(async () => undefined),
         }),
-      },
+      }),
     ]);
     const transport = new MemoryTransport();
     const errors: string[] = [];
@@ -461,6 +512,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       projects: new ProjectCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
+      verifyInstalledSkills: async () => undefined,
       writeError: (message) => errors.push(message),
     });
     await flush();
@@ -554,13 +606,13 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     config.defaultAgent = "codex";
     config.agents = { codex: { kind: "codex", displayName: "Alice" } };
     const runtimeAdapters = new RuntimeAdapterRegistry([
-      {
+      fixedRuntimeAdapter({
         kind: "codex",
         modes: ["read-only"],
         start: async () => {
           throw new Error("not used by this assembly test");
         },
-      },
+      }),
     ]);
     const transport = new MemoryTransport();
     const events: BindingProtocolEvent[] = [];
@@ -591,6 +643,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
           events.push(event);
         },
       },
+      verifyInstalledSkills: async () => undefined,
       writeError: (message) => errors.push(message),
     });
     await flush();

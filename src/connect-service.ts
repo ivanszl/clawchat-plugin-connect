@@ -273,12 +273,7 @@ function startToolRequestWorkers(
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         await store.settleToolRequest(request.requestId, {
-          state:
-            error instanceof ToolExecutionTimeout ||
-            isIndeterminateToolError(error) ||
-            isAgentLivewareOperation(request.toolName)
-              ? "indeterminate"
-              : "failed",
+          state: toolFailureState(error),
           error: detail,
         });
         writeError(`${handle.agentId}: tool ${request.toolName} failed: ${detail}\n`);
@@ -292,6 +287,10 @@ function startToolRequestWorkers(
     stopping = true;
     await Promise.allSettled(workers);
   };
+}
+
+export function toolFailureState(error: unknown): "failed" | "indeterminate" {
+  return error instanceof ToolExecutionTimeout || isIndeterminateToolError(error) ? "indeterminate" : "failed";
 }
 
 class ToolExecutionTimeout extends Error {

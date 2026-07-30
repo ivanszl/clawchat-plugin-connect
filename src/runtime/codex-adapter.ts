@@ -62,17 +62,15 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     options.cacheMedia ??
     (async (media: ConnectRuntimeMedia, stateDbPath: string, trustedOrigins?: readonly string[]) =>
       await cacheRuntimeMedia(media, stateDbPath, { trustedOrigins }));
-  const clients = new Map<string, Promise<CodexAppServerClient>>();
+  let client: Promise<CodexAppServerClient> | null = null;
 
   const clientFor = async (binding: CodexAgentBindingConfig): Promise<CodexAppServerClient> => {
-    const identity = processIdentity(binding);
-    const active = clients.get(identity);
-    if (active) return await active;
+    if (client) return await client;
     const created = createAppServer(binding).catch((error) => {
-      clients.delete(identity);
+      if (client === created) client = null;
       throw error;
     });
-    clients.set(identity, created);
+    client = created;
     return await created;
   };
 
@@ -130,11 +128,9 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
       return new CodexRuntimeSession(await clientFor(codexBinding), codexBinding, context, cacheMedia);
     },
     async close() {
-      const active = [...clients.values()];
-      clients.clear();
-      const results = await Promise.allSettled(active.map(async (client) => await (await client).close()));
-      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-      if (failure) throw failure.reason;
+      const active = client;
+      client = null;
+      if (active) await (await active).close();
     },
   };
 }
@@ -300,7 +296,16 @@ function transcriptEntry(
           return part?.type === "text" ? [stringField(part.text)] : [];
         })
       : [];
-    return { id: item.id, kind: "user", text: content.join("\n"), state, source: "history" };
+    const text = content.join("\n");
+    const context = clawChatTurnContext(text);
+    return {
+      id: item.id,
+      kind: "user",
+      text,
+      state,
+      source: "history",
+      ...(context?.messageId ? { data: { clawchatMessageId: context.messageId } } : {}),
+    };
   }
   if (item.type === "agentMessage")
     return { id: item.id, kind: "assistant", text: stringField(item.text), state, source: "history" };
@@ -359,6 +364,19 @@ function transcriptEntry(
   };
 }
 
+function clawChatTurnContext(text: string): { messageId: string } | null {
+  const match = /^<clawchat_turn_context>\n([^\n]+)\n<\/clawchat_turn_context>/u.exec(text);
+  if (!match?.[1]) return null;
+  try {
+    const value = JSON.parse(match[1]) as Record<string, unknown>;
+    return value.origin === "clawchat" && typeof value.message_id === "string" && value.message_id
+      ? { messageId: value.message_id }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function codexActivity(
   entry: RuntimeTranscriptEntry,
   position: string,
@@ -377,10 +395,6 @@ function codexActivity(
 function requireCodexBinding(binding: { kind: string }): CodexAgentBindingConfig {
   if (binding.kind !== "codex") throw new Error("Codex Runtime Adapter requires a Codex Agent Binding");
   return binding as CodexAgentBindingConfig;
-}
-
-function processIdentity(binding: CodexAgentBindingConfig): string {
-  return JSON.stringify({ codexPathOverride: binding.codexPathOverride ?? null, env: binding.env ?? null });
 }
 
 function codexHome(binding: CodexAgentBindingConfig): string {

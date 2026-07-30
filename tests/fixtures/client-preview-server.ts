@@ -8,6 +8,7 @@ import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../../src/runtime/runtime-interaction-coordinator";
 import type { RuntimeActivity, RuntimeTranscriptEntry } from "../../src/runtime/types";
 import { createStateStore } from "../../src/state";
+import { fixedRuntimeAdapter } from "../runtime-adapter-fixture";
 
 const directory = await mkdtemp(join(tmpdir(), "connect-client-preview-"));
 const discoveredWorkspace = join(directory, "discovered-workspace");
@@ -178,7 +179,7 @@ function appendExternalTuiTurn() {
 }
 
 const runtimeAdapters = new RuntimeAdapterRegistry([
-  {
+  fixedRuntimeAdapter({
     kind: "codex",
     modes: ["read-only", "workspace-write", "danger-full-access"],
     listModels: async () => [
@@ -229,7 +230,7 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
       limitations: [],
     }),
     start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
-  },
+  }),
 ]);
 
 function previewActivity(

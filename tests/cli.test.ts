@@ -413,10 +413,40 @@ describe("runConnectCli", () => {
 
     expect(JSON.parse(output.stdout.at(-1) ?? "{}")).toMatchObject({
       requestId: "known-request",
-      agent: "codex",
       toolName: "clawchat_get_account_profile",
       status: "succeeded",
       result: { nickname: "Connect" },
+    });
+    expect(JSON.parse(output.stdout.at(-1) ?? "{}")).not.toHaveProperty("agent");
+  });
+
+  it("settles a locally timed-out Tool Request to a terminal state", async () => {
+    const path = await tempConfig();
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    config.stateDbPath = `${path}.sqlite`;
+    await saveConfig(config, path);
+    const output = io();
+
+    await expect(
+      runConnectCli(
+        [
+          "tool",
+          "call",
+          "clawchat_get_account_profile",
+          "--input-json",
+          "{}",
+          "--request-id",
+          "deadline-request",
+          "--config",
+          path,
+        ],
+        { ...output.deps, toolRequestWaitMs: 0 },
+      ),
+    ).resolves.toBe(1);
+
+    expect(JSON.parse(output.stdout.at(-1) ?? "{}")).toMatchObject({
+      requestId: "deadline-request",
+      status: "expired",
     });
   });
 
@@ -424,6 +454,84 @@ describe("runConnectCli", () => {
     const output = io();
     await expect(runConnectCli(["tool", "list"], output.deps)).resolves.toBe(0);
     expect(JSON.parse(output.stdout[0] ?? "{}").tools).toHaveLength(24);
+  });
+
+  it("describes tools, reads stdin JSON, and honors explicit, runtime, then default Binding precedence", async () => {
+    const path = await tempConfig();
+    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    config.stateDbPath = `${path}.sqlite`;
+    await saveConfig(config, path);
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    for (const requestId of ["explicit-request", "default-request"]) {
+      await store.submitToolRequest({
+        requestId,
+        bindingId: "codex",
+        toolName: "clawchat_get_user_profile",
+        normalizedInput: { userId: "user-1" },
+        timeoutMs: 30_000,
+      });
+      await store.claimNextToolRequest("codex");
+      await store.settleToolRequest(requestId, { state: "succeeded", result: { userId: "user-1" } });
+    }
+    await store.close();
+    const output = io();
+
+    await expect(runConnectCli(["tool", "describe", "clawchat_get_user_profile"], output.deps)).resolves.toBe(0);
+    expect(JSON.parse(output.stdout.pop() ?? "{}")).toMatchObject({
+      name: "clawchat_get_user_profile",
+      inputSchema: { required: ["userId"] },
+    });
+
+    const previousBinding = process.env.CLAWCHAT_CONNECT_AGENT_ID;
+    try {
+      process.env.CLAWCHAT_CONNECT_AGENT_ID = "missing-runtime-binding";
+      await expect(
+        runConnectCli(
+          [
+            "tool",
+            "call",
+            "clawchat_get_user_profile",
+            "--input-json",
+            "-",
+            "--request-id",
+            "explicit-request",
+            "--agent",
+            "codex",
+            "--config",
+            path,
+          ],
+          { ...output.deps, readStdin: async () => '{"userId":"user-1"}' },
+        ),
+      ).resolves.toBe(0);
+      await expect(
+        runConnectCli(
+          ["tool", "call", "clawchat_get_user_profile", "--input-json", '{"userId":"user-1"}', "--config", path],
+          output.deps,
+        ),
+      ).resolves.toBe(1);
+      expect(output.stderr.join("")).toContain("missing-runtime-binding");
+
+      delete process.env.CLAWCHAT_CONNECT_AGENT_ID;
+      await expect(
+        runConnectCli(
+          [
+            "tool",
+            "call",
+            "clawchat_get_user_profile",
+            "--input-json",
+            '{"userId":"user-1"}',
+            "--request-id",
+            "default-request",
+            "--config",
+            path,
+          ],
+          output.deps,
+        ),
+      ).resolves.toBe(0);
+    } finally {
+      if (previousBinding === undefined) delete process.env.CLAWCHAT_CONNECT_AGENT_ID;
+      else process.env.CLAWCHAT_CONNECT_AGENT_ID = previousBinding;
+    }
   });
 });
 

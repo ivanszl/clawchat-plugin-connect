@@ -156,6 +156,7 @@ export type RuntimeTranscriptCompleteness = "complete" | "partial" | "live-only"
 
 export interface RuntimeTranscriptEntry {
   id: string;
+  aliases?: string[];
   position?: string;
   kind:
     | "user"

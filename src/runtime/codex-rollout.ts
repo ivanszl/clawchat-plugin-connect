@@ -16,7 +16,7 @@ interface RolloutCall {
   status: string;
 }
 
-type RolloutToken = { kind: "anchor"; id: string } | { kind: "call"; callId: string };
+type RolloutToken = { kind: "anchor"; id: string; role: string } | { kind: "call"; callId: string };
 
 export async function backfillCodexRolloutTranscript(
   options: BackfillCodexRolloutTranscriptOptions,
@@ -49,7 +49,12 @@ export async function backfillCodexRolloutTranscript(
     if (!payload || !payloadType) continue;
     if (payloadType === "message") {
       const id = stringValue(payload.id);
-      if (id) tokens.push({ kind: "anchor", id });
+      if (id)
+        tokens.push({
+          kind: "anchor",
+          id,
+          role: stringValue(payload.role),
+        });
       continue;
     }
     if (isRawToolCall(payloadType)) {
@@ -115,9 +120,10 @@ export async function backfillCodexRolloutTranscript(
     });
   }
 
+  const correlation = correlateMessageAnchors(options.appServerEntries, tokens);
   return {
-    entries: mergeByMessageAnchors(options.appServerEntries, tokens, fallbackByCallId),
-    completeness: complete ? "complete" : "partial",
+    entries: mergeByMessageAnchors(correlation.entries, correlation.tokens, fallbackByCallId),
+    completeness: complete && correlation.complete ? "complete" : "partial",
   };
 }
 
@@ -177,6 +183,122 @@ function mergeByMessageAnchors(
     }
   }
   return [...appServerEntries.flatMap((entry) => [...(beforeAnchor.get(entry.id) ?? []), entry]), ...afterAll];
+}
+
+function correlateMessageAnchors(
+  entries: RuntimeTranscriptEntry[],
+  tokens: RolloutToken[],
+): { entries: RuntimeTranscriptEntry[]; tokens: RolloutToken[]; complete: boolean } {
+  const anchors = tokens.filter((token): token is Extract<RolloutToken, { kind: "anchor" }> => token.kind === "anchor");
+  const canonicalByRolloutId = new Map<string, string>();
+  const aliasesByEntryId = new Map<string, string[]>();
+  let complete = true;
+
+  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+  for (const anchor of anchors) {
+    if (entriesById.has(anchor.id)) canonicalByRolloutId.set(anchor.id, anchor.id);
+  }
+
+  const appServerTurns = appServerMessageTurns(entries);
+  const rolloutTurns = rolloutMessageTurns(tokens);
+  if (appServerTurns.length !== rolloutTurns.length) complete = false;
+  for (let index = 0; index < Math.min(appServerTurns.length, rolloutTurns.length); index += 1) {
+    const appServerTurn = appServerTurns[index];
+    const rolloutTurn = rolloutTurns[index];
+    if (!appServerTurn || !rolloutTurn) continue;
+    if (
+      appServerTurn.users.length !== (rolloutTurn.user ? 1 : 0) ||
+      appServerTurn.assistants.length !== rolloutTurn.assistants.length
+    ) {
+      complete = false;
+      continue;
+    }
+    if (rolloutTurn.user && appServerTurn.users[0])
+      correlateNativeAnchor(rolloutTurn.user, appServerTurn.users[0], canonicalByRolloutId, aliasesByEntryId);
+    for (const [assistantIndex, anchor] of rolloutTurn.assistants.entries()) {
+      const entry = appServerTurn.assistants[assistantIndex];
+      if (entry) correlateNativeAnchor(anchor, entry, canonicalByRolloutId, aliasesByEntryId);
+    }
+  }
+  const messageEntries = entries.filter((entry) => entry.kind === "user" || entry.kind === "assistant");
+  if (messageEntries.some((entry) => !entry.position || !hasCorrelatedId(entry, canonicalByRolloutId)))
+    complete = false;
+  return {
+    entries: entries.map((entry) => {
+      const aliases = aliasesByEntryId.get(entry.id);
+      return aliases ? { ...entry, aliases: [...(entry.aliases ?? []), ...aliases] } : entry;
+    }),
+    tokens: tokens.map((token) => {
+      if (token.kind !== "anchor") return token;
+      const canonicalId = canonicalByRolloutId.get(token.id);
+      return canonicalId ? { ...token, id: canonicalId } : token;
+    }),
+    complete,
+  };
+}
+
+interface MessageTurn<T> {
+  users: T[];
+  assistants: T[];
+}
+
+function appServerMessageTurns(entries: RuntimeTranscriptEntry[]): Array<MessageTurn<RuntimeTranscriptEntry>> {
+  const turns = new Map<number, MessageTurn<RuntimeTranscriptEntry>>();
+  for (const entry of entries) {
+    if (entry.kind !== "user" && entry.kind !== "assistant") continue;
+    const match = /^(\d+)\./u.exec(entry.position ?? "");
+    if (!match?.[1]) continue;
+    const turnIndex = Number(match[1]);
+    const turn = turns.get(turnIndex) ?? { users: [], assistants: [] };
+    if (entry.kind === "user") turn.users.push(entry);
+    else turn.assistants.push(entry);
+    turns.set(turnIndex, turn);
+  }
+  return [...turns.entries()].sort(([left], [right]) => left - right).map(([, turn]) => turn);
+}
+
+function rolloutMessageTurns(
+  tokens: RolloutToken[],
+): Array<{ user: RolloutAnchor | null; assistants: RolloutAnchor[] }> {
+  const turns: Array<{ user: RolloutAnchor | null; assistants: RolloutAnchor[] }> = [];
+  let current: { user: RolloutAnchor | null; assistants: RolloutAnchor[]; activityStarted: boolean } | null = null;
+  for (const token of tokens) {
+    if (token.kind === "call") {
+      if (current) current.activityStarted = true;
+      continue;
+    }
+    if (token.role === "user") {
+      if (current?.activityStarted) {
+        turns.push(current);
+        current = null;
+      }
+      current ??= { user: null, assistants: [], activityStarted: false };
+      current.user = token;
+      continue;
+    }
+    if (token.role !== "assistant") continue;
+    current ??= { user: null, assistants: [], activityStarted: false };
+    current.activityStarted = true;
+    current.assistants.push(token);
+  }
+  if (current) turns.push(current);
+  return turns;
+}
+
+type RolloutAnchor = Extract<RolloutToken, { kind: "anchor" }>;
+
+function correlateNativeAnchor(
+  anchor: RolloutAnchor,
+  entry: RuntimeTranscriptEntry,
+  canonicalByRolloutId: Map<string, string>,
+  aliasesByEntryId: Map<string, string[]>,
+): void {
+  canonicalByRolloutId.set(anchor.id, entry.id);
+  if (anchor.id !== entry.id) aliasesByEntryId.set(entry.id, [anchor.id]);
+}
+
+function hasCorrelatedId(entry: RuntimeTranscriptEntry, canonicalByRolloutId: ReadonlyMap<string, string>): boolean {
+  return [...canonicalByRolloutId.values()].includes(entry.id);
 }
 
 function isRawToolCall(type: string): boolean {

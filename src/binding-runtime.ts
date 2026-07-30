@@ -12,6 +12,7 @@ import type { RuntimeInteractionCoordinator } from "./runtime/runtime-interactio
 import { RuntimeInteractionRouter } from "./runtime/runtime-interaction-router";
 import type { SessionActivity } from "./runtime/session-queue";
 import type { ConnectRuntimeMedia } from "./runtime/types";
+import { verifyInstalledSkills } from "./skills";
 import type { ConnectStateStore } from "./state";
 import { executeConnectTool } from "./tool-executor";
 import type { ActivationCredentials, ConnectConfig } from "./types";
@@ -30,6 +31,7 @@ export interface BindingRuntimeOptions {
   runtimeInteractions?: RuntimeInteractionCoordinator;
   wsTransport?: Transport;
   protocolEventHandlers?: BindingProtocolEventHandlers;
+  verifyInstalledSkills?: () => Promise<void>;
   writeError: (message: string) => void;
 }
 
@@ -78,6 +80,7 @@ export interface BindingRuntimeHandle {
 }
 
 export async function startBindingRuntime(options: BindingRuntimeOptions): Promise<BindingRuntimeHandle> {
+  await (options.verifyInstalledSkills ?? verifyInstalledSkills)();
   const binding = getAgentBinding(options.config, options.agentId);
   const runtimeConfig: ConnectConfig = {
     ...options.config,
@@ -226,6 +229,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         wsClient,
       };
       if (isAgentLivewareOperation(toolName)) {
+        const managedAppId = (await options.stateStore.getLivewareExposure())?.appId ?? null;
         return await executeAgentLiveware(toolName, input, {
           activation: options.activation,
           clawChatBaseUrl: options.config.baseUrl,
@@ -233,6 +237,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
           registerApp: async (name, appId, url) =>
             await executeConnectTool("clawchat_register_app", { name, appId, url }, toolOptions),
           unregisterApp: async (appId) => await executeConnectTool("clawchat_unregister_app", { appId }, toolOptions),
+          managedAppId,
         });
       }
       return await executeConnectTool(toolName, input, toolOptions);

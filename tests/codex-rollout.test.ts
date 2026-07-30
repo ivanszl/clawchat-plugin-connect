@@ -5,6 +5,63 @@ import { join } from "node:path";
 import { backfillCodexRolloutTranscript } from "../src/runtime/codex-rollout";
 
 describe("Codex rollout transcript fallback", () => {
+  it("aliases synthetic app-server message ids to stable rollout ids", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "connect-codex-rollout-aliases-"));
+    const sessions = join(codexHome, "sessions");
+    await mkdir(sessions, { recursive: true });
+    await writeFile(
+      join(sessions, "rollout-thread-1.jsonl"),
+      [
+        record({ type: "message", id: "environment-1", role: "user", content: [{ text: "environment" }] }),
+        record({ type: "message", id: "native-user-1", role: "user", content: [{ text: "hello" }] }),
+        record({ type: "message", id: "native-agent-1", role: "assistant", content: [{ text: "hi" }] }),
+      ].join("\n"),
+    );
+
+    const snapshot = await backfillCodexRolloutTranscript({
+      codexHome,
+      runtimeThreadId: "thread-1",
+      appServerEntries: [
+        { id: "item-1", kind: "user", text: "hello", state: "complete", source: "history", position: "0.1" },
+        { id: "item-2", kind: "assistant", text: "hi", state: "complete", source: "history", position: "0.2" },
+      ],
+    });
+
+    expect(snapshot.completeness).toBe("complete");
+    expect(snapshot.entries).toMatchObject([
+      { id: "item-1", aliases: ["native-user-1"] },
+      { id: "item-2", aliases: ["native-agent-1"] },
+    ]);
+  });
+
+  it("does not infer aliases from equal display text without native turn structure", async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), "connect-codex-rollout-no-text-correlation-"));
+    const sessions = join(codexHome, "sessions");
+    await mkdir(sessions, { recursive: true });
+    await writeFile(
+      join(sessions, "rollout-thread-1.jsonl"),
+      [record({ type: "message", id: "native-user-1", role: "user", content: [{ text: "same text" }] })].join("\n"),
+    );
+    const appServerEntries = [
+      {
+        id: "item-1",
+        kind: "user" as const,
+        text: "same text",
+        state: "complete" as const,
+        source: "history" as const,
+      },
+    ];
+
+    const snapshot = await backfillCodexRolloutTranscript({
+      codexHome,
+      runtimeThreadId: "thread-1",
+      appServerEntries,
+    });
+
+    expect(snapshot.entries).toEqual(appServerEntries);
+    expect(snapshot.completeness).toBe("partial");
+  });
+
   it("inserts missing raw tool calls between app-server message anchors", async () => {
     const codexHome = await mkdtemp(join(tmpdir(), "connect-codex-rollout-"));
     const sessions = join(codexHome, "sessions", "2026", "07", "27");
@@ -51,6 +108,7 @@ describe("Codex rollout transcript fallback", () => {
           text: "run the tests",
           state: "complete",
           source: "history",
+          position: "0.1",
         },
         {
           id: "agent-1",
@@ -58,6 +116,7 @@ describe("Codex rollout transcript fallback", () => {
           text: "done",
           state: "complete",
           source: "history",
+          position: "0.2",
         },
       ],
     });

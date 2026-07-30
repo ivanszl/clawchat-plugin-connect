@@ -7,6 +7,7 @@ import { defaultConfig } from "../src/config";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { RuntimeActivity } from "../src/runtime/types";
 import { createStateStore } from "../src/state";
+import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 function liveActivity(
   id: string,
@@ -19,6 +20,58 @@ function liveActivity(
 }
 
 describe("Connect Transcript Projection", () => {
+  it("rekeys a ClawChat inbound block from authoritative turn context instead of duplicating it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-clawchat-user-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-clawchat-user",
+        sessionId: "session-clawchat-user",
+        agentId: "codex",
+        runtimeSessionId: "thread-clawchat-user",
+        name: "ClawChat user reconciliation",
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-clawchat-user", "codex");
+      if (!session) throw new Error("test Session was not created");
+      const projection = new TranscriptProjection({
+        stateStore: store,
+        config: defaultConfig(),
+        runtimeAdapters: new RuntimeAdapterRegistry([]),
+      });
+      await projection.appendUserMessage({
+        sessionRef: session.sessionRef,
+        text: "hello",
+        origin: "clawchat",
+        author: "Colin",
+        id: "clawchat-message-1",
+      });
+      await projection.upsertRuntimeActivity(session.sessionRef, {
+        id: "item-1",
+        aliases: ["native-user-1"],
+        position: "0.1",
+        parentId: null,
+        kind: "user",
+        text: "<clawchat_turn_context>\n{}\n</clawchat_turn_context>\n\nhello",
+        state: "complete",
+        source: "history",
+        data: { clawchatMessageId: "clawchat-message-1" },
+      });
+
+      await expect(store.listTranscriptBlocks(session.sessionRef)).resolves.toMatchObject([
+        {
+          id: expect.stringMatching(/^b_/u),
+          origin: "clawchat",
+          runtimeSource: "history",
+          plainText: "hello",
+        },
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("reconciles a Web user message with its Runtime history item without losing media", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-transcript-web-user-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
@@ -133,12 +186,12 @@ describe("Connect Transcript Projection", () => {
         stateStore: store,
         config,
         runtimeAdapters: new RuntimeAdapterRegistry([
-          {
+          fixedRuntimeAdapter({
             kind: "codex",
             modes: [],
             readActivity: async () => ({ activities: [], completeness: "complete", limitations: [] }),
             start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
-          },
+          }),
         ]),
       });
 
@@ -311,7 +364,7 @@ describe("Connect Transcript Projection", () => {
       const config = defaultConfig();
       config.agents = { codex: { kind: "codex" } };
       const runtimeAdapters = new RuntimeAdapterRegistry([
-        {
+        fixedRuntimeAdapter({
           kind: "codex",
           modes: ["workspace-write"],
           readActivity: async () => ({
@@ -331,7 +384,7 @@ describe("Connect Transcript Projection", () => {
             ],
           }),
           start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
-        },
+        }),
       ]);
       const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters });
 
@@ -368,7 +421,7 @@ describe("Connect Transcript Projection", () => {
       const config = defaultConfig();
       config.agents = { codex: { kind: "codex" } };
       const runtimeAdapters = new RuntimeAdapterRegistry([
-        {
+        fixedRuntimeAdapter({
           kind: "codex",
           modes: ["workspace-write"],
           readActivity: async () => ({
@@ -423,7 +476,7 @@ describe("Connect Transcript Projection", () => {
             ],
           }),
           start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
-        },
+        }),
       ]);
       const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters });
       await projection.upsertRuntimeActivity(
@@ -501,7 +554,7 @@ describe("Connect Transcript Projection", () => {
       const config = defaultConfig();
       config.agents = { codex: { kind: "codex" } };
       const runtimeAdapters = new RuntimeAdapterRegistry([
-        {
+        fixedRuntimeAdapter({
           kind: "codex",
           modes: [],
           readActivity: async () => ({
@@ -519,7 +572,7 @@ describe("Connect Transcript Projection", () => {
             })),
           }),
           start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
-        },
+        }),
       ]);
       const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters });
       for (let index = 0; index < 201; index += 1) {

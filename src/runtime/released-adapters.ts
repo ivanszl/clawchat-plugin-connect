@@ -63,7 +63,12 @@ export function normalizeReleasedAgentBinding(agentId: string, raw: unknown): Ag
 }
 
 export function createReleasedRuntimeAdapterRegistry(): RuntimeAdapterRegistry {
-  return new RuntimeAdapterRegistry(RELEASED_RUNTIME_ADAPTERS.map((definition) => definition.create()));
+  return new RuntimeAdapterRegistry(
+    RELEASED_RUNTIME_ADAPTERS.map((definition) => ({
+      kind: definition.metadata.kind,
+      create: definition.create,
+    })),
+  );
 }
 
 function normalizeCodexAgentBinding(record: Record<string, unknown>): CodexAgentBindingConfig {

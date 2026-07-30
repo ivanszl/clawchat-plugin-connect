@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -17,8 +17,8 @@ export async function installManagedSkills(
 ): Promise<{ targetRoot: string; skills: string[] }> {
   const source = options.sourceDirectory ?? (await resolveBundledSkillsDirectory());
   const targetRoot = resolve(options.targetRoot ?? join(homedir(), ".agents", "skills"));
+  await preflightManagedSkills({ sourceDirectory: source, targetRoot });
   const manifest = await readAndVerifyManifest(source);
-  await mkdir(targetRoot, { recursive: true });
   const transactionId = process.pid;
   const entries = ["clawchat-core", "clawchat-liveware"].map((skill) => ({
     target: join(targetRoot, skill),
@@ -54,6 +54,7 @@ export async function installManagedSkills(
       await rename(entry.staging, entry.target);
       installed.push(entry);
     }
+    await verifyInstalledSkills({ sourceDirectory: source, targetRoot });
   } catch (error) {
     for (const entry of installed.reverse()) await rm(entry.target, { recursive: true, force: true });
     for (const entry of backedUp.reverse()) {
@@ -63,8 +64,27 @@ export async function installManagedSkills(
     throw error;
   }
   for (const entry of backedUp) await rm(entry.backup, { recursive: true, force: true });
-  await verifyInstalledSkills({ sourceDirectory: source, targetRoot });
   return { targetRoot, skills: ["clawchat-core", "clawchat-liveware"] };
+}
+
+export async function preflightManagedSkills(
+  options: { sourceDirectory?: string; targetRoot?: string } = {},
+): Promise<{ targetRoot: string }> {
+  const source = options.sourceDirectory ?? (await resolveBundledSkillsDirectory());
+  const targetRoot = resolve(options.targetRoot ?? join(homedir(), ".agents", "skills"));
+  await readAndVerifyManifest(source);
+  await mkdir(targetRoot, { recursive: true });
+  const transactionId = randomUUID();
+  const probe = join(targetRoot, `.clawchat-connect-preflight-${transactionId}`);
+  const moved = `${probe}.moved`;
+  try {
+    await writeFile(probe, "preflight", { flag: "wx" });
+    await rename(probe, moved);
+  } finally {
+    await rm(probe, { force: true }).catch(() => undefined);
+    await rm(moved, { force: true }).catch(() => undefined);
+  }
+  return { targetRoot };
 }
 
 export async function verifyInstalledSkills(

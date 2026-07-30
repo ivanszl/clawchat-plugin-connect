@@ -15,6 +15,7 @@ import type {
   CodexThreadStartParams,
   CodexTurnStartParams,
 } from "../src/runtime/codex-app-server";
+import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeSession, ConnectRuntimeStartContext, RuntimeActivity } from "../src/runtime/types";
 import type { CodexAgentBindingConfig, RuntimeWorkspace } from "../src/types";
 
@@ -240,22 +241,26 @@ describe("Codex app-server runtime adapter", () => {
   });
 
   it("owns a separate app-server process for each injected Agent Binding identity", async () => {
-    const clients = [new FakeAppServer(), new FakeAppServer()];
+    const createdClients = [new FakeAppServer(), new FakeAppServer()];
+    const clients = [...createdClients];
     const createAppServer = mock(async () => {
       const client = clients.shift();
       if (!client) throw new Error("unexpected extra app-server");
       return client;
     });
-    const adapter = createCodexRuntimeAdapter({ createAppServer });
+    const registry = new RuntimeAdapterRegistry([
+      { kind: "codex", create: () => createCodexRuntimeAdapter({ createAppServer }) },
+    ]);
     const work = { ...agent, env: { CLAWCHAT_CONNECT_AGENT_ID: "work" } };
     const review = { ...agent, env: { CLAWCHAT_CONNECT_AGENT_ID: "review" } };
 
-    await adapter.discoverThreads?.(work, workspace);
-    await adapter.discoverThreads?.(review, workspace);
-    await adapter.discoverAllThreads?.(work);
+    await registry.discoverThreads(work, workspace);
+    await registry.discoverThreads(review, workspace);
+    await registry.discoverAllThreads(work);
 
     expect(createAppServer).toHaveBeenCalledTimes(2);
-    await adapter.close?.();
+    await registry.close();
+    expect(createdClients.every((client) => client.close.mock.calls.length === 1)).toBe(true);
     expect(createAppServer.mock.results).toHaveLength(2);
   });
 

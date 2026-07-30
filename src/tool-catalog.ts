@@ -1,3 +1,5 @@
+import { basename } from "node:path";
+
 export type ToolValueType = "string" | "integer" | "boolean" | "string-array" | "mentions";
 
 export interface ToolProperty {
@@ -7,6 +9,7 @@ export interface ToolProperty {
   enum?: string[];
   minimum?: number;
   maximum?: number;
+  record?: "basename" | "url" | "url-array";
 }
 
 export interface ConnectToolDefinition {
@@ -14,6 +17,15 @@ export interface ConnectToolDefinition {
   description: string;
   timeoutMs: 30_000 | 120_000;
   properties: Record<string, ToolProperty>;
+  execution: "http" | "websocket" | "file-upload";
+  handler(input: Record<string, unknown>, context: ToolHandlerContext): Promise<unknown> | unknown;
+}
+
+export interface ToolHandlerContext {
+  request(method: string, path: string, body?: unknown): Promise<unknown>;
+  mention(input: Record<string, unknown>): Promise<unknown>;
+  react(input: Record<string, unknown>): unknown;
+  uploadAvatar(input: Record<string, unknown>): Promise<unknown>;
 }
 
 const p = (type: ToolValueType, description: string, extra: Partial<ToolProperty> = {}): ToolProperty => ({
@@ -22,12 +34,41 @@ const p = (type: ToolValueType, description: string, extra: Partial<ToolProperty
   ...extra,
 });
 
+const http = (
+  method: string,
+  path: (input: Record<string, unknown>) => string,
+  body?: (input: Record<string, unknown>) => unknown,
+): Pick<ConnectToolDefinition, "execution" | "handler"> => ({
+  execution: "http",
+  handler: async (input, context) => await context.request(method, path(input), body ? body(input) : undefined),
+});
+
+const websocket = (operation: "mention" | "react"): Pick<ConnectToolDefinition, "execution" | "handler"> => ({
+  execution: "websocket",
+  handler: async (input, context) => await context[operation](input),
+});
+
+const fileUpload: Pick<ConnectToolDefinition, "execution" | "handler"> = {
+  execution: "file-upload",
+  handler: async (input, context) => await context.uploadAvatar(input),
+};
+
+const id = (input: Record<string, unknown>, key: string): string => encodeURIComponent(String(input[key]));
+
+const query = (values: Record<string, unknown>): string => {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) if (value != null && value !== "") params.set(key, String(value));
+  const text = params.toString();
+  return text ? `?${text}` : "";
+};
+
 export const CONNECT_TOOL_CATALOG = [
   {
     name: "clawchat_get_account_profile",
     description: "Get the connected ClawChat account profile.",
     timeoutMs: 30_000,
     properties: {},
+    ...http("GET", () => "/v1/users/me"),
   },
   {
     name: "clawchat_update_account_profile",
@@ -35,17 +76,26 @@ export const CONNECT_TOOL_CATALOG = [
     timeoutMs: 30_000,
     properties: {
       nickname: p("string", "New nickname."),
-      avatar_url: p("string", "New avatar URL."),
+      avatar_url: p("string", "New avatar URL.", { record: "url" }),
       bio: p("string", "New bio."),
     },
+    ...http(
+      "PATCH",
+      () => "/v1/users/me",
+      (input) => input,
+    ),
   },
   {
     name: "clawchat_upload_avatar_image",
     description: "Upload an absolute local image path for use as the account avatar.",
     timeoutMs: 120_000,
     properties: {
-      filePath: p("string", "Absolute local image path (maximum 20 MiB).", { required: true }),
+      filePath: p("string", "Absolute local image path (maximum 20 MiB).", {
+        required: true,
+        record: "basename",
+      }),
     },
+    ...fileUpload,
   },
   {
     name: "clawchat_get_user_profile",
@@ -54,12 +104,14 @@ export const CONNECT_TOOL_CATALOG = [
     properties: {
       userId: p("string", "Exact user ID.", { required: true }),
     },
+    ...http("GET", (input) => `/v1/users/${id(input, "userId")}`),
   },
   {
     name: "clawchat_list_account_friends",
     description: "List friends of the connected account.",
     timeoutMs: 30_000,
     properties: {},
+    ...http("GET", () => "/v1/friendships"),
   },
   {
     name: "clawchat_send_friend_request",
@@ -69,6 +121,14 @@ export const CONNECT_TOOL_CATALOG = [
       userId: p("string", "Exact user ID.", { required: true }),
       greeting: p("string", "Optional greeting."),
     },
+    ...http(
+      "POST",
+      () => "/v1/friendships",
+      (input) => ({
+        user_id: input.userId,
+        ...(input.greeting != null ? { greeting: input.greeting } : {}),
+      }),
+    ),
   },
   {
     name: "clawchat_list_friend_requests",
@@ -77,6 +137,7 @@ export const CONNECT_TOOL_CATALOG = [
     properties: {
       direction: p("string", "Request direction.", { enum: ["incoming", "outgoing"] }),
     },
+    ...http("GET", (input) => `/v1/friendships/requests/${input.direction ?? "incoming"}`),
   },
   {
     name: "clawchat_accept_friend_request",
@@ -85,6 +146,7 @@ export const CONNECT_TOOL_CATALOG = [
     properties: {
       requestId: p("integer", "Exact request ID.", { required: true, minimum: 1 }),
     },
+    ...http("POST", (input) => `/v1/friendships/requests/${id(input, "requestId")}/accept`),
   },
   {
     name: "clawchat_reject_friend_request",
@@ -93,6 +155,7 @@ export const CONNECT_TOOL_CATALOG = [
     properties: {
       requestId: p("integer", "Exact request ID.", { required: true, minimum: 1 }),
     },
+    ...http("POST", (input) => `/v1/friendships/requests/${id(input, "requestId")}/reject`),
   },
   {
     name: "clawchat_remove_friend",
@@ -101,6 +164,7 @@ export const CONNECT_TOOL_CATALOG = [
     properties: {
       friendUserId: p("string", "Exact friend user ID.", { required: true }),
     },
+    ...http("DELETE", (input) => `/v1/friendships/${id(input, "friendUserId")}`),
   },
   {
     name: "clawchat_search_users",
@@ -110,6 +174,7 @@ export const CONNECT_TOOL_CATALOG = [
       q: p("string", "Username or nickname query."),
       limit: p("integer", "Maximum results.", { minimum: 1, maximum: 100 }),
     },
+    ...http("GET", (input) => `/v1/users/search${query({ q: input.q, limit: input.limit })}`),
   },
   {
     name: "clawchat_leave_group",
@@ -118,6 +183,7 @@ export const CONNECT_TOOL_CATALOG = [
     properties: {
       conversationId: p("string", "Exact group conversation ID.", { required: true }),
     },
+    ...http("POST", (input) => `/v1/conversations/${id(input, "conversationId")}/leave`),
   },
   {
     name: "clawchat_mention_message",
@@ -130,6 +196,7 @@ export const CONNECT_TOOL_CATALOG = [
       mentions: p("mentions", "One or more exact userId/display pairs.", { required: true }),
       replyToMessageId: p("string", "Optional exact reply target message ID."),
     },
+    ...websocket("mention"),
   },
   {
     name: "clawchat_react_message",
@@ -137,10 +204,12 @@ export const CONNECT_TOOL_CATALOG = [
     timeoutMs: 30_000,
     properties: {
       chatId: p("string", "Exact conversation ID.", { required: true }),
+      chatType: p("string", "Conversation type.", { required: true, enum: ["direct", "group"] }),
       emoji: p("string", "Single emoji.", { required: true }),
       targetMessageId: p("string", "Exact target message ID.", { required: true }),
       remove: p("boolean", "Remove the reaction instead of adding it."),
     },
+    ...websocket("react"),
   },
   {
     name: "clawchat_list_moments",
@@ -150,6 +219,7 @@ export const CONNECT_TOOL_CATALOG = [
       before: p("integer", "Return IDs below this cursor.", { minimum: 1 }),
       limit: p("integer", "Maximum results.", { minimum: 1, maximum: 100 }),
     },
+    ...http("GET", (input) => `/v1/moments${query({ before: input.before, limit: input.limit })}`),
   },
   {
     name: "clawchat_create_moment",
@@ -157,8 +227,13 @@ export const CONNECT_TOOL_CATALOG = [
     timeoutMs: 30_000,
     properties: {
       text: p("string", "Moment text."),
-      images: p("string-array", "Hosted image URLs."),
+      images: p("string-array", "Hosted image URLs.", { record: "url-array" }),
     },
+    ...http(
+      "POST",
+      () => "/v1/moments",
+      (input) => input,
+    ),
   },
   {
     name: "clawchat_delete_moment",
@@ -167,6 +242,7 @@ export const CONNECT_TOOL_CATALOG = [
     properties: {
       momentId: p("integer", "Exact moment ID.", { required: true, minimum: 1 }),
     },
+    ...http("DELETE", (input) => `/v1/moments/${id(input, "momentId")}`),
   },
   {
     name: "clawchat_toggle_moment_reaction",
@@ -176,6 +252,13 @@ export const CONNECT_TOOL_CATALOG = [
       momentId: p("integer", "Exact moment ID.", { required: true, minimum: 1 }),
       emoji: p("string", "Emoji.", { required: true }),
     },
+    ...http(
+      "POST",
+      (input) => `/v1/moments/${id(input, "momentId")}/reactions`,
+      (input) => ({
+        emoji: input.emoji,
+      }),
+    ),
   },
   {
     name: "clawchat_create_moment_comment",
@@ -185,6 +268,13 @@ export const CONNECT_TOOL_CATALOG = [
       momentId: p("integer", "Exact moment ID.", { required: true, minimum: 1 }),
       text: p("string", "Comment text.", { required: true }),
     },
+    ...http(
+      "POST",
+      (input) => `/v1/moments/${id(input, "momentId")}/comments`,
+      (input) => ({
+        text: input.text,
+      }),
+    ),
   },
   {
     name: "clawchat_reply_moment_comment",
@@ -195,6 +285,14 @@ export const CONNECT_TOOL_CATALOG = [
       replyToCommentId: p("integer", "Exact comment ID.", { required: true, minimum: 1 }),
       text: p("string", "Reply text.", { required: true }),
     },
+    ...http(
+      "POST",
+      (input) => `/v1/moments/${id(input, "momentId")}/comments`,
+      (input) => ({
+        text: input.text,
+        reply_to_comment_id: input.replyToCommentId,
+      }),
+    ),
   },
   {
     name: "clawchat_delete_moment_comment",
@@ -204,6 +302,7 @@ export const CONNECT_TOOL_CATALOG = [
       momentId: p("integer", "Exact moment ID.", { required: true, minimum: 1 }),
       commentId: p("integer", "Exact comment ID.", { required: true, minimum: 1 }),
     },
+    ...http("DELETE", (input) => `/v1/moments/${id(input, "momentId")}/comments/${id(input, "commentId")}`),
   },
   {
     name: "clawchat_register_app",
@@ -212,14 +311,24 @@ export const CONNECT_TOOL_CATALOG = [
     properties: {
       name: p("string", "Launcher name.", { required: true }),
       appId: p("string", "Exact Liveware app ID.", { required: true }),
-      url: p("string", "Exact public tunnel URL.", { required: true }),
+      url: p("string", "Exact public tunnel URL.", { required: true, record: "url" }),
     },
+    ...http(
+      "POST",
+      () => "/v1/agents/me/apps",
+      (input) => ({
+        name: input.name,
+        app_id: input.appId,
+        url: input.url,
+      }),
+    ),
   },
   {
     name: "clawchat_list_apps",
     description: "List Liveware apps registered by this agent.",
     timeoutMs: 30_000,
     properties: {},
+    ...http("GET", () => "/v1/agents/me/apps"),
   },
   {
     name: "clawchat_unregister_app",
@@ -228,6 +337,7 @@ export const CONNECT_TOOL_CATALOG = [
     properties: {
       appId: p("string", "Exact Liveware app ID.", { required: true }),
     },
+    ...http("DELETE", (input) => `/v1/agents/me/apps/${id(input, "appId")}`),
   },
 ] as const satisfies readonly ConnectToolDefinition[];
 
@@ -269,6 +379,32 @@ export function validateToolInput(tool: ConnectToolDefinition, input: unknown): 
   if (tool.name === "clawchat_create_moment" && !record.text && !(Array.isArray(record.images) && record.images.length))
     throw new Error("at least one of text or images is required");
   return record;
+}
+
+export function recordToolInput(tool: ConnectToolDefinition, input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(input).map(([key, value]) => {
+      const policy = tool.properties[key]?.record;
+      if (policy === "basename" && typeof value === "string") return [key, basename(value)];
+      if (policy === "url" && typeof value === "string") return [key, recordableUrl(value)];
+      if (policy === "url-array" && Array.isArray(value))
+        return [key, value.map((item) => (typeof item === "string" ? recordableUrl(item) : item))];
+      return [key, value];
+    }),
+  );
+}
+
+function recordableUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "[invalid-url]";
+  }
 }
 
 function validateMentions(value: unknown, key: string): void {
