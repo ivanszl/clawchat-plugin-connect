@@ -380,7 +380,7 @@ async function handleMode(ctx: ChatCommandContext, mode: string | undefined): Pr
     if (modes.length === 0)
       return { handled: true, text: `Runtime ${binding.kind} does not support configurable modes.` };
     if (selectedMode && !modes.includes(selectedMode)) {
-      return { handled: true, text: `Usage for ${binding.kind}: /mode ${modes.join("|")}|default` };
+      return { handled: true, text: `Usage for ClawChat Connect: /mode ${modes.join("|")}|default` };
     }
   }
   if (intent || !current) {

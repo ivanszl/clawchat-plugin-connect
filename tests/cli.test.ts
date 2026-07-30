@@ -673,7 +673,7 @@ describe("handleChatCommand", () => {
         projects,
         runtimeModesFor: () => ["read-only", "workspace-write", "danger-full-access"],
       }),
-    ).resolves.toMatchObject({ handled: true, text: expect.stringContaining("Usage for codex") });
+    ).resolves.toMatchObject({ handled: true, text: expect.stringContaining("Usage for ClawChat Connect") });
     await store.close();
   });
 
