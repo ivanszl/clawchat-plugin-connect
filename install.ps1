@@ -37,14 +37,11 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
   $Version = $env:CLAWCHAT_CONNECT_VERSION
 }
 if ([string]::IsNullOrWhiteSpace($Version)) {
-  $releasesUrl = "https://api.github.com/repos/$repository/releases?per_page=100"
-  $release = Invoke-RestMethod -UseBasicParsing -Uri $releasesUrl | Where-Object {
-    -not $_.draft -and $_.tag_name -match "^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
-  } | Select-Object -First 1
-  if ($null -eq $release) {
-    throw "Latest published release was not found for $repository"
+  $releaseChannelUrl = "https://raw.githubusercontent.com/$repository/release-channel/latest-alpha.txt"
+  $Version = (Invoke-WebRequest -UseBasicParsing -Uri $releaseChannelUrl).Content.Trim()
+  if ([string]::IsNullOrWhiteSpace($Version)) {
+    throw "Alpha release channel was empty for $repository"
   }
-  $Version = $release.tag_name
 }
 if (-not $Version.StartsWith("v")) {
   $Version = "v$Version"

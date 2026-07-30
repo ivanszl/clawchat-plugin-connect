@@ -495,7 +495,7 @@ CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
 
 Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it beside the Connect executable under `dist/`. Windows builds use `.exe` names. Preview the browser client with `bun run preview:web`.
 
-Version tags such as `v0.1.0-alpha.20` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. Both installers resolve the latest published release unless a version is explicitly supplied. npm packages include all six assets so a global Bun install remains portable.
+Version tags such as `v0.1.0-alpha.20` run the alpha release workflow, which checks the tag against `package.json`, runs tests and the real Codex integration, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. After all assets are published, the workflow advances the API-independent `release-channel/latest-alpha.txt` pointer used by default installs and updates. npm packages include all six assets so a global Bun install remains portable.
 
 ## License
 

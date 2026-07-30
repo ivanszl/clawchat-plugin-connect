@@ -16,14 +16,12 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 
 if [ -z "$version" ]; then
-  releases_url="https://api.github.com/repos/${repository}/releases?per_page=100"
+  release_channel_url="https://raw.githubusercontent.com/${repository}/release-channel/latest-alpha.txt"
   version="$(
-    curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3 "$releases_url" |
-      tr ',' '\n' |
-      sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' |
-      awk 'NR == 1 { print; exit }'
+    curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3 "$release_channel_url" |
+      awk 'NF { print $1; exit }'
   )"
-  [ -n "$version" ] || fail "latest published release was not found for ${repository}"
+  [ -n "$version" ] || fail "alpha release channel was empty for ${repository}"
 fi
 
 case "$version" in

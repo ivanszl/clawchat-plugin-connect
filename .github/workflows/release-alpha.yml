@@ -146,8 +146,8 @@ jobs:
           bun-windows-x64 windows x64
           TARGETS
           cp install.sh install.ps1 build/release/
-          grep -F "api.github.com/repos/\${repository}/releases?per_page=100" build/release/install.sh
-          grep -F 'api.github.com/repos/$repository/releases?per_page=100' build/release/install.ps1
+          grep -F "raw.githubusercontent.com/\${repository}/release-channel/latest-alpha.txt" build/release/install.sh
+          grep -F 'raw.githubusercontent.com/$repository/release-channel/latest-alpha.txt' build/release/install.ps1
           cp CHANGELOG.md build/release/
           cd build/release
           sha256sum clawchat-connect-*.tar.gz clawchat-connect-*.zip install.sh install.ps1 CHANGELOG.md > checksums.txt
@@ -175,3 +175,30 @@ jobs:
               --title "ClawChat Connect ${GITHUB_REF_NAME}" \
               --notes-file build/release-notes.md
           fi
+
+      - name: Advance alpha release channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel_branch="release-channel"
+          channel_path="latest-alpha.txt"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${channel_branch}" >/dev/null 2>&1; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/heads/${channel_branch}" \
+              -f sha="${GITHUB_SHA}" >/dev/null
+          fi
+          existing_sha="$(
+            gh api "repos/${GITHUB_REPOSITORY}/contents/${channel_path}?ref=${channel_branch}" \
+              --jq .sha 2>/dev/null || true
+          )"
+          channel_content="$(printf '%s\n' "${GITHUB_REF_NAME}" | base64 -w 0)"
+          arguments=(
+            -f message="chore: advance alpha channel to ${GITHUB_REF_NAME}"
+            -f content="${channel_content}"
+            -f branch="${channel_branch}"
+          )
+          if [ -n "${existing_sha}" ]; then arguments+=(-f sha="${existing_sha}"); fi
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${channel_path}" \
+            "${arguments[@]}" >/dev/null

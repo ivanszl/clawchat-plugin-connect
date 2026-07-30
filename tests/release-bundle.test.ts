@@ -136,8 +136,8 @@ describe("standalone release bundle", () => {
 
   it("ships a checksum-verifying PowerShell installer and Windows release targets", async () => {
     const installer = await readFile("install.ps1", "utf8");
-    expect(installer).toContain("api.github.com/repos/$repository/releases?per_page=100");
-    expect(installer).toContain("Select-Object -First 1");
+    expect(installer).toContain("raw.githubusercontent.com/$repository/release-channel/latest-alpha.txt");
+    expect(installer).not.toContain("api.github.com");
     expect(installer).toContain("Get-FileHash");
     expect(installer).toContain("Expand-Archive");
     expect(installer).toContain("clawchat-connect.exe");
@@ -153,6 +153,8 @@ describe("standalone release bundle", () => {
     expect(workflow).not.toMatch(/^\s*bun-linux-x64 linux x64$/mu);
     expect(workflow).toContain("install.ps1");
     expect(workflow).toContain("--notes-file build/release-notes.md");
+    expect(workflow).toContain("release-channel");
+    expect(workflow).toContain("latest-alpha.txt");
   });
 
   it("uses vendored, verified Liveware assets for npm packages and local compiled builds", async () => {
@@ -207,21 +209,7 @@ describe("standalone release bundle", () => {
     const checksum = (await new Response(checksumProcess.stdout).text()).split(/\s+/u)[0];
     expect(await checksumProcess.exited).toBe(0);
     await writeFile(join(fixtureDirectory, "checksums.txt"), `${checksum}  ${asset}\n`);
-    await writeFile(
-      join(fixtureDirectory, "releases.json"),
-      JSON.stringify([
-        {
-          tag_name: "v0.1.0-alpha.12",
-          draft: false,
-          prerelease: true,
-        },
-        {
-          tag_name: "v0.1.0-alpha.11",
-          draft: false,
-          prerelease: true,
-        },
-      ]),
-    );
+    await writeFile(join(fixtureDirectory, "latest-alpha.txt"), "v0.1.0-alpha.12\n");
     const curlPath = join(commandDirectory, "curl");
     await writeFile(
       curlPath,
@@ -237,11 +225,11 @@ describe("standalone release bundle", () => {
         "  esac",
         "done",
         'case "$url" in',
-        "  *api.github.com*)",
+        "  *release-channel/latest-alpha.txt)",
         '    if [ -n "$output" ]; then',
-        '      cp "$CONNECT_INSTALL_FIXTURES/releases.json" "$output"',
+        '      cp "$CONNECT_INSTALL_FIXTURES/latest-alpha.txt" "$output"',
         "    else",
-        '      cat "$CONNECT_INSTALL_FIXTURES/releases.json"',
+        '      cat "$CONNECT_INSTALL_FIXTURES/latest-alpha.txt"',
         "    fi",
         "    ;;",
         '  *) cp "$CONNECT_INSTALL_FIXTURES/$' + '{url##*/}" "$output" ;;',
@@ -282,6 +270,9 @@ describe("standalone release bundle", () => {
     await expect(readFile(requestsPath, "utf8")).resolves.toContain(
       "/releases/download/v0.1.0-alpha.12/clawchat-connect-",
     );
+    const requests = await readFile(requestsPath, "utf8");
+    expect(requests).toContain("/release-channel/latest-alpha.txt");
+    expect(requests).not.toContain("api.github.com");
 
     const installedConnectBeforeFailure = await readFile(join(installDirectory, "clawchat-connect"), "utf8");
     await writeFile(
