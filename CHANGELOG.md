@@ -16,6 +16,10 @@ All notable changes to ClawChat Connect are documented in this file.
 - Routed Agent tool execution through the Connect Service and persistent SQLite request lifecycle while retaining settled request history.
 - Added WebSocket reaction delivery alongside the existing message reply path.
 
+### Fixed
+
+- Fixed upgrades from pre-Project databases by adding the missing Runtime Session `project_id` migration without replacing existing local Session state.
+
 ## [0.1.0-alpha.16] - 2026-07-29
 
 ### Added
