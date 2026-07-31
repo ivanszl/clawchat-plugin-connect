@@ -148,6 +148,17 @@ export class SessionCatalog {
           }
         : option;
     });
+    for (const [id, selected] of Object.entries(selectedSessionOptions)) {
+      if (sessionOptionDefinitions.some((definition) => definition.id === id)) continue;
+      sessionOptionDefinitions.push({
+        id,
+        displayName: id,
+        description: "Saved Runtime Adapter option is no longer advertised",
+        category: "other",
+        changePolicy: "in-place",
+        values: [{ id: selected, displayName: selected, unavailable: true }],
+      });
+    }
     let modelAvailable = true;
     let effectiveModel: string | null = null;
     let effectiveReasoningEffort: string | null = null;

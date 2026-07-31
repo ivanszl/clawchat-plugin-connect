@@ -13,14 +13,6 @@ export type CodexWebSearchMode = "disabled" | "cached" | "live";
 
 export interface AgentBindingConfigBase {
   executablePathOverride?: string;
-  /** Codex compatibility preferences; ignored by other Adapter kinds. */
-  codexPathOverride?: string;
-  model?: string;
-  sandboxMode?: CodexSandboxMode;
-  modelReasoningEffort?: CodexReasoningEffort;
-  approvalPolicy?: CodexApprovalPolicy;
-  webSearchMode?: CodexWebSearchMode;
-  networkAccessEnabled?: boolean;
   env?: Record<string, string>;
   displayName?: string;
   sessionOptions?: Record<string, string>;
@@ -29,10 +21,24 @@ export interface AgentBindingConfigBase {
 
 export interface CodexAgentBindingConfig extends AgentBindingConfigBase {
   kind: "codex";
+  codexPathOverride?: string;
+  model?: string;
+  sandboxMode?: CodexSandboxMode;
+  modelReasoningEffort?: CodexReasoningEffort;
+  approvalPolicy?: CodexApprovalPolicy;
+  webSearchMode?: CodexWebSearchMode;
+  networkAccessEnabled?: boolean;
 }
 
 export interface OpenCodeAgentBindingConfig extends AgentBindingConfigBase {
   kind: "opencode";
+  codexPathOverride?: never;
+  model?: never;
+  sandboxMode?: never;
+  modelReasoningEffort?: never;
+  approvalPolicy?: never;
+  webSearchMode?: never;
+  networkAccessEnabled?: never;
 }
 
 export type AgentBindingConfig = CodexAgentBindingConfig | OpenCodeAgentBindingConfig;

@@ -630,6 +630,7 @@ export class ConnectRuntime {
 
   private async modelFor(current: RuntimeSessionRecord, agentId: string) {
     const binding = getAgentBinding(this.options.config, agentId);
+    if (binding.kind === "opencode") return { model: undefined, reasoningEffort: undefined };
     return resolveModelSelection(binding, current, await this.runtimeAdapters.listModels(binding));
   }
 }

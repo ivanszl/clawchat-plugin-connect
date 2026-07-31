@@ -27,4 +27,3 @@ coverage:
 - OpenCode assistant-generated outbound media beyond Connect's existing safe image rules.
 - Runtime-specific compaction controls and context metrics.
 - Attaching to an already-running runtime Server or TUI (currently intentionally unsupported).
-

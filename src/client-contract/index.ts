@@ -273,7 +273,13 @@ export interface RuntimeSessionOptionView {
   category: "agent" | "model" | "variant" | "execution" | "other";
   changePolicy: "in-place" | "new-runtime-session";
   defaultValue?: string;
-  values: Array<{ id: string; displayName: string; description?: string; unavailable?: boolean }>;
+  values: Array<{
+    id: string;
+    displayName: string;
+    description?: string;
+    unavailable?: boolean;
+    availableWhen?: Record<string, string>;
+  }>;
 }
 
 export interface ProjectView {

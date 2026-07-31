@@ -189,7 +189,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Replacing the Connect Owner transfers the existing Projects, Sessions, and Runtime Threads to the new owner; replacement does not clear or isolate prior local data.
 - A Connect installation has one Connect Service; Agent Bindings and Runtime Adapters do not own background services.
 - Agent Binding IDs are arbitrary; Runtime Adapter selection comes only from the Binding's explicit `kind`.
-- The first release registers only the Codex Runtime Adapter; that is a release scope, not a domain invariant.
+- The current release registers Codex and OpenCode Runtime Adapters; released kinds remain product scope, not a domain invariant.
 - Connect defines Project, Session, and Runtime Thread semantics uniformly across Runtime Adapter kinds. Each Runtime Adapter translates its coding agent's native project, workspace, conversation, session, or thread concepts into that Connect model rather than changing the model for its kind.
 - Successful activation synchronizes the Agent Binding ID to the connected ClawChat Profile nickname.
 - Projects are global and reusable across Agent Bindings.

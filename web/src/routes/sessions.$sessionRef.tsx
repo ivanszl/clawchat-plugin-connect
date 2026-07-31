@@ -110,23 +110,31 @@ function SessionPage() {
             hasChevron={false}
             placement="below"
             items={[
-              view.isArchived
-                ? {
-                    label: "恢复 Session",
-                    isDisabled: lifecycle.isPending,
-                    onClick: () => lifecycle.mutate("unarchive"),
-                  }
-                : {
-                    label: "归档 Session",
-                    isDisabled: lifecycle.isPending,
-                    onClick: () => lifecycle.mutate("archive"),
-                  },
-              { type: "divider" },
-              {
-                label: "永久删除 Session",
-                isDisabled: lifecycle.isPending,
-                onClick: () => setDeleteOpen(true),
-              },
+              ...(view.allowedActions.includes(view.isArchived ? "unarchive" : "archive")
+                ? [
+                    view.isArchived
+                      ? {
+                          label: "恢复 Session",
+                          isDisabled: lifecycle.isPending,
+                          onClick: () => lifecycle.mutate("unarchive"),
+                        }
+                      : {
+                          label: "归档 Session",
+                          isDisabled: lifecycle.isPending,
+                          onClick: () => lifecycle.mutate("archive"),
+                        },
+                  ]
+                : []),
+              ...(view.allowedActions.includes("delete")
+                ? [
+                    { type: "divider" as const },
+                    {
+                      label: "永久删除 Session",
+                      isDisabled: lifecycle.isPending,
+                      onClick: () => setDeleteOpen(true),
+                    },
+                  ]
+                : []),
             ]}
           />
         </div>
@@ -197,9 +205,15 @@ function SessionModelControls({ view }: { view: SessionView }) {
   const effectiveModelOption = view.modelOptions.find((option) => option.id === view.effectiveModel);
   const unavailableModel =
     view.model && !view.modelOptions.some((option) => option.id === view.model) ? view.model : null;
-  const compactLabel = `${effectiveModelOption?.displayName ?? view.effectiveModel ?? "Runtime 默认模型"} · ${
-    view.effectiveReasoningEffort ?? "default"
-  }`;
+  const usesGenericModelOptions = view.sessionOptionDefinitions.some(
+    (definition) => definition.category === "model" || definition.category === "variant",
+  );
+  const compactLabel = usesGenericModelOptions
+    ? [sessionOptions.agent, sessionOptions.model, sessionOptions.variant].filter(Boolean).join(" · ") ||
+      "Runtime 原生默认值"
+    : `${effectiveModelOption?.displayName ?? view.effectiveModel ?? "Runtime 默认模型"} · ${
+        view.effectiveReasoningEffort ?? "default"
+      }`;
   const modelOptions = [
     { value: "default", label: "继承 Agent Binding / Runtime 默认值" },
     ...(unavailableModel ? [{ value: unavailableModel, label: `${unavailableModel}（不可用）` }] : []),
@@ -233,7 +247,7 @@ function SessionModelControls({ view }: { view: SessionView }) {
         <div className="session-model-popover">
           <div className="session-model-popover-heading">
             <div>
-              <strong>模型与推理强度</strong>
+              <strong>{usesGenericModelOptions ? "Runtime Session 选项" : "模型与推理强度"}</strong>
               <p>
                 当前生效：{compactLabel}（
                 {{ session: "Session", binding: "Agent Binding", runtime: "Runtime" }[view.modelSource]}）
@@ -241,27 +255,37 @@ function SessionModelControls({ view }: { view: SessionView }) {
             </div>
             {!view.modelAvailable ? <Badge label="模型不可用" variant="error" /> : null}
           </div>
-          <Selector
-            label="Session 模型"
-            options={modelOptions}
-            value={model}
-            onChange={(value) => {
-              const option = view.modelOptions.find((candidate) => candidate.id === value);
-              setModel(value);
-              setEffort(option?.defaultReasoningEffort ?? view.effectiveReasoningEffort ?? "default");
-            }}
-            isDisabled={view.modelOptions.length === 0 && !unavailableModel}
-            disabledMessage="Runtime Adapter 不支持模型选择。"
-            width="100%"
-          />
+          {!usesGenericModelOptions ? (
+            <Selector
+              label="Session 模型"
+              options={modelOptions}
+              value={model}
+              onChange={(value) => {
+                const option = view.modelOptions.find((candidate) => candidate.id === value);
+                setModel(value);
+                setEffort(option?.defaultReasoningEffort ?? view.effectiveReasoningEffort ?? "default");
+              }}
+              isDisabled={view.modelOptions.length === 0 && !unavailableModel}
+              disabledMessage="Runtime Adapter 不支持模型选择。"
+              width="100%"
+            />
+          ) : null}
           {view.sessionOptionDefinitions.map((definition) => {
             const selected = sessionOptions[definition.id] ?? "default";
             const values = [
               { value: "default", label: "使用 Runtime 默认值" },
-              ...definition.values.map((value) => ({
-                value: value.id,
-                label: `${value.displayName}${value.unavailable ? "（不可用）" : ""}`,
-              })),
+              ...definition.values
+                .filter(
+                  (value) =>
+                    !value.availableWhen ||
+                    Object.entries(value.availableWhen).every(
+                      ([optionId, expected]) => sessionOptions[optionId] === expected,
+                    ),
+                )
+                .map((value) => ({
+                  value: value.id,
+                  label: `${value.displayName}${value.unavailable ? "（不可用）" : ""}`,
+                })),
             ];
             return (
               <Selector
@@ -274,30 +298,34 @@ function SessionModelControls({ view }: { view: SessionView }) {
                     const next = { ...current };
                     if (value === "default") delete next[definition.id];
                     else next[definition.id] = value;
+                    for (const dependent of view.sessionOptionDefinitions) {
+                      const selectedDependent = next[dependent.id];
+                      const selectedValue = dependent.values.find((candidate) => candidate.id === selectedDependent);
+                      if (
+                        selectedValue?.availableWhen?.[definition.id] &&
+                        selectedValue.availableWhen[definition.id] !== next[definition.id]
+                      )
+                        delete next[dependent.id];
+                    }
                     return next;
                   })
                 }
-                isDisabled={
-                  definition.changePolicy !== "in-place" ||
-                  Boolean(definition.values.find((value) => value.id === selected)?.unavailable)
-                }
-                disabledMessage={
-                  definition.changePolicy === "in-place"
-                    ? "当前保存值不可用，请先选择 Runtime 支持的值。"
-                    : "更改此选项需要创建新的 Runtime Session。"
-                }
+                isDisabled={definition.changePolicy !== "in-place"}
+                disabledMessage="更改此选项需要创建新的 Runtime Session。"
                 width="100%"
               />
             );
           })}
-          <Selector
-            label="推理强度"
-            options={selectedModel?.supportedReasoningEfforts ?? [effort]}
-            value={effort}
-            onChange={setEffort}
-            isDisabled={model === "default"}
-            width="100%"
-          />
+          {!usesGenericModelOptions ? (
+            <Selector
+              label="推理强度"
+              options={selectedModel?.supportedReasoningEfforts ?? [effort]}
+              value={effort}
+              onChange={setEffort}
+              isDisabled={model === "default"}
+              width="100%"
+            />
+          ) : null}
           {save.isError ? <span className="form-error">{save.error.message}</span> : null}
           <div className="session-model-popover-actions">
             <Button

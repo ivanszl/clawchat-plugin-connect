@@ -98,7 +98,17 @@ export async function createOpenCodeServerClient(
 
   const port = await (options.allocatePort ?? allocateLoopbackPort)();
   const password = options.password?.() ?? randomBytes(32).toString("base64url");
-  const serverEnv = { ...env, OPENCODE_SERVER_PASSWORD: password };
+  const serverEnv = { ...env };
+  for (const name of [
+    "OPENCODE_SERVER_PASSWORD",
+    "OPENCODE_SERVER_USERNAME",
+    "OPENCODE_SERVER_HOSTNAME",
+    "OPENCODE_SERVER_PORT",
+    "OPENCODE_SERVER_CORS",
+    "OPENCODE_SERVER_MDNS",
+  ])
+    delete serverEnv[name];
+  serverEnv.OPENCODE_SERVER_PASSWORD = password;
   const child = (options.spawnServer ?? spawnOpenCodeServer)(
     executable,
     ["serve", "--hostname", "127.0.0.1", "--port", String(port), "--mdns=false"],

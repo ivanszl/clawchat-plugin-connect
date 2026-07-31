@@ -88,6 +88,7 @@ export interface RuntimeSessionOptionValue {
   displayName: string;
   description?: string;
   unavailable?: boolean;
+  availableWhen?: Record<string, string>;
 }
 
 export interface RuntimeSessionOption {

@@ -58,7 +58,12 @@ describe("OpenCode Server process boundary", () => {
       {
         kind: "opencode",
         executablePathOverride: "/opt/opencode",
-        env: { OPENCODE_CONFIG_DIR: "/tmp/open-config" },
+        env: {
+          OPENCODE_CONFIG_DIR: "/tmp/open-config",
+          OPENCODE_SERVER_USERNAME: "inherited-user",
+          OPENCODE_SERVER_CORS: "*",
+          OPENCODE_SERVER_MDNS: "true",
+        },
       },
       {
         readVersion: async () => "1.18.10",
@@ -78,6 +83,10 @@ describe("OpenCode Server process boundary", () => {
       }),
     );
     expect(createApi).toHaveBeenCalledWith("http://127.0.0.1:43129", "opencode", "generated-secret");
+    const spawnedEnv = (spawnServer.mock.calls as unknown as Array<[string, string[], NodeJS.ProcessEnv]>)[0]?.[2];
+    expect(spawnedEnv?.OPENCODE_SERVER_USERNAME).toBeUndefined();
+    expect(spawnedEnv?.OPENCODE_SERVER_CORS).toBeUndefined();
+    expect(spawnedEnv?.OPENCODE_SERVER_MDNS).toBeUndefined();
     expect(client.version).toBe("1.18.10");
     await client.close();
     expect(process.exitCode).toBe(0);

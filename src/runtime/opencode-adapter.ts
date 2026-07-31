@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
   Agent,
@@ -33,7 +33,8 @@ export interface OpenCodeRuntimeAdapterOptions {
   messageID?: () => string;
 }
 
-type EventListener = (event: GlobalEvent | Error) => Promise<void> | void;
+class OpenCodeReconnect {}
+type EventListener = (event: GlobalEvent | Error | OpenCodeReconnect) => Promise<void> | void;
 
 export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOptions = {}): ConnectRuntimeAdapter {
   let clientPromise: Promise<OpenCodeServerClient> | null = null;
@@ -43,6 +44,7 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
   let lastDirectory = tmpdir();
   const listeners = new Set<EventListener>();
   const threadDirectories = new Map<string, string>();
+  const observedUserMessages = new Map<string, Set<string>>();
 
   const clientFor = async (binding: AgentBindingConfig): Promise<OpenCodeServerClient> => {
     const openCodeBinding = requireOpenCodeBinding(binding);
@@ -139,7 +141,13 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
     },
     async readActivity(binding, runtimeThreadId) {
       const { client, session } = await locateSession(binding, runtimeThreadId);
-      return activitySnapshot(await client.messages(session.id, session.directory));
+      const messages = await client.messages(session.id, session.directory);
+      const snapshot = activitySnapshot(messages);
+      snapshot.activities = orderedActivities([
+        ...snapshot.activities,
+        ...externalModificationActivities(session.id, messages, observedUserMessages),
+      ]);
+      return snapshot;
     },
     async deleteThread(binding, runtimeThreadId) {
       let located: { client: OpenCodeServerClient; session: Session };
@@ -158,6 +166,7 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
         context,
         listeners,
         threadDirectories,
+        observedUserMessages,
         messageID: options.messageID ?? randomUUID,
         onDirectory: (directory) => {
           lastDirectory = directory;
@@ -181,6 +190,7 @@ interface OpenCodeRuntimeSessionOptions {
   context: ConnectRuntimeStartContext;
   listeners: Set<EventListener>;
   threadDirectories: Map<string, string>;
+  observedUserMessages: Map<string, Set<string>>;
   messageID: () => string;
   onDirectory(directory: string): void;
 }
@@ -193,6 +203,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     listener: EventListener;
     pendingNativeRequests: Map<string, "permission" | "question">;
     trustedRoots: string[];
+    interactionControllers: Set<AbortController>;
   } | null = null;
   private closed = false;
 
@@ -215,6 +226,18 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     const queue = new ActivityQueue();
     const pendingNativeRequests = new Map<string, "permission" | "question">();
     const listener: EventListener = async (event) => {
+      if (event instanceof OpenCodeReconnect) {
+        const statuses = await this.options.client.sessionStatus(directory);
+        const messages = await this.options.client.messages(session.id, directory);
+        const snapshot = activitySnapshot(messages);
+        snapshot.activities = orderedActivities([
+          ...snapshot.activities,
+          ...externalModificationActivities(session.id, messages, this.options.observedUserMessages),
+        ]);
+        for (const activity of snapshot.activities) queue.push({ ...activity, source: "history" });
+        if (statuses[session.id]?.type === "idle") queue.close();
+        return;
+      }
       if (event instanceof Error) {
         queue.push(errorActivity(input.turnId, event));
         queue.close();
@@ -222,7 +245,12 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       }
       if (canonical(event.directory) !== directory) return;
       const payload = event.payload as { type: string; properties?: Record<string, unknown> };
-      if (stringValue(payload.properties?.sessionID) !== session.id) return;
+      if (eventSessionId(payload.properties) !== session.id) return;
+      if (payload.type === "session.deleted") {
+        queue.push(errorActivity(input.turnId, new Error("OpenCode Session was deleted by another client")));
+        queue.close();
+        return;
+      }
       if (payload.type === "permission.asked") {
         await this.handlePermission(payload.properties as unknown as PermissionRequest, input, pendingNativeRequests);
         return;
@@ -237,7 +265,12 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         return;
       }
       if (payload.type === "message.part.updated" || payload.type === "session.idle") {
-        const snapshot = activitySnapshot(await this.options.client.messages(session.id, directory));
+        const messages = await this.options.client.messages(session.id, directory);
+        const snapshot = activitySnapshot(messages);
+        snapshot.activities = orderedActivities([
+          ...snapshot.activities,
+          ...externalModificationActivities(session.id, messages, this.options.observedUserMessages),
+        ]);
         for (const activity of snapshot.activities) queue.push({ ...activity, source: "live" });
       }
       if (payload.type === "session.idle") queue.close();
@@ -248,13 +281,23 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       listener,
       pendingNativeRequests,
       trustedRoots: [directory, ...input.workspace.additionalDirectories.map(canonical)],
+      interactionControllers: new Set(),
     };
     this.options.listeners.add(listener);
     try {
+      const beforePrompt = await this.options.client.messages(session.id, directory);
+      for (const activity of externalModificationActivities(
+        session.id,
+        beforePrompt,
+        this.options.observedUserMessages,
+      ))
+        queue.push(activity);
+      const messageID = this.options.messageID();
+      this.options.observedUserMessages.get(session.id)?.add(messageID);
       await this.options.client.promptAsync({
         sessionID: session.id,
         directory,
-        messageID: this.options.messageID(),
+        messageID,
         ...promptSelection(input),
         parts: promptParts(input),
       });
@@ -272,13 +315,16 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
   async cancel(): Promise<boolean> {
     const active = this.active;
     if (!active || !this.runtimeThreadId) return false;
-    for (const [requestID, kind] of active.pendingNativeRequests) {
+    const pendingNativeRequests = [...active.pendingNativeRequests];
+    active.pendingNativeRequests.clear();
+    for (const controller of active.interactionControllers) controller.abort();
+    active.interactionControllers.clear();
+    for (const [requestID, kind] of pendingNativeRequests) {
       if (kind === "permission") {
         await this.options.client.replyPermission(requestID, active.directory, "reject").catch(() => false);
       } else {
         await this.options.client.rejectQuestion(requestID, active.directory).catch(() => false);
       }
-      active.pendingNativeRequests.delete(requestID);
     }
     const aborted = await this.options.client.abortSession(this.runtimeThreadId, active.directory);
     active.queue.push({
@@ -343,27 +389,46 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       await this.options.client.replyPermission(requestID, directory, "reject");
       return;
     }
-    const response = await input.interactionPort.request(
-      {
-        kind: "approval",
-        action,
-        title: `允许 OpenCode 使用 ${permission.permission}？`,
-        description: permission.patterns.join("\n") || "OpenCode 请求执行受权限控制的操作。",
-        ...(action === "command"
-          ? { command: stringValue(permission.metadata.command) || permission.patterns.join(" ") }
-          : { files: permission.patterns.map((path) => ({ path })) }),
-        options: approvalOptions(),
-      },
-      interactionContext(input),
-    );
-    if (!pending.delete(requestID)) return;
+    const controller = new AbortController();
+    const delivery = nativeDelivery();
+    this.active?.interactionControllers.add(controller);
+    let response: import("./types").RuntimeInteractionResponse;
+    try {
+      response = await input.interactionPort.request(
+        {
+          kind: "approval",
+          action,
+          title: `允许 OpenCode 使用 ${permission.permission}？`,
+          description: permission.patterns.join("\n") || "OpenCode 请求执行受权限控制的操作。",
+          ...(action === "command"
+            ? { command: stringValue(permission.metadata.command) || permission.patterns.join(" ") }
+            : { files: permission.patterns.map((path) => ({ path })) }),
+          options: approvalOptions(),
+        },
+        interactionContext(input, delivery.promise, controller.signal),
+      );
+    } catch {
+      response = { kind: "approval", optionId: "cancel" };
+    } finally {
+      this.active?.interactionControllers.delete(controller);
+    }
+    if (!pending.delete(requestID)) {
+      delivery.fail(new Error("OpenCode permission request was cancelled"));
+      return;
+    }
     const reply =
       response.kind !== "approval" || response.optionId === "deny" || response.optionId === "cancel"
         ? "reject"
         : response.optionId === "approve-session"
           ? "always"
           : "once";
-    await this.options.client.replyPermission(requestID, directory, reply);
+    try {
+      await this.options.client.replyPermission(requestID, directory, reply);
+      delivery.confirm();
+    } catch (error) {
+      delivery.fail(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
 
   private async handleQuestion(
@@ -380,26 +445,51 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       return;
     }
     const questions = question.questions.map(runtimeQuestion);
-    const response = await input.interactionPort.request(
-      {
-        kind: "user-input",
-        title: "OpenCode 需要你的回答",
-        description: questions.length === 1 ? (questions[0]?.prompt ?? "") : `请回答 ${questions.length} 个问题。`,
-        questions,
-        autoResolutionMs: null,
-      },
-      interactionContext(input),
-    );
-    if (!pending.delete(requestID)) return;
-    if (response.kind !== "user-input") {
-      await this.options.client.rejectQuestion(requestID, directory);
+    const controller = new AbortController();
+    const delivery = nativeDelivery();
+    this.active?.interactionControllers.add(controller);
+    let response: import("./types").RuntimeInteractionResponse;
+    try {
+      response = await input.interactionPort.request(
+        {
+          kind: "user-input",
+          title: "OpenCode 需要你的回答",
+          description: questions.length === 1 ? (questions[0]?.prompt ?? "") : `请回答 ${questions.length} 个问题。`,
+          questions,
+          autoResolutionMs: null,
+        },
+        interactionContext(input, delivery.promise, controller.signal),
+      );
+    } catch {
+      response = { kind: "user-input", answers: {} };
+    } finally {
+      this.active?.interactionControllers.delete(controller);
+    }
+    if (!pending.delete(requestID)) {
+      delivery.fail(new Error("OpenCode question request was cancelled"));
       return;
     }
-    await this.options.client.replyQuestion(
-      requestID,
-      directory,
-      questions.map((item) => response.answers[item.id] ?? []),
-    );
+    if (response.kind !== "user-input") {
+      try {
+        await this.options.client.rejectQuestion(requestID, directory);
+        delivery.confirm();
+      } catch (error) {
+        delivery.fail(error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      }
+      return;
+    }
+    try {
+      await this.options.client.replyQuestion(
+        requestID,
+        directory,
+        questions.map((item) => response.answers[item.id] ?? []),
+      );
+      delivery.confirm();
+    } catch (error) {
+      delivery.fail(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
 }
 
@@ -410,16 +500,35 @@ async function pumpEvents(
   onConnected: () => void,
   onFailure: (failure: Error) => Promise<void>,
 ): Promise<void> {
-  try {
-    for await (const event of client.events(signal, onConnected)) {
-      await Promise.all([...listeners].map(async (listener) => await listener(event)));
-    }
-    if (!signal.aborted) throw new Error("OpenCode global event stream ended");
-  } catch (error) {
+  let connections = 0;
+  let lastFailure = new Error("OpenCode global event stream ended");
+  for (const delayMs of [0, 100, 250, 500]) {
     if (signal.aborted) return;
-    const failure = error instanceof Error ? error : new Error(String(error));
-    await Promise.all([...listeners].map(async (listener) => await listener(failure)));
-    await onFailure(failure);
+    if (delayMs) await Bun.sleep(delayMs);
+    try {
+      for await (const event of client.events(signal, () => {
+        connections += 1;
+        if (connections === 1) onConnected();
+        else dispatchEvent(new OpenCodeReconnect(), listeners);
+      })) {
+        dispatchEvent(event, listeners);
+      }
+      if (signal.aborted) return;
+      lastFailure = new Error("OpenCode global event stream ended");
+    } catch (error) {
+      if (signal.aborted) return;
+      lastFailure = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  dispatchEvent(lastFailure, listeners);
+  await onFailure(lastFailure);
+}
+
+function dispatchEvent(event: GlobalEvent | Error | OpenCodeReconnect, listeners: Set<EventListener>): void {
+  for (const listener of listeners) {
+    void Promise.resolve(listener(event)).catch(async (error) => {
+      await listener(error instanceof Error ? error : new Error(String(error)));
+    });
   }
 }
 
@@ -428,6 +537,7 @@ function summarizeSessions(sessions: Session[], directories: Map<string, string>
     .filter((session) => !session.parentID)
     .map((session) => {
       const directory = canonical(session.directory);
+      const workspaceKind = isConnectIsolatedWorkspace(directory) ? ("transient" as const) : ("persistent" as const);
       directories.set(session.id, directory);
       return {
         runtimeThreadId: session.id,
@@ -435,10 +545,10 @@ function summarizeSessions(sessions: Session[], directories: Map<string, string>
         name: session.title || null,
         updatedAt: session.time.updated,
         workingDirectory: directory,
-        workspaceKind: "persistent" as const,
+        workspaceKind,
         workspaceIdentity: {
           key: `opencode:${directory}`,
-          kind: "persistent" as const,
+          kind: workspaceKind,
           localRoot: directory,
         },
       };
@@ -450,7 +560,6 @@ function sessionOptions(
   providers: { all: Provider[]; connected: string[]; default: Record<string, string> },
 ): RuntimeSessionOption[] {
   const models = connectedModels(providers);
-  const variants = [...new Set(models.flatMap(({ model }) => Object.keys(model.variants ?? {})))].sort();
   return [
     {
       id: "agent",
@@ -479,7 +588,15 @@ function sessionOptions(
       description: "OpenCode model variant",
       category: "variant",
       changePolicy: "in-place",
-      values: variants.map((id) => ({ id, displayName: id })),
+      values: models.flatMap(({ provider, model }) =>
+        Object.keys(model.variants ?? {})
+          .sort()
+          .map((id) => ({
+            id,
+            displayName: id,
+            availableWhen: { model: `${provider.id}/${model.id}` },
+          })),
+      ),
     },
   ];
 }
@@ -527,14 +644,62 @@ function activitySnapshot(messages: OpenCodeMessage[]): RuntimeActivitySnapshot 
     completeness: "complete",
     limitations: [],
     activities: messages.flatMap((message, turn) =>
-      message.parts.map((part, index) => activityForPart(message.info, part, `${turn}.${index + 1}`)),
+      message.parts.map((part, index) => activityForPart(message.info, part, `${turn + 1}.${index}`)),
     ),
   };
 }
 
+function observeUserMessages(
+  sessionID: string,
+  messages: OpenCodeMessage[],
+  observedBySession: Map<string, Set<string>>,
+): Set<string> {
+  const observed = observedBySession.get(sessionID) ?? new Set<string>();
+  for (const message of messages) if (message.info.role === "user") observed.add(message.info.id);
+  observedBySession.set(sessionID, observed);
+  return observed;
+}
+
+function externalModificationActivities(
+  sessionID: string,
+  messages: OpenCodeMessage[],
+  observedBySession: Map<string, Set<string>>,
+): RuntimeActivity[] {
+  const previous = observedBySession.get(sessionID);
+  if (!previous) {
+    observeUserMessages(sessionID, messages, observedBySession);
+    return [];
+  }
+  const external = messages.flatMap((message, index) =>
+    message.info.role === "user" && !previous.has(message.info.id)
+      ? [
+          {
+            id: `external:${message.info.id}`,
+            position: `${index + 1}.999999`,
+            parentId: null,
+            kind: "progress" as const,
+            text: "OpenCode Session was modified by another client.",
+            state: "complete" as const,
+            source: "history" as const,
+          },
+        ]
+      : [],
+  );
+  observeUserMessages(sessionID, messages, observedBySession);
+  return external;
+}
+
+function orderedActivities(activities: RuntimeActivity[]): RuntimeActivity[] {
+  return activities.sort((left, right) => {
+    const [leftTurn = 0, leftItem = 0] = left.position.split(".").map(Number);
+    const [rightTurn = 0, rightItem = 0] = right.position.split(".").map(Number);
+    return leftTurn - rightTurn || leftItem - rightItem;
+  });
+}
+
 function activityForPart(message: Message, part: Part, position: string): RuntimeActivity {
   const base = {
-    id: part.id,
+    id: `${message.id}:${part.id}`,
     position,
     parentId: null,
     state: partState(part),
@@ -704,13 +869,25 @@ function runtimeQuestion(question: QuestionInfo, index: number) {
   };
 }
 
-function interactionContext(input: ConnectRuntimePrompt) {
+function interactionContext(input: ConnectRuntimePrompt, deliveryConfirmation: Promise<void>, signal: AbortSignal) {
   return {
     sessionRef: input.metadata?.sessionRef ?? "",
     turnId: input.turnId ?? "",
     origin: input.turnOrigin ?? "client",
-    deliveryConfirmation: Promise.resolve(),
+    deliveryConfirmation,
+    signal,
   } as const;
+}
+
+function nativeDelivery() {
+  let confirm!: () => void;
+  let fail!: (error: Error) => void;
+  const promise = new Promise<void>((resolve, reject) => {
+    confirm = resolve;
+    fail = reject;
+  });
+  void promise.catch(() => undefined);
+  return { promise, confirm, fail };
 }
 
 function approvalOptions() {
@@ -722,7 +899,7 @@ function approvalOptions() {
 }
 
 function permissionAction(permission: string): "command" | "file-change" {
-  return ["edit", "write", "patch"].includes(permission) ? "file-change" : "command";
+  return ["edit", "write", "patch", "external_directory"].includes(permission) ? "file-change" : "command";
 }
 
 function errorActivity(turnId: string | undefined, error: Error): RuntimeActivity {
@@ -750,6 +927,13 @@ function nativeErrorText(properties: Record<string, unknown> | undefined): strin
   return stringValue(properties?.message) || "OpenCode Session failed";
 }
 
+function eventSessionId(properties: Record<string, unknown> | undefined): string {
+  const direct = stringValue(properties?.sessionID);
+  if (direct) return direct;
+  const info = properties?.info;
+  return info && typeof info === "object" ? stringValue((info as Record<string, unknown>).id) : "";
+}
+
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -761,6 +945,16 @@ function canonical(directory: string): string {
   } catch {
     return absolute;
   }
+}
+
+function isConnectIsolatedWorkspace(directory: string): boolean {
+  const workspace = canonical(directory);
+  const workspacesRoot = dirname(dirname(dirname(workspace)));
+  if (basename(workspacesRoot) !== "workspaces") return false;
+  const owner = basename(dirname(workspacesRoot));
+  if (owner !== ".clawchat-connect" && !owner.startsWith("clawchat-connect-live.")) return false;
+  const identity = relative(workspacesRoot, workspace).split(/[\\/]/u);
+  return identity.length === 3 && identity.every((segment) => /^[a-f0-9]{24}$/iu.test(segment));
 }
 
 function requireOpenCodeBinding(binding: AgentBindingConfig): OpenCodeAgentBindingConfig {

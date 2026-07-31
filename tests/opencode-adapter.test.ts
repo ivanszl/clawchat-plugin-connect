@@ -144,6 +144,13 @@ class EventQueue {
     } else this.values.push(value);
   }
 
+  disconnect(): void {
+    const waiter = this.waiters.shift();
+    if (!waiter) return;
+    waiter.signal.removeEventListener("abort", waiter.onAbort);
+    waiter.resolve({ done: true, value: undefined });
+  }
+
   async *iterate(signal: AbortSignal): AsyncIterable<GlobalEvent> {
     while (!signal.aborted) {
       const value = this.values.shift();
@@ -160,7 +167,8 @@ class EventQueue {
         this.waiters.push({ resolve, signal, onAbort });
         signal.addEventListener("abort", onAbort, { once: true });
       });
-      if (!result.done) yield result.value;
+      if (result.done) return;
+      yield result.value;
     }
   }
 }
@@ -251,6 +259,7 @@ function fixture() {
   };
   return {
     client,
+    sessions,
     events,
     prompts,
     permissionReplies,
@@ -295,11 +304,26 @@ describe("OpenCode Runtime Adapter", () => {
         workingDirectory: directory,
       }),
     ]);
+    test.sessions.push(
+      nativeSession({
+        id: "isolated-1",
+        directory:
+          "/tmp/.clawchat-connect/workspaces/aaaaaaaaaaaaaaaaaaaaaaaa/bbbbbbbbbbbbbbbbbbbbbbbb/cccccccccccccccccccccccc",
+      }),
+    );
+    expect(
+      (await adapter.discoverAllThreads?.(binding))?.find((thread) => thread.runtimeThreadId === "isolated-1"),
+    ).toMatchObject({
+      workspaceKind: "transient",
+      workspaceIdentity: { kind: "transient" },
+    });
     await adapter.close?.();
   });
 
   it("maps native history into stable runtime-neutral Activity and deletes natively", async () => {
     const test = fixture();
+    const nativeHistory = history();
+    test.client.messages = async () => nativeHistory;
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
     const binding = { kind: "opencode" as const };
 
@@ -307,11 +331,38 @@ describe("OpenCode Runtime Adapter", () => {
     const second = await adapter.readActivity?.(binding, "session-1");
     expect(second).toEqual(first);
     expect(first?.activities.map(({ id, position, kind, text }) => ({ id, position, kind, text }))).toEqual([
-      { id: "part-user", position: "0.1", kind: "user", text: "inspect" },
-      { id: "part-reasoning", position: "1.1", kind: "reasoning", text: "checking" },
-      { id: "part-tool", position: "1.2", kind: "command", text: "Run pwd\n\n/repo" },
-      { id: "part-answer", position: "1.3", kind: "assistant", text: "done" },
+      { id: "message-user:part-user", position: "1.0", kind: "user", text: "inspect" },
+      { id: "message-assistant:part-reasoning", position: "2.0", kind: "reasoning", text: "checking" },
+      { id: "message-assistant:part-tool", position: "2.1", kind: "command", text: "Run pwd\n\n/repo" },
+      { id: "message-assistant:part-answer", position: "2.2", kind: "assistant", text: "done" },
     ]);
+    nativeHistory.push({
+      info: {
+        id: "message-external",
+        sessionID: "session-1",
+        role: "user",
+        time: { created: 15 },
+        agent: "build",
+        model: { providerID: "anthropic", modelID: "claude-sonnet" },
+      },
+      parts: [
+        {
+          id: "part-external",
+          sessionID: "session-1",
+          messageID: "message-external",
+          type: "text",
+          text: "external edit",
+        },
+      ],
+    });
+    expect((await adapter.readActivity?.(binding, "session-1"))?.activities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "external:message-external",
+          text: "OpenCode Session was modified by another client.",
+        }),
+      ]),
+    );
 
     await adapter.deleteThread?.(binding, "session-1");
     expect(test.deletes()).toBe(1);
@@ -353,9 +404,7 @@ describe("OpenCode Runtime Adapter", () => {
         },
       ],
       workspace: { projectId: "p", workingDirectory: directory, additionalDirectories: [], skipGitRepoCheck: true },
-      mode: "build",
-      model: "anthropic/claude-sonnet",
-      reasoningEffort: "high",
+      sessionOptions: { agent: "build", model: "anthropic/claude-sonnet", variant: "high" },
       metadata: { sessionRef: "ABCDEFGH" },
     })) {
       activities.push(activity);
@@ -376,8 +425,37 @@ describe("OpenCode Runtime Adapter", () => {
         ],
       },
     ]);
-    expect(activities.some((activity) => activity.id === "part-answer" && activity.text === "done")).toBe(true);
+    expect(
+      activities.some((activity) => activity.id === "message-assistant:part-answer" && activity.text === "done"),
+    ).toBe(true);
     await session.close();
+    await adapter.close?.();
+  });
+
+  it("leaves native agent, model, and variant defaults unset", async () => {
+    const test = fixture();
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const session = await adapter.start(
+      { kind: "opencode" },
+      {
+        agentId: "open",
+        chatId: "chat",
+        sessionId: "connect-session",
+        runtimeSessionId: null,
+        configPath: "/tmp/config.json",
+        stateDbPath: "/tmp/state.sqlite",
+        onRuntimeSessionId: async () => undefined,
+      },
+    );
+    for await (const _activity of session.prompt({
+      prompt: "inspect",
+      workspace: { projectId: "p", workingDirectory: directory, additionalDirectories: [], skipGitRepoCheck: true },
+    })) {
+      // Consume the completed turn.
+    }
+    expect(test.prompts[0]).not.toHaveProperty("agent");
+    expect(test.prompts[0]).not.toHaveProperty("model");
+    expect(test.prompts[0]).not.toHaveProperty("variant");
     await adapter.close?.();
   });
 
@@ -385,6 +463,7 @@ describe("OpenCode Runtime Adapter", () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
     const requests: RuntimeInteractionRequest[] = [];
+    let deliveryConfirmation: Promise<void> | null = null;
     const session = await adapter.start(
       { kind: "opencode" },
       {
@@ -405,8 +484,9 @@ describe("OpenCode Runtime Adapter", () => {
       turnOrigin: "client",
       metadata: { sessionRef: "ABCDEFGH" },
       interactionPort: {
-        request: async (request) => {
+        request: async (request, context) => {
           requests.push(request);
+          deliveryConfirmation = context.deliveryConfirmation;
           return { kind: "approval", optionId: "approve-session" };
         },
       },
@@ -442,8 +522,48 @@ describe("OpenCode Runtime Adapter", () => {
       }),
     ]);
     expect(test.permissionReplies).toEqual(["always"]);
+    await expect(deliveryConfirmation as Promise<void> | null).resolves.toBeUndefined();
     await pendingActivity;
     await session.close();
+    await adapter.close?.();
+  });
+
+  it("reconnects the global event stream and reconciles active Session history", async () => {
+    const test = fixture();
+    let settlePromptStarted!: () => void;
+    const promptStarted = new Promise<void>((resolve) => {
+      settlePromptStarted = resolve;
+    });
+    test.client.promptAsync = async () => {
+      settlePromptStarted();
+    };
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const session = await adapter.start(
+      { kind: "opencode" },
+      {
+        agentId: "open",
+        chatId: "chat",
+        sessionId: "connect-session",
+        runtimeSessionId: "session-1",
+        configPath: "/tmp/config.json",
+        stateDbPath: "/tmp/state.sqlite",
+        onRuntimeSessionId: async () => undefined,
+      },
+    );
+    const iterator = session
+      .prompt({
+        prompt: "continue",
+        workspace: { projectId: "p", workingDirectory: directory, additionalDirectories: [], skipGitRepoCheck: true },
+      })
+      [Symbol.asyncIterator]();
+    const next = iterator.next();
+    await promptStarted;
+    test.events.disconnect();
+    await expect(next).resolves.toMatchObject({
+      done: false,
+      value: { id: "message-user:part-user", source: "history" },
+    });
+    await session.cancel?.();
     await adapter.close?.();
   });
 
@@ -483,7 +603,7 @@ describe("OpenCode Runtime Adapter", () => {
           properties: {
             id: "permission-outside",
             sessionID: "session-1",
-            permission: "edit",
+            permission: "external_directory",
             patterns: ["/outside/secrets.txt"],
             metadata: {},
             always: [],
