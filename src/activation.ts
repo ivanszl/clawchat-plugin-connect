@@ -37,14 +37,6 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
         `Agent Binding ${agentId} belongs to ClawChat account ${existingActivation.ownerUserId}; remove it before activating a different account`,
       );
     }
-    const existingOwnerBinding = (await store.listActivations()).find(
-      (activation) => activation.localAgentId !== agentId && activation.ownerUserId === result.ownerUserId,
-    );
-    if (existingOwnerBinding) {
-      throw new Error(
-        `ClawChat account ${result.ownerUserId} already owns Agent Binding ${existingOwnerBinding.localAgentId}; remove it before activating another Binding`,
-      );
-    }
     await store.upsertActivation(result);
     const authenticatedClient = createClawChatApiClient({
       baseUrl: config.baseUrl,

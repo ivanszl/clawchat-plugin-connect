@@ -171,9 +171,9 @@ clawchat-connect service restart
 
 Each Binding owns independent credentials, Sessions, Runtime instance, and Liveware Exposure. Projects remain installation-global and may be shared deliberately. Reactivating a Binding may refresh the same ClawChat account, but it cannot assign that Binding's existing history to a different account.
 
-Connect Service provisions or adopts one `ClawChat Connect` Liveware App per activated Binding after its Binding-Scoped Client Gateway is ready. The default Liveware Access Policy is `private`, so only that Binding Owner can open its App. Activation itself never publishes the installation-wide Client port.
+Connect Service provisions or adopts one Binding-named `ClawChat Connect · <binding-id>` Liveware App per activated Binding after its Binding-Scoped Client Gateway is ready. Existing singleton `ClawChat Connect` Apps remain adopted during migration. The default Liveware Access Policy is `private`, so only that Binding Owner can open its App. Activation itself never publishes the installation-wide Client port.
 
-One ClawChat account may own only one Agent Binding in an installation. Reactivating the same Binding with the same account refreshes its credentials; moving an account to another Binding requires removing its current Binding first.
+One ClawChat account may own multiple Agent Bindings in an installation. Reactivating the same Binding with the same account refreshes its credentials.
 
 ### 4. Install the background service
 

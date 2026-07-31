@@ -1,5 +1,6 @@
 import {
   createLivewareExposureDependencies,
+  isConnectManagedLivewareAppName,
   LIVEWARE_APP_NAME,
   type LivewareControlSession,
   resolveLivewareExecutablePath,
@@ -35,7 +36,7 @@ export function validateAgentLivewareInput(operation: AgentLivewareOperation, in
     if (policy !== "private" && policy !== "public") throw new Error("policy must be private or public");
     value.policy = policy;
   }
-  if (operation === "liveware_app_create" && text("name") === LIVEWARE_APP_NAME)
+  if (operation === "liveware_app_create" && isConnectManagedLivewareAppName(text("name")))
     throw new Error(`the app name ${LIVEWARE_APP_NAME} is reserved`);
   if (operation === "liveware_tunnel_bind") validateLoopbackUpstream(text("upstream"));
   return value;
@@ -95,7 +96,7 @@ export async function executeAgentLiveware(
 
 async function assertMutable(control: LivewareControlSession, appId: string, managedAppId?: string | null) {
   const app = await inspect(control, appId);
-  if (app.appId === managedAppId || app.name === LIVEWARE_APP_NAME)
+  if (app.appId === managedAppId || isConnectManagedLivewareAppName(app.name))
     throw new Error(`the managed ${LIVEWARE_APP_NAME} app cannot be changed`);
   return app;
 }

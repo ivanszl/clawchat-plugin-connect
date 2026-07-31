@@ -21,7 +21,7 @@ The single host-level Connect process that operates every activated Agent Bindin
 _Avoid_: Agent Service, Codex Service, per-agent service
 
 **Binding Owner**:
-The stable ClawChat user account whose activation credentials own one Agent Binding. One Connect installation may contain Agent Bindings with different Binding Owners; an occupied Binding cannot be reassigned to another owner without first removing and purging that Binding.
+The stable ClawChat user account whose activation credentials own an Agent Binding. One Binding Owner may own multiple Agent Bindings, and one Connect installation may contain different Binding Owners; an occupied Binding cannot be reassigned to another owner without first removing and purging that Binding.
 _Avoid_: Connect Owner, installation owner
 
 **Connect Client**:
@@ -190,7 +190,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Multiple Agent Bindings may use the same Runtime Adapter kind.
 - Every Agent Binding owns an independent Binding Runtime Instance. Runtime process, environment, cached client state, and shutdown lifecycle are never shared between Agent Bindings, including Bindings of the same Runtime Adapter kind.
 - Every activated Agent Binding has exactly one Binding Owner; one Connect installation may operate multiple Binding Owners concurrently.
-- A Binding Owner owns at most one Agent Binding in one Connect installation.
+- A Binding Owner may own multiple Agent Bindings in one Connect installation.
 - Reactivating a Binding for the same Binding Owner refreshes only that Binding's credentials. Activation for a different owner is rejected while the Binding exists.
 - Removing an Agent Binding retires its Liveware Exposure, deletes its credentials, and purges all Binding-scoped local data before its ID may be reused.
 - A Connect installation has one Connect Service; Agent Bindings and Runtime Adapters do not own background services.

@@ -42,11 +42,11 @@ describe("Connect Service", () => {
     ).rejects.toThrow("managed skills mismatch");
   });
 
-  it("starts Agent Bindings for different Binding Owners in one process and closes them together", async () => {
+  it("starts multiple Agent Bindings for one Binding Owner in one process and closes them together", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     await stateStore.upsertActivation(activation("codex-work"));
-    await stateStore.upsertActivation(activation("codex-review", "owner-2"));
+    await stateStore.upsertActivation(activation("codex-review"));
     const config = serviceConfig(["codex-work", "codex-review", "not-activated"]);
     config.agents["codex-review"] = { kind: "codex" };
     config.stateDbPath = stateStore.dbPath;
@@ -223,11 +223,11 @@ describe("Connect Service", () => {
     expect(events.indexOf("liveware-agent-stop")).toBeLessThan(events.indexOf("client-stop"));
   });
 
-  it("starts one Binding-Scoped Client Gateway and Liveware Exposure for each Binding Owner", async () => {
+  it("starts one Binding-Scoped Client Gateway and Liveware Exposure for each Agent Binding", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-multi-liveware-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
-    await stateStore.upsertActivation(activation("personal", "owner-personal"));
-    await stateStore.upsertActivation(activation("work", "owner-work"));
+    await stateStore.upsertActivation(activation("personal", "shared-owner"));
+    await stateStore.upsertActivation(activation("work", "shared-owner"));
     const config = serviceConfig(["personal", "work"]);
     config.agents.work = { kind: "codex" };
     config.stateDbPath = stateStore.dbPath;

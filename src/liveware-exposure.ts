@@ -6,6 +6,7 @@ import type { ConnectStateStore } from "./state";
 import type { ActivationCredentials, LivewareAccessPolicy, LivewareExposureRecord } from "./types";
 
 export const LIVEWARE_APP_NAME = "ClawChat Connect";
+const LIVEWARE_APP_BINDING_SEPARATOR = " · ";
 export const LIVEWARE_APP_SUBTITLE = "Connect Web";
 export const DEFAULT_LIVEWARE_API_URL = "https://api-liveware.clawling.io";
 export const DEFAULT_LIVEWARE_RELAY_URL = "https://tunnel-liveware.clawling.io";
@@ -180,16 +181,17 @@ async function prepareWithControl(
   }
 
   const apps = await control.listApps();
+  const appName = livewareExposureAppName(options.activation.localAgentId);
   const app =
     (existing ? apps.find((candidate) => candidate.appId === existing.appId) : undefined) ??
-    apps.find((candidate) => candidate.name === LIVEWARE_APP_NAME) ??
-    (await control.createApp(LIVEWARE_APP_NAME, options.accessPolicy));
+    apps.find((candidate) => candidate.name === appName) ??
+    (await control.createApp(appName, options.accessPolicy));
 
   await control.setAccessPolicy(app.appId, options.accessPolicy);
   const publicUrl = normalizeHttpUrl(await control.bindTunnel(app.appId, options.upstream), "Liveware public URL");
   const registration: ClawChatLivewareRegistration = {
     livewareId: app.appId,
-    name: LIVEWARE_APP_NAME,
+    name: app.name,
     subtitle: LIVEWARE_APP_SUBTITLE,
     url: publicUrl,
   };
@@ -208,6 +210,14 @@ async function prepareWithControl(
   };
   await options.stateStore.setLivewareExposure(record);
   return record;
+}
+
+export function livewareExposureAppName(localAgentId: string): string {
+  return `${LIVEWARE_APP_NAME}${LIVEWARE_APP_BINDING_SEPARATOR}${localAgentId}`;
+}
+
+export function isConnectManagedLivewareAppName(name: string): boolean {
+  return name === LIVEWARE_APP_NAME || name.startsWith(`${LIVEWARE_APP_NAME}${LIVEWARE_APP_BINDING_SEPARATOR}`);
 }
 
 export async function startLivewareExposure(

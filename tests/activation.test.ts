@@ -173,7 +173,7 @@ describe("activateConnect", () => {
     });
     await store.close();
   });
-  it("rejects assigning one Binding Owner to a second Agent Binding", async () => {
+  it("allows one Binding Owner to activate a second Agent Binding", async () => {
     const dir = await tempDir();
     const config = upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" });
     config.agents.work = {
@@ -204,10 +204,14 @@ describe("activateConnect", () => {
         : response({ code: 0, data: { nickname: "work" } }),
     ) as unknown as typeof fetch;
 
-    await expect(activateConnect({ agentId: "work", code: "SAMEOWNER", config, store, fetchImpl })).rejects.toThrow(
-      "already owns Agent Binding personal",
-    );
-    await expect(store.getActivation("work")).resolves.toBeNull();
+    await expect(
+      activateConnect({ agentId: "work", code: "SAMEOWNER", config, store, fetchImpl }),
+    ).resolves.toMatchObject({ localAgentId: "work", ownerUserId: "shared-owner" });
+    await expect(store.getActivation("work")).resolves.toMatchObject({
+      localAgentId: "work",
+      ownerUserId: "shared-owner",
+      accessToken: "work-token",
+    });
     await store.close();
   });
   it("keeps activation credentials and reports an actionable error when Profile synchronization fails", async () => {

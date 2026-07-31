@@ -22,12 +22,14 @@ describe("Agent-managed Liveware validation", () => {
   });
 
   it("protects the Connect-managed app name", () => {
-    expect(() =>
-      validateAgentLivewareInput("liveware_app_create", {
-        name: "ClawChat Connect",
-        policy: "private",
-      }),
-    ).toThrow("reserved");
+    for (const name of ["ClawChat Connect", "ClawChat Connect · personal"]) {
+      expect(() =>
+        validateAgentLivewareInput("liveware_app_create", {
+          name,
+          policy: "private",
+        }),
+      ).toThrow("reserved");
+    }
   });
 
   it("protects the persisted managed app id after the app is renamed", async () => {

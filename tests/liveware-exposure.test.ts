@@ -46,7 +46,7 @@ describe("Liveware Exposure", () => {
     expect(await clawChat.list(activation(), "device-1")).toEqual([
       {
         livewareId: first.appId,
-        name: "ClawChat Connect",
+        name: "ClawChat Connect · codex",
         subtitle: "Connect Web",
         url: first.publicUrl,
       },
@@ -113,14 +113,14 @@ describe("Liveware Exposure", () => {
     await stateStore.close();
   });
 
-  it("provisions independent Liveware Exposures for different Agent Bindings", async () => {
+  it("provisions independent Liveware Exposures for Agent Bindings owned by one account", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-liveware-multi-account-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const controlPlane = new FakeLivewareControlPlane();
     const clawChat = new FakeClawChatLiveware();
     const dependencies = { controlPlane, clawChat };
-    const personal = activation("personal", "token-personal", "owner-personal");
-    const work = activation("work", "token-work", "owner-work");
+    const personal = activation("personal", "shared-owner-token", "shared-owner");
+    const work = activation("work", "shared-owner-token", "shared-owner");
 
     const personalExposure = await prepareLivewareExposure(
       {
