@@ -91,7 +91,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.23
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.24
 ```
 
 Windows PowerShell 用户应先下载安装脚本并检查其内容：
@@ -118,7 +118,7 @@ bun add --global @clawling/clawchat-plugin-connect
 clawchat-connect update
 ```
 
-使用 `clawchat-connect update --version v0.1.0-alpha.23` 可安装指定版本。更新命令会保留现有配置并刷新系统原生的 Connect Service。
+使用 `clawchat-connect update --version v0.1.0-alpha.24` 可安装指定版本。更新命令会保留现有配置并刷新系统原生的 Connect Service。
 
 ### 2. 创建 Agent Binding
 

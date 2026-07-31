@@ -2,6 +2,12 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.24] - 2026-07-31
+
+### Fixed
+
+- Sized the mobile Session navigation drawer to its ClawChat host instead of the browser viewport, removing persistent horizontal scrolling in embedded layouts.
+
 ## [0.1.0-alpha.23] - 2026-07-31
 
 ### Changed
