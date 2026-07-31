@@ -2,6 +2,18 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.23] - 2026-07-31
+
+### Changed
+
+- Stopped displaying informational transcript-completeness notices for partial and live-only Runtime history.
+- Centralized addressed group-message command and attachment classification across inbound consumers.
+
+### Fixed
+
+- Released nested mobile dialog interaction locks before navigating to a newly created Session, so its Composer accepts input immediately and subsequent creation dialogs do not remain loading.
+- Made ClawChat Runtime Interactions fail closed without native delivery confirmation or an originating conversation route, and stopped exposing Runtime-provided approval reasons in chat prompts.
+
 ## [0.1.0-alpha.22] - 2026-07-30
 
 ### Changed
