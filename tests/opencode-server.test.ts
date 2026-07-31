@@ -11,6 +11,7 @@ import {
   type OpenCodeServerProcess,
 } from "../src/runtime/opencode-server";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import { CONNECT_VERSION } from "../src/version";
 
 class FakeProcess extends EventEmitter implements OpenCodeServerProcess {
   readonly stderr = new PassThrough();
@@ -337,7 +338,9 @@ describe("OpenCode Server process boundary", () => {
           createApi: () => api("1.19.0"),
         },
       ),
-    ).rejects.toThrow("Unsupported OpenCode version 1.19.0; Connect supports 1.18.10 with @opencode-ai/sdk 1.18.10");
+    ).rejects.toThrow(
+      `OpenCode compatibility failure for executable version: Connect ${CONNECT_VERSION}, @opencode-ai/sdk 1.18.10, OpenCode 1.19.0`,
+    );
     expect(spawnServer).not.toHaveBeenCalled();
   });
 
@@ -369,8 +372,32 @@ describe("OpenCode Server process boundary", () => {
           createApi: () => api("1.18.9"),
         },
       ),
-    ).rejects.toThrow("OpenCode compatibility handshake failed: executable 1.18.10, Server 1.18.9");
+    ).rejects.toThrow(
+      `OpenCode compatibility failure for global.health version: Connect ${CONNECT_VERSION}, @opencode-ai/sdk 1.18.10, OpenCode 1.18.10; executable version 1.18.10 does not match Server version 1.18.9`,
+    );
     expect(process.exitCode).toBe(0);
+  });
+
+  it("adds Connect, SDK, executable, and capability context to incompatible API errors", async () => {
+    const process = new FakeProcess();
+    const incompatibleApi = api();
+    incompatibleApi.listAgents = async () => {
+      throw new Error("response shape mismatch: expected an agent array");
+    };
+    const client = await createOpenCodeServerClient(
+      { kind: "opencode", executablePathOverride: "/opt/opencode" },
+      {
+        readVersion: async () => "1.18.10",
+        allocatePort: async () => 43129,
+        spawnServer: () => process,
+        createApi: () => incompatibleApi,
+      },
+    );
+
+    await expect(client.listAgents("/project")).rejects.toThrow(
+      `OpenCode compatibility failure for app.agents: Connect ${CONNECT_VERSION}, @opencode-ai/sdk 1.18.10, OpenCode 1.18.10; response shape mismatch: expected an agent array`,
+    );
+    await client.close();
   });
 
   it("redacts the generated password from startup diagnostics", async () => {

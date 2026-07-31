@@ -17,7 +17,7 @@ import {
   type UpdateBindingPreferencesRequest,
   type UpdateSessionPreferencesRequest,
 } from "../client-contract";
-import { saveConfig } from "../config";
+import { getAgentBinding, saveConfig } from "../config";
 import { bindingOutputVisibility } from "../output-visibility";
 import { ProjectCatalog } from "../projects";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
@@ -217,8 +217,9 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                     outputVisibility: bindingOutputVisibility(options.config, bindingId),
                     model: binding.model ?? null,
                     modelReasoningEffort: binding.modelReasoningEffort ?? null,
-                    modelOptions: (await options.runtimeAdapters.listModels(binding)) ?? [],
-                    modeOptions: [...options.runtimeAdapters.modesFor(binding)],
+                    modelOptions:
+                      (await options.runtimeAdapters.listModels(getAgentBinding(options.config, bindingId))) ?? [],
+                    modeOptions: [...options.runtimeAdapters.modesFor(getAgentBinding(options.config, bindingId))],
                   })),
               ),
               capabilities: {
@@ -302,8 +303,9 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               "session.create",
               body.bindingId,
               async () => {
-                const binding = options.config.agents[body.bindingId];
-                if (!binding) return commandError(404, "binding-not-found", "Agent Binding was not found");
+                if (!options.config.agents[body.bindingId])
+                  return commandError(404, "binding-not-found", "Agent Binding was not found");
+                const binding = getAgentBinding(options.config, body.bindingId);
                 const workspaceProject = body.workspaceId ? await projects.get(body.workspaceId) : null;
                 if (body.workspaceId && !workspaceProject)
                   return commandError(400, "invalid-workspace", "Project Workspace ID was not found");
@@ -719,8 +721,9 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               async () => {
                 const session = await options.stateStore.getRuntimeSessionByRef(sessionRef);
                 if (!session) return commandError(404, "session-not-found", "Session was not found");
-                const binding = options.config.agents[session.agentId];
-                if (!binding) return commandError(404, "binding-not-found", "Agent Binding was not found");
+                if (!options.config.agents[session.agentId])
+                  return commandError(404, "binding-not-found", "Agent Binding was not found");
+                const binding = getAgentBinding(options.config, session.agentId);
                 let model: string | null = null;
                 let reasoningEffort: string | null = null;
                 try {
@@ -777,6 +780,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             const bindingId = decodeURIComponent(preferenceMatch[1] ?? "");
             const binding = options.config.agents[bindingId];
             if (!binding) return errorResponse(404, "binding-not-found", "Agent Binding was not found");
+            const runtimeBinding = getAgentBinding(options.config, bindingId);
             const body = await readJsonBody<UpdateBindingPreferencesRequest>(request);
             if (!validRequestId(body.requestId))
               return errorResponse(400, "invalid-request-id", "requestId is required");
@@ -801,7 +805,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   if (requestedModel) {
                     try {
                       const selectedModel = requireModel(
-                        await options.runtimeAdapters.listModels(binding),
+                        await options.runtimeAdapters.listModels(runtimeBinding),
                         requestedModel,
                       );
                       resolveEffort(selectedModel, requestedEffort, true);
@@ -811,7 +815,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                     }
                   } else if (requestedEffort) {
                     try {
-                      const models = await options.runtimeAdapters.listModels(binding);
+                      const models = await options.runtimeAdapters.listModels(runtimeBinding);
                       const defaultModel = models?.find((candidate) => candidate.isDefault) ?? models?.[0];
                       if (!defaultModel)
                         return commandError(

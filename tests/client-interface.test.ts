@@ -57,6 +57,7 @@ describe("Connect Client Interface", () => {
     let isArchived = false;
     let isDeleted = false;
     const lifecycleCalls: string[] = [];
+    const runtimeBindingIds = new Set<string | undefined>();
     const summary = { runtimeThreadId: "thread-1", name: "First session", updatedAt: 1 };
     const discoveredSummary = {
       runtimeThreadId: "thread-discovered",
@@ -67,36 +68,43 @@ describe("Connect Client Interface", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
-      listModels: async () => [
-        {
-          id: "gpt-default",
-          displayName: "Default model",
-          description: "Runtime default",
-          isDefault: true,
-          defaultReasoningEffort: "medium",
-          supportedReasoningEfforts: ["medium", "high"],
-          inputModalities: ["text", "image"],
-        },
-        {
-          id: "gpt-deep",
-          displayName: "Deep model",
-          description: "Long tasks",
-          isDefault: false,
-          defaultReasoningEffort: "high",
-          supportedReasoningEfforts: ["high", "xhigh"],
-          inputModalities: ["text", "image"],
-          turnSubmissionCapability: {
-            prompt: { allowed: true, required: false, maxCharacters: 8_000 },
-            attachments: {
-              allowedKinds: ["image"],
-              allowedMediaTypes: ["image/png"],
-              maxCount: 2,
-              maxBytesEach: 1_024,
-              maxBytesTotal: 1_500,
+      listModels: async (binding) => {
+        runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
+        return [
+          {
+            id: "gpt-default",
+            displayName: "Default model",
+            description: "Runtime default",
+            isDefault: true,
+            defaultReasoningEffort: "medium",
+            supportedReasoningEfforts: ["medium", "high"],
+            inputModalities: ["text", "image"],
+          },
+          {
+            id: "gpt-deep",
+            displayName: "Deep model",
+            description: "Long tasks",
+            isDefault: false,
+            defaultReasoningEffort: "high",
+            supportedReasoningEfforts: ["high", "xhigh"],
+            inputModalities: ["text", "image"],
+            turnSubmissionCapability: {
+              prompt: { allowed: true, required: false, maxCharacters: 8_000 },
+              attachments: {
+                allowedKinds: ["image"],
+                allowedMediaTypes: ["image/png"],
+                maxCount: 2,
+                maxBytesEach: 1_024,
+                maxBytesTotal: 1_500,
+              },
             },
           },
-        },
-      ],
+        ];
+      },
+      listSessionOptions: async (binding) => {
+        runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
+        return [];
+      },
       discoverAllThreads: async () => (!isArchived && !isDeleted ? [summary, discoveredSummary] : [discoveredSummary]),
       discoverArchivedThreads: async () => (isArchived && !isDeleted ? [{ ...summary, isArchived: true }] : []),
       archiveThread: async (_binding, threadId) => {
@@ -807,6 +815,7 @@ describe("Connect Client Interface", () => {
     expect(deleted.status).toBe(200);
     await expect(deleted.json()).resolves.toEqual({ sessionRef: session.sessionRef, deleted: true });
     expect(lifecycleCalls).toEqual(["archive:thread-1", "unarchive:thread-1", "delete:thread-1"]);
+    expect([...runtimeBindingIds]).toEqual(["codex"]);
     await expect(store.getSessionRefTarget(session.sessionRef)).resolves.toBeNull();
   });
 

@@ -16,6 +16,7 @@ import type {
   TextPartInput,
 } from "@opencode-ai/sdk/v2/types";
 import type { OpenCodeAgentBindingConfig } from "../types";
+import { CONNECT_VERSION } from "../version";
 
 export const OPENCODE_SDK_VERSION = "1.18.10" as const;
 export const SUPPORTED_OPENCODE_VERSIONS = [OPENCODE_SDK_VERSION] as const;
@@ -93,12 +94,12 @@ export async function createOpenCodeServerClient(
   const version = parseOpenCodeVersion(rawVersion);
   if (!SUPPORTED_OPENCODE_VERSIONS.includes(version as (typeof SUPPORTED_OPENCODE_VERSIONS)[number])) {
     throw new Error(
-      `Unsupported OpenCode version ${version}; Connect supports ${SUPPORTED_OPENCODE_VERSIONS.join(", ")} with @opencode-ai/sdk ${OPENCODE_SDK_VERSION}`,
+      `OpenCode compatibility failure for executable version: Connect ${CONNECT_VERSION}, @opencode-ai/sdk ${OPENCODE_SDK_VERSION}, OpenCode ${version}; supported OpenCode versions: ${SUPPORTED_OPENCODE_VERSIONS.join(", ")}`,
     );
   }
 
   const port = await (options.allocatePort ?? allocateLoopbackPort)();
-  const password = options.password?.() ?? randomBytes(32).toString("base64url");
+  const password = options.password?.() ?? randomBytes(32).toString("hex");
   const serverEnv = { ...env };
   for (const name of [
     "OPENCODE_SERVER_PASSWORD",
@@ -125,12 +126,19 @@ export async function createOpenCodeServerClient(
     });
   });
   const stderr = collectStderr(child.stderr, [password]);
-  const api = (options.createApi ?? createOfficialApi)(`http://127.0.0.1:${port}`, "opencode", password);
+  const api = withCompatibilityDiagnostics(
+    (options.createApi ?? createOfficialApi)(`http://127.0.0.1:${port}`, "opencode", password),
+    version,
+  );
 
   try {
     const health = await waitForHealth(api, child, stderr, options.readinessTimeoutMs ?? 10_000);
     if (health.version !== version) {
-      throw new Error(`OpenCode compatibility handshake failed: executable ${version}, Server ${health.version}`);
+      throw compatibilityError(
+        "global.health version",
+        version,
+        new Error(`executable version ${version} does not match Server version ${health.version}`),
+      );
     }
   } catch (error) {
     await stopServer(child, options.shutdownTimeoutMs);
@@ -168,6 +176,49 @@ export async function createOpenCodeServerClient(
       await stopServer(child, options.shutdownTimeoutMs);
     },
   };
+}
+
+function withCompatibilityDiagnostics(api: OpenCodeApiClient, version: string): OpenCodeApiClient {
+  const operation =
+    <Arguments extends unknown[], Result>(capability: string, run: (...args: Arguments) => Promise<Result>) =>
+    async (...args: Arguments): Promise<Result> => {
+      try {
+        return await run(...args);
+      } catch (error) {
+        throw compatibilityError(capability, version, error);
+      }
+    };
+  return {
+    health: operation("global.health", api.health.bind(api)),
+    listAgents: operation("app.agents", api.listAgents.bind(api)),
+    listProviders: operation("provider.list", api.listProviders.bind(api)),
+    listSessions: operation("session.list", api.listSessions.bind(api)),
+    getSession: operation("session.get", api.getSession.bind(api)),
+    createSession: operation("session.create", api.createSession.bind(api)),
+    deleteSession: operation("session.delete", api.deleteSession.bind(api)),
+    sessionStatus: operation("session.status", api.sessionStatus.bind(api)),
+    messages: operation("session.messages", api.messages.bind(api)),
+    promptAsync: operation("session.promptAsync", api.promptAsync.bind(api)),
+    abortSession: operation("session.abort", api.abortSession.bind(api)),
+    events: async function* (signal, onConnected) {
+      try {
+        yield* api.events(signal, onConnected);
+      } catch (error) {
+        throw compatibilityError("global.event", version, error);
+      }
+    },
+    replyPermission: operation("permission.reply", api.replyPermission.bind(api)),
+    replyQuestion: operation("question.reply", api.replyQuestion.bind(api)),
+    rejectQuestion: operation("question.reject", api.rejectQuestion.bind(api)),
+  };
+}
+
+function compatibilityError(capability: string, version: string, cause: unknown): Error {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new Error(
+    `OpenCode compatibility failure for ${capability}: Connect ${CONNECT_VERSION}, @opencode-ai/sdk ${OPENCODE_SDK_VERSION}, OpenCode ${version}; ${detail}`,
+    { cause },
+  );
 }
 
 function createOfficialApi(baseUrl: string, username: string, password: string): OpenCodeApiClient {
