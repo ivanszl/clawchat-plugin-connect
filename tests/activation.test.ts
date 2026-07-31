@@ -166,7 +166,18 @@ describe("activateConnect", () => {
 
     await expect(
       activateConnect({ agentId: "personal", code: "DIFFERENTOWNER", config, store, fetchImpl }),
-    ).rejects.toThrow("belongs to ClawChat account original-owner");
+    ).rejects.toThrow("re-pair ownership contract was violated");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://app.clawling.com/v1/agents/connect",
+      expect.objectContaining({
+        body: JSON.stringify({
+          code: "DIFFERENTOWNER",
+          platform: "clawchat-connect",
+          type: "clawbot",
+          user_id: "original-user",
+        }),
+      }),
+    );
     await expect(store.getActivation("personal")).resolves.toMatchObject({
       accessToken: "original-token",
       ownerUserId: "original-owner",

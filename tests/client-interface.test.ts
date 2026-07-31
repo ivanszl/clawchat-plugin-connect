@@ -1064,7 +1064,10 @@ describe("Connect Client Interface", () => {
     };
     const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { personal: { kind: "codex" }, work: { kind: "codex" } };
+    config.agents = {
+      personal: { kind: "codex", outputVisibility: "minimal" },
+      work: { kind: "codex", outputVisibility: "full" },
+    };
     config.defaultAgent = "personal";
     config.stateDbPath = store.dbPath;
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
@@ -1130,7 +1133,9 @@ describe("Connect Client Interface", () => {
     });
 
     const bootstrap = await localRequest(fetchHandler, handle.origin, "/client/v1/bootstrap", { headers: scope });
-    await expect(bootstrap.json()).resolves.toMatchObject({ bindings: [{ bindingId: "personal" }] });
+    await expect(bootstrap.json()).resolves.toMatchObject({
+      bindings: [{ bindingId: "personal", outputVisibility: "minimal" }],
+    });
     const catalog = await localRequest(fetchHandler, handle.origin, "/client/v1/session-catalog", { headers: scope });
     await expect(catalog.json()).resolves.toMatchObject({
       bindings: [{ bindingId: "personal", entries: [{ sessionRef: "PERSNAL2" }] }],
@@ -1171,9 +1176,16 @@ describe("Connect Client Interface", () => {
         "sec-fetch-site": "same-origin",
         "content-type": "application/json",
       },
-      body: JSON.stringify({ requestId: "scoped-work-own-preference", displayName: "Work Account" }),
+      body: JSON.stringify({
+        requestId: "scoped-work-own-preference",
+        displayName: "Work Account",
+        outputVisibility: "normal",
+      }),
     });
     expect(workOwnMutation.status).toBe(200);
+    await expect(workOwnMutation.json()).resolves.toMatchObject({ bindingId: "work", outputVisibility: "normal" });
+    expect(config.agents.work?.outputVisibility).toBe("normal");
+    expect(config.agents.personal?.outputVisibility).toBe("minimal");
 
     const workSubmissionBody = new FormData();
     workSubmissionBody.append("prompt", "work only");

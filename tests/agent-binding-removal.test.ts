@@ -1,9 +1,11 @@
 import { describe, expect, it, mock } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { removeAgentBinding } from "../src/agent-binding-removal";
+import { FileTurnSubmissionStaging } from "../src/client-interface/turn-submission-staging";
 import { defaultConfig, loadConfig, saveConfig } from "../src/config";
+import { ProjectCatalog } from "../src/projects";
 import { createStateStore } from "../src/state";
 import type { ActivationCredentials } from "../src/types";
 
@@ -27,9 +29,42 @@ describe("Agent Binding removal", () => {
       sessionId: "work-session",
       agentId: "work",
       runtimeSessionId: "work-thread",
-      projectId: "shared-project",
+      projectId: null,
       hasMessages: true,
     });
+    await store.upsertRuntimeSession({
+      chatId: "personal-chat",
+      sessionId: "personal-session",
+      agentId: "personal",
+      runtimeSessionId: "personal-thread",
+      projectId: null,
+      hasMessages: true,
+    });
+    const workSession = await store.getCurrentRuntimeSession("work-chat", "work");
+    const personalSession = await store.getCurrentRuntimeSession("personal-chat", "personal");
+    if (!workSession || !personalSession) throw new Error("test Sessions were not materialized");
+    const projects = new ProjectCatalog(store);
+    const workWorkspace = await projects.resolveWorkspace(workSession);
+    const personalWorkspace = await projects.resolveWorkspace(personalSession);
+    const staging = new FileTurnSubmissionStaging(config.stateDbPath);
+    const stagedWork = await staging.stage({
+      submissionId: "work-submission",
+      sessionRef: workSession.sessionRef,
+      prompt: "work",
+      attachments: [attachment("work")],
+    });
+    stagedWork.transfer();
+    const stagedPersonal = await staging.stage({
+      submissionId: "personal-submission",
+      sessionRef: personalSession.sessionRef,
+      prompt: "personal",
+      attachments: [attachment("personal")],
+    });
+    stagedPersonal.transfer();
+    await store.claimClientCommand("work-command", "turn.submit", `${workSession.sessionRef}:work-digest`);
+    await store.claimClientCommand("personal-command", "turn.submit", `${personalSession.sessionRef}:personal-digest`);
+    await store.upsertTranscriptBlock(workSession.sessionRef, transcriptBlock("work-block"));
+    await store.upsertTranscriptBlock(personalSession.sessionRef, transcriptBlock("personal-block"));
     await store.upsertInboundMessage({
       agentId: "work",
       direction: "inbound",
@@ -81,10 +116,44 @@ describe("Agent Binding removal", () => {
     await expect(store.getRuntimeStatus("work")).resolves.toBeNull();
     await expect(store.getLivewareExposure("work")).resolves.toBeNull();
     await expect(store.getLivewareExposure("personal")).resolves.toMatchObject({ localAgentId: "personal" });
+    await expect(store.getClientCommandOutcome("work-command")).resolves.toEqual({ state: "missing" });
+    await expect(store.getClientCommandOutcome("personal-command")).resolves.toMatchObject({ state: "pending" });
+    expect((await store.listClientEvents(0)).map(({ event }) => "sessionRef" in event && event.sessionRef)).toEqual([
+      personalSession.sessionRef,
+    ]);
+    expect(await stat(workWorkspace.workingDirectory).catch(() => null)).toBeNull();
+    expect((await stat(personalWorkspace.workingDirectory)).isDirectory()).toBe(true);
+    await expect(staging.attachment("work-submission", 0)).resolves.toBeNull();
+    await expect(staging.attachment("personal-submission", 0)).resolves.toMatchObject({
+      sessionRef: personalSession.sessionRef,
+    });
     await expect(store.listProjects()).resolves.toHaveLength(1);
     await store.close();
   });
 });
+
+function attachment(label: string) {
+  const bytes = new TextEncoder().encode(label);
+  return {
+    name: `${label}.png`,
+    mime: "image/png",
+    size: bytes.byteLength,
+    readBytes: async () => bytes,
+  };
+}
+
+function transcriptBlock(id: string) {
+  return {
+    id,
+    type: "message" as const,
+    origin: "runtime" as const,
+    state: "complete" as const,
+    plainText: id,
+    role: "assistant" as const,
+    author: "Agent",
+    markdown: id,
+  };
+}
 
 function activation(localAgentId: string): ActivationCredentials {
   return {

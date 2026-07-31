@@ -18,6 +18,7 @@ import {
   type UpdateSessionPreferencesRequest,
 } from "../client-contract";
 import { saveConfig } from "../config";
+import { bindingOutputVisibility } from "../output-visibility";
 import { ProjectCatalog } from "../projects";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
@@ -43,6 +44,23 @@ class ClientRequestError extends Error {
     readonly retryable = false,
   ) {
     super(message);
+  }
+}
+
+class ClientBindingRequestScope {
+  constructor(
+    readonly bindingId: string | null,
+    private readonly catalog: SessionCatalog,
+  ) {}
+
+  includesBinding(bindingId: string): boolean {
+    return this.bindingId === null || bindingId === this.bindingId;
+  }
+
+  async includesSession(sessionRef: string): Promise<boolean> {
+    if (this.bindingId === null) return true;
+    const entry = await this.catalog.entry(sessionRef);
+    return entry?.bindingId === this.bindingId;
   }
 }
 
@@ -159,19 +177,17 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
         if (bindingScope && !options.config.agents[bindingScope]) {
           return errorResponse(404, "binding-not-found", "Agent Binding was not found");
         }
+        const requestScope = new ClientBindingRequestScope(bindingScope, catalog);
         if (url.pathname.startsWith(CLIENT_API_PREFIX)) {
           if (bindingScope) {
             const bindingPath = url.pathname.match(/^\/client\/v1\/bindings\/([^/]+)(?:\/|$)/u);
-            if (bindingPath && decodeURIComponent(bindingPath[1] ?? "") !== bindingScope) {
+            if (bindingPath && !requestScope.includesBinding(decodeURIComponent(bindingPath[1] ?? ""))) {
               return errorResponse(404, "binding-not-found", "Agent Binding was not found");
             }
             const sessionPath = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)(?:\/|$)/u);
             const sessionRef = sessionPath ? normalizeSessionRef(sessionPath[1] ?? "") : null;
-            if (sessionRef) {
-              const entry = await catalog.entry(sessionRef);
-              if (!entry || entry.bindingId !== bindingScope) {
-                return errorResponse(404, "session-not-found", "Session was not found");
-              }
+            if (sessionRef && !(await requestScope.includesSession(sessionRef))) {
+              return errorResponse(404, "session-not-found", "Session was not found");
             }
           }
           if (isMutation(request.method)) {
@@ -187,14 +203,17 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             const view: BootstrapView = {
               apiVersion: 1,
               eventCursor: await options.stateStore.getClientEventCursor(),
-              outputVisibility: options.config.outputVisibility,
+              outputVisibility: bindingScope
+                ? bindingOutputVisibility(options.config, bindingScope)
+                : options.config.outputVisibility,
               bindings: await Promise.all(
                 Object.entries(options.config.agents)
-                  .filter(([bindingId]) => !bindingScope || bindingId === bindingScope)
+                  .filter(([bindingId]) => requestScope.includesBinding(bindingId))
                   .map(async ([bindingId, binding]) => ({
                     bindingId,
                     displayName: binding.displayName || bindingId,
                     clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
+                    outputVisibility: bindingOutputVisibility(options.config, bindingId),
                     model: binding.model ?? null,
                     modelReasoningEffort: binding.modelReasoningEffort ?? null,
                     modelOptions: (await options.runtimeAdapters.listModels(binding)) ?? [],
@@ -262,7 +281,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-request-id", "requestId is required");
             if (typeof body.bindingId !== "string" || !body.bindingId.trim())
               return errorResponse(400, "invalid-binding", "bindingId is required");
-            if (bindingScope && body.bindingId !== bindingScope)
+            if (!requestScope.includesBinding(body.bindingId))
               return errorResponse(404, "binding-not-found", "Agent Binding was not found");
             if (body.workspaceId !== null && typeof body.workspaceId !== "string")
               return errorResponse(400, "invalid-workspace", "workspaceId must be a string or null");
@@ -392,7 +411,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             await catalog.ensureProjection(sessionRef, url.searchParams.get("refresh") === "1");
             const watermark = await options.stateStore.getClientEventCursor();
             const view = await catalog.sessionView(sessionRef);
-            return view && (!bindingScope || view.bindingId === bindingScope)
+            return view && requestScope.includesBinding(view.bindingId)
               ? snapshotResponse(view, watermark)
               : errorResponse(404, "session-not-found", "Session was not found");
           }
@@ -497,11 +516,11 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-submission-id", "Invalid submission identity");
             const attachment = await submissionStaging.attachment(submissionId, index);
             if (!attachment) return errorResponse(404, "attachment-not-found", "Attachment was not found");
-            if (bindingScope) {
-              const entry = attachment.sessionRef ? await catalog.entry(attachment.sessionRef) : null;
-              if (!entry || entry.bindingId !== bindingScope) {
-                return errorResponse(404, "attachment-not-found", "Attachment was not found");
-              }
+            if (
+              bindingScope &&
+              (!attachment.sessionRef || !(await requestScope.includesSession(attachment.sessionRef)))
+            ) {
+              return errorResponse(404, "attachment-not-found", "Attachment was not found");
             }
             return new Response(Bun.file(attachment.path), {
               headers: securityHeaders({
@@ -639,12 +658,12 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           const interactionMatch = url.pathname.match(/^\/client\/v1\/runtime-interactions\/([^/]+)\/respond$/u);
           if (interactionMatch && request.method === "POST") {
             const interactionId = decodeURIComponent(interactionMatch[1] ?? "");
-            if (bindingScope) {
-              const sessionRef = runtimeInteractions.pendingSessionRef(interactionId);
-              const entry = sessionRef ? await catalog.entry(sessionRef) : null;
-              if (!entry || entry.bindingId !== bindingScope) {
-                return errorResponse(404, "interaction-not-found", "Runtime Interaction was not found");
-              }
+            const interactionSessionRef = runtimeInteractions.pendingSessionRef(interactionId);
+            if (
+              bindingScope &&
+              (!interactionSessionRef || !(await requestScope.includesSession(interactionSessionRef)))
+            ) {
+              return errorResponse(404, "interaction-not-found", "Runtime Interaction was not found");
             }
             const body = await readJsonBody<import("../client-contract").RespondToRuntimeInteractionRequest>(request);
             if (!validRequestId(body.requestId))
@@ -789,7 +808,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                       effortUpdate as AgentBindingConfig["modelReasoningEffort"],
                     );
                 }
-                if (body.outputVisibility !== undefined) options.config.outputVisibility = body.outputVisibility;
+                if (body.outputVisibility !== undefined) binding.outputVisibility = body.outputVisibility;
                 await saveConfig(options.config, options.configPath);
                 catalog.invalidate();
                 return {
@@ -800,7 +819,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                     clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
                     model: binding.model ?? null,
                     modelReasoningEffort: binding.modelReasoningEffort ?? null,
-                    outputVisibility: options.config.outputVisibility,
+                    outputVisibility: bindingOutputVisibility(options.config, bindingId),
                   },
                 };
               },

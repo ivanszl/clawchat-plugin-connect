@@ -4,16 +4,20 @@ import { materializeRuntimeOutput, policyForOutputVisibility, resolveOutputVisib
 import type { ConnectStateStore } from "../src/state";
 
 describe("output visibility", () => {
-  it("uses chat override before global default", async () => {
+  it("uses a Binding-scoped chat override before the Binding default", async () => {
     const config = defaultConfig();
     config.outputVisibility = "minimal";
+    config.agents.work = { kind: "codex", outputVisibility: "normal" };
     const store = { getOutputVisibility: mock(async () => "full") } as unknown as ConnectStateStore;
-    await expect(resolveOutputVisibility({ config, store, chatId: "chat-1" })).resolves.toBe("full");
+    await expect(resolveOutputVisibility({ config, store, bindingId: "work", chatId: "chat-1" })).resolves.toBe("full");
+    expect(store.getOutputVisibility).toHaveBeenCalledWith("work", "chat-1");
   });
-  it("falls back to global config without project override", async () => {
+  it("falls back from the Binding default to the installation default", async () => {
     const config = defaultConfig();
-    config.outputVisibility = "normal";
-    await expect(resolveOutputVisibility({ config, chatId: "chat-1" })).resolves.toBe("normal");
+    config.outputVisibility = "minimal";
+    config.agents.work = { kind: "codex", outputVisibility: "full" };
+    await expect(resolveOutputVisibility({ config, bindingId: "work", chatId: "chat-1" })).resolves.toBe("full");
+    await expect(resolveOutputVisibility({ config, bindingId: "missing", chatId: "chat-1" })).resolves.toBe("minimal");
   });
   it("hides progress in normal mode and always materializes controls", () => {
     const policy = policyForOutputVisibility("normal");

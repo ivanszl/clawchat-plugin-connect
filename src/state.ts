@@ -377,12 +377,27 @@ export class ConnectStateStore {
       run(
         `DELETE FROM client_commands
           WHERE entity_ref = ?
-             OR entity_ref IN (SELECT session_ref FROM session_refs WHERE agent_id = ?)`,
+             OR EXISTS (
+               SELECT 1
+                 FROM session_refs
+                WHERE agent_id = ?
+                  AND (
+                    client_commands.entity_ref = session_refs.session_ref
+                    OR client_commands.entity_ref LIKE session_refs.session_ref || ':%'
+                  )
+             )`,
         bindingId,
+        bindingId,
+      );
+      run(
+        `DELETE FROM client_events
+          WHERE event_type = 'catalog.changed'
+             OR entity_ref IN (SELECT session_ref FROM session_refs WHERE agent_id = ?)`,
         bindingId,
       );
       run("DELETE FROM tool_requests WHERE binding_id = ?", bindingId);
       run("DELETE FROM runtime_workspace_mappings WHERE binding_id = ?", bindingId);
+      run("DELETE FROM output_visibility WHERE local_agent_id = ?", bindingId);
       run("DELETE FROM runtime_sessions WHERE agent_id = ?", bindingId);
       run("DELETE FROM session_intents WHERE agent_id = ?", bindingId);
       run("DELETE FROM session_refs WHERE agent_id = ?", bindingId);
@@ -394,7 +409,6 @@ export class ConnectStateStore {
       run("DELETE FROM runtime_statuses WHERE agent_id = ?", bindingId);
       run("DELETE FROM liveware_exposures WHERE local_agent_id = ?", bindingId);
       run("DELETE FROM activations WHERE platform = ? AND local_agent_id = ?", PLATFORM_ID, bindingId);
-      run("DELETE FROM client_events");
     });
   }
 
@@ -643,16 +657,24 @@ export class ConnectStateStore {
       createdAt: numberValue(row.created_at),
     }));
   }
-  async getOutputVisibility(chatId: string): Promise<OutputVisibility | null> {
+  async getOutputVisibility(localAgentId: string, chatId: string): Promise<OutputVisibility | null> {
     const db = await this.requireDb();
-    const row = await db.get<{ mode?: string }>("SELECT mode FROM output_visibility WHERE chat_id = ?", chatId);
+    const row = await db.get<{ mode?: string }>(
+      "SELECT mode FROM output_visibility WHERE local_agent_id = ? AND chat_id = ?",
+      requireStateString(localAgentId, "Agent Binding ID"),
+      requireStateString(chatId, "chatId"),
+    );
     return row?.mode === "minimal" || row?.mode === "normal" || row?.mode === "full" ? row.mode : null;
   }
-  async setOutputVisibility(chatId: string, mode: OutputVisibility): Promise<void> {
+  async setOutputVisibility(localAgentId: string, chatId: string, mode: OutputVisibility): Promise<void> {
     const now = Date.now();
     const db = await this.requireDb();
     await db.run(
-      `INSERT INTO output_visibility(chat_id, mode, updated_at) VALUES (?, ?, ?) ON CONFLICT(chat_id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at`,
+      `INSERT INTO output_visibility(local_agent_id, chat_id, mode, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(local_agent_id, chat_id)
+       DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at`,
+      requireStateString(localAgentId, "Agent Binding ID"),
       chatId,
       mode,
       now,
@@ -2259,9 +2281,11 @@ export class ConnectStateStore {
         PRIMARY KEY(binding_id, runtime_kind, identity_key)
       );
       CREATE TABLE IF NOT EXISTS output_visibility(
-        chat_id TEXT PRIMARY KEY,
+        local_agent_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
         mode TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(local_agent_id, chat_id)
       );
       CREATE TABLE IF NOT EXISTS clawchat_messages(
         id INTEGER PRIMARY KEY,
@@ -2418,6 +2442,25 @@ export class ConnectStateStore {
            FROM liveware_exposure`,
       );
       await db.exec("DROP TABLE liveware_exposure");
+    }
+    const outputVisibilityColumns = await db.all<{ name: string }[]>("PRAGMA table_info(output_visibility)");
+    if (!outputVisibilityColumns.some((column) => column.name === "local_agent_id")) {
+      await db.exec(`
+        ALTER TABLE output_visibility RENAME TO output_visibility_legacy;
+        CREATE TABLE output_visibility(
+          local_agent_id TEXT NOT NULL,
+          chat_id TEXT NOT NULL,
+          mode TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(local_agent_id, chat_id)
+        );
+        INSERT INTO output_visibility(local_agent_id, chat_id, mode, updated_at)
+        SELECT activations.local_agent_id, legacy.chat_id, legacy.mode, legacy.updated_at
+          FROM output_visibility_legacy AS legacy
+          CROSS JOIN activations
+         WHERE activations.platform = '${PLATFORM_ID}';
+        DROP TABLE output_visibility_legacy;
+      `);
     }
     const columns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_sessions)");
     if (!columns.some((column) => column.name === "project_id"))

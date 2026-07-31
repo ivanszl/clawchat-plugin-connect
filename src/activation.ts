@@ -34,7 +34,7 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
     const result = normalizeActivationResult(agentId, await client.agentsConnect({ code, existingUserId }));
     if (existingActivation && existingActivation.ownerUserId !== result.ownerUserId) {
       throw new Error(
-        `Agent Binding ${agentId} belongs to ClawChat account ${existingActivation.ownerUserId}; remove it before activating a different account`,
+        `ClawChat re-pair ownership contract was violated for Agent Binding ${agentId}; its existing credentials were preserved`,
       );
     }
     await store.upsertActivation(result);

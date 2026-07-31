@@ -160,7 +160,7 @@ function invalidCommandUsage(message: NormalizedInboundMessage, command: string,
 async function handleOutput(ctx: ChatCommandContext, rawMode: string | undefined): Promise<ChatCommandResult> {
   const mode = parseOutputVisibility(rawMode);
   if (!mode) return { handled: true, text: commandUsage(ctx.message.chatType, "/clawchat-output") };
-  await ctx.stateStore.setOutputVisibility(ctx.message.chatId, mode);
+  await ctx.stateStore.setOutputVisibility(ctx.agentId, ctx.message.chatId, mode);
   const detail: Record<OutputVisibility, string> = {
     minimal: "final only",
     normal: "final and assistant-visible output",

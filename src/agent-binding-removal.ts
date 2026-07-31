@@ -1,11 +1,13 @@
 import { resolve } from "node:path";
 import { manageBackgroundService } from "./background-service";
+import { FileTurnSubmissionStaging } from "./client-interface/turn-submission-staging";
 import { defaultConfigPath, loadConfig, saveConfig } from "./config";
 import {
   createLivewareExposureDependencies,
   resolveLivewareExecutablePath,
   retireLivewareExposure,
 } from "./liveware-exposure";
+import { ProjectCatalog } from "./projects";
 import { type ConnectStateStore, createStateStore } from "./state";
 import type { ActivationCredentials } from "./types";
 
@@ -78,6 +80,11 @@ export async function removeAgentBinding(
         );
       }
     }
+    const sessionRefs = (await store.listAllRuntimeSessions())
+      .filter((session) => session.agentId === agentId)
+      .map((session) => session.sessionRef);
+    await new FileTurnSubmissionStaging(config.stateDbPath).purgeSessions(sessionRefs);
+    await new ProjectCatalog(store).purgeBindingWorkspaces(agentId);
     await store.purgeAgentBinding(agentId);
     delete config.agents[agentId];
     if (config.defaultAgent === agentId) config.defaultAgent = Object.keys(config.agents)[0] ?? null;

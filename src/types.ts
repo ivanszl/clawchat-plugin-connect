@@ -13,6 +13,7 @@ export type CodexWebSearchMode = "disabled" | "cached" | "live";
 
 export interface CodexAgentBindingConfig {
   kind: "codex";
+  outputVisibility?: OutputVisibility;
   codexPathOverride?: string;
   env?: Record<string, string>;
   displayName?: string;

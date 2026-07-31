@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, realpath, stat } from "node:fs/promises";
+import { mkdir, realpath, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ConnectStateStore } from "./state";
 import type { ProjectRecord, RuntimeSessionRecord, RuntimeWorkspace } from "./types";
@@ -98,6 +98,10 @@ export class ProjectCatalog {
   isIsolatedWorkspace(path: string): boolean {
     const nestedPath = relative(resolve(this.workspaceRoot), resolve(path));
     return nestedPath === "" || (!nestedPath.startsWith("..") && !isAbsolute(nestedPath));
+  }
+
+  async purgeBindingWorkspaces(agentId: string): Promise<void> {
+    await rm(join(this.workspaceRoot, stablePathSegment(agentId)), { recursive: true, force: true });
   }
 
   async remove(reference: string): Promise<RemoveProjectResult> {

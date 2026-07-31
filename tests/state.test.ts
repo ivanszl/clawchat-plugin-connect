@@ -33,6 +33,50 @@ describe("agent-only config", () => {
 });
 
 describe("state store", () => {
+  it("scopes output visibility by Agent Binding and migrates legacy overrides", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const initial = createStateStore({ dbPath });
+    await initial.upsertActivation({
+      localAgentId: "work",
+      accessToken: "work-token",
+      refreshToken: null,
+      serverAgentId: "work-agent",
+      userId: "work-user",
+      ownerUserId: "owner",
+      conversationId: null,
+    });
+    await initial.upsertActivation({
+      localAgentId: "personal",
+      accessToken: "personal-token",
+      refreshToken: null,
+      serverAgentId: "personal-agent",
+      userId: "personal-user",
+      ownerUserId: "owner",
+      conversationId: null,
+    });
+    await initial.close();
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      DROP TABLE output_visibility;
+      CREATE TABLE output_visibility(
+        chat_id TEXT PRIMARY KEY,
+        mode TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO output_visibility(chat_id, mode, updated_at) VALUES ('shared-chat', 'full', 1);
+    `);
+    legacy.close();
+
+    const migrated = createStateStore({ dbPath });
+    await expect(migrated.getOutputVisibility("work", "shared-chat")).resolves.toBe("full");
+    await expect(migrated.getOutputVisibility("personal", "shared-chat")).resolves.toBe("full");
+    await migrated.setOutputVisibility("work", "shared-chat", "minimal");
+    await expect(migrated.getOutputVisibility("work", "shared-chat")).resolves.toBe("minimal");
+    await expect(migrated.getOutputVisibility("personal", "shared-chat")).resolves.toBe("full");
+    await migrated.close();
+  });
+
   it("persists Protocol v2 negative acknowledgements on outbound messages", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");

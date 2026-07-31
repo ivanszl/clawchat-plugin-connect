@@ -192,7 +192,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Every activated Agent Binding has exactly one Binding Owner; one Connect installation may operate multiple Binding Owners concurrently.
 - A Binding Owner may own multiple Agent Bindings in one Connect installation.
 - Reactivating a Binding for the same Binding Owner refreshes only that Binding's credentials. Activation for a different owner is rejected while the Binding exists.
-- Removing an Agent Binding retires its Liveware Exposure, deletes its credentials, and purges all Binding-scoped local data before its ID may be reused.
+- Removing an Agent Binding retires its Liveware Exposure, deletes its credentials, and purges its database records, Client commands/events, staged Turn Submissions, and isolated Non-Project workspaces before its ID may be reused; unrelated Bindings and installation-global Projects remain intact.
 - A Connect installation has one Connect Service; Agent Bindings and Runtime Adapters do not own background services.
 - Agent Binding IDs are arbitrary; Runtime Adapter selection comes only from the Binding's explicit `kind`.
 - The first release registers only the Codex Runtime Adapter; that is a release scope, not a domain invariant.
@@ -230,7 +230,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Runtime Adapters provide a stable Runtime Thread-local position for each Runtime Activity across live and recovered observations. The Connect Transcript Projection maps that runtime-neutral order into Client Transcript sequence and treats an Adapter-declared ordering limitation as partial completeness instead of guessing from arrival time.
 - Runtime Activity kinds are runtime-neutral and closed over Connect's shared display semantics. An Adapter maps an unsupported native kind to a sanitized `unknown` Activity; adapter-specific kinds and raw native payloads never cross the Runtime Adapter seam.
 - The Codex Runtime Adapter uses app-server as its primary history interface and may supplement omitted displayable tool calls from the matching pinned-version rollout JSONL. Raw rollout records and private reasoning never cross the Runtime Adapter seam.
-- ClawChat `outputVisibility` filters remote delivery only and never discards an event from the Connect Transcript Projection.
+- ClawChat `outputVisibility` is resolved from a Binding-scoped chat override, then the Agent Binding default, then the installation default. It filters remote delivery only and never discards an event from the Connect Transcript Projection.
 - Every displayable Runtime Activity is committed to the Connect Transcript Projection before Turn Surface delivery is attempted. A Turn Surface delivery failure does not remove or hide Activity already projected for the Client Transcript.
 - Session names are display and selection labels; Session Refs are stable unambiguous selectors, while internal Session and Runtime Thread IDs remain hidden.
 - Session lifecycle commands resolve a Session Ref to its native Runtime Thread and are delegated through that Agent Binding's Runtime Adapter.

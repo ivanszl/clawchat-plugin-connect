@@ -29,11 +29,7 @@ export function SettingsPage() {
       </header>
       <div className="settings-list">
         {bootstrap.data.bindings.map((binding) => (
-          <BindingSettings
-            key={binding.bindingId}
-            binding={binding}
-            outputVisibility={bootstrap.data.outputVisibility}
-          />
+          <BindingSettings key={binding.bindingId} binding={binding} />
         ))}
         <ProjectSettings projects={projects.data ?? []} />
       </div>
@@ -41,18 +37,12 @@ export function SettingsPage() {
   );
 }
 
-function BindingSettings({
-  binding,
-  outputVisibility,
-}: {
-  binding: BindingPreferenceView;
-  outputVisibility: BootstrapView["outputVisibility"];
-}) {
+function BindingSettings({ binding }: { binding: BindingPreferenceView }) {
   const queryClient = useQueryClient();
   const [displayName, setDisplayName] = useState(binding.displayName);
   const [model, setModel] = useState(binding.model ?? "");
   const [effort, setEffort] = useState(binding.modelReasoningEffort ?? "default");
-  const [visibility, setVisibility] = useState(outputVisibility);
+  const [visibility, setVisibility] = useState(binding.outputVisibility);
   const selectedModel =
     binding.modelOptions.find((option) => option.id === model) ??
     binding.modelOptions.find((option) => option.isDefault) ??
@@ -62,6 +52,7 @@ function BindingSettings({
     setDisplayName(binding.displayName);
     setModel(binding.model ?? "");
     setEffort(binding.modelReasoningEffort ?? "default");
+    setVisibility(binding.outputVisibility);
   }, [binding]);
   const save = useMutation({
     mutationFn: async () =>

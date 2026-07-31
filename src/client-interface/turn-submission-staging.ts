@@ -140,7 +140,23 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
         const path = join(this.root, entry.name);
         const details = await stat(path).catch(() => null);
         if (details && now - details.mtimeMs >= STAGING_TTL_MS) {
-          await rm(path, { recursive: true, force: true });
+          await rm(path, { recursive: true, force: true }).catch(() => undefined);
+        }
+      }),
+    );
+  }
+
+  async purgeSessions(sessionRefs: Iterable<string>): Promise<void> {
+    const owned = new Set(sessionRefs);
+    if (owned.size === 0) return;
+    const entries = await readdir(this.root, { withFileTypes: true }).catch(() => []);
+    await Promise.all(
+      entries.map(async (entry) => {
+        if (!entry.isDirectory()) return;
+        const directory = join(this.root, entry.name);
+        const manifest = await readManifest(join(directory, "manifest.json"));
+        if (manifest?.sessionRef && owned.has(manifest.sessionRef)) {
+          await rm(directory, { recursive: true, force: true });
         }
       }),
     );

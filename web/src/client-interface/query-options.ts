@@ -166,7 +166,7 @@ export async function removeProject(workspaceId: string): Promise<{ workspaceId:
 export async function updateBindingPreferences(
   bindingId: string,
   updates: Omit<UpdateBindingPreferencesRequest, "requestId">,
-): Promise<BindingPreferenceView & { outputVisibility: BootstrapView["outputVisibility"] }> {
+): Promise<BindingPreferenceView> {
   return await clientFetch(`${CLIENT_API_PREFIX}/bindings/${encodeURIComponent(bindingId)}/preferences`, {
     method: "PATCH",
     body: JSON.stringify({ requestId: requestId(), ...updates }),

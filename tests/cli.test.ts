@@ -663,7 +663,7 @@ describe("handleChatCommand", () => {
         ownerUserId: "usr",
       }),
     ).resolves.toMatchObject({ handled: true });
-    expect(store.setOutputVisibility).toHaveBeenCalledWith("chat-1", "full");
+    expect(store.setOutputVisibility).toHaveBeenCalledWith("codex", "chat-1", "full");
   });
 
   it("rejects control commands from users other than the Agent Binding owner", async () => {

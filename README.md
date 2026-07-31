@@ -174,6 +174,7 @@ Each Binding owns independent credentials, Sessions, Runtime instance, and Livew
 Connect Service provisions or adopts one Binding-named `ClawChat Connect · <binding-id>` Liveware App per activated Binding after its Binding-Scoped Client Gateway is ready. Existing singleton `ClawChat Connect` Apps remain adopted during migration. The default Liveware Access Policy is `private`, so only that Binding Owner can open its App. Activation itself never publishes the installation-wide Client port.
 
 One ClawChat account may own multiple Agent Bindings in an installation. Reactivating the same Binding with the same account refreshes its credentials.
+For an occupied Binding, Connect sends the stored Agent user ID through ClawChat's atomic re-pair path; a code from another Owner is rejected by ClawChat before it is consumed, and Connect preserves the existing local credentials if the returned identity violates that contract.
 
 ### 4. Install the background service
 
@@ -248,6 +249,8 @@ Send these as standalone ClawChat messages. In a direct conversation, use the fo
 | `/clawchat-output <mode>` | Set ClawChat output to `minimal`, `normal`, or `full`. |
 
 `/help` is available to every participant. Other Connect control commands require the Agent Binding owner. Removed forms such as `/list`, `/current`, `/clawchat-status`, and `/project add|list|use|current|clear|remove` fail with a pointer to `/help`; they are not forwarded to the coding agent. Unknown `/clawchat-*` commands show Connect help, while unrelated slash commands are passed through.
+
+Output visibility is scoped to the Agent Binding: a chat override applies only to that Binding even when another Agent is present in the same ClawChat conversation. Binding settings inherit the installation default until explicitly changed.
 
 Runtime approvals and questions stay in the direct or group conversation whose turn created them. Direct responses use `/approve`, `/approve session`, `/deny`, `/N`, or `/answer <text>`; group responses use the same exact lowercase, single-line forms after `@Agent `. For now, any participant in the originating group may answer an Interaction, including a Session-level approval. Connect controls remain restricted to the receiving Binding's Binding Owner.
 
