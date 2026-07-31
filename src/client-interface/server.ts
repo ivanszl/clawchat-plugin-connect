@@ -8,8 +8,10 @@ import {
   type CancelTurnRequest,
   CLIENT_API_PREFIX,
   type ClientErrorView,
+  type ClientViewEvent,
   type CreateSessionRequest,
   normalizeSessionRef,
+  type SessionCatalogView,
   type SessionMutationRequest,
   type SessionView,
   type UpdateBindingPreferencesRequest,
@@ -24,6 +26,7 @@ import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runti
 import { createSessionContinuity, SessionLifecycleError } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig } from "../types";
+import { BINDING_SCOPE_HEADER } from "./binding-scoped-gateway";
 import { SessionCatalog } from "./session-catalog";
 import type { TranscriptProjection } from "./transcript-projection";
 import { TurnSubmission, type TurnSubmissionDraft, TurnSubmissionError } from "./turn-submission";
@@ -66,6 +69,7 @@ export interface ClientHttpServerOptions {
 }
 
 export interface ClientHttpServerHandle {
+  port?: number;
   stop(closeActiveConnections?: boolean): void | Promise<void>;
 }
 
@@ -151,9 +155,32 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
         const requestOrigin = allowedRequestOrigin(request, hostname, port);
         if (!requestOrigin) return errorResponse(400, "invalid-host", "Invalid Host header");
         const url = new URL(request.url);
+        const bindingScope = request.headers.get(BINDING_SCOPE_HEADER)?.trim() || null;
+        if (bindingScope && !options.config.agents[bindingScope]) {
+          return errorResponse(404, "binding-not-found", "Agent Binding was not found");
+        }
         if (url.pathname.startsWith(CLIENT_API_PREFIX)) {
+          if (bindingScope) {
+            const bindingPath = url.pathname.match(/^\/client\/v1\/bindings\/([^/]+)(?:\/|$)/u);
+            if (bindingPath && decodeURIComponent(bindingPath[1] ?? "") !== bindingScope) {
+              return errorResponse(404, "binding-not-found", "Agent Binding was not found");
+            }
+            const sessionPath = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)(?:\/|$)/u);
+            const sessionRef = sessionPath ? normalizeSessionRef(sessionPath[1] ?? "") : null;
+            if (sessionRef) {
+              const entry = await catalog.entry(sessionRef);
+              if (!entry || entry.bindingId !== bindingScope) {
+                return errorResponse(404, "session-not-found", "Session was not found");
+              }
+            }
+          }
           if (isMutation(request.method)) {
-            const mutationError = await validateMutationRequest(request, requestOrigin, options.stateStore);
+            const mutationError = await validateMutationRequest(
+              request,
+              requestOrigin,
+              options.stateStore,
+              bindingScope,
+            );
             if (mutationError) return mutationError;
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/bootstrap` && request.method === "GET") {
@@ -162,15 +189,17 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               eventCursor: await options.stateStore.getClientEventCursor(),
               outputVisibility: options.config.outputVisibility,
               bindings: await Promise.all(
-                Object.entries(options.config.agents).map(async ([bindingId, binding]) => ({
-                  bindingId,
-                  displayName: binding.displayName || bindingId,
-                  clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
-                  model: binding.model ?? null,
-                  modelReasoningEffort: binding.modelReasoningEffort ?? null,
-                  modelOptions: (await options.runtimeAdapters.listModels(binding)) ?? [],
-                  modeOptions: [...options.runtimeAdapters.modesFor(binding)],
-                })),
+                Object.entries(options.config.agents)
+                  .filter(([bindingId]) => !bindingScope || bindingId === bindingScope)
+                  .map(async ([bindingId, binding]) => ({
+                    bindingId,
+                    displayName: binding.displayName || bindingId,
+                    clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
+                    model: binding.model ?? null,
+                    modelReasoningEffort: binding.modelReasoningEffort ?? null,
+                    modelOptions: (await options.runtimeAdapters.listModels(binding)) ?? [],
+                    modeOptions: [...options.runtimeAdapters.modesFor(binding)],
+                  })),
               ),
               capabilities: {
                 localTurns: true,
@@ -183,7 +212,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/session-catalog` && request.method === "GET") {
             const watermark = await options.stateStore.getClientEventCursor();
-            return snapshotResponse(await catalog.view(url.searchParams.get("refresh") === "1"), watermark);
+            return snapshotResponse(
+              scopeSessionCatalog(await catalog.view(url.searchParams.get("refresh") === "1"), bindingScope),
+              watermark,
+            );
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/projects` && request.method === "GET") {
             return jsonResponse(
@@ -230,6 +262,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-request-id", "requestId is required");
             if (typeof body.bindingId !== "string" || !body.bindingId.trim())
               return errorResponse(400, "invalid-binding", "bindingId is required");
+            if (bindingScope && body.bindingId !== bindingScope)
+              return errorResponse(404, "binding-not-found", "Agent Binding was not found");
             if (body.workspaceId !== null && typeof body.workspaceId !== "string")
               return errorResponse(400, "invalid-workspace", "workspaceId must be a string or null");
             if (body.name !== null && typeof body.name !== "string")
@@ -334,15 +368,21 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/events` && request.method === "GET") {
             const after = eventCursor(request, url);
-            return eventStreamResponse(options.stateStore, request, after, publishClientViews);
+            return eventStreamResponse(options.stateStore, request, after, publishClientViews, bindingScope, catalog);
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/events/batch` && request.method === "GET") {
             const after = eventCursor(request, url);
             await publishClientViews();
             const events = await options.stateStore.listClientEvents(after);
+            const visibleEvents = await scopedClientEvents(
+              events.map((event) => event.event),
+              bindingScope,
+              catalog,
+              after,
+            );
             return jsonResponse({
               cursor: events.at(-1)?.cursor ?? after,
-              events: events.map((event) => event.event),
+              events: visibleEvents,
             });
           }
           const sessionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)$/u);
@@ -352,7 +392,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             await catalog.ensureProjection(sessionRef, url.searchParams.get("refresh") === "1");
             const watermark = await options.stateStore.getClientEventCursor();
             const view = await catalog.sessionView(sessionRef);
-            return view
+            return view && (!bindingScope || view.bindingId === bindingScope)
               ? snapshotResponse(view, watermark)
               : errorResponse(404, "session-not-found", "Session was not found");
           }
@@ -800,9 +840,10 @@ async function validateMutationRequest(
   request: Request,
   origin: string,
   stateStore: ConnectStateStore,
+  bindingScope: string | null,
 ): Promise<Response | null> {
   const requestOrigin = request.headers.get("origin");
-  if (requestOrigin !== origin && !(await isRegisteredLivewareOrigin(requestOrigin, stateStore))) {
+  if (requestOrigin !== origin && !(await isRegisteredLivewareOrigin(requestOrigin, stateStore, bindingScope))) {
     return errorResponse(403, "invalid-origin", "Invalid request Origin");
   }
   const fetchSite = request.headers.get("sec-fetch-site");
@@ -815,12 +856,15 @@ async function validateMutationRequest(
 async function isRegisteredLivewareOrigin(
   requestOrigin: string | null,
   stateStore: ConnectStateStore,
+  bindingScope: string | null,
 ): Promise<boolean> {
   if (!requestOrigin) return false;
-  const exposure = await stateStore.getLivewareExposure();
-  if (!exposure) return false;
   try {
-    return new URL(requestOrigin).origin === new URL(exposure.publicUrl).origin;
+    const origin = new URL(requestOrigin).origin;
+    const exposures = bindingScope
+      ? [await stateStore.getLivewareExposure(bindingScope)].filter((exposure) => exposure !== null)
+      : await stateStore.listLivewareExposures();
+    return exposures.some((exposure) => origin === new URL(exposure.publicUrl).origin);
   } catch {
     return false;
   }
@@ -884,14 +928,23 @@ function viewFingerprint(view: { revision: number }): string {
   return JSON.stringify({ ...view, revision: 0 });
 }
 
+function scopeSessionCatalog(view: SessionCatalogView, bindingScope: string | null): SessionCatalogView {
+  return bindingScope
+    ? { ...view, bindings: view.bindings.filter((binding) => binding.bindingId === bindingScope) }
+    : view;
+}
+
 function eventStreamResponse(
   store: ConnectStateStore,
   request: Request,
   afterCursor: number,
   publishClientViews: () => Promise<void>,
+  bindingScope: string | null,
+  catalog: SessionCatalog,
 ): Response {
   const encoder = new TextEncoder();
   let cursor = afterCursor;
+  let visibleCursor = afterCursor;
   let pumping = false;
   let closed = false;
   let poll: ReturnType<typeof setInterval> | null = null;
@@ -918,9 +971,13 @@ function eventStreamResponse(
           for (const stored of events) {
             if (closed) return;
             cursor = stored.cursor;
+            const event = await scopeClientEvent(stored.event, bindingScope, catalog);
+            if (!event) continue;
+            const scopedEvent = { ...event, previousCursor: visibleCursor } as ClientViewEvent;
+            visibleCursor = scopedEvent.cursor;
             controller.enqueue(
               encoder.encode(
-                `id: ${stored.cursor}\nevent: ${stored.event.type}\ndata: ${JSON.stringify(stored.event)}\n\n`,
+                `id: ${stored.cursor}\nevent: ${scopedEvent.type}\ndata: ${JSON.stringify(scopedEvent)}\n\n`,
               ),
             );
             if ((controller.desiredSize ?? 1) < -64) {
@@ -953,6 +1010,40 @@ function eventStreamResponse(
   headers.set("Cache-Control", "no-cache, no-transform");
   headers.set("Connection", "keep-alive");
   return new Response(stream, { headers });
+}
+
+async function scopedClientEvents(
+  events: ClientViewEvent[],
+  bindingScope: string | null,
+  catalog: SessionCatalog,
+  afterCursor: number,
+): Promise<ClientViewEvent[]> {
+  const visible: ClientViewEvent[] = [];
+  let previousCursor = afterCursor;
+  for (const event of events) {
+    const scoped = await scopeClientEvent(event, bindingScope, catalog);
+    if (!scoped) continue;
+    const continuous = { ...scoped, previousCursor } as ClientViewEvent;
+    visible.push(continuous);
+    previousCursor = continuous.cursor;
+  }
+  return visible;
+}
+
+async function scopeClientEvent(
+  event: ClientViewEvent,
+  bindingScope: string | null,
+  catalog: SessionCatalog,
+): Promise<ClientViewEvent | null> {
+  if (!bindingScope || event.type === "snapshot-required") return event;
+  if (event.type === "catalog.changed") {
+    return { ...event, catalog: scopeSessionCatalog(event.catalog, bindingScope) };
+  }
+  if (event.type === "session.changed") {
+    return event.session.bindingId === bindingScope ? event : null;
+  }
+  const entry = await catalog.entry(event.sessionRef);
+  return entry?.bindingId === bindingScope ? event : null;
 }
 
 async function staticResponse(assetsRoot: string, pathname: string, head: boolean): Promise<Response> {

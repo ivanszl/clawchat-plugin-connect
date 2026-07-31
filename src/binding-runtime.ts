@@ -242,7 +242,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         wsClient,
       };
       if (isAgentLivewareOperation(toolName)) {
-        const managedAppId = (await options.stateStore.getLivewareExposure())?.appId ?? null;
+        const managedAppId = (await options.stateStore.getLivewareExposure(options.agentId))?.appId ?? null;
         return await executeAgentLiveware(toolName, input, {
           activation: options.activation,
           clawChatBaseUrl: options.config.baseUrl,

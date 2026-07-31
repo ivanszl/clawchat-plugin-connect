@@ -8,6 +8,8 @@ Connect may optionally publish its existing Connect Client through one Connect-m
 
 One Connect Owner is shared by every activated Agent Binding. Connect provisions the App in the Liveware Control Plane, configures its policy and tunnel binding, registers the App separately with ClawChat through `POST /v1/agents/me/liveware`, and coordinates the bundled, pinned `liveware` companion process. Liveware App creation alone does not make a ClawChat launcher entry. Replacing the Connect Owner preserves existing local Projects, Sessions, and Runtime Threads, unregisters and retires the previous owner's App, and creates and registers a new App for the new owner with the same policy; the public URL may change.
 
+ADR-0034 supersedes the singleton-owner, singleton-App, and installation-wide capability clauses. The managed publication mechanism and browser transport decisions remain in force.
+
 Connect uses its activated ClawChat Agent token for Liveware Control Plane login and ClawChat Liveware registration. It does not acquire or persist the human user's ClawChat token: ClawChat injects that token into the WebView and Liveware exchanges it for its own ticket when the user opens the App.
 
 The integration treats Liveware as an unmodified external executable. Connect absorbs compatibility requirements at its own Client Interface and process boundary rather than requiring Connect-specific changes to the Liveware source or tunnel protocol.

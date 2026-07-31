@@ -7,6 +7,11 @@ import {
   startBindingRuntime,
 } from "./binding-runtime";
 import {
+  type BindingScopedClientGatewayHandle,
+  type BindingScopedClientGatewayOptions,
+  startBindingScopedClientGateway,
+} from "./client-interface/binding-scoped-gateway";
+import {
   type ClientInterfaceHandle,
   type ClientInterfaceOptions,
   startClientInterface,
@@ -46,6 +51,11 @@ export interface ConnectServiceDependencies {
   startClientInterface?: (options: ClientInterfaceOptions) => Promise<ClientInterfaceHandle>;
   createRuntimeAdapterRegistry?: () => RuntimeAdapterRegistry;
   livewareDependencies?: LivewareExposureDependencies;
+  startBindingScopedClientGateway?: (
+    options: BindingScopedClientGatewayOptions,
+  ) => Promise<BindingScopedClientGatewayHandle>;
+  startLivewareExposure?: typeof startLivewareExposure;
+  retireLivewareExposure?: typeof retireLivewareExposure;
   verifyInstalledSkills?: () => Promise<void>;
 }
 
@@ -66,7 +76,8 @@ export async function startConnectService(
   const handles: BindingRuntimeHandle[] = [];
   const runtimeAdapters = (dependencies.createRuntimeAdapterRegistry ?? createReleasedRuntimeAdapterRegistry)();
   let clientInterface: ClientInterfaceHandle | null = null;
-  let livewareExposure: LivewareExposureHandle | null = null;
+  const livewareExposures: LivewareExposureHandle[] = [];
+  const bindingScopedGateways: BindingScopedClientGatewayHandle[] = [];
   let runtimeInteractions: RuntimeInteractionCoordinator | null = null;
   let stopToolWorkers: (() => Promise<void>) | null = null;
   try {
@@ -81,14 +92,6 @@ export async function startConnectService(
     if (activatedBindings.length === 0) {
       throw new Error(
         "no activated Agent Bindings are configured; activate at least one Binding before starting Connect",
-      );
-    }
-    const ownerUserIds = new Set(
-      activatedBindings.flatMap(({ activation }) => (activation ? [activation.ownerUserId] : [])),
-    );
-    if (ownerUserIds.size !== 1) {
-      throw new Error(
-        `activated Agent Bindings belong to multiple Connect Owners: ${[...ownerUserIds].join(", ")}; activate one Binding as the replacement owner`,
       );
     }
     const deviceId = await store.getOrCreateDeviceId();
@@ -152,49 +155,79 @@ export async function startConnectService(
         `WARNING: Connect Client is exposed on all IPv4 interfaces without authentication; use port ${config.clientPort} only on a trusted LAN.\n`,
       );
     }
-    const livewarePrincipal =
-      activatedBindings.find(({ agentId }) => agentId === config.defaultAgent)?.activation ??
-      activatedBindings[0]?.activation ??
-      null;
-    if (livewarePrincipal) {
-      const existingExposure = await store.getLivewareExposure();
-      if (config.livewareAccessPolicy !== "off" || existingExposure) {
+    const existingExposures = await store.listLivewareExposures();
+    if (config.livewareAccessPolicy !== "off" || existingExposures.length > 0) {
+      let livewareDependencies = dependencies.livewareDependencies;
+      if (!livewareDependencies) {
         try {
-          const livewareDependencies =
-            dependencies.livewareDependencies ??
-            createLivewareExposureDependencies({
-              livewarePath: await resolveLivewareExecutablePath(),
-              clawChatBaseUrl: config.baseUrl,
-            });
-          if (config.livewareAccessPolicy === "off") {
-            const retirementPrincipal =
-              activatedBindings.find(({ agentId }) => agentId === existingExposure?.localAgentId)?.activation ??
-              livewarePrincipal;
-            await retireLivewareExposure(
+          livewareDependencies = createLivewareExposureDependencies({
+            livewarePath: await resolveLivewareExecutablePath(),
+            clawChatBaseUrl: config.baseUrl,
+          });
+        } catch (error) {
+          writeError(
+            `Liveware Exposure unavailable; local Connect remains running: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+        }
+      }
+      if (!livewareDependencies) {
+        await (options.waitUntilShutdown ?? waitForShutdown)();
+        return { startedAgentIds: handles.map((handle) => handle.agentId) };
+      }
+      if (config.livewareAccessPolicy === "off") {
+        for (const existingExposure of existingExposures) {
+          const retirementPrincipal = activatedBindings.find(
+            ({ agentId }) => agentId === existingExposure.localAgentId,
+          )?.activation;
+          if (!retirementPrincipal) {
+            writeError(
+              `${existingExposure.localAgentId}: Liveware Exposure cannot be retired because its activation is missing.\n`,
+            );
+            continue;
+          }
+          try {
+            await (dependencies.retireLivewareExposure ?? retireLivewareExposure)(
               { activation: retirementPrincipal, deviceId, stateStore: store },
               livewareDependencies,
             );
-            writeOutput("Liveware Exposure is disabled and its previous App was retired.\n");
-          } else {
-            livewareExposure = await startLivewareExposure(
+            writeOutput(`${existingExposure.localAgentId}: Liveware Exposure was retired.\n`);
+          } catch (error) {
+            writeError(
+              `${existingExposure.localAgentId}: Liveware Exposure retirement failed; local Connect remains running: ${error instanceof Error ? error.message : String(error)}\n`,
+            );
+          }
+        }
+      } else {
+        for (const { agentId, activation } of activatedBindings) {
+          if (!activation) continue;
+          let gateway: BindingScopedClientGatewayHandle | null = null;
+          try {
+            gateway = await (dependencies.startBindingScopedClientGateway ?? startBindingScopedClientGateway)({
+              bindingId: agentId,
+              upstreamOrigin: clientInterface.origin,
+            });
+            const exposure = await (dependencies.startLivewareExposure ?? startLivewareExposure)(
               {
-                activation: livewarePrincipal,
+                activation,
                 deviceId,
-                upstream: `http://127.0.0.1:${config.clientPort}`,
+                upstream: gateway.origin,
                 accessPolicy: config.livewareAccessPolicy,
                 stateStore: store,
                 writeError,
               },
               livewareDependencies,
             );
+            bindingScopedGateways.push(gateway);
+            livewareExposures.push(exposure);
             writeOutput(
-              `Liveware Exposure is available at ${livewareExposure.record.publicUrl} (${livewareExposure.record.accessPolicy}).\n`,
+              `${agentId}: Liveware Exposure is available at ${exposure.record.publicUrl} (${exposure.record.accessPolicy}).\n`,
+            );
+          } catch (error) {
+            await gateway?.stop().catch(() => undefined);
+            writeError(
+              `${agentId}: Liveware Exposure unavailable; local Connect remains running: ${error instanceof Error ? error.message : String(error)}\n`,
             );
           }
-        } catch (error) {
-          writeError(
-            `Liveware Exposure unavailable; local Connect remains running: ${error instanceof Error ? error.message : String(error)}\n`,
-          );
         }
       }
     }
@@ -203,10 +236,11 @@ export async function startConnectService(
   } finally {
     await stopToolWorkers?.();
     const shutdownFailures: unknown[] = [];
-    try {
-      await livewareExposure?.close();
-    } catch (error) {
-      shutdownFailures.push(error);
+    for (const result of await Promise.allSettled(livewareExposures.map(async (exposure) => await exposure.close()))) {
+      if (result.status === "rejected") shutdownFailures.push(result.reason);
+    }
+    for (const result of await Promise.allSettled(bindingScopedGateways.map(async (gateway) => await gateway.stop()))) {
+      if (result.status === "rejected") shutdownFailures.push(result.reason);
     }
     try {
       await clientInterface?.stop();

@@ -1,0 +1,7 @@
+# Scope multiple ClawChat accounts by Agent Binding
+
+One Connect installation may operate multiple ClawChat accounts concurrently by assigning each account one Agent Binding. Same-kind Bindings own independent credentials, Runtime instances, Sessions, messages, transcripts, tool requests, protocol state, Runtime status, and Liveware Exposures; Projects remain installation-global so Bindings may deliberately work in the same local workspace. This supersedes ADR-0010 and the singleton-owner, singleton-App, and installation-wide capability clauses of ADR-0018.
+
+Each Liveware Exposure terminates at a dedicated Binding-Scoped Client Gateway that supplies a trusted, non-user-selectable Binding scope to every Client read, mutation, transcript, and event stream. Pointing all tunnels at the installation-wide Client port or accepting a user-selected Binding filter would allow one ClawChat account to enumerate another account's Sessions.
+
+Each ClawChat account may own at most one Agent Binding in an installation. Reactivation may refresh credentials only when the Binding Owner is unchanged. Reassigning an occupied Binding is rejected; explicit removal retires its Exposure and purges all Binding-scoped local data before the Binding ID can be reused. Existing single-account installations migrate their current activation, Sessions, and Liveware Exposure to the existing Binding without reactivation or history loss.

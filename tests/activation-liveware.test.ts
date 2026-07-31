@@ -14,21 +14,22 @@ import {
 import { createStateStore } from "../src/state";
 import type { ActivationCredentials } from "../src/types";
 
-describe("Connect Owner activation with Liveware Exposure", () => {
-  it("retires the previous owner's exposure and activations while preserving local work", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-owner-replacement-"));
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+describe("Binding Owner activation with Liveware Exposure", () => {
+  it("adds another Binding Owner without publishing an unscoped Liveware Exposure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-multi-owner-"));
+    const config = upsertAgentBinding(upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" }), "work", {
+      kind: "codex",
+    });
     config.stateDbPath = join(directory, "state.sqlite");
     config.livewareAccessPolicy = "private";
     const store = createStateStore({ dbPath: config.stateDbPath });
-    const previous = activation("codex", "token-old", "owner-old", "agent-user-old");
+    const previous = activation("personal", "token-old", "owner-old", "agent-user-old");
     await store.upsertActivation(previous);
-    await store.upsertActivation(activation("legacy", "token-legacy", "owner-old", "agent-user-legacy"));
     await store.insertProject({ projectId: "project-1", name: "Existing Project", rootPath: directory });
     await store.upsertRuntimeSession({
       chatId: "chat-existing",
       sessionId: "session-existing",
-      agentId: "codex",
+      agentId: "personal",
       runtimeSessionId: "thread-existing",
       projectId: "project-1",
       isCurrent: true,
@@ -58,7 +59,7 @@ describe("Connect Owner activation with Liveware Exposure", () => {
         : json({ code: 0, data: { nickname: "codex" } });
 
     const result = await activateConnect({
-      agentId: "codex",
+      agentId: "work",
       code: "NEWOWNER",
       config,
       store,
@@ -68,26 +69,26 @@ describe("Connect Owner activation with Liveware Exposure", () => {
 
     expect(result.ownerUserId).toBe("owner-new");
     await expect(store.listActivations()).resolves.toEqual([
-      expect.objectContaining({ localAgentId: "codex", ownerUserId: "owner-new", accessToken: "token-new" }),
+      expect.objectContaining({ localAgentId: "personal", ownerUserId: "owner-old", accessToken: "token-old" }),
+      expect.objectContaining({ localAgentId: "work", ownerUserId: "owner-new", accessToken: "token-new" }),
     ]);
     await expect(store.listProjects()).resolves.toEqual([
       expect.objectContaining({ projectId: "project-1", name: "Existing Project" }),
     ]);
-    await expect(store.getCurrentRuntimeSession("chat-existing", "codex")).resolves.toMatchObject({
+    await expect(store.getCurrentRuntimeSession("chat-existing", "personal")).resolves.toMatchObject({
       sessionId: "session-existing",
       runtimeSessionId: "thread-existing",
       projectId: "project-1",
     });
-    expect(controlPlane.appsFor("owner-old").has(oldExposure.appId)).toBe(false);
-    expect(clawChat.registrationsFor("owner-old").has(oldExposure.appId)).toBe(false);
-    const replacement = await store.getLivewareExposure();
-    expect(replacement).toMatchObject({ ownerUserId: "owner-new", localAgentId: "codex" });
-    expect(controlPlane.appsFor("owner-new").has(replacement?.appId ?? "")).toBe(true);
-    expect(clawChat.registrationsFor("owner-new").has(replacement?.appId ?? "")).toBe(true);
+    expect(controlPlane.appsFor("owner-old").has(oldExposure.appId)).toBe(true);
+    expect(clawChat.registrationsFor("owner-old").has(oldExposure.appId)).toBe(true);
+    await expect(store.listLivewareExposures()).resolves.toEqual([oldExposure]);
+    expect(controlPlane.appsFor("owner-new")).toHaveLength(0);
+    expect(clawChat.registrationsFor("owner-new")).toHaveLength(0);
     await store.close();
   });
 
-  it("keeps the new activation when optional Liveware synchronization is unavailable", async () => {
+  it("does not require Liveware Control Plane access during activation", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-liveware-activation-failure-"));
     const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
     config.stateDbPath = join(directory, "state.sqlite");
@@ -123,7 +124,7 @@ describe("Connect Owner activation with Liveware Exposure", () => {
           },
         },
       }),
-    ).rejects.toThrow("credentials were saved");
+    ).resolves.toMatchObject({ localAgentId: "codex", ownerUserId: "owner-new" });
     await expect(store.getActivation("codex")).resolves.toMatchObject({
       ownerUserId: "owner-new",
       accessToken: "token-new",

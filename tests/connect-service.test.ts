@@ -5,19 +5,24 @@ import { join } from "node:path";
 import type { BindingRuntimeHandle } from "../src/binding-runtime";
 import { defaultConfig, getAgentBinding } from "../src/config";
 import { startConnectService } from "../src/connect-service";
-import type { ClawChatLivewarePort, LivewareControlPlanePort, LivewareControlSession } from "../src/liveware-exposure";
+import type {
+  ClawChatLivewarePort,
+  LivewareControlPlanePort,
+  LivewareControlSession,
+  startLivewareExposure as startLivewareExposureDefault,
+} from "../src/liveware-exposure";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { createStateStore } from "../src/state";
 import type { ActivationCredentials, AgentBindingConfig, ConnectConfig } from "../src/types";
 
-function activation(agentId: string): ActivationCredentials {
+function activation(agentId: string, ownerUserId = "owner-1"): ActivationCredentials {
   return {
     localAgentId: agentId,
     accessToken: `token-${agentId}`,
     refreshToken: null,
     serverAgentId: `server-${agentId}`,
     userId: `user-${agentId}`,
-    ownerUserId: "owner-1",
+    ownerUserId,
     conversationId: `chat-${agentId}`,
   };
 }
@@ -37,11 +42,11 @@ describe("Connect Service", () => {
     ).rejects.toThrow("managed skills mismatch");
   });
 
-  it("starts every activated Agent Binding in one process and closes them together", async () => {
+  it("starts Agent Bindings for different Binding Owners in one process and closes them together", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     await stateStore.upsertActivation(activation("codex-work"));
-    await stateStore.upsertActivation(activation("codex-review"));
+    await stateStore.upsertActivation(activation("codex-review", "owner-2"));
     const config = serviceConfig(["codex-work", "codex-review", "not-activated"]);
     config.agents["codex-review"] = { kind: "codex" };
     config.stateDbPath = stateStore.dbPath;
@@ -204,6 +209,11 @@ describe("Connect Service", () => {
             },
           };
         },
+        startBindingScopedClientGateway: async ({ bindingId }) => ({
+          bindingId,
+          origin: "http://127.0.0.1:48001",
+          stop: async () => undefined,
+        }),
         livewareDependencies: { controlPlane, clawChat },
         verifyInstalledSkills: async () => undefined,
       },
@@ -211,6 +221,79 @@ describe("Connect Service", () => {
 
     expect(events.indexOf("client-start")).toBeLessThan(events.indexOf("liveware-agent-start"));
     expect(events.indexOf("liveware-agent-stop")).toBeLessThan(events.indexOf("client-stop"));
+  });
+
+  it("starts one Binding-Scoped Client Gateway and Liveware Exposure for each Binding Owner", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-multi-liveware-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await stateStore.upsertActivation(activation("personal", "owner-personal"));
+    await stateStore.upsertActivation(activation("work", "owner-work"));
+    const config = serviceConfig(["personal", "work"]);
+    config.agents.work = { kind: "codex" };
+    config.stateDbPath = stateStore.dbPath;
+    config.livewareAccessPolicy = "private";
+    const gatewayStops: string[] = [];
+    const exposureStops: string[] = [];
+    const startBindingScopedClientGateway = mock(async ({ bindingId }: { bindingId: string }) => ({
+      bindingId,
+      origin: bindingId === "personal" ? "http://127.0.0.1:48001" : "http://127.0.0.1:48002",
+      stop: async () => {
+        gatewayStops.push(bindingId);
+      },
+    }));
+    const startLivewareExposure = mock(async (input: Parameters<typeof startLivewareExposureDefault>[0]) => ({
+      record: {
+        ownerUserId: input.activation.ownerUserId,
+        localAgentId: input.activation.localAgentId,
+        appId: `app-${input.activation.localAgentId}`,
+        publicUrl: `https://${input.activation.localAgentId}.apps.example`,
+        accessPolicy: input.accessPolicy,
+      },
+      close: async () => {
+        exposureStops.push(input.activation.localAgentId);
+      },
+    }));
+
+    await startConnectService(
+      {
+        config,
+        stateStore,
+        waitUntilShutdown: async () => undefined,
+        writeOutput: () => undefined,
+        writeError: () => undefined,
+      },
+      {
+        startBindingRuntime: async ({ agentId }) => ({
+          agentId,
+          websocketUrl: config.websocketUrl,
+          deviceId: "device-1",
+          close: async () => undefined,
+        }),
+        startClientInterface: async () => ({
+          origin: "http://127.0.0.1:47823",
+          stop: async () => undefined,
+        }),
+        startBindingScopedClientGateway,
+        startLivewareExposure,
+        livewareDependencies: {
+          controlPlane: { connect: async () => Promise.reject(new Error("not used")) },
+          clawChat: {
+            list: async () => [],
+            register: async () => undefined,
+            unregister: async () => undefined,
+          },
+        },
+        verifyInstalledSkills: async () => undefined,
+      },
+    );
+
+    expect(startBindingScopedClientGateway.mock.calls.map(([input]) => input.bindingId)).toEqual(["personal", "work"]);
+    expect(startLivewareExposure.mock.calls.map(([input]) => [input.activation.localAgentId, input.upstream])).toEqual([
+      ["personal", "http://127.0.0.1:48001"],
+      ["work", "http://127.0.0.1:48002"],
+    ]);
+    expect(exposureStops).toEqual(["personal", "work"]);
+    expect(gatewayStops).toEqual(["personal", "work"]);
   });
 
   it("keeps local Connect running when the optional Liveware Exposure cannot start", async () => {
@@ -238,6 +321,11 @@ describe("Connect Service", () => {
         }),
         startClientInterface: async () => ({
           origin: "http://127.0.0.1:47823",
+          stop: async () => undefined,
+        }),
+        startBindingScopedClientGateway: async ({ bindingId }) => ({
+          bindingId,
+          origin: "http://127.0.0.1:48001",
           stop: async () => undefined,
         }),
         livewareDependencies: {

@@ -172,10 +172,10 @@ async function prepareWithControl(
   clawChat: ClawChatLivewarePort,
   control: LivewareControlSession,
 ): Promise<LivewareExposureRecord> {
-  const existing = await options.stateStore.getLivewareExposure();
+  const existing = await options.stateStore.getLivewareExposure(options.activation.localAgentId);
   if (existing && existing.ownerUserId !== options.activation.ownerUserId) {
     throw new Error(
-      `Liveware Exposure belongs to Connect Owner ${existing.ownerUserId}; retire it before preparing owner ${options.activation.ownerUserId}`,
+      `Liveware Exposure for Agent Binding ${options.activation.localAgentId} belongs to Binding Owner ${existing.ownerUserId}; retire it before preparing owner ${options.activation.ownerUserId}`,
     );
   }
 
@@ -255,17 +255,17 @@ export async function retireLivewareExposure(
   options: RetireLivewareExposureOptions,
   dependencies: LivewareExposureDependencies,
 ): Promise<void> {
-  const existing = await options.stateStore.getLivewareExposure();
+  const existing = await options.stateStore.getLivewareExposure(options.activation.localAgentId);
   if (!existing) return;
   if (existing.ownerUserId !== options.activation.ownerUserId) {
     throw new Error(
-      `Cannot retire Liveware Exposure for Connect Owner ${existing.ownerUserId} with credentials for ${options.activation.ownerUserId}`,
+      `Cannot retire Liveware Exposure for Binding Owner ${existing.ownerUserId} with credentials for ${options.activation.ownerUserId}`,
     );
   }
   await dependencies.clawChat.unregister(options.activation, options.deviceId, existing.appId);
   const control = await dependencies.controlPlane.connect(options.activation.accessToken);
   await control.deleteApp(existing.appId);
-  await options.stateStore.clearLivewareExposure();
+  await options.stateStore.clearLivewareExposure(options.activation.localAgentId);
 }
 
 function sameRegistration(left: ClawChatLivewareRegistration, right: ClawChatLivewareRegistration): boolean {

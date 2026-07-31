@@ -353,66 +353,83 @@ export class ConnectStateStore {
     });
   }
 
-  async replaceOwnerActivation(input: ActivationCredentials): Promise<void> {
-    const now = Date.now();
+  async purgeAgentBinding(localAgentId: string): Promise<void> {
+    const bindingId = requireStateString(localAgentId, "Agent Binding ID");
     const db = await this.requireDb();
     db.transaction((run) => {
-      run("DELETE FROM activations WHERE platform = ? AND owner_user_id <> ?", PLATFORM_ID, input.ownerUserId);
       run(
-        `INSERT INTO activations(
-           platform, local_agent_id, access_token, refresh_token, server_agent_id,
-           user_id, owner_user_id, conversation_id, activated_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(platform, local_agent_id) DO UPDATE SET
-           access_token = excluded.access_token,
-           refresh_token = excluded.refresh_token,
-           server_agent_id = excluded.server_agent_id,
-           user_id = excluded.user_id,
-           owner_user_id = excluded.owner_user_id,
-           conversation_id = excluded.conversation_id,
-           updated_at = excluded.updated_at`,
-        PLATFORM_ID,
-        input.localAgentId,
-        input.accessToken,
-        input.refreshToken,
-        input.serverAgentId,
-        input.userId,
-        input.ownerUserId,
-        input.conversationId,
-        now,
-        now,
+        `DELETE FROM turn_submission_cancellations
+          WHERE session_ref IN (SELECT session_ref FROM session_refs WHERE agent_id = ?)`,
+        bindingId,
       );
+      run(
+        `DELETE FROM transcript_blocks
+          WHERE session_ref IN (SELECT session_ref FROM session_refs WHERE agent_id = ?)`,
+        bindingId,
+      );
+      run(
+        `DELETE FROM session_lifecycle_operations
+          WHERE binding_id = ?
+             OR session_ref IN (SELECT session_ref FROM session_refs WHERE agent_id = ?)`,
+        bindingId,
+        bindingId,
+      );
+      run(
+        `DELETE FROM client_commands
+          WHERE entity_ref = ?
+             OR entity_ref IN (SELECT session_ref FROM session_refs WHERE agent_id = ?)`,
+        bindingId,
+        bindingId,
+      );
+      run("DELETE FROM tool_requests WHERE binding_id = ?", bindingId);
+      run("DELETE FROM runtime_workspace_mappings WHERE binding_id = ?", bindingId);
+      run("DELETE FROM runtime_sessions WHERE agent_id = ?", bindingId);
+      run("DELETE FROM session_intents WHERE agent_id = ?", bindingId);
+      run("DELETE FROM session_refs WHERE agent_id = ?", bindingId);
+      run("DELETE FROM clawchat_messages WHERE local_agent_id = ?", bindingId);
+      run("DELETE FROM protocol_delivery_state WHERE local_agent_id = ?", bindingId);
+      run("DELETE FROM protocol_inbox WHERE local_agent_id = ?", bindingId);
+      run("DELETE FROM protocol_delivery_quarantine WHERE local_agent_id = ?", bindingId);
+      run("DELETE FROM protocol_event_dedup WHERE local_agent_id = ?", bindingId);
+      run("DELETE FROM runtime_statuses WHERE agent_id = ?", bindingId);
+      run("DELETE FROM liveware_exposures WHERE local_agent_id = ?", bindingId);
+      run("DELETE FROM activations WHERE platform = ? AND local_agent_id = ?", PLATFORM_ID, bindingId);
+      run("DELETE FROM client_events");
     });
   }
 
-  async getLivewareExposure(): Promise<LivewareExposureRecord | null> {
+  async getLivewareExposure(localAgentId?: string): Promise<LivewareExposureRecord | null> {
     const db = await this.requireDb();
     const row = await db.get<Record<string, unknown>>(
       `SELECT owner_user_id, local_agent_id, app_id, public_url, access_policy
-         FROM liveware_exposure
-        WHERE id = 1`,
+         FROM liveware_exposures
+        ${localAgentId ? "WHERE local_agent_id = ?" : "ORDER BY local_agent_id LIMIT 1"}`,
+      ...(localAgentId ? [localAgentId] : []),
     );
-    if (!row) return null;
-    const accessPolicy = stringValue(row.access_policy);
-    if (accessPolicy !== "private" && accessPolicy !== "public") return null;
-    return {
-      ownerUserId: stringValue(row.owner_user_id),
-      localAgentId: stringValue(row.local_agent_id),
-      appId: stringValue(row.app_id),
-      publicUrl: stringValue(row.public_url),
-      accessPolicy,
-    };
+    return row ? livewareExposureFromRow(row) : null;
+  }
+
+  async listLivewareExposures(): Promise<LivewareExposureRecord[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<Array<Record<string, unknown>>>(
+      `SELECT owner_user_id, local_agent_id, app_id, public_url, access_policy
+         FROM liveware_exposures
+        ORDER BY local_agent_id`,
+    );
+    return rows.flatMap((row) => {
+      const exposure = livewareExposureFromRow(row);
+      return exposure ? [exposure] : [];
+    });
   }
 
   async setLivewareExposure(record: LivewareExposureRecord): Promise<void> {
     const db = await this.requireDb();
     await db.run(
-      `INSERT INTO liveware_exposure(
-         id, owner_user_id, local_agent_id, app_id, public_url, access_policy, updated_at
-       ) VALUES (1, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
+      `INSERT INTO liveware_exposures(
+         owner_user_id, local_agent_id, app_id, public_url, access_policy, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(local_agent_id) DO UPDATE SET
          owner_user_id = excluded.owner_user_id,
-         local_agent_id = excluded.local_agent_id,
          app_id = excluded.app_id,
          public_url = excluded.public_url,
          access_policy = excluded.access_policy,
@@ -426,9 +443,13 @@ export class ConnectStateStore {
     );
   }
 
-  async clearLivewareExposure(): Promise<void> {
+  async clearLivewareExposure(localAgentId?: string): Promise<void> {
     const db = await this.requireDb();
-    await db.run("DELETE FROM liveware_exposure WHERE id = 1");
+    if (localAgentId) {
+      await db.run("DELETE FROM liveware_exposures WHERE local_agent_id = ?", localAgentId);
+    } else {
+      await db.run("DELETE FROM liveware_exposures");
+    }
   }
 
   async getDeviceId(): Promise<string | null> {
@@ -2164,11 +2185,10 @@ export class ConnectStateStore {
         device_id TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS liveware_exposure(
-        id INTEGER PRIMARY KEY CHECK(id = 1),
+      CREATE TABLE IF NOT EXISTS liveware_exposures(
+        local_agent_id TEXT PRIMARY KEY,
         owner_user_id TEXT NOT NULL,
-        local_agent_id TEXT NOT NULL,
-        app_id TEXT NOT NULL,
+        app_id TEXT NOT NULL UNIQUE,
         public_url TEXT NOT NULL,
         access_policy TEXT NOT NULL CHECK(access_policy IN ('private', 'public')),
         updated_at INTEGER NOT NULL
@@ -2390,6 +2410,19 @@ export class ConnectStateStore {
 
   private async migrateSchema(): Promise<void> {
     const db = await this.requireDb();
+    const legacyLivewareTable = await db.get<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'liveware_exposure'",
+    );
+    if (legacyLivewareTable) {
+      await db.exec(
+        `INSERT OR IGNORE INTO liveware_exposures(
+           owner_user_id, local_agent_id, app_id, public_url, access_policy, updated_at
+         )
+         SELECT owner_user_id, local_agent_id, app_id, public_url, access_policy, updated_at
+           FROM liveware_exposure`,
+      );
+      await db.exec("DROP TABLE liveware_exposure");
+    }
     const columns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_sessions)");
     if (!columns.some((column) => column.name === "project_id"))
       await db.exec("ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT REFERENCES projects(project_id)");
@@ -2561,6 +2594,17 @@ function requireStateString(value: string, field: string): string {
 function nullableString(value: unknown): string | null {
   const text = stringValue(value).trim();
   return text ? text : null;
+}
+function livewareExposureFromRow(row: Record<string, unknown>): LivewareExposureRecord | null {
+  const accessPolicy = stringValue(row.access_policy);
+  if (accessPolicy !== "private" && accessPolicy !== "public") return null;
+  return {
+    ownerUserId: stringValue(row.owner_user_id),
+    localAgentId: stringValue(row.local_agent_id),
+    appId: stringValue(row.app_id),
+    publicUrl: stringValue(row.public_url),
+    accessPolicy,
+  };
 }
 function sameTranscriptPayload(stored: TranscriptBlock, input: TranscriptBlockInput): boolean {
   const storedPayload = { ...stored } as Record<string, unknown>;

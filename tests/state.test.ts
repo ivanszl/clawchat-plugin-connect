@@ -487,6 +487,45 @@ describe("state store", () => {
     await store.close();
   });
 
+  it("migrates the singleton Liveware Exposure without reactivation", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const legacy = new Database(dbPath, { create: true });
+    legacy.exec(`
+      CREATE TABLE liveware_exposure(
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        owner_user_id TEXT NOT NULL,
+        local_agent_id TEXT NOT NULL,
+        app_id TEXT NOT NULL,
+        public_url TEXT NOT NULL,
+        access_policy TEXT NOT NULL CHECK(access_policy IN ('private', 'public')),
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO liveware_exposure VALUES (
+        1,
+        'owner-existing',
+        'codex',
+        'app-existing',
+        'https://app-existing.apps.example',
+        'private',
+        1
+      );
+    `);
+    legacy.close();
+
+    const store = createStateStore({ dbPath });
+    await expect(store.listLivewareExposures()).resolves.toEqual([
+      {
+        ownerUserId: "owner-existing",
+        localAgentId: "codex",
+        appId: "app-existing",
+        publicUrl: "https://app-existing.apps.example",
+        accessPolicy: "private",
+      },
+    ]);
+    await store.close();
+  });
+
   it("upgrades the pre-Project runtime Session schema without replacing local state", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");

@@ -93,6 +93,31 @@ describe("runConnectCli", () => {
     });
   });
 
+  it("requires explicit confirmation before removing an Agent Binding and its local data", async () => {
+    const path = await tempConfig();
+    const output = io();
+    const removeAgentBinding = mock(async () => ({ agentId: "work", configPath: path }));
+
+    await expect(
+      runConnectCli(["agent", "remove", "work", "--config", path], {
+        ...output.deps,
+        removeAgentBinding,
+      }),
+    ).resolves.toBe(1);
+    expect(output.stderr.join("")).toContain("--yes");
+    expect(removeAgentBinding).not.toHaveBeenCalled();
+
+    output.stderr.length = 0;
+    await expect(
+      runConnectCli(["agent", "remove", "work", "--yes", "--config", path], {
+        ...output.deps,
+        removeAgentBinding,
+      }),
+    ).resolves.toBe(0);
+    expect(removeAgentBinding).toHaveBeenCalledWith({ agentId: "work", configPath: path });
+    expect(output.stdout.join("")).toContain("Removed Agent Binding work");
+  });
+
   it("rejects agent bindings without an explicit supported runtime kind", async () => {
     const path = await tempConfig();
     const output = io();

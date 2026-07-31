@@ -82,16 +82,6 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
     const id = agentId.trim();
     if (id) agents[id] = normalizeAgentBinding(id, value);
   }
-  const ownersByKind = new Map<string, string>();
-  for (const [agentId, binding] of Object.entries(agents)) {
-    const existing = ownersByKind.get(binding.kind);
-    if (existing) {
-      throw new Error(
-        `Runtime kind ${binding.kind} may be configured only once (Agent Bindings: ${existing}, ${agentId})`,
-      );
-    }
-    ownersByKind.set(binding.kind, agentId);
-  }
   const firstAgent = Object.keys(agents)[0] ?? null;
   const requestedDefault = readString(record.defaultAgent) || null;
   const defaultAgent = requestedDefault && agents[requestedDefault] ? requestedDefault : firstAgent;

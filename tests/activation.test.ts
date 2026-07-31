@@ -99,6 +99,117 @@ describe("activateConnect", () => {
     );
     await store.close();
   });
+  it("keeps another Agent Binding active when a different Binding Owner activates", async () => {
+    const dir = await tempDir();
+    const config = upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" });
+    config.agents.work = {
+      ...config.agents.personal,
+      env: { ...config.agents.personal?.env, CLAWCHAT_CONNECT_AGENT_ID: "work" },
+    };
+    config.livewareAccessPolicy = "off";
+    config.stateDbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    await store.upsertActivation({
+      localAgentId: "personal",
+      accessToken: "personal-token",
+      refreshToken: null,
+      serverAgentId: "personal-agent",
+      userId: "personal-user",
+      ownerUserId: "personal-owner",
+      conversationId: "personal-conversation",
+    });
+    const fetchImpl = mock(async (input: string | URL | Request) =>
+      String(input).endsWith("/v1/agents/connect")
+        ? response({
+            code: 0,
+            data: {
+              access_token: "work-token",
+              agent: { id: "work-agent", user_id: "work-user", owner_id: "work-owner" },
+              conversation: { id: "work-conversation" },
+            },
+          })
+        : response({ code: 0, data: { nickname: "work" } }),
+    ) as unknown as typeof fetch;
+
+    await activateConnect({ agentId: "work", code: "WORKCODE", config, store, fetchImpl });
+
+    await expect(store.listActivations()).resolves.toEqual([
+      expect.objectContaining({ localAgentId: "personal", ownerUserId: "personal-owner" }),
+      expect.objectContaining({ localAgentId: "work", ownerUserId: "work-owner" }),
+    ]);
+    await store.close();
+  });
+  it("rejects assigning an occupied Agent Binding to a different Binding Owner", async () => {
+    const dir = await tempDir();
+    const config = upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" });
+    config.livewareAccessPolicy = "off";
+    config.stateDbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    await store.upsertActivation({
+      localAgentId: "personal",
+      accessToken: "original-token",
+      refreshToken: null,
+      serverAgentId: "original-agent",
+      userId: "original-user",
+      ownerUserId: "original-owner",
+      conversationId: "original-conversation",
+    });
+    const fetchImpl = mock(async () =>
+      response({
+        code: 0,
+        data: {
+          access_token: "intruder-token",
+          agent: { id: "intruder-agent", user_id: "original-user", owner_id: "different-owner" },
+        },
+      }),
+    ) as unknown as typeof fetch;
+
+    await expect(
+      activateConnect({ agentId: "personal", code: "DIFFERENTOWNER", config, store, fetchImpl }),
+    ).rejects.toThrow("belongs to ClawChat account original-owner");
+    await expect(store.getActivation("personal")).resolves.toMatchObject({
+      accessToken: "original-token",
+      ownerUserId: "original-owner",
+    });
+    await store.close();
+  });
+  it("rejects assigning one Binding Owner to a second Agent Binding", async () => {
+    const dir = await tempDir();
+    const config = upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" });
+    config.agents.work = {
+      ...config.agents.personal,
+      env: { ...config.agents.personal?.env, CLAWCHAT_CONNECT_AGENT_ID: "work" },
+    };
+    config.livewareAccessPolicy = "off";
+    config.stateDbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    await store.upsertActivation({
+      localAgentId: "personal",
+      accessToken: "personal-token",
+      refreshToken: null,
+      serverAgentId: "personal-agent",
+      userId: "personal-user",
+      ownerUserId: "shared-owner",
+      conversationId: "personal-conversation",
+    });
+    const fetchImpl = mock(async (input: string | URL | Request) =>
+      String(input).endsWith("/v1/agents/connect")
+        ? response({
+            code: 0,
+            data: {
+              access_token: "work-token",
+              agent: { id: "work-agent", user_id: "work-user", owner_id: "shared-owner" },
+            },
+          })
+        : response({ code: 0, data: { nickname: "work" } }),
+    ) as unknown as typeof fetch;
+
+    await expect(activateConnect({ agentId: "work", code: "SAMEOWNER", config, store, fetchImpl })).rejects.toThrow(
+      "already owns Agent Binding personal",
+    );
+    await expect(store.getActivation("work")).resolves.toBeNull();
+    await store.close();
+  });
   it("keeps activation credentials and reports an actionable error when Profile synchronization fails", async () => {
     const dir = await tempDir();
     const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
