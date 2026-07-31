@@ -32,8 +32,6 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
   const ownsStore = !options.store;
   try {
     const deviceId = await store.getOrCreateDeviceId();
-    const previousActivations = await store.listActivations();
-    const previousExposure = await store.getLivewareExposure();
     const existingUserId = await store.getActivationUserId(agentId);
     const client = createClawChatApiClient({
       baseUrl: config.baseUrl,
@@ -41,7 +39,6 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
       fetchImpl: options.fetchImpl,
     });
     const result = normalizeActivationResult(agentId, await client.agentsConnect({ code, existingUserId }));
-    const ownerChanged = previousActivations.some((activation) => activation.ownerUserId !== result.ownerUserId);
     let livewareDependencies = options.livewareDependencies;
     const getLivewareDependencies = async (): Promise<LivewareExposureDependencies> => {
       livewareDependencies ??= createLivewareExposureDependencies({
@@ -51,23 +48,7 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
       });
       return livewareDependencies;
     };
-    if (ownerChanged && previousExposure) {
-      const previousPrincipal = previousActivations.find(
-        (activation) =>
-          activation.localAgentId === previousExposure.localAgentId &&
-          activation.ownerUserId === previousExposure.ownerUserId,
-      );
-      if (!previousPrincipal) {
-        throw new Error(
-          `Connect Owner replacement cannot retire Liveware Exposure ${previousExposure.appId}: its activation is missing`,
-        );
-      }
-      await retireLivewareExposure(
-        { activation: previousPrincipal, deviceId, stateStore: store },
-        await getLivewareDependencies(),
-      );
-    }
-    await store.replaceOwnerActivation(result);
+    await store.upsertActivation(result);
     const authenticatedClient = createClawChatApiClient({
       baseUrl: config.baseUrl,
       deviceId,

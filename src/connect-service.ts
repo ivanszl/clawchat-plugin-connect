@@ -83,14 +83,6 @@ export async function startConnectService(
         "no activated Agent Bindings are configured; activate at least one Binding before starting Connect",
       );
     }
-    const ownerUserIds = new Set(
-      activatedBindings.flatMap(({ activation }) => (activation ? [activation.ownerUserId] : [])),
-    );
-    if (ownerUserIds.size !== 1) {
-      throw new Error(
-        `activated Agent Bindings belong to multiple Connect Owners: ${[...ownerUserIds].join(", ")}; activate one Binding as the replacement owner`,
-      );
-    }
     const deviceId = await store.getOrCreateDeviceId();
     await store.expirePendingRuntimeInteractions();
     const projects = new ProjectCatalog(store);
