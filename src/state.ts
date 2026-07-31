@@ -163,6 +163,7 @@ export interface UpsertRuntimeSessionInput {
   mode?: string | null;
   model?: string | null;
   reasoningEffort?: string | null;
+  sessionOptions?: Record<string, string>;
   hasMessages?: boolean;
   isCurrent?: boolean;
 }
@@ -176,6 +177,7 @@ export interface AdoptRuntimeThreadRefInput {
   mode?: string | null;
   model?: string | null;
   reasoningEffort?: string | null;
+  sessionOptions?: Record<string, string>;
 }
 export interface SetSessionIntentInput {
   chatId: string;
@@ -185,6 +187,7 @@ export interface SetSessionIntentInput {
   mode?: string | null;
   model?: string | null;
   reasoningEffort?: string | null;
+  sessionOptions?: Record<string, string>;
 }
 
 export interface ResolveOrMaterializeRuntimeSessionInput {
@@ -711,7 +714,7 @@ export class ConnectStateStore {
       await db.run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
     }
     await db.run(
-      `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id, session_id) DO UPDATE SET agent_id = excluded.agent_id, runtime_session_id = excluded.runtime_session_id, project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, has_messages = CASE WHEN runtime_sessions.has_messages = 1 OR excluded.has_messages = 1 THEN 1 ELSE 0 END, is_current = excluded.is_current, updated_at = excluded.updated_at`,
+      `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, session_options_json, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id, session_id) DO UPDATE SET agent_id = excluded.agent_id, runtime_session_id = excluded.runtime_session_id, project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, session_options_json = excluded.session_options_json, has_messages = CASE WHEN runtime_sessions.has_messages = 1 OR excluded.has_messages = 1 THEN 1 ELSE 0 END, is_current = excluded.is_current, updated_at = excluded.updated_at`,
       input.chatId,
       input.sessionId,
       input.agentId,
@@ -721,6 +724,7 @@ export class ConnectStateStore {
       input.mode ?? null,
       input.model ?? null,
       input.reasoningEffort ?? null,
+      JSON.stringify(input.sessionOptions ?? {}),
       input.hasMessages === false ? 0 : 1,
       input.isCurrent === false ? 0 : 1,
       now,
@@ -769,8 +773,8 @@ export class ConnectStateStore {
       run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
       run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
       run(
-        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, has_messages, is_current, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, session_options_json, has_messages, is_current, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
         input.chatId,
         input.sessionId,
         input.agentId,
@@ -780,6 +784,7 @@ export class ConnectStateStore {
         input.mode ?? null,
         input.model ?? null,
         input.reasoningEffort ?? null,
+        JSON.stringify(input.sessionOptions ?? {}),
         now,
         now,
       );
@@ -817,13 +822,31 @@ export class ConnectStateStore {
     return result.changes > 0;
   }
 
+  async setRuntimeSessionOptions(
+    chatId: string,
+    agentId: string,
+    sessionId: string,
+    sessionOptions: Record<string, string>,
+  ): Promise<boolean> {
+    const db = await this.requireDb();
+    const result = await db.run(
+      "UPDATE runtime_sessions SET session_options_json = ?, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
+      JSON.stringify(sessionOptions),
+      Date.now(),
+      chatId,
+      agentId,
+      sessionId,
+    );
+    return result.changes > 0;
+  }
+
   async setSessionIntent(input: SetSessionIntentInput): Promise<void> {
     const now = Date.now();
     const db = await this.requireDb();
     db.transaction((run) => {
       run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
       run(
-        `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, model, reasoning_effort, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, updated_at = excluded.updated_at`,
+        `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, model, reasoning_effort, session_options_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, session_options_json = excluded.session_options_json, updated_at = excluded.updated_at`,
         input.chatId,
         input.agentId,
         input.projectId,
@@ -831,6 +854,7 @@ export class ConnectStateStore {
         input.mode ?? null,
         input.model ?? null,
         input.reasoningEffort ?? null,
+        JSON.stringify(input.sessionOptions ?? {}),
         now,
         now,
       );
@@ -878,7 +902,7 @@ export class ConnectStateStore {
         input.agentId,
       );
       run(
-        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, session_options_json, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
         input.chatId,
         input.sessionId,
         input.agentId,
@@ -887,6 +911,7 @@ export class ConnectStateStore {
         nullableString(intent?.mode),
         nullableString(intent?.model),
         nullableString(intent?.reasoning_effort),
+        JSON.stringify(stringRecordFromJson(intent?.session_options_json)),
         now,
         now,
       );
@@ -2191,6 +2216,7 @@ export class ConnectStateStore {
         mode TEXT,
         model TEXT,
         reasoning_effort TEXT,
+        session_options_json TEXT NOT NULL DEFAULT '{}',
         has_messages INTEGER NOT NULL DEFAULT 0,
         is_current INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
@@ -2205,6 +2231,7 @@ export class ConnectStateStore {
         mode TEXT,
         model TEXT,
         reasoning_effort TEXT,
+        session_options_json TEXT NOT NULL DEFAULT '{}',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY(chat_id, agent_id)
@@ -2399,6 +2426,8 @@ export class ConnectStateStore {
       await db.exec("ALTER TABLE runtime_sessions ADD COLUMN model TEXT");
     if (!columns.some((column) => column.name === "reasoning_effort"))
       await db.exec("ALTER TABLE runtime_sessions ADD COLUMN reasoning_effort TEXT");
+    if (!columns.some((column) => column.name === "session_options_json"))
+      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
     await db.exec(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_sessions_identity ON runtime_sessions(chat_id, agent_id, session_id)",
     );
@@ -2407,6 +2436,8 @@ export class ConnectStateStore {
       await db.exec("ALTER TABLE session_intents ADD COLUMN model TEXT");
     if (!intentColumns.some((column) => column.name === "reasoning_effort"))
       await db.exec("ALTER TABLE session_intents ADD COLUMN reasoning_effort TEXT");
+    if (!intentColumns.some((column) => column.name === "session_options_json"))
+      await db.exec("ALTER TABLE session_intents ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
     const messageColumns = await db.all<{ name: string }[]>("PRAGMA table_info(clawchat_messages)");
     if (!messageColumns.some((column) => column.name === "rejected_at"))
       await db.exec("ALTER TABLE clawchat_messages ADD COLUMN rejected_at INTEGER");
@@ -2436,7 +2467,7 @@ export class ConnectStateStore {
     );
     const now = Date.now();
     await db.run(
-      `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, model, reasoning_effort, created_at, updated_at) SELECT chat_id, agent_id, project_id, name, mode, model, reasoning_effort, ?, ? FROM runtime_sessions WHERE is_current = 1 AND has_messages = 0 ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, updated_at = excluded.updated_at`,
+      `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, model, reasoning_effort, session_options_json, created_at, updated_at) SELECT chat_id, agent_id, project_id, name, mode, model, reasoning_effort, session_options_json, ?, ? FROM runtime_sessions WHERE is_current = 1 AND has_messages = 0 ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, session_options_json = excluded.session_options_json, updated_at = excluded.updated_at`,
       now,
       now,
     );
@@ -2615,6 +2646,17 @@ function stringArrayFromJson(value: unknown): string[] {
     return [];
   }
 }
+function stringRecordFromJson(value: unknown): Record<string, string> {
+  try {
+    const parsed = JSON.parse(stringValue(value)) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    );
+  } catch {
+    return {};
+  }
+}
 function runtimeSessionFromRow(row: Record<string, unknown>): RuntimeSessionRecord {
   return {
     chatId: stringValue(row.chat_id),
@@ -2627,6 +2669,7 @@ function runtimeSessionFromRow(row: Record<string, unknown>): RuntimeSessionReco
     mode: nullableString(row.mode),
     model: nullableString(row.model),
     reasoningEffort: nullableString(row.reasoning_effort),
+    sessionOptions: stringRecordFromJson(row.session_options_json),
     hasMessages: Boolean(row.has_messages),
     isCurrent: Boolean(row.is_current),
     updatedAt: numberValue(row.updated_at),
@@ -2655,6 +2698,7 @@ function sessionIntentFromRow(row: Record<string, unknown>): SessionIntentRecord
     mode: nullableString(row.mode),
     model: nullableString(row.model),
     reasoningEffort: nullableString(row.reasoning_effort),
+    sessionOptions: stringRecordFromJson(row.session_options_json),
     updatedAt: numberValue(row.updated_at),
   };
 }

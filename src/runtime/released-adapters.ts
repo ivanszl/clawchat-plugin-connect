@@ -8,6 +8,7 @@ import type {
   CodexWebSearchMode,
 } from "../types";
 import { createCodexRuntimeAdapter } from "./codex-adapter";
+import { createOpenCodeRuntimeAdapter } from "./opencode-adapter";
 import { RuntimeAdapterRegistry } from "./registry";
 import type { ConnectRuntimeAdapter } from "./types";
 
@@ -35,6 +36,11 @@ const RELEASED_RUNTIME_ADAPTERS: readonly ReleasedRuntimeAdapterDefinition[] = [
     normalize: normalizeCodexAgentBinding,
     create: createCodexRuntimeAdapter,
   },
+  {
+    metadata: { kind: "opencode", displayName: "OpenCode" },
+    normalize: normalizeOpenCodeAgentBinding,
+    create: createOpenCodeRuntimeAdapter,
+  },
 ];
 
 export function releasedRuntimeAdapters(): readonly ReleasedRuntimeAdapterMetadata[] {
@@ -48,7 +54,7 @@ export function createReleasedAgentBinding(
   const normalizedKind = kind?.trim().toLowerCase() ?? "";
   return normalizeReleasedAgentBinding("CLI", {
     kind: normalizedKind,
-    ...(options.executablePath?.trim() ? { codexPathOverride: options.executablePath.trim() } : {}),
+    ...(options.executablePath?.trim() ? { executablePathOverride: options.executablePath.trim() } : {}),
   });
 }
 
@@ -88,6 +94,9 @@ function normalizeCodexAgentBinding(record: Record<string, unknown>): CodexAgent
   const networkAccessEnabled = readOptionalBoolean(record.networkAccessEnabled, "networkAccessEnabled");
   return {
     kind: "codex",
+    ...(readString(record.executablePathOverride)
+      ? { executablePathOverride: readString(record.executablePathOverride) }
+      : {}),
     ...(readString(record.codexPathOverride) ? { codexPathOverride: readString(record.codexPathOverride) } : {}),
     ...(env ? { env } : {}),
     ...(readString(record.displayName) ? { displayName: readString(record.displayName) } : {}),
@@ -98,6 +107,35 @@ function normalizeCodexAgentBinding(record: Record<string, unknown>): CodexAgent
     ...(webSearchMode ? { webSearchMode } : {}),
     ...(networkAccessEnabled !== undefined ? { networkAccessEnabled } : {}),
     ...(additionalDirectories ? { additionalDirectories } : {}),
+  };
+}
+
+const OPENCODE_MANAGED_ENV = new Set([
+  "OPENCODE_SERVER_PASSWORD",
+  "OPENCODE_SERVER_USERNAME",
+  "OPENCODE_SERVER_HOSTNAME",
+  "OPENCODE_SERVER_PORT",
+  "OPENCODE_SERVER_CORS",
+  "OPENCODE_SERVER_MDNS",
+]);
+
+function normalizeOpenCodeAgentBinding(record: Record<string, unknown>): AgentBindingConfig {
+  const env = readEnv(record.env);
+  for (const name of Object.keys(env ?? {})) {
+    if (OPENCODE_MANAGED_ENV.has(name)) throw new Error(`${name} is managed by Connect`);
+  }
+  const sessionOptions = readStringRecord(record.sessionOptions, "sessionOptions");
+  return {
+    kind: "opencode",
+    ...(readString(record.executablePathOverride)
+      ? { executablePathOverride: readString(record.executablePathOverride) }
+      : {}),
+    ...(env ? { env } : {}),
+    ...(readString(record.displayName) ? { displayName: readString(record.displayName) } : {}),
+    ...(readAbsolutePathArray(record.additionalDirectories, "additionalDirectories")
+      ? { additionalDirectories: readAbsolutePathArray(record.additionalDirectories, "additionalDirectories") }
+      : {}),
+    ...(sessionOptions ? { sessionOptions } : {}),
   };
 }
 
@@ -114,6 +152,19 @@ function readEnv(value: unknown): Record<string, string> | undefined {
     env[name] = typeof raw === "string" ? raw : String(raw ?? "");
   }
   return Object.keys(env).length > 0 ? env : undefined;
+}
+
+function readStringRecord(value: unknown, label: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  const result: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    const text = readString(rawValue);
+    if (!key || !text) throw new Error(`${label} keys and values must be non-empty strings`);
+    result[key] = text;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function readAbsolutePathArray(value: unknown, label: string): string[] | undefined {

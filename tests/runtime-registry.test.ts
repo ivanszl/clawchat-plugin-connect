@@ -94,11 +94,19 @@ describe("RuntimeAdapterRegistry", () => {
   });
 
   it("constructs released adapters and operator metadata from one catalog", () => {
-    expect(releasedRuntimeAdapters()).toEqual([{ kind: "codex", displayName: "Codex" }]);
+    expect(releasedRuntimeAdapters()).toEqual([
+      { kind: "codex", displayName: "Codex" },
+      { kind: "opencode", displayName: "OpenCode" },
+    ]);
     expect(createReleasedRuntimeAdapterRegistry().modesFor({ kind: "codex" })).toEqual([
       "read-only",
       "workspace-write",
       "danger-full-access",
     ]);
+    expect(createReleasedRuntimeAdapterRegistry().lifecycleCapabilities({ kind: "opencode" })).toEqual({
+      archive: false,
+      restore: false,
+      delete: true,
+    });
   });
 });

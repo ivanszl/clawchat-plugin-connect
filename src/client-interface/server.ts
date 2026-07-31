@@ -20,6 +20,7 @@ import { ProjectCatalog } from "../projects";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
+import type { RuntimeSessionOption } from "../runtime/types";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import { createSessionContinuity, SessionLifecycleError } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
@@ -240,6 +241,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-model", "model must be a string or null");
             if (body.reasoningEffort !== null && typeof body.reasoningEffort !== "string")
               return errorResponse(400, "invalid-reasoning-effort", "reasoningEffort must be a string or null");
+            if (!isStringRecord(body.sessionOptions))
+              return errorResponse(400, "invalid-session-options", "sessionOptions must contain only string values");
             return await idempotentCommand(
               options.stateStore,
               body.requestId,
@@ -270,6 +273,27 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 } catch (error) {
                   return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
                 }
+                let sessionOptions: Record<string, string>;
+                try {
+                  const workspace = workspaceProject
+                    ? await projects.resolveProjectWorkspace(workspaceProject.projectId)
+                    : {
+                        projectId: null,
+                        workingDirectory: projects.workspaceRoot,
+                        additionalDirectories: [],
+                        skipGitRepoCheck: true,
+                      };
+                  sessionOptions = validateSessionOptions(
+                    body.sessionOptions ?? {},
+                    await options.runtimeAdapters.listSessionOptions(binding, workspace),
+                  );
+                } catch (error) {
+                  return commandError(
+                    400,
+                    "invalid-session-options",
+                    error instanceof Error ? error.message : String(error),
+                  );
+                }
                 const chatId = `__connect_client_session__:${randomUUID()}`;
                 const session = await sessionContinuity.inConversation({ chatId, bindingId: body.bindingId }).create({
                   projectId: workspaceProject?.projectId ?? null,
@@ -277,6 +301,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   mode: body.mode,
                   model,
                   reasoningEffort,
+                  sessionOptions,
                 });
                 catalog.invalidate();
                 let view: SessionView | null;
@@ -618,6 +643,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-model", "model must be a string or null");
             if (body.reasoningEffort !== null && typeof body.reasoningEffort !== "string")
               return errorResponse(400, "invalid-reasoning-effort", "reasoningEffort must be a string or null");
+            if (!isStringRecord(body.sessionOptions))
+              return errorResponse(400, "invalid-session-options", "sessionOptions must contain only string values");
             return await idempotentCommand(
               options.stateStore,
               body.requestId,
@@ -642,7 +669,25 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 } catch (error) {
                   return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
                 }
-                await sessionContinuity.forSession(session.sessionRef).changeModel(model, reasoningEffort);
+                let sessionOptions: Record<string, string> | undefined;
+                if (body.sessionOptions !== undefined) {
+                  try {
+                    const definitions = await options.runtimeAdapters.listSessionOptions(
+                      binding,
+                      await projects.resolveWorkspace(session),
+                    );
+                    sessionOptions = validateSessionOptions(body.sessionOptions, definitions, true);
+                  } catch (error) {
+                    return commandError(
+                      400,
+                      "invalid-session-options",
+                      error instanceof Error ? error.message : String(error),
+                    );
+                  }
+                }
+                const lifecycle = sessionContinuity.forSession(session.sessionRef);
+                await lifecycle.changeModel(model, reasoningEffort);
+                if (sessionOptions) await lifecycle.changeSessionOptions(sessionOptions);
                 catalog.invalidate();
                 const view = await catalog.sessionView(sessionRef);
                 return view
@@ -1115,6 +1160,33 @@ function parseLimit(value: string | null): number {
 
 function validRequestId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{8,100}$/u.test(value);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> | undefined {
+  return (
+    value === undefined ||
+    (Boolean(value) &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      Object.values(value as Record<string, unknown>).every((item) => typeof item === "string"))
+  );
+}
+
+function validateSessionOptions(
+  selected: Record<string, string>,
+  definitions: RuntimeSessionOption[],
+  requireInPlace = false,
+): Record<string, string> {
+  const byId = new Map(definitions.map((definition) => [definition.id, definition]));
+  for (const [id, value] of Object.entries(selected)) {
+    const definition = byId.get(id);
+    if (!definition) throw new Error(`Session option is not available: ${id}`);
+    if (requireInPlace && definition.changePolicy !== "in-place")
+      throw new Error(`Session option requires a new Runtime Session: ${id}`);
+    if (!definition.values.some((candidate) => candidate.id === value))
+      throw new Error(`Session option value is not available: ${id}=${value}`);
+  }
+  return { ...selected };
 }
 
 function requireDisplayName(value: unknown): string {

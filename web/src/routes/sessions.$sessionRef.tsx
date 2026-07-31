@@ -187,10 +187,12 @@ function SessionModelControls({ view }: { view: SessionView }) {
   const [isOpen, setIsOpen] = useState(false);
   const [model, setModel] = useState(view.model ?? "default");
   const [effort, setEffort] = useState(view.reasoningEffort ?? view.effectiveReasoningEffort ?? "default");
+  const [sessionOptions, setSessionOptions] = useState(view.sessionOptions);
   useEffect(() => {
     setModel(view.model ?? "default");
     setEffort(view.reasoningEffort ?? view.effectiveReasoningEffort ?? "default");
-  }, [view.effectiveReasoningEffort, view.model, view.reasoningEffort]);
+    setSessionOptions(view.sessionOptions);
+  }, [view.effectiveReasoningEffort, view.model, view.reasoningEffort, view.sessionOptions]);
   const selectedModel = view.modelOptions.find((option) => option.id === model);
   const effectiveModelOption = view.modelOptions.find((option) => option.id === view.effectiveModel);
   const unavailableModel =
@@ -212,6 +214,7 @@ function SessionModelControls({ view }: { view: SessionView }) {
         view.sessionRef,
         model === "default" ? null : model,
         model === "default" ? null : effort,
+        sessionOptions,
       ),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: clientKeys.session(view.sessionRef), refetchType: "active" });
@@ -251,6 +254,42 @@ function SessionModelControls({ view }: { view: SessionView }) {
             disabledMessage="Runtime Adapter 不支持模型选择。"
             width="100%"
           />
+          {view.sessionOptionDefinitions.map((definition) => {
+            const selected = sessionOptions[definition.id] ?? "default";
+            const values = [
+              { value: "default", label: "使用 Runtime 默认值" },
+              ...definition.values.map((value) => ({
+                value: value.id,
+                label: `${value.displayName}${value.unavailable ? "（不可用）" : ""}`,
+              })),
+            ];
+            return (
+              <Selector
+                key={definition.id}
+                label={definition.displayName}
+                options={values}
+                value={selected}
+                onChange={(value) =>
+                  setSessionOptions((current) => {
+                    const next = { ...current };
+                    if (value === "default") delete next[definition.id];
+                    else next[definition.id] = value;
+                    return next;
+                  })
+                }
+                isDisabled={
+                  definition.changePolicy !== "in-place" ||
+                  Boolean(definition.values.find((value) => value.id === selected)?.unavailable)
+                }
+                disabledMessage={
+                  definition.changePolicy === "in-place"
+                    ? "当前保存值不可用，请先选择 Runtime 支持的值。"
+                    : "更改此选项需要创建新的 Runtime Session。"
+                }
+                width="100%"
+              />
+            );
+          })}
           <Selector
             label="推理强度"
             options={selectedModel?.supportedReasoningEfforts ?? [effort]}

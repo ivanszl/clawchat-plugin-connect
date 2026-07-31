@@ -9,6 +9,7 @@ export interface ConnectRuntimePrompt {
   mode?: string;
   model?: string;
   reasoningEffort?: string;
+  sessionOptions?: Record<string, string>;
   turnId?: string;
   turnOrigin?: "client" | "clawchat";
   interactionPort?: RuntimeInteractionPort;
@@ -80,6 +81,23 @@ export interface RuntimeModelOption {
   supportedReasoningEfforts: string[];
   inputModalities: Array<"text" | "image" | "audio">;
   turnSubmissionCapability?: RuntimeTurnSubmissionCapability;
+}
+
+export interface RuntimeSessionOptionValue {
+  id: string;
+  displayName: string;
+  description?: string;
+  unavailable?: boolean;
+}
+
+export interface RuntimeSessionOption {
+  id: string;
+  displayName: string;
+  description: string;
+  category: "agent" | "model" | "variant" | "execution" | "other";
+  changePolicy: "in-place" | "new-runtime-session";
+  defaultValue?: string;
+  values: RuntimeSessionOptionValue[];
 }
 
 export interface RuntimeTurnSubmissionCapability {
@@ -230,6 +248,7 @@ export interface ConnectRuntimeAdapter {
   readonly lifecycleCapabilities?: RuntimeLifecycleCapabilities;
   prepare?(binding: AgentBindingConfig): Promise<void>;
   listModels?(binding: AgentBindingConfig): Promise<RuntimeModelOption[]>;
+  listSessionOptions?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeSessionOption[]>;
   discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;

@@ -16,6 +16,7 @@ export interface SessionSelection {
   mode: string | null;
   model: string | null;
   reasoningEffort: string | null;
+  sessionOptions?: Record<string, string>;
 }
 
 export interface SessionTarget extends SessionSelection {
@@ -38,6 +39,7 @@ export interface ConversationSessions {
   adopt(input: { sessionRef: string; sessionId: string; selection: SessionSelection }): Promise<SessionTarget | null>;
   changeMode(mode: string | null): Promise<"intent" | "session">;
   changeModel(model: string | null, reasoningEffort: string | null): Promise<"intent" | "session">;
+  changeSessionOptions(sessionOptions: Record<string, string>): Promise<"intent" | "session">;
 }
 
 export interface SessionContinuity {
@@ -64,6 +66,7 @@ export interface SessionLifecycle {
   targetForTurn(turnOrigin: TurnOrigin): Promise<TurnTarget>;
   attachRuntimeThread(runtimeThreadId: string | null): Promise<void>;
   changeModel(model: string | null, reasoningEffort: string | null): Promise<void>;
+  changeSessionOptions(sessionOptions: Record<string, string>): Promise<void>;
   associateProject(projectId: string): Promise<void>;
   discardEmpty(): Promise<void>;
   archive(): Promise<void>;
@@ -172,6 +175,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
             mode: input.selection.mode,
             model: input.selection.model,
             reasoningEffort: input.selection.reasoningEffort,
+            sessionOptions: input.selection.sessionOptions,
           });
           return session ? sessionTarget(session) : null;
         },
@@ -185,6 +189,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
               mode,
               model: intent?.model ?? null,
               reasoningEffort: intent?.reasoningEffort ?? null,
+              sessionOptions: intent?.sessionOptions,
             });
             return "intent";
           }
@@ -205,6 +210,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
               mode: intent?.mode ?? null,
               model,
               reasoningEffort,
+              sessionOptions: intent?.sessionOptions,
             });
             return "intent";
           }
@@ -214,6 +220,29 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
             current.sessionId,
             model,
             reasoningEffort,
+          );
+          if (!updated) throw new Error(`Session ${current.sessionRef} no longer exists`);
+          return "session";
+        },
+        async changeSessionOptions(sessionOptions) {
+          const intent = await options.stateStore.getSessionIntent(scope.chatId, scope.bindingId);
+          const current = await options.stateStore.getCurrentRuntimeSession(scope.chatId, scope.bindingId);
+          if (intent || !current) {
+            await this.planNext({
+              projectId: intent?.projectId ?? null,
+              name: intent?.name ?? null,
+              mode: intent?.mode ?? null,
+              model: intent?.model ?? null,
+              reasoningEffort: intent?.reasoningEffort ?? null,
+              sessionOptions,
+            });
+            return "intent";
+          }
+          const updated = await options.stateStore.setRuntimeSessionOptions(
+            current.chatId,
+            current.agentId,
+            current.sessionId,
+            sessionOptions,
           );
           if (!updated) throw new Error(`Session ${current.sessionRef} no longer exists`);
           return "session";
@@ -255,6 +284,17 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
             session.sessionId,
             model,
             reasoningEffort,
+          );
+          if (!updated) throw new Error(`Session ${normalized} was not found`);
+        },
+        async changeSessionOptions(sessionOptions) {
+          const session = await options.stateStore.getRuntimeSessionByRef(normalized);
+          if (!session) throw new Error(`Session ${normalized} was not found`);
+          const updated = await options.stateStore.setRuntimeSessionOptions(
+            session.chatId,
+            session.agentId,
+            session.sessionId,
+            sessionOptions,
           );
           if (!updated) throw new Error(`Session ${normalized} was not found`);
         },
@@ -311,6 +351,7 @@ function sessionTarget(session: RuntimeSessionRecord): SessionTarget {
     mode: session.mode,
     model: session.model,
     reasoningEffort: session.reasoningEffort,
+    sessionOptions: session.sessionOptions,
   };
 }
 
@@ -348,6 +389,7 @@ async function executeLifecycleOperation(
       mode: session.mode,
       model: session.model,
       reasoningEffort: session.reasoningEffort,
+      sessionOptions: session.sessionOptions,
     });
   }
   if (operation.action === "delete") await options.stateStore.deleteSessionByRef(operation.sessionRef);

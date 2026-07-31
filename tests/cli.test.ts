@@ -75,7 +75,7 @@ describe("runConnectCli", () => {
     const path = await tempConfig();
     const output = io();
     await expect(runConnectCli(["init", "--config", path, "--agent", "codex"], output.deps)).resolves.toBe(1);
-    expect(output.stderr.join("")).toContain("--kind codex is required");
+    expect(output.stderr.join("")).toContain("--kind codex, opencode is required");
   });
 
   it("adds an explicitly named first-party Codex agent", async () => {
@@ -93,12 +93,27 @@ describe("runConnectCli", () => {
     });
   });
 
+  it("adds OpenCode with the runtime-neutral executable override", async () => {
+    const path = await tempConfig();
+    const output = io();
+    await runConnectCli(["init", "--config", path], output.deps);
+    await expect(
+      runConnectCli(
+        ["agent", "add", "open", "--kind", "opencode", "--runtime-path", "/opt/opencode", "--config", path],
+        output.deps,
+      ),
+    ).resolves.toBe(0);
+    await expect(loadConfig(path)).resolves.toMatchObject({
+      agents: { open: { kind: "opencode", executablePathOverride: "/opt/opencode" } },
+    });
+  });
+
   it("rejects agent bindings without an explicit supported runtime kind", async () => {
     const path = await tempConfig();
     const output = io();
     await runConnectCli(["init", "--config", path], output.deps);
     await expect(runConnectCli(["agent", "add", "claude", "--config", path], output.deps)).resolves.toBe(1);
-    expect(output.stderr.join("")).toContain("--kind codex is required");
+    expect(output.stderr.join("")).toContain("--kind codex, opencode is required");
   });
 
   it("reads and updates config through the config subcommands", async () => {

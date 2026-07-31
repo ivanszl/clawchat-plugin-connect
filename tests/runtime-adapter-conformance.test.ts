@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
 import { createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
+import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
+import type { OpenCodeMessage, OpenCodeServerClient } from "../src/runtime/opencode-server";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { releasedRuntimeAdapters } from "../src/runtime/released-adapters";
 import { type ConnectRuntimeAdapter, RuntimeLifecycleError, runtimeActivityOrdinal } from "../src/runtime/types";
@@ -139,15 +141,28 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
       const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(harness.adapter)]);
       harness.activateThread();
 
-      await registry.archiveThread(harness.binding, "thread-1");
-      await registry.archiveThread(harness.binding, "thread-1");
-      await registry.unarchiveThread(harness.binding, "thread-1");
-      await registry.unarchiveThread(harness.binding, "thread-1");
+      const capabilities = registry.lifecycleCapabilities(harness.binding);
+      if (capabilities.archive && capabilities.restore) {
+        await registry.archiveThread(harness.binding, "thread-1");
+        await registry.archiveThread(harness.binding, "thread-1");
+        await registry.unarchiveThread(harness.binding, "thread-1");
+        await registry.unarchiveThread(harness.binding, "thread-1");
+      } else {
+        await expect(registry.archiveThread(harness.binding, "thread-1")).rejects.toMatchObject({
+          code: "unsupported",
+        });
+        await expect(registry.unarchiveThread(harness.binding, "thread-1")).rejects.toMatchObject({
+          code: "unsupported",
+        });
+      }
       await registry.deleteThread(harness.binding, "thread-1");
       await registry.deleteThread(harness.binding, "thread-1");
 
-      expect(harness.lifecycleCalls()).toEqual(["archive", "restore", "delete"]);
-      await expect(registry.archiveThread(harness.binding, "thread-1")).rejects.toMatchObject({ code: "not-found" });
+      expect(harness.lifecycleCalls()).toEqual(capabilities.archive ? ["archive", "restore", "delete"] : ["delete"]);
+      if (capabilities.archive)
+        await expect(registry.archiveThread(harness.binding, "thread-1")).rejects.toMatchObject({
+          code: "not-found",
+        });
       await registry.close();
     });
 
@@ -155,6 +170,11 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
       const harness = createHarness();
       const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(harness.adapter)]);
       harness.activateThread();
+      if (!registry.lifecycleCapabilities(harness.binding).archive) {
+        await expect(registry.archiveThread(harness.binding, "thread-1")).rejects.toBeInstanceOf(RuntimeLifecycleError);
+        await registry.close();
+        return;
+      }
       harness.failNextArchive();
 
       await expect(registry.archiveThread(harness.binding, "thread-1")).rejects.toBeInstanceOf(RuntimeLifecycleError);
@@ -361,6 +381,104 @@ runtimeAdapterConformance(
     };
   },
   "codex",
+);
+
+runtimeAdapterConformance(
+  "OpenCode",
+  () => {
+    let closes = 0;
+    let state: "active" | "deleted" = "active";
+    let pendingReject: ((error: Error) => void) | null = null;
+    const lifecycleCalls: string[] = [];
+    const messages: OpenCodeMessage[] = [
+      {
+        info: {
+          id: "message-1",
+          sessionID: "thread-1",
+          role: "user",
+          time: { created: 1 },
+          agent: "build",
+          model: { providerID: "test", modelID: "model" },
+        },
+        parts: Array.from({ length: 201 }, (_, index) => ({
+          id: `activity-${index}`,
+          sessionID: "thread-1",
+          messageID: "message-1",
+          type: "text" as const,
+          text: "same output",
+        })),
+      },
+    ];
+    const session = {
+      id: "thread-1",
+      slug: "thread-1",
+      projectID: "project-1",
+      directory: "/repo",
+      title: "Conformance",
+      version: "1.18.10",
+      time: { created: 1, updated: 1 },
+    };
+    const client: OpenCodeServerClient = {
+      version: "1.18.10",
+      health: async () => ({ healthy: true, version: "1.18.10" }),
+      listAgents: async () =>
+        pendingReject
+          ? await new Promise((_, reject) => {
+              pendingReject = reject;
+            })
+          : [],
+      listProviders: async () => ({ all: [], connected: [], default: {} }),
+      listSessions: async () => (state === "active" ? [session] : []),
+      getSession: async () => {
+        if (state !== "active") throw new Error("not found");
+        return session;
+      },
+      createSession: async () => session,
+      deleteSession: async () => {
+        if (state === "deleted") return false;
+        lifecycleCalls.push("delete");
+        state = "deleted";
+        return true;
+      },
+      sessionStatus: async () => ({}),
+      messages: async () => messages,
+      promptAsync: async () => undefined,
+      abortSession: async () => true,
+      events: (signal, onConnected) => {
+        onConnected?.();
+        return {
+          async *[Symbol.asyncIterator]() {
+            await new Promise<void>((resolve) => {
+              if (signal.aborted) resolve();
+              else signal.addEventListener("abort", () => resolve(), { once: true });
+            });
+          },
+        };
+      },
+      replyPermission: async () => true,
+      replyQuestion: async () => true,
+      rejectQuestion: async () => true,
+      close: async () => {
+        closes += 1;
+        pendingReject?.(new Error("binding closed"));
+      },
+    };
+    return {
+      binding: { kind: "opencode" },
+      activateThread: () => {
+        state = "active";
+      },
+      closeCount: () => closes,
+      failNextArchive: () => undefined,
+      lifecycleCalls: () => lifecycleCalls,
+      startPendingOperation: async () => {
+        pendingReject = () => undefined;
+        return await client.listAgents("/repo");
+      },
+      adapter: createOpenCodeRuntimeAdapter({ createServer: async () => client }),
+    };
+  },
+  "opencode",
 );
 
 describe("released Runtime Adapter conformance gate", () => {

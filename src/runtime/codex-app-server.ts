@@ -161,7 +161,10 @@ export async function createCodexAppServerClient(
   options: CreateCodexAppServerClientOptions = {},
 ): Promise<CodexAppServerClient> {
   const env = binding.env ? { ...process.env, ...binding.env } : undefined;
-  const executable = binding.codexPathOverride ?? Bun.which("codex", { PATH: env?.PATH ?? process.env.PATH });
+  const executable =
+    binding.executablePathOverride ??
+    binding.codexPathOverride ??
+    Bun.which("codex", { PATH: env?.PATH ?? process.env.PATH });
   if (!executable) {
     throw new Error(
       "Codex executable was not found in PATH; install Codex CLI or configure the Agent Binding with --codex-path",

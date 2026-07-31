@@ -428,6 +428,10 @@ export class ConnectRuntime {
       mode: current.mode ?? undefined,
       model: model.model,
       reasoningEffort: model.reasoningEffort,
+      sessionOptions: {
+        ...(getAgentBinding(this.options.config, activeAgentId).sessionOptions ?? {}),
+        ...(current.sessionOptions ?? {}),
+      },
       turnId: message.messageId,
       interactionPort: runtimeInteractions
         ? {
@@ -501,6 +505,10 @@ export class ConnectRuntime {
         mode: current.mode ?? undefined,
         model: model.model,
         reasoningEffort: model.reasoningEffort,
+        sessionOptions: {
+          ...(getAgentBinding(this.options.config, activeAgentId).sessionOptions ?? {}),
+          ...(current.sessionOptions ?? {}),
+        },
         turnId,
         interactionPort: this.options.runtimeInteractions,
         metadata: {
@@ -638,6 +646,7 @@ function runtimeSessionFromTurnTarget(target: TurnTarget): RuntimeSessionRecord 
     mode: target.mode,
     model: target.model,
     reasoningEffort: target.reasoningEffort,
+    sessionOptions: target.sessionOptions,
     hasMessages: true,
     isCurrent: true,
     updatedAt: Date.now(),

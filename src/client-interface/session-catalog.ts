@@ -129,6 +129,25 @@ export class SessionCatalog {
     const activity = (await this.options.sessionActivity?.(entry.bindingId, normalized)) ?? "idle";
     const advertisedModels = await this.options.runtimeAdapters.listModels(binding);
     const modelOptions = advertisedModels ?? [];
+    const selectedSessionOptions = {
+      ...(binding.sessionOptions ?? {}),
+      ...(session?.sessionOptions ?? {}),
+    };
+    const advertisedSessionOptions = session
+      ? await this.options.runtimeAdapters.listSessionOptions(binding, await this.projects.resolveWorkspace(session))
+      : [];
+    const sessionOptionDefinitions = advertisedSessionOptions.map((option) => {
+      const selected = selectedSessionOptions[option.id];
+      return selected && !option.values.some((value) => value.id === selected)
+        ? {
+            ...option,
+            values: [
+              { id: selected, displayName: selected, description: "Saved selection is unavailable", unavailable: true },
+              ...option.values,
+            ],
+          }
+        : option;
+    });
     let modelAvailable = true;
     let effectiveModel: string | null = null;
     let effectiveReasoningEffort: string | null = null;
@@ -167,6 +186,8 @@ export class SessionCatalog {
       mode: session?.mode ?? null,
       model: session?.model ?? null,
       reasoningEffort: session?.reasoningEffort ?? null,
+      sessionOptions: session?.sessionOptions ?? {},
+      sessionOptionDefinitions,
       effectiveModel,
       effectiveReasoningEffort,
       modelSource,

@@ -11,21 +11,31 @@ export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhig
 export type CodexApprovalPolicy = "never" | "on-request" | "untrusted";
 export type CodexWebSearchMode = "disabled" | "cached" | "live";
 
-export interface CodexAgentBindingConfig {
-  kind: "codex";
+export interface AgentBindingConfigBase {
+  executablePathOverride?: string;
+  /** Codex compatibility preferences; ignored by other Adapter kinds. */
   codexPathOverride?: string;
-  env?: Record<string, string>;
-  displayName?: string;
   model?: string;
   sandboxMode?: CodexSandboxMode;
   modelReasoningEffort?: CodexReasoningEffort;
   approvalPolicy?: CodexApprovalPolicy;
   webSearchMode?: CodexWebSearchMode;
   networkAccessEnabled?: boolean;
+  env?: Record<string, string>;
+  displayName?: string;
+  sessionOptions?: Record<string, string>;
   additionalDirectories?: string[];
 }
 
-export type AgentBindingConfig = CodexAgentBindingConfig;
+export interface CodexAgentBindingConfig extends AgentBindingConfigBase {
+  kind: "codex";
+}
+
+export interface OpenCodeAgentBindingConfig extends AgentBindingConfigBase {
+  kind: "opencode";
+}
+
+export type AgentBindingConfig = CodexAgentBindingConfig | OpenCodeAgentBindingConfig;
 
 export interface ConnectConfig {
   baseUrl: string;
@@ -87,6 +97,7 @@ export interface RuntimeSessionRecord {
   mode: string | null;
   model: string | null;
   reasoningEffort: string | null;
+  sessionOptions?: Record<string, string>;
   hasMessages: boolean;
   isCurrent: boolean;
   updatedAt: number;
@@ -100,6 +111,7 @@ export interface SessionIntentRecord {
   mode: string | null;
   model: string | null;
   reasoningEffort: string | null;
+  sessionOptions?: Record<string, string>;
   updatedAt: number;
 }
 

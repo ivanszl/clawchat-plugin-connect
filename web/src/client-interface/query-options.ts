@@ -142,10 +142,11 @@ export async function updateSessionPreferences(
   sessionRef: string,
   model: string | null,
   reasoningEffort: string | null,
+  sessionOptions?: Record<string, string>,
 ): Promise<SessionView> {
   return await clientFetch<SessionView>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}/preferences`, {
     method: "PATCH",
-    body: JSON.stringify({ requestId: requestId(), model, reasoningEffort }),
+    body: JSON.stringify({ requestId: requestId(), model, reasoningEffort, sessionOptions }),
   });
 }
 

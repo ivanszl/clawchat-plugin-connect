@@ -21,6 +21,7 @@ it("materializes one Turn Target when concurrent first messages consume a Sessio
     mode: "read-only",
     model: "gpt-planned",
     reasoningEffort: "high",
+    sessionOptions: { agent: "build", variant: "high" },
   });
 
   const [first, second] = await Promise.all([
@@ -38,6 +39,7 @@ it("materializes one Turn Target when concurrent first messages consume a Sessio
     mode: "read-only",
     model: "gpt-planned",
     reasoningEffort: "high",
+    sessionOptions: { agent: "build", variant: "high" },
     runtimeThreadId: null,
     turnOrigin: "clawchat",
   });

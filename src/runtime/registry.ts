@@ -6,6 +6,7 @@ import type {
   RuntimeActivitySnapshot,
   RuntimeLifecycleCapabilities,
   RuntimeModelOption,
+  RuntimeSessionOption,
   RuntimeThreadSummary,
 } from "./types";
 import { RuntimeLifecycleError } from "./types";
@@ -56,6 +57,10 @@ export class RuntimeAdapterRegistry {
   async listModels(binding: AgentBindingConfig): Promise<RuntimeModelOption[] | null> {
     const operation = this.require(binding).listModels;
     return operation ? await operation(binding) : null;
+  }
+
+  async listSessionOptions(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeSessionOption[]> {
+    return (await this.require(binding).listSessionOptions?.(binding, workspace)) ?? [];
   }
 
   async discoverThreads(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]> {

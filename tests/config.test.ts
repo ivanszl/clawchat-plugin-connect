@@ -89,6 +89,55 @@ describe("Agent Binding configuration", () => {
     await expect(loadConfig(path)).resolves.toEqual(config);
   });
 
+  it("normalizes an OpenCode Binding without managing provider credentials", () => {
+    const config = normalizeConfig({
+      defaultAgent: "open",
+      agents: {
+        open: {
+          kind: "opencode",
+          executablePathOverride: "/opt/opencode",
+          displayName: "OpenCode",
+          env: { OPENCODE_CONFIG_DIR: "/tmp/opencode-config" },
+          additionalDirectories: ["/repo/shared", "/repo/shared"],
+          sessionOptions: {
+            agent: "build",
+            model: "anthropic/claude-sonnet-4-5",
+            variant: "high",
+          },
+        },
+      },
+    });
+
+    expect(getAgentBinding(config, "open")).toEqual({
+      kind: "opencode",
+      executablePathOverride: "/opt/opencode",
+      displayName: "OpenCode",
+      env: {
+        CLAWCHAT_CONNECT_AGENT_ID: "open",
+        OPENCODE_CONFIG_DIR: "/tmp/opencode-config",
+      },
+      additionalDirectories: ["/repo/shared"],
+      sessionOptions: {
+        agent: "build",
+        model: "anthropic/claude-sonnet-4-5",
+        variant: "high",
+      },
+    });
+  });
+
+  it("rejects OpenCode Server controls that Connect owns", () => {
+    expect(() =>
+      normalizeConfig({
+        agents: {
+          open: {
+            kind: "opencode",
+            env: { OPENCODE_SERVER_PASSWORD: "user-selected" },
+          },
+        },
+      }),
+    ).toThrow("OPENCODE_SERVER_PASSWORD is managed by Connect");
+  });
+
   it("derives a missing media upload endpoint from a custom API base URL", () => {
     const config = normalizeConfig({
       baseUrl: "https://self-hosted.example/connect",

@@ -224,6 +224,8 @@ export interface SessionView {
   mode: string | null;
   model: string | null;
   reasoningEffort: string | null;
+  sessionOptions: Record<string, string>;
+  sessionOptionDefinitions: RuntimeSessionOptionView[];
   effectiveModel: string | null;
   effectiveReasoningEffort: string | null;
   modelSource: "session" | "binding" | "runtime";
@@ -262,6 +264,16 @@ export interface RuntimeModelOptionView {
   defaultReasoningEffort: string;
   supportedReasoningEfforts: string[];
   inputModalities: Array<"text" | "image" | "audio">;
+}
+
+export interface RuntimeSessionOptionView {
+  id: string;
+  displayName: string;
+  description: string;
+  category: "agent" | "model" | "variant" | "execution" | "other";
+  changePolicy: "in-place" | "new-runtime-session";
+  defaultValue?: string;
+  values: Array<{ id: string; displayName: string; description?: string; unavailable?: boolean }>;
 }
 
 export interface ProjectView {
@@ -359,6 +371,7 @@ export interface CreateSessionRequest {
   mode: string | null;
   model: string | null;
   reasoningEffort: string | null;
+  sessionOptions?: Record<string, string>;
 }
 
 export interface StartTurnResponse {
@@ -384,6 +397,7 @@ export interface UpdateSessionPreferencesRequest {
   requestId: string;
   model: string | null;
   reasoningEffort: string | null;
+  sessionOptions?: Record<string, string>;
 }
 
 export interface AddProjectRequest {
