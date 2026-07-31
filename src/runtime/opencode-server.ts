@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
@@ -39,7 +39,7 @@ export interface OpenCodeApiClient {
   health(): Promise<{ healthy: true; version: string }>;
   listAgents(directory: string): Promise<Agent[]>;
   listProviders(directory: string): Promise<{ all: Provider[]; connected: string[]; default: Record<string, string> }>;
-  listSessions(directory?: string): Promise<Session[]>;
+  listSessions(directory?: string, rootsOnly?: boolean): Promise<Session[]>;
   getSession(sessionID: string, directory: string): Promise<Session>;
   createSession(directory: string, title?: string): Promise<Session>;
   deleteSession(sessionID: string, directory: string): Promise<boolean>;
@@ -73,6 +73,7 @@ export interface OpenCodeServerClientOptions {
   spawnServer?: (executable: string, args: string[], env: NodeJS.ProcessEnv) => OpenCodeServerProcess;
   createApi?: (baseUrl: string, username: string, password: string) => OpenCodeApiClient;
   readinessTimeoutMs?: number;
+  shutdownTimeoutMs?: number;
 }
 
 export async function createOpenCodeServerClient(
@@ -114,6 +115,15 @@ export async function createOpenCodeServerClient(
     ["serve", "--hostname", "127.0.0.1", "--port", String(port), "--mdns=false"],
     serverEnv,
   );
+  const serverExit = new Promise<Error>((resolve) => {
+    child.once("exit", (code, signal) => {
+      resolve(
+        new Error(
+          `OpenCode Server exited unexpectedly${code !== null ? ` with code ${code}` : signal ? ` from ${signal}` : ""}`,
+        ),
+      );
+    });
+  });
   const stderr = collectStderr(child.stderr, [password]);
   const api = (options.createApi ?? createOfficialApi)(`http://127.0.0.1:${port}`, "opencode", password);
 
@@ -123,7 +133,7 @@ export async function createOpenCodeServerClient(
       throw new Error(`OpenCode compatibility handshake failed: executable ${version}, Server ${health.version}`);
     }
   } catch (error) {
-    await stopServer(child);
+    await stopServer(child, options.shutdownTimeoutMs);
     throw error;
   }
 
@@ -131,10 +141,31 @@ export async function createOpenCodeServerClient(
   return {
     ...api,
     version,
+    events: async function* (signal, onConnected) {
+      const controller = new AbortController();
+      const forwardAbort = () => controller.abort(signal.reason);
+      signal.addEventListener("abort", forwardAbort, { once: true });
+      if (signal.aborted) forwardAbort();
+      let exitFailure: Error | null = null;
+      void serverExit.then((failure) => {
+        if (signal.aborted) return;
+        exitFailure = failure;
+        controller.abort(failure);
+      });
+      try {
+        yield* api.events(controller.signal, onConnected);
+        if (exitFailure) throw exitFailure;
+      } catch (error) {
+        if (exitFailure) throw exitFailure;
+        throw error;
+      } finally {
+        signal.removeEventListener("abort", forwardAbort);
+      }
+    },
     async close() {
       if (closed) return;
       closed = true;
-      await stopServer(child);
+      await stopServer(child, options.shutdownTimeoutMs);
     },
   };
 }
@@ -149,8 +180,10 @@ function createOfficialApi(baseUrl: string, username: string, password: string):
     health: async () => unwrap(await client.global.health({ throwOnError: true })),
     listAgents: async (directory) => unwrap(await client.app.agents({ directory }, { throwOnError: true })),
     listProviders: async (directory) => unwrap(await client.provider.list({ directory }, { throwOnError: true })),
-    listSessions: async (directory) =>
-      unwrap(await client.session.list({ ...(directory ? { directory } : {}), roots: true }, { throwOnError: true })),
+    listSessions: async (directory, rootsOnly = true) =>
+      unwrap(
+        await client.session.list({ ...(directory ? { directory } : {}), roots: rootsOnly }, { throwOnError: true }),
+      ),
     getSession: async (sessionID, directory) =>
       unwrap(await client.session.get({ sessionID, directory }, { throwOnError: true })),
     createSession: async (directory, title) =>
@@ -268,13 +301,13 @@ async function waitForHealth(
   throw new Error(`OpenCode Server did not become ready: ${detail}${stderr() ? ` (${stderr()})` : ""}`);
 }
 
-async function stopServer(child: OpenCodeServerProcess): Promise<void> {
+async function stopServer(child: OpenCodeServerProcess, timeoutMs = 2_000): Promise<void> {
   if (child.exitCode !== null) return;
   await new Promise<void>((resolve) => {
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
       resolve();
-    }, 2_000);
+    }, timeoutMs);
     child.once("exit", () => {
       clearTimeout(timeout);
       resolve();

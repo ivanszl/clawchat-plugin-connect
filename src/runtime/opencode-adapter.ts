@@ -16,7 +16,12 @@ import type {
   ToolPart,
 } from "@opencode-ai/sdk/v2/types";
 import type { AgentBindingConfig, OpenCodeAgentBindingConfig } from "../types";
-import { createOpenCodeServerClient, type OpenCodeMessage, type OpenCodeServerClient } from "./opencode-server";
+import {
+  createOpenCodeServerClient,
+  type OpenCodeMessage,
+  type OpenCodeServerClient,
+  type OpenCodeServerClientOptions,
+} from "./opencode-server";
 import type {
   ConnectRuntimeAdapter,
   ConnectRuntimePrompt,
@@ -30,6 +35,8 @@ import type {
 
 export interface OpenCodeRuntimeAdapterOptions {
   createServer?: (binding: OpenCodeAgentBindingConfig) => Promise<OpenCodeServerClient>;
+  serverClientOptions?: OpenCodeServerClientOptions;
+  eventReconnectDelays?: readonly number[];
   messageID?: () => string;
 }
 
@@ -50,7 +57,9 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
     const openCodeBinding = requireOpenCodeBinding(binding);
     if (closed) throw new Error("OpenCode Runtime Adapter is closed");
     if (!clientPromise) {
-      const starting = (options.createServer ?? createOpenCodeServerClient)(openCodeBinding);
+      const starting = options.createServer
+        ? options.createServer(openCodeBinding)
+        : createOpenCodeServerClient(openCodeBinding, options.serverClientOptions);
       clientPromise = starting;
       let client: OpenCodeServerClient;
       try {
@@ -82,6 +91,7 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
           eventsAbort = null;
           eventsPump = null;
         },
+        options.eventReconnectDelays,
       );
       try {
         await withTimeout(ready, 10_000, "OpenCode global event stream did not connect");
@@ -141,13 +151,7 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
     },
     async readActivity(binding, runtimeThreadId) {
       const { client, session } = await locateSession(binding, runtimeThreadId);
-      const messages = await client.messages(session.id, session.directory);
-      const snapshot = activitySnapshot(messages);
-      snapshot.activities = orderedActivities([
-        ...snapshot.activities,
-        ...externalModificationActivities(session.id, messages, observedUserMessages),
-      ]);
-      return snapshot;
+      return await reconcileSessionActivity(client, session, observedUserMessages);
     },
     async deleteThread(binding, runtimeThreadId) {
       let located: { client: OpenCodeServerClient; session: Session };
@@ -157,12 +161,14 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
         if (error instanceof Error && /not found/iu.test(error.message)) return;
         throw error;
       }
-      await located.client.deleteSession(located.session.id, located.session.directory);
+      const deleted = await located.client.deleteSession(located.session.id, located.session.directory);
+      if (!deleted) throw new Error(`OpenCode Session deletion was not confirmed: ${located.session.id}`);
       threadDirectories.delete(runtimeThreadId);
     },
     async start(binding, context) {
+      await clientFor(binding);
       return new OpenCodeRuntimeSession({
-        client: await clientFor(binding),
+        clientFor: async () => await clientFor(binding),
         context,
         listeners,
         threadDirectories,
@@ -186,7 +192,7 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
 }
 
 interface OpenCodeRuntimeSessionOptions {
-  client: OpenCodeServerClient;
+  clientFor(): Promise<OpenCodeServerClient>;
   context: ConnectRuntimeStartContext;
   listeners: Set<EventListener>;
   threadDirectories: Map<string, string>;
@@ -198,6 +204,7 @@ interface OpenCodeRuntimeSessionOptions {
 class OpenCodeRuntimeSession implements ConnectRuntimeSession {
   private runtimeThreadId: string | null;
   private active: {
+    client: OpenCodeServerClient;
     directory: string;
     queue: ActivityQueue;
     listener: EventListener;
@@ -214,31 +221,28 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
   async *prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeActivity> {
     if (this.closed) throw new Error("OpenCode Runtime Session is closed");
     if (this.active) throw new Error("OpenCode Runtime Session already has an active turn");
+    const client = await this.options.clientFor();
     const directory = canonical(input.workspace.workingDirectory);
     this.options.onDirectory(directory);
-    const session = await this.ensureThread(directory);
-    const statuses = await this.options.client.sessionStatus(directory);
+    const session = await this.ensureThread(client, directory);
+    const statuses = await client.sessionStatus(directory);
     if (statuses[session.id]?.type === "busy") {
       throw new Error("OpenCode Session is busy in another client; wait for it to become idle and refresh");
     }
-    await validatePromptSelection(this.options.client, input, directory);
+    await validatePromptSelection(client, input, directory);
 
     const queue = new ActivityQueue();
     const pendingNativeRequests = new Map<string, "permission" | "question">();
     const listener: EventListener = async (event) => {
       if (event instanceof OpenCodeReconnect) {
-        const statuses = await this.options.client.sessionStatus(directory);
-        const messages = await this.options.client.messages(session.id, directory);
-        const snapshot = activitySnapshot(messages);
-        snapshot.activities = orderedActivities([
-          ...snapshot.activities,
-          ...externalModificationActivities(session.id, messages, this.options.observedUserMessages),
-        ]);
+        const statuses = await client.sessionStatus(directory);
+        const snapshot = await reconcileSessionActivity(client, session, this.options.observedUserMessages);
         for (const activity of snapshot.activities) queue.push({ ...activity, source: "history" });
         if (statuses[session.id]?.type === "idle") queue.close();
         return;
       }
       if (event instanceof Error) {
+        this.expireActiveInteractions();
         queue.push(errorActivity(input.turnId, event));
         queue.close();
         return;
@@ -247,6 +251,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       const payload = event.payload as { type: string; properties?: Record<string, unknown> };
       if (eventSessionId(payload.properties) !== session.id) return;
       if (payload.type === "session.deleted") {
+        this.expireActiveInteractions();
         queue.push(errorActivity(input.turnId, new Error("OpenCode Session was deleted by another client")));
         queue.close();
         return;
@@ -260,22 +265,19 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         return;
       }
       if (payload.type === "session.error") {
+        this.expireActiveInteractions();
         queue.push(errorActivity(input.turnId, new Error(nativeErrorText(payload.properties))));
         queue.close();
         return;
       }
       if (payload.type === "message.part.updated" || payload.type === "session.idle") {
-        const messages = await this.options.client.messages(session.id, directory);
-        const snapshot = activitySnapshot(messages);
-        snapshot.activities = orderedActivities([
-          ...snapshot.activities,
-          ...externalModificationActivities(session.id, messages, this.options.observedUserMessages),
-        ]);
+        const snapshot = await reconcileSessionActivity(client, session, this.options.observedUserMessages);
         for (const activity of snapshot.activities) queue.push({ ...activity, source: "live" });
       }
       if (payload.type === "session.idle") queue.close();
     };
     this.active = {
+      client,
       directory,
       queue,
       listener,
@@ -285,7 +287,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     };
     this.options.listeners.add(listener);
     try {
-      const beforePrompt = await this.options.client.messages(session.id, directory);
+      const beforePrompt = await client.messages(session.id, directory);
       for (const activity of externalModificationActivities(
         session.id,
         beforePrompt,
@@ -294,7 +296,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         queue.push(activity);
       const messageID = this.options.messageID();
       this.options.observedUserMessages.get(session.id)?.add(messageID);
-      await this.options.client.promptAsync({
+      await client.promptAsync({
         sessionID: session.id,
         directory,
         messageID,
@@ -321,12 +323,12 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     active.interactionControllers.clear();
     for (const [requestID, kind] of pendingNativeRequests) {
       if (kind === "permission") {
-        await this.options.client.replyPermission(requestID, active.directory, "reject").catch(() => false);
+        await active.client.replyPermission(requestID, active.directory, "reject").catch(() => false);
       } else {
-        await this.options.client.rejectQuestion(requestID, active.directory).catch(() => false);
+        await active.client.rejectQuestion(requestID, active.directory).catch(() => false);
       }
     }
-    const aborted = await this.options.client.abortSession(this.runtimeThreadId, active.directory);
+    const aborted = await active.client.abortSession(this.runtimeThreadId, active.directory);
     active.queue.push({
       id: `turn:${this.options.context.sessionId}:cancelled`,
       position: "0.0",
@@ -346,9 +348,16 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     this.closed = true;
   }
 
-  private async ensureThread(directory: string): Promise<Session> {
+  private expireActiveInteractions(): void {
+    if (!this.active) return;
+    this.active.pendingNativeRequests.clear();
+    for (const controller of this.active.interactionControllers) controller.abort();
+    this.active.interactionControllers.clear();
+  }
+
+  private async ensureThread(client: OpenCodeServerClient, directory: string): Promise<Session> {
     if (this.runtimeThreadId) {
-      const session = await this.options.client.getSession(this.runtimeThreadId, directory);
+      const session = await client.getSession(this.runtimeThreadId, directory);
       if (canonical(session.directory) !== directory) {
         throw new Error(
           `OpenCode Session directory conflict: expected ${directory}, native Session uses ${canonical(session.directory)}`,
@@ -357,7 +366,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       this.options.threadDirectories.set(session.id, directory);
       return session;
     }
-    const session = await this.options.client.createSession(directory);
+    const session = await client.createSession(directory);
     this.runtimeThreadId = session.id;
     this.options.threadDirectories.set(session.id, directory);
     await this.options.context.onRuntimeSessionId(session.id);
@@ -371,10 +380,12 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
   ): Promise<void> {
     const requestID = permission.id;
     pending.set(requestID, "permission");
-    const directory = this.active?.directory ?? "";
+    const active = this.active;
+    const directory = active?.directory ?? "";
+    if (!active) return;
     if (!input.interactionPort || !input.metadata?.sessionRef || !input.turnId || !input.turnOrigin) {
       pending.delete(requestID);
-      await this.options.client.replyPermission(requestID, directory, "reject");
+      await active.client.replyPermission(requestID, directory, "reject");
       return;
     }
     const action = permissionAction(permission.permission);
@@ -386,7 +397,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       )
     ) {
       pending.delete(requestID);
-      await this.options.client.replyPermission(requestID, directory, "reject");
+      await active.client.replyPermission(requestID, directory, "reject");
       return;
     }
     const controller = new AbortController();
@@ -423,7 +434,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
           ? "always"
           : "once";
     try {
-      await this.options.client.replyPermission(requestID, directory, reply);
+      await active.client.replyPermission(requestID, directory, reply);
       delivery.confirm();
     } catch (error) {
       delivery.fail(error instanceof Error ? error : new Error(String(error)));
@@ -438,10 +449,12 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
   ): Promise<void> {
     const requestID = question.id;
     pending.set(requestID, "question");
-    const directory = this.active?.directory ?? "";
+    const active = this.active;
+    const directory = active?.directory ?? "";
+    if (!active) return;
     if (!input.interactionPort || !input.metadata?.sessionRef || !input.turnId || !input.turnOrigin) {
       pending.delete(requestID);
-      await this.options.client.rejectQuestion(requestID, directory);
+      await active.client.rejectQuestion(requestID, directory);
       return;
     }
     const questions = question.questions.map(runtimeQuestion);
@@ -471,7 +484,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     }
     if (response.kind !== "user-input") {
       try {
-        await this.options.client.rejectQuestion(requestID, directory);
+        await active.client.rejectQuestion(requestID, directory);
         delivery.confirm();
       } catch (error) {
         delivery.fail(error instanceof Error ? error : new Error(String(error)));
@@ -480,7 +493,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       return;
     }
     try {
-      await this.options.client.replyQuestion(
+      await active.client.replyQuestion(
         requestID,
         directory,
         questions.map((item) => response.answers[item.id] ?? []),
@@ -499,10 +512,11 @@ async function pumpEvents(
   listeners: Set<EventListener>,
   onConnected: () => void,
   onFailure: (failure: Error) => Promise<void>,
+  reconnectDelays: readonly number[] = [0, 100, 250, 500],
 ): Promise<void> {
   let connections = 0;
   let lastFailure = new Error("OpenCode global event stream ended");
-  for (const delayMs of [0, 100, 250, 500]) {
+  for (const delayMs of reconnectDelays) {
     if (signal.aborted) return;
     if (delayMs) await Bun.sleep(delayMs);
     try {
@@ -641,12 +655,61 @@ function connectedModels(providers: { all: Provider[]; connected: string[]; defa
 
 function activitySnapshot(messages: OpenCodeMessage[]): RuntimeActivitySnapshot {
   return {
-    completeness: "complete",
-    limitations: [],
+    completeness: "partial",
+    limitations: ["correlation"],
     activities: messages.flatMap((message, turn) =>
-      message.parts.map((part, index) => activityForPart(message.info, part, `${turn + 1}.${index}`)),
+      message.parts.map((part, index) => activityForPart(message.info, part, `${turn}.${index + 1}`)),
     ),
   };
+}
+
+async function reconcileSessionActivity(
+  client: OpenCodeServerClient,
+  session: Session,
+  observedUserMessages: Map<string, Set<string>>,
+  ancestors: ReadonlySet<string> = new Set(),
+): Promise<RuntimeActivitySnapshot> {
+  const messages = await client.messages(session.id, session.directory);
+  const snapshot = activitySnapshot(messages);
+  const limitations = new Set(snapshot.limitations);
+  const activities = [
+    ...snapshot.activities,
+    ...externalModificationActivities(session.id, messages, observedUserMessages),
+  ];
+  const lineage = new Set(ancestors).add(session.id);
+  const children = (await client.listSessions(session.directory, false))
+    .filter((candidate) => candidate.parentID === session.id && !lineage.has(candidate.id))
+    .sort((left, right) => left.time.created - right.time.created || left.id.localeCompare(right.id));
+  if (children.length > 0) limitations.add("ordering");
+  for (const child of children) {
+    const childSnapshot = await reconcileSessionActivity(client, child, observedUserMessages, lineage);
+    for (const limitation of childSnapshot.limitations) limitations.add(limitation);
+    activities.push({
+      id: `session:${child.id}`,
+      position: unpairedSubagentPosition(child.id),
+      parentId: null,
+      kind: "subagent",
+      text: child.title || "Sub-agent",
+      state: "complete",
+      source: "history",
+      data: { title: child.title || "Sub-agent", role: null, activityKind: "unknown", runtimeThreadId: child.id },
+      children: childSnapshot.activities,
+    });
+  }
+  snapshot.activities = orderedActivities(activities);
+  snapshot.limitations = [...limitations].sort();
+  return snapshot;
+}
+
+function unpairedSubagentPosition(runtimeThreadId: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const character of runtimeThreadId) {
+    hash ^= BigInt(character.codePointAt(0) ?? 0);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  const turn = 4_500_000_000n + (hash % 4_499_999_999n);
+  const item = 1n + ((hash / 4_499_999_999n) % 999_998n);
+  return `${turn}.${item}`;
 }
 
 function observeUserMessages(
@@ -675,7 +738,7 @@ function externalModificationActivities(
       ? [
           {
             id: `external:${message.info.id}`,
-            position: `${index + 1}.999999`,
+            position: `${index}.999999`,
             parentId: null,
             kind: "progress" as const,
             text: "OpenCode Session was modified by another client.",

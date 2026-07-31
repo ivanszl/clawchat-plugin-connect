@@ -119,11 +119,14 @@ export class SessionCatalog {
 
   async sessionView(sessionRef: string): Promise<SessionView | null> {
     const normalized = sessionRef.toUpperCase();
-    const entry = await this.entry(normalized);
+    const catalogState = await this.load();
+    const entry = catalogState.entriesByRef.get(normalized) ?? null;
     if (!entry) return null;
     const session = await this.options.stateStore.getRuntimeSessionByRef(normalized);
     const target = session ? null : await this.options.stateStore.getSessionRefTarget(normalized);
-    const runtimeThreadAvailable = Boolean(session?.runtimeSessionId || target?.runtimeSessionId);
+    const hasMappedRuntimeThread = Boolean(session?.runtimeSessionId || target?.runtimeSessionId);
+    const runtimeThreadAvailable = hasMappedRuntimeThread && catalogState.runtimeRevisionByRef.has(normalized);
+    const runtimeThreadMissing = hasMappedRuntimeThread && !runtimeThreadAvailable;
     const binding = getAgentBinding(this.options.config, entry.bindingId);
     const runtimeStatus = await this.options.stateStore.getRuntimeStatus(entry.bindingId);
     const activity = (await this.options.sessionActivity?.(entry.bindingId, normalized)) ?? "idle";
@@ -212,7 +215,9 @@ export class SessionCatalog {
         (runtimeThreadAvailable ? "partial" : "live-only"),
       pendingInteractions,
       turnSubmissionCapability: clientTurnSubmissionCapability(effectiveModelOption, modelAvailable),
-      allowedActions: sessionActions(entry.isArchived, runtimeThreadAvailable, activity, lifecycleCapabilities),
+      allowedActions: runtimeThreadMissing
+        ? []
+        : sessionActions(entry.isArchived, runtimeThreadAvailable, activity, lifecycleCapabilities),
       updatedAt: entry.updatedAt,
     };
   }
@@ -496,9 +501,7 @@ function clientTurnSubmissionCapability(
   const modalityKinds: TurnSubmissionCapability["attachments"]["allowedKinds"] = [];
   if (modalities.includes("image")) modalityKinds.push("image");
   if (modalities.includes("audio")) modalityKinds.push("audio");
-  const allowedKinds = (native?.attachments.allowedKinds ?? modalityKinds).filter((kind) =>
-    modalityKinds.includes(kind),
-  );
+  const allowedKinds = native ? [...native.attachments.allowedKinds] : modalityKinds;
   const maxCount = allowedKinds.length > 0 ? Math.min(10, native?.attachments.maxCount ?? 10) : 0;
   return {
     prompt: {
@@ -548,13 +551,16 @@ function managedEntry(
     isAdopted: true,
     unreadCount: 0,
     pendingInteractionCount: 0,
-    allowedActions: catalogActions(
-      runtimeThread?.isArchived === true,
-      true,
-      Boolean(session.runtimeSessionId),
-      activity,
-      lifecycleCapabilities,
-    ),
+    allowedActions:
+      session.runtimeSessionId && !runtimeThread
+        ? ["open"]
+        : catalogActions(
+            runtimeThread?.isArchived === true,
+            true,
+            Boolean(runtimeThread),
+            activity,
+            lifecycleCapabilities,
+          ),
   };
 }
 

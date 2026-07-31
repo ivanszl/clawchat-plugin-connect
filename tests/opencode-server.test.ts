@@ -1,12 +1,15 @@
 import { describe, expect, it, mock } from "bun:test";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:net";
 import { PassThrough } from "node:stream";
 import type { GlobalEvent } from "@opencode-ai/sdk/v2/types";
+import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
 import {
   createOpenCodeServerClient,
   type OpenCodeApiClient,
   type OpenCodeServerProcess,
 } from "../src/runtime/opencode-server";
+import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 
 class FakeProcess extends EventEmitter implements OpenCodeServerProcess {
   readonly stderr = new PassThrough();
@@ -17,6 +20,86 @@ class FakeProcess extends EventEmitter implements OpenCodeServerProcess {
       this.exitCode = 0;
       this.emit("exit", 0, null);
     }
+    return true;
+  }
+}
+
+class StubbornProcess extends EventEmitter implements OpenCodeServerProcess {
+  readonly stderr = new PassThrough();
+  readonly signals: Array<NodeJS.Signals | number | undefined> = [];
+  exitCode: number | null = null;
+
+  kill(signal?: NodeJS.Signals | number): boolean {
+    this.signals.push(signal);
+    if (signal === "SIGKILL") {
+      this.exitCode = 137;
+      this.emit("exit", 137, "SIGKILL");
+    }
+    return true;
+  }
+}
+
+class AuthenticatedHttpProcess extends EventEmitter implements OpenCodeServerProcess {
+  readonly stderr = new PassThrough();
+  readonly requests: Array<{ authorization: string | null; path: string }> = [];
+  readonly port: number;
+  readonly password: string;
+  exitCode: number | null = null;
+  private readonly streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
+  private readonly server: Bun.Server<undefined>;
+
+  constructor(port: number, password: string) {
+    super();
+    this.port = port;
+    this.password = password;
+    const expectedAuthorization = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
+    this.server = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      fetch: (request) => {
+        const url = new URL(request.url);
+        const authorization = request.headers.get("authorization");
+        this.requests.push({ authorization, path: url.pathname });
+        if (authorization !== expectedAuthorization) return new Response("Unauthorized", { status: 401 });
+        if (url.pathname === "/global/health") {
+          return Response.json({ healthy: true, version: "1.18.10" });
+        }
+        if (url.pathname === "/global/event") {
+          const streams = this.streams;
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              streams.add(controller);
+              controller.enqueue(new TextEncoder().encode(": connected\n\n"));
+            },
+            cancel() {
+              streams.clear();
+            },
+          });
+          return new Response(stream, {
+            headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+          });
+        }
+        return new Response("Not found", { status: 404 });
+      },
+    });
+  }
+
+  crash(): void {
+    if (this.exitCode !== null) return;
+    for (const stream of this.streams) stream.close();
+    this.streams.clear();
+    this.server.stop(true);
+    this.exitCode = 1;
+    this.emit("exit", 1, null);
+  }
+
+  kill(): boolean {
+    if (this.exitCode !== null) return true;
+    for (const stream of this.streams) stream.close();
+    this.streams.clear();
+    this.server.stop(true);
+    this.exitCode = 0;
+    this.emit("exit", 0, null);
     return true;
   }
 }
@@ -123,6 +206,22 @@ describe("OpenCode Server process boundary", () => {
     expect(spawnServer).not.toHaveBeenCalled();
   });
 
+  it("rejects empty executable version output before spawning a Server", async () => {
+    const spawnServer = mock(() => new FakeProcess());
+    await expect(
+      createOpenCodeServerClient(
+        { kind: "opencode", executablePathOverride: "/opt/opencode" },
+        {
+          readVersion: async () => "",
+          allocatePort: async () => 1,
+          spawnServer,
+          createApi: () => api(),
+        },
+      ),
+    ).rejects.toThrow("Failed to read OpenCode version: empty output");
+    expect(spawnServer).not.toHaveBeenCalled();
+  });
+
   it("rejects a health response whose version differs from the executable", async () => {
     const process = new FakeProcess();
     await expect(
@@ -164,4 +263,147 @@ describe("OpenCode Server process boundary", () => {
     await expect(result).rejects.toThrow("fatal [REDACTED]");
     await expect(result).rejects.not.toThrow("generated-secret");
   });
+
+  it("restarts through the authenticated HTTP boundary while isolating two same-kind Bindings", async () => {
+    const ports = await availablePorts(3);
+    const passwords = ["first-secret", "second-secret", "replacement-secret"];
+    const processes: AuthenticatedHttpProcess[] = [];
+    let passwordIndex = 0;
+    let portIndex = 0;
+    const serverClientOptions = {
+      readVersion: async () => "1.18.10",
+      allocatePort: async () => {
+        const port = ports[portIndex++];
+        if (port === undefined) throw new Error("missing port fixture");
+        return port;
+      },
+      password: () => {
+        const password = passwords[passwordIndex++];
+        if (password === undefined) throw new Error("missing password fixture");
+        return password;
+      },
+      spawnServer: (_executable: string, args: string[], env: NodeJS.ProcessEnv) => {
+        const portFlag = args.indexOf("--port");
+        const port = Number(args[portFlag + 1]);
+        const password = env.OPENCODE_SERVER_PASSWORD;
+        if (!Number.isInteger(port) || !password) throw new Error("invalid authenticated Server launch");
+        const process = new AuthenticatedHttpProcess(port, password);
+        processes.push(process);
+        return process;
+      },
+    };
+    const registry = new RuntimeAdapterRegistry([
+      {
+        kind: "opencode",
+        create: () =>
+          createOpenCodeRuntimeAdapter({
+            serverClientOptions,
+            eventReconnectDelays: [0],
+          }),
+      },
+    ]);
+    const firstBinding = {
+      kind: "opencode",
+      executablePathOverride: "/opt/opencode",
+      env: { CLAWCHAT_CONNECT_AGENT_ID: "first" },
+    } as const;
+    const secondBinding = {
+      kind: "opencode",
+      executablePathOverride: "/opt/opencode",
+      env: { CLAWCHAT_CONNECT_AGENT_ID: "second" },
+    } as const;
+
+    await Promise.all([registry.prepare(firstBinding), registry.prepare(secondBinding)]);
+    expect(processes).toHaveLength(2);
+    const [first, second] = processes;
+    if (!first || !second) throw new Error("missing isolated process fixture");
+    expect(first.port).not.toBe(second.port);
+    expect(first.password).not.toBe(second.password);
+    expect((await fetch(`http://127.0.0.1:${first.port}/global/health`)).status).toBe(401);
+    expect(
+      (
+        await fetch(`http://127.0.0.1:${first.port}/global/health`, {
+          headers: { Authorization: basicAuth(second.password) },
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await fetch(`http://127.0.0.1:${first.port}/global/health`, {
+          headers: { Authorization: basicAuth(first.password) },
+        })
+      ).status,
+    ).toBe(200);
+
+    first.crash();
+    for (let attempt = 0; attempt < 100 && processes.length < 3; attempt += 1) {
+      await Bun.sleep(1);
+      await registry.prepare(firstBinding);
+    }
+    expect(processes).toHaveLength(3);
+    const replacement = processes[2];
+    if (!replacement) throw new Error("missing replacement process fixture");
+    expect(first.exitCode).toBe(1);
+    expect(second.exitCode).toBeNull();
+    expect(replacement.port).not.toBe(first.port);
+    expect(replacement.password).not.toBe(first.password);
+
+    await registry.close();
+    expect(second.exitCode).toBe(0);
+    expect(replacement.exitCode).toBe(0);
+  });
+
+  it("escalates bounded shutdown from SIGTERM to SIGKILL", async () => {
+    const process = new StubbornProcess();
+    const client = await createOpenCodeServerClient(
+      { kind: "opencode", executablePathOverride: "/opt/opencode" },
+      {
+        readVersion: async () => "1.18.10",
+        allocatePort: async () => 43129,
+        spawnServer: () => process,
+        createApi: () => api(),
+        shutdownTimeoutMs: 1,
+      },
+    );
+
+    await client.close();
+
+    expect(process.signals).toEqual(["SIGTERM", "SIGKILL"]);
+  });
 });
+
+function basicAuth(password: string): string {
+  return `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
+}
+
+async function availablePorts(count: number): Promise<number[]> {
+  const servers = Array.from({ length: count }, () => createServer());
+  try {
+    await Promise.all(
+      servers.map(
+        async (server) =>
+          await new Promise<void>((resolve, reject) => {
+            server.once("error", reject);
+            server.listen(0, "127.0.0.1", resolve);
+          }),
+      ),
+    );
+    return servers.map((server) => {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("failed to reserve a loopback port");
+      return address.port;
+    });
+  } finally {
+    await Promise.all(
+      servers.map(
+        async (server) =>
+          await new Promise<void>((resolve, reject) =>
+            server.close((error) => {
+              if (error) reject(error);
+              else resolve();
+            }),
+          ),
+      ),
+    );
+  }
+}

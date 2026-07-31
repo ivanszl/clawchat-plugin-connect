@@ -818,6 +818,7 @@ describe("Connect Client Interface", () => {
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     openStores.push(store);
     const config = defaultConfig();
+    config.stateDbPath = store.dbPath;
     config.agents = { codex: { kind: "codex", displayName: "Codex" } };
     config.defaultAgent = "codex";
     let catalogUnavailable = true;
@@ -908,6 +909,7 @@ describe("Connect Client Interface", () => {
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     openStores.push(store);
     const config = defaultConfig();
+    config.stateDbPath = store.dbPath;
     const registry = new RuntimeAdapterRegistry([]);
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
     const port = 47_892;
@@ -945,6 +947,7 @@ describe("Connect Client Interface", () => {
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     openStores.push(store);
     const config = defaultConfig();
+    config.stateDbPath = store.dbPath;
     config.clientHost = "0.0.0.0";
     const registry = new RuntimeAdapterRegistry([]);
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });

@@ -305,7 +305,7 @@ describe("Session Catalog workspace grouping", () => {
 
   it("derives lifecycle actions from Runtime Adapter capabilities and Runtime Thread availability", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-capabilities-"));
-    const refs = ["ABCDEFGH", "JKLMNPQR"];
+    const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ"];
     const store = createStateStore({
       dbPath: join(directory, "state.sqlite"),
       sessionRefFactory: () => refs.shift() ?? "STUVWXYZ",
@@ -328,10 +328,37 @@ describe("Session Catalog workspace grouping", () => {
       hasMessages: true,
       isCurrent: true,
     });
+    await store.upsertRuntimeSession({
+      chatId: "chat-missing",
+      sessionId: "session-missing",
+      agentId: "codex",
+      runtimeSessionId: "thread-deleted-externally",
+      name: "Missing thread",
+      hasMessages: true,
+      isCurrent: true,
+    });
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
       lifecycleCapabilities: { archive: false, restore: false, delete: false },
+      listModels: async () => [
+        {
+          id: "test/model",
+          displayName: "Test",
+          description: "Test model",
+          isDefault: true,
+          defaultReasoningEffort: "default",
+          supportedReasoningEfforts: ["default"],
+          inputModalities: ["text", "image", "audio"],
+          turnSubmissionCapability: {
+            prompt: { allowed: true, required: false },
+            attachments: {
+              allowedKinds: ["image", "file", "audio", "video"],
+              allowedMediaTypes: ["*/*"],
+            },
+          },
+        },
+      ],
       discoverAllThreads: async () => [
         {
           runtimeThreadId: "thread-1",
@@ -355,8 +382,18 @@ describe("Session Catalog workspace grouping", () => {
     const entries = (await catalog.view()).bindings[0]?.entries ?? [];
     expect(entries.find((entry) => entry.name === "Empty")?.allowedActions).toEqual(["open", "send"]);
     expect(entries.find((entry) => entry.name === "Thread")?.allowedActions).toEqual(["open", "send", "cancel"]);
+    expect(entries.find((entry) => entry.name === "Missing thread")?.allowedActions).toEqual(["open"]);
     await expect(catalog.sessionView("ABCDEFGH")).resolves.toMatchObject({ allowedActions: ["send"] });
+    await expect(catalog.sessionView("ABCDEFGH")).resolves.toMatchObject({
+      turnSubmissionCapability: {
+        attachments: { allowedKinds: ["image", "file", "audio", "video"] },
+      },
+    });
     await expect(catalog.sessionView("JKLMNPQR")).resolves.toMatchObject({ allowedActions: ["send", "cancel"] });
+    await expect(catalog.sessionView("STUVWXYZ")).resolves.toMatchObject({
+      runtimeThreadAvailable: false,
+      allowedActions: [],
+    });
     await expect(catalog.archive("JKLMNPQR")).rejects.toMatchObject({ code: "session-action-unsupported" });
   });
 
