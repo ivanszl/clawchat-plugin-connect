@@ -175,6 +175,25 @@ export class TranscriptProjection {
     return (await this.options.stateStore.upsertTranscriptBlock(sessionRef, input)).block;
   }
 
+  async applyRuntimeDelivery(
+    sessionRef: string,
+    activity: RuntimeActivity,
+    delivery: { text: string; media: NonNullable<MessageBlockContent["media"]> },
+  ): Promise<TranscriptBlock> {
+    const input = this.fromRuntimeActivity(sessionRef, activity);
+    if (input.type !== "message" || input.role !== "assistant")
+      return await this.upsertRuntimeActivity(sessionRef, activity);
+    const text = normalizeVisibleText(delivery.text);
+    return (
+      await this.options.stateStore.upsertTranscriptBlock(sessionRef, {
+        ...input,
+        plainText: text,
+        markdown: text,
+        media: delivery.media,
+      })
+    ).block;
+  }
+
   private fromRuntimeActivity(sessionRef: string, entry: RuntimeActivity): EmbeddedTranscriptBlock {
     const id = stableBlockId(sessionRef, entry.id);
     const text = normalizeHistoryText(entry.text);

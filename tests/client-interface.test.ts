@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { mkdir, mkdtemp, readdir, realpath } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindingRuntimeHandle } from "../src/binding-runtime";
 import { type ClientInterfaceHandle, startClientInterface } from "../src/client-interface/server";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
+import { ProjectCatalog } from "../src/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
@@ -469,13 +470,24 @@ describe("Connect Client Interface", () => {
     const catalogResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/session-catalog?refresh=1");
     const catalogView = (await catalogResponse.json()) as {
       bindings: Array<{
-        entries: Array<{ workspaceId: string | null; workspaceName: string | null }>;
+        entries: Array<{ sessionRef: string; workspaceId: string | null; workspaceName: string | null }>;
       }>;
     };
     const discoveredWorkspace = catalogView.bindings[0]?.entries.find(
       (entry) => entry.workspaceName === "discovered-workspace",
     );
     expect(discoveredWorkspace?.workspaceId).toBeTruthy();
+    if (!discoveredWorkspace) throw new Error("discovered workspace Session was not cataloged");
+    await expect(store.getRuntimeSessionByRef(discoveredWorkspace.sessionRef)).resolves.toBeNull();
+    const discoveredSpecPath = join(discoveredWorkspaceRoot, "discovered-spec.md");
+    await writeFile(discoveredSpecPath, "# Discovered Runtime Thread spec\n");
+    const discoveredWorkspaceFile = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${discoveredWorkspace.sessionRef}/files?path=${encodeURIComponent(discoveredSpecPath)}`,
+    );
+    expect(discoveredWorkspaceFile.status).toBe(200);
+    await expect(discoveredWorkspaceFile.text()).resolves.toBe("# Discovered Runtime Thread spec\n");
     const workspaceSession = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
       method: "POST",
       headers: { origin: handle.origin, "content-type": "application/json" },
@@ -518,6 +530,69 @@ describe("Connect Client Interface", () => {
         },
       ],
     });
+
+    const runtimeWorkspace = await new ProjectCatalog(store).resolveWorkspace(session);
+    const specDirectory = join(runtimeWorkspace.workingDirectory, ".scratch", "example-spec");
+    const specPath = join(specDirectory, "spec.md");
+    await mkdir(specDirectory, { recursive: true });
+    await writeFile(specPath, "# Example spec\n\nWorkspace-scoped content.\n");
+    const workspaceFile = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/files?path=${encodeURIComponent(specPath)}`,
+    );
+    expect(workspaceFile.status).toBe(200);
+    expect(workspaceFile.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(workspaceFile.headers.get("content-disposition")).toContain("spec.md");
+    await expect(workspaceFile.text()).resolves.toBe("# Example spec\n\nWorkspace-scoped content.\n");
+
+    const imagePath = join(specDirectory, "mockup.png");
+    const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+    await writeFile(imagePath, imageBytes);
+    const workspaceImage = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/files?path=${encodeURIComponent(imagePath)}`,
+    );
+    expect(workspaceImage.status).toBe(200);
+    expect(workspaceImage.headers.get("content-type")).toBe("image/png");
+    expect(new Uint8Array(await workspaceImage.arrayBuffer())).toEqual(imageBytes);
+
+    const htmlPath = join(specDirectory, "prototype.html");
+    await writeFile(htmlPath, "<script>window.top.location='https://example.com'</script>");
+    const workspaceHtml = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/files?path=${encodeURIComponent(htmlPath)}`,
+    );
+    expect(workspaceHtml.status).toBe(200);
+    expect(workspaceHtml.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(workspaceHtml.headers.get("content-security-policy")).toContain("script-src 'none'");
+
+    const outsideSpecPath = join(directory, "outside.md");
+    await writeFile(outsideSpecPath, "# Outside\n");
+    const outsideWorkspaceFile = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/files?path=${encodeURIComponent(outsideSpecPath)}`,
+    );
+    expect(outsideWorkspaceFile.status).toBe(403);
+    const linkedOutsideSpecPath = join(specDirectory, "linked-outside.md");
+    await symlink(outsideSpecPath, linkedOutsideSpecPath);
+    const linkedOutsideWorkspaceFile = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/files?path=${encodeURIComponent(linkedOutsideSpecPath)}`,
+    );
+    expect(linkedOutsideWorkspaceFile.status).toBe(403);
+    const environmentPath = join(runtimeWorkspace.workingDirectory, ".env");
+    await writeFile(environmentPath, "SECRET_TOKEN=not-readable-through-liveware\n");
+    const unsupportedWorkspaceFile = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/files?path=${encodeURIComponent(environmentPath)}`,
+    );
+    expect(unsupportedWorkspaceFile.status).toBe(415);
 
     const eventCursor = await store.getClientEventCursor();
     await projection.appendUserMessage({

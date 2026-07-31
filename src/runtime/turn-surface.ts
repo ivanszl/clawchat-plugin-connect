@@ -39,12 +39,12 @@ export class ClientTurnSurface implements TurnSurface {
 export interface ClawChatTurnSurfaceOptions {
   project(event: RuntimeActivity): Promise<void>;
   materialize(event: RuntimeActivity): MaterializedRuntimeReply | null;
-  deliver(reply: MaterializedRuntimeReply): Promise<void>;
+  deliver(event: RuntimeActivity, reply: MaterializedRuntimeReply): Promise<void>;
 }
 
 export class ClawChatTurnSurface implements TurnSurface {
   readonly origin = "clawchat" as const;
-  private readonly buffered = new Map<string, MaterializedRuntimeReply>();
+  private readonly buffered = new Map<string, { event: RuntimeActivity; reply: MaterializedRuntimeReply }>();
 
   constructor(private readonly options: ClawChatTurnSurfaceOptions) {}
 
@@ -55,13 +55,13 @@ export class ClawChatTurnSurface implements TurnSurface {
       this.buffered.delete(event.id);
       return;
     }
-    if (reply.requiredControl) await this.options.deliver(reply);
-    else this.buffered.set(event.id, reply);
+    if (reply.requiredControl) await this.options.deliver(event, reply);
+    else this.buffered.set(event.id, { event, reply });
   }
 
   async complete(): Promise<void> {
-    const replies = [...this.buffered.values()];
+    const deliveries = [...this.buffered.values()];
     this.buffered.clear();
-    for (const reply of replies) await this.options.deliver(reply);
+    for (const { event, reply } of deliveries) await this.options.deliver(event, reply);
   }
 }

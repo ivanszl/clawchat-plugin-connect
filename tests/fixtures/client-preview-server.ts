@@ -19,6 +19,9 @@ await mkdir(projectDirectory);
 await mkdir(discoveredWorkspace);
 await mkdir(archivedDiscoveredWorkspace, { recursive: true });
 const projectRoot = await realpath(projectDirectory);
+const artifactSpecPath = join(projectRoot, "artifact-preview.md");
+await Bun.write(artifactSpecPath, "# Mobile Artifact preview\n\n[Open TypeScript](./artifact-preview.ts)\n");
+await Bun.write(join(projectRoot, "artifact-preview.ts"), 'export const mobileArtifact = "ready";\n');
 const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ", "23456789", "BCDEFGHJ", "CDEFGHJK", "DEFGHJKM"];
 const stateStore = createStateStore({
   dbPath: join(directory, "state.sqlite"),
@@ -117,6 +120,13 @@ const transcripts = new Map<string, RuntimeTranscriptEntry[]>([
         id: "a1",
         kind: "assistant",
         text: "App Server 已成为 Codex 的唯一生产协议；Web 只连接 Connect，并可从原生 thread 重建完整消息。",
+        state: "complete",
+        source: "history",
+      },
+      {
+        id: "a-artifact",
+        kind: "assistant",
+        text: `[打开 Artifact 移动端测试](${artifactSpecPath})`,
         state: "complete",
         source: "history",
       },

@@ -669,27 +669,37 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
   it("uploads a safe local Markdown image before replying with a media Fragment", async () => {
     const fixture = await runtimeFixture();
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!current) throw new Error("test Session was not created");
     const imagePath = join(dirname(fixture.config.stateDbPath), "media-cache", "cached-image", "00-TheFool.jpg");
     await mkdir(dirname(imagePath), { recursive: true });
     const imageBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]);
     await writeFile(imagePath, imageBytes);
+    const output = activity(`![00-TheFool.jpg](${imagePath})`);
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["read-only", "workspace-write", "danger-full-access"],
       start: mock(async () => ({
         prompt: async function* () {
-          yield activity(`![00-TheFool.jpg](${imagePath})`);
+          yield output;
         },
         close: mock(async () => undefined),
       })),
     };
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
+    const transcriptProjection = new TranscriptProjection({
+      stateStore: fixture.store,
+      config: fixture.config,
+      runtimeAdapters,
+    });
     const runtime = new ConnectRuntime({
       agentId: "codex",
       config: fixture.config,
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
+      runtimeAdapters,
+      transcriptProjection,
     });
 
     await runtime.handleInboundMessage(message("send the image back"));
@@ -718,6 +728,31 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         },
       }),
       { toType: "direct" },
+    );
+    await expect(fixture.store.listTranscriptBlocks(current.sessionRef)).resolves.toContainEqual(
+      expect.objectContaining({
+        type: "message",
+        role: "assistant",
+        markdown: "",
+        media: [
+          expect.objectContaining({
+            kind: "image",
+            url: "https://cdn.example/uploaded-image",
+            name: "00-TheFool.jpg",
+            mime: "image/jpeg",
+          }),
+        ],
+      }),
+    );
+
+    await transcriptProjection.upsertRuntimeActivity(current.sessionRef, { ...output, source: "history" });
+    await expect(fixture.store.listTranscriptBlocks(current.sessionRef)).resolves.toContainEqual(
+      expect.objectContaining({
+        type: "message",
+        role: "assistant",
+        markdown: "",
+        media: [expect.objectContaining({ url: "https://cdn.example/uploaded-image" })],
+      }),
     );
     await runtime.dispose();
     await fixture.store.close();
@@ -751,6 +786,49 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     });
 
     await runtime.handleInboundMessage(message("send the result"));
+
+    expect(fixture.uploadMedia).not.toHaveBeenCalled();
+    expect(fixture.sendMessageEnvelope).toHaveBeenCalledWith(
+      "message.reply",
+      "chat-1",
+      expect.objectContaining({
+        message: expect.objectContaining({ body: { fragments: [{ kind: "text", text: markdown }] } }),
+      }),
+      { toType: "direct" },
+    );
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("sends a local Markdown document link to ClawChat as unchanged text", async () => {
+    const fixture = await runtimeFixture();
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!current) throw new Error("test session was not created");
+    const workspace = await new ProjectCatalog(fixture.store).resolveWorkspace(current);
+    const specPath = join(workspace.workingDirectory, ".scratch", "example-spec", "spec.md");
+    await mkdir(dirname(specPath), { recursive: true });
+    await writeFile(specPath, "# Example spec\n");
+    const markdown = `[Example spec](${specPath})`;
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: mock(async () => ({
+        prompt: async function* () {
+          yield activity(markdown);
+        },
+        close: mock(async () => undefined),
+      })),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
+    });
+
+    await runtime.handleInboundMessage(message("write the spec"));
 
     expect(fixture.uploadMedia).not.toHaveBeenCalled();
     expect(fixture.sendMessageEnvelope).toHaveBeenCalledWith(

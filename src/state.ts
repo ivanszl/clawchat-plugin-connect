@@ -1908,19 +1908,9 @@ export class ConnectStateStore {
     );
     const previous = JSON.parse(candidate.block_json) as TranscriptBlock;
     const now = Date.now();
-    const preserveOptimisticMessage =
-      previous.type === "message" && input.type === "message" && !candidate.block_id.startsWith("b_");
+    const projectedInput = preserveConnectOwnedMessageMetadata(previous, input);
     const block: TranscriptBlock = {
-      ...input,
-      ...(preserveOptimisticMessage
-        ? {
-            origin: previous.origin,
-            author: previous.author,
-            ...(previous.sender ? { sender: previous.sender } : {}),
-            ...(previous.conversationType ? { conversationType: previous.conversationType } : {}),
-            ...(previous.media && !input.media ? { media: previous.media } : {}),
-          }
-        : {}),
+      ...projectedInput,
       revision: Math.max(candidate.revision, stable?.revision ?? 0) + 1,
       sequence: candidate.sequence,
       createdAt: new Date(candidate.created_at).toISOString(),
@@ -2689,6 +2679,23 @@ function preserveConnectOwnedMessageMetadata(
   stored: TranscriptBlock | null,
   input: TranscriptBlockInput,
 ): TranscriptBlockInput {
+  if (
+    stored?.type === "message" &&
+    input.type === "message" &&
+    stored.role === "assistant" &&
+    input.role === "assistant" &&
+    stored.origin === "runtime" &&
+    input.origin === "runtime" &&
+    stored.media &&
+    !input.media
+  ) {
+    return {
+      ...input,
+      plainText: stored.plainText,
+      markdown: stored.markdown,
+      media: stored.media,
+    };
+  }
   if (
     stored?.type !== "message" ||
     input.type !== "message" ||

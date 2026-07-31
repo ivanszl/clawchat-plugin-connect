@@ -18,7 +18,7 @@ import type { SessionActivity } from "../runtime/session-queue";
 import type { RuntimeLifecycleCapabilities, RuntimeModelOption, RuntimeThreadSummary } from "../runtime/types";
 import { createSessionContinuity, type SessionContinuity } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
-import type { ConnectConfig, ProjectRecord, RuntimeSessionRecord, RuntimeStatus } from "../types";
+import type { ConnectConfig, ProjectRecord, RuntimeSessionRecord, RuntimeStatus, RuntimeWorkspace } from "../types";
 import { findProjectForWorkspace, workspaceView } from "../workspace-catalog";
 import type { TranscriptProjection } from "./transcript-projection";
 
@@ -115,6 +115,26 @@ export class SessionCatalog {
 
   async entry(sessionRef: string, force = false): Promise<SessionCatalogEntryView | null> {
     return (await this.load(force)).entriesByRef.get(sessionRef.toUpperCase()) ?? null;
+  }
+
+  async workspace(sessionRef: string): Promise<RuntimeWorkspace | null> {
+    const normalized = sessionRef.toUpperCase();
+    const state = await this.load();
+    const entry = state.entriesByRef.get(normalized) ?? null;
+    if (!entry) return null;
+    const managed = await this.options.stateStore.getRuntimeSessionByRef(normalized);
+    if (managed) return await this.projects.resolveWorkspace(managed);
+    if (entry.projectId) {
+      return await this.projects.resolveProjectWorkspace(entry.projectId).catch(() => null);
+    }
+    const workingDirectory = state.workingDirectoryByRef.get(normalized) ?? null;
+    if (!workingDirectory) return null;
+    return {
+      projectId: null,
+      workingDirectory: resolve(workingDirectory),
+      additionalDirectories: [],
+      skipGitRepoCheck: true,
+    };
   }
 
   async sessionView(sessionRef: string): Promise<SessionView | null> {

@@ -9,12 +9,14 @@ const transcriptBlockUrl = new URL("../web/src/features/transcript/TranscriptBlo
 const settingsPageUrl = new URL("../web/src/features/settings/SettingsPage.tsx", import.meta.url);
 
 describe("Connect Client session layout", () => {
-  it("keeps the transcript and composer in stable rows when the history warning is absent", async () => {
+  it("keeps Artifact navigation, transcript, and composer in stable rows", async () => {
     const stylesheet = await Bun.file(stylesheetUrl).text();
 
-    expect(cssRule(stylesheet, ".session-notices")).toContain("grid-row: 2");
-    expect(cssRule(stylesheet, ".transcript-frame")).toContain("grid-row: 3");
-    expect(cssRule(stylesheet, ".composer-region")).toContain("grid-row: 4");
+    expect(cssRule(stylesheet, ".artifact-desktop-tabs")).toContain("grid-row: 2");
+    expect(cssRule(stylesheet, ".session-notices")).toContain("grid-row: 3");
+    expect(cssRule(stylesheet, ".session-transcript-surface")).toContain("grid-row: 4");
+    expect(cssRule(stylesheet, ".session-composer-surface")).toContain("grid-row: 5");
+    expect(cssRule(stylesheet, ".artifact-viewer")).toContain("grid-row: 3 / 6");
   });
 
   it("keeps two-column Settings controls aligned by placing descriptions below the controls", async () => {

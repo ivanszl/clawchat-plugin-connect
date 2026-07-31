@@ -10,13 +10,22 @@ import { TranscriptBlockView, TranscriptToolCallsView } from "./TranscriptBlockV
 import { groupBlocksForRendering, groupTranscriptBlocks, type TranscriptGroup } from "./transcript-render-groups";
 
 export interface TranscriptViewportProps {
+  sessionRef: string;
   pages: TranscriptPageView[];
   hasOlder: boolean;
   isLoadingOlder: boolean;
   loadOlder(): Promise<unknown>;
+  onOpenArtifact?: (path: string) => void;
 }
 
-export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder }: TranscriptViewportProps) {
+export function TranscriptViewport({
+  sessionRef,
+  pages,
+  hasOlder,
+  isLoadingOlder,
+  loadOlder,
+  onOpenArtifact,
+}: TranscriptViewportProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const columnRef = useRef<HTMLDivElement>(null);
   const loadingOlderRef = useRef(false);
@@ -138,7 +147,11 @@ export function TranscriptViewport({ pages, hasOlder, isLoadingOlder, loadOlder 
                       </div>
                     ) : (
                       <div className="transcript-group-block" data-block-type={entry.block.type} key={entry.id}>
-                        <TranscriptBlockView block={entry.block} />
+                        <TranscriptBlockView
+                          block={entry.block}
+                          sessionRef={sessionRef}
+                          onOpenArtifact={onOpenArtifact}
+                        />
                       </div>
                     ),
                   )}

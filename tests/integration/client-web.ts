@@ -26,6 +26,7 @@ try {
     await verifyComposerWorkingState(browser, origin);
     await verifyEmbeddedMobileNavigationDoesNotOverflow(browser, origin);
     await verifySmallWindowNavigation(browser, origin);
+    await verifyResponsiveArtifactWorkspace(browser, origin);
     await verifyTranscriptAlwaysFollowsLatest(browser, origin);
     await verifyTranscriptPresentation(browser, origin);
     await verifyContinueInClawChat(browser, origin);
@@ -638,6 +639,83 @@ async function verifySmallWindowNavigation(browser: Awaited<ReturnType<typeof ch
     await page.getByRole("button", { name: "新建 Session" }).click();
     await expect(createDialog).toBeVisible();
     await expect(createDialog.getByRole("button", { name: "创建 Session" })).toBeEnabled();
+  } finally {
+    await page.close();
+  }
+}
+
+async function verifyResponsiveArtifactWorkspace(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const viewports = [
+    { width: 320, height: 568 },
+    { width: 390, height: 844 },
+    { width: 442, height: 704 },
+    { width: 720, height: 900 },
+    { width: 721, height: 900 },
+    { width: 1024, height: 768 },
+    { width: 1440, height: 900 },
+  ];
+  for (const viewport of viewports) {
+    await verifyArtifactWorkspaceAtViewport(browser, previewOrigin, viewport);
+  }
+}
+
+async function verifyArtifactWorkspaceAtViewport(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+  viewport: { width: number; height: number },
+) {
+  const page = await browser.newPage({ viewport });
+  try {
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    await page.getByRole("link", { name: "打开 Artifact 移动端测试" }).click();
+    await expect(page.getByRole("heading", { name: "Mobile Artifact preview" })).toBeVisible();
+    await expect(page.locator(".session-composer-surface")).toBeHidden();
+
+    await page.getByRole("link", { name: "Open TypeScript" }).click();
+    await expect(page.getByText('export const mobileArtifact = "ready";')).toBeVisible();
+    if (viewport.width <= 720) {
+      await expect(page.locator(".artifact-desktop-tabs")).toBeHidden();
+      await expect(page.locator(".artifact-mobile-navigation")).toBeVisible();
+      await expect(page.getByRole("button", { name: "← 对话" })).toBeVisible();
+      await page.getByRole("button", { name: "已打开 (2)" }).click();
+      const sheet = page.getByRole("dialog").filter({ hasText: "已打开项目" });
+      await expect(sheet).toBeVisible();
+      await expect(sheet.getByText("artifact-preview.md", { exact: true })).toBeVisible();
+      await expect(sheet.getByText("artifact-preview.ts", { exact: true })).toBeVisible();
+      await sheet.evaluate(async (element) => {
+        await Promise.all(element.getAnimations().map((animation) => animation.finished));
+      });
+      const sheetBox = await sheet.boundingBox();
+      assert(sheetBox, "mobile Artifact sheet must have a bounding box");
+      assert(
+        sheetBox.x >= 7 && sheetBox.x <= 9 && sheetBox.width >= viewport.width - 18,
+        `mobile Artifact sheet must use the available viewport width: ${JSON.stringify({ sheetBox, viewport })}`,
+      );
+      assert(
+        sheetBox.y + sheetBox.height <= viewport.height && sheetBox.y + sheetBox.height >= viewport.height - 12,
+        `mobile Artifact sheet must stay attached to the viewport bottom: ${JSON.stringify({ sheetBox, viewport })}`,
+      );
+      await sheet.getByRole("button", { name: "App Server 与 Web Client" }).click();
+      await expect(page.getByRole("button", { name: "← 对话" })).toHaveCount(0);
+    } else {
+      await expect(page.locator(".artifact-desktop-tabs")).toBeVisible();
+      await expect(page.locator(".artifact-mobile-navigation")).toBeHidden();
+      await expect(page.getByRole("tab", { name: "artifact-preview.ts" })).toBeVisible();
+      await page.getByRole("tab", { name: "App Server 与 Web Client" }).click();
+    }
+    await expect(page.locator(".session-composer-surface")).toBeVisible();
+    const geometry = await page.evaluate(() => ({
+      client: document.documentElement.clientWidth,
+      scroll: document.documentElement.scrollWidth,
+    }));
+    assert.equal(
+      geometry.scroll,
+      geometry.client,
+      `Artifact Workspace must not overflow its viewport: ${JSON.stringify({ geometry, viewport })}`,
+    );
   } finally {
     await page.close();
   }

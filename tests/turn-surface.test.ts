@@ -22,7 +22,7 @@ it("projects every Runtime Activity before a ClawChat delivery failure", async (
       order.push(`project:${event.text}`);
     },
     materialize: (event) => ({ text: event.text, requiredControl: event.data?.requiredControl === true }),
-    deliver: async (reply) => {
+    deliver: async (_event, reply) => {
       order.push(`deliver:${reply.text}`);
       throw new Error("ClawChat unavailable");
     },
@@ -42,7 +42,7 @@ it("delivers only the completed current state when a Runtime Activity streamed b
       projected.push(`${event.state}:${event.text}`);
     },
     materialize: (event) => ({ text: event.text, requiredControl: false }),
-    deliver: async (reply) => {
+    deliver: async (_event, reply) => {
       delivered.push(reply.text);
     },
   });

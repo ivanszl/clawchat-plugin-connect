@@ -22,6 +22,7 @@ import {
   updateSessionPreferences,
 } from "../client-interface/query-options";
 import { MoreIcon } from "../components/icons";
+import { ArtifactNavigation, ArtifactViewer, useArtifactWorkspace } from "../features/artifacts/ArtifactWorkspaceView";
 import { SessionComposer } from "../features/composer/SessionComposer";
 import { TranscriptViewport } from "../features/transcript/TranscriptViewport";
 import { continueInClawChatHref, isClawChatLivewareContext } from "../liveware/clawchat-deep-link";
@@ -36,6 +37,7 @@ function SessionPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const artifactWorkspace = useArtifactWorkspace(sessionRef);
   const lifecycle = useMutation({
     mutationFn: async (action: "archive" | "unarchive" | "delete") => {
       if (action === "archive") return await archiveSession(sessionRef);
@@ -139,7 +141,8 @@ function SessionPage() {
           />
         </div>
       </header>
-      <div className="session-notices">
+      <ArtifactNavigation sessionTitle={view.name} workspace={artifactWorkspace} />
+      <div className="session-notices" hidden={Boolean(artifactWorkspace.activeTab)}>
         {view.isArchived ? (
           <Banner
             status="info"
@@ -159,23 +162,37 @@ function SessionPage() {
           />
         ) : null}
       </div>
-      <TranscriptViewport
-        key={sessionRef}
-        pages={transcript.data.pages}
-        hasOlder={Boolean(transcript.hasNextPage)}
-        isLoadingOlder={transcript.isFetchingNextPage}
-        loadOlder={transcript.fetchNextPage}
-      />
-      <SessionComposer
-        sessionRef={sessionRef}
-        contextLabel={`${view.workspaceName || view.projectName || "Non-Project"} / ${view.sessionRef}`}
-        continueInClawChatHref={clawChatHref}
-        canSend={view.allowedActions.includes("send") && view.status !== "offline"}
-        isRuntimeActive={view.status === "running" || view.status === "queued"}
-        capability={view.turnSubmissionCapability}
-        hasPendingInteraction={view.pendingInteractions.length > 0}
-        modelControl={<SessionModelControls view={view} />}
-      />
+      <div className="session-transcript-surface" hidden={Boolean(artifactWorkspace.activeTab)}>
+        <TranscriptViewport
+          key={sessionRef}
+          sessionRef={sessionRef}
+          pages={transcript.data.pages}
+          hasOlder={Boolean(transcript.hasNextPage)}
+          isLoadingOlder={transcript.isFetchingNextPage}
+          loadOlder={transcript.fetchNextPage}
+          onOpenArtifact={artifactWorkspace.open}
+        />
+      </div>
+      <div className="session-composer-surface" hidden={Boolean(artifactWorkspace.activeTab)}>
+        <SessionComposer
+          sessionRef={sessionRef}
+          contextLabel={`${view.workspaceName || view.projectName || "Non-Project"} / ${view.sessionRef}`}
+          continueInClawChatHref={clawChatHref}
+          canSend={view.allowedActions.includes("send") && view.status !== "offline"}
+          isRuntimeActive={view.status === "running" || view.status === "queued"}
+          capability={view.turnSubmissionCapability}
+          hasPendingInteraction={view.pendingInteractions.length > 0}
+          modelControl={<SessionModelControls view={view} />}
+        />
+      </div>
+      {artifactWorkspace.activeTab ? (
+        <ArtifactViewer
+          key={artifactWorkspace.activeTab.id}
+          sessionRef={sessionRef}
+          tab={artifactWorkspace.activeTab}
+          openArtifact={artifactWorkspace.open}
+        />
+      ) : null}
       <AlertDialog
         isOpen={deleteOpen}
         onOpenChange={setDeleteOpen}

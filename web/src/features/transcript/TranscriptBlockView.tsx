@@ -20,9 +20,18 @@ import type {
   RuntimeInteractionBlock,
   TranscriptBlock,
 } from "../../../../src/client-contract";
+import { normalizeWorkspaceArtifactHref, workspaceArtifactUrl } from "../../../../src/workspace-artifact";
 import { respondToRuntimeInteraction } from "../../client-interface/query-options";
 
-export function TranscriptBlockView({ block }: { block: TranscriptBlock | EmbeddedTranscriptBlock }) {
+export function TranscriptBlockView({
+  block,
+  sessionRef,
+  onOpenArtifact,
+}: {
+  block: TranscriptBlock | EmbeddedTranscriptBlock;
+  sessionRef: string;
+  onOpenArtifact?: (path: string) => void;
+}) {
   if (block.type === "message") {
     const sender = block.role === "user" ? "user" : "assistant";
     return (
@@ -56,6 +65,8 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
               markdown={visibleMessageMarkdown(block)}
               isStreaming={block.state === "streaming"}
               preserveLineBreaks
+              sessionRef={sessionRef}
+              onOpenArtifact={onOpenArtifact}
             />
           ) : null}
         </ChatMessageBubble>
@@ -75,7 +86,7 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
             {block.blocks.length > 0 ? (
               block.blocks.map((child) => (
                 <article className="subagent-transcript-item" data-block-type={child.type} key={child.id}>
-                  <TranscriptBlockView block={child} />
+                  <TranscriptBlockView block={child} sessionRef={sessionRef} onOpenArtifact={onOpenArtifact} />
                 </article>
               ))
             ) : (
@@ -93,7 +104,12 @@ export function TranscriptBlockView({ block }: { block: TranscriptBlock | Embedd
           trigger={block.type === "plan" ? "执行计划" : "推理摘要"}
           defaultIsOpen={block.type === "plan" || block.state === "streaming"}
         >
-          <SafeMarkdown markdown={block.markdown} isStreaming={block.state === "streaming"} />
+          <SafeMarkdown
+            markdown={block.markdown}
+            isStreaming={block.state === "streaming"}
+            sessionRef={sessionRef}
+            onOpenArtifact={onOpenArtifact}
+          />
         </Collapsible>
       </div>
     );
@@ -371,10 +387,14 @@ function deadlineRemaining(deadline: string | null): number | null {
 function SafeMarkdown({
   markdown,
   isStreaming,
+  sessionRef,
+  onOpenArtifact,
   preserveLineBreaks = false,
 }: {
   markdown: string;
   isStreaming: boolean;
+  sessionRef: string;
+  onOpenArtifact?: (path: string) => void;
   preserveLineBreaks?: boolean;
 }) {
   return (
@@ -384,25 +404,92 @@ function SafeMarkdown({
       isStreaming={isStreaming}
       autolink="gfm"
       contentWidth="72ch"
-      onLinkClick={(href, event) => {
-        if (!isSafeExternalLink(href)) {
-          event.preventDefault();
-          return false;
-        }
-        event.preventDefault();
-        window.open(href, "_blank", "noopener,noreferrer");
-        return false;
-      }}
       components={{
         image: ({ alt }) => <span className="blocked-image">[图片已阻止：{alt || "无描述"}]</span>,
+        link: ({ href, children }) => (
+          <SafeMarkdownLink href={href} sessionRef={sessionRef} onOpenArtifact={onOpenArtifact}>
+            {children}
+          </SafeMarkdownLink>
+        ),
         code: ({ code, language }) => (
           <CodeBlock code={code} language={language} hasCopyButton isWrapped width="100%" />
         ),
       }}
     >
-      {markdown}
+      {routeStandaloneImagesThroughOverride(markdown)}
     </Markdown>
   );
+}
+
+function SafeMarkdownLink({
+  href,
+  sessionRef,
+  onOpenArtifact,
+  children,
+}: {
+  href: string;
+  sessionRef: string;
+  onOpenArtifact?: (path: string) => void;
+  children: ReactNode;
+}) {
+  const localPath = normalizeWorkspaceArtifactHref(href);
+  if (localPath) {
+    return (
+      <a
+        href={workspaceArtifactUrl(sessionRef, localPath)}
+        onClick={
+          onOpenArtifact
+            ? (event) => {
+                event.preventDefault();
+                onOpenArtifact(localPath);
+              }
+            : undefined
+        }
+      >
+        {children}
+      </a>
+    );
+  }
+  if (!isSafeExternalLink(href)) return <span>{children}</span>;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  );
+}
+
+function routeStandaloneImagesThroughOverride(markdown: string): string {
+  let fenceCharacter: "`" | "~" | null = null;
+  let fenceLength = 0;
+  return markdown
+    .split("\n")
+    .map((line) => {
+      const fence = /^ {0,3}(`{3,}|~{3,})/u.exec(line)?.[1] ?? null;
+      if (fenceCharacter) {
+        if (
+          fence?.[0] === fenceCharacter &&
+          fence.length >= fenceLength &&
+          line.slice(line.indexOf(fence) + fence.length).trim() === ""
+        ) {
+          fenceCharacter = null;
+          fenceLength = 0;
+        }
+        return line;
+      }
+      if (fence) {
+        fenceCharacter = fence[0] as "`" | "~";
+        fenceLength = fence.length;
+        return line;
+      }
+      const standaloneImage = /^((?:(?: {0,3}>[ \t]?)+)?[ \t]*)(!\[[^\]\r\n]*\]\([^\r\n]*\))[ \t]*$/u.exec(line);
+      if (!standaloneImage) return line;
+      const prefix = standaloneImage[1] ?? "";
+      if (!prefix.includes(">") && (prefix.startsWith("\t") || prefix.length >= 4)) return line;
+      // Astryx 0.1.7 skips components.image for a block consisting only of an image.
+      // A word joiner keeps the node inline so the Connect-owned safe image renderer runs.
+      return `${prefix}\u2060${line.slice(prefix.length)}`;
+    })
+    .join("\n");
 }
 
 function visibleMessageMarkdown(
@@ -415,7 +502,7 @@ function visibleMessageMarkdown(
 
 function isSafeExternalLink(href: string): boolean {
   try {
-    const url = new URL(href, window.location.origin);
+    const url = new URL(href);
     return url.protocol === "https:" || url.protocol === "http:" || url.protocol === "mailto:";
   } catch {
     return false;

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access } from "node:fs/promises";
-import { dirname, extname, join, resolve, sep } from "node:path";
+import { access, realpath, stat } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { BindingRuntimeHandle } from "../binding-runtime";
 import {
   type AddProjectRequest,
@@ -28,6 +28,7 @@ import type { RuntimeSessionOption } from "../runtime/types";
 import { createSessionContinuity, SessionLifecycleError } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig, RuntimeWorkspace } from "../types";
+import { classifyWorkspaceArtifact } from "../workspace-artifact";
 import { BINDING_SCOPE_HEADER } from "./binding-scoped-gateway";
 import { SessionCatalog } from "./session-catalog";
 import type { TranscriptProjection } from "./transcript-projection";
@@ -462,6 +463,48 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               },
               watermark,
             );
+          }
+          const workspaceFileMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/files$/u);
+          if (workspaceFileMatch && request.method === "GET") {
+            const sessionRef = normalizeSessionRef(workspaceFileMatch[1] ?? "");
+            if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
+            const workspace = await catalog.workspace(sessionRef);
+            if (!workspace) return errorResponse(404, "session-not-found", "Session was not found");
+            const requestedPath = url.searchParams.get("path")?.trim() ?? "";
+            if (!requestedPath || !isAbsolute(requestedPath)) {
+              return errorResponse(400, "invalid-workspace-file", "Workspace file path must be absolute");
+            }
+            const canonicalPath = await realpath(requestedPath).catch(() => null);
+            if (!canonicalPath) return errorResponse(404, "workspace-file-not-found", "Workspace file was not found");
+            const roots = await Promise.all(
+              [workspace.workingDirectory, ...workspace.additionalDirectories].map(
+                async (root) => await realpath(root).catch(() => null),
+              ),
+            );
+            if (!roots.some((root) => root && isPathWithin(root, canonicalPath))) {
+              return errorResponse(403, "workspace-file-forbidden", "Workspace file is outside this Session");
+            }
+            const artifactType = classifyWorkspaceArtifact(canonicalPath);
+            if (!artifactType) {
+              return errorResponse(415, "workspace-file-unsupported", "This file type cannot be opened in Liveware");
+            }
+            const details = await stat(canonicalPath);
+            if (!details.isFile()) {
+              return errorResponse(404, "workspace-file-not-found", "Workspace file was not found");
+            }
+            if (details.size > artifactType.maxBytes) {
+              return errorResponse(413, "workspace-file-too-large", "Workspace file is too large to open");
+            }
+            return new Response(Bun.file(canonicalPath), {
+              headers: workspaceArtifactHeaders({
+                "Content-Type": artifactType.mime,
+                "Content-Length": String(details.size),
+                "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(basename(canonicalPath))}`,
+                "Cache-Control": "no-store",
+                "X-ClawChat-Artifact-Kind": artifactType.kind,
+                ...(artifactType.language ? { "X-ClawChat-Artifact-Language": artifactType.language } : {}),
+              }),
+            });
           }
           const archiveMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/archive$/u);
           if (archiveMatch && request.method === "POST") {
@@ -1223,6 +1266,11 @@ function jsonResponse(value: unknown, status = 200): Response {
   });
 }
 
+function isPathWithin(root: string, candidate: string): boolean {
+  const nestedPath = relative(root, candidate);
+  return nestedPath === "" || (!nestedPath.startsWith(`..${sep}`) && nestedPath !== ".." && !isAbsolute(nestedPath));
+}
+
 function snapshotResponse(value: unknown, watermark: number): Response {
   const response = jsonResponse(value);
   response.headers.set("X-Client-View-Watermark", String(watermark));
@@ -1252,6 +1300,14 @@ function securityHeaders(initial: Record<string, string> = {}): Headers {
     "X-Content-Type-Options": "nosniff",
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
+    ...initial,
+  });
+}
+
+function workspaceArtifactHeaders(initial: Record<string, string>): Headers {
+  return securityHeaders({
+    "Content-Security-Policy":
+      "default-src 'none'; script-src 'none'; script-src-attr 'none'; style-src 'none'; img-src 'self' data:; connect-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
     ...initial,
   });
 }

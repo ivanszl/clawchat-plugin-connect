@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { open, realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { MessageBlockContent } from "../client-contract";
 import type { TranscriptProjection } from "../client-interface/transcript-projection";
 import { defaultConfigPath, getAgentBinding } from "../config";
 import { buildReplyTextMessagePayload } from "../message-mapper";
@@ -14,7 +15,7 @@ import {
 } from "../output-visibility";
 import { synchronizeRuntimeProjects as synchronizeProjects } from "../project-synchronizer";
 import { ProjectCatalog } from "../projects";
-import { EVENT, type NormalizedInboundMessage } from "../protocol";
+import { EVENT, type Fragment, type NormalizedInboundMessage } from "../protocol";
 import {
   createSessionContinuity,
   type SessionContinuity,
@@ -418,7 +419,12 @@ export class ConnectRuntime {
         await this.options.transcriptProjection?.upsertRuntimeActivity(current.sessionRef, event);
       },
       materialize: (event) => materializeRuntimeOutput(event, policy),
-      deliver: async (reply) => await this.sendReply(message, reply, workspace),
+      deliver: async (event, reply) => {
+        const delivery = await this.sendReply(message, reply, workspace);
+        if (delivery?.media.length) {
+          await this.options.transcriptProjection?.applyRuntimeDelivery(current.sessionRef, event, delivery);
+        }
+      },
     });
     const runtimeInteractions = this.options.runtimeInteractions;
     for await (const event of this.executor.execute(target, {
@@ -553,7 +559,7 @@ export class ConnectRuntime {
     message: NormalizedInboundMessage,
     reply: MaterializedRuntimeReply,
     workspace?: RuntimeWorkspace,
-  ): Promise<void> {
+  ): Promise<DeliveredReplyProjection | null> {
     const route = { chatId: message.chatId, chatType: message.chatType };
     const localMedia = workspace
       ? await resolveLocalReplyMedia(reply.text, this.options.config.stateDbPath, workspace)
@@ -564,10 +570,14 @@ export class ConnectRuntime {
         await this.options.wsClient.uploadMedia(Bun.file(file.path), { filename: file.filename }),
       );
     }
-    if (payload.message.body.fragments.length === 0) return;
+    if (payload.message.body.fragments.length === 0) return null;
     await this.options.wsClient.sendMessageEnvelope(EVENT.MESSAGE_REPLY, route.chatId, payload, {
       toType: route.chatType,
     });
+    return {
+      text: localMedia.text,
+      media: transcriptMediaFromFragments(payload.message.body.fragments),
+    };
   }
 
   private async materializeCurrentSession(chatId: string): Promise<RuntimeSessionRecord> {
@@ -658,6 +668,11 @@ function runtimeSessionFromTurnTarget(target: TurnTarget): RuntimeSessionRecord 
 interface LocalReplyMediaFile {
   path: string;
   filename: string;
+}
+
+interface DeliveredReplyProjection {
+  text: string;
+  media: NonNullable<MessageBlockContent["media"]>;
 }
 
 const LOCAL_MARKDOWN_IMAGE_PATTERN = /!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\s*\)/gu;
@@ -820,7 +835,11 @@ function runtimeMedia(message: NormalizedInboundMessage): ConnectRuntimeMedia[] 
 }
 
 function transcriptMedia(message: NormalizedInboundMessage): import("../client-contract").MessageBlockContent["media"] {
-  return message.fragments.flatMap((fragment) => {
+  return transcriptMediaFromFragments(message.fragments);
+}
+
+function transcriptMediaFromFragments(fragments: readonly Fragment[]): NonNullable<MessageBlockContent["media"]> {
+  return fragments.flatMap((fragment) => {
     if (!["image", "file", "audio", "video"].includes(fragment.kind)) return [];
     const record = fragment as Record<string, unknown>;
     const url = typeof record.url === "string" ? record.url : "";
