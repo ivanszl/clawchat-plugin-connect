@@ -2,6 +2,16 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.25] - 2026-07-31
+
+### Added
+
+- Added Session-scoped Artifact tabs to Liveware for Markdown, text, source code, diffs, images, PDFs, CSV/TSV, SVG, and sandboxed HTML, with responsive desktop and mobile navigation.
+
+### Fixed
+
+- Delivered safe Runtime-generated local images through ClawChat media uploads and preserved their structured image media in Client transcripts.
+
 ## [0.1.0-alpha.24] - 2026-07-31
 
 ### Fixed
