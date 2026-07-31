@@ -152,11 +152,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
       const option = pending.request.options.find((candidate) => candidate.id === action.option_id);
       if (!option) return true;
       const responder = envelope.sender ? await this.resolvedResponder(envelope.sender) : undefined;
-      await this.settle(
-        pending,
-        { kind: "approval", optionId: option.id },
-        responder,
-      );
+      await this.settle(pending, { kind: "approval", optionId: option.id }, responder);
       return true;
     }
 
@@ -498,9 +494,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     });
   }
 
-  private async withResolvedSenderDisplayName(
-    message: NormalizedInboundMessage,
-  ): Promise<NormalizedInboundMessage> {
+  private async withResolvedSenderDisplayName(message: NormalizedInboundMessage): Promise<NormalizedInboundMessage> {
     const sender = await this.resolvedSender(message.sender);
     return sender === message.sender ? message : { ...message, sender };
   }
