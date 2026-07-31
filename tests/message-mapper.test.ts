@@ -71,4 +71,23 @@ describe("ClawChat inbound addressing", () => {
 
     expect(addressInboundMessage(message, "agent-1")?.message.text).toBe("");
   });
+
+  it("classifies addressed group command input for every ingress consumer", () => {
+    const message = {
+      ...inboundMessage("group"),
+      text: "@Agent\n /approve[file: report.txt]",
+      fragments: [
+        { kind: "mention", user_id: "agent-1", display: "Agent" },
+        { kind: "text", text: "\n /approve" },
+        { kind: "file", url: "https://media.example/report.txt", name: "report.txt" },
+      ],
+      mentions: ["agent-1"],
+    } satisfies NormalizedInboundMessage;
+
+    expect(addressInboundMessage(message, "agent-1")).toMatchObject({
+      acceptsCommands: false,
+      hasAttachment: true,
+      malformedLineBreakCommand: true,
+    });
+  });
 });

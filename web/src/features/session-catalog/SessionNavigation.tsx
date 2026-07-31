@@ -124,7 +124,9 @@ export function SessionNavigation() {
         onOpenChange={setNewSessionOpen}
         onCreated={(sessionRef) => {
           setNewSessionOpen(false);
-          void navigate({ to: "/sessions/$sessionRef", params: { sessionRef } });
+          requestAnimationFrame(() => {
+            void navigate({ to: "/sessions/$sessionRef", params: { sessionRef } });
+          });
         }}
       />
     </>

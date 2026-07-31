@@ -62,9 +62,9 @@ export interface RuntimeInteractionContext {
   sessionRef: string;
   turnId: string;
   origin: "client" | "clawchat";
+  deliveryConfirmation: Promise<void>;
   signal?: AbortSignal;
   clawchat?: ClawChatInteractionRoute;
-  deliveryConfirmation?: Promise<void>;
 }
 
 export interface RuntimeInteractionPort {

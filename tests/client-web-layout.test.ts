@@ -17,18 +17,6 @@ describe("Connect Client session layout", () => {
     expect(cssRule(stylesheet, ".composer-region")).toContain("grid-row: 4");
   });
 
-  it("reports partial and live-only transcript history with a deduplicated info toast", async () => {
-    const source = await Bun.file(sessionRouteUrl).text();
-
-    expect(source).toContain('import { useToast } from "@astryxdesign/core/Toast"');
-    expect(source).toContain("uniqueID: `transcript-completeness:" + "$" + "{sessionRef}`");
-    expect(source).toContain('collisionBehavior: "overwrite"');
-    expect(source).toContain("部分工具执行细节可能缺失。");
-    expect(source).toContain("仅显示 Connect 已同步的消息；此 Session 的早期 Runtime 历史不可用。");
-    expect(source).not.toContain('title="历史消息可能不完整"');
-    expect(source).not.toContain("本次运行期间捕获的消息");
-  });
-
   it("keeps two-column Settings controls aligned by placing descriptions below the controls", async () => {
     const [source, stylesheet] = await Promise.all([Bun.file(settingsPageUrl).text(), Bun.file(stylesheetUrl).text()]);
     const controls = [...source.matchAll(/<(?:Selector|TextInput)\b[\s\S]*?\/>/gu)].map(([control]) => control);

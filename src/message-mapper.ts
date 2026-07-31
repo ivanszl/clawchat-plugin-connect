@@ -21,6 +21,8 @@ export interface AddressedInboundMessage {
   message: NormalizedInboundMessage;
   hasAddressingMention: boolean;
   acceptsCommands: boolean;
+  hasAttachment: boolean;
+  malformedLineBreakCommand: boolean;
 }
 
 export function commandAddressPrefix(chatType: NormalizedInboundMessage["chatType"]): string {
@@ -98,11 +100,16 @@ export function addressInboundMessage(
   agentUserId: string,
 ): AddressedInboundMessage | null {
   if (!isMessageAddressedToAgent(message, agentUserId)) return null;
+  const hasAttachment = message.fragments.some((fragment) =>
+    ["image", "file", "audio", "video"].includes(fragment.kind),
+  );
   if (message.chatType === "direct") {
     return {
       message: { ...message, text: fragmentsToPromptText(message.fragments) },
       hasAddressingMention: false,
       acceptsCommands: true,
+      hasAttachment,
+      malformedLineBreakCommand: false,
     };
   }
 
@@ -111,7 +118,13 @@ export function addressInboundMessage(
   );
   const firstContent = firstContentIndex >= 0 ? message.fragments[firstContentIndex] : null;
   if (firstContent?.kind !== "mention" || (firstContent as Record<string, unknown>).user_id !== agentUserId) {
-    return { message, hasAddressingMention: false, acceptsCommands: false };
+    return {
+      message,
+      hasAddressingMention: false,
+      acceptsCommands: false,
+      hasAttachment,
+      malformedLineBreakCommand: false,
+    };
   }
 
   const remainder = fragmentsToPromptText(message.fragments.slice(firstContentIndex + 1));
@@ -121,6 +134,8 @@ export function addressInboundMessage(
     message: { ...message, text: addressedText },
     hasAddressingMention: true,
     acceptsCommands,
+    hasAttachment,
+    malformedLineBreakCommand: /^[\r\n]+[ \t]*\//u.test(addressedText),
   };
 }
 

@@ -68,21 +68,16 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     request: RuntimeInteractionRequest,
     context: RuntimeInteractionContext,
   ): Promise<RuntimeInteractionResponse> {
+    if (!context.deliveryConfirmation) {
+      throw new Error("Native delivery confirmation is required for a Runtime Interaction");
+    }
     if (context.origin === "client") {
       if (!this.options.clientPort) throw new Error("Connect Client Runtime Interaction service is unavailable");
       return await this.options.clientPort.request(request, context);
     }
-    const route =
-      context.clawchat ??
-      (this.options.ownerConversationId
-        ? {
-            chatId: this.options.ownerConversationId,
-            chatType: "direct" as const,
-            sourceMessageId: null,
-          }
-        : null);
+    const route = context.clawchat;
     if (!route) {
-      throw new Error("ClawChat owner direct conversation is unavailable");
+      throw new Error("Originating ClawChat conversation route is required");
     }
 
     const id = randomUUID();
@@ -105,7 +100,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
         resolve,
         reject,
         timeout,
-        deliveryConfirmation: context.deliveryConfirmation ?? Promise.resolve(),
+        deliveryConfirmation: context.deliveryConfirmation,
         removeAbortListener: () => context.signal?.removeEventListener("abort", onAbort),
         settlement: new RuntimeInteractionSettlement({
           validate: (response) => validateRuntimeResponse(request, response),
@@ -212,14 +207,8 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     ) {
       return false;
     }
-    const routedMessage =
-      message.chatType === "group" && this.options.agentUserId
-        ? addressInboundMessage(message, this.options.agentUserId)
-        : { message, hasAddressingMention: false, acceptsCommands: message.chatType === "direct" };
-    const malformedLineBreakResponse = Boolean(
-      routedMessage?.hasAddressingMention && /^[\r\n]+[ \t]*\//u.test(routedMessage.message.text),
-    );
-    if (!routedMessage || (!routedMessage.acceptsCommands && !malformedLineBreakResponse)) return false;
+    const routedMessage = addressInboundMessage(message, this.options.agentUserId ?? "");
+    if (!routedMessage || (!routedMessage.acceptsCommands && !routedMessage.malformedLineBreakCommand)) return false;
     const eligible = [...this.pending.values()].filter(
       (candidate) =>
         candidate.route.chatId === message.chatId &&
@@ -228,10 +217,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     );
     const responseText = routedMessage.message.text;
     const responseKind = runtimeResponseKind(responseText);
-    const hasAttachment = message.fragments.some((fragment) =>
-      ["image", "file", "audio", "video"].includes(fragment.kind),
-    );
-    if (responseKind && (hasAttachment || /[\r\n]/u.test(responseText))) {
+    if (responseKind && (routedMessage.hasAttachment || /[\r\n]/u.test(responseText))) {
       await this.sendForMessage(message, [
         { kind: "text", text: runtimeResponseUsage(message.chatType, responseKind) },
       ]);
@@ -392,15 +378,10 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     const commandPrefix = commandAddressPrefix(pending.route.chatType);
     if (pending.request.kind === "approval") {
       const title =
-        pending.route.chatType === "group"
-          ? pending.request.action === "file-change"
-            ? "Runtime file-change approval requested"
-            : "Runtime command approval requested"
-          : pending.request.title;
-      const description =
-        pending.route.chatType === "group"
-          ? "Review the Runtime request and choose one of the Connect decisions below."
-          : pending.request.description;
+        pending.request.action === "file-change"
+          ? "Runtime file-change approval requested"
+          : "Runtime command approval requested";
+      const description = "Review the Runtime request and choose one of the Connect decisions below.";
       await this.send(pending, [
         {
           kind: "text",

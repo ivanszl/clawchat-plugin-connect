@@ -76,13 +76,66 @@ describe("Runtime Interaction surface routing", () => {
         sessionRef: "ABCDEFGH",
         turnId: "turn-client",
         origin: "client",
+        deliveryConfirmation: Promise.resolve(),
       }),
     ).resolves.toEqual({ kind: "approval", optionId: "approve-once" });
     expect(clientRequest).toHaveBeenCalledTimes(1);
     expect(sendClawChatMessage).not.toHaveBeenCalled();
   });
 
-  it("renders ClawChat approval commands and accepts only the owner's matching reply", async () => {
+  it("rejects ClawChat interactions without native delivery confirmation", async () => {
+    const controller = new AbortController();
+    const sendClawChatMessage = mock(async (_delivery: { fragments: Fragment[] }) => undefined);
+    const router = new RuntimeInteractionRouter({
+      clientPort: { request: mock() } as RuntimeInteractionPort,
+      ownerUserId: "owner-1",
+      ownerConversationId: "owner-conversation",
+      sendClawChatMessage,
+    });
+
+    const result = router.request(approvalRequest(), {
+      sessionRef: "ABCDEFGH",
+      turnId: "turn-clawchat",
+      origin: "clawchat",
+      signal: controller.signal,
+      deliveryConfirmation: undefined as unknown as Promise<void>,
+      clawchat: {
+        chatId: "owner-conversation",
+        chatType: "direct",
+        sourceMessageId: "message-direct",
+      },
+    });
+    const rejection = expect(result).rejects.toThrow("Native delivery confirmation is required");
+    await Bun.sleep(0);
+    controller.abort();
+
+    await rejection;
+    expect(sendClawChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects ClawChat interactions without their originating conversation route", async () => {
+    const sendClawChatMessage = mock(async (_delivery: { fragments: Fragment[] }) => {
+      throw new Error("Unexpected presentation");
+    });
+    const router = new RuntimeInteractionRouter({
+      clientPort: { request: mock() } as RuntimeInteractionPort,
+      ownerUserId: "owner-1",
+      ownerConversationId: "owner-conversation",
+      sendClawChatMessage,
+    });
+
+    const result = router.request(approvalRequest(), {
+      sessionRef: "ABCDEFGH",
+      turnId: "turn-clawchat",
+      origin: "clawchat",
+      deliveryConfirmation: Promise.resolve(),
+    });
+
+    await expect(result).rejects.toThrow("Originating ClawChat conversation route is required");
+    expect(sendClawChatMessage).not.toHaveBeenCalled();
+  });
+
+  it("renders sanitized direct ClawChat approval commands and accepts only the owner's matching reply", async () => {
     const sent: Fragment[][] = [];
     const router = new RuntimeInteractionRouter({
       clientPort: { request: mock() } as RuntimeInteractionPort,
@@ -92,16 +145,26 @@ describe("Runtime Interaction surface routing", () => {
         sent.push(delivery.fragments);
       },
     });
-    const result = router.request(approvalRequest(), {
-      sessionRef: "ABCDEFGH",
-      turnId: "turn-clawchat",
-      origin: "clawchat",
-    });
+    const result = router.request(
+      { ...approvalRequest(), description: "token=short-secret" },
+      {
+        sessionRef: "ABCDEFGH",
+        turnId: "turn-clawchat",
+        origin: "clawchat",
+        deliveryConfirmation: Promise.resolve(),
+        clawchat: {
+          chatId: "owner-conversation",
+          chatType: "direct",
+          sourceMessageId: "message-direct",
+        },
+      },
+    );
     while (sent.length === 0) await Bun.sleep(0);
+    expect(JSON.stringify(sent[0])).not.toContain("short-secret");
     expect(sent[0]).toEqual([
       {
         kind: "text",
-        text: "允许运行命令？\n更新本地 Connect\n\n/approve 仅此次允许\n/approve session 本 Session 允许\n/deny 拒绝",
+        text: "Runtime command approval requested\nReview the Runtime request and choose one of the Connect decisions below.\n\n/approve 仅此次允许\n/approve session 本 Session 允许\n/deny 拒绝",
       },
     ]);
     await expect(router.handleMessage(message("other-user", "/approve"))).resolves.toBe(false);
@@ -131,6 +194,7 @@ describe("Runtime Interaction surface routing", () => {
         sessionRef: "ABCDEFGH",
         turnId: "turn-group",
         origin: "clawchat",
+        deliveryConfirmation: Promise.resolve(),
         clawchat: {
           chatId: "group-conversation",
           chatType: "group",
@@ -193,6 +257,7 @@ describe("Runtime Interaction surface routing", () => {
       sessionRef: "ABCDEFGH",
       turnId: "turn-group",
       origin: "clawchat",
+      deliveryConfirmation: Promise.resolve(),
       clawchat: {
         chatId: "group-conversation",
         chatType: "group",
@@ -444,6 +509,7 @@ describe("Runtime Interaction surface routing", () => {
     const context = {
       sessionRef: "ABCDEFGH",
       origin: "clawchat" as const,
+      deliveryConfirmation: Promise.resolve(),
       clawchat: {
         chatId: "group-conversation",
         chatType: "group" as const,
@@ -517,6 +583,7 @@ describe("Runtime Interaction surface routing", () => {
         sessionRef: "ABCDEFGH",
         turnId: "turn-case",
         origin: "clawchat",
+        deliveryConfirmation: Promise.resolve(),
         clawchat: {
           chatId: "group-conversation",
           chatType: "group",
@@ -575,7 +642,17 @@ describe("Runtime Interaction surface routing", () => {
         ],
         autoResolutionMs: null,
       },
-      { sessionRef: "ABCDEFGH", turnId: "turn-question", origin: "clawchat" },
+      {
+        sessionRef: "ABCDEFGH",
+        turnId: "turn-question",
+        origin: "clawchat",
+        deliveryConfirmation: Promise.resolve(),
+        clawchat: {
+          chatId: "owner-conversation",
+          chatType: "direct",
+          sourceMessageId: "message-direct",
+        },
+      },
     );
     while (sent.length === 0) await Bun.sleep(0);
     expect(sent[0]).toEqual([{ kind: "text", text: "颜色：选择颜色\n\n/1 红色\n/2 蓝色" }]);
@@ -621,7 +698,17 @@ describe("Runtime Interaction surface routing", () => {
         ],
         autoResolutionMs: null,
       },
-      { sessionRef: "ABCDEFGH", turnId: "turn-other", origin: "clawchat" },
+      {
+        sessionRef: "ABCDEFGH",
+        turnId: "turn-other",
+        origin: "clawchat",
+        deliveryConfirmation: Promise.resolve(),
+        clawchat: {
+          chatId: "owner-conversation",
+          chatType: "direct",
+          sourceMessageId: "message-direct",
+        },
+      },
     );
     while (sent.length === 0) await Bun.sleep(0);
 
@@ -649,6 +736,7 @@ describe("Runtime Interaction surface routing", () => {
       turnId: "turn-aborted",
       origin: "clawchat",
       signal: controller.signal,
+      deliveryConfirmation: Promise.resolve(),
       clawchat: {
         chatId: "group-conversation",
         chatType: "group",

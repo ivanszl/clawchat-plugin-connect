@@ -20,6 +20,7 @@ try {
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   try {
     await verifyRuntimeApproval(browser, origin);
+    await verifyTranscriptCompletenessIsSilent(browser, origin);
     await verifySessionNavigationStaysInSpa(browser, origin);
     await verifyExternalTuiRefresh(browser, origin);
     await verifyComposerWorkingState(browser, origin);
@@ -124,6 +125,33 @@ try {
 } finally {
   server.kill("SIGTERM");
   await server.exited;
+}
+
+async function verifyTranscriptCompletenessIsSilent(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const page = await browser.newPage();
+  let completeness: "partial" | "live-only" = "partial";
+  try {
+    await page.route(/\/client\/v1\/sessions\/ABCDEFGH(?:\?refresh=1)?$/u, async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as Record<string, unknown>;
+      await route.fulfill({ response, json: { ...body, transcriptCompleteness: completeness } });
+    });
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    await expect(page.getByText("部分工具执行细节可能缺失。", { exact: true })).toHaveCount(0);
+
+    completeness = "live-only";
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    await expect(
+      page.getByText("仅显示 Connect 已同步的消息；此 Session 的早期 Runtime 历史不可用。", { exact: true }),
+    ).toHaveCount(0);
+  } finally {
+    await page.close();
+  }
 }
 
 async function verifySessionNavigationStaysInSpa(
@@ -565,6 +593,22 @@ async function verifySmallWindowNavigation(browser: Awaited<ReturnType<typeof ch
     );
     const scrollRegion = createDialog.locator(".new-session-dialog-content");
     await expect(scrollRegion).toHaveCSS("overflow-y", "auto");
+
+    await createDialog.getByRole("textbox", { name: /^名称/u }).fill("Small-window Session");
+    await submit.click();
+    await expect(page.getByRole("heading", { name: "Small-window Session" })).toBeVisible();
+    await expect(createDialog).not.toBeVisible();
+
+    const composerInput = page.locator(".session-composer [contenteditable='true']");
+    await composerInput.click();
+    await page.keyboard.type("小窗口输入");
+    await expect(composerInput).toHaveText("小窗口输入");
+
+    await page.getByTestId("mobile-nav-toggle").click();
+    await expect(dialog).toBeVisible();
+    await page.getByRole("button", { name: "新建 Session" }).click();
+    await expect(createDialog).toBeVisible();
+    await expect(createDialog.getByRole("button", { name: "创建 Session" })).toBeEnabled();
   } finally {
     await page.close();
   }

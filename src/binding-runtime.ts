@@ -383,13 +383,13 @@ async function dispatchInboundMessage(
   const addressed = addressInboundMessage(params.message, params.activation.userId);
   if (!addressed) return true;
   const message = addressed.message;
-  const malformedLineBreakCommand =
-    message.chatType === "group" && addressed.hasAddressingMention && /^[\r\n]+[ \t]*\//u.test(message.text);
-  const canRouteCommand = addressed.acceptsCommands || malformedLineBreakCommand;
-  const hasAttachment = message.fragments.some((fragment) =>
-    ["image", "file", "audio", "video"].includes(fragment.kind),
-  );
-  if (message.chatType === "group" && addressed.hasAddressingMention && !message.text.trim() && !hasAttachment) {
+  const canRouteCommand = addressed.acceptsCommands || addressed.malformedLineBreakCommand;
+  if (
+    message.chatType === "group" &&
+    addressed.hasAddressingMention &&
+    !message.text.trim() &&
+    !addressed.hasAttachment
+  ) {
     await params.wsClient.sendMessageEnvelope(
       EVENT.MESSAGE_REPLY,
       message.chatId,

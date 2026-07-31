@@ -15,7 +15,7 @@ const discoveredWorkspace = join(directory, "discovered-workspace");
 const archivedDiscoveredWorkspace = join(directory, "archived", "discovered-workspace");
 await mkdir(discoveredWorkspace);
 await mkdir(archivedDiscoveredWorkspace, { recursive: true });
-const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ", "23456789", "BCDEFGHJ", "CDEFGHJK"];
+const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ", "23456789", "BCDEFGHJ", "CDEFGHJK", "DEFGHJKM"];
 const stateStore = createStateStore({
   dbPath: join(directory, "state.sqlite"),
   sessionRefFactory: () => {
