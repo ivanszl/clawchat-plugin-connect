@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startClientInterface } from "../../src/client-interface/server";
@@ -11,10 +11,14 @@ import { createStateStore } from "../../src/state";
 import { fixedRuntimeAdapter } from "../runtime-adapter-fixture";
 
 const directory = await mkdtemp(join(tmpdir(), "connect-client-preview-"));
+const repositoryRoot = process.cwd();
+const projectDirectory = join(directory, "clawchat-plugin-connect");
 const discoveredWorkspace = join(directory, "discovered-workspace");
 const archivedDiscoveredWorkspace = join(directory, "archived", "discovered-workspace");
+await mkdir(projectDirectory);
 await mkdir(discoveredWorkspace);
 await mkdir(archivedDiscoveredWorkspace, { recursive: true });
+const projectRoot = await realpath(projectDirectory);
 const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ", "23456789", "BCDEFGHJ", "CDEFGHJK", "DEFGHJKM"];
 const stateStore = createStateStore({
   dbPath: join(directory, "state.sqlite"),
@@ -33,7 +37,7 @@ await stateStore.upsertActivation({
   ownerUserId: "usr_preview_owner",
   conversationId: "preview-conversation",
 });
-await stateStore.insertProject({ projectId: "connect", name: "connect-qa", rootPath: process.cwd() });
+await stateStore.insertProject({ projectId: "connect", name: "connect-qa", rootPath: projectRoot });
 await stateStore.upsertRuntimeSession({
   chatId: "chat-project",
   sessionId: "session-project",
@@ -207,7 +211,7 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
         runtimeThreadId: "thread-project",
         name: "App Server 与 Web Client",
         updatedAt: projectThreadUpdatedAt,
-        workingDirectory: process.cwd(),
+        workingDirectory: projectRoot,
       },
       { runtimeThreadId: "thread-local", name: "Non-Project scratch", updatedAt: Date.now() - 1_000 },
       {
@@ -261,7 +265,7 @@ const previewApproval = runtimeInteractions.request(
     title: "允许 Codex 更新本地 Connect？",
     description: "该命令会替换本机安装的 Connect 并重启服务。",
     command: "install dist/clawchat-connect ~/.local/bin/clawchat-connect",
-    cwd: process.cwd(),
+    cwd: projectRoot,
     options: [
       { id: "approve-once", label: "仅此次允许" },
       { id: "approve-session", label: "本 Session 允许" },
@@ -308,7 +312,7 @@ const clientInterface = await startClientInterface({
   transcriptProjection,
   runtimeInteractions,
   runtimes: [runtime],
-  assetsPath: join(process.cwd(), "dist/client"),
+  assetsPath: join(repositoryRoot, "dist/client"),
   serverFactory: (options) =>
     Bun.serve({
       ...options,
