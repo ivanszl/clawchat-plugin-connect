@@ -27,7 +27,7 @@ import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runti
 import type { RuntimeSessionOption } from "../runtime/types";
 import { createSessionContinuity, SessionLifecycleError } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
-import type { AgentBindingConfig, ConnectConfig } from "../types";
+import type { AgentBindingConfig, ConnectConfig, RuntimeWorkspace } from "../types";
 import { BINDING_SCOPE_HEADER } from "./binding-scoped-gateway";
 import { SessionCatalog } from "./session-catalog";
 import type { TranscriptProjection } from "./transcript-projection";
@@ -326,27 +326,21 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 } catch (error) {
                   return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
                 }
-                let sessionOptions: Record<string, string>;
-                try {
-                  const workspace = workspaceProject
-                    ? await projects.resolveProjectWorkspace(workspaceProject.projectId)
-                    : {
-                        projectId: null,
-                        workingDirectory: projects.workspaceRoot,
-                        additionalDirectories: [],
-                        skipGitRepoCheck: true,
-                      };
-                  sessionOptions = validateSessionOptions(
-                    body.sessionOptions ?? {},
-                    await options.runtimeAdapters.listSessionOptions(binding, workspace),
-                  );
-                } catch (error) {
-                  return commandError(
-                    400,
-                    "invalid-session-options",
-                    error instanceof Error ? error.message : String(error),
-                  );
-                }
+                const workspace = workspaceProject
+                  ? await projects.resolveProjectWorkspace(workspaceProject.projectId)
+                  : {
+                      projectId: null,
+                      workingDirectory: projects.workspaceRoot,
+                      additionalDirectories: [],
+                      skipGitRepoCheck: true,
+                    };
+                const validatedOptions = await validatedSessionOptions(
+                  options.runtimeAdapters,
+                  binding,
+                  workspace,
+                  body.sessionOptions ?? {},
+                );
+                if (!validatedOptions.ok) return validatedOptions.error;
                 const chatId = `__connect_client_session__:${randomUUID()}`;
                 const session = await sessionContinuity.inConversation({ chatId, bindingId: body.bindingId }).create({
                   projectId: workspaceProject?.projectId ?? null,
@@ -354,7 +348,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   mode: body.mode,
                   model,
                   reasoningEffort,
-                  sessionOptions,
+                  sessionOptions: validatedOptions.value,
                 });
                 catalog.invalidate();
                 let view: SessionView | null;
@@ -743,19 +737,15 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 }
                 let sessionOptions: Record<string, string> | undefined;
                 if (body.sessionOptions !== undefined) {
-                  try {
-                    const definitions = await options.runtimeAdapters.listSessionOptions(
-                      binding,
-                      await projects.resolveWorkspace(session),
-                    );
-                    sessionOptions = validateSessionOptions(body.sessionOptions, definitions, true);
-                  } catch (error) {
-                    return commandError(
-                      400,
-                      "invalid-session-options",
-                      error instanceof Error ? error.message : String(error),
-                    );
-                  }
+                  const validatedOptions = await validatedSessionOptions(
+                    options.runtimeAdapters,
+                    binding,
+                    await projects.resolveWorkspace(session),
+                    body.sessionOptions,
+                    true,
+                  );
+                  if (!validatedOptions.ok) return validatedOptions.error;
+                  sessionOptions = validatedOptions.value;
                 }
                 const lifecycle = sessionContinuity.forSession(session.sessionRef);
                 await lifecycle.changeModel(model, reasoningEffort);
@@ -1310,6 +1300,30 @@ function validateSessionOptions(
       throw new Error(`Session option value is not available: ${id}=${value}`);
   }
   return { ...selected };
+}
+
+async function validatedSessionOptions(
+  runtimeAdapters: RuntimeAdapterRegistry,
+  binding: AgentBindingConfig,
+  workspace: RuntimeWorkspace,
+  selected: Record<string, string>,
+  requireInPlace = false,
+): Promise<{ ok: true; value: Record<string, string> } | { ok: false; error: ReturnType<typeof commandError> }> {
+  try {
+    return {
+      ok: true,
+      value: validateSessionOptions(
+        selected,
+        await runtimeAdapters.listSessionOptions(binding, workspace),
+        requireInPlace,
+      ),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: commandError(400, "invalid-session-options", error instanceof Error ? error.message : String(error)),
+    };
+  }
 }
 
 function requireDisplayName(value: unknown): string {

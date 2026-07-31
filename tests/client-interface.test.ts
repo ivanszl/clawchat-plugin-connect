@@ -1062,7 +1062,12 @@ describe("Connect Client Interface", () => {
           },
         },
       ],
-      discoverAllThreads: async () => [],
+      discoverAllThreads: async (binding) => {
+        const bindingId = binding.env?.CLAWCHAT_CONNECT_AGENT_ID;
+        return bindingId === "personal"
+          ? [{ runtimeThreadId: "personal-thread", name: "Personal Session", updatedAt: 1 }]
+          : [{ runtimeThreadId: "work-thread", name: "Work Session", updatedAt: 1 }];
+      },
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);

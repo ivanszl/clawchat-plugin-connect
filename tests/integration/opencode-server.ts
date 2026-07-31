@@ -28,6 +28,19 @@ try {
   );
   if (!Array.isArray(agents) || !Array.isArray(providers.all))
     throw new Error("OpenCode capability discovery returned an incompatible shape");
+  if (!agents.some((agent) => !agent.hidden && (agent.mode === "primary" || agent.mode === "all")))
+    throw new Error("OpenCode capability discovery returned no primary agent");
+  const connectedProviders = providers.all.filter((provider) => providers.connected.includes(provider.id));
+  const discoveredModels = connectedProviders.flatMap((provider) =>
+    Object.values(provider.models).map((model) => ({
+      id: `${provider.id}/${model.id}`,
+      variants: Object.keys(model.variants ?? {}),
+    })),
+  );
+  if (discoveredModels.length === 0)
+    throw new Error("OpenCode capability discovery returned no provider-qualified model");
+  if (!discoveredModels.some((model) => model.variants.length > 0))
+    throw new Error("OpenCode capability discovery returned no model variant");
 
   const session = await within(client.createSession(directory, "ClawChat Connect integration"), "Session creation");
   createdSessionId = session.id;
@@ -35,6 +48,9 @@ try {
     !(await within(client.listSessions(directory), "Session listing")).some((candidate) => candidate.id === session.id)
   )
     throw new Error("Created OpenCode Session was not discoverable");
+  const readSession = await within(client.getSession(session.id, directory), "Session read");
+  if (readSession.id !== session.id || (await realpath(readSession.directory)) !== directory)
+    throw new Error("OpenCode Session read did not preserve its identity and directory");
   if ((await within(client.messages(session.id, directory), "message history")).length !== 0)
     throw new Error("New OpenCode Session unexpectedly contained messages");
   const eventSessionId = await Promise.race([

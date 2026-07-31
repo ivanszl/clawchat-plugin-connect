@@ -1,0 +1,212 @@
+{
+  "version": "1.18.10",
+  "directory": "/tmp/clawchat-connect-opencode-compatibility",
+  "health": {
+    "healthy": true,
+    "version": "1.18.10"
+  },
+  "agents": [
+    {
+      "name": "build",
+      "description": "Generated compatibility fixture",
+      "mode": "primary",
+      "permission": [],
+      "options": {}
+    }
+  ],
+  "providers": {
+    "all": [
+      {
+        "id": "fixture",
+        "name": "Fixture Provider",
+        "source": "custom",
+        "env": [],
+        "options": {},
+        "models": {
+          "fixture-model": {
+            "id": "fixture-model",
+            "providerID": "fixture",
+            "api": {
+              "id": "fixture-model",
+              "url": "https://fixture.invalid",
+              "npm": "@ai-sdk/openai-compatible"
+            },
+            "name": "Fixture Model",
+            "capabilities": {
+              "temperature": true,
+              "reasoning": true,
+              "attachment": true,
+              "toolcall": true,
+              "input": {
+                "text": true,
+                "audio": true,
+                "image": true,
+                "video": true,
+                "pdf": true
+              },
+              "output": {
+                "text": true,
+                "audio": false,
+                "image": false,
+                "video": false,
+                "pdf": false
+              },
+              "interleaved": false
+            },
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cache": {
+                "read": 0,
+                "write": 0
+              }
+            },
+            "limit": {
+              "context": 100000,
+              "output": 10000
+            },
+            "status": "active",
+            "options": {},
+            "headers": {},
+            "release_date": "2026-01-01",
+            "variants": {
+              "high": {
+                "reasoningEffort": "high"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "connected": [
+      "fixture"
+    ],
+    "default": {
+      "fixture": "fixture-model"
+    }
+  },
+  "session": {
+    "id": "ses_compatibility",
+    "slug": "compatibility",
+    "projectID": "fixture-project",
+    "directory": "/tmp/clawchat-connect-opencode-compatibility",
+    "title": "Compatibility fixture",
+    "version": "1.18.10",
+    "time": {
+      "created": 1,
+      "updated": 2
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "id": "msg_compatibility",
+        "sessionID": "ses_compatibility",
+        "role": "user",
+        "time": {
+          "created": 3
+        },
+        "agent": "build",
+        "model": {
+          "providerID": "fixture",
+          "modelID": "fixture-model"
+        }
+      },
+      "parts": [
+        {
+          "id": "part_compatibility",
+          "sessionID": "ses_compatibility",
+          "messageID": "msg_compatibility",
+          "type": "text",
+          "text": "fixture"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "directory": "/tmp/clawchat-connect-opencode-compatibility",
+      "payload": {
+        "id": "evt_session",
+        "type": "session.created",
+        "properties": {
+          "sessionID": "ses_compatibility",
+          "info": {
+            "id": "ses_compatibility",
+            "slug": "compatibility",
+            "projectID": "fixture-project",
+            "directory": "/tmp/clawchat-connect-opencode-compatibility",
+            "title": "Compatibility fixture",
+            "version": "1.18.10",
+            "time": {
+              "created": 1,
+              "updated": 2
+            }
+          }
+        }
+      }
+    },
+    {
+      "directory": "/tmp/clawchat-connect-opencode-compatibility",
+      "payload": {
+        "id": "evt_part",
+        "type": "message.part.updated",
+        "properties": {
+          "sessionID": "ses_compatibility",
+          "part": {
+            "id": "part_compatibility",
+            "sessionID": "ses_compatibility",
+            "messageID": "msg_compatibility",
+            "type": "text",
+            "text": "fixture"
+          },
+          "time": 3
+        }
+      }
+    },
+    {
+      "directory": "/tmp/clawchat-connect-opencode-compatibility",
+      "payload": {
+        "id": "evt_permission",
+        "type": "permission.asked",
+        "properties": {
+          "id": "permission_compatibility",
+          "sessionID": "ses_compatibility",
+          "permission": "bash",
+          "patterns": [
+            "git status"
+          ],
+          "metadata": {
+            "command": "git status"
+          },
+          "always": []
+        }
+      }
+    },
+    {
+      "directory": "/tmp/clawchat-connect-opencode-compatibility",
+      "payload": {
+        "id": "evt_question",
+        "type": "question.asked",
+        "properties": {
+          "id": "question_compatibility",
+          "sessionID": "ses_compatibility",
+          "questions": [
+            {
+              "question": "Continue?",
+              "header": "Continue",
+              "options": [
+                {
+                  "label": "Yes",
+                  "description": "Continue"
+                }
+              ],
+              "multiple": false,
+              "custom": true
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

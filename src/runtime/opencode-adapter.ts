@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
@@ -321,11 +321,22 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     active.pendingNativeRequests.clear();
     for (const controller of active.interactionControllers) controller.abort();
     active.interactionControllers.clear();
+    let interactionFailure: Error | null = null;
     for (const [requestID, kind] of pendingNativeRequests) {
-      if (kind === "permission") {
-        await active.client.replyPermission(requestID, active.directory, "reject").catch(() => false);
-      } else {
-        await active.client.rejectQuestion(requestID, active.directory).catch(() => false);
+      try {
+        if (kind === "permission") {
+          await requireNativeConfirmation(
+            active.client.replyPermission(requestID, active.directory, "reject"),
+            "OpenCode permission rejection",
+          );
+        } else {
+          await requireNativeConfirmation(
+            active.client.rejectQuestion(requestID, active.directory),
+            "OpenCode question rejection",
+          );
+        }
+      } catch (error) {
+        interactionFailure ??= error instanceof Error ? error : new Error(String(error));
       }
     }
     const aborted = await active.client.abortSession(this.runtimeThreadId, active.directory);
@@ -339,6 +350,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       source: "live",
     });
     active.queue.close();
+    if (interactionFailure) throw interactionFailure;
     return aborted;
   }
 
@@ -385,7 +397,10 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     if (!active) return;
     if (!input.interactionPort || !input.metadata?.sessionRef || !input.turnId || !input.turnOrigin) {
       pending.delete(requestID);
-      await active.client.replyPermission(requestID, directory, "reject");
+      await requireNativeConfirmation(
+        active.client.replyPermission(requestID, directory, "reject"),
+        "OpenCode permission rejection",
+      );
       return;
     }
     const action = permissionAction(permission.permission);
@@ -397,7 +412,10 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       )
     ) {
       pending.delete(requestID);
-      await active.client.replyPermission(requestID, directory, "reject");
+      await requireNativeConfirmation(
+        active.client.replyPermission(requestID, directory, "reject"),
+        "OpenCode permission rejection",
+      );
       return;
     }
     const controller = new AbortController();
@@ -433,13 +451,11 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         : response.optionId === "approve-session"
           ? "always"
           : "once";
-    try {
-      await active.client.replyPermission(requestID, directory, reply);
-      delivery.confirm();
-    } catch (error) {
-      delivery.fail(error instanceof Error ? error : new Error(String(error)));
-      throw error;
-    }
+    await settleNativeDelivery(
+      delivery,
+      active.client.replyPermission(requestID, directory, reply),
+      "OpenCode permission response",
+    );
   }
 
   private async handleQuestion(
@@ -454,7 +470,10 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     if (!active) return;
     if (!input.interactionPort || !input.metadata?.sessionRef || !input.turnId || !input.turnOrigin) {
       pending.delete(requestID);
-      await active.client.rejectQuestion(requestID, directory);
+      await requireNativeConfirmation(
+        active.client.rejectQuestion(requestID, directory),
+        "OpenCode question rejection",
+      );
       return;
     }
     const questions = question.questions.map(runtimeQuestion);
@@ -474,7 +493,16 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         interactionContext(input, delivery.promise, controller.signal),
       );
     } catch {
-      response = { kind: "user-input", answers: {} };
+      if (!pending.delete(requestID)) {
+        delivery.fail(new Error("OpenCode question request was cancelled"));
+        return;
+      }
+      await settleNativeDelivery(
+        delivery,
+        active.client.rejectQuestion(requestID, directory),
+        "OpenCode question rejection",
+      );
+      return;
     } finally {
       this.active?.interactionControllers.delete(controller);
     }
@@ -483,26 +511,22 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       return;
     }
     if (response.kind !== "user-input") {
-      try {
-        await active.client.rejectQuestion(requestID, directory);
-        delivery.confirm();
-      } catch (error) {
-        delivery.fail(error instanceof Error ? error : new Error(String(error)));
-        throw error;
-      }
+      await settleNativeDelivery(
+        delivery,
+        active.client.rejectQuestion(requestID, directory),
+        "OpenCode question rejection",
+      );
       return;
     }
-    try {
-      await active.client.replyQuestion(
+    await settleNativeDelivery(
+      delivery,
+      active.client.replyQuestion(
         requestID,
         directory,
         questions.map((item) => response.answers[item.id] ?? []),
-      );
-      delivery.confirm();
-    } catch (error) {
-      delivery.fail(error instanceof Error ? error : new Error(String(error)));
-      throw error;
-    }
+      ),
+      "OpenCode question response",
+    );
   }
 }
 
@@ -685,20 +709,29 @@ async function reconcileSessionActivity(
     const childSnapshot = await reconcileSessionActivity(client, child, observedUserMessages, lineage);
     for (const limitation of childSnapshot.limitations) limitations.add(limitation);
     activities.push({
-      id: `session:${child.id}`,
+      id: opaqueChildActivityId(child.id),
       position: unpairedSubagentPosition(child.id),
       parentId: null,
       kind: "subagent",
       text: child.title || "Sub-agent",
       state: "complete",
       source: "history",
-      data: { title: child.title || "Sub-agent", role: null, activityKind: "unknown", runtimeThreadId: child.id },
+      data: { title: child.title || "Sub-agent", role: null, activityKind: "unknown" },
       children: childSnapshot.activities,
     });
   }
   snapshot.activities = orderedActivities(activities);
   snapshot.limitations = [...limitations].sort();
   return snapshot;
+}
+
+function opaqueChildActivityId(nativeSessionId: string): string {
+  const digest = createHash("sha256")
+    .update("opencode-child-session\0")
+    .update(nativeSessionId)
+    .digest("base64url")
+    .slice(0, 22);
+  return `subagent:${digest}`;
 }
 
 function unpairedSubagentPosition(runtimeThreadId: string): string {
@@ -951,6 +984,25 @@ function nativeDelivery() {
   });
   void promise.catch(() => undefined);
   return { promise, confirm, fail };
+}
+
+async function requireNativeConfirmation(operation: Promise<boolean>, description: string): Promise<void> {
+  if (!(await operation)) throw new Error(`${description} was not confirmed`);
+}
+
+async function settleNativeDelivery(
+  delivery: ReturnType<typeof nativeDelivery>,
+  operation: Promise<boolean>,
+  description: string,
+): Promise<void> {
+  try {
+    await requireNativeConfirmation(operation, description);
+    delivery.confirm();
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    delivery.fail(failure);
+    throw failure;
+  }
 }
 
 function approvalOptions() {

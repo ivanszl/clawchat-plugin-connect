@@ -442,8 +442,10 @@ describe("OpenCode Runtime Adapter", () => {
         { id: "message-assistant:part-answer", position: "1.3", kind: "assistant", text: "done" },
       ],
     );
-    const child = first?.activities.find((activity) => activity.id === "session:child-1");
+    const child = first?.activities.find((activity) => activity.id === "subagent:p6QCSiqLQja_67w_fVJy-U");
     expect(child).toMatchObject({ kind: "subagent", text: "Child" });
+    expect(JSON.stringify(first?.activities)).not.toContain("session:child-1");
+    expect(JSON.stringify(first?.activities)).not.toContain('"runtimeThreadId"');
     expect(child?.children).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -453,7 +455,7 @@ describe("OpenCode Runtime Adapter", () => {
           text: "child work",
         }),
         expect.objectContaining({
-          id: "session:grandchild-1",
+          id: "subagent:lzdRZo2nD2anE44JhpAUKS",
           kind: "subagent",
           children: [
             expect.objectContaining({
@@ -528,7 +530,7 @@ describe("OpenCode Runtime Adapter", () => {
       snapshot?.activities.find((activity) => activity.id.endsWith("subtask-without-native-child-id"))?.children,
     ).toBe(undefined);
     expect(snapshot?.activities).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: "session:child-1", kind: "subagent" })]),
+      expect.arrayContaining([expect.objectContaining({ id: "subagent:p6QCSiqLQja_67w_fVJy-U", kind: "subagent" })]),
     );
     await adapter.close?.();
   });
@@ -921,6 +923,64 @@ describe("OpenCode Runtime Adapter", () => {
     }
   });
 
+  it("fails Interaction delivery when OpenCode does not confirm a permission response", async () => {
+    const test = fixture();
+    let attempted!: () => void;
+    const responseAttempted = new Promise<void>((resolve) => {
+      attempted = resolve;
+    });
+    test.client.replyPermission = async () => {
+      attempted();
+      return false;
+    };
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const session = await adapter.start({ kind: "opencode" }, startContext());
+    let deliveryConfirmation: Promise<void> | null = null;
+    test.client.promptAsync = async () => {
+      test.events.push({
+        directory,
+        payload: {
+          id: "event-unconfirmed-permission",
+          type: "permission.asked",
+          properties: {
+            id: "unconfirmed-permission",
+            sessionID: "session-1",
+            permission: "bash",
+            patterns: ["git status"],
+            metadata: { command: "git status" },
+            always: [],
+          },
+        },
+      } as GlobalEvent);
+    };
+    const iterator = session
+      .prompt({
+        prompt: "run",
+        workspace: runtimeWorkspace,
+        turnId: "turn-unconfirmed-permission",
+        turnOrigin: "client",
+        metadata: { sessionRef: "ABCDEFGH" },
+        interactionPort: {
+          request: async (_request, context) => {
+            deliveryConfirmation = context.deliveryConfirmation;
+            return { kind: "approval", optionId: "approve-once" };
+          },
+        },
+      })
+      [Symbol.asyncIterator]();
+    const activity = iterator.next();
+    await responseAttempted;
+
+    await expect(deliveryConfirmation as Promise<void> | null).rejects.toThrow(
+      "OpenCode permission response was not confirmed",
+    );
+    await expect(activity).resolves.toMatchObject({
+      value: expect.objectContaining({ kind: "error", text: expect.stringContaining("was not confirmed") }),
+    });
+    await iterator.next();
+    await adapter.close?.();
+  });
+
   it("rejects a pending native Interaction before aborting its Session", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
@@ -976,6 +1036,63 @@ describe("OpenCode Runtime Adapter", () => {
     expect(test.nativeCalls.slice(-2)).toEqual(["permission:reject", "abort"]);
     expect(test.permissionReplies).toEqual(["reject"]);
     await pending;
+    await adapter.close?.();
+  });
+
+  it("still aborts after an unconfirmed native Interaction rejection and reports the failure", async () => {
+    const test = fixture();
+    test.client.replyPermission = async (_requestID, _directory, reply) => {
+      test.nativeCalls.push(`permission:${reply}`);
+      return false;
+    };
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const session = await adapter.start({ kind: "opencode" }, startContext());
+    let interactionStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      interactionStarted = resolve;
+    });
+    test.client.promptAsync = async () => {
+      test.events.push({
+        directory,
+        payload: {
+          id: "event-unconfirmed-cancel",
+          type: "permission.asked",
+          properties: {
+            id: "unconfirmed-cancel",
+            sessionID: "session-1",
+            permission: "bash",
+            patterns: ["git status"],
+            metadata: { command: "git status" },
+            always: [],
+          },
+        },
+      } as GlobalEvent);
+    };
+    const iterator = session
+      .prompt({
+        prompt: "run",
+        workspace: runtimeWorkspace,
+        turnId: "turn-unconfirmed-cancel",
+        turnOrigin: "client",
+        metadata: { sessionRef: "ABCDEFGH" },
+        interactionPort: {
+          request: async (_request, context) => {
+            interactionStarted();
+            await new Promise<void>((resolve) =>
+              context.signal?.addEventListener("abort", () => resolve(), { once: true }),
+            );
+            throw new Error("cancelled");
+          },
+        },
+      })
+      [Symbol.asyncIterator]();
+    const pending = iterator.next();
+    await started;
+
+    await expect(session.cancel?.()).rejects.toThrow("OpenCode permission rejection was not confirmed");
+    expect(test.nativeCalls.slice(-2)).toEqual(["permission:reject", "abort"]);
+    await pending;
+    await iterator.next();
     await adapter.close?.();
   });
 
@@ -1240,6 +1357,132 @@ describe("OpenCode Runtime Adapter", () => {
     await expect(deliveryConfirmation as Promise<void> | null).resolves.toBeUndefined();
     await session.cancel?.();
     await pending;
+    await adapter.close?.();
+  });
+
+  it("rejects a failed question Interaction instead of submitting empty answers", async () => {
+    const test = fixture();
+    let rejected!: () => void;
+    const rejectionAttempted = new Promise<void>((resolve) => {
+      rejected = resolve;
+    });
+    test.client.rejectQuestion = async () => {
+      test.nativeCalls.push("question:reject");
+      rejected();
+      return true;
+    };
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const session = await adapter.start({ kind: "opencode" }, startContext());
+    let deliveryConfirmation: Promise<void> | null = null;
+    test.client.promptAsync = async () => {
+      test.events.push({
+        directory,
+        payload: {
+          id: "event-rejected-question",
+          type: "question.asked",
+          properties: {
+            id: "rejected-question",
+            sessionID: "session-1",
+            questions: [
+              {
+                question: "Choose a target",
+                header: "Target",
+                options: [],
+                multiple: false,
+                custom: true,
+              },
+            ],
+          },
+        },
+      } as GlobalEvent);
+    };
+    const iterator = session
+      .prompt({
+        prompt: "ask",
+        workspace: runtimeWorkspace,
+        turnId: "turn-rejected-question",
+        turnOrigin: "client",
+        metadata: { sessionRef: "ABCDEFGH" },
+        interactionPort: {
+          request: async (_request, context) => {
+            deliveryConfirmation = context.deliveryConfirmation;
+            throw new Error("interaction expired");
+          },
+        },
+      })
+      [Symbol.asyncIterator]();
+    const pending = iterator.next();
+    await rejectionAttempted;
+
+    expect(test.questionReplies).toEqual([]);
+    expect(test.nativeCalls).toContain("question:reject");
+    await expect(deliveryConfirmation as Promise<void> | null).resolves.toBeUndefined();
+    await session.cancel?.();
+    await pending;
+    await iterator.next();
+    await adapter.close?.();
+  });
+
+  it("fails Interaction delivery when OpenCode does not confirm a question response", async () => {
+    const test = fixture();
+    let attempted!: () => void;
+    const responseAttempted = new Promise<void>((resolve) => {
+      attempted = resolve;
+    });
+    test.client.replyQuestion = async () => {
+      attempted();
+      return false;
+    };
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const session = await adapter.start({ kind: "opencode" }, startContext());
+    let deliveryConfirmation: Promise<void> | null = null;
+    test.client.promptAsync = async () => {
+      test.events.push({
+        directory,
+        payload: {
+          id: "event-unconfirmed-question",
+          type: "question.asked",
+          properties: {
+            id: "unconfirmed-question",
+            sessionID: "session-1",
+            questions: [
+              {
+                question: "Choose a target",
+                header: "Target",
+                options: [],
+                multiple: false,
+                custom: true,
+              },
+            ],
+          },
+        },
+      } as GlobalEvent);
+    };
+    const iterator = session
+      .prompt({
+        prompt: "ask",
+        workspace: runtimeWorkspace,
+        turnId: "turn-unconfirmed-question",
+        turnOrigin: "client",
+        metadata: { sessionRef: "ABCDEFGH" },
+        interactionPort: {
+          request: async (_request, context) => {
+            deliveryConfirmation = context.deliveryConfirmation;
+            return { kind: "user-input", answers: { "question-1": ["Tests"] } };
+          },
+        },
+      })
+      [Symbol.asyncIterator]();
+    const activity = iterator.next();
+    await responseAttempted;
+
+    await expect(deliveryConfirmation as Promise<void> | null).rejects.toThrow(
+      "OpenCode question response was not confirmed",
+    );
+    await expect(activity).resolves.toMatchObject({
+      value: expect.objectContaining({ kind: "error", text: expect.stringContaining("was not confirmed") }),
+    });
+    await iterator.next();
     await adapter.close?.();
   });
 

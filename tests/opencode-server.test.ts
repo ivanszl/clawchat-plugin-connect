@@ -2,11 +2,12 @@ import { describe, expect, it, mock } from "bun:test";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
 import { PassThrough } from "node:stream";
-import type { GlobalEvent } from "@opencode-ai/sdk/v2/types";
+import type { Agent, GlobalEvent, Provider, Session } from "@opencode-ai/sdk/v2/types";
 import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
 import {
   createOpenCodeServerClient,
   type OpenCodeApiClient,
+  type OpenCodeMessage,
   type OpenCodeServerProcess,
 } from "../src/runtime/opencode-server";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
@@ -104,6 +105,83 @@ class AuthenticatedHttpProcess extends EventEmitter implements OpenCodeServerPro
   }
 }
 
+interface OpenCodeCompatibilityFixture {
+  version: string;
+  directory: string;
+  health: { healthy: true; version: string };
+  agents: Agent[];
+  providers: { all: Provider[]; connected: string[]; default: Record<string, string> };
+  session: Session;
+  messages: OpenCodeMessage[];
+  events: GlobalEvent[];
+}
+
+class CompatibilityHttpProcess extends EventEmitter implements OpenCodeServerProcess {
+  readonly stderr = new PassThrough();
+  readonly requests: Array<{ method: string; path: string }> = [];
+  exitCode: number | null = null;
+  private readonly server: Bun.Server<undefined>;
+
+  constructor(
+    port: number,
+    password: string,
+    private readonly fixture: OpenCodeCompatibilityFixture,
+  ) {
+    super();
+    const expectedAuthorization = `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`;
+    this.server = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      fetch: (request) => {
+        const url = new URL(request.url);
+        this.requests.push({ method: request.method, path: url.pathname });
+        if (request.headers.get("authorization") !== expectedAuthorization)
+          return new Response("Unauthorized", { status: 401 });
+        if (url.pathname === "/global/health") return Response.json(this.fixture.health);
+        if (url.pathname === "/agent") return Response.json(this.fixture.agents);
+        if (url.pathname === "/provider") return Response.json(this.fixture.providers);
+        if (url.pathname === "/session" && request.method === "GET") return Response.json([this.fixture.session]);
+        if (url.pathname === "/session" && request.method === "POST") return Response.json(this.fixture.session);
+        if (url.pathname === `/session/${this.fixture.session.id}` && request.method === "GET")
+          return Response.json(this.fixture.session);
+        if (url.pathname === `/session/${this.fixture.session.id}` && request.method === "DELETE")
+          return Response.json(true);
+        if (url.pathname === "/session/status") return Response.json({});
+        if (url.pathname === `/session/${this.fixture.session.id}/message`) return Response.json(this.fixture.messages);
+        if (url.pathname === `/session/${this.fixture.session.id}/prompt_async`)
+          return new Response(null, { status: 204 });
+        if (url.pathname === `/session/${this.fixture.session.id}/abort`) return Response.json(true);
+        if (url.pathname === "/permission/permission_compatibility/reply") return Response.json(true);
+        if (url.pathname === "/question/question_compatibility/reply") return Response.json(true);
+        if (url.pathname === "/question/question_compatibility/reject") return Response.json(true);
+        if (url.pathname === "/global/event") {
+          const encoded = new TextEncoder().encode(
+            this.fixture.events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+          );
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(encoded);
+                controller.close();
+              },
+            }),
+            { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" } },
+          );
+        }
+        return new Response("Not found", { status: 404 });
+      },
+    });
+  }
+
+  kill(): boolean {
+    if (this.exitCode !== null) return true;
+    this.server.stop(true);
+    this.exitCode = 0;
+    this.emit("exit", 0, null);
+    return true;
+  }
+}
+
 function api(version = "1.18.10"): OpenCodeApiClient {
   return {
     health: async () => ({ healthy: true, version }),
@@ -132,6 +210,63 @@ function api(version = "1.18.10"): OpenCodeApiClient {
 }
 
 describe("OpenCode Server process boundary", () => {
+  it("accepts the generated OpenCode 1.18.10 SDK compatibility fixture through the official client", async () => {
+    const fixture = (await Bun.file(
+      new URL("./fixtures/opencode/1.18.10/compatibility.json", import.meta.url),
+    ).json()) as OpenCodeCompatibilityFixture;
+    const [port] = await availablePorts(1);
+    if (!port) throw new Error("missing compatibility fixture port");
+    let compatibilityProcess!: CompatibilityHttpProcess;
+    const client = await createOpenCodeServerClient(
+      { kind: "opencode", executablePathOverride: "/opt/opencode" },
+      {
+        readVersion: async () => fixture.version,
+        allocatePort: async () => port,
+        password: () => "fixture-secret",
+        spawnServer: (_executable, _args, env) => {
+          compatibilityProcess = new CompatibilityHttpProcess(port, env.OPENCODE_SERVER_PASSWORD ?? "", fixture);
+          return compatibilityProcess;
+        },
+      },
+    );
+
+    expect(await client.listAgents(fixture.directory)).toEqual(fixture.agents);
+    expect(await client.listProviders(fixture.directory)).toEqual(fixture.providers);
+    expect(await client.listSessions(fixture.directory)).toEqual([fixture.session]);
+    expect(await client.getSession(fixture.session.id, fixture.directory)).toEqual(fixture.session);
+    expect(await client.createSession(fixture.directory, fixture.session.title)).toEqual(fixture.session);
+    expect(await client.messages(fixture.session.id, fixture.directory)).toEqual(fixture.messages);
+    await expect(
+      client.promptAsync({
+        sessionID: fixture.session.id,
+        directory: fixture.directory,
+        messageID: "msg_prompt",
+        agent: "build",
+        model: { providerID: "fixture", modelID: "fixture-model" },
+        variant: "high",
+        parts: [{ type: "text", text: "fixture" }],
+      }),
+    ).resolves.toBeUndefined();
+    expect(await client.abortSession(fixture.session.id, fixture.directory)).toBe(true);
+    expect(await client.replyPermission("permission_compatibility", fixture.directory, "once")).toBe(true);
+    expect(await client.replyQuestion("question_compatibility", fixture.directory, [["Yes"]])).toBe(true);
+    expect(await client.rejectQuestion("question_compatibility", fixture.directory)).toBe(true);
+    const eventTypes: string[] = [];
+    for await (const event of client.events(new AbortController().signal)) eventTypes.push(event.payload.type);
+    expect(eventTypes).toEqual(["session.created", "message.part.updated", "permission.asked", "question.asked"]);
+    expect(await client.deleteSession(fixture.session.id, fixture.directory)).toBe(true);
+
+    await client.close();
+    expect(compatibilityProcess.requests).toEqual(
+      expect.arrayContaining([
+        { method: "GET", path: "/agent" },
+        { method: "GET", path: "/provider" },
+        { method: "GET", path: `/session/${fixture.session.id}` },
+        { method: "GET", path: "/global/event" },
+      ]),
+    );
+  });
+
   it("starts the installed compatible executable as an authenticated loopback Server", async () => {
     const process = new FakeProcess();
     const spawnServer = mock(() => process);
