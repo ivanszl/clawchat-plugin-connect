@@ -138,6 +138,10 @@ export class RuntimeInteractionCoordinator implements RuntimeInteractionPort {
     return [...this.pending.values()].some((pending) => pending.sessionRef === sessionRef);
   }
 
+  pendingSessionRef(interactionId: string): string | null {
+    return this.pending.get(interactionId)?.sessionRef ?? null;
+  }
+
   async expire(interactionId: string, reason: string): Promise<void> {
     const pending = this.pending.get(interactionId);
     if (!pending) return;

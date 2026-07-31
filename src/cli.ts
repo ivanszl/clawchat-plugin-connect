@@ -211,16 +211,7 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     .option("--yes", "Confirm permanent Binding data deletion")
     .action(async (id: string, options: { config?: string; yes?: boolean }) => {
       commandRan = true;
-      if (!options.yes) {
-        throw new Error(
-          `Removing Agent Binding ${id} retires its Liveware Exposure and permanently deletes its Sessions and local data; repeat with --yes`,
-        );
-      }
-      const result = await (deps.removeAgentBinding ?? removeAgentBindingDefault)({
-        agentId: id,
-        configPath: options.config,
-      });
-      io.writeStdout(`Removed Agent Binding ${result.agentId}: ${result.configPath}\n`);
+      await runAgentBindingRemoval(id, options.config, options.yes ?? false, io, deps.removeAgentBinding);
     });
 
   cli
@@ -609,13 +600,7 @@ async function maybeRunNestedAgentCommand(
     }
     if (action === "remove") {
       if (!id) throw new Error("agent id is required");
-      if (!argv.includes("--yes")) {
-        throw new Error(
-          `Removing Agent Binding ${id} retires its Liveware Exposure and permanently deletes its Sessions and local data; repeat with --yes`,
-        );
-      }
-      const result = await removeAgentBinding({ agentId: id, configPath });
-      io.writeStdout(`Removed Agent Binding ${result.agentId}: ${result.configPath}\n`);
+      await runAgentBindingRemoval(id, configPath, argv.includes("--yes"), io, removeAgentBinding);
       return 0;
     }
     io.writeStdout(HELP_TEXT);
@@ -624,6 +609,22 @@ async function maybeRunNestedAgentCommand(
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+}
+
+async function runAgentBindingRemoval(
+  agentId: string,
+  configPath: string | undefined,
+  confirmed: boolean,
+  io: CliIo,
+  removeAgentBinding: typeof removeAgentBindingDefault = removeAgentBindingDefault,
+): Promise<void> {
+  if (!confirmed) {
+    throw new Error(
+      `Removing Agent Binding ${agentId} retires its Liveware Exposure and permanently deletes its Sessions and local data; repeat with --yes`,
+    );
+  }
+  const result = await removeAgentBinding({ agentId, configPath });
+  io.writeStdout(`Removed Agent Binding ${result.agentId}: ${result.configPath}\n`);
 }
 
 async function maybeRunNestedProfileCommand(

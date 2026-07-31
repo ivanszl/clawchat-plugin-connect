@@ -51,7 +51,7 @@ describe("Liveware Exposure", () => {
         url: first.publicUrl,
       },
     ]);
-    await expect(stateStore.getLivewareExposure()).resolves.toEqual(first);
+    await expect(stateStore.getLivewareExposure("codex")).resolves.toEqual(first);
     await stateStore.close();
   });
 
@@ -78,7 +78,7 @@ describe("Liveware Exposure", () => {
     expect(await clawChat.list(principal, "device-1")).toEqual([]);
     expect(await controlPlane.connect("token-1").then((session) => session.listApps())).toEqual([]);
     expect(controlPlane.bindings.has(record.appId)).toBe(false);
-    await expect(stateStore.getLivewareExposure()).resolves.toBeNull();
+    await expect(stateStore.getLivewareExposure("codex")).resolves.toBeNull();
     await stateStore.close();
   });
 
@@ -109,7 +109,7 @@ describe("Liveware Exposure", () => {
     });
     expect(controlPlane.apps).toHaveLength(1);
     expect(controlPlane.policies.get(privateExposure.appId)).toBe("public");
-    await expect(stateStore.getLivewareExposure()).resolves.toEqual(publicExposure);
+    await expect(stateStore.getLivewareExposure("codex")).resolves.toEqual(publicExposure);
     await stateStore.close();
   });
 

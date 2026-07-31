@@ -13,10 +13,12 @@ import {
 const STAGING_TTL_MS = 24 * 60 * 60 * 1_000;
 
 interface StagedAttachmentManifest {
+  sessionRef: string | null;
   attachments: Array<{ file: string; name: string; mime: string; size: number }>;
 }
 
 export interface StagedTurnSubmissionAttachment {
+  sessionRef: string | null;
   path: string;
   name: string;
   mime: string;
@@ -38,7 +40,7 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
     let transferred = false;
     try {
       const media: ConnectRuntimeMedia[] = [];
-      const manifest: StagedAttachmentManifest = { attachments: [] };
+      const manifest: StagedAttachmentManifest = { sessionRef: draft.sessionRef, attachments: [] };
       for (const [index, attachment] of draft.attachments.entries()) {
         signal?.throwIfAborted();
         const kind = attachmentKind(attachment.mime);
@@ -104,7 +106,13 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
         const path = join(directory, attachment.file);
         const details = await stat(path).catch(() => null);
         if (details?.isFile() && details.size === attachment.size) {
-          return { path, name: attachment.name, mime: attachment.mime, size: attachment.size };
+          return {
+            sessionRef: manifest?.sessionRef ?? null,
+            path,
+            name: attachment.name,
+            mime: attachment.mime,
+            size: attachment.size,
+          };
         }
       }
       const legacyFile = (await readdir(directory, { withFileTypes: true }).catch(() => [])).find(
@@ -114,6 +122,7 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
       const path = join(directory, legacyFile.name);
       const details = await stat(path);
       return {
+        sessionRef: manifest?.sessionRef ?? null,
         path,
         name: `attachment-${index}`,
         mime: await detectMediaType(path),
@@ -141,7 +150,9 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
 async function readManifest(path: string): Promise<StagedAttachmentManifest | null> {
   try {
     const value = JSON.parse(await readFile(path, "utf8")) as Partial<StagedAttachmentManifest>;
-    return Array.isArray(value.attachments) ? { attachments: value.attachments } : null;
+    return Array.isArray(value.attachments)
+      ? { sessionRef: typeof value.sessionRef === "string" ? value.sessionRef : null, attachments: value.attachments }
+      : null;
   } catch {
     return null;
   }

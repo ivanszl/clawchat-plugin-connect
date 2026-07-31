@@ -64,7 +64,6 @@ describe("Binding Owner activation with Liveware Exposure", () => {
       config,
       store,
       fetchImpl: fetchImpl as typeof fetch,
-      livewareDependencies,
     });
 
     expect(result.ownerUserId).toBe("owner-new");
@@ -111,18 +110,6 @@ describe("Binding Owner activation with Liveware Exposure", () => {
         config,
         store,
         fetchImpl: fetchImpl as typeof fetch,
-        livewareDependencies: {
-          controlPlane: {
-            connect: async () => {
-              throw new Error("control plane unavailable");
-            },
-          },
-          clawChat: {
-            list: async () => [],
-            register: async () => undefined,
-            unregister: async () => undefined,
-          },
-        },
       }),
     ).resolves.toMatchObject({ localAgentId: "codex", ownerUserId: "owner-new" });
     await expect(store.getActivation("codex")).resolves.toMatchObject({

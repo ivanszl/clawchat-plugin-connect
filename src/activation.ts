@@ -1,6 +1,5 @@
 import { createClawChatApiClient, type FetchLike, normalizeActivationResult } from "./api-client";
 import { getAgentBinding, loadConfig, saveConfig } from "./config";
-import type { LivewareExposureDependencies } from "./liveware-exposure";
 import { type ConnectStateStore, createStateStore } from "./state";
 import type { ActivationCredentials, ConnectConfig } from "./types";
 
@@ -11,7 +10,6 @@ export interface ActivateConnectOptions {
   config?: ConnectConfig;
   store?: ConnectStateStore;
   fetchImpl?: FetchLike;
-  livewareDependencies?: LivewareExposureDependencies;
 }
 export type ActivateConnectResult = ActivationCredentials;
 

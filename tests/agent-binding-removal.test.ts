@@ -48,17 +48,27 @@ describe("Agent Binding removal", () => {
     });
     await store.setRuntimeConnectionStatus("work", true, null);
     const actions: string[] = [];
+    const getServiceStatus = mock(async () => {
+      actions.push("status");
+      return { running: true };
+    });
     const stopService = mock(async () => {
       actions.push("stop");
+    });
+    const startService = mock(async () => {
+      actions.push("start");
     });
     const retireLivewareExposure = mock(async ({ activation: principal }: { activation: ActivationCredentials }) => {
       actions.push(`retire:${principal.localAgentId}`);
       await store.clearLivewareExposure(principal.localAgentId);
     });
 
-    await removeAgentBinding({ agentId: "work", configPath }, { store, stopService, retireLivewareExposure });
+    await removeAgentBinding(
+      { agentId: "work", configPath },
+      { store, getServiceStatus, stopService, startService, retireLivewareExposure },
+    );
 
-    expect(actions).toEqual(["stop", "retire:work"]);
+    expect(actions).toEqual(["status", "stop", "retire:work", "start"]);
     await expect(loadConfig(configPath)).resolves.toMatchObject({
       defaultAgent: "personal",
       agents: { personal: { kind: "codex" } },

@@ -398,13 +398,13 @@ export class ConnectStateStore {
     });
   }
 
-  async getLivewareExposure(localAgentId?: string): Promise<LivewareExposureRecord | null> {
+  async getLivewareExposure(localAgentId: string): Promise<LivewareExposureRecord | null> {
     const db = await this.requireDb();
     const row = await db.get<Record<string, unknown>>(
       `SELECT owner_user_id, local_agent_id, app_id, public_url, access_policy
          FROM liveware_exposures
-        ${localAgentId ? "WHERE local_agent_id = ?" : "ORDER BY local_agent_id LIMIT 1"}`,
-      ...(localAgentId ? [localAgentId] : []),
+        WHERE local_agent_id = ?`,
+      localAgentId,
     );
     return row ? livewareExposureFromRow(row) : null;
   }
@@ -443,13 +443,9 @@ export class ConnectStateStore {
     );
   }
 
-  async clearLivewareExposure(localAgentId?: string): Promise<void> {
+  async clearLivewareExposure(localAgentId: string): Promise<void> {
     const db = await this.requireDb();
-    if (localAgentId) {
-      await db.run("DELETE FROM liveware_exposures WHERE local_agent_id = ?", localAgentId);
-    } else {
-      await db.run("DELETE FROM liveware_exposures");
-    }
+    await db.run("DELETE FROM liveware_exposures WHERE local_agent_id = ?", localAgentId);
   }
 
   async getDeviceId(): Promise<string | null> {

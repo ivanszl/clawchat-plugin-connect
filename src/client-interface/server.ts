@@ -497,6 +497,12 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-submission-id", "Invalid submission identity");
             const attachment = await submissionStaging.attachment(submissionId, index);
             if (!attachment) return errorResponse(404, "attachment-not-found", "Attachment was not found");
+            if (bindingScope) {
+              const entry = attachment.sessionRef ? await catalog.entry(attachment.sessionRef) : null;
+              if (!entry || entry.bindingId !== bindingScope) {
+                return errorResponse(404, "attachment-not-found", "Attachment was not found");
+              }
+            }
             return new Response(Bun.file(attachment.path), {
               headers: securityHeaders({
                 "Content-Type": attachment.mime || "application/octet-stream",
@@ -633,6 +639,13 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           const interactionMatch = url.pathname.match(/^\/client\/v1\/runtime-interactions\/([^/]+)\/respond$/u);
           if (interactionMatch && request.method === "POST") {
             const interactionId = decodeURIComponent(interactionMatch[1] ?? "");
+            if (bindingScope) {
+              const sessionRef = runtimeInteractions.pendingSessionRef(interactionId);
+              const entry = sessionRef ? await catalog.entry(sessionRef) : null;
+              if (!entry || entry.bindingId !== bindingScope) {
+                return errorResponse(404, "interaction-not-found", "Runtime Interaction was not found");
+              }
+            }
             const body = await readJsonBody<import("../client-contract").RespondToRuntimeInteractionRequest>(request);
             if (!validRequestId(body.requestId))
               return errorResponse(400, "invalid-request-id", "requestId is required");

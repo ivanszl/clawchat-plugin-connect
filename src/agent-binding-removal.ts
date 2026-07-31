@@ -21,7 +21,9 @@ export interface RemoveAgentBindingResult {
 
 export interface RemoveAgentBindingDependencies {
   store?: ConnectStateStore;
+  getServiceStatus?: (configPath: string) => Promise<{ running: boolean }>;
   stopService?: (configPath: string) => Promise<void>;
+  startService?: (configPath: string) => Promise<void>;
   retireLivewareExposure?: (options: {
     activation: ActivationCredentials;
     deviceId: string;
@@ -34,20 +36,27 @@ export async function removeAgentBinding(
   dependencies: RemoveAgentBindingDependencies = {},
 ): Promise<RemoveAgentBindingResult> {
   const agentId = options.agentId.trim();
-  if (!agentId) throw new Error("agent id is required");
+  if (!agentId) throw new Error("Agent Binding ID is required");
   const configPath = resolve(options.configPath ?? defaultConfigPath());
   const config = await loadConfig(configPath);
-  if (!config.agents[agentId]) throw new Error(`Unknown clawchat-connect agent: ${agentId}`);
+  if (!config.agents[agentId]) throw new Error(`Unknown Agent Binding: ${agentId}`);
   const store = dependencies.store ?? createStateStore({ dbPath: config.stateDbPath });
   const ownsStore = !dependencies.store;
+  let serviceStopped = false;
   try {
-    await (
-      dependencies.stopService ??
-      (async (path: string) => {
-        const status = await manageBackgroundService({ action: "status", configPath: path });
-        if (status.running) await manageBackgroundService({ action: "stop", configPath: path });
-      })
+    const serviceStatus = await (
+      dependencies.getServiceStatus ??
+      (async (path: string) => await manageBackgroundService({ action: "status", configPath: path }))
     )(configPath);
+    if (serviceStatus.running) {
+      await (
+        dependencies.stopService ??
+        (async (path: string) => {
+          await manageBackgroundService({ action: "stop", configPath: path });
+        })
+      )(configPath);
+      serviceStopped = true;
+    }
     const activation = await store.getActivation(agentId);
     const exposure = await store.getLivewareExposure(agentId);
     if (exposure) {
@@ -74,6 +83,17 @@ export async function removeAgentBinding(
     if (config.defaultAgent === agentId) config.defaultAgent = Object.keys(config.agents)[0] ?? null;
     return { agentId, configPath: await saveConfig(config, configPath) };
   } finally {
-    if (ownsStore) await store.close();
+    try {
+      if (serviceStopped && Object.keys(config.agents).length > 0) {
+        await (
+          dependencies.startService ??
+          (async (path: string) => {
+            await manageBackgroundService({ action: "start", configPath: path });
+          })
+        )(configPath);
+      }
+    } finally {
+      if (ownsStore) await store.close();
+    }
   }
 }
