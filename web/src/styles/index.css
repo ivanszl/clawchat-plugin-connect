@@ -637,7 +637,7 @@ textarea {
 
 @media (max-width: 720px) {
   .astryx-mobile-nav > div {
-    width: 100vw;
+    width: 100%;
     max-width: none;
   }
 

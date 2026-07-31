@@ -24,6 +24,7 @@ try {
     await verifySessionNavigationStaysInSpa(browser, origin);
     await verifyExternalTuiRefresh(browser, origin);
     await verifyComposerWorkingState(browser, origin);
+    await verifyEmbeddedMobileNavigationDoesNotOverflow(browser, origin);
     await verifySmallWindowNavigation(browser, origin);
     await verifyTranscriptAlwaysFollowsLatest(browser, origin);
     await verifyTranscriptPresentation(browser, origin);
@@ -517,6 +518,34 @@ async function transcriptBlockCount(page: Page, sessionRef: string): Promise<num
     const body = (await response.json()) as { blocks?: unknown[] };
     return body.blocks?.length ?? 0;
   }, sessionRef);
+}
+
+async function verifyEmbeddedMobileNavigationDoesNotOverflow(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const page = await browser.newPage({ viewport: { width: 442, height: 704 } });
+  try {
+    await page.goto(previewOrigin);
+    await page.getByTestId("mobile-nav-toggle").click();
+    const navigationOverlay = page.locator(".astryx-mobile-nav");
+    await expect(navigationOverlay).toBeVisible();
+    await navigationOverlay.evaluate((element) => {
+      (element as HTMLElement).style.width = "360px";
+      (element as HTMLElement).style.maxWidth = "360px";
+    });
+    const hostWidth = await navigationOverlay.evaluate((element) => element.clientWidth);
+    const drawerWidth = await navigationOverlay.locator(":scope > div").evaluate((element) => element.clientWidth);
+    assert(
+      drawerWidth <= hostWidth,
+      `embedded mobile navigation drawer must fit its host: ${JSON.stringify({
+        hostWidth,
+        drawerWidth,
+      })}`,
+    );
+  } finally {
+    await page.close();
+  }
 }
 
 async function verifySmallWindowNavigation(browser: Awaited<ReturnType<typeof chromium.launch>>, origin: string) {
