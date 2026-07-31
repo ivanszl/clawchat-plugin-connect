@@ -5,7 +5,7 @@ ClawChat Connect binds ClawChat conversations to local agent runtimes while keep
 ## Language
 
 **Agent Binding**:
-A named association between Connect and one configured local agent runtime. A Connect installation may have at most one Agent Binding for each Runtime Adapter kind.
+A named association between one ClawChat account and one configured local agent runtime. Multiple Agent Bindings may use the same Runtime Adapter kind, but each owns independent credentials, Sessions, and runtime state.
 _Avoid_: Agent, when referring to the configured association rather than the external agent itself
 
 **Runtime Adapter**:
@@ -20,9 +20,9 @@ _Avoid_: Runtime Adapter, shared runtime process
 The single host-level Connect process that operates every activated Agent Binding, regardless of Runtime Adapter kind.
 _Avoid_: Agent Service, Codex Service, per-agent service
 
-**Connect Owner**:
-The single ClawChat user associated with a Connect installation and every activated Agent Binding in it. Activating Connect as a different user replaces the previous Connect Owner rather than adding another owner.
-_Avoid_: Agent Binding owner, when implying that Bindings in one installation may have different owners
+**Binding Owner**:
+The stable ClawChat user account whose activation credentials own an Agent Binding. One Binding Owner may own multiple Agent Bindings, and one Connect installation may contain different Binding Owners; an occupied Binding cannot be reassigned to another owner without first removing and purging that Binding.
+_Avoid_: Connect Owner, installation owner
 
 **Connect Client**:
 A local application for administering Connect, observing ClawChat conversations, and interacting with Runtime Threads. Messages originating in the Client remain local rather than being published to ClawChat.
@@ -65,8 +65,12 @@ The rule that a reconnecting Connect Client restores the complete latest Client 
 _Avoid_: Stream Replay, Exactly-Once Streaming
 
 **Liveware Exposure**:
-An optional publication of Connect Client inside ClawChat through a Liveware App. It adds a ClawChat interaction surface without replacing Connect Service, Connect Client, or Client Interface ownership.
+An optional publication of one Agent Binding's Connect Client view inside its Binding Owner's ClawChat account through a dedicated Liveware App. It adds a Binding-scoped ClawChat interaction surface without replacing Connect Service, Connect Client, or Client Interface ownership.
 _Avoid_: Connect deployment, Liveware Client, when referring to the publication boundary
+
+**Binding-Scoped Client Gateway**:
+The loopback HTTP boundary dedicated to one Agent Binding's Liveware Exposure. It supplies a trusted non-user-selectable Binding scope to Client Interface reads, mutations, transcripts, and event streams while leaving Projects installation-global.
+_Avoid_: Shared Client port, user-selected Binding filter
 
 **Agent-Managed Liveware App**:
 An additional Liveware App that a local Agent deploys for a user-requested local web service through Connect's credential-safe Liveware command boundary and registers into ClawChat. It is independent of the Liveware Exposure managed for Connect Client.
@@ -183,10 +187,12 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 ## Invariants
 
 - Connect binds and manages multiple Agent Bindings independently of any one runtime kind.
-- The current release accepts at most one Agent Binding for each Runtime Adapter kind; this is a temporary release constraint rather than a domain invariant.
+- Multiple Agent Bindings may use the same Runtime Adapter kind.
 - Every Agent Binding owns an independent Binding Runtime Instance. Runtime process, environment, cached client state, and shutdown lifecycle are never shared between Agent Bindings, including Bindings of the same Runtime Adapter kind.
-- A Connect installation has one Connect Owner shared by all activated Agent Bindings; a different owner's activation replaces the existing owner instead of coexisting with it.
-- Replacing the Connect Owner transfers the existing Projects, Sessions, and Runtime Threads to the new owner; replacement does not clear or isolate prior local data.
+- Every activated Agent Binding has exactly one Binding Owner; one Connect installation may operate multiple Binding Owners concurrently.
+- A Binding Owner may own multiple Agent Bindings in one Connect installation.
+- Reactivating a Binding for the same Binding Owner refreshes only that Binding's credentials. Activation for a different owner is rejected while the Binding exists.
+- Removing an Agent Binding retires its Liveware Exposure, deletes its credentials, and purges its database records, Client commands/events, staged Turn Submissions, and isolated Non-Project workspaces before its ID may be reused; unrelated Bindings and installation-global Projects remain intact.
 - A Connect installation has one Connect Service; Agent Bindings and Runtime Adapters do not own background services.
 - Agent Binding IDs are arbitrary; Runtime Adapter selection comes only from the Binding's explicit `kind`.
 - The current release registers Codex and OpenCode Runtime Adapters; released kinds remain product scope, not a domain invariant.
@@ -203,7 +209,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Each accepted turn is bound to an immutable Turn Target before entering the Session queue. Later Session selection changes never redirect queued work to another Session, Project, Agent Binding, or Runtime Thread.
 - A Session model selection overrides its Agent Binding model default, which overrides the Runtime Adapter default. Reasoning effort resolves independently from a strict Session effort, then a valid Agent Binding effort for the effective model, then the model's advertised default. An unavailable persisted Session selection never silently falls back; an invalid Binding effort falls back because it is only a default.
 - Changing Project association creates a Session Intent whose eventual Session starts a new Runtime Thread boundary.
-- Connect Client Session Catalog discovery is installation-wide across Projects, Non-Project Sessions, ClawChat conversations, and Agent Bindings.
+- The loopback or trusted-LAN Connect Client Session Catalog is installation-wide across Projects, Non-Project Sessions, ClawChat conversations, and Agent Bindings. A Liveware-opened Connect Client is scoped to the Agent Binding that owns its Liveware Exposure.
 - Client Interface binds to loopback by default; unauthenticated IPv4 LAN exposure requires an explicit wildcard Host configuration and is not an internet-facing mode.
 - Connect synchronizes every active persistent Runtime Workspace Identity with a usable local root into a Project, reusing an existing Project with the same canonical root and creating only missing Projects. Synchronization never deletes a Project merely because its Runtime Threads are inactive or archived.
 - Project synchronization is a one-way projection from Runtime Workspace Identity into Connect; changing or removing a Connect Project does not mutate the runtime's workspace or Runtime Threads.
@@ -224,7 +230,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Runtime Adapters provide a stable Runtime Thread-local position for each Runtime Activity across live and recovered observations. The Connect Transcript Projection maps that runtime-neutral order into Client Transcript sequence and treats an Adapter-declared ordering limitation as partial completeness instead of guessing from arrival time.
 - Runtime Activity kinds are runtime-neutral and closed over Connect's shared display semantics. An Adapter maps an unsupported native kind to a sanitized `unknown` Activity; adapter-specific kinds and raw native payloads never cross the Runtime Adapter seam.
 - The Codex Runtime Adapter uses app-server as its primary history interface and may supplement omitted displayable tool calls from the matching pinned-version rollout JSONL. Raw rollout records and private reasoning never cross the Runtime Adapter seam.
-- ClawChat `outputVisibility` filters remote delivery only and never discards an event from the Connect Transcript Projection.
+- ClawChat `outputVisibility` is resolved from a Binding-scoped chat override, then the Agent Binding default, then the installation default. It filters remote delivery only and never discards an event from the Connect Transcript Projection.
 - Every displayable Runtime Activity is committed to the Connect Transcript Projection before Turn Surface delivery is attempted. A Turn Surface delivery failure does not remove or hide Activity already projected for the Client Transcript.
 - Session names are display and selection labels; Session Refs are stable unambiguous selectors, while internal Session and Runtime Thread IDs remain hidden.
 - Session lifecycle commands resolve a Session Ref to its native Runtime Thread and are delegated through that Agent Binding's Runtime Adapter.
@@ -232,7 +238,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - An Archived Session remains readable in Connect Client but cannot accept a new turn until its Runtime Thread is restored.
 - Permanent deletion succeeds at the runtime before Connect removes the Session mapping and Connect Transcript Projection. Connect does not independently cascade deletion to Subagent Threads.
 - A Non-Project Session receives a deterministic isolated workspace and never inherits `process.cwd()`.
-- Connect control commands are restricted to the Connect Owner.
+- Connect control commands are restricted to the Binding Owner of the Agent Binding that received them.
 - Direct messages are addressed to the Agent Binding without a mention. A group message enters Connect routing when it explicitly mentions the activated ClawChat Agent; only a ClawChat Addressing Mention expresses control-command or textual Runtime Interaction response intent and is excluded from effective prompt content.
 - Every runtime turn records its Turn Origin, and every Runtime Interaction inherits that origin.
 - A Codex Agent Binding without an explicit approval policy normalizes to `on-request`, allowing Connect to surface Runtime Interactions while still requiring a human decision before an escalation is granted.
@@ -242,12 +248,12 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Connect Client connection state does not own Runtime Interaction lifetime. A pending Client-originated interaction survives Client disconnect and never falls back to ClawChat.
 - Runtime Interaction settlement state belongs to the active runtime process and does not resume after the Connect process, Runtime Adapter connection, or native request ends. Connect persists its presentation and final result, marks a leftover pending presentation expired after restart, and never treats that record as a resumable native request.
 - Client Interface queries are shaped for Connect Client views, and its commands express user intent. Connect Client does not decode runtime-native payloads or reconstruct Connect state from runtime protocols.
-- Liveware Exposure changes only how Connect Client is reached and which ClawChat users may enter it; it does not replace or narrow Connect Client or Client Interface behavior.
-- Liveware Access Policy is the only remote-entry authorization for a Liveware Exposure. Connect adds no user roles or per-user capability filtering; every admitted user receives the complete Connect Client capability set.
-- Connect owns Liveware App provisioning, policy configuration, tunnel binding, ClawChat Liveware Registration, and process coordination for the Liveware Exposure it creates.
+- Each activated Agent Binding may own one Liveware Exposure registered through its own credentials; Liveware Apps, registrations, tunnel bindings, and lifecycle are never shared between Bindings.
+- Every Liveware Exposure terminates at a Binding-Scoped Client Gateway rather than the installation-wide Client port. Every admitted user receives the complete Client capability set only within that Binding scope; Projects remain installation-global.
+- Liveware Access Policy governs who may enter one Exposure, while the Binding-Scoped Client Gateway prevents that Exposure from reading or mutating another Binding's Sessions, messages, transcripts, tool requests, Runtime state, or event stream.
+- Connect owns Liveware App provisioning, policy configuration, tunnel binding, ClawChat Liveware Registration, gateway scope, and process coordination for each Liveware Exposure it creates.
 - A launcher-visible Liveware Exposure requires both a Liveware Control Plane App and a ClawChat Liveware Registration; creating the App alone does not register it in ClawChat.
-- Connect uses its activated ClawChat Agent token for Liveware Control Plane login and ClawChat Liveware Registration. ClawChat and Liveware own the separate user-token and WebView-ticket flow used when a person opens the App.
-- Replacing the Connect Owner unregisters the previous ClawChat Liveware Registration, retires the previous owner's Liveware App, creates a new App for the new owner with the existing Liveware Access Policy, and registers the new App in ClawChat; the public URL is not preserved.
+- Connect uses each Agent Binding's activated ClawChat Agent token for that Binding's Liveware Control Plane login and ClawChat Liveware Registration. ClawChat and Liveware own the separate user-token and WebView-ticket flow used when a person opens the App.
 - Agent-Managed Liveware Apps never reuse, modify, or retire the Connect-managed Liveware Exposure.
 - Every successfully bound Agent-Managed Liveware App is registered into ClawChat; Connect Agent Skills do not expose a tunnel-only workflow.
 - A local Agent operates the bundled Liveware executable only through Connect's credential-safe command boundary; Connect does not reveal or persist the activated ClawChat access token for Agent use.

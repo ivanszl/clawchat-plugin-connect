@@ -139,6 +139,8 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     ownerUserId: options.activation.ownerUserId,
     ownerConversationId: options.activation.conversationId,
     agentUserId: options.activation.userId,
+    agentDisplayName: options.agentId,
+    resolveSenderDisplayName,
     sendClawChatMessage: async (delivery) => {
       const payload = buildTextMessagePayload(
         "",
@@ -157,6 +159,15 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
           : {},
       );
       payload.message.body.fragments = delivery.fragments;
+      payload.message.context.mentions = delivery.fragments.flatMap((fragment) => {
+        if (fragment.kind !== "mention" || !fragment.user_id) return [];
+        return [
+          {
+            user_id: fragment.user_id,
+            ...(fragment.display ? { display: fragment.display } : {}),
+          },
+        ];
+      });
       await wsClient.sendMessageEnvelope(EVENT.MESSAGE_REPLY, delivery.chatId, payload, { toType: delivery.chatType });
     },
   });
@@ -242,7 +253,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         wsClient,
       };
       if (isAgentLivewareOperation(toolName)) {
-        const managedAppId = (await options.stateStore.getLivewareExposure())?.appId ?? null;
+        const managedAppId = (await options.stateStore.getLivewareExposure(options.agentId))?.appId ?? null;
         return await executeAgentLiveware(toolName, input, {
           activation: options.activation,
           clawChatBaseUrl: options.config.baseUrl,

@@ -21,11 +21,11 @@ describe("production Liveware adapters", () => {
       commands.push({ command, env });
       const operation = command.slice(1, -1).join(" ");
       if (operation === "app list") return success("[]");
-      if (operation === "app create ClawChat Connect --policy private") {
+      if (operation === "app create ClawChat Connect · codex --policy private") {
         return success(
           JSON.stringify({
             appId: "app-0000000000000001",
-            name: "ClawChat Connect",
+            name: "ClawChat Connect · codex",
             publicUrl: "https://app-0000000000000001.apps.example",
           }),
         );
@@ -38,7 +38,7 @@ describe("production Liveware adapters", () => {
         return success(
           JSON.stringify({
             appId: "app-0000000000000001",
-            name: "ClawChat Connect",
+            name: "ClawChat Connect · codex",
             publicUrl: "https://app-0000000000000001.apps.example",
           }),
         );
@@ -62,7 +62,7 @@ describe("production Liveware adapters", () => {
         const body = init.body;
         expect(body).toBeInstanceOf(FormData);
         expect(Object.fromEntries((body as FormData).entries())).toEqual({
-          name: "ClawChat Connect",
+          name: "ClawChat Connect · codex",
           subtitle: "Connect Web",
           liveware_id: "app-0000000000000001",
           url: "https://app-0000000000000001.apps.example",

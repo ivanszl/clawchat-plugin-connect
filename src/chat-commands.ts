@@ -68,15 +68,15 @@ function helpText(chatType: NormalizedInboundMessage["chatType"]): string {
     "**ClawChat Connect commands**",
     "",
     `- \`${prefix}/help\` — show this help.`,
-    `- \`${prefix}/status\` — show runtime and current Session status (Connect Owner only).`,
-    `- \`${prefix}/clawchat-output minimal|normal|full\` — set output visibility (Connect Owner only).`,
-    `- \`${prefix}/new [name]\` — prepare a new Session for the next message (Connect Owner only).`,
-    `- \`${prefix}/sessions\` — list Sessions in the selected workspace (Connect Owner only).`,
-    `- \`${prefix}/switch <name-or-ref>\` — switch or import a Session (Connect Owner only).`,
-    `- \`${prefix}/project [workspace-id|none]\` — inspect or select the next Project (Connect Owner only).`,
-    `- \`${prefix}/model [model-id [reasoning-effort]|default]\` — inspect or select the model (Connect Owner only).`,
-    `- \`${prefix}/mode [mode|default]\` — inspect or select the runtime mode (Connect Owner only).`,
-    `- \`${prefix}/cancel\` — cancel an active turn when supported (Connect Owner only).`,
+    `- \`${prefix}/status\` — show runtime and current Session status (Binding Owner only).`,
+    `- \`${prefix}/clawchat-output minimal|normal|full\` — set output visibility (Binding Owner only).`,
+    `- \`${prefix}/new [name]\` — prepare a new Session for the next message (Binding Owner only).`,
+    `- \`${prefix}/sessions\` — list Sessions in the selected workspace (Binding Owner only).`,
+    `- \`${prefix}/switch <name-or-ref>\` — switch or import a Session (Binding Owner only).`,
+    `- \`${prefix}/project [workspace-id|none]\` — inspect or select the next Project (Binding Owner only).`,
+    `- \`${prefix}/model [model-id [reasoning-effort]|default]\` — inspect or select the model (Binding Owner only).`,
+    `- \`${prefix}/mode [mode|default]\` — inspect or select the runtime mode (Binding Owner only).`,
+    `- \`${prefix}/cancel\` — cancel an active turn when supported (Binding Owner only).`,
     "",
     "**Runtime Interaction responses (only when requested)**",
     "",
@@ -160,7 +160,7 @@ function invalidCommandUsage(message: NormalizedInboundMessage, command: string,
 async function handleOutput(ctx: ChatCommandContext, rawMode: string | undefined): Promise<ChatCommandResult> {
   const mode = parseOutputVisibility(rawMode);
   if (!mode) return { handled: true, text: commandUsage(ctx.message.chatType, "/clawchat-output") };
-  await ctx.stateStore.setOutputVisibility(ctx.message.chatId, mode);
+  await ctx.stateStore.setOutputVisibility(ctx.agentId, ctx.message.chatId, mode);
   const detail: Record<OutputVisibility, string> = {
     minimal: "final only",
     normal: "final and assistant-visible output",

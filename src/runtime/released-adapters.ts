@@ -6,6 +6,7 @@ import type {
   CodexReasoningEffort,
   CodexSandboxMode,
   CodexWebSearchMode,
+  OutputVisibility,
 } from "../types";
 import { createCodexRuntimeAdapter } from "./codex-adapter";
 import { createOpenCodeRuntimeAdapter } from "./opencode-adapter";
@@ -29,6 +30,7 @@ const CODEX_SANDBOX_MODES = new Set<CodexSandboxMode>(["read-only", "workspace-w
 const CODEX_REASONING_EFFORTS = new Set<CodexReasoningEffort>(["minimal", "low", "medium", "high", "xhigh"]);
 const CODEX_APPROVAL_POLICIES = new Set<CodexApprovalPolicy>(["never", "on-request", "untrusted"]);
 const CODEX_WEB_SEARCH_MODES = new Set<CodexWebSearchMode>(["disabled", "cached", "live"]);
+const OUTPUT_VISIBILITIES = new Set<OutputVisibility>(["minimal", "normal", "full"]);
 
 const RELEASED_RUNTIME_ADAPTERS: readonly ReleasedRuntimeAdapterDefinition[] = [
   {
@@ -92,11 +94,13 @@ function normalizeCodexAgentBinding(record: Record<string, unknown>): CodexAgent
   const approvalPolicy = readOptionalEnum(record.approvalPolicy, CODEX_APPROVAL_POLICIES, "approvalPolicy");
   const webSearchMode = readOptionalEnum(record.webSearchMode, CODEX_WEB_SEARCH_MODES, "webSearchMode");
   const networkAccessEnabled = readOptionalBoolean(record.networkAccessEnabled, "networkAccessEnabled");
+  const outputVisibility = readOptionalEnum(record.outputVisibility, OUTPUT_VISIBILITIES, "outputVisibility");
   return {
     kind: "codex",
     ...(readString(record.executablePathOverride)
       ? { executablePathOverride: readString(record.executablePathOverride) }
       : {}),
+    ...(outputVisibility ? { outputVisibility } : {}),
     ...(readString(record.codexPathOverride) ? { codexPathOverride: readString(record.codexPathOverride) } : {}),
     ...(env ? { env } : {}),
     ...(readString(record.displayName) ? { displayName: readString(record.displayName) } : {}),
@@ -121,6 +125,7 @@ const OPENCODE_MANAGED_ENV = new Set([
 
 function normalizeOpenCodeAgentBinding(record: Record<string, unknown>): AgentBindingConfig {
   const env = readEnv(record.env);
+  const outputVisibility = readOptionalEnum(record.outputVisibility, OUTPUT_VISIBILITIES, "outputVisibility");
   for (const name of Object.keys(env ?? {})) {
     if (OPENCODE_MANAGED_ENV.has(name)) throw new Error(`${name} is managed by Connect`);
   }
@@ -130,6 +135,7 @@ function normalizeOpenCodeAgentBinding(record: Record<string, unknown>): AgentBi
     ...(readString(record.executablePathOverride)
       ? { executablePathOverride: readString(record.executablePathOverride) }
       : {}),
+    ...(outputVisibility ? { outputVisibility } : {}),
     ...(env ? { env } : {}),
     ...(readString(record.displayName) ? { displayName: readString(record.displayName) } : {}),
     ...(readAbsolutePathArray(record.additionalDirectories, "additionalDirectories")

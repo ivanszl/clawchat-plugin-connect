@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { cac } from "cac";
 import { type ActivateConnectResult, activateConnect as activateConnectDefault } from "./activation";
+import {
+  type RemoveAgentBindingResult,
+  removeAgentBinding as removeAgentBindingDefault,
+} from "./agent-binding-removal";
 import { type AgentLivewareOperation, isAgentLivewareOperation, validateAgentLivewareInput } from "./agent-liveware";
 import {
   BACKGROUND_SERVICE_PROCESS_ACTION,
@@ -51,6 +55,7 @@ export interface CliIo {
 
 export interface ConnectCliDeps extends Partial<CliIo> {
   activateConnect?: typeof activateConnectDefault;
+  removeAgentBinding?: typeof removeAgentBindingDefault;
   updateAccountProfile?: typeof updateAccountProfileDefault;
   manageBackgroundService?: typeof manageBackgroundServiceDefault;
   startConnectService?: typeof startConnectServiceDefault;
@@ -77,7 +82,7 @@ const HELP_TEXT = `${[
   "  init [--agent <id> --kind codex] [--config <path>]",
   "  agent add <id> --kind <kind> [--runtime-path <path>] [--config <path>]",
   "  agent list [--config <path>]",
-  "  agent remove <id> [--config <path>]",
+  "  agent remove <id> --yes [--config <path>]",
   "  project add <absolute-path> [--additional-directory <absolute-path>] [--config <path>]",
   "  project list [--config <path>]",
   "  project remove <workspace-id> [--config <path>]",
@@ -117,7 +122,11 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     io.writeStdout(HELP_TEXT);
     return 0;
   }
-  const nestedAgentResult = await maybeRunNestedAgentCommand(argv, io);
+  const nestedAgentResult = await maybeRunNestedAgentCommand(
+    argv,
+    io,
+    deps.removeAgentBinding ?? removeAgentBindingDefault,
+  );
   if (nestedAgentResult !== null) return nestedAgentResult;
   const nestedProjectResult = await maybeRunNestedProjectCommand(argv, io);
   if (nestedProjectResult !== null) return nestedProjectResult;
@@ -206,12 +215,10 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   cli
     .command("agent remove <id>", "Remove agent")
     .option("--config <path>", "Config path")
-    .action(async (id: string, options: { config?: string }) => {
+    .option("--yes", "Confirm permanent Binding data deletion")
+    .action(async (id: string, options: { config?: string; yes?: boolean }) => {
       commandRan = true;
-      const config = await loadConfig(options.config);
-      delete config.agents[id];
-      if (config.defaultAgent === id) config.defaultAgent = Object.keys(config.agents)[0] ?? null;
-      io.writeStdout(`Removed agent ${id}: ${await saveConfig(config, options.config)}\n`);
+      await runAgentBindingRemoval(id, options.config, options.yes ?? false, io, deps.removeAgentBinding);
     });
 
   cli
@@ -239,7 +246,7 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       const store = createStateStore({ dbPath: config.stateDbPath });
       const activation = agentId ? await store.getActivation(agentId) : null;
       const status = agentId ? await store.getRuntimeStatus(agentId) : null;
-      const livewareExposure = await store.getLivewareExposure();
+      const livewareExposure = agentId ? await store.getLivewareExposure(agentId) : null;
       await store.close();
       io.writeStdout(formatStatus(config, agentId, activation !== null, status, livewareExposure));
     });
@@ -567,7 +574,11 @@ async function openUrlDefault(url: string): Promise<void> {
   if (code !== 0) throw new Error(`Could not open the browser; use the printed Connect Client URL (exit ${code})`);
 }
 
-async function maybeRunNestedAgentCommand(argv: string[], io: CliIo): Promise<number | null> {
+async function maybeRunNestedAgentCommand(
+  argv: string[],
+  io: CliIo,
+  removeAgentBinding: (options: { agentId: string; configPath?: string }) => Promise<RemoveAgentBindingResult>,
+): Promise<number | null> {
   if (argv[0] !== "agent") return null;
   const action = argv[1];
   const id = argv[2];
@@ -597,10 +608,7 @@ async function maybeRunNestedAgentCommand(argv: string[], io: CliIo): Promise<nu
     }
     if (action === "remove") {
       if (!id) throw new Error("agent id is required");
-      const config = await loadConfig(configPath);
-      delete config.agents[id];
-      if (config.defaultAgent === id) config.defaultAgent = Object.keys(config.agents)[0] ?? null;
-      io.writeStdout(`Removed agent ${id}: ${await saveConfig(config, configPath)}\n`);
+      await runAgentBindingRemoval(id, configPath, argv.includes("--yes"), io, removeAgentBinding);
       return 0;
     }
     io.writeStdout(HELP_TEXT);
@@ -609,6 +617,22 @@ async function maybeRunNestedAgentCommand(argv: string[], io: CliIo): Promise<nu
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
+}
+
+async function runAgentBindingRemoval(
+  agentId: string,
+  configPath: string | undefined,
+  confirmed: boolean,
+  io: CliIo,
+  removeAgentBinding: typeof removeAgentBindingDefault = removeAgentBindingDefault,
+): Promise<void> {
+  if (!confirmed) {
+    throw new Error(
+      `Removing Agent Binding ${agentId} retires its Liveware Exposure and permanently deletes its Sessions and local data; repeat with --yes`,
+    );
+  }
+  const result = await removeAgentBinding({ agentId, configPath });
+  io.writeStdout(`Removed Agent Binding ${result.agentId}: ${result.configPath}\n`);
 }
 
 async function maybeRunNestedProfileCommand(

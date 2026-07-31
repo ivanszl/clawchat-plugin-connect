@@ -46,12 +46,12 @@ describe("Liveware Exposure", () => {
     expect(await clawChat.list(activation(), "device-1")).toEqual([
       {
         livewareId: first.appId,
-        name: "ClawChat Connect",
+        name: "ClawChat Connect · codex",
         subtitle: "Connect Web",
         url: first.publicUrl,
       },
     ]);
-    await expect(stateStore.getLivewareExposure()).resolves.toEqual(first);
+    await expect(stateStore.getLivewareExposure("codex")).resolves.toEqual(first);
     await stateStore.close();
   });
 
@@ -78,7 +78,7 @@ describe("Liveware Exposure", () => {
     expect(await clawChat.list(principal, "device-1")).toEqual([]);
     expect(await controlPlane.connect("token-1").then((session) => session.listApps())).toEqual([]);
     expect(controlPlane.bindings.has(record.appId)).toBe(false);
-    await expect(stateStore.getLivewareExposure()).resolves.toBeNull();
+    await expect(stateStore.getLivewareExposure("codex")).resolves.toBeNull();
     await stateStore.close();
   });
 
@@ -109,7 +109,44 @@ describe("Liveware Exposure", () => {
     });
     expect(controlPlane.apps).toHaveLength(1);
     expect(controlPlane.policies.get(privateExposure.appId)).toBe("public");
-    await expect(stateStore.getLivewareExposure()).resolves.toEqual(publicExposure);
+    await expect(stateStore.getLivewareExposure("codex")).resolves.toEqual(publicExposure);
+    await stateStore.close();
+  });
+
+  it("provisions independent Liveware Exposures for Agent Bindings owned by one account", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-liveware-multi-account-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const controlPlane = new FakeLivewareControlPlane();
+    const clawChat = new FakeClawChatLiveware();
+    const dependencies = { controlPlane, clawChat };
+    const personal = activation("personal", "shared-owner-token", "shared-owner");
+    const work = activation("work", "shared-owner-token", "shared-owner");
+
+    const personalExposure = await prepareLivewareExposure(
+      {
+        activation: personal,
+        deviceId: "device-1",
+        upstream: "http://127.0.0.1:48001",
+        accessPolicy: "private",
+        stateStore,
+      },
+      dependencies,
+    );
+    const workExposure = await prepareLivewareExposure(
+      {
+        activation: work,
+        deviceId: "device-1",
+        upstream: "http://127.0.0.1:48002",
+        accessPolicy: "private",
+        stateStore,
+      },
+      dependencies,
+    );
+
+    expect(personalExposure.appId).not.toBe(workExposure.appId);
+    await expect(stateStore.listLivewareExposures()).resolves.toEqual([personalExposure, workExposure]);
+    expect(controlPlane.bindings.get(personalExposure.appId)).toBe("http://127.0.0.1:48001");
+    expect(controlPlane.bindings.get(workExposure.appId)).toBe("http://127.0.0.1:48002");
     await stateStore.close();
   });
 
@@ -150,18 +187,23 @@ class FakeLivewareControlPlane implements LivewareControlPlanePort {
   readonly policies = new Map<string, "private" | "public">();
   readonly bindings = new Map<string, string>();
   readonly agentProcesses: FakeLivewareAgentProcess[] = [];
+  private readonly appsByToken = new Map<string, Map<string, LivewareApp>>();
+  private nextId = 1;
 
   async connect(accessToken: string): Promise<LivewareControlSession> {
-    if (accessToken !== "token-1") throw new Error("unexpected ClawChat token");
+    const accountApps = this.appsByToken.get(accessToken) ?? new Map<string, LivewareApp>();
+    this.appsByToken.set(accessToken, accountApps);
     return {
-      listApps: async () => [...this.apps.values()],
+      listApps: async () => [...accountApps.values()],
       createApp: async (name, accessPolicy) => {
+        const appId = `app-${String(this.nextId++).padStart(16, "0")}`;
         const app = {
-          appId: "app-0000000000000001",
+          appId,
           name,
-          publicUrl: "https://app-0000000000000001.apps.example",
+          publicUrl: `https://${appId}.apps.example`,
         };
         this.apps.set(app.appId, app);
+        accountApps.set(app.appId, app);
         this.policies.set(app.appId, accessPolicy);
         return app;
       },
@@ -176,6 +218,7 @@ class FakeLivewareControlPlane implements LivewareControlPlanePort {
       },
       deleteApp: async (appId) => {
         this.apps.delete(appId);
+        accountApps.delete(appId);
         this.policies.delete(appId);
         this.bindings.delete(appId);
       },
@@ -208,34 +251,42 @@ class FakeLivewareAgentProcess implements LivewareAgentProcess {
 class FakeClawChatLiveware implements ClawChatLivewarePort {
   private readonly registrations = new Map<
     string,
-    { livewareId: string; name: string; subtitle: string; url: string }
+    Map<string, { livewareId: string; name: string; subtitle: string; url: string }>
   >();
 
-  async list(_activation: ActivationCredentials, _deviceId: string) {
-    return [...this.registrations.values()];
+  private registrationsFor(ownerUserId: string) {
+    const registrations =
+      this.registrations.get(ownerUserId) ??
+      new Map<string, { livewareId: string; name: string; subtitle: string; url: string }>();
+    this.registrations.set(ownerUserId, registrations);
+    return registrations;
+  }
+
+  async list(activation: ActivationCredentials, _deviceId: string) {
+    return [...this.registrationsFor(activation.ownerUserId).values()];
   }
 
   async register(
-    _activation: ActivationCredentials,
+    activation: ActivationCredentials,
     _deviceId: string,
     registration: { livewareId: string; name: string; subtitle: string; url: string },
   ) {
-    this.registrations.set(registration.livewareId, registration);
+    this.registrationsFor(activation.ownerUserId).set(registration.livewareId, registration);
   }
 
-  async unregister(_activation: ActivationCredentials, _deviceId: string, livewareId: string) {
-    this.registrations.delete(livewareId);
+  async unregister(activation: ActivationCredentials, _deviceId: string, livewareId: string) {
+    this.registrationsFor(activation.ownerUserId).delete(livewareId);
   }
 }
 
-function activation(): ActivationCredentials {
+function activation(localAgentId = "codex", accessToken = "token-1", ownerUserId = "owner-1"): ActivationCredentials {
   return {
-    localAgentId: "codex",
-    accessToken: "token-1",
+    localAgentId,
+    accessToken,
     refreshToken: null,
     serverAgentId: "agent-1",
     userId: "agent-user-1",
-    ownerUserId: "owner-1",
+    ownerUserId,
     conversationId: "conversation-1",
   };
 }

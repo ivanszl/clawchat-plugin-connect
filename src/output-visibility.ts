@@ -14,10 +14,14 @@ export interface MaterializedRuntimeReply {
 export async function resolveOutputVisibility(params: {
   config: ConnectConfig;
   store?: ConnectStateStore;
+  bindingId: string;
   chatId: string;
 }): Promise<OutputVisibility> {
-  const override = await params.store?.getOutputVisibility(params.chatId).catch(() => null);
-  return override ?? params.config.outputVisibility ?? "normal";
+  const override = await params.store?.getOutputVisibility(params.bindingId, params.chatId).catch(() => null);
+  return override ?? bindingOutputVisibility(params.config, params.bindingId);
+}
+export function bindingOutputVisibility(config: ConnectConfig, bindingId: string): OutputVisibility {
+  return config.agents[bindingId]?.outputVisibility ?? config.outputVisibility ?? "normal";
 }
 export function policyForOutputVisibility(mode: OutputVisibility): OutputVisibilityPolicy {
   if (mode === "minimal") return { mode, includeKinds: new Set(["final", "control"]) };

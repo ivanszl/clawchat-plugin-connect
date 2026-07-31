@@ -33,6 +33,50 @@ describe("agent-only config", () => {
 });
 
 describe("state store", () => {
+  it("scopes output visibility by Agent Binding and migrates legacy overrides", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const initial = createStateStore({ dbPath });
+    await initial.upsertActivation({
+      localAgentId: "work",
+      accessToken: "work-token",
+      refreshToken: null,
+      serverAgentId: "work-agent",
+      userId: "work-user",
+      ownerUserId: "owner",
+      conversationId: null,
+    });
+    await initial.upsertActivation({
+      localAgentId: "personal",
+      accessToken: "personal-token",
+      refreshToken: null,
+      serverAgentId: "personal-agent",
+      userId: "personal-user",
+      ownerUserId: "owner",
+      conversationId: null,
+    });
+    await initial.close();
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      DROP TABLE output_visibility;
+      CREATE TABLE output_visibility(
+        chat_id TEXT PRIMARY KEY,
+        mode TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO output_visibility(chat_id, mode, updated_at) VALUES ('shared-chat', 'full', 1);
+    `);
+    legacy.close();
+
+    const migrated = createStateStore({ dbPath });
+    await expect(migrated.getOutputVisibility("work", "shared-chat")).resolves.toBe("full");
+    await expect(migrated.getOutputVisibility("personal", "shared-chat")).resolves.toBe("full");
+    await migrated.setOutputVisibility("work", "shared-chat", "minimal");
+    await expect(migrated.getOutputVisibility("work", "shared-chat")).resolves.toBe("minimal");
+    await expect(migrated.getOutputVisibility("personal", "shared-chat")).resolves.toBe("full");
+    await migrated.close();
+  });
+
   it("persists Protocol v2 negative acknowledgements on outbound messages", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");
@@ -484,6 +528,45 @@ describe("state store", () => {
     expect(current).toMatchObject({ name: "Legacy Session", runtimeSessionId: "thread-1" });
     expect(current?.hasMessages).toBe(true);
     expect(current?.sessionRef).toMatch(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/u);
+    await store.close();
+  });
+
+  it("migrates the singleton Liveware Exposure without reactivation", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const legacy = new Database(dbPath, { create: true });
+    legacy.exec(`
+      CREATE TABLE liveware_exposure(
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        owner_user_id TEXT NOT NULL,
+        local_agent_id TEXT NOT NULL,
+        app_id TEXT NOT NULL,
+        public_url TEXT NOT NULL,
+        access_policy TEXT NOT NULL CHECK(access_policy IN ('private', 'public')),
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO liveware_exposure VALUES (
+        1,
+        'owner-existing',
+        'codex',
+        'app-existing',
+        'https://app-existing.apps.example',
+        'private',
+        1
+      );
+    `);
+    legacy.close();
+
+    const store = createStateStore({ dbPath });
+    await expect(store.listLivewareExposures()).resolves.toEqual([
+      {
+        ownerUserId: "owner-existing",
+        localAgentId: "codex",
+        appId: "app-existing",
+        publicUrl: "https://app-existing.apps.example",
+        accessPolicy: "private",
+      },
+    ]);
     await store.close();
   });
 

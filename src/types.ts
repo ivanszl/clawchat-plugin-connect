@@ -13,6 +13,7 @@ export type CodexWebSearchMode = "disabled" | "cached" | "live";
 
 export interface AgentBindingConfigBase {
   executablePathOverride?: string;
+  outputVisibility?: OutputVisibility;
   env?: Record<string, string>;
   displayName?: string;
   sessionOptions?: Record<string, string>;

@@ -158,7 +158,23 @@ clawchat-connect activate work YOUR_INVITE_CODE
 
 Connect stores the returned credentials, not the invite code, and updates the ClawChat Profile nickname to the Binding ID (`work` in this example).
 
-Activation also provisions (or adopts) one Liveware App named `ClawChat Connect`, binds it to the local Client Interface, and registers it with the activated ClawChat Agent. The default Liveware Access Policy is `private`, so only the Connect Owner can open it from ClawChat. Liveware synchronization failures do not discard the saved activation; restarting the Connect Service retries them.
+One Connect installation can activate multiple ClawChat accounts, including multiple Bindings that use Codex:
+
+```bash
+clawchat-connect agent add personal --kind codex
+clawchat-connect activate personal PERSONAL_ACCOUNT_INVITE_CODE
+
+clawchat-connect agent add work --kind codex
+clawchat-connect activate work WORK_ACCOUNT_INVITE_CODE
+clawchat-connect service restart
+```
+
+Each Binding owns independent credentials, Sessions, Runtime instance, and Liveware Exposure. Projects remain installation-global and may be shared deliberately. Reactivating a Binding may refresh the same ClawChat account, but it cannot assign that Binding's existing history to a different account.
+
+Connect Service provisions or adopts one Binding-named `ClawChat Connect · <binding-id>` Liveware App per activated Binding after its Binding-Scoped Client Gateway is ready. Existing singleton `ClawChat Connect` Apps remain adopted during migration. The default Liveware Access Policy is `private`, so only that Binding Owner can open its App. Activation itself never publishes the installation-wide Client port.
+
+One ClawChat account may own multiple Agent Bindings in an installation. Reactivating the same Binding with the same account refreshes its credentials.
+For an occupied Binding, Connect sends the stored Agent user ID through ClawChat's atomic re-pair path; a code from another Owner is rejected by ClawChat before it is consumed, and Connect preserves the existing local credentials if the returned identity violates that contract.
 
 ### 4. Install the background service
 
@@ -234,7 +250,9 @@ Send these as standalone ClawChat messages. In a direct conversation, use the fo
 
 `/help` is available to every participant. Other Connect control commands require the Agent Binding owner. Removed forms such as `/list`, `/current`, `/clawchat-status`, and `/project add|list|use|current|clear|remove` fail with a pointer to `/help`; they are not forwarded to the coding agent. Unknown `/clawchat-*` commands show Connect help, while unrelated slash commands are passed through.
 
-Runtime approvals and questions stay in the direct or group conversation whose turn created them. Direct responses use `/approve`, `/approve session`, `/deny`, `/N`, or `/answer <text>`; group responses use the same exact lowercase, single-line forms after `@Agent `. For now, any participant in the originating group may answer an Interaction, including a Session-level approval. Connect controls remain Connect Owner-only.
+Output visibility is scoped to the Agent Binding: a chat override applies only to that Binding even when another Agent is present in the same ClawChat conversation. Binding settings inherit the installation default until explicitly changed.
+
+Runtime approvals and questions stay in the direct or group conversation whose turn created them. Direct responses use `/approve`, `/approve session`, `/deny`, `/N`, or `/answer <text>`; group responses use the same exact lowercase, single-line forms after `@Agent `. For now, any participant in the originating group may answer an Interaction, including a Session-level approval. Connect controls remain restricted to the receiving Binding's Binding Owner.
 
 The effective model is resolved for every turn: Session override → Agent Binding default → Runtime Adapter default. Reasoning effort resolves separately: Session override → a valid Agent Binding effort → the model's advertised default. An unavailable saved Session selection fails visibly instead of silently falling back; an invalid Binding effort falls back to the advertised default because it is only a default. Changing a model keeps the same Runtime Thread; changing the mode of a materialized Session starts a new Runtime Thread boundary.
 
@@ -268,12 +286,12 @@ Browser and ClawChat turns targeting the same Session are strictly ordered. Diff
 
 ### ClawChat access through Liveware
 
-The activated Agent exposes `ClawChat Connect` in ClawChat. Its URL tunnels to the same complete Connect Client that is available locally; Connect does not add a second permissions layer or remove capabilities from the remote view.
+Each activated Binding exposes its own `ClawChat Connect` launcher in its ClawChat account. The local loopback Client can manage every Binding, but a Liveware-opened Client can read and mutate only the Binding that owns that Exposure. Projects remain shared; Sessions, transcripts, messages, events, and Runtime state do not cross the gateway boundary.
 
 Choose who Liveware admits, then restart the service:
 
 ```bash
-# Connect Owner only (default)
+# Binding Owner only (default)
 clawchat-connect config set livewareAccessPolicy private
 
 # Any authenticated ClawChat user who can open the Liveware App
@@ -285,7 +303,13 @@ clawchat-connect config set livewareAccessPolicy off
 clawchat-connect service restart
 ```
 
-Changing the Connect Owner replaces the previous activation: Connect unregisters and retires the previous owner's Liveware App, preserves local Projects, Sessions, and Runtime Threads, and provisions a new App for the replacement owner. The public URL may change.
+To remove a Binding, its Liveware App and local history, stop using its ID and confirm the destructive command:
+
+```bash
+clawchat-connect agent remove work --yes
+```
+
+Removal stops Connect Service, retires only that Binding's Liveware Exposure, deletes its credentials and Binding-scoped local data, and preserves shared Projects and other Bindings. The Binding ID may then be reused.
 
 ### Trusted LAN access
 

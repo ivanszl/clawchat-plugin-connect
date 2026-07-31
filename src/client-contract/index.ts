@@ -294,6 +294,7 @@ export interface BindingPreferenceView {
   bindingId: string;
   displayName: string;
   clawChatUserId: string | null;
+  outputVisibility: "minimal" | "normal" | "full";
   model: string | null;
   modelReasoningEffort: string | null;
   modelOptions: RuntimeModelOptionView[];

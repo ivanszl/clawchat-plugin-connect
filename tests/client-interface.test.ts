@@ -995,6 +995,294 @@ describe("Connect Client Interface", () => {
     );
     expect(hostnameRebinding.status).toBe(400);
   });
+
+  it("restricts a Binding-scoped Client gateway to its Agent Binding while sharing Projects", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-binding-scope-"));
+    const assetsPath = join(directory, "assets");
+    await mkdir(assetsPath);
+    await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Scoped Connect test</title>");
+    const refs = ["PERSNAL2", "WRKREF23"];
+    const store = createStateStore({
+      dbPath: join(directory, "state.sqlite"),
+      sessionRefFactory: () => refs.shift() ?? "NEWREF34",
+    });
+    openStores.push(store);
+    await store.insertProject({ projectId: "shared-project", name: "Shared Project", rootPath: directory });
+    await store.setLivewareExposure({
+      localAgentId: "personal",
+      ownerUserId: "owner-personal",
+      appId: "app-personal",
+      publicUrl: "https://personal.apps.example",
+      accessPolicy: "private",
+    });
+    await store.setLivewareExposure({
+      localAgentId: "work",
+      ownerUserId: "owner-work",
+      appId: "app-work",
+      publicUrl: "https://work.apps.example",
+      accessPolicy: "private",
+    });
+    await store.upsertRuntimeSession({
+      chatId: "personal-chat",
+      sessionId: "personal-session",
+      agentId: "personal",
+      runtimeSessionId: "personal-thread",
+      name: "Personal Session",
+      hasMessages: true,
+    });
+    await store.upsertRuntimeSession({
+      chatId: "work-chat",
+      sessionId: "work-session",
+      agentId: "work",
+      runtimeSessionId: "work-thread",
+      name: "Work Session",
+      hasMessages: true,
+    });
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      listModels: async () => [
+        {
+          id: "scoped-model",
+          displayName: "Scoped model",
+          description: "Supports scoped attachment tests",
+          isDefault: true,
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: ["medium"],
+          inputModalities: ["text", "image"],
+          turnSubmissionCapability: {
+            prompt: { allowed: true, required: false, maxCharacters: 8_000 },
+            attachments: {
+              allowedKinds: ["image"],
+              allowedMediaTypes: ["image/png"],
+              maxCount: 1,
+              maxBytesEach: 1_024,
+              maxBytesTotal: 1_024,
+            },
+          },
+        },
+      ],
+      discoverAllThreads: async () => [],
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
+    const config = defaultConfig();
+    config.agents = {
+      personal: { kind: "codex", outputVisibility: "minimal" },
+      work: { kind: "codex", outputVisibility: "full" },
+    };
+    config.defaultAgent = "personal";
+    config.stateDbPath = store.dbPath;
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const runtimeInteractions = new RuntimeInteractionCoordinator(projection);
+    const enqueueWorkTurn = mock(
+      async (sessionRef: string, _prompt: string, _media: import("../src/runtime/types").ConnectRuntimeMedia[]) => ({
+        turnId: "work-turn",
+        sessionRef,
+      }),
+    );
+    const scopedRuntimes: BindingRuntimeHandle[] = [
+      {
+        agentId: "personal",
+        websocketUrl: config.websocketUrl,
+        deviceId: "personal-device",
+        enqueueClientTurn: async (sessionRef) => ({ turnId: "personal-turn", sessionRef }),
+        close: async () => undefined,
+      },
+      {
+        agentId: "work",
+        websocketUrl: config.websocketUrl,
+        deviceId: "work-device",
+        enqueueClientTurn: enqueueWorkTurn,
+        close: async () => undefined,
+      },
+    ];
+    const port = 47_895;
+    let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
+    const handle = await startClientInterface({
+      config,
+      configPath: join(directory, "config.json"),
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      runtimeInteractions,
+      runtimes: scopedRuntimes,
+      assetsPath,
+      port,
+      serverFactory: (options) => {
+        fetchHandler = options.fetch;
+        return { stop: async () => undefined };
+      },
+    });
+    openHandles.push(handle);
+    if (!fetchHandler) throw new Error("test Client Interface did not expose a request handler");
+    const scope = { "x-clawchat-connect-binding-scope": "personal" };
+    const globalCatalogResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/session-catalog");
+    const globalCatalog = (await globalCatalogResponse.json()) as import("../src/client-contract").SessionCatalogView;
+    const globalWorkResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions/WRKREF23");
+    const globalWork = (await globalWorkResponse.json()) as import("../src/client-contract").SessionView;
+    await store.appendClientViewEvent({
+      type: "catalog.changed",
+      cursor: 0,
+      revision: globalCatalog.revision + 1,
+      catalog: { ...globalCatalog, revision: globalCatalog.revision + 1 },
+    });
+    await store.appendClientViewEvent({
+      type: "session.changed",
+      cursor: 0,
+      sessionRef: globalWork.sessionRef,
+      revision: globalWork.revision + 1,
+      session: { ...globalWork, revision: globalWork.revision + 1 },
+    });
+
+    const bootstrap = await localRequest(fetchHandler, handle.origin, "/client/v1/bootstrap", { headers: scope });
+    await expect(bootstrap.json()).resolves.toMatchObject({
+      bindings: [{ bindingId: "personal", outputVisibility: "minimal" }],
+    });
+    const catalog = await localRequest(fetchHandler, handle.origin, "/client/v1/session-catalog", { headers: scope });
+    await expect(catalog.json()).resolves.toMatchObject({
+      bindings: [{ bindingId: "personal", entries: [{ sessionRef: "PERSNAL2" }] }],
+    });
+    const workSession = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions/WRKREF23", {
+      headers: scope,
+    });
+    expect(workSession.status).toBe(404);
+    const workTranscript = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions/WRKREF23/transcript", {
+      headers: scope,
+    });
+    expect(workTranscript.status).toBe(404);
+    const workMutation = await localRequest(fetchHandler, handle.origin, "/client/v1/bindings/work/preferences", {
+      method: "PATCH",
+      headers: { ...scope, origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({ requestId: "scoped-work-preference", displayName: "Leaked Work" }),
+    });
+    expect(workMutation.status).toBe(404);
+    const workCreation = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
+      method: "POST",
+      headers: { ...scope, origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "scoped-work-session",
+        bindingId: "work",
+        workspaceId: null,
+        name: "Forbidden",
+        mode: null,
+        model: null,
+        reasoningEffort: null,
+      }),
+    });
+    expect(workCreation.status).toBe(404);
+    const workOwnMutation = await localRequest(fetchHandler, handle.origin, "/client/v1/bindings/work/preferences", {
+      method: "PATCH",
+      headers: {
+        "x-clawchat-connect-binding-scope": "work",
+        origin: "https://work.apps.example",
+        "sec-fetch-site": "same-origin",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        requestId: "scoped-work-own-preference",
+        displayName: "Work Account",
+        outputVisibility: "normal",
+      }),
+    });
+    expect(workOwnMutation.status).toBe(200);
+    await expect(workOwnMutation.json()).resolves.toMatchObject({ bindingId: "work", outputVisibility: "normal" });
+    expect(config.agents.work?.outputVisibility).toBe("normal");
+    expect(config.agents.personal?.outputVisibility).toBe("minimal");
+
+    const workSubmissionBody = new FormData();
+    workSubmissionBody.append("prompt", "work only");
+    workSubmissionBody.append("attachments", new File(["work-secret"], "work.png", { type: "image/png" }));
+    const workSubmission = await localRequest(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/sessions/WRKREF23/turn-submissions/work_submission_1",
+      {
+        method: "POST",
+        headers: {
+          "x-clawchat-connect-binding-scope": "work",
+          origin: "https://work.apps.example",
+          "sec-fetch-site": "same-origin",
+        },
+        body: workSubmissionBody,
+      },
+    );
+    if (workSubmission.status !== 202) throw new Error(await workSubmission.text());
+    const workAttachmentUrl = enqueueWorkTurn.mock.calls[0]?.[2]?.[0]?.url;
+    if (!workAttachmentUrl) throw new Error("work attachment was not staged");
+    const crossBindingAttachment = await localRequest(fetchHandler, handle.origin, workAttachmentUrl, {
+      headers: scope,
+    });
+    expect(crossBindingAttachment.status).toBe(404);
+    const ownBindingAttachment = await localRequest(fetchHandler, handle.origin, workAttachmentUrl, {
+      headers: { "x-clawchat-connect-binding-scope": "work" },
+    });
+    expect(ownBindingAttachment.status).toBe(200);
+    await expect(ownBindingAttachment.text()).resolves.toBe("work-secret");
+
+    const workInteractionResult = runtimeInteractions.request(
+      {
+        kind: "approval",
+        action: "command",
+        title: "Work approval",
+        description: "work only",
+        options: [
+          { id: "approve-once", label: "Approve once" },
+          { id: "deny", label: "Deny" },
+        ],
+      },
+      { sessionRef: "WRKREF23", turnId: "work-interaction-turn", origin: "client" },
+    );
+    while ((await store.listPendingRuntimeInteractions("WRKREF23")).length === 0) await Bun.sleep(0);
+    const workInteraction = (await store.listPendingRuntimeInteractions("WRKREF23"))[0];
+    if (!workInteraction) throw new Error("work interaction was not projected");
+    const crossBindingInteraction = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/runtime-interactions/${workInteraction.interactionId}/respond`,
+      {
+        method: "POST",
+        headers: { ...scope, origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "personal_cross_binding_response", optionId: "approve-once" }),
+      },
+    );
+    expect(crossBindingInteraction.status).toBe(404);
+    const ownBindingInteraction = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/runtime-interactions/${workInteraction.interactionId}/respond`,
+      {
+        method: "POST",
+        headers: {
+          "x-clawchat-connect-binding-scope": "work",
+          origin: "https://work.apps.example",
+          "sec-fetch-site": "same-origin",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ requestId: "work_own_response", optionId: "approve-once" }),
+      },
+    );
+    expect(ownBindingInteraction.status).toBe(200);
+    await expect(workInteractionResult).resolves.toEqual({ kind: "approval", optionId: "approve-once" });
+
+    const eventBatch = await localRequest(fetchHandler, handle.origin, "/client/v1/events/batch?after=0", {
+      headers: scope,
+    });
+    const eventBody = (await eventBatch.json()) as import("../src/client-contract").ClientEventBatchView;
+    const eventBindingIds = eventBody.events.flatMap((event) =>
+      event.type === "catalog.changed" ? event.catalog.bindings.map((binding) => binding.bindingId) : [],
+    );
+    expect(eventBindingIds.length).toBeGreaterThan(0);
+    expect(eventBindingIds.every((bindingId) => bindingId === "personal")).toBe(true);
+    for (let index = 1; index < eventBody.events.length; index += 1) {
+      expect(eventBody.events[index]?.previousCursor).toBe(eventBody.events[index - 1]?.cursor);
+    }
+    expect(
+      eventBody.events.some((event) => event.type === "session.changed" && event.session.bindingId === "work"),
+    ).toBe(false);
+    const projectList = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", { headers: scope });
+    await expect(projectList.json()).resolves.toEqual([expect.objectContaining({ projectId: "shared-project" })]);
+  });
 });
 
 async function localRequest(

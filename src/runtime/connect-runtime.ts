@@ -409,6 +409,7 @@ export class ConnectRuntime {
     const mode = await resolveOutputVisibility({
       config: this.options.config,
       store: this.options.stateStore,
+      bindingId: activeAgentId,
       chatId: message.chatId,
     });
     const policy = policyForOutputVisibility(mode);

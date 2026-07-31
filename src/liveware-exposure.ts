@@ -6,6 +6,7 @@ import type { ConnectStateStore } from "./state";
 import type { ActivationCredentials, LivewareAccessPolicy, LivewareExposureRecord } from "./types";
 
 export const LIVEWARE_APP_NAME = "ClawChat Connect";
+const LIVEWARE_APP_BINDING_SEPARATOR = " · ";
 export const LIVEWARE_APP_SUBTITLE = "Connect Web";
 export const DEFAULT_LIVEWARE_API_URL = "https://api-liveware.clawling.io";
 export const DEFAULT_LIVEWARE_RELAY_URL = "https://tunnel-liveware.clawling.io";
@@ -172,24 +173,25 @@ async function prepareWithControl(
   clawChat: ClawChatLivewarePort,
   control: LivewareControlSession,
 ): Promise<LivewareExposureRecord> {
-  const existing = await options.stateStore.getLivewareExposure();
+  const existing = await options.stateStore.getLivewareExposure(options.activation.localAgentId);
   if (existing && existing.ownerUserId !== options.activation.ownerUserId) {
     throw new Error(
-      `Liveware Exposure belongs to Connect Owner ${existing.ownerUserId}; retire it before preparing owner ${options.activation.ownerUserId}`,
+      `Liveware Exposure for Agent Binding ${options.activation.localAgentId} belongs to Binding Owner ${existing.ownerUserId}; retire it before preparing owner ${options.activation.ownerUserId}`,
     );
   }
 
   const apps = await control.listApps();
+  const appName = livewareExposureAppName(options.activation.localAgentId);
   const app =
     (existing ? apps.find((candidate) => candidate.appId === existing.appId) : undefined) ??
-    apps.find((candidate) => candidate.name === LIVEWARE_APP_NAME) ??
-    (await control.createApp(LIVEWARE_APP_NAME, options.accessPolicy));
+    apps.find((candidate) => candidate.name === appName) ??
+    (await control.createApp(appName, options.accessPolicy));
 
   await control.setAccessPolicy(app.appId, options.accessPolicy);
   const publicUrl = normalizeHttpUrl(await control.bindTunnel(app.appId, options.upstream), "Liveware public URL");
   const registration: ClawChatLivewareRegistration = {
     livewareId: app.appId,
-    name: LIVEWARE_APP_NAME,
+    name: app.name,
     subtitle: LIVEWARE_APP_SUBTITLE,
     url: publicUrl,
   };
@@ -208,6 +210,14 @@ async function prepareWithControl(
   };
   await options.stateStore.setLivewareExposure(record);
   return record;
+}
+
+export function livewareExposureAppName(localAgentId: string): string {
+  return `${LIVEWARE_APP_NAME}${LIVEWARE_APP_BINDING_SEPARATOR}${localAgentId}`;
+}
+
+export function isConnectManagedLivewareAppName(name: string): boolean {
+  return name === LIVEWARE_APP_NAME || name.startsWith(`${LIVEWARE_APP_NAME}${LIVEWARE_APP_BINDING_SEPARATOR}`);
 }
 
 export async function startLivewareExposure(
@@ -255,17 +265,17 @@ export async function retireLivewareExposure(
   options: RetireLivewareExposureOptions,
   dependencies: LivewareExposureDependencies,
 ): Promise<void> {
-  const existing = await options.stateStore.getLivewareExposure();
+  const existing = await options.stateStore.getLivewareExposure(options.activation.localAgentId);
   if (!existing) return;
   if (existing.ownerUserId !== options.activation.ownerUserId) {
     throw new Error(
-      `Cannot retire Liveware Exposure for Connect Owner ${existing.ownerUserId} with credentials for ${options.activation.ownerUserId}`,
+      `Cannot retire Liveware Exposure for Binding Owner ${existing.ownerUserId} with credentials for ${options.activation.ownerUserId}`,
     );
   }
   await dependencies.clawChat.unregister(options.activation, options.deviceId, existing.appId);
   const control = await dependencies.controlPlane.connect(options.activation.accessToken);
   await control.deleteApp(existing.appId);
-  await options.stateStore.clearLivewareExposure();
+  await options.stateStore.clearLivewareExposure(options.activation.localAgentId);
 }
 
 function sameRegistration(left: ClawChatLivewareRegistration, right: ClawChatLivewareRegistration): boolean {

@@ -181,15 +181,17 @@ describe("Agent Binding configuration", () => {
     ).toThrow("Agent Binding other Runtime kind is not supported in this release: unsupported");
   });
 
-  it("allows at most one Agent Binding for each Runtime Adapter kind", () => {
-    expect(() =>
-      normalizeConfig({
-        agents: {
-          work: { kind: "codex" },
-          review: { kind: "codex" },
-        },
-      }),
-    ).toThrow("Runtime kind codex may be configured only once");
+  it("allows multiple Agent Bindings to use the same Runtime Adapter kind", () => {
+    const config = normalizeConfig({
+      agents: {
+        personal: { kind: "codex" },
+        work: { kind: "codex" },
+      },
+    });
+
+    expect(Object.keys(config.agents)).toEqual(["personal", "work"]);
+    expect(config.agents.personal?.kind).toBe("codex");
+    expect(config.agents.work?.kind).toBe("codex");
   });
 
   it("rejects invalid security options instead of silently broadening access", () => {
