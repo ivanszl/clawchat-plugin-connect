@@ -311,6 +311,40 @@ describe("OpenCode Server process boundary", () => {
     expect(process.exitCode).toBe(0);
   });
 
+  it("generates a fresh 256-bit hex credential for each owned Server process", async () => {
+    const childPasswords: string[] = [];
+    const apiPasswords: string[] = [];
+    let port = 43_129;
+    const clients = await Promise.all(
+      Array.from({ length: 2 }, async () => {
+        const process = new FakeProcess();
+        return await createOpenCodeServerClient(
+          { kind: "opencode", executablePathOverride: "/opt/opencode" },
+          {
+            readVersion: async () => "1.18.10",
+            allocatePort: async () => port++,
+            spawnServer: (_executable, _args, env) => {
+              const password = env.OPENCODE_SERVER_PASSWORD;
+              if (!password) throw new Error("missing generated Server credential");
+              childPasswords.push(password);
+              return process;
+            },
+            createApi: (_baseUrl, _username, password) => {
+              apiPasswords.push(password);
+              return api();
+            },
+          },
+        );
+      }),
+    );
+
+    expect(childPasswords).toHaveLength(2);
+    expect(childPasswords.every((password) => /^[a-f0-9]{64}$/u.test(password))).toBe(true);
+    expect(new Set(childPasswords).size).toBe(2);
+    expect(apiPasswords).toEqual(childPasswords);
+    await Promise.all(clients.map(async (client) => await client.close()));
+  });
+
   it("requires the executable to be available from the override or effective PATH", async () => {
     await expect(
       createOpenCodeServerClient(
