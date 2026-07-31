@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { addressInboundMessage, commandAddressPrefix } from "../message-mapper";
-import type { Envelope, Fragment, NormalizedInboundMessage } from "../protocol";
+import type { Envelope, Fragment, NormalizedInboundMessage, Sender } from "../protocol";
 import { RuntimeInteractionSettlement } from "./runtime-interaction-settlement";
 import type {
   ClawChatInteractionRoute,
@@ -15,6 +15,8 @@ interface RouterOptions {
   ownerUserId: string;
   ownerConversationId: string | null;
   agentUserId?: string;
+  agentDisplayName?: string;
+  resolveSenderDisplayName?(senderId: string): Promise<string | null>;
   sendClawChatMessage(delivery: ClawChatInteractionDelivery): Promise<void>;
 }
 
@@ -149,12 +151,11 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     if (pending.request.kind === "approval") {
       const option = pending.request.options.find((candidate) => candidate.id === action.option_id);
       if (!option) return true;
+      const responder = envelope.sender ? await this.resolvedResponder(envelope.sender) : undefined;
       await this.settle(
         pending,
         { kind: "approval", optionId: option.id },
-        envelope.sender
-          ? { id: envelope.sender.id, displayName: envelope.sender.nick_name || envelope.sender.id }
-          : undefined,
+        responder,
       );
       return true;
     }
@@ -171,7 +172,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
       pending.answers[question.id] = [structuredAnswer];
       pending.questionIndex += 1;
       if (envelope.sender) {
-        await this.acknowledgeAnswer(pending, question, envelope.sender, null);
+        await this.acknowledgeAnswer(pending, question, await this.resolvedSender(envelope.sender), null);
       }
       await this.present(pending);
       return true;
@@ -194,7 +195,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     pending.answers[question.id] = [option.label];
     pending.questionIndex += 1;
     if (envelope.sender) {
-      await this.acknowledgeAnswer(pending, question, envelope.sender, option.label);
+      await this.acknowledgeAnswer(pending, question, await this.resolvedSender(envelope.sender), option.label);
     }
     await this.present(pending);
     return true;
@@ -209,6 +210,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     }
     const routedMessage = addressInboundMessage(message, this.options.agentUserId ?? "");
     if (!routedMessage || (!routedMessage.acceptsCommands && !routedMessage.malformedLineBreakCommand)) return false;
+    message = await this.withResolvedSenderDisplayName(message);
     const eligible = [...this.pending.values()].filter(
       (candidate) =>
         candidate.route.chatId === message.chatId &&
@@ -447,7 +449,11 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
   }
 
   private async send(pending: PendingClawChatInteraction, fragments: Fragment[]): Promise<void> {
-    await this.options.sendClawChatMessage({ ...pending.route, interactionId: pending.id, fragments });
+    await this.options.sendClawChatMessage({
+      ...pending.route,
+      interactionId: pending.id,
+      fragments: this.structuredGroupCommandMentions(pending.route.chatType, fragments),
+    });
   }
 
   private async sendForMessage(message: NormalizedInboundMessage, fragments: Fragment[]): Promise<void> {
@@ -461,8 +467,54 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
       },
       sourceFragments: message.fragments,
       interactionId: null,
-      fragments,
+      fragments: this.structuredGroupCommandMentions(message.chatType, fragments),
     });
+  }
+
+  private structuredGroupCommandMentions(
+    chatType: NormalizedInboundMessage["chatType"],
+    fragments: Fragment[],
+  ): Fragment[] {
+    const agentUserId = this.options.agentUserId;
+    if (chatType !== "group" || !agentUserId) return fragments;
+    return fragments.flatMap((fragment) => {
+      const fragmentText = (fragment as Record<string, unknown>).text;
+      if (fragment.kind !== "text" || typeof fragmentText !== "string") return [fragment];
+      const parts = fragmentText.split("@Agent ");
+      if (parts.length === 1) return [fragment];
+      const structured: Fragment[] = [];
+      for (const [index, part] of parts.entries()) {
+        if (index > 0) {
+          structured.push({
+            kind: "mention",
+            user_id: agentUserId,
+            ...(this.options.agentDisplayName ? { display: this.options.agentDisplayName } : {}),
+          });
+        }
+        const text = index > 0 ? ` ${part}` : part;
+        if (text) structured.push({ kind: "text", text });
+      }
+      return structured;
+    });
+  }
+
+  private async withResolvedSenderDisplayName(
+    message: NormalizedInboundMessage,
+  ): Promise<NormalizedInboundMessage> {
+    const sender = await this.resolvedSender(message.sender);
+    return sender === message.sender ? message : { ...message, sender };
+  }
+
+  private async resolvedSender(sender: Sender): Promise<Sender> {
+    const current = sender.nick_name.trim();
+    if (current && current !== sender.id) return sender;
+    const displayName = await this.options.resolveSenderDisplayName?.(sender.id).catch(() => null);
+    return displayName && displayName !== sender.id ? { ...sender, nick_name: displayName } : sender;
+  }
+
+  private async resolvedResponder(sender: Sender): Promise<{ id: string; displayName: string }> {
+    const resolved = await this.resolvedSender(sender);
+    return { id: resolved.id, displayName: resolved.nick_name || resolved.id };
   }
 
   private async acknowledgeAnswer(

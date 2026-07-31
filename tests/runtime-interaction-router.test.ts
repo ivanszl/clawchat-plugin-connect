@@ -184,6 +184,7 @@ describe("Runtime Interaction surface routing", () => {
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",
+      agentDisplayName: "Alice",
       sendClawChatMessage: async (delivery) => {
         sent.push(delivery);
       },
@@ -208,13 +209,18 @@ describe("Runtime Interaction surface routing", () => {
       chatId: "group-conversation",
       chatType: "group",
       sourceMessageId: "message-group",
-      fragments: [
-        {
-          kind: "text",
-          text: expect.stringContaining("Session ABCDEFGH"),
-        },
-      ],
     });
+    expect(sent[0]?.fragments).toContainEqual({
+      kind: "mention",
+      user_id: "agent-1",
+      display: "Alice",
+    });
+    expect(sent[0]?.fragments).toContainEqual(
+      expect.objectContaining({
+        kind: "text",
+        text: expect.stringContaining("Session ABCDEFGH"),
+      }),
+    );
     expect(JSON.stringify(sent[0].fragments)).not.toContain("do-not-publish");
     await expect(router.handleMessage(groupMessage("member-1", "/approve"))).resolves.toBe(true);
     await expect(result).resolves.toEqual({ kind: "approval", optionId: "approve-once" });
@@ -233,6 +239,44 @@ describe("Runtime Interaction surface routing", () => {
       expect.objectContaining({
         kind: "text",
         text: expect.stringContaining("member-1 approved once for Session ABCDEFGH"),
+      }),
+    ]);
+  });
+
+  it("resolves an opaque group responder id before publishing approval confirmation", async () => {
+    const sent: Array<{ fragments: Fragment[] }> = [];
+    const router = new RuntimeInteractionRouter({
+      clientPort: { request: mock() } as RuntimeInteractionPort,
+      ownerUserId: "owner-1",
+      ownerConversationId: "owner-conversation",
+      agentUserId: "agent-1",
+      resolveSenderDisplayName: mock(async (senderId: string) =>
+        senderId === "usr_01KPSPM0D3FFERFTYPY0PF8J2J" ? "Colin" : null,
+      ),
+      sendClawChatMessage: async (delivery) => {
+        sent.push(delivery);
+      },
+    });
+    const result = router.request(approvalRequest(), {
+      sessionRef: "ABCDEFGH",
+      turnId: "turn-group",
+      origin: "clawchat",
+      deliveryConfirmation: Promise.resolve(),
+      clawchat: {
+        chatId: "group-conversation",
+        chatType: "group",
+        sourceMessageId: "message-group",
+      },
+    });
+    while (sent.length === 0) await Bun.sleep(0);
+
+    const opaqueId = "usr_01KPSPM0D3FFERFTYPY0PF8J2J";
+    await expect(router.handleMessage(groupMessage(opaqueId, "/approve"))).resolves.toBe(true);
+    await expect(result).resolves.toEqual({ kind: "approval", optionId: "approve-once" });
+    expect(sent.at(-1)?.fragments).toEqual([
+      expect.objectContaining({
+        kind: "text",
+        text: expect.stringContaining("Colin approved once for Session ABCDEFGH"),
       }),
     ]);
   });
@@ -416,9 +460,10 @@ describe("Runtime Interaction surface routing", () => {
     while (sent.length === 0) await Bun.sleep(0);
     expect(JSON.stringify(sent[0].fragments)).not.toContain("short-secret");
     expect(JSON.stringify(sent[0].fragments)).not.toContain("Version");
-    expect(sent[0].fragments).toEqual([
+    expect(sent[0].fragments).toContainEqual(
       expect.objectContaining({ kind: "text", text: expect.stringContaining("Question 1") }),
-    ]);
+    );
+    expect(sent[0].fragments).toContainEqual({ kind: "mention", user_id: "agent-1" });
     const interactionId = sent[0].interactionId;
     if (!interactionId) throw new Error("Expected an Interaction identity in its presentation");
 
@@ -598,7 +643,11 @@ describe("Runtime Interaction surface routing", () => {
 
     await expect(router.handleMessage(groupMessage("member-1", "/APPROVE"))).resolves.toBe(true);
     expect(settled).toBe(false);
-    expect(sent.at(-1)?.fragments).toEqual([expect.objectContaining({ kind: "text", text: "Usage: @Agent /approve" })]);
+    expect(sent.at(-1)?.fragments).toEqual([
+      { kind: "text", text: "Usage: " },
+      { kind: "mention", user_id: "agent-1" },
+      { kind: "text", text: " /approve" },
+    ]);
 
     await expect(router.handleMessage(groupMessage("member-1", "/approve"))).resolves.toBe(true);
     await expect(result).resolves.toEqual({ kind: "approval", optionId: "approve-once" });
