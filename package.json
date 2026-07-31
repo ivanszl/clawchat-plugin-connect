@@ -40,6 +40,7 @@
     "dev:web": "vite --config vite.config.ts",
     "preview:web": "bun run build:web && bun tests/fixtures/client-preview-server.ts",
     "prototype:multi-account": "bun src/prototypes/multi-account-bindings.prototype.ts",
+    "prototype:multi-account-liveware": "bun src/prototypes/multi-account-liveware.prototype.ts",
     "build": "bun run build:service && bun run build:web",
     "build:service": "bun build ./src/bin.ts ./src/index.ts --target=bun --outdir=dist/src --packages=external --sourcemap=linked",
     "build:web": "vite build --config vite.config.ts",
