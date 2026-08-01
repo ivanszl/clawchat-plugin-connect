@@ -356,17 +356,14 @@ export interface ClientErrorView {
 export interface StartTurnRequest {
   requestId: string;
   prompt: string;
-  skill?: SkillSelectionView;
+  selection?: SlashSuggestionView;
   media?: ClientMediaAttachment[];
 }
 
-export interface SkillSelectionView {
+export interface SlashSuggestionView {
+  kind: "skill" | "command";
   id: string;
   name: string;
-}
-
-export interface SlashSuggestionView extends SkillSelectionView {
-  kind: "skill";
   description?: string;
 }
 

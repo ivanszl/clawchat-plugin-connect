@@ -426,6 +426,39 @@ describe("OpenCode Runtime Adapter", () => {
     expect(invalidated).toHaveBeenCalledTimes(1);
   });
 
+  it("discovers ordinary runtime commands and invokes a selected command natively", async () => {
+    const test = fixture();
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const binding = { kind: "opencode" as const };
+
+    const commands = await adapter.listCommands?.(binding, runtimeWorkspace);
+    expect(commands).toEqual([
+      {
+        id: "opencode-command:compact",
+        name: "compact",
+        description: "Compact the Session",
+      },
+    ]);
+
+    const session = await adapter.start(binding, startContext());
+    for await (const _activity of session.prompt({
+      prompt: "/compact keep the important context",
+      command: commands?.[0],
+      workspace: runtimeWorkspace,
+    })) {
+      // Drain the completed native turn.
+    }
+
+    expect(test.commands).toEqual([
+      expect.objectContaining({
+        sessionID: "session-1",
+        directory,
+        command: "compact",
+        arguments: "keep the important context",
+      }),
+    ]);
+  });
+
   it("discovers native capabilities and only top-level Runtime Threads", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });

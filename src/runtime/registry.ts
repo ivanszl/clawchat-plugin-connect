@@ -4,6 +4,7 @@ import type {
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
   RuntimeActivitySnapshot,
+  RuntimeCommandSummary,
   RuntimeLifecycleCapabilities,
   RuntimeModelOption,
   RuntimeSessionOption,
@@ -27,6 +28,11 @@ export class RuntimeAdapterRegistry {
     { expiresAt: number; value?: RuntimeSkillSummary[]; loading?: Promise<RuntimeSkillSummary[]> }
   >();
   private readonly skillChangeSubscriptions = new Map<string, () => void>();
+  private readonly commandLists = new Map<
+    string,
+    { expiresAt: number; value?: RuntimeCommandSummary[]; loading?: Promise<RuntimeCommandSummary[]> }
+  >();
+  private readonly commandChangeSubscriptions = new Map<string, () => void>();
 
   constructor(definitions: readonly RuntimeAdapterDefinition[]) {
     for (const definition of definitions) {
@@ -75,28 +81,32 @@ export class RuntimeAdapterRegistry {
     options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number } = {},
   ): Promise<RuntimeSkillSummary[] | null> {
     const adapter = this.require(binding);
-    if (!adapter.listSkills) return null;
-    const bindingId = this.bindingId(binding);
-    const key = `${bindingId}\0${workspace.workingDirectory}`;
-    const cached = this.skillLists.get(key);
-    if (!options.forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
-    if (!options.forceRefresh && cached?.loading) {
-      if (options.existingOnly) return await waitForSkillList(cached.loading, options.waitMs ?? 150);
-      return await cached.loading;
-    }
-    if (options.existingOnly) return cached?.value ?? null;
-    const loading = adapter
-      .listSkills(binding, workspace, { forceRefresh: options.forceRefresh })
-      .then((value) => {
-        this.skillLists.set(key, { value, expiresAt: Date.now() + 30_000 });
-        return value;
-      })
-      .catch((error) => {
-        this.skillLists.delete(key);
-        throw error;
-      });
-    this.skillLists.set(key, { loading, expiresAt: 0 });
-    return await loading;
+    return await this.listRuntimeCatalog(
+      binding,
+      workspace,
+      this.skillLists,
+      adapter.listSkills
+        ? async () => await adapter.listSkills?.(binding, workspace, { forceRefresh: options.forceRefresh })
+        : undefined,
+      options,
+    );
+  }
+
+  async listCommands(
+    binding: AgentBindingConfig,
+    workspace: RuntimeWorkspace,
+    options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number } = {},
+  ): Promise<RuntimeCommandSummary[] | null> {
+    const adapter = this.require(binding);
+    return await this.listRuntimeCatalog(
+      binding,
+      workspace,
+      this.commandLists,
+      adapter.listCommands
+        ? async () => await adapter.listCommands?.(binding, workspace, { forceRefresh: options.forceRefresh })
+        : undefined,
+      options,
+    );
   }
 
   async discoverThreads(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]> {
@@ -187,8 +197,11 @@ export class RuntimeAdapterRegistry {
     );
     this.adaptersByBinding.clear();
     for (const unsubscribe of this.skillChangeSubscriptions.values()) unsubscribe();
+    for (const unsubscribe of this.commandChangeSubscriptions.values()) unsubscribe();
     this.skillChangeSubscriptions.clear();
+    this.commandChangeSubscriptions.clear();
     this.skillLists.clear();
+    this.commandLists.clear();
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failure) throw failure.reason;
   }
@@ -214,7 +227,46 @@ export class RuntimeAdapterRegistry {
         }),
       );
     }
+    if (adapter.onCommandsChanged) {
+      this.commandChangeSubscriptions.set(
+        bindingId,
+        adapter.onCommandsChanged(() => {
+          for (const key of this.commandLists.keys())
+            if (key.startsWith(`${bindingId}\0`)) this.commandLists.delete(key);
+        }),
+      );
+    }
     return adapter;
+  }
+
+  private async listRuntimeCatalog<T>(
+    binding: AgentBindingConfig,
+    workspace: RuntimeWorkspace,
+    cache: Map<string, { expiresAt: number; value?: T[]; loading?: Promise<T[]> }>,
+    load: (() => Promise<T[] | undefined>) | undefined,
+    options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number },
+  ): Promise<T[] | null> {
+    if (!load) return null;
+    const key = `${this.bindingId(binding)}\0${workspace.workingDirectory}`;
+    const cached = cache.get(key);
+    if (!options.forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
+    if (!options.forceRefresh && cached?.loading) {
+      if (options.existingOnly) return await waitForRuntimeList(cached.loading, options.waitMs ?? 150);
+      return await cached.loading;
+    }
+    if (options.existingOnly) return cached?.value ?? null;
+    const loading = load()
+      .then((value) => {
+        const resolved = value ?? [];
+        cache.set(key, { value: resolved, expiresAt: Date.now() + 30_000 });
+        return resolved;
+      })
+      .catch((error) => {
+        cache.delete(key);
+        throw error;
+      });
+    cache.set(key, { loading, expiresAt: 0 });
+    return await loading;
   }
 
   private bindingId(binding: AgentBindingConfig): string {
@@ -229,10 +281,7 @@ export class RuntimeAdapterRegistry {
   }
 }
 
-async function waitForSkillList(
-  loading: Promise<RuntimeSkillSummary[]>,
-  waitMs: number,
-): Promise<RuntimeSkillSummary[] | null> {
+async function waitForRuntimeList<T>(loading: Promise<T[]>, waitMs: number): Promise<T[] | null> {
   if (waitMs <= 0) return null;
   return await Promise.race([
     loading,

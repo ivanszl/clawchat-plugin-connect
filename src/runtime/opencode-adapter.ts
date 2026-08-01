@@ -54,10 +54,17 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
   const threadDirectories = new Map<string, string>();
   const observedUserMessages = new Map<string, Set<string>>();
   const nativeSkills = new Map<string, Map<string, string>>();
+  const nativeCommands = new Map<string, Map<string, string>>();
+  const commandCatalogLoads = new Map<string, Promise<Awaited<ReturnType<OpenCodeServerClient["listCommands"]>>>>();
   const skillChangeListeners = new Set<() => void>();
+  const commandChangeListeners = new Set<() => void>();
   const invalidateSkillWorkspace = (workspace: RuntimeWorkspace) => {
     if (!nativeSkills.delete(resolve(workspace.workingDirectory))) return;
     for (const listener of skillChangeListeners) listener();
+  };
+  const invalidateCommandWorkspace = (workspace: RuntimeWorkspace) => {
+    if (!nativeCommands.delete(resolve(workspace.workingDirectory))) return;
+    for (const listener of commandChangeListeners) listener();
   };
 
   const clientFor = async (binding: AgentBindingConfig): Promise<OpenCodeServerClient> => {
@@ -125,6 +132,17 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
     return { client, session };
   };
 
+  const commandCatalogFor = async (binding: AgentBindingConfig, workspace: RuntimeWorkspace) => {
+    const key = resolve(workspace.workingDirectory);
+    const existing = commandCatalogLoads.get(key);
+    if (existing) return await existing;
+    const loading = (async () => await (await clientFor(binding)).listCommands(workspace.workingDirectory))().finally(
+      () => commandCatalogLoads.delete(key),
+    );
+    commandCatalogLoads.set(key, loading);
+    return await loading;
+  };
+
   return {
     kind: "opencode",
     modes: [],
@@ -142,7 +160,7 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
       return sessionOptions(agents, providers);
     },
     async listSkills(binding, workspace) {
-      const commands = await (await clientFor(binding)).listCommands(workspace.workingDirectory);
+      const commands = await commandCatalogFor(binding, workspace);
       const workspaceSkills = new Map<string, string>();
       const summaries = commands
         .filter((command) => command.source === "skill")
@@ -157,6 +175,23 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
     onSkillsChanged(listener) {
       skillChangeListeners.add(listener);
       return () => skillChangeListeners.delete(listener);
+    },
+    async listCommands(binding, workspace) {
+      const commands = await commandCatalogFor(binding, workspace);
+      const workspaceCommands = new Map<string, string>();
+      const summaries = commands
+        .filter((command) => command.source !== "skill")
+        .map((command) => {
+          const id = `opencode-command:${command.name}`;
+          workspaceCommands.set(id, command.name);
+          return { id, name: command.name, ...(command.description ? { description: command.description } : {}) };
+        });
+      nativeCommands.set(resolve(workspace.workingDirectory), workspaceCommands);
+      return summaries;
+    },
+    onCommandsChanged(listener) {
+      commandChangeListeners.add(listener);
+      return () => commandChangeListeners.delete(listener);
     },
     async listModels(binding) {
       return modelOptions(await (await clientFor(binding)).listProviders(lastDirectory));
@@ -203,6 +238,8 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
         },
         nativeSkills,
         invalidateSkillWorkspace,
+        nativeCommands,
+        invalidateCommandWorkspace,
       });
     },
     async close() {
@@ -213,7 +250,10 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
       if (clientPromise) await (await clientPromise).close();
       listeners.clear();
       skillChangeListeners.clear();
+      commandChangeListeners.clear();
       nativeSkills.clear();
+      nativeCommands.clear();
+      commandCatalogLoads.clear();
       clientPromise = null;
     },
   };
@@ -229,6 +269,8 @@ interface OpenCodeRuntimeSessionOptions {
   onDirectory(directory: string): void;
   nativeSkills: ReadonlyMap<string, ReadonlyMap<string, string>>;
   invalidateSkillWorkspace(workspace: RuntimeWorkspace): void;
+  nativeCommands: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  invalidateCommandWorkspace(workspace: RuntimeWorkspace): void;
 }
 
 class OpenCodeRuntimeSession implements ConnectRuntimeSession {
@@ -326,10 +368,16 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         queue.push(activity);
       const messageID = this.options.messageID();
       this.options.observedUserMessages.get(session.id)?.add(messageID);
-      if (input.skill) {
-        const command = this.options.nativeSkills.get(resolve(input.workspace.workingDirectory))?.get(input.skill.id);
-        if (!command || command !== input.skill.name)
-          throw new Error(`OpenCode Skill is no longer available: ${input.skill.name}`);
+      if (input.skill || input.command) {
+        const selection = input.command ?? input.skill;
+        if (!selection) throw new Error("OpenCode slash selection is missing");
+        const isCommand = input.command !== undefined;
+        const command = (isCommand ? this.options.nativeCommands : this.options.nativeSkills)
+          .get(resolve(input.workspace.workingDirectory))
+          ?.get(selection.id);
+        const label = isCommand ? "command" : "Skill";
+        if (!command || command !== selection.name)
+          throw new Error(`OpenCode ${label} is no longer available: ${selection.name}`);
         await client.runCommand({
           sessionID: session.id,
           directory,
@@ -352,6 +400,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       yield* queue;
     } catch (error) {
       if (input.skill) this.options.invalidateSkillWorkspace(input.workspace);
+      if (input.command) this.options.invalidateCommandWorkspace(input.workspace);
       if (!queue.isClosed) queue.fail(error);
       throw error;
     } finally {

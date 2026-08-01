@@ -24,7 +24,7 @@ import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
-import type { RuntimeSessionOption } from "../runtime/types";
+import type { RuntimeSessionOption, RuntimeSlashSelection } from "../runtime/types";
 import { createSessionContinuity, SessionLifecycleError } from "../session-continuity";
 import { leadingSkillName } from "../skill-invocation";
 import type { ConnectStateStore } from "../state";
@@ -138,7 +138,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       return view.turnSubmissionCapability;
     },
     staging: submissionStaging,
-    accept: async (sessionRef, prompt, skill, staged, signal) => {
+    accept: async (sessionRef, prompt, selection, staged, signal) => {
       signal?.throwIfAborted();
       if (runtimeInteractions.hasPending(sessionRef)) {
         throw new ClientRequestError(
@@ -162,7 +162,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
         sessionRef,
         prompt,
         submissionStaging.mediaFor(staged),
-        skill,
+        selection,
         signal,
       );
       catalog.invalidate();
@@ -437,11 +437,19 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           if (slashSuggestionsMatch && request.method === "GET") {
             const sessionRef = normalizeSessionRef(slashSuggestionsMatch[1] ?? "");
             if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
-            const skills = await sessionSkills(sessionRef, catalog, options, url.searchParams.get("refresh") === "1");
-            if (skills === undefined) return errorResponse(404, "session-not-found", "Session was not found");
+            const refresh = url.searchParams.get("refresh") === "1";
+            const [commands, skills] = await Promise.all([
+              sessionCommands(sessionRef, catalog, options, refresh),
+              sessionSkills(sessionRef, catalog, options, refresh),
+            ]);
+            if (commands === undefined || skills === undefined)
+              return errorResponse(404, "session-not-found", "Session was not found");
             return jsonResponse({
-              supported: skills !== null,
-              entries: (skills ?? []).map((skill) => ({ ...skill, kind: "skill" as const })),
+              supported: commands !== null || skills !== null,
+              entries: [
+                ...(commands ?? []).map((command) => ({ ...command, kind: "command" as const })),
+                ...(skills ?? []).map((skill) => ({ ...skill, kind: "skill" as const })),
+              ],
             });
           }
           const sessionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)$/u);
@@ -660,31 +668,40 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             const form = await request.formData();
             const prompt = form.get("prompt");
             if (typeof prompt !== "string") return errorResponse(400, "invalid-prompt", "prompt must be text");
-            const skillId = form.get("skillId");
-            const skillName = form.get("skillName");
+            const selectionKind = form.get("selectionKind");
+            const selectionId = form.get("selectionId");
+            const selectionName = form.get("selectionName");
+            const selectionFields = [selectionKind, selectionId, selectionName];
+            if (selectionFields.some((value) => value !== null && typeof value !== "string"))
+              return errorResponse(400, "invalid-selection", "Slash selection must be text");
+            if (selectionFields.some((value) => value === null) && selectionFields.some((value) => value !== null))
+              return errorResponse(400, "invalid-selection", "Selection kind, id, and name must be provided together");
+            let selection: RuntimeSlashSelection | null = null;
             if (
-              (skillId !== null && typeof skillId !== "string") ||
-              (skillName !== null && typeof skillName !== "string")
-            )
-              return errorResponse(400, "invalid-skill", "Skill selection must be text");
-            if ((skillId === null) !== (skillName === null))
-              return errorResponse(400, "invalid-skill", "Skill id and name must be provided together");
-            let skill = null;
-            if (skillId !== null && skillName !== null) {
-              if (!skillId.trim() || !skillName.trim())
-                return errorResponse(400, "invalid-skill", "Skill id and name must not be empty");
-              if (leadingSkillName(prompt) !== skillName)
+              typeof selectionKind === "string" &&
+              typeof selectionId === "string" &&
+              typeof selectionName === "string"
+            ) {
+              if (!selectionId.trim() || !selectionName.trim() || !["command", "skill"].includes(selectionKind))
+                return errorResponse(400, "invalid-selection", "Slash selection is invalid");
+              if (leadingSkillName(prompt) !== selectionName)
                 return errorResponse(
                   400,
-                  "skill-prompt-mismatch",
-                  "Selected Skill must match the leading prompt prefix",
+                  "selection-prompt-mismatch",
+                  "Selected slash entry must match the leading prompt prefix",
                 );
-              skill = { id: skillId, name: skillName };
+              selection = { kind: selectionKind as "command" | "skill", id: selectionId, name: selectionName };
             } else {
               const manualName = leadingSkillName(prompt);
               if (manualName) {
-                const available = await sessionSkills(sessionRef, catalog, options, false, true).catch(() => null);
-                skill = available?.find((candidate) => candidate.name === manualName) ?? null;
+                const commands = await sessionCommands(sessionRef, catalog, options, false, true).catch(() => null);
+                const command = commands?.find((candidate) => candidate.name === manualName);
+                if (command) selection = { ...command, kind: "command" };
+                else {
+                  const skills = await sessionSkills(sessionRef, catalog, options, false, true).catch(() => null);
+                  const skill = skills?.find((candidate) => candidate.name === manualName);
+                  if (skill) selection = { ...skill, kind: "skill" };
+                }
               }
             }
             const files = form.getAll("attachments");
@@ -695,7 +712,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               submissionId,
               sessionRef,
               prompt,
-              skill,
+              selection,
               attachments: files.map((file) => ({
                 name: file.name || "attachment",
                 mime: file.type,
@@ -1293,11 +1310,11 @@ async function turnSubmissionDigest(draft: TurnSubmissionDraft): Promise<string>
   hash.update(draft.sessionRef);
   hash.update("\0");
   hash.update(draft.prompt);
-  if (draft.skill) {
-    hash.update("\0skill\0");
-    hash.update(draft.skill.id);
+  if (draft.selection) {
+    hash.update(`\0${draft.selection.kind}\0`);
+    hash.update(draft.selection.id);
     hash.update("\0");
-    hash.update(draft.skill.name);
+    hash.update(draft.selection.name);
   }
   for (const attachment of draft.attachments) {
     hash.update("\0");
@@ -1323,6 +1340,23 @@ async function sessionSkills(
   const workspace = await catalog.workspace(sessionRef);
   if (!workspace) return undefined;
   return await options.runtimeAdapters.listSkills(getAgentBinding(options.config, entry.bindingId), workspace, {
+    forceRefresh,
+    existingOnly,
+  });
+}
+
+async function sessionCommands(
+  sessionRef: string,
+  catalog: SessionCatalog,
+  options: ClientInterfaceOptions,
+  forceRefresh = false,
+  existingOnly = false,
+) {
+  const entry = await catalog.entry(sessionRef);
+  if (!entry) return undefined;
+  const workspace = await catalog.workspace(sessionRef);
+  if (!workspace) return undefined;
+  return await options.runtimeAdapters.listCommands(getAgentBinding(options.config, entry.bindingId), workspace, {
     forceRefresh,
     existingOnly,
   });

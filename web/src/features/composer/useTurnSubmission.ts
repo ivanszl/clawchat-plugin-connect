@@ -1,6 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import { useRef, useState } from "react";
-import type { SkillSelectionView } from "../../../../src/client-contract";
+import type { SlashSuggestionView } from "../../../../src/client-contract";
 import { ClientInterfaceError, requestId } from "../../client-interface/http";
 import {
   submitTurn,
@@ -16,11 +16,11 @@ export function useTurnSubmission(sessionRef: string) {
     mutationFn: async ({
       prompt,
       files,
-      skill,
+      selection,
     }: {
       prompt: string;
       files: File[];
-      skill: SkillSelectionView | null;
+      selection: SlashSuggestionView | null;
     }) => {
       const submissionId = retryIdentity.current.begin(requestId);
       const abort = new AbortController();
@@ -31,7 +31,7 @@ export function useTurnSubmission(sessionRef: string) {
             submissionId,
             sessionRef,
             prompt,
-            skill,
+            selection,
             attachments: [...files],
           },
           { signal: abort.signal, onProgress: setProgress },

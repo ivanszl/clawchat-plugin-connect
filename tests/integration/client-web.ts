@@ -268,6 +268,11 @@ async function verifySkillPicker(browser: Awaited<ReturnType<typeof chromium.lau
     await expect(picker).toBeVisible();
     await expect(picker.getByRole("option", { name: /grill-with-docs/u })).toContainText("结合官方文档追问并检验方案");
     await expect(picker).not.toContainText("/repo/");
+    await input.fill("/com");
+    await expect(picker.getByRole("option", { name: /compact/u })).toContainText("Compact the Session context");
+    await picker.getByRole("option", { name: /compact/u }).click();
+    await expect(input).toHaveText("/compact ");
+    await input.fill("/gr");
     await picker.getByRole("option", { name: /grill-with-docs/u }).click();
     await expect(input).toHaveText("/grill-with-docs ");
     await input.fill("/res");

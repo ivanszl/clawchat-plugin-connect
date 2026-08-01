@@ -1,4 +1,4 @@
-import type { SkillSelectionView, StartTurnResponse } from "../../../src/client-contract";
+import type { SlashSuggestionView, StartTurnResponse } from "../../../src/client-contract";
 import { CLIENT_API_PREFIX } from "../../../src/client-contract";
 import { ClientInterfaceError } from "./http";
 
@@ -8,7 +8,7 @@ export interface ClientTurnSubmission {
   submissionId: string;
   sessionRef: string;
   prompt: string;
-  skill?: SkillSelectionView | null;
+  selection?: SlashSuggestionView | null;
   attachments: File[];
 }
 
@@ -40,9 +40,10 @@ export function submitTurn(
   const totalBytes = draft.attachments.reduce((total, file) => total + file.size, 0);
   const body = new FormData();
   body.append("prompt", draft.prompt);
-  if (draft.skill) {
-    body.append("skillId", draft.skill.id);
-    body.append("skillName", draft.skill.name);
+  if (draft.selection) {
+    body.append("selectionKind", draft.selection.kind);
+    body.append("selectionId", draft.selection.id);
+    body.append("selectionName", draft.selection.name);
   }
   for (const file of draft.attachments) body.append("attachments", file, file.name);
   options.onProgress?.({ phase: "transferring", transferredBytes: 0, totalBytes });

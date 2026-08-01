@@ -42,7 +42,7 @@ import type {
   ConnectRuntimeMedia,
   RuntimeInteractionPort,
   RuntimeModelOption,
-  RuntimeSkillSummary,
+  RuntimeSlashSelection,
   SelectableRuntimeThread,
 } from "./types";
 
@@ -195,7 +195,7 @@ export class ConnectRuntime {
     sessionRef: string,
     prompt: string,
     media: ConnectRuntimeMedia[] = [],
-    skill: RuntimeSkillSummary | null = null,
+    selection: RuntimeSlashSelection | null = null,
     signal?: AbortSignal,
   ): Promise<{ turnId: string; sessionRef: string }> {
     signal?.throwIfAborted();
@@ -223,7 +223,7 @@ export class ConnectRuntime {
         this.activeTurnSessionChats.set(key, current.chatId);
         await this.recordRuntimeStatus(this.queue.stats());
         try {
-          await this.runClientTurn(target, text, turnId, media, skill);
+          await this.runClientTurn(target, text, turnId, media, selection);
         } finally {
           this.activeTurnSessionChats.delete(key);
           await this.recordRuntimeStatus(this.queue.stats());
@@ -485,7 +485,7 @@ export class ConnectRuntime {
     prompt: string,
     turnId: string,
     media: ConnectRuntimeMedia[],
-    skill: RuntimeSkillSummary | null,
+    selection: RuntimeSlashSelection | null,
   ): Promise<void> {
     const current = runtimeSessionFromTurnTarget(target);
     const activeAgentId = target.bindingId || this.options.agentId;
@@ -514,7 +514,8 @@ export class ConnectRuntime {
     try {
       for await (const event of this.executor.execute(target, {
         prompt,
-        ...(skill ? { skill } : {}),
+        ...(selection?.kind === "skill" ? { skill: selection } : {}),
+        ...(selection?.kind === "command" ? { command: selection } : {}),
         media,
         trustedMediaOrigins: configuredMediaOrigins(this.options.config),
         workspace,

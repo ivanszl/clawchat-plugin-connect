@@ -224,6 +224,9 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
       },
       { id: "codex:research", name: "research", description: "调查可靠的一手资料" },
     ],
+    listCommands: async () => [
+      { id: "preview-command:compact", name: "compact", description: "Compact the Session context" },
+    ],
     discoverAllThreads: async () => [
       {
         runtimeThreadId: "thread-project",

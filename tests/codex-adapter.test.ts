@@ -262,6 +262,25 @@ describe("Codex app-server runtime adapter", () => {
     expect(client.startTurn).not.toHaveBeenCalled();
   });
 
+  it("rejects a Runtime Command selection because Codex exposes no command catalog", async () => {
+    const client = new FakeAppServer();
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+    const session = await adapter.start(agent, context());
+
+    await expect(
+      (async () => {
+        for await (const _activity of session.prompt({
+          prompt: "/compact",
+          command: { id: "codex-command:compact", name: "compact" },
+          workspace,
+        })) {
+          // Unsupported structured selections fail before a native turn starts.
+        }
+      })(),
+    ).rejects.toThrow("Codex Runtime Commands are not supported: compact");
+    expect(client.startTurn).not.toHaveBeenCalled();
+  });
+
   it("keeps Runtime Activity positions stable across multiple live and historical turns", async () => {
     const client = new FakeAppServer();
     let completedTurns = 0;

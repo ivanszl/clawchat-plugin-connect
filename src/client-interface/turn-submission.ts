@@ -1,5 +1,5 @@
 import type { TurnSubmissionCapability } from "../client-contract";
-import type { RuntimeSkillSummary } from "../runtime/types";
+import type { RuntimeSlashSelection } from "../runtime/types";
 export type TurnSubmissionAttachmentKind = "image" | "file" | "audio" | "video";
 export type { TurnSubmissionCapability } from "../client-contract";
 
@@ -14,7 +14,7 @@ export interface TurnSubmissionDraft {
   submissionId: string;
   sessionRef: string;
   prompt: string;
-  skill?: RuntimeSkillSummary | null;
+  selection?: RuntimeSlashSelection | null;
   attachments: TurnSubmissionAttachment[];
 }
 
@@ -39,7 +39,7 @@ export interface TurnSubmissionOptions {
   accept(
     sessionRef: string,
     prompt: string,
-    skill: RuntimeSkillSummary | null,
+    selection: RuntimeSlashSelection | null,
     staged: StagedTurnSubmission,
     signal?: AbortSignal,
   ): Promise<AcceptedTurnSubmission>;
@@ -78,7 +78,7 @@ export class TurnSubmission {
       const accepted = await this.options.accept(
         immutable.sessionRef,
         immutable.prompt,
-        immutable.skill ?? null,
+        immutable.selection ?? null,
         staged,
         signal,
       );
@@ -96,7 +96,7 @@ function snapshotDraft(draft: TurnSubmissionDraft): TurnSubmissionDraft {
     submissionId: draft.submissionId,
     sessionRef: draft.sessionRef,
     prompt: draft.prompt,
-    skill: draft.skill ? { ...draft.skill } : null,
+    selection: draft.selection ? { ...draft.selection } : null,
     attachments: draft.attachments.map((attachment) => ({ ...attachment })),
   };
 }

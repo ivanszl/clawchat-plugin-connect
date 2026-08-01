@@ -658,6 +658,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
   }
 
   private async buildTurnInput(input: ConnectRuntimePrompt): Promise<CodexUserInput[]> {
+    if (input.command) throw new Error(`Codex Runtime Commands are not supported: ${input.command.name}`);
     let prompt = input.prompt;
     const selectedSkill = input.skill ? this.resolveSkill(input.skill, input.workspace) : null;
     if (selectedSkill) prompt = replaceLeadingSkill(prompt, selectedSkill.name, "$");

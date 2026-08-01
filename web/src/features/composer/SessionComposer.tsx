@@ -37,7 +37,7 @@ export function SessionComposer({
   const [attachments, setAttachments] = useState<File[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [acceptedTurnId, setAcceptedTurnId] = useState<string | null>(null);
-  const [selectedSkill, setSelectedSkill] = useState<SlashSuggestionView | null>(null);
+  const [selectedSelection, setSelectedSelection] = useState<SlashSuggestionView | null>(null);
   const [activeSuggestion, setActiveSuggestion] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const slashPickerWasOpen = useRef(false);
@@ -48,7 +48,7 @@ export function SessionComposer({
     setAttachments([]);
     setAttachmentError(null);
     setAcceptedTurnId(null);
-    setSelectedSkill(null);
+    setSelectedSelection(null);
   }, [storageKey]);
   useEffect(() => {
     if (!value) sessionStorage.removeItem(storageKey);
@@ -89,8 +89,8 @@ export function SessionComposer({
   };
   const setComposerValue = (next: string) => {
     setValue(next);
-    const selectedPrefix = selectedSkill ? `/${selectedSkill.name}` : null;
-    if (selectedPrefix && next !== selectedPrefix && !next.startsWith(`${selectedPrefix} `)) setSelectedSkill(null);
+    const selectedPrefix = selectedSelection ? `/${selectedSelection.name}` : null;
+    if (selectedPrefix && next !== selectedPrefix && !next.startsWith(`${selectedPrefix} `)) setSelectedSelection(null);
     setActiveSuggestion(0);
   };
   const slashMatch = /^\/([^\s/]*)$/u.exec(value);
@@ -109,18 +109,18 @@ export function SessionComposer({
             entry.description?.toLocaleLowerCase().includes(slashQuery),
         );
   const chooseSuggestion = (entry: SlashSuggestionView) => {
-    setSelectedSkill(entry);
+    setSelectedSelection(entry);
     setValue(`/${entry.name} `);
     setActiveSuggestion(0);
   };
   const submit = (prompt: string) => {
     if (!send.isPending && (prompt.trim() || attachments.length > 0)) {
       send.mutate(
-        { prompt, files: attachments, skill: selectedSkill },
+        { prompt, files: attachments, selection: selectedSelection },
         {
           onSuccess: (response) => {
             setValue("");
-            setSelectedSkill(null);
+            setSelectedSelection(null);
             setAttachments([]);
             setAttachmentError(null);
             setAcceptedTurnId(response.turnId);
@@ -155,7 +155,7 @@ export function SessionComposer({
         <div className="slash-suggestions" role="listbox" aria-label="命令和 Skills">
           {slashSuggestions.isError ? (
             <button className="slash-suggestion-error" type="button" onClick={() => slashSuggestions.refetch()}>
-              Skills 加载失败，点击重试
+              命令和 Skills 加载失败，点击重试
             </button>
           ) : (
             filteredSuggestions.map((entry, index) => (

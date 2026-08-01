@@ -114,6 +114,41 @@ describe("RuntimeAdapterRegistry", () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it("caches Commands per Binding workspace and invalidates them on native change notifications", async () => {
+    let notifyCommandsChanged: (() => void) | undefined;
+    const unsubscribe = mock(() => undefined);
+    const listCommands = mock(async () => [{ id: "command-1", name: "compact", description: "Compact the Session" }]);
+    const opencode = {
+      ...adapter("opencode"),
+      listCommands,
+      onCommandsChanged: (listener: () => void) => {
+        notifyCommandsChanged = listener;
+        return unsubscribe;
+      },
+    } satisfies ConnectRuntimeAdapter;
+    const registry = new RuntimeAdapterRegistry([{ kind: "opencode", create: () => opencode }]);
+    const binding = { kind: "opencode", env: { CLAWCHAT_CONNECT_AGENT_ID: "work" } } as AgentBindingConfig;
+    const workspace: RuntimeWorkspace = {
+      projectId: "project-1",
+      workingDirectory: "/repo",
+      additionalDirectories: [],
+      skipGitRepoCheck: true,
+    };
+
+    await expect(registry.listCommands(binding, workspace)).resolves.toEqual([
+      { id: "command-1", name: "compact", description: "Compact the Session" },
+    ]);
+    await registry.listCommands(binding, workspace);
+    expect(listCommands).toHaveBeenCalledTimes(1);
+
+    notifyCommandsChanged?.();
+    await registry.listCommands(binding, workspace);
+    expect(listCommands).toHaveBeenCalledTimes(2);
+
+    await registry.close();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
   it("does not start or indefinitely await Skill discovery while classifying a manual slash prefix", async () => {
     let finishDiscovery!: (skills: Array<{ id: string; name: string }>) => void;
     const pending = new Promise<Array<{ id: string; name: string }>>((resolve) => {

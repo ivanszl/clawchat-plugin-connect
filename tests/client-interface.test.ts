@@ -116,6 +116,13 @@ describe("Connect Client Interface", () => {
           },
         ];
       },
+      listCommands: async (binding) => {
+        runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
+        return [
+          { id: "codex-command:compact", name: "compact", description: "Compact the Session" },
+          { id: "codex-command:grill-with-docs", name: "grill-with-docs", description: "Runtime command" },
+        ];
+      },
       discoverAllThreads: async () => (!isArchived && !isDeleted ? [summary, discoveredSummary] : [discoveredSummary]),
       discoverArchivedThreads: async () => (isArchived && !isDeleted ? [{ ...summary, isArchived: true }] : []),
       archiveThread: async (_binding, threadId) => {
@@ -196,7 +203,7 @@ describe("Connect Client Interface", () => {
         sessionRef: string,
         _prompt: string,
         _media: import("../src/runtime/types").ConnectRuntimeMedia[],
-        _skill: import("../src/runtime/types").RuntimeSkillSummary | null,
+        _selection?: import("../src/runtime/types").RuntimeSlashSelection | null,
       ) => ({
         turnId: "turn-123",
         sessionRef,
@@ -254,6 +261,18 @@ describe("Connect Client Interface", () => {
     await expect(slashSuggestions.json()).resolves.toEqual({
       supported: true,
       entries: [
+        {
+          id: "codex-command:compact",
+          kind: "command",
+          name: "compact",
+          description: "Compact the Session",
+        },
+        {
+          id: "codex-command:grill-with-docs",
+          kind: "command",
+          name: "grill-with-docs",
+          description: "Runtime command",
+        },
         {
           id: "codex:grill-with-docs",
           kind: "skill",
@@ -677,8 +696,9 @@ describe("Connect Client Interface", () => {
     const submissionBody = (prompt = "/grill-with-docs from web") => {
       const body = new FormData();
       body.append("prompt", prompt);
-      body.append("skillId", "codex:grill-with-docs");
-      body.append("skillName", "grill-with-docs");
+      body.append("selectionKind", "skill");
+      body.append("selectionId", "codex:grill-with-docs");
+      body.append("selectionName", "grill-with-docs");
       body.append("attachments", new File(["photo"], "photo.png", { type: "image/png" }));
       return body;
     };
@@ -707,6 +727,7 @@ describe("Connect Client Interface", () => {
         }),
       ],
       {
+        kind: "skill",
         id: "codex:grill-with-docs",
         name: "grill-with-docs",
       },
@@ -772,9 +793,10 @@ describe("Connect Client Interface", () => {
       "  /grill-with-docs preserve the authored prompt  ",
       [],
       {
-        id: "codex:grill-with-docs",
+        kind: "command",
+        id: "codex-command:grill-with-docs",
         name: "grill-with-docs",
-        description: "Challenge a proposal against primary documentation",
+        description: "Runtime command",
       },
       expect.any(AbortSignal),
     );

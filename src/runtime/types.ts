@@ -4,6 +4,7 @@ import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 export interface ConnectRuntimePrompt {
   prompt: string;
   skill?: RuntimeSkillSummary;
+  command?: RuntimeCommandSummary;
   media?: ConnectRuntimeMedia[];
   trustedMediaOrigins?: string[];
   workspace: RuntimeWorkspace;
@@ -28,6 +29,17 @@ export interface RuntimeSkillSummary {
   name: string;
   description?: string;
 }
+
+export interface RuntimeCommandSummary {
+  /** Runtime Adapter-owned opaque identity safe to expose through the Client Interface. */
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export type RuntimeSlashSelection =
+  | ({ kind: "skill" } & RuntimeSkillSummary)
+  | ({ kind: "command" } & RuntimeCommandSummary);
 
 export type RuntimeInteractionRequest =
   | {
@@ -264,6 +276,12 @@ export interface ConnectRuntimeAdapter {
     options?: { forceRefresh?: boolean },
   ): Promise<RuntimeSkillSummary[]>;
   onSkillsChanged?(listener: () => void): () => void;
+  listCommands?(
+    binding: AgentBindingConfig,
+    workspace: RuntimeWorkspace,
+    options?: { forceRefresh?: boolean },
+  ): Promise<RuntimeCommandSummary[]>;
+  onCommandsChanged?(listener: () => void): () => void;
   discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
