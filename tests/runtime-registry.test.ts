@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { createReleasedRuntimeAdapterRegistry, releasedRuntimeAdapters } from "../src/runtime/released-adapters";
 import type { ConnectRuntimeAdapter, ConnectRuntimeSession } from "../src/runtime/types";
-import type { AgentBindingConfig } from "../src/types";
+import type { AgentBindingConfig, RuntimeWorkspace } from "../src/types";
 
 const session: ConnectRuntimeSession = {
   prompt: async function* () {},
@@ -77,6 +77,68 @@ describe("RuntimeAdapterRegistry", () => {
     ).resolves.toEqual([{ runtimeThreadId: "thread-1", name: "Existing thread", updatedAt: 1 }]);
     await registry.close();
     expect(codex.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("caches Skills per Binding workspace and invalidates them on native change notifications", async () => {
+    let notifySkillsChanged: (() => void) | undefined;
+    const unsubscribe = mock(() => undefined);
+    const listSkills = mock(async () => [{ id: "skill-1", name: "grill-with-docs", description: "Review docs" }]);
+    const codex = {
+      ...adapter(),
+      listSkills,
+      onSkillsChanged: (listener: () => void) => {
+        notifySkillsChanged = listener;
+        return unsubscribe;
+      },
+    } satisfies ConnectRuntimeAdapter;
+    const registry = new RuntimeAdapterRegistry([{ kind: "codex", create: () => codex }]);
+    const binding = { kind: "codex", env: { CLAWCHAT_CONNECT_AGENT_ID: "work" } } as AgentBindingConfig;
+    const workspace: RuntimeWorkspace = {
+      projectId: "project-1",
+      workingDirectory: "/repo",
+      additionalDirectories: [],
+      skipGitRepoCheck: true,
+    };
+
+    await expect(registry.listSkills(binding, workspace)).resolves.toEqual([
+      { id: "skill-1", name: "grill-with-docs", description: "Review docs" },
+    ]);
+    await registry.listSkills(binding, workspace);
+    expect(listSkills).toHaveBeenCalledTimes(1);
+
+    notifySkillsChanged?.();
+    await registry.listSkills(binding, workspace);
+    expect(listSkills).toHaveBeenCalledTimes(2);
+
+    await registry.close();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start or indefinitely await Skill discovery while classifying a manual slash prefix", async () => {
+    let finishDiscovery!: (skills: Array<{ id: string; name: string }>) => void;
+    const pending = new Promise<Array<{ id: string; name: string }>>((resolve) => {
+      finishDiscovery = resolve;
+    });
+    const listSkills = mock(async () => await pending);
+    const codex = { ...adapter(), listSkills } satisfies ConnectRuntimeAdapter;
+    const registry = new RuntimeAdapterRegistry([{ kind: "codex", create: () => codex }]);
+    const binding = { kind: "codex" } as AgentBindingConfig;
+    const workspace: RuntimeWorkspace = {
+      projectId: "project-1",
+      workingDirectory: "/repo",
+      additionalDirectories: [],
+      skipGitRepoCheck: true,
+    };
+
+    await expect(registry.listSkills(binding, workspace, { existingOnly: true })).resolves.toBeNull();
+    expect(listSkills).not.toHaveBeenCalled();
+
+    const discovery = registry.listSkills(binding, workspace);
+    await expect(registry.listSkills(binding, workspace, { existingOnly: true, waitMs: 1 })).resolves.toBeNull();
+    expect(listSkills).toHaveBeenCalledTimes(1);
+    finishDiscovery([{ id: "skill-1", name: "grill-with-docs" }]);
+    await discovery;
+    await registry.close();
   });
 
   it("rejects duplicate and unregistered Runtime Adapter kinds", async () => {

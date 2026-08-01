@@ -26,6 +26,7 @@ import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { RuntimeSessionOption } from "../runtime/types";
 import { createSessionContinuity, SessionLifecycleError } from "../session-continuity";
+import { leadingSkillName } from "../skill-invocation";
 import type { ConnectStateStore } from "../state";
 import type { AgentBindingConfig, ConnectConfig, RuntimeWorkspace } from "../types";
 import { classifyWorkspaceArtifact } from "../workspace-artifact";
@@ -137,7 +138,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       return view.turnSubmissionCapability;
     },
     staging: submissionStaging,
-    accept: async (sessionRef, prompt, staged, signal) => {
+    accept: async (sessionRef, prompt, skill, staged, signal) => {
       signal?.throwIfAborted();
       if (runtimeInteractions.hasPending(sessionRef)) {
         throw new ClientRequestError(
@@ -157,7 +158,13 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
         throw new ClientRequestError(503, "runtime-offline", "Runtime is unavailable", true);
       }
       signal?.throwIfAborted();
-      const accepted = await runtime.enqueueClientTurn(sessionRef, prompt, submissionStaging.mediaFor(staged), signal);
+      const accepted = await runtime.enqueueClientTurn(
+        sessionRef,
+        prompt,
+        submissionStaging.mediaFor(staged),
+        skill,
+        signal,
+      );
       catalog.invalidate();
       return { accepted: true, ...accepted };
     },
@@ -426,6 +433,17 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               events: visibleEvents,
             });
           }
+          const slashSuggestionsMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/slash-suggestions$/u);
+          if (slashSuggestionsMatch && request.method === "GET") {
+            const sessionRef = normalizeSessionRef(slashSuggestionsMatch[1] ?? "");
+            if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
+            const skills = await sessionSkills(sessionRef, catalog, options, url.searchParams.get("refresh") === "1");
+            if (skills === undefined) return errorResponse(404, "session-not-found", "Session was not found");
+            return jsonResponse({
+              supported: skills !== null,
+              entries: (skills ?? []).map((skill) => ({ ...skill, kind: "skill" as const })),
+            });
+          }
           const sessionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)$/u);
           if (sessionMatch && request.method === "GET") {
             const sessionRef = normalizeSessionRef(sessionMatch[1] ?? "");
@@ -642,6 +660,33 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             const form = await request.formData();
             const prompt = form.get("prompt");
             if (typeof prompt !== "string") return errorResponse(400, "invalid-prompt", "prompt must be text");
+            const skillId = form.get("skillId");
+            const skillName = form.get("skillName");
+            if (
+              (skillId !== null && typeof skillId !== "string") ||
+              (skillName !== null && typeof skillName !== "string")
+            )
+              return errorResponse(400, "invalid-skill", "Skill selection must be text");
+            if ((skillId === null) !== (skillName === null))
+              return errorResponse(400, "invalid-skill", "Skill id and name must be provided together");
+            let skill = null;
+            if (skillId !== null && skillName !== null) {
+              if (!skillId.trim() || !skillName.trim())
+                return errorResponse(400, "invalid-skill", "Skill id and name must not be empty");
+              if (leadingSkillName(prompt) !== skillName)
+                return errorResponse(
+                  400,
+                  "skill-prompt-mismatch",
+                  "Selected Skill must match the leading prompt prefix",
+                );
+              skill = { id: skillId, name: skillName };
+            } else {
+              const manualName = leadingSkillName(prompt);
+              if (manualName) {
+                const available = await sessionSkills(sessionRef, catalog, options, false, true).catch(() => null);
+                skill = available?.find((candidate) => candidate.name === manualName) ?? null;
+              }
+            }
             const files = form.getAll("attachments");
             if (!files.every((file): file is File => file instanceof File && file.size > 0)) {
               return errorResponse(400, "invalid-attachment", "Attachments must be non-empty files");
@@ -650,6 +695,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               submissionId,
               sessionRef,
               prompt,
+              skill,
               attachments: files.map((file) => ({
                 name: file.name || "attachment",
                 mime: file.type,
@@ -1247,6 +1293,12 @@ async function turnSubmissionDigest(draft: TurnSubmissionDraft): Promise<string>
   hash.update(draft.sessionRef);
   hash.update("\0");
   hash.update(draft.prompt);
+  if (draft.skill) {
+    hash.update("\0skill\0");
+    hash.update(draft.skill.id);
+    hash.update("\0");
+    hash.update(draft.skill.name);
+  }
   for (const attachment of draft.attachments) {
     hash.update("\0");
     hash.update(attachment.name);
@@ -1257,6 +1309,23 @@ async function turnSubmissionDigest(draft: TurnSubmissionDraft): Promise<string>
     hash.update(await attachment.readBytes());
   }
   return hash.digest("hex");
+}
+
+async function sessionSkills(
+  sessionRef: string,
+  catalog: SessionCatalog,
+  options: ClientInterfaceOptions,
+  forceRefresh = false,
+  existingOnly = false,
+) {
+  const entry = await catalog.entry(sessionRef);
+  if (!entry) return undefined;
+  const workspace = await catalog.workspace(sessionRef);
+  if (!workspace) return undefined;
+  return await options.runtimeAdapters.listSkills(getAgentBinding(options.config, entry.bindingId), workspace, {
+    forceRefresh,
+    existingOnly,
+  });
 }
 
 function jsonResponse(value: unknown, status = 200): Response {

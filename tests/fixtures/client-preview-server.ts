@@ -216,6 +216,14 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
         inputModalities: ["text", "image"],
       },
     ],
+    listSkills: async () => [
+      {
+        id: "codex:grill-with-docs",
+        name: "grill-with-docs",
+        description: "结合官方文档追问并检验方案",
+      },
+      { id: "codex:research", name: "research", description: "调查可靠的一手资料" },
+    ],
     discoverAllThreads: async () => [
       {
         runtimeThreadId: "thread-project",

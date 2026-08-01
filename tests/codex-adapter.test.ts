@@ -68,6 +68,22 @@ function turn(id = "turn-1", overrides: Partial<CodexAppServerTurn> = {}): Codex
 }
 
 class FakeAppServer implements CodexAppServerClient {
+  readonly listSkills = mock(async () => ({
+    data: [
+      {
+        cwd: "/repo",
+        skills: [
+          {
+            name: "grill-with-docs",
+            description: "Challenge a proposal against primary documentation",
+            enabled: true,
+            path: "/repo/.agents/skills/grill-with-docs/SKILL.md",
+          },
+        ],
+        errors: [],
+      },
+    ],
+  }));
   readonly listThreads = mock(async () => ({ data: [] as CodexAppServerThread[], nextCursor: null as string | null }));
   readonly listModels = mock(
     async (): Promise<{ data: CodexAppServerModel[]; nextCursor: string | null }> => ({
@@ -90,7 +106,9 @@ class FakeAppServer implements CodexAppServerClient {
       nextCursor: null as string | null,
     }),
   );
-  readonly startThread = mock(async (_params: CodexThreadStartParams) => ({ thread: thread("thread-new") }));
+  readonly startThread = mock(async (params: CodexThreadStartParams) => ({
+    thread: thread("thread-new", { cwd: params.cwd }),
+  }));
   readonly resumeThread = mock(async (params: CodexThreadResumeParams) => ({ thread: thread(params.threadId) }));
   readonly readThread = mock(async (params: { threadId: string; includeTurns: true }) => ({
     thread: thread(params.threadId, { turns: [] }),
@@ -162,6 +180,88 @@ function emitCompletedTurn(
 }
 
 describe("Codex app-server runtime adapter", () => {
+  it("discovers project Skills and invokes the selected Skill through native structured input", async () => {
+    const client = new FakeAppServer();
+    client.startTurn.mockImplementationOnce(async () => {
+      queueMicrotask(() => emitCompletedTurn(client, "thread-new", []));
+      return { turn: turn() };
+    });
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+
+    const skills = await adapter.listSkills?.(agent, workspace);
+    expect(skills).toEqual([
+      {
+        id: expect.any(String),
+        name: "grill-with-docs",
+        description: "Challenge a proposal against primary documentation",
+      },
+    ]);
+    expect(skills?.[0]?.id).not.toContain("/repo/");
+
+    const session = await adapter.start(agent, context());
+    for await (const _activity of session.prompt({
+      prompt: "  /grill-with-docs Review the Skill design  ",
+      skill: skills?.[0],
+      workspace,
+    })) {
+      // Drain the completed native turn.
+    }
+
+    expect(client.listSkills).toHaveBeenCalledWith({ cwds: ["/repo"], forceReload: false });
+    expect(client.startTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: [
+          { type: "text", text: "  $grill-with-docs Review the Skill design  ", text_elements: [] },
+          {
+            type: "skill",
+            name: "grill-with-docs",
+            path: "/repo/.agents/skills/grill-with-docs/SKILL.md",
+          },
+        ],
+      }),
+    );
+
+    const otherSession = await adapter.start(agent, context({ sessionId: "session-2" }));
+    await expect(
+      (async () => {
+        for await (const _activity of otherSession.prompt({
+          prompt: "/grill-with-docs Must not cross workspaces",
+          skill: skills?.[0],
+          workspace: { ...workspace, projectId: "project-2", workingDirectory: "/other-repo" },
+        })) {
+          // A Skill discovered for /repo is not valid in another workspace.
+        }
+      })(),
+    ).rejects.toThrow("Codex Skill is no longer available: grill-with-docs");
+    expect(client.startTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates a stale Skill selection when Codex reports that its catalog changed", async () => {
+    const client = new FakeAppServer();
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+    const invalidated = mock(() => undefined);
+    adapter.onSkillsChanged?.(invalidated);
+    const skill = (await adapter.listSkills?.(agent, workspace))?.[0];
+    if (!skill) throw new Error("fixture Skill was not discovered");
+
+    client.emit("skills/changed", {});
+
+    const session = await adapter.start(agent, context());
+    await expect(
+      (async () => {
+        for await (const _activity of session.prompt({
+          prompt: "/grill-with-docs Review the Skill design",
+          skill,
+          workspace,
+        })) {
+          // The stale selection must fail before a native turn starts.
+        }
+      })(),
+    ).rejects.toThrow("Codex Skill is no longer available: grill-with-docs");
+    expect(invalidated).toHaveBeenCalledTimes(1);
+    expect(client.startTurn).not.toHaveBeenCalled();
+  });
+
   it("keeps Runtime Activity positions stable across multiple live and historical turns", async () => {
     const client = new FakeAppServer();
     let completedTurns = 0;

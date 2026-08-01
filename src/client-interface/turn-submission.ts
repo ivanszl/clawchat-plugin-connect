@@ -1,4 +1,5 @@
 import type { TurnSubmissionCapability } from "../client-contract";
+import type { RuntimeSkillSummary } from "../runtime/types";
 export type TurnSubmissionAttachmentKind = "image" | "file" | "audio" | "video";
 export type { TurnSubmissionCapability } from "../client-contract";
 
@@ -13,6 +14,7 @@ export interface TurnSubmissionDraft {
   submissionId: string;
   sessionRef: string;
   prompt: string;
+  skill?: RuntimeSkillSummary | null;
   attachments: TurnSubmissionAttachment[];
 }
 
@@ -37,6 +39,7 @@ export interface TurnSubmissionOptions {
   accept(
     sessionRef: string,
     prompt: string,
+    skill: RuntimeSkillSummary | null,
     staged: StagedTurnSubmission,
     signal?: AbortSignal,
   ): Promise<AcceptedTurnSubmission>;
@@ -72,7 +75,13 @@ export class TurnSubmission {
     try {
       signal?.throwIfAborted();
       validateDraft(immutable, await this.options.capabilityFor(immutable.sessionRef));
-      const accepted = await this.options.accept(immutable.sessionRef, immutable.prompt.trim(), staged, signal);
+      const accepted = await this.options.accept(
+        immutable.sessionRef,
+        immutable.prompt,
+        immutable.skill ?? null,
+        staged,
+        signal,
+      );
       staged.transfer();
       return accepted;
     } catch (error) {
@@ -87,6 +96,7 @@ function snapshotDraft(draft: TurnSubmissionDraft): TurnSubmissionDraft {
     submissionId: draft.submissionId,
     sessionRef: draft.sessionRef,
     prompt: draft.prompt,
+    skill: draft.skill ? { ...draft.skill } : null,
     attachments: draft.attachments.map((attachment) => ({ ...attachment })),
   };
 }

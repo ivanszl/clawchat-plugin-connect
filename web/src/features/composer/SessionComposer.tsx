@@ -2,12 +2,12 @@ import { Button } from "@astryxdesign/core/Button";
 import { ChatComposer, ChatComposerDrawer, ChatComposerInput, ChatSendButton } from "@astryxdesign/core/Chat";
 import { Icon } from "@astryxdesign/core/Icon";
 import { Spinner } from "@astryxdesign/core/Spinner";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageCircle, Paperclip, Square, X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import type { TurnSubmissionCapability } from "../../../../src/client-contract";
+import type { SlashSuggestionView, TurnSubmissionCapability } from "../../../../src/client-contract";
 import { attachmentKind, mediaTypeAllowed } from "../../../../src/client-interface/turn-submission";
-import { cancelTurn, clientKeys } from "../../client-interface/query-options";
+import { cancelTurn, clientKeys, slashSuggestionsQueryOptions } from "../../client-interface/query-options";
 import { useTurnSubmission } from "./useTurnSubmission";
 
 export interface SessionComposerProps {
@@ -37,13 +37,18 @@ export function SessionComposer({
   const [attachments, setAttachments] = useState<File[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [acceptedTurnId, setAcceptedTurnId] = useState<string | null>(null);
+  const [selectedSkill, setSelectedSkill] = useState<SlashSuggestionView | null>(null);
+  const [activeSuggestion, setActiveSuggestion] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const slashPickerWasOpen = useRef(false);
+  const slashSuggestions = useQuery(slashSuggestionsQueryOptions(sessionRef));
   useEffect(() => {
     const next = sessionStorage.getItem(storageKey) ?? "";
     setValue(next);
     setAttachments([]);
     setAttachmentError(null);
     setAcceptedTurnId(null);
+    setSelectedSkill(null);
   }, [storageKey]);
   useEffect(() => {
     if (!value) sessionStorage.removeItem(storageKey);
@@ -82,13 +87,40 @@ export function SessionComposer({
       return next;
     });
   };
+  const setComposerValue = (next: string) => {
+    setValue(next);
+    const selectedPrefix = selectedSkill ? `/${selectedSkill.name}` : null;
+    if (selectedPrefix && next !== selectedPrefix && !next.startsWith(`${selectedPrefix} `)) setSelectedSkill(null);
+    setActiveSuggestion(0);
+  };
+  const slashMatch = /^\/([^\s/]*)$/u.exec(value);
+  const slashQuery = slashMatch?.[1]?.toLocaleLowerCase() ?? null;
+  useEffect(() => {
+    const isOpen = slashQuery !== null;
+    if (isOpen && !slashPickerWasOpen.current && slashSuggestions.data) void slashSuggestions.refetch();
+    slashPickerWasOpen.current = isOpen;
+  }, [slashQuery, slashSuggestions.data, slashSuggestions.refetch]);
+  const filteredSuggestions =
+    slashQuery === null
+      ? []
+      : (slashSuggestions.data?.entries ?? []).filter(
+          (entry) =>
+            entry.name.toLocaleLowerCase().includes(slashQuery) ||
+            entry.description?.toLocaleLowerCase().includes(slashQuery),
+        );
+  const chooseSuggestion = (entry: SlashSuggestionView) => {
+    setSelectedSkill(entry);
+    setValue(`/${entry.name} `);
+    setActiveSuggestion(0);
+  };
   const submit = (prompt: string) => {
     if (!send.isPending && (prompt.trim() || attachments.length > 0)) {
       send.mutate(
-        { prompt: prompt.trim(), files: attachments },
+        { prompt, files: attachments, skill: selectedSkill },
         {
           onSuccess: (response) => {
             setValue("");
+            setSelectedSkill(null);
             setAttachments([]);
             setAttachmentError(null);
             setAcceptedTurnId(response.turnId);
@@ -119,10 +151,34 @@ export function SessionComposer({
             : `正在传输 ${formatBytes(send.progress.transferredBytes)} / ${formatBytes(send.progress.totalBytes)}`}
         </div>
       ) : null}
+      {slashQuery !== null && (filteredSuggestions.length > 0 || slashSuggestions.isError) ? (
+        <div className="slash-suggestions" role="listbox" aria-label="命令和 Skills">
+          {slashSuggestions.isError ? (
+            <button className="slash-suggestion-error" type="button" onClick={() => slashSuggestions.refetch()}>
+              Skills 加载失败，点击重试
+            </button>
+          ) : (
+            filteredSuggestions.map((entry, index) => (
+              <button
+                className="slash-suggestion"
+                type="button"
+                role="option"
+                aria-selected={index === activeSuggestion}
+                key={`${entry.kind}:${entry.id}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => chooseSuggestion(entry)}
+              >
+                <span>/{entry.name}</span>
+                {entry.description ? <small>{entry.description}</small> : null}
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
       <ChatComposer
         className="session-composer"
         value={value}
-        onChange={setValue}
+        onChange={setComposerValue}
         onSubmit={submit}
         onStop={() => {
           if (!stop.isPending) stop.mutate();
@@ -141,12 +197,28 @@ export function SessionComposer({
         input={
           <ChatComposerInput
             value={value}
-            onChange={setValue}
+            onChange={setComposerValue}
             onFiles={addFiles}
             onKeyDownCapture={(event) => {
               if (event.key === "Enter" && (event.nativeEvent.isComposing || event.keyCode === 229)) {
                 event.preventDefault();
                 event.stopPropagation();
+                return;
+              }
+              if (filteredSuggestions.length > 0 && event.key === "ArrowDown") {
+                event.preventDefault();
+                setActiveSuggestion((current) => (current + 1) % filteredSuggestions.length);
+                return;
+              }
+              if (filteredSuggestions.length > 0 && event.key === "ArrowUp") {
+                event.preventDefault();
+                setActiveSuggestion((current) => (current === 0 ? filteredSuggestions.length - 1 : current - 1));
+                return;
+              }
+              if (filteredSuggestions.length > 0 && event.key === "Enter") {
+                event.preventDefault();
+                event.stopPropagation();
+                chooseSuggestion(filteredSuggestions[activeSuggestion] ?? filteredSuggestions[0]);
               }
             }}
             placeholder={

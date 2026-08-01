@@ -38,7 +38,13 @@ import type { RuntimeAdapterRegistry } from "./registry";
 import { type QueueStats, type SessionActivity, SessionQueue } from "./session-queue";
 import { SessionTurnExecutor } from "./session-turn-executor";
 import { ClawChatTurnSurface, ClientTurnSurface } from "./turn-surface";
-import type { ConnectRuntimeMedia, RuntimeInteractionPort, RuntimeModelOption, SelectableRuntimeThread } from "./types";
+import type {
+  ConnectRuntimeMedia,
+  RuntimeInteractionPort,
+  RuntimeModelOption,
+  RuntimeSkillSummary,
+  SelectableRuntimeThread,
+} from "./types";
 
 export interface ConnectRuntimeOptions {
   agentId: string;
@@ -189,11 +195,12 @@ export class ConnectRuntime {
     sessionRef: string,
     prompt: string,
     media: ConnectRuntimeMedia[] = [],
+    skill: RuntimeSkillSummary | null = null,
     signal?: AbortSignal,
   ): Promise<{ turnId: string; sessionRef: string }> {
     signal?.throwIfAborted();
-    const text = prompt.trim();
-    if (!text && media.length === 0) throw new Error("prompt or media is required");
+    const text = prompt;
+    if (!text.trim() && media.length === 0) throw new Error("prompt or media is required");
     const current = await this.options.stateStore.getRuntimeSessionByRef(sessionRef);
     signal?.throwIfAborted();
     if (!current || current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
@@ -216,7 +223,7 @@ export class ConnectRuntime {
         this.activeTurnSessionChats.set(key, current.chatId);
         await this.recordRuntimeStatus(this.queue.stats());
         try {
-          await this.runClientTurn(target, text, turnId, media);
+          await this.runClientTurn(target, text, turnId, media, skill);
         } finally {
           this.activeTurnSessionChats.delete(key);
           await this.recordRuntimeStatus(this.queue.stats());
@@ -478,6 +485,7 @@ export class ConnectRuntime {
     prompt: string,
     turnId: string,
     media: ConnectRuntimeMedia[],
+    skill: RuntimeSkillSummary | null,
   ): Promise<void> {
     const current = runtimeSessionFromTurnTarget(target);
     const activeAgentId = target.bindingId || this.options.agentId;
@@ -506,6 +514,7 @@ export class ConnectRuntime {
     try {
       for await (const event of this.executor.execute(target, {
         prompt,
+        ...(skill ? { skill } : {}),
         media,
         trustedMediaOrigins: configuredMediaOrigins(this.options.config),
         workspace,

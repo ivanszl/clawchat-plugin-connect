@@ -3,6 +3,7 @@ import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 
 export interface ConnectRuntimePrompt {
   prompt: string;
+  skill?: RuntimeSkillSummary;
   media?: ConnectRuntimeMedia[];
   trustedMediaOrigins?: string[];
   workspace: RuntimeWorkspace;
@@ -19,6 +20,13 @@ export interface ConnectRuntimePrompt {
     mode: string;
     allowedKinds: RuntimeOutputKind[];
   };
+}
+
+export interface RuntimeSkillSummary {
+  /** Runtime Adapter-owned opaque identity safe to expose through the Client Interface. */
+  id: string;
+  name: string;
+  description?: string;
 }
 
 export type RuntimeInteractionRequest =
@@ -250,6 +258,12 @@ export interface ConnectRuntimeAdapter {
   prepare?(binding: AgentBindingConfig): Promise<void>;
   listModels?(binding: AgentBindingConfig): Promise<RuntimeModelOption[]>;
   listSessionOptions?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeSessionOption[]>;
+  listSkills?(
+    binding: AgentBindingConfig,
+    workspace: RuntimeWorkspace,
+    options?: { forceRefresh?: boolean },
+  ): Promise<RuntimeSkillSummary[]>;
+  onSkillsChanged?(listener: () => void): () => void;
   discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;

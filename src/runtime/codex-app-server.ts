@@ -42,6 +42,13 @@ export interface CodexAppServerModel {
   inputModalities?: Array<"text" | "image" | "audio">;
 }
 
+export interface CodexAppServerSkill {
+  name: string;
+  description: string;
+  enabled: boolean;
+  path: string;
+}
+
 export interface CodexAppServerThreadItem extends JsonObject {
   type: string;
   id: string;
@@ -96,6 +103,7 @@ export type CodexSandboxPolicy =
 
 export type CodexUserInput =
   | { type: "text"; text: string; text_elements: [] }
+  | { type: "skill"; name: string; path: string }
   | { type: "image"; url: string; detail?: "auto" | "low" | "high" | "original" }
   | { type: "localImage"; path: string; detail?: "auto" | "low" | "high" | "original" }
   | { type: "audio"; url: string }
@@ -113,6 +121,9 @@ export interface CodexTurnStartParams extends JsonObject {
 }
 
 export interface CodexAppServerClient {
+  listSkills(params: { cwds: string[]; forceReload?: boolean }): Promise<{
+    data: Array<{ cwd: string; skills: CodexAppServerSkill[]; errors: Array<{ message: string; path: string }> }>;
+  }>;
   listModels(params: {
     cursor?: string | null;
     limit?: number;
@@ -307,6 +318,16 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
     includeHidden?: boolean;
   }): Promise<{ data: CodexAppServerModel[]; nextCursor: string | null }> {
     return await this.request("model/list", params);
+  }
+
+  async listSkills(params: { cwds: string[]; forceReload?: boolean }): Promise<{
+    data: Array<{
+      cwd: string;
+      skills: CodexAppServerSkill[];
+      errors: Array<{ message: string; path: string }>;
+    }>;
+  }> {
+    return await this.request("skills/list", params);
   }
 
   async startThread(params: CodexThreadStartParams): Promise<{ thread: CodexAppServerThread }> {

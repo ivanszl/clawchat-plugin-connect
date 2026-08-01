@@ -427,6 +427,7 @@ runtimeAdapterConformance(
               pendingReject = reject;
             })
           : [],
+      listCommands: async () => [],
       listProviders: async () => ({ all: [], connected: [], default: {} }),
       listSessions: async () => (state === "active" ? [session] : []),
       getSession: async () => {
@@ -443,6 +444,7 @@ runtimeAdapterConformance(
       sessionStatus: async () => ({}),
       messages: async () => messages,
       promptAsync: async () => undefined,
+      runCommand: async () => undefined,
       abortSession: async () => true,
       events: (signal, onConnected) => {
         onConnected?.();

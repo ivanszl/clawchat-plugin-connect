@@ -52,6 +52,10 @@ _Avoid_: Skill tool table, handwritten CLI registry, generated tool reference
 One of Connect's user-scoped instruction packages that teaches a local Agent to use ClawChat Tool Commands or deploy Agent-Managed Liveware Apps without registering runtime-native tools.
 _Avoid_: Runtime Tool, MCP Server, repository skill
 
+**Runtime Skill**:
+A named reusable workflow that a coding-agent runtime reports as explicitly user-invocable for one Agent Binding and runtime workspace. Connect carries only its safe summary and Runtime Adapter-owned opaque selection identity; discovery, content, enablement, permissions, and native invocation remain runtime-owned.
+_Avoid_: Connect Agent Skill, Connect-discovered Skill, generic slash command
+
 **ClawChat Turn Context**:
 Connect-derived Agent-visible metadata attached to one ClawChat-originated turn. It identifies the exact conversation, message, sender, conversation type, and known mentions without treating user-authored text as authoritative metadata.
 _Avoid_: Prompt text, process environment, Client Turn context
@@ -189,6 +193,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Connect binds and manages multiple Agent Bindings independently of any one runtime kind.
 - Multiple Agent Bindings may use the same Runtime Adapter kind.
 - Every Agent Binding owns an independent Binding Runtime Instance. Runtime process, environment, cached client state, and shutdown lifecycle are never shared between Agent Bindings, including Bindings of the same Runtime Adapter kind.
+- Runtime Skill discovery and cached summaries remain scoped to one Agent Binding and runtime workspace. Connect never derives Runtime Skills by scanning local instruction files, and the active Runtime Adapter remains authoritative when a selected Runtime Skill is invoked.
 - Every activated Agent Binding has exactly one Binding Owner; one Connect installation may operate multiple Binding Owners concurrently.
 - A Binding Owner may own multiple Agent Bindings in one Connect installation.
 - Reactivating a Binding for the same Binding Owner refreshes only that Binding's credentials. Activation for a different owner is rejected while the Binding exists.

@@ -32,6 +32,7 @@ try {
     await verifyContinueInClawChat(browser, origin);
     await verifyImeConfirmationDoesNotSubmit(browser, origin);
     await verifyComposerReturnsIdleAfterTurn(browser, origin);
+    await verifySkillPicker(browser, origin);
     const page = await browser.newPage();
     const createRequests: unknown[] = [];
     page.on("request", (request) => {
@@ -252,6 +253,31 @@ async function verifyImeConfirmationDoesNotSubmit(
     await page.waitForTimeout(50);
     assert.equal(submittedTurns, 0, "IME compatibility Enter keyCode must not submit a turn");
     await expect(input).toHaveText("中文");
+  } finally {
+    await page.close();
+  }
+}
+
+async function verifySkillPicker(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    const input = page.locator(".session-composer [contenteditable='true']");
+    await input.fill("/gr");
+    const picker = page.getByRole("listbox", { name: "命令和 Skills" });
+    await expect(picker).toBeVisible();
+    await expect(picker.getByRole("option", { name: /grill-with-docs/u })).toContainText("结合官方文档追问并检验方案");
+    await expect(picker).not.toContainText("/repo/");
+    await picker.getByRole("option", { name: /grill-with-docs/u }).click();
+    await expect(input).toHaveText("/grill-with-docs ");
+    await input.fill("/res");
+    await picker.getByRole("option", { name: /research/u }).click();
+    await expect(input).toHaveText("/research ");
+    await input.fill("/gr");
+    await picker.getByRole("option", { name: /grill-with-docs/u }).click();
+    await input.fill("/grill-with-docs 评审 Skill discovery 方案");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText("/grill-with-docs 评审 Skill discovery 方案", { exact: true })).toBeVisible();
   } finally {
     await page.close();
   }

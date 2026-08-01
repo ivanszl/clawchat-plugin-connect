@@ -17,6 +17,7 @@ import {
   clientKeys,
   deleteSession,
   sessionQueryOptions,
+  slashSuggestionsQueryOptions,
   transcriptQueryOptions,
   unarchiveSession,
   updateSessionPreferences,
@@ -32,6 +33,7 @@ export const Route = createFileRoute("/sessions/$sessionRef")({ component: Sessi
 function SessionPage() {
   const { sessionRef } = Route.useParams();
   const session = useQuery(sessionQueryOptions(sessionRef));
+  useQuery(slashSuggestionsQueryOptions(sessionRef));
   const transcript = useInfiniteQuery(transcriptQueryOptions(sessionRef));
   const bootstrap = useQuery(bootstrapQueryOptions);
   const queryClient = useQueryClient();

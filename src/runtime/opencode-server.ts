@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type {
   Agent,
+  Command,
   FilePartInput,
   GlobalEvent,
   Message,
@@ -36,9 +37,22 @@ export interface OpenCodePromptInput {
   parts: Array<TextPartInput | FilePartInput>;
 }
 
+export interface OpenCodeCommandInput {
+  sessionID: string;
+  directory: string;
+  messageID: string;
+  agent?: string;
+  model?: string;
+  variant?: string;
+  command: string;
+  arguments: string;
+  parts?: Array<FilePartInput>;
+}
+
 export interface OpenCodeApiClient {
   health(): Promise<{ healthy: true; version: string }>;
   listAgents(directory: string): Promise<Agent[]>;
+  listCommands(directory: string): Promise<Command[]>;
   listProviders(directory: string): Promise<{ all: Provider[]; connected: string[]; default: Record<string, string> }>;
   listSessions(directory?: string, rootsOnly?: boolean): Promise<Session[]>;
   getSession(sessionID: string, directory: string): Promise<Session>;
@@ -47,6 +61,7 @@ export interface OpenCodeApiClient {
   sessionStatus(directory: string): Promise<Record<string, SessionStatus>>;
   messages(sessionID: string, directory: string): Promise<OpenCodeMessage[]>;
   promptAsync(input: OpenCodePromptInput): Promise<void>;
+  runCommand(input: OpenCodeCommandInput): Promise<void>;
   abortSession(sessionID: string, directory: string): Promise<boolean>;
   events(signal: AbortSignal, onConnected?: () => void): AsyncIterable<GlobalEvent>;
   replyPermission(requestID: string, directory: string, reply: "once" | "always" | "reject"): Promise<boolean>;
@@ -191,6 +206,7 @@ function withCompatibilityDiagnostics(api: OpenCodeApiClient, version: string): 
   return {
     health: operation("global.health", api.health.bind(api)),
     listAgents: operation("app.agents", api.listAgents.bind(api)),
+    listCommands: operation("command.list", api.listCommands.bind(api)),
     listProviders: operation("provider.list", api.listProviders.bind(api)),
     listSessions: operation("session.list", api.listSessions.bind(api)),
     getSession: operation("session.get", api.getSession.bind(api)),
@@ -199,6 +215,7 @@ function withCompatibilityDiagnostics(api: OpenCodeApiClient, version: string): 
     sessionStatus: operation("session.status", api.sessionStatus.bind(api)),
     messages: operation("session.messages", api.messages.bind(api)),
     promptAsync: operation("session.promptAsync", api.promptAsync.bind(api)),
+    runCommand: operation("session.command", api.runCommand.bind(api)),
     abortSession: operation("session.abort", api.abortSession.bind(api)),
     events: async function* (signal, onConnected) {
       try {
@@ -230,6 +247,7 @@ function createOfficialApi(baseUrl: string, username: string, password: string):
   return {
     health: async () => unwrap(await client.global.health({ throwOnError: true })),
     listAgents: async (directory) => unwrap(await client.app.agents({ directory }, { throwOnError: true })),
+    listCommands: async (directory) => unwrap(await client.command.list({ directory }, { throwOnError: true })),
     listProviders: async (directory) => unwrap(await client.provider.list({ directory }, { throwOnError: true })),
     listSessions: async (directory, rootsOnly = true) =>
       unwrap(
@@ -246,6 +264,9 @@ function createOfficialApi(baseUrl: string, username: string, password: string):
       unwrap(await client.session.messages({ sessionID, directory }, { throwOnError: true })),
     promptAsync: async (input) => {
       await client.session.promptAsync(input, { throwOnError: true });
+    },
+    runCommand: async (input) => {
+      await client.session.command(input, { throwOnError: true });
     },
     abortSession: async (sessionID, directory) =>
       unwrap(await client.session.abort({ sessionID, directory }, { throwOnError: true })),

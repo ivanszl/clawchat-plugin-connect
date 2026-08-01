@@ -356,7 +356,23 @@ export interface ClientErrorView {
 export interface StartTurnRequest {
   requestId: string;
   prompt: string;
+  skill?: SkillSelectionView;
   media?: ClientMediaAttachment[];
+}
+
+export interface SkillSelectionView {
+  id: string;
+  name: string;
+}
+
+export interface SlashSuggestionView extends SkillSelectionView {
+  kind: "skill";
+  description?: string;
+}
+
+export interface SlashSuggestionListView {
+  supported: boolean;
+  entries: SlashSuggestionView[];
 }
 
 export interface ClientMediaAttachment {

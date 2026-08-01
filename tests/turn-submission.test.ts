@@ -22,7 +22,7 @@ const capability: TurnSubmissionCapability = {
 
 describe("TurnSubmission", () => {
   test("accepts text-only and capability-permitted attachment-only drafts", async () => {
-    const accepted = mock(async (sessionRef: string) => ({
+    const accepted = mock(async (sessionRef: string, _prompt: string) => ({
       accepted: true as const,
       turnId: "turn-accepted",
       sessionRef,
@@ -36,10 +36,11 @@ describe("TurnSubmission", () => {
       submissions.submit({
         submissionId: "text-only",
         sessionRef: "NKEP79B8",
-        prompt: "hello",
+        prompt: "  hello  ",
         attachments: [],
       }),
     ).resolves.toMatchObject({ accepted: true });
+    expect(accepted.mock.calls[0]?.[1]).toBe("  hello  ");
     await expect(
       submissions.submit({
         submissionId: "attachment-only",
@@ -147,7 +148,7 @@ describe("TurnSubmission", () => {
       staging: {
         stage: async () => ({ rollback, transfer: () => undefined }),
       },
-      accept: async (_sessionRef, _prompt, _staged, signal) =>
+      accept: async (_sessionRef, _prompt, _skill, _staged, signal) =>
         await new Promise((_, reject) => {
           signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
           controller.abort();

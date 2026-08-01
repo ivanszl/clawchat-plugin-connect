@@ -16,7 +16,7 @@ import type { RuntimeAdapterRegistry } from "./runtime/registry";
 import type { RuntimeInteractionCoordinator } from "./runtime/runtime-interaction-coordinator";
 import { RuntimeInteractionRouter } from "./runtime/runtime-interaction-router";
 import type { SessionActivity } from "./runtime/session-queue";
-import type { ConnectRuntimeMedia } from "./runtime/types";
+import type { ConnectRuntimeMedia, RuntimeSkillSummary } from "./runtime/types";
 import { verifyInstalledSkills } from "./skills";
 import type { ConnectStateStore } from "./state";
 import { executeConnectTool } from "./tool-executor";
@@ -74,6 +74,7 @@ export interface BindingRuntimeHandle {
     sessionRef: string,
     prompt: string,
     media?: ConnectRuntimeMedia[],
+    skill?: RuntimeSkillSummary | null,
     signal?: AbortSignal,
   ): Promise<{ turnId: string; sessionRef: string }>;
   uploadClientMedia?(file: Blob, filename: string): Promise<ConnectRuntimeMedia>;
@@ -238,8 +239,8 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     agentId: options.agentId,
     websocketUrl: options.config.websocketUrl,
     deviceId: options.deviceId,
-    enqueueClientTurn: async (sessionRef, prompt, media, signal) =>
-      await runtime.enqueueClientTurn(sessionRef, prompt, media, signal),
+    enqueueClientTurn: async (sessionRef, prompt, media, skill, signal) =>
+      await runtime.enqueueClientTurn(sessionRef, prompt, media, skill, signal),
     uploadClientMedia: async (file, filename) => await runtime.uploadClientMedia(file, filename),
     cancelClientTurn: async (sessionRef) => await runtime.cancelClientTurn(sessionRef),
     sessionActivity: async (sessionRef) => await runtime.sessionActivity(sessionRef),

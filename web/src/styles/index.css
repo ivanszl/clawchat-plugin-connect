@@ -423,6 +423,7 @@ textarea {
 }
 
 .composer-region {
+  position: relative;
   z-index: 3;
   width: min(100%, 920px);
   min-width: 0;
@@ -431,6 +432,46 @@ textarea {
   margin: 0 auto;
   padding: var(--spacing-2) clamp(14px, 4vw, 42px) var(--spacing-4);
   background: linear-gradient(0deg, var(--color-background-surface) 76%, transparent);
+}
+
+.slash-suggestions {
+  position: absolute;
+  z-index: 6;
+  right: clamp(14px, 4vw, 42px);
+  bottom: calc(100% - var(--spacing-2));
+  left: clamp(14px, 4vw, 42px);
+  display: grid;
+  max-height: min(360px, 45vh);
+  padding: var(--spacing-1);
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--border-radius-lg);
+  background: var(--color-background-surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.slash-suggestion,
+.slash-suggestion-error {
+  display: grid;
+  gap: 2px;
+  padding: var(--spacing-2);
+  border: 0;
+  border-radius: var(--border-radius-md);
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.slash-suggestion small {
+  color: var(--color-text-secondary);
+}
+
+.slash-suggestion:hover,
+.slash-suggestion[aria-selected="true"],
+.slash-suggestion-error:hover {
+  background: var(--color-background-muted);
 }
 
 .artifact-desktop-tabs {

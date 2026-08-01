@@ -187,6 +187,7 @@ function api(version = "1.18.10"): OpenCodeApiClient {
   return {
     health: async () => ({ healthy: true, version }),
     listAgents: async () => [],
+    listCommands: async () => [],
     listProviders: async () => ({ all: [], connected: [], default: {} }),
     listSessions: async () => [],
     getSession: async () => {
@@ -199,6 +200,7 @@ function api(version = "1.18.10"): OpenCodeApiClient {
     sessionStatus: async () => ({}),
     messages: async () => [],
     promptAsync: async () => undefined,
+    runCommand: async () => undefined,
     abortSession: async () => false,
     events: async function* (_signal, onConnected) {
       onConnected?.();

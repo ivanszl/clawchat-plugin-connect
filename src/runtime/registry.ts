@@ -7,6 +7,7 @@ import type {
   RuntimeLifecycleCapabilities,
   RuntimeModelOption,
   RuntimeSessionOption,
+  RuntimeSkillSummary,
   RuntimeThreadSummary,
 } from "./types";
 import { RuntimeLifecycleError } from "./types";
@@ -21,6 +22,11 @@ export class RuntimeAdapterRegistry {
   private readonly adaptersByBinding = new Map<string, ConnectRuntimeAdapter>();
   private readonly anonymousBindingIds = new WeakMap<object, string>();
   private nextAnonymousBindingId = 1;
+  private readonly skillLists = new Map<
+    string,
+    { expiresAt: number; value?: RuntimeSkillSummary[]; loading?: Promise<RuntimeSkillSummary[]> }
+  >();
+  private readonly skillChangeSubscriptions = new Map<string, () => void>();
 
   constructor(definitions: readonly RuntimeAdapterDefinition[]) {
     for (const definition of definitions) {
@@ -61,6 +67,36 @@ export class RuntimeAdapterRegistry {
 
   async listSessionOptions(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeSessionOption[]> {
     return (await this.require(binding).listSessionOptions?.(binding, workspace)) ?? [];
+  }
+
+  async listSkills(
+    binding: AgentBindingConfig,
+    workspace: RuntimeWorkspace,
+    options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number } = {},
+  ): Promise<RuntimeSkillSummary[] | null> {
+    const adapter = this.require(binding);
+    if (!adapter.listSkills) return null;
+    const bindingId = this.bindingId(binding);
+    const key = `${bindingId}\0${workspace.workingDirectory}`;
+    const cached = this.skillLists.get(key);
+    if (!options.forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
+    if (!options.forceRefresh && cached?.loading) {
+      if (options.existingOnly) return await waitForSkillList(cached.loading, options.waitMs ?? 150);
+      return await cached.loading;
+    }
+    if (options.existingOnly) return cached?.value ?? null;
+    const loading = adapter
+      .listSkills(binding, workspace, { forceRefresh: options.forceRefresh })
+      .then((value) => {
+        this.skillLists.set(key, { value, expiresAt: Date.now() + 30_000 });
+        return value;
+      })
+      .catch((error) => {
+        this.skillLists.delete(key);
+        throw error;
+      });
+    this.skillLists.set(key, { loading, expiresAt: 0 });
+    return await loading;
   }
 
   async discoverThreads(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]> {
@@ -150,6 +186,9 @@ export class RuntimeAdapterRegistry {
       [...this.adaptersByBinding.values()].map(async (adapter) => await adapter.close?.()),
     );
     this.adaptersByBinding.clear();
+    for (const unsubscribe of this.skillChangeSubscriptions.values()) unsubscribe();
+    this.skillChangeSubscriptions.clear();
+    this.skillLists.clear();
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failure) throw failure.reason;
   }
@@ -167,6 +206,14 @@ export class RuntimeAdapterRegistry {
     if (adapter.kind !== binding.kind)
       throw new Error(`Runtime Adapter factory for ${binding.kind} created ${adapter.kind}`);
     this.adaptersByBinding.set(bindingId, adapter);
+    if (adapter.onSkillsChanged) {
+      this.skillChangeSubscriptions.set(
+        bindingId,
+        adapter.onSkillsChanged(() => {
+          for (const key of this.skillLists.keys()) if (key.startsWith(`${bindingId}\0`)) this.skillLists.delete(key);
+        }),
+      );
+    }
     return adapter;
   }
 
@@ -180,6 +227,19 @@ export class RuntimeAdapterRegistry {
     this.anonymousBindingIds.set(binding, created);
     return created;
   }
+}
+
+async function waitForSkillList(
+  loading: Promise<RuntimeSkillSummary[]>,
+  waitMs: number,
+): Promise<RuntimeSkillSummary[] | null> {
+  if (waitMs <= 0) return null;
+  return await Promise.race([
+    loading,
+    new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), waitMs);
+    }),
+  ]);
 }
 
 async function runLifecycleMutation(action: string, operation: () => Promise<void>): Promise<void> {

@@ -15,7 +15,8 @@ import type {
   Session,
   ToolPart,
 } from "@opencode-ai/sdk/v2/types";
-import type { AgentBindingConfig, OpenCodeAgentBindingConfig } from "../types";
+import { leadingSkillArguments } from "../skill-invocation";
+import type { AgentBindingConfig, OpenCodeAgentBindingConfig, RuntimeWorkspace } from "../types";
 import {
   createOpenCodeServerClient,
   type OpenCodeMessage,
@@ -52,6 +53,12 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
   const listeners = new Set<EventListener>();
   const threadDirectories = new Map<string, string>();
   const observedUserMessages = new Map<string, Set<string>>();
+  const nativeSkills = new Map<string, Map<string, string>>();
+  const skillChangeListeners = new Set<() => void>();
+  const invalidateSkillWorkspace = (workspace: RuntimeWorkspace) => {
+    if (!nativeSkills.delete(resolve(workspace.workingDirectory))) return;
+    for (const listener of skillChangeListeners) listener();
+  };
 
   const clientFor = async (binding: AgentBindingConfig): Promise<OpenCodeServerClient> => {
     const openCodeBinding = requireOpenCodeBinding(binding);
@@ -134,6 +141,23 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
       ]);
       return sessionOptions(agents, providers);
     },
+    async listSkills(binding, workspace) {
+      const commands = await (await clientFor(binding)).listCommands(workspace.workingDirectory);
+      const workspaceSkills = new Map<string, string>();
+      const summaries = commands
+        .filter((command) => command.source === "skill")
+        .map((command) => {
+          const id = `opencode:${command.name}`;
+          workspaceSkills.set(id, command.name);
+          return { id, name: command.name, ...(command.description ? { description: command.description } : {}) };
+        });
+      nativeSkills.set(resolve(workspace.workingDirectory), workspaceSkills);
+      return summaries;
+    },
+    onSkillsChanged(listener) {
+      skillChangeListeners.add(listener);
+      return () => skillChangeListeners.delete(listener);
+    },
     async listModels(binding) {
       return modelOptions(await (await clientFor(binding)).listProviders(lastDirectory));
     },
@@ -177,6 +201,8 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
         onDirectory: (directory) => {
           lastDirectory = directory;
         },
+        nativeSkills,
+        invalidateSkillWorkspace,
       });
     },
     async close() {
@@ -186,6 +212,8 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
       await eventsPump?.catch(() => undefined);
       if (clientPromise) await (await clientPromise).close();
       listeners.clear();
+      skillChangeListeners.clear();
+      nativeSkills.clear();
       clientPromise = null;
     },
   };
@@ -199,6 +227,8 @@ interface OpenCodeRuntimeSessionOptions {
   observedUserMessages: Map<string, Set<string>>;
   messageID: () => string;
   onDirectory(directory: string): void;
+  nativeSkills: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  invalidateSkillWorkspace(workspace: RuntimeWorkspace): void;
 }
 
 class OpenCodeRuntimeSession implements ConnectRuntimeSession {
@@ -296,16 +326,32 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         queue.push(activity);
       const messageID = this.options.messageID();
       this.options.observedUserMessages.get(session.id)?.add(messageID);
-      await client.promptAsync({
-        sessionID: session.id,
-        directory,
-        messageID,
-        ...promptSelection(input),
-        parts: promptParts(input),
-      });
+      if (input.skill) {
+        const command = this.options.nativeSkills.get(resolve(input.workspace.workingDirectory))?.get(input.skill.id);
+        if (!command || command !== input.skill.name)
+          throw new Error(`OpenCode Skill is no longer available: ${input.skill.name}`);
+        await client.runCommand({
+          sessionID: session.id,
+          directory,
+          messageID,
+          ...commandSelection(input),
+          command,
+          arguments: leadingSkillArguments(input.prompt),
+          parts: promptParts(input).filter((part) => part.type === "file"),
+        });
+      } else {
+        await client.promptAsync({
+          sessionID: session.id,
+          directory,
+          messageID,
+          ...promptSelection(input),
+          parts: promptParts(input),
+        });
+      }
       await input.onAccepted?.();
       yield* queue;
     } catch (error) {
+      if (input.skill) this.options.invalidateSkillWorkspace(input.workspace);
       if (!queue.isClosed) queue.fail(error);
       throw error;
     } finally {
@@ -902,6 +948,15 @@ function promptSelection(input: ConnectRuntimePrompt) {
     ...(agent ? { agent } : {}),
     ...(parsedModel ? { model: parsedModel } : {}),
     ...(variant && variant !== "default" ? { variant } : {}),
+  };
+}
+
+function commandSelection(input: ConnectRuntimePrompt) {
+  const selected = promptSelection(input);
+  return {
+    ...(selected.agent ? { agent: selected.agent } : {}),
+    ...(selected.model ? { model: `${selected.model.providerID}/${selected.model.modelID}` } : {}),
+    ...(selected.variant ? { variant: selected.variant } : {}),
   };
 }
 

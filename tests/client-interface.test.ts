@@ -106,6 +106,16 @@ describe("Connect Client Interface", () => {
         runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
         return [];
       },
+      listSkills: async (binding) => {
+        runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
+        return [
+          {
+            id: "codex:grill-with-docs",
+            name: "grill-with-docs",
+            description: "Challenge a proposal against primary documentation",
+          },
+        ];
+      },
       discoverAllThreads: async () => (!isArchived && !isDeleted ? [summary, discoveredSummary] : [discoveredSummary]),
       discoverArchivedThreads: async () => (isArchived && !isDeleted ? [{ ...summary, isArchived: true }] : []),
       archiveThread: async (_binding, threadId) => {
@@ -182,7 +192,12 @@ describe("Connect Client Interface", () => {
     config.defaultAgent = "codex";
     config.stateDbPath = store.dbPath;
     const enqueueClientTurn = mock(
-      async (sessionRef: string, _prompt: string, _media: import("../src/runtime/types").ConnectRuntimeMedia[]) => ({
+      async (
+        sessionRef: string,
+        _prompt: string,
+        _media: import("../src/runtime/types").ConnectRuntimeMedia[],
+        _skill: import("../src/runtime/types").RuntimeSkillSummary | null,
+      ) => ({
         turnId: "turn-123",
         sessionRef,
       }),
@@ -229,6 +244,23 @@ describe("Connect Client Interface", () => {
       apiVersion: 1,
       bindings: [{ bindingId: "codex", displayName: "Codex", clawChatUserId: "usr_agent_codex" }],
       capabilities: { localTurns: true, runtimeInteractions: true },
+    });
+    const slashSuggestions = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/slash-suggestions`,
+    );
+    expect(slashSuggestions.status).toBe(200);
+    await expect(slashSuggestions.json()).resolves.toEqual({
+      supported: true,
+      entries: [
+        {
+          id: "codex:grill-with-docs",
+          kind: "skill",
+          name: "grill-with-docs",
+          description: "Challenge a proposal against primary documentation",
+        },
+      ],
     });
     const invalidBindingModel = await localRequest(
       fetchHandler,
@@ -642,9 +674,11 @@ describe("Connect Client Interface", () => {
       ),
     ).toBe(true);
 
-    const submissionBody = (prompt = "from web") => {
+    const submissionBody = (prompt = "/grill-with-docs from web") => {
       const body = new FormData();
       body.append("prompt", prompt);
+      body.append("skillId", "codex:grill-with-docs");
+      body.append("skillName", "grill-with-docs");
       body.append("attachments", new File(["photo"], "photo.png", { type: "image/png" }));
       return body;
     };
@@ -662,7 +696,7 @@ describe("Connect Client Interface", () => {
     await expect(turn.json()).resolves.toEqual({ accepted: true, turnId: "turn-123", sessionRef: session.sessionRef });
     expect(enqueueClientTurn).toHaveBeenCalledWith(
       session.sessionRef,
-      "from web",
+      "/grill-with-docs from web",
       [
         expect.objectContaining({
           kind: "image",
@@ -672,6 +706,10 @@ describe("Connect Client Interface", () => {
           stagedPath: expect.any(String),
         }),
       ],
+      {
+        id: "codex:grill-with-docs",
+        name: "grill-with-docs",
+      },
       expect.any(AbortSignal),
     );
     const acceptedMedia = enqueueClientTurn.mock.calls[0]?.[2]?.[0];
@@ -694,6 +732,53 @@ describe("Connect Client Interface", () => {
     );
     expect(replayedTurn.status).toBe(202);
     expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
+
+    const unknownSlashBody = new FormData();
+    unknownSlashBody.append("prompt", "/not-a-skill keep this as ordinary text");
+    const unknownSlashTurn = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_unknown_slash`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin },
+        body: unknownSlashBody,
+      },
+    );
+    expect(unknownSlashTurn.status).toBe(202);
+    expect(enqueueClientTurn).toHaveBeenLastCalledWith(
+      session.sessionRef,
+      "/not-a-skill keep this as ordinary text",
+      [],
+      null,
+      expect.any(AbortSignal),
+    );
+
+    const knownSlashBody = new FormData();
+    knownSlashBody.append("prompt", "  /grill-with-docs preserve the authored prompt  ");
+    const knownSlashTurn = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_known_slash`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin },
+        body: knownSlashBody,
+      },
+    );
+    expect(knownSlashTurn.status).toBe(202);
+    expect(enqueueClientTurn).toHaveBeenLastCalledWith(
+      session.sessionRef,
+      "  /grill-with-docs preserve the authored prompt  ",
+      [],
+      {
+        id: "codex:grill-with-docs",
+        name: "grill-with-docs",
+        description: "Challenge a proposal against primary documentation",
+      },
+      expect.any(AbortSignal),
+    );
+    expect(enqueueClientTurn).toHaveBeenCalledTimes(3);
 
     const acceptedOutcome = await localRequest(
       fetchHandler,
@@ -729,7 +814,7 @@ describe("Connect Client Interface", () => {
     );
     expect(cancelledTurn.status).toBe(409);
     await expect(cancelledTurn.json()).resolves.toMatchObject({ error: { code: "submission-cancelled" } });
-    expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
+    expect(enqueueClientTurn).toHaveBeenCalledTimes(3);
 
     const conflictingSubmission = await localRequest(
       fetchHandler,
@@ -738,11 +823,11 @@ describe("Connect Client Interface", () => {
       {
         method: "POST",
         headers: { origin: handle.origin },
-        body: submissionBody("different content"),
+        body: submissionBody("/grill-with-docs different content"),
       },
     );
     expect(conflictingSubmission.status).toBe(409);
-    expect(enqueueClientTurn).toHaveBeenCalledTimes(1);
+    expect(enqueueClientTurn).toHaveBeenCalledTimes(3);
 
     const conflictingRequestId = await localRequest(
       fetchHandler,
@@ -1146,6 +1231,10 @@ describe("Connect Client Interface", () => {
           },
         },
       ],
+      listSkills: async (binding) => {
+        const bindingId = binding.env?.CLAWCHAT_CONNECT_AGENT_ID ?? "unknown";
+        return [{ id: `codex:${bindingId}`, name: `${bindingId}-skill`, description: `${bindingId} only` }];
+      },
       discoverAllThreads: async (binding) => {
         const bindingId = binding.env?.CLAWCHAT_CONNECT_AGENT_ID;
         return bindingId === "personal"
@@ -1240,6 +1329,23 @@ describe("Connect Client Interface", () => {
       headers: scope,
     });
     expect(workTranscript.status).toBe(404);
+    const personalSkills = await localRequest(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/sessions/PERSNAL2/slash-suggestions",
+      { headers: scope },
+    );
+    await expect(personalSkills.json()).resolves.toEqual({
+      supported: true,
+      entries: [{ id: "codex:personal", kind: "skill", name: "personal-skill", description: "personal only" }],
+    });
+    const crossBindingSkills = await localRequest(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/sessions/WRKREF23/slash-suggestions",
+      { headers: scope },
+    );
+    expect(crossBindingSkills.status).toBe(404);
     const workMutation = await localRequest(fetchHandler, handle.origin, "/client/v1/bindings/work/preferences", {
       method: "PATCH",
       headers: { ...scope, origin: handle.origin, "content-type": "application/json" },

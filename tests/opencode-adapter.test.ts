@@ -2,14 +2,19 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Agent, GlobalEvent, Provider, Session } from "@opencode-ai/sdk/v2/types";
+import type { Agent, Command, GlobalEvent, Provider, Session } from "@opencode-ai/sdk/v2/types";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { TurnSubmission, type TurnSubmissionCapability } from "../src/client-interface/turn-submission";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import { ProjectCatalog } from "../src/projects";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
 import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
-import type { OpenCodeMessage, OpenCodePromptInput, OpenCodeServerClient } from "../src/runtime/opencode-server";
+import type {
+  OpenCodeCommandInput,
+  OpenCodeMessage,
+  OpenCodePromptInput,
+  OpenCodeServerClient,
+} from "../src/runtime/opencode-server";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeStartContext, RuntimeActivity, RuntimeInteractionRequest } from "../src/runtime/types";
 import { createStateStore } from "../src/state";
@@ -208,6 +213,7 @@ function fixture() {
   const events = new EventQueue();
   const sessions = [nativeSession(), nativeSession({ id: "child-1", parentID: "session-1", title: "Child" })];
   const prompts: OpenCodePromptInput[] = [];
+  const commands: OpenCodeCommandInput[] = [];
   const permissionReplies: string[] = [];
   const questionReplies: string[][][] = [];
   const nativeCalls: string[] = [];
@@ -231,6 +237,17 @@ function fixture() {
     version: "1.18.10",
     health: async () => ({ healthy: true, version: "1.18.10" }),
     listAgents: async () => agents,
+    listCommands: async () =>
+      [
+        {
+          name: "grill-with-docs",
+          description: "Challenge a proposal against primary documentation",
+          source: "skill",
+          template: "",
+          hints: [],
+        },
+        { name: "compact", description: "Compact the Session", source: "command", template: "", hints: [] },
+      ] satisfies Command[],
     listProviders: async () => ({
       all: [provider()],
       connected: ["anthropic"],
@@ -243,8 +260,8 @@ function fixture() {
       if (!session) throw new Error("not found");
       return session;
     },
-    createSession: async () => {
-      const created = nativeSession({ id: "created-1", title: "New session" });
+    createSession: async (sessionDirectory) => {
+      const created = nativeSession({ id: "created-1", title: "New session", directory: sessionDirectory });
       sessions.push(created);
       return created;
     },
@@ -271,6 +288,17 @@ function fixture() {
           },
         },
       } as GlobalEvent);
+      events.push({
+        directory,
+        payload: {
+          id: "event-idle",
+          type: "session.idle",
+          properties: { sessionID: input.sessionID },
+        },
+      } as GlobalEvent);
+    },
+    runCommand: async (input) => {
+      commands.push(input);
       events.push({
         directory,
         payload: {
@@ -314,6 +342,7 @@ function fixture() {
     sessions,
     events,
     prompts,
+    commands,
     permissionReplies,
     permissionReplied,
     questionReplies,
@@ -327,6 +356,76 @@ function fixture() {
 }
 
 describe("OpenCode Runtime Adapter", () => {
+  it("discovers user-invocable Skills and runs the selected Skill as a native Session command", async () => {
+    const test = fixture();
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const binding = { kind: "opencode" as const };
+    const invalidated = mock(() => undefined);
+    adapter.onSkillsChanged?.(invalidated);
+
+    const skills = await adapter.listSkills?.(binding, runtimeWorkspace);
+    expect(skills).toEqual([
+      {
+        id: "opencode:grill-with-docs",
+        name: "grill-with-docs",
+        description: "Challenge a proposal against primary documentation",
+      },
+    ]);
+
+    const session = await adapter.start(binding, startContext());
+    for await (const _activity of session.prompt({
+      prompt: "  /grill-with-docs Review the Skill design  ",
+      skill: skills?.[0],
+      workspace: runtimeWorkspace,
+    })) {
+      // Drain the completed native turn.
+    }
+
+    expect(test.prompts).toEqual([]);
+    expect(test.commands).toEqual([
+      expect.objectContaining({
+        sessionID: "session-1",
+        directory,
+        command: "grill-with-docs",
+        arguments: "Review the Skill design",
+      }),
+    ]);
+
+    const otherSession = await adapter.start(
+      binding,
+      startContext({ sessionId: "connect-session-2", runtimeSessionId: null }),
+    );
+    await expect(
+      (async () => {
+        for await (const _activity of otherSession.prompt({
+          prompt: "/grill-with-docs Must not cross workspaces",
+          skill: skills?.[0],
+          workspace: { ...runtimeWorkspace, projectId: "project-2", workingDirectory: "/other-repo" },
+        })) {
+          // A Skill discovered for one workspace is not valid in another.
+        }
+      })(),
+    ).rejects.toThrow("OpenCode Skill is no longer available: grill-with-docs");
+    expect(test.commands).toHaveLength(1);
+    expect(invalidated).not.toHaveBeenCalled();
+
+    test.client.runCommand = async () => {
+      throw new Error("Skill permission denied");
+    };
+    await expect(
+      (async () => {
+        for await (const _activity of session.prompt({
+          prompt: "/grill-with-docs Retry after permission changed",
+          skill: skills?.[0],
+          workspace: runtimeWorkspace,
+        })) {
+          // Native Skill failures invalidate the cached catalog for retry.
+        }
+      })(),
+    ).rejects.toThrow("Skill permission denied");
+    expect(invalidated).toHaveBeenCalledTimes(1);
+  });
+
   it("discovers native capabilities and only top-level Runtime Threads", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });

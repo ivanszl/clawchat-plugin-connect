@@ -11,6 +11,7 @@ import type {
   SessionCatalogView,
   SessionDeleteResponse,
   SessionView,
+  SlashSuggestionListView,
   TranscriptPageView,
   UpdateBindingPreferencesRequest,
 } from "../../../src/client-contract";
@@ -23,6 +24,7 @@ export const clientKeys = {
   catalog: ["client", "session-catalog"] as const,
   session: (sessionRef: string) => ["client", "session", sessionRef] as const,
   transcript: (sessionRef: string) => ["client", "transcript", sessionRef] as const,
+  slashSuggestions: (sessionRef: string) => ["client", "slash-suggestions", sessionRef] as const,
   projects: ["client", "projects"] as const,
 };
 
@@ -48,6 +50,15 @@ export async function refreshSessionCatalog(client: import("@tanstack/react-quer
     client.invalidateQueries({ queryKey: ["client", "session"], refetchType: "active" }),
     client.invalidateQueries({ queryKey: ["client", "transcript"], refetchType: "active" }),
   ]);
+}
+
+export function slashSuggestionsQueryOptions(sessionRef: string) {
+  return queryOptions({
+    queryKey: clientKeys.slashSuggestions(sessionRef),
+    queryFn: async () =>
+      await clientFetch<SlashSuggestionListView>(`${CLIENT_API_PREFIX}/sessions/${sessionRef}/slash-suggestions`),
+    staleTime: 30_000,
+  });
 }
 
 export function sessionQueryOptions(sessionRef: string) {

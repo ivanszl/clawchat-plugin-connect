@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { replaceLeadingSkill } from "../skill-invocation";
 import type { CodexAgentBindingConfig, CodexApprovalPolicy, CodexSandboxMode, RuntimeWorkspace } from "../types";
 import {
   type CodexAppServerClient,
@@ -23,6 +25,7 @@ import type {
   RuntimeActivity,
   RuntimeInteractionPort,
   RuntimeModelOption,
+  RuntimeSkillSummary,
   RuntimeThreadSummary,
   RuntimeTranscriptEntry,
 } from "./types";
@@ -63,13 +66,29 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     (async (media: ConnectRuntimeMedia, stateDbPath: string, trustedOrigins?: readonly string[]) =>
       await cacheRuntimeMedia(media, stateDbPath, { trustedOrigins }));
   let client: Promise<CodexAppServerClient> | null = null;
+  const nativeSkills = new Map<string, Map<string, { name: string; path: string }>>();
+  const skillChangeListeners = new Set<() => void>();
+  let removeSkillNotification: (() => void) | null = null;
+  const invalidateSkillWorkspace = (workspace: RuntimeWorkspace) => {
+    if (!nativeSkills.delete(resolve(workspace.workingDirectory))) return;
+    for (const listener of skillChangeListeners) listener();
+  };
 
   const clientFor = async (binding: CodexAgentBindingConfig): Promise<CodexAppServerClient> => {
     if (client) return await client;
-    const created = createAppServer(binding).catch((error) => {
-      if (client === created) client = null;
-      throw error;
-    });
+    const created = createAppServer(binding)
+      .then((appServer) => {
+        removeSkillNotification = appServer.onNotification((notification) => {
+          if (notification.method !== "skills/changed") return;
+          nativeSkills.clear();
+          for (const listener of skillChangeListeners) listener();
+        });
+        return appServer;
+      })
+      .catch((error) => {
+        if (client === created) client = null;
+        throw error;
+      });
     client = created;
     return await created;
   };
@@ -84,6 +103,28 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     async listModels(binding) {
       const codexBinding = requireCodexBinding(binding);
       return await discoverCodexModels(await clientFor(codexBinding));
+    },
+    async listSkills(binding, workspace, listOptions) {
+      const codexBinding = requireCodexBinding(binding);
+      const response = await (await clientFor(codexBinding)).listSkills({
+        cwds: [workspace.workingDirectory],
+        forceReload: listOptions?.forceRefresh === true,
+      });
+      const entry = response.data.find((candidate) => resolve(candidate.cwd) === resolve(workspace.workingDirectory));
+      const workspaceSkills = new Map<string, { name: string; path: string }>();
+      const summaries: RuntimeSkillSummary[] = [];
+      for (const skill of entry?.skills ?? []) {
+        if (!skill.enabled) continue;
+        const id = `codex:${createHash("sha256").update(skill.path).digest("base64url").slice(0, 22)}`;
+        workspaceSkills.set(id, { name: skill.name, path: skill.path });
+        summaries.push({ id, name: skill.name, ...(skill.description ? { description: skill.description } : {}) });
+      }
+      nativeSkills.set(resolve(workspace.workingDirectory), workspaceSkills);
+      return summaries;
+    },
+    onSkillsChanged(listener) {
+      skillChangeListeners.add(listener);
+      return () => skillChangeListeners.delete(listener);
     },
     async discoverThreads(binding, workspace) {
       const codexBinding = requireCodexBinding(binding);
@@ -125,11 +166,22 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     },
     async start(binding, context) {
       const codexBinding = requireCodexBinding(binding);
-      return new CodexRuntimeSession(await clientFor(codexBinding), codexBinding, context, cacheMedia);
+      return new CodexRuntimeSession(
+        await clientFor(codexBinding),
+        codexBinding,
+        context,
+        cacheMedia,
+        nativeSkills,
+        invalidateSkillWorkspace,
+      );
     },
     async close() {
       const active = client;
       client = null;
+      removeSkillNotification?.();
+      removeSkillNotification = null;
+      skillChangeListeners.clear();
+      nativeSkills.clear();
       if (active) await (await active).close();
     },
   };
@@ -515,6 +567,8 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       stateDbPath: string,
       trustedOrigins?: readonly string[],
     ) => Promise<string>,
+    private readonly nativeSkills: ReadonlyMap<string, ReadonlyMap<string, { name: string; path: string }>>,
+    private readonly invalidateSkillWorkspace: (workspace: RuntimeWorkspace) => void,
   ) {
     this.runtimeSessionId = context.runtimeSessionId;
   }
@@ -586,6 +640,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       if (active.cancelled) await this.client.interruptTurn({ threadId, turnId: response.turn.id });
       for await (const event of active.queue) yield codexLiveActivity(active, event);
     } catch (error) {
+      if (input.skill) this.invalidateSkillWorkspace(input.workspace);
       if (!active.turnId) throw error;
       if (!active.cancelled) {
         yield codexLiveActivity(active, {
@@ -603,7 +658,11 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
   }
 
   private async buildTurnInput(input: ConnectRuntimePrompt): Promise<CodexUserInput[]> {
-    const turnInput: CodexUserInput[] = input.prompt ? [{ type: "text", text: input.prompt, text_elements: [] }] : [];
+    let prompt = input.prompt;
+    const selectedSkill = input.skill ? this.resolveSkill(input.skill, input.workspace) : null;
+    if (selectedSkill) prompt = replaceLeadingSkill(prompt, selectedSkill.name, "$");
+    const turnInput: CodexUserInput[] = prompt ? [{ type: "text", text: prompt, text_elements: [] }] : [];
+    if (selectedSkill) turnInput.push({ type: "skill", name: selectedSkill.name, path: selectedSkill.path });
     for (const media of input.media ?? []) {
       const path = input.trustedMediaOrigins
         ? await this.cacheMedia(media, this.context.stateDbPath, input.trustedMediaOrigins)
@@ -619,6 +678,12 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
       turnInput.push({ type: "mention", name: media.name || media.kind, path });
     }
     return turnInput;
+  }
+
+  private resolveSkill(skill: RuntimeSkillSummary, workspace: RuntimeWorkspace): { name: string; path: string } {
+    const selected = this.nativeSkills.get(resolve(workspace.workingDirectory))?.get(skill.id);
+    if (!selected || selected.name !== skill.name) throw new Error(`Codex Skill is no longer available: ${skill.name}`);
+    return selected;
   }
 
   async cancel(): Promise<boolean> {
