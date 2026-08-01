@@ -149,10 +149,6 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       }
       const session = await catalog.adopt(sessionRef);
       if (!session) throw new ClientRequestError(404, "session-not-found", "Session was not found");
-      const view = await catalog.sessionView(sessionRef);
-      if (!view || view.isArchived || !view.allowedActions.includes("send")) {
-        throw new ClientRequestError(409, "session-state-conflict", "Session cannot accept a turn right now");
-      }
       const runtime = runtimes.get(session.agentId);
       if (!runtime?.enqueueClientTurn) {
         throw new ClientRequestError(503, "runtime-offline", "Runtime is unavailable", true);

@@ -1037,6 +1037,14 @@ textarea {
     min-height: 60px;
   }
 
+  .session-heading {
+    display: none;
+  }
+
+  .session-meta {
+    margin-left: auto;
+  }
+
   .artifact-desktop-tabs {
     display: none;
   }
@@ -1052,8 +1060,10 @@ textarea {
     border-bottom: 1px solid var(--color-border);
   }
 
-  .artifact-mobile-navigation strong {
+  .artifact-mobile-navigation h1 {
+    margin: 0;
     overflow: hidden;
+    font-size: inherit;
     text-align: center;
     text-overflow: ellipsis;
     white-space: nowrap;

@@ -5,6 +5,7 @@ const sessionRouteUrl = new URL("../web/src/routes/sessions.$sessionRef.tsx", im
 const sessionComposerUrl = new URL("../web/src/features/composer/SessionComposer.tsx", import.meta.url);
 const iconsUrl = new URL("../web/src/components/icons.tsx", import.meta.url);
 const appShellUrl = new URL("../web/src/features/app-shell/ConnectAppShell.tsx", import.meta.url);
+const artifactWorkspaceUrl = new URL("../web/src/features/artifacts/ArtifactWorkspaceView.tsx", import.meta.url);
 const transcriptBlockUrl = new URL("../web/src/features/transcript/TranscriptBlockView.tsx", import.meta.url);
 const settingsPageUrl = new URL("../web/src/features/settings/SettingsPage.tsx", import.meta.url);
 
@@ -41,6 +42,33 @@ describe("Connect Client session layout", () => {
     expect(source).toContain("modelControl={<SessionModelControls view={view} />}");
     expect(source).toContain('label="Session 模型设置"');
     expect(source).toContain('placement="above"');
+  });
+
+  it("shows the Session title only once in the mobile conversation view", async () => {
+    const [stylesheet, artifactWorkspace] = await Promise.all([
+      Bun.file(stylesheetUrl).text(),
+      Bun.file(artifactWorkspaceUrl).text(),
+    ]);
+    const mobileStyles = stylesheet.slice(stylesheet.indexOf("@media (max-width: 720px)"));
+
+    expect(cssRule(mobileStyles, ".session-heading")).toContain("display: none");
+    expect(cssRule(mobileStyles, ".session-meta")).toContain("margin-left: auto");
+    expect(artifactWorkspace).toContain("<h1 title={activeTitle}>{activeTitle}</h1>");
+  });
+
+  it("describes submission acknowledgement without claiming that the Session queue is blocking", async () => {
+    const composer = await Bun.file(sessionComposerUrl).text();
+
+    expect(composer).toContain("附件传输完成，正在确认提交");
+    expect(composer).toContain('label={send.progress?.phase === "accepting" ? "正在确认" : "取消提交"}');
+    expect(composer).not.toContain("等待 Session 队列接收");
+  });
+
+  it("keeps a pointer-accessible enqueue action while the Agent is working", async () => {
+    const composer = await Bun.file(sessionComposerUrl).text();
+
+    expect(composer).toContain("const hasSubmissionDraft = Boolean(value.trim() || attachments.length > 0);");
+    expect(composer).toContain("isAgentWorking && !hasSubmissionDraft");
   });
 
   it("moves Session workspace metadata from the header into the composer footer", async () => {

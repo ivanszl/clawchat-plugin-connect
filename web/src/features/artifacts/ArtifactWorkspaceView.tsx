@@ -109,7 +109,7 @@ export function ArtifactNavigation({
             ← 对话
           </button>
         ) : null}
-        <strong title={activeTitle}>{activeTitle}</strong>
+        <h1 title={activeTitle}>{activeTitle}</h1>
         <button className="artifact-mobile-open" type="button" onClick={() => setMobileOpen(true)}>
           已打开 {workspace.state.tabs.length > 0 ? `(${workspace.state.tabs.length})` : ""}
         </button>

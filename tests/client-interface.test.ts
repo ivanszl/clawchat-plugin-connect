@@ -9,7 +9,7 @@ import { defaultConfig } from "../src/config";
 import { ProjectCatalog } from "../src/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
-import type { ConnectRuntimeAdapter } from "../src/runtime/types";
+import type { ConnectRuntimeAdapter, RuntimeModelOption } from "../src/runtime/types";
 import { type ConnectStateStore, createStateStore } from "../src/state";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
@@ -59,17 +59,10 @@ describe("Connect Client Interface", () => {
     let isDeleted = false;
     const lifecycleCalls: string[] = [];
     const runtimeBindingIds = new Set<string | undefined>();
-    const summary = { runtimeThreadId: "thread-1", name: "First session", updatedAt: 1 };
-    const discoveredSummary = {
-      runtimeThreadId: "thread-discovered",
-      name: "Discovered workspace session",
-      updatedAt: 2,
-      workingDirectory: discoveredWorkspaceRoot,
-    };
-    const adapter: ConnectRuntimeAdapter = {
-      kind: "codex",
-      modes: ["workspace-write"],
-      listModels: async (binding) => {
+    const listModels = mock(
+      async (
+        binding: Parameters<NonNullable<ConnectRuntimeAdapter["listModels"]>>[0],
+      ): Promise<RuntimeModelOption[]> => {
         runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
         return [
           {
@@ -102,10 +95,25 @@ describe("Connect Client Interface", () => {
           },
         ];
       },
-      listSessionOptions: async (binding) => {
+    );
+    const listSessionOptions = mock(
+      async (binding: Parameters<NonNullable<ConnectRuntimeAdapter["listSessionOptions"]>>[0]) => {
         runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
         return [];
       },
+    );
+    const summary = { runtimeThreadId: "thread-1", name: "First session", updatedAt: 1 };
+    const discoveredSummary = {
+      runtimeThreadId: "thread-discovered",
+      name: "Discovered workspace session",
+      updatedAt: 2,
+      workingDirectory: discoveredWorkspaceRoot,
+    };
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      listModels,
+      listSessionOptions,
       listSkills: async (binding) => {
         runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
         return [
@@ -702,6 +710,8 @@ describe("Connect Client Interface", () => {
       body.append("attachments", new File(["photo"], "photo.png", { type: "image/png" }));
       return body;
     };
+    const modelReadsBeforeSubmission = listModels.mock.calls.length;
+    const optionReadsBeforeSubmission = listSessionOptions.mock.calls.length;
     const turn = await localRequest(
       fetchHandler,
       handle.origin,
@@ -713,6 +723,8 @@ describe("Connect Client Interface", () => {
       },
     );
     expect(turn.status).toBe(202);
+    expect(listModels.mock.calls.length - modelReadsBeforeSubmission).toBe(0);
+    expect(listSessionOptions.mock.calls.length - optionReadsBeforeSubmission).toBe(0);
     await expect(turn.json()).resolves.toEqual({ accepted: true, turnId: "turn-123", sessionRef: session.sessionRef });
     expect(enqueueClientTurn).toHaveBeenCalledWith(
       session.sessionRef,

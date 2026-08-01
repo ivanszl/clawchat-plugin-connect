@@ -1,7 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { createReleasedRuntimeAdapterRegistry, releasedRuntimeAdapters } from "../src/runtime/released-adapters";
-import type { ConnectRuntimeAdapter, ConnectRuntimeSession } from "../src/runtime/types";
+import type { ConnectRuntimeAdapter, ConnectRuntimeSession, RuntimeModelOption } from "../src/runtime/types";
 import type { AgentBindingConfig, RuntimeWorkspace } from "../src/types";
 
 const session: ConnectRuntimeSession = {
@@ -147,6 +147,41 @@ describe("RuntimeAdapterRegistry", () => {
 
     await registry.close();
     expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("caches model and Session option catalogs used by Turn Submission validation", async () => {
+    const listModels = mock(
+      async (): Promise<RuntimeModelOption[]> => [
+        {
+          id: "gpt-default",
+          displayName: "Default model",
+          description: "Runtime default",
+          isDefault: true,
+          defaultReasoningEffort: "medium",
+          supportedReasoningEfforts: ["medium"],
+          inputModalities: ["text"],
+        },
+      ],
+    );
+    const listSessionOptions = mock(async () => []);
+    const codex = { ...adapter(), listModels, listSessionOptions } satisfies ConnectRuntimeAdapter;
+    const registry = new RuntimeAdapterRegistry([{ kind: "codex", create: () => codex }]);
+    const binding = { kind: "codex", env: { CLAWCHAT_CONNECT_AGENT_ID: "work" } } as AgentBindingConfig;
+    const workspace: RuntimeWorkspace = {
+      projectId: "project-1",
+      workingDirectory: "/repo",
+      additionalDirectories: [],
+      skipGitRepoCheck: true,
+    };
+
+    await registry.listModels(binding);
+    await registry.listModels(binding);
+    await registry.listSessionOptions(binding, workspace);
+    await registry.listSessionOptions(binding, workspace);
+
+    expect(listModels).toHaveBeenCalledTimes(1);
+    expect(listSessionOptions).toHaveBeenCalledTimes(1);
+    await registry.close();
   });
 
   it("does not start or indefinitely await Skill discovery while classifying a manual slash prefix", async () => {

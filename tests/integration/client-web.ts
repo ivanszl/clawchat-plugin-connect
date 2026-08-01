@@ -32,6 +32,7 @@ try {
     await verifyContinueInClawChat(browser, origin);
     await verifyImeConfirmationDoesNotSubmit(browser, origin);
     await verifyComposerReturnsIdleAfterTurn(browser, origin);
+    await verifyComposerDoesNotStickAfterUnobservedFastTurn(browser, origin);
     await verifySkillPicker(browser, origin);
     const page = await browser.newPage();
     const createRequests: unknown[] = [];
@@ -312,6 +313,14 @@ async function verifyComposerWorkingState(browser: Awaited<ReturnType<typeof chr
       `working control must remain inside the small-window composer: ${JSON.stringify({ stopBox, composerBox })}`,
     );
     assert(stopBox.width > stopBox.height, "working state must show a visible Stop label, not an icon alone");
+
+    const input = page.locator(".session-composer [contenteditable='true']");
+    await input.fill("运行中加入队列");
+    const send = page.getByRole("button", { name: "Send", exact: true });
+    await expect(send).toBeVisible();
+    await expect(stop).toHaveCount(0);
+    await send.click();
+    await expect(input).toHaveText("");
   } finally {
     await page.close();
   }
@@ -335,6 +344,37 @@ async function verifyComposerReturnsIdleAfterTurn(
   }
 }
 
+async function verifyComposerDoesNotStickAfterUnobservedFastTurn(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const page = await browser.newPage();
+  try {
+    await page.route(/\/client\/v1\/events/u, async (route) => await route.abort("blockedbyclient"));
+    await page.route(/\/client\/v1\/sessions\/ABCDEFGH(?:\?refresh=1)?$/u, async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as Record<string, unknown>;
+      await route.fulfill({ response, json: { ...body, status: "idle" } });
+    });
+    await page.route(/\/client\/v1\/sessions\/ABCDEFGH\/turn-submissions\//u, async (route) => {
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({ accepted: true, turnId: "fast-turn", sessionRef: "ABCDEFGH" }),
+      });
+    });
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    const input = page.locator(".session-composer [contenteditable='true']");
+    await input.fill("极快完成的任务");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(input).toHaveText("");
+    await expect(page.getByTestId("agent-working-spinner")).toHaveCount(0, { timeout: 1_000 });
+    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+  } finally {
+    await page.close();
+  }
+}
+
 async function verifyContinueInClawChat(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
   const page = await browser.newPage({
     viewport: { width: 320, height: 704 },
@@ -345,7 +385,7 @@ async function verifyContinueInClawChat(browser: Awaited<ReturnType<typeof chrom
     await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
     const mobileStressLabel =
       "$grill-with-docs 根据https://github.com/clawling/clawnest-liveware，connect web可以使用liveware".repeat(3);
-    await page.locator(".session-heading h1").evaluate((element, label) => {
+    await page.locator(".artifact-mobile-navigation h1").evaluate((element, label) => {
       element.textContent = label;
       element.setAttribute("title", label);
     }, mobileStressLabel);

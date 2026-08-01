@@ -18,11 +18,21 @@ export interface RuntimeAdapterDefinition {
   create(): ConnectRuntimeAdapter;
 }
 
+const RUNTIME_CATALOG_TTL_MS = 30_000;
+
 export class RuntimeAdapterRegistry {
   private readonly definitions = new Map<string, RuntimeAdapterDefinition>();
   private readonly adaptersByBinding = new Map<string, ConnectRuntimeAdapter>();
   private readonly anonymousBindingIds = new WeakMap<object, string>();
   private nextAnonymousBindingId = 1;
+  private readonly modelLists = new Map<
+    string,
+    { expiresAt: number; value?: RuntimeModelOption[]; loading?: Promise<RuntimeModelOption[]> }
+  >();
+  private readonly sessionOptionLists = new Map<
+    string,
+    { expiresAt: number; value?: RuntimeSessionOption[]; loading?: Promise<RuntimeSessionOption[]> }
+  >();
   private readonly skillLists = new Map<
     string,
     { expiresAt: number; value?: RuntimeSkillSummary[]; loading?: Promise<RuntimeSkillSummary[]> }
@@ -68,11 +78,22 @@ export class RuntimeAdapterRegistry {
 
   async listModels(binding: AgentBindingConfig): Promise<RuntimeModelOption[] | null> {
     const operation = this.require(binding).listModels;
-    return operation ? await operation(binding) : null;
+    return await this.listCachedRuntimeCatalog(
+      this.bindingId(binding),
+      this.modelLists,
+      operation ? async () => await operation(binding) : undefined,
+    );
   }
 
   async listSessionOptions(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeSessionOption[]> {
-    return (await this.require(binding).listSessionOptions?.(binding, workspace)) ?? [];
+    const operation = this.require(binding).listSessionOptions;
+    return (
+      (await this.listCachedRuntimeCatalog(
+        `${this.bindingId(binding)}\0${workspace.workingDirectory}`,
+        this.sessionOptionLists,
+        operation ? async () => await operation(binding, workspace) : undefined,
+      )) ?? []
+    );
   }
 
   async listSkills(
@@ -200,6 +221,8 @@ export class RuntimeAdapterRegistry {
     for (const unsubscribe of this.commandChangeSubscriptions.values()) unsubscribe();
     this.skillChangeSubscriptions.clear();
     this.commandChangeSubscriptions.clear();
+    this.modelLists.clear();
+    this.sessionOptionLists.clear();
     this.skillLists.clear();
     this.commandLists.clear();
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -246,8 +269,17 @@ export class RuntimeAdapterRegistry {
     load: (() => Promise<T[] | undefined>) | undefined,
     options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number },
   ): Promise<T[] | null> {
-    if (!load) return null;
     const key = `${this.bindingId(binding)}\0${workspace.workingDirectory}`;
+    return await this.listCachedRuntimeCatalog(key, cache, load, options);
+  }
+
+  private async listCachedRuntimeCatalog<T>(
+    key: string,
+    cache: Map<string, { expiresAt: number; value?: T[]; loading?: Promise<T[]> }>,
+    load: (() => Promise<T[] | undefined>) | undefined,
+    options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number } = {},
+  ): Promise<T[] | null> {
+    if (!load) return null;
     const cached = cache.get(key);
     if (!options.forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
     if (!options.forceRefresh && cached?.loading) {
@@ -258,7 +290,7 @@ export class RuntimeAdapterRegistry {
     const loading = load()
       .then((value) => {
         const resolved = value ?? [];
-        cache.set(key, { value: resolved, expiresAt: Date.now() + 30_000 });
+        cache.set(key, { value: resolved, expiresAt: Date.now() + RUNTIME_CATALOG_TTL_MS });
         return resolved;
       })
       .catch((error) => {

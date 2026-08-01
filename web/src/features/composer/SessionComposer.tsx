@@ -55,8 +55,8 @@ export function SessionComposer({
     else sessionStorage.setItem(storageKey, value);
   }, [storageKey, value]);
   useEffect(() => {
-    if (!isRuntimeActive) setAcceptedTurnId(null);
-  }, [isRuntimeActive]);
+    if (acceptedTurnId && !isRuntimeActive) setAcceptedTurnId(null);
+  }, [acceptedTurnId, isRuntimeActive]);
   const send = useTurnSubmission(sessionRef);
   const addFiles = (files: File[]) => {
     setAttachmentError(null);
@@ -136,6 +136,7 @@ export function SessionComposer({
   const error = attachmentError ?? send.error?.message ?? stop.error?.message;
   const composerDisabled = !canSend || hasPendingInteraction || send.isPending;
   const isAgentWorking = Boolean(acceptedTurnId) || isRuntimeActive;
+  const hasSubmissionDraft = Boolean(value.trim() || attachments.length > 0);
   const attachmentLimitLabel =
     capability.attachments.maxCount === 0
       ? "当前 Turn Submission 不支持附件"
@@ -147,7 +148,7 @@ export function SessionComposer({
       {send.isPending && send.progress ? (
         <div className="composer-submission-progress" role="status">
           {send.progress.phase === "accepting"
-            ? "附件传输完成，正在等待 Session 队列接收"
+            ? "附件传输完成，正在确认提交"
             : `正在传输 ${formatBytes(send.progress.transferredBytes)} / ${formatBytes(send.progress.totalBytes)}`}
         </div>
       ) : null}
@@ -183,7 +184,7 @@ export function SessionComposer({
         onStop={() => {
           if (!stop.isPending) stop.mutate();
         }}
-        isStopShown={Boolean(acceptedTurnId) || isRuntimeActive}
+        isStopShown={isAgentWorking && !hasSubmissionDraft}
         isDisabled={composerDisabled}
         placeholder={
           hasPendingInteraction
@@ -307,13 +308,13 @@ export function SessionComposer({
         sendButton={
           send.isPending ? (
             <Button
-              label={send.progress?.phase === "accepting" ? "等待队列接收" : "取消提交"}
+              label={send.progress?.phase === "accepting" ? "正在确认" : "取消提交"}
               isLoading={send.progress?.phase === "accepting"}
               size="md"
               variant="secondary"
               onClick={send.cancel}
             />
-          ) : isAgentWorking ? (
+          ) : isAgentWorking && !hasSubmissionDraft ? (
             <Button
               label="停止"
               tooltip="停止当前任务"
@@ -333,17 +334,14 @@ export function SessionComposer({
               onClick={() => stop.mutate()}
             />
           ) : (
-            <ChatSendButton
-              isDisabled={composerDisabled || (!value.trim() && attachments.length === 0)}
-              onSend={() => submit(value)}
-            />
+            <ChatSendButton isDisabled={composerDisabled || !hasSubmissionDraft} onSend={() => submit(value)} />
           )
         }
       />
       <div className="sr-only" aria-live="polite">
         {send.isPending
           ? send.progress?.phase === "accepting"
-            ? "附件传输完成，正在等待 Session 队列接收"
+            ? "附件传输完成，正在确认提交"
             : `正在传输 ${send.progress?.transferredBytes ?? 0} / ${send.progress?.totalBytes ?? 0} 字节`
           : isAgentWorking
             ? "Agent 正在工作，可以点击停止"
