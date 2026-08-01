@@ -5,12 +5,13 @@ import {
   createArtifactWorkspaceState,
   openArtifact,
   parseDelimitedText,
-  SESSION_ARTIFACT_ID,
+  showConversation,
 } from "../web/src/features/artifacts/artifact-workspace";
 
 describe("Artifact Workspace", () => {
   it("opens, de-duplicates, activates, and closes Artifact tabs", () => {
     const empty = createArtifactWorkspaceState();
+    expect(empty.activeId).toBeNull();
     const specOpen = openArtifact(empty, "SL8JZA5F", "/workspace/spec.md");
     const imageOpen = openArtifact(specOpen, "SL8JZA5F", "/workspace/mockup.png");
     const specReopened = openArtifact(imageOpen, "SL8JZA5F", "/workspace/spec.md");
@@ -22,7 +23,13 @@ describe("Artifact Workspace", () => {
     const closed = closeArtifact(specReopened, "/workspace/spec.md");
     expect(closed.tabs.map((tab) => tab.path)).toEqual(["/workspace/mockup.png"]);
     expect(closed.activeId).toBe("/workspace/mockup.png");
-    expect(activateArtifact(closed, SESSION_ARTIFACT_ID).activeId).toBe(SESSION_ARTIFACT_ID);
+    expect(showConversation(closed).activeId).toBeNull();
+    expect(activateArtifact(showConversation(closed), "/workspace/mockup.png").activeId).toBe("/workspace/mockup.png");
+    expect(closeArtifact(closed, "/workspace/mockup.png")).toEqual({ activeId: null, tabs: [] });
+  });
+
+  it("restores legacy Session pseudo-tabs as the Conversation surface", () => {
+    expect(createArtifactWorkspaceState({ activeId: "session", tabs: [] }).activeId).toBeNull();
   });
 
   it("ignores unsupported files", () => {

@@ -385,7 +385,7 @@ async function verifyContinueInClawChat(browser: Awaited<ReturnType<typeof chrom
     await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
     const mobileStressLabel =
       "$grill-with-docs 根据https://github.com/clawling/clawnest-liveware，connect web可以使用liveware".repeat(3);
-    await page.locator(".artifact-mobile-navigation h1").evaluate((element, label) => {
+    await page.locator(".session-heading h1").evaluate((element, label) => {
       element.textContent = label;
       element.setAttribute("title", label);
     }, mobileStressLabel);
@@ -743,16 +743,17 @@ async function verifyArtifactWorkspaceAtViewport(
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     await page.getByRole("link", { name: "打开 Artifact 移动端测试" }).click();
     await expect(page.getByRole("heading", { name: "Mobile Artifact preview" })).toBeVisible();
-    await expect(page.locator(".session-composer-surface")).toBeHidden();
+    if (viewport.width <= 720) await expect(page.locator(".session-composer-surface")).toBeHidden();
+    else await expect(page.locator(".session-composer-surface")).toBeVisible();
 
     await page.getByRole("link", { name: "Open TypeScript" }).click();
     await expect(page.getByText('export const mobileArtifact = "ready";')).toBeVisible();
     if (viewport.width <= 720) {
-      await expect(page.locator(".artifact-desktop-tabs")).toBeHidden();
-      await expect(page.locator(".artifact-mobile-navigation")).toBeVisible();
+      await expect(page.locator(".artifact-tab-strip")).toBeHidden();
+      await expect(page.locator(".artifact-mobile-controls")).toBeVisible();
       await expect(page.getByRole("button", { name: "← 对话" })).toBeVisible();
       await page.getByRole("button", { name: "已打开 (2)" }).click();
-      const sheet = page.getByRole("dialog").filter({ hasText: "已打开项目" });
+      const sheet = page.getByRole("dialog").filter({ hasText: "已打开文件" });
       await expect(sheet).toBeVisible();
       await expect(sheet.getByText("artifact-preview.md", { exact: true })).toBeVisible();
       await expect(sheet.getByText("artifact-preview.ts", { exact: true })).toBeVisible();
@@ -769,13 +770,14 @@ async function verifyArtifactWorkspaceAtViewport(
         sheetBox.y + sheetBox.height <= viewport.height && sheetBox.y + sheetBox.height >= viewport.height - 12,
         `mobile Artifact sheet must stay attached to the viewport bottom: ${JSON.stringify({ sheetBox, viewport })}`,
       );
-      await sheet.getByRole("button", { name: "App Server 与 Web Client" }).click();
+      await sheet.getByRole("button", { name: "关闭已打开文件" }).click();
+      await page.getByRole("button", { name: "← 对话" }).click();
       await expect(page.getByRole("button", { name: "← 对话" })).toHaveCount(0);
     } else {
-      await expect(page.locator(".artifact-desktop-tabs")).toBeVisible();
-      await expect(page.locator(".artifact-mobile-navigation")).toBeHidden();
+      await expect(page.locator(".artifact-tab-strip")).toBeVisible();
+      await expect(page.locator(".artifact-mobile-controls")).toBeHidden();
       await expect(page.getByRole("tab", { name: "artifact-preview.ts" })).toBeVisible();
-      await page.getByRole("tab", { name: "App Server 与 Web Client" }).click();
+      await expect(page.getByRole("tab", { name: "App Server 与 Web Client" })).toHaveCount(0);
     }
     await expect(page.locator(".session-composer-surface")).toBeVisible();
     const geometry = await page.evaluate(() => ({

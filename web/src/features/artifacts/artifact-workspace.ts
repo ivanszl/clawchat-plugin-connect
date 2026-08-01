@@ -4,7 +4,6 @@ import {
   workspaceArtifactUrl,
 } from "../../../../src/workspace-artifact";
 
-export const SESSION_ARTIFACT_ID = "session";
 export const MAX_OPEN_ARTIFACTS = 12;
 
 export interface ArtifactTab {
@@ -18,17 +17,14 @@ export interface ArtifactTab {
 }
 
 export interface ArtifactWorkspaceState {
-  activeId: string;
+  activeId: string | null;
   tabs: ArtifactTab[];
 }
 
 export function createArtifactWorkspaceState(value?: Partial<ArtifactWorkspaceState> | null): ArtifactWorkspaceState {
   const tabs = Array.isArray(value?.tabs) ? value.tabs.filter(isArtifactTab).slice(-MAX_OPEN_ARTIFACTS) : [];
   const requestedActiveId = value?.activeId;
-  const activeId =
-    requestedActiveId && (requestedActiveId === SESSION_ARTIFACT_ID || tabs.some((tab) => tab.id === requestedActiveId))
-      ? requestedActiveId
-      : SESSION_ARTIFACT_ID;
+  const activeId = requestedActiveId && tabs.some((tab) => tab.id === requestedActiveId) ? requestedActiveId : null;
   return { activeId, tabs };
 }
 
@@ -50,8 +46,12 @@ export function openArtifact(state: ArtifactWorkspaceState, sessionRef: string, 
 }
 
 export function activateArtifact(state: ArtifactWorkspaceState, id: string): ArtifactWorkspaceState {
-  if (id !== SESSION_ARTIFACT_ID && !state.tabs.some((tab) => tab.id === id)) return state;
+  if (!state.tabs.some((tab) => tab.id === id)) return state;
   return state.activeId === id ? state : { ...state, activeId: id };
+}
+
+export function showConversation(state: ArtifactWorkspaceState): ArtifactWorkspaceState {
+  return state.activeId === null ? state : { ...state, activeId: null };
 }
 
 export function closeArtifact(state: ArtifactWorkspaceState, id: string): ArtifactWorkspaceState {
@@ -59,7 +59,7 @@ export function closeArtifact(state: ArtifactWorkspaceState, id: string): Artifa
   if (index < 0) return state;
   const tabs = state.tabs.filter((tab) => tab.id !== id);
   if (state.activeId !== id) return { ...state, tabs };
-  return { activeId: tabs[Math.min(index, tabs.length - 1)]?.id ?? SESSION_ARTIFACT_ID, tabs };
+  return { activeId: tabs[Math.min(index, tabs.length - 1)]?.id ?? null, tabs };
 }
 
 export interface DelimitedTextResult {

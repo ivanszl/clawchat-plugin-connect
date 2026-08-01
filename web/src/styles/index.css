@@ -117,7 +117,7 @@ textarea {
 
 .session-page {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
   background:
@@ -196,18 +196,37 @@ textarea {
 }
 
 .session-notices {
-  grid-row: 3;
+  grid-row: 1;
   min-height: 0;
+}
+
+.session-work-area {
+  display: grid;
+  grid-row: 2;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.session-work-area[data-artifact-open="true"] {
+  grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.1fr);
+}
+
+.session-conversation {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .session-transcript-surface {
   position: relative;
-  grid-row: 4;
+  grid-row: 2;
   min-height: 0;
 }
 
 .session-composer-surface {
-  grid-row: 5;
+  grid-row: 3;
   min-width: 0;
 }
 
@@ -474,9 +493,18 @@ textarea {
   background: var(--color-background-muted);
 }
 
-.artifact-desktop-tabs {
+.artifact-dock {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--color-background-surface);
+  border-left: 1px solid var(--color-border);
+}
+
+.artifact-tab-strip {
   display: flex;
-  grid-row: 2;
   min-width: 0;
   min-height: 39px;
   align-items: stretch;
@@ -498,7 +526,7 @@ textarea {
 
 .artifact-tab,
 .artifact-tab-close,
-.artifact-mobile-navigation button,
+.artifact-mobile-controls button,
 .artifact-mobile-sheet-content button,
 .artifact-viewer-header a,
 .artifact-html-mode button {
@@ -518,12 +546,6 @@ textarea {
   border: 0;
   border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   cursor: pointer;
-}
-
-.artifact-desktop-tabs > .artifact-tab {
-  flex: 0 0 auto;
-  max-width: 260px;
-  padding-right: 12px;
 }
 
 .artifact-tab-group .artifact-tab {
@@ -569,14 +591,13 @@ textarea {
   background: var(--color-overlay-hover);
 }
 
-.artifact-mobile-navigation {
+.artifact-mobile-controls {
   display: none;
-  grid-row: 2;
 }
 
 .artifact-viewer {
   display: grid;
-  grid-row: 3 / 6;
+  grid-row: 2;
   grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
@@ -1035,9 +1056,14 @@ textarea {
 
   .session-header {
     min-height: 60px;
+    padding: 8px 12px;
   }
 
   .session-heading {
+    min-width: 0;
+  }
+
+  .session-header[data-artifact-open="true"] .session-heading {
     display: none;
   }
 
@@ -1045,22 +1071,24 @@ textarea {
     margin-left: auto;
   }
 
-  .artifact-desktop-tabs {
+  .artifact-tab-strip {
     display: none;
   }
 
-  .artifact-mobile-navigation {
+  .artifact-mobile-controls {
     display: grid;
+    flex: 1;
     min-width: 0;
-    min-height: 44px;
-    grid-template-columns: minmax(68px, auto) minmax(0, 1fr) minmax(88px, auto);
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 8px;
-    padding: 4px 12px;
-    border-bottom: 1px solid var(--color-border);
   }
 
-  .artifact-mobile-navigation h1 {
+  .session-header[data-artifact-open="true"] .artifact-mobile-controls {
+    grid-template-columns: minmax(68px, auto) minmax(0, 1fr) minmax(88px, auto);
+  }
+
+  .artifact-mobile-controls h1 {
     margin: 0;
     overflow: hidden;
     font-size: inherit;
@@ -1069,7 +1097,7 @@ textarea {
     white-space: nowrap;
   }
 
-  .artifact-mobile-navigation button {
+  .artifact-mobile-controls button {
     min-height: 32px;
     padding: 4px 8px;
     color: var(--color-text-accent);
@@ -1078,8 +1106,20 @@ textarea {
     border-radius: var(--radius-sm);
   }
 
-  .artifact-mobile-navigation .artifact-mobile-open {
-    grid-column: 3;
+  .artifact-mobile-controls .artifact-mobile-open {
+    justify-self: end;
+  }
+
+  .session-work-area[data-artifact-open="true"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .session-work-area[data-artifact-open="true"] .session-conversation {
+    display: none;
+  }
+
+  .artifact-dock {
+    border-left: 0;
   }
 
   .artifact-mobile-sheet {

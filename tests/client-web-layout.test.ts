@@ -10,14 +10,22 @@ const transcriptBlockUrl = new URL("../web/src/features/transcript/TranscriptBlo
 const settingsPageUrl = new URL("../web/src/features/settings/SettingsPage.tsx", import.meta.url);
 
 describe("Connect Client session layout", () => {
-  it("keeps Artifact navigation, transcript, and composer in stable rows", async () => {
-    const stylesheet = await Bun.file(stylesheetUrl).text();
+  it("keeps Conversation primary and places Artifact files in a secondary dock", async () => {
+    const [source, stylesheet, artifactWorkspace] = await Promise.all([
+      Bun.file(sessionRouteUrl).text(),
+      Bun.file(stylesheetUrl).text(),
+      Bun.file(artifactWorkspaceUrl).text(),
+    ]);
 
-    expect(cssRule(stylesheet, ".artifact-desktop-tabs")).toContain("grid-row: 2");
-    expect(cssRule(stylesheet, ".session-notices")).toContain("grid-row: 3");
-    expect(cssRule(stylesheet, ".session-transcript-surface")).toContain("grid-row: 4");
-    expect(cssRule(stylesheet, ".session-composer-surface")).toContain("grid-row: 5");
-    expect(cssRule(stylesheet, ".artifact-viewer")).toContain("grid-row: 3 / 6");
+    expect(source).toContain('className="session-work-area"');
+    expect(source).toContain('className="session-conversation"');
+    expect(source).toContain("<ArtifactDock");
+    expect(cssRule(stylesheet, ".session-work-area")).toContain("display: grid");
+    expect(cssRule(stylesheet, ".session-conversation")).toContain("grid-template-rows");
+    expect(cssRule(stylesheet, ".artifact-dock")).toContain("grid-template-rows");
+    expect(artifactWorkspace).toContain('aria-label="已打开文件"');
+    expect(artifactWorkspace).not.toContain("SESSION_ARTIFACT_ID");
+    expect(artifactWorkspace).not.toContain("sessionTitle");
   });
 
   it("keeps two-column Settings controls aligned by placing descriptions below the controls", async () => {
@@ -44,16 +52,21 @@ describe("Connect Client session layout", () => {
     expect(source).toContain('placement="above"');
   });
 
-  it("shows the Session title only once in the mobile conversation view", async () => {
-    const [stylesheet, artifactWorkspace] = await Promise.all([
+  it("keeps one populated heading row across mobile Conversation and Artifact surfaces", async () => {
+    const [source, stylesheet, artifactWorkspace] = await Promise.all([
+      Bun.file(sessionRouteUrl).text(),
       Bun.file(stylesheetUrl).text(),
       Bun.file(artifactWorkspaceUrl).text(),
     ]);
     const mobileStyles = stylesheet.slice(stylesheet.indexOf("@media (max-width: 720px)"));
 
-    expect(cssRule(mobileStyles, ".session-heading")).toContain("display: none");
-    expect(cssRule(mobileStyles, ".session-meta")).toContain("margin-left: auto");
-    expect(artifactWorkspace).toContain("<h1 title={activeTitle}>{activeTitle}</h1>");
+    expect(source).toContain("data-artifact-open={artifactWorkspace.activeTab ? true : undefined}");
+    expect(cssRule(mobileStyles, ".session-heading")).not.toContain("display: none");
+    expect(cssRule(mobileStyles, '.session-header[data-artifact-open="true"] .session-heading')).toContain(
+      "display: none",
+    );
+    expect(artifactWorkspace).toContain("<h1 title={workspace.activeTab.title}>{workspace.activeTab.title}</h1>");
+    expect(artifactWorkspace).toContain('className="artifact-mobile-controls"');
   });
 
   it("describes submission acknowledgement without claiming that the Session queue is blocking", async () => {

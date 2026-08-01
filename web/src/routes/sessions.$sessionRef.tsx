@@ -23,7 +23,11 @@ import {
   updateSessionPreferences,
 } from "../client-interface/query-options";
 import { MoreIcon } from "../components/icons";
-import { ArtifactNavigation, ArtifactViewer, useArtifactWorkspace } from "../features/artifacts/ArtifactWorkspaceView";
+import {
+  ArtifactDock,
+  ArtifactMobileControls,
+  useArtifactWorkspace,
+} from "../features/artifacts/ArtifactWorkspaceView";
 import { SessionComposer } from "../features/composer/SessionComposer";
 import { TranscriptViewport } from "../features/transcript/TranscriptViewport";
 import { continueInClawChatHref, isClawChatLivewareContext } from "../liveware/clawchat-deep-link";
@@ -83,10 +87,11 @@ function SessionPage() {
     : null;
   return (
     <section className="session-page">
-      <header className="session-header">
+      <header className="session-header" data-artifact-open={artifactWorkspace.activeTab ? true : undefined}>
         <div className="session-heading">
           <h1 title={view.name}>{view.name}</h1>
         </div>
+        <ArtifactMobileControls workspace={artifactWorkspace} />
         <div className="session-meta">
           <Badge label={view.bindingKind} variant="neutral" />
           {view.isArchived ? <Badge label="已归档" variant="neutral" /> : null}
@@ -143,58 +148,54 @@ function SessionPage() {
           />
         </div>
       </header>
-      <ArtifactNavigation sessionTitle={view.name} workspace={artifactWorkspace} />
-      <div className="session-notices" hidden={Boolean(artifactWorkspace.activeTab)}>
-        {view.isArchived ? (
-          <Banner
-            status="info"
-            title="此 Session 已归档"
-            description="历史消息仍可查看；恢复后才能继续发送消息。"
-            container="section"
-          />
-        ) : null}
-        {lifecycle.isError ? (
-          <Banner
-            status="error"
-            title="Session 操作失败"
-            description={lifecycle.error.message}
-            container="section"
-            isDismissable
-            onDismiss={() => lifecycle.reset()}
-          />
-        ) : null}
+      <div className="session-work-area" data-artifact-open={artifactWorkspace.activeTab ? true : undefined}>
+        <div className="session-conversation">
+          <div className="session-notices">
+            {view.isArchived ? (
+              <Banner
+                status="info"
+                title="此 Session 已归档"
+                description="历史消息仍可查看；恢复后才能继续发送消息。"
+                container="section"
+              />
+            ) : null}
+            {lifecycle.isError ? (
+              <Banner
+                status="error"
+                title="Session 操作失败"
+                description={lifecycle.error.message}
+                container="section"
+                isDismissable
+                onDismiss={() => lifecycle.reset()}
+              />
+            ) : null}
+          </div>
+          <div className="session-transcript-surface">
+            <TranscriptViewport
+              key={sessionRef}
+              sessionRef={sessionRef}
+              pages={transcript.data.pages}
+              hasOlder={Boolean(transcript.hasNextPage)}
+              isLoadingOlder={transcript.isFetchingNextPage}
+              loadOlder={transcript.fetchNextPage}
+              onOpenArtifact={artifactWorkspace.open}
+            />
+          </div>
+          <div className="session-composer-surface">
+            <SessionComposer
+              sessionRef={sessionRef}
+              contextLabel={`${view.workspaceName || view.projectName || "Non-Project"} / ${view.sessionRef}`}
+              continueInClawChatHref={clawChatHref}
+              canSend={view.allowedActions.includes("send") && view.status !== "offline"}
+              isRuntimeActive={view.status === "running" || view.status === "queued"}
+              capability={view.turnSubmissionCapability}
+              hasPendingInteraction={view.pendingInteractions.length > 0}
+              modelControl={<SessionModelControls view={view} />}
+            />
+          </div>
+        </div>
+        <ArtifactDock sessionRef={sessionRef} workspace={artifactWorkspace} />
       </div>
-      <div className="session-transcript-surface" hidden={Boolean(artifactWorkspace.activeTab)}>
-        <TranscriptViewport
-          key={sessionRef}
-          sessionRef={sessionRef}
-          pages={transcript.data.pages}
-          hasOlder={Boolean(transcript.hasNextPage)}
-          isLoadingOlder={transcript.isFetchingNextPage}
-          loadOlder={transcript.fetchNextPage}
-          onOpenArtifact={artifactWorkspace.open}
-        />
-      </div>
-      <div className="session-composer-surface" hidden={Boolean(artifactWorkspace.activeTab)}>
-        <SessionComposer
-          sessionRef={sessionRef}
-          contextLabel={`${view.workspaceName || view.projectName || "Non-Project"} / ${view.sessionRef}`}
-          continueInClawChatHref={clawChatHref}
-          canSend={view.allowedActions.includes("send") && view.status !== "offline"}
-          isRuntimeActive={view.status === "running" || view.status === "queued"}
-          capability={view.turnSubmissionCapability}
-          hasPendingInteraction={view.pendingInteractions.length > 0}
-          modelControl={<SessionModelControls view={view} />}
-        />
-      </div>
-      {artifactWorkspace.activeTab ? (
-        <ArtifactViewer
-          key={artifactWorkspace.activeTab.id}
-          sessionRef={sessionRef}
-          tab={artifactWorkspace.activeTab}
-          openArtifact={artifactWorkspace.open}
-        />
-      ) : null}
       <AlertDialog
         isOpen={deleteOpen}
         onOpenChange={setDeleteOpen}

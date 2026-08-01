@@ -18,15 +18,16 @@ import {
   createArtifactWorkspaceState,
   openArtifact,
   parseDelimitedText,
-  SESSION_ARTIFACT_ID,
+  showConversation,
 } from "./artifact-workspace";
 
 export interface ArtifactWorkspaceController {
-  state: ArtifactWorkspaceState;
+  tabs: readonly ArtifactTab[];
   activeTab: ArtifactTab | null;
   open(path: string): void;
   close(id: string): void;
   activate(id: string): void;
+  showConversation(): void;
 }
 
 export function useArtifactWorkspace(sessionRef: string): ArtifactWorkspaceController {
@@ -46,73 +47,70 @@ export function useArtifactWorkspace(sessionRef: string): ArtifactWorkspaceContr
   );
   const close = useCallback((id: string) => setState((current) => closeArtifact(current, id)), []);
   const activate = useCallback((id: string) => setState((current) => activateArtifact(current, id)), []);
+  const showConversationView = useCallback(() => setState((current) => showConversation(current)), []);
   return {
-    state,
+    tabs: state.tabs,
     activeTab: state.tabs.find((tab) => tab.id === state.activeId) ?? null,
     open,
     close,
     activate,
+    showConversation: showConversationView,
   };
 }
 
-export function ArtifactNavigation({
-  sessionTitle,
-  workspace,
-}: {
-  sessionTitle: string;
-  workspace: ArtifactWorkspaceController;
-}) {
+export function ArtifactTabStrip({ workspace }: { workspace: ArtifactWorkspaceController }) {
+  return (
+    <div className="artifact-tab-strip" role="tablist" aria-label="已打开文件">
+      {workspace.tabs.map((tab) => (
+        <div className="artifact-tab-group" key={tab.id} role="presentation">
+          <button
+            className="artifact-tab"
+            type="button"
+            role="tab"
+            aria-selected={workspace.activeTab?.id === tab.id}
+            title={tab.path}
+            onClick={() => workspace.activate(tab.id)}
+          >
+            {tab.title}
+          </button>
+          <button
+            className="artifact-tab-close"
+            type="button"
+            aria-label={`关闭 ${tab.title}`}
+            onClick={() => workspace.close(tab.id)}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ArtifactMobileControls({ workspace }: { workspace: ArtifactWorkspaceController }) {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const activeTitle = workspace.activeTab?.title ?? sessionTitle;
   const select = (id: string) => {
     workspace.activate(id);
     setMobileOpen(false);
   };
+  const close = (id: string) => {
+    workspace.close(id);
+    if (workspace.tabs.length === 1) setMobileOpen(false);
+  };
   return (
     <>
-      <div className="artifact-desktop-tabs" role="tablist" aria-label="Session 和已打开文件">
-        <button
-          className="artifact-tab"
-          type="button"
-          role="tab"
-          aria-selected={workspace.state.activeId === SESSION_ARTIFACT_ID}
-          onClick={() => workspace.activate(SESSION_ARTIFACT_ID)}
-        >
-          {sessionTitle}
-        </button>
-        {workspace.state.tabs.map((tab) => (
-          <div className="artifact-tab-group" key={tab.id}>
-            <button
-              className="artifact-tab"
-              type="button"
-              role="tab"
-              aria-selected={workspace.state.activeId === tab.id}
-              title={tab.path}
-              onClick={() => workspace.activate(tab.id)}
-            >
-              {tab.title}
-            </button>
-            <button
-              className="artifact-tab-close"
-              type="button"
-              aria-label={`关闭 ${tab.title}`}
-              onClick={() => workspace.close(tab.id)}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-      </div>
-      <div className="artifact-mobile-navigation">
+      <div className="artifact-mobile-controls">
         {workspace.activeTab ? (
-          <button className="artifact-mobile-back" type="button" onClick={() => select(SESSION_ARTIFACT_ID)}>
+          <button className="artifact-mobile-back" type="button" onClick={workspace.showConversation}>
             ← 对话
           </button>
         ) : null}
-        <h1 title={activeTitle}>{activeTitle}</h1>
-        <button className="artifact-mobile-open" type="button" onClick={() => setMobileOpen(true)}>
-          已打开 {workspace.state.tabs.length > 0 ? `(${workspace.state.tabs.length})` : ""}
-        </button>
+        {workspace.activeTab ? <h1 title={workspace.activeTab.title}>{workspace.activeTab.title}</h1> : null}
+        {workspace.tabs.length > 0 ? (
+          <button className="artifact-mobile-open" type="button" onClick={() => setMobileOpen(true)}>
+            已打开 ({workspace.tabs.length})
+          </button>
+        ) : null}
       </div>
       <Dialog
         className="artifact-mobile-sheet"
@@ -126,29 +124,45 @@ export function ArtifactNavigation({
       >
         <div className="artifact-mobile-sheet-content">
           <header>
-            <strong>已打开项目</strong>
-            <button type="button" onClick={() => setMobileOpen(false)} aria-label="关闭已打开项目">
+            <strong>已打开文件</strong>
+            <button type="button" onClick={() => setMobileOpen(false)} aria-label="关闭已打开文件">
               ×
             </button>
           </header>
-          <ArtifactSheetRow
-            title={sessionTitle}
-            isActive={workspace.state.activeId === SESSION_ARTIFACT_ID}
-            onSelect={() => select(SESSION_ARTIFACT_ID)}
-          />
-          {workspace.state.tabs.map((tab) => (
+          {workspace.tabs.map((tab) => (
             <ArtifactSheetRow
               key={tab.id}
               title={tab.title}
               subtitle={tab.path}
-              isActive={workspace.state.activeId === tab.id}
+              isActive={workspace.activeTab?.id === tab.id}
               onSelect={() => select(tab.id)}
-              onClose={() => workspace.close(tab.id)}
+              onClose={() => close(tab.id)}
             />
           ))}
         </div>
       </Dialog>
     </>
+  );
+}
+
+export function ArtifactDock({
+  sessionRef,
+  workspace,
+}: {
+  sessionRef: string;
+  workspace: ArtifactWorkspaceController;
+}) {
+  if (!workspace.activeTab) return null;
+  return (
+    <section className="artifact-dock">
+      <ArtifactTabStrip workspace={workspace} />
+      <ArtifactViewer
+        key={workspace.activeTab.id}
+        sessionRef={sessionRef}
+        tab={workspace.activeTab}
+        openArtifact={workspace.open}
+      />
+    </section>
   );
 }
 
