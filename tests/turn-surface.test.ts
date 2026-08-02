@@ -117,6 +117,67 @@ it("strips a group no-reply signal while preserving explicit media", async () =>
   expect(delivered).toEqual(["Here it is: ![chart](./chart.png)"]);
 });
 
+it("suppresses intermediate media before a terminal group no-reply signal", async () => {
+  const delivered: string[] = [];
+  const surface = new ClawChatTurnSurface({
+    noReplyProtocol: true,
+    project: async () => undefined,
+    materialize: (event) => ({ text: event.text, requiredControl: false }),
+    deliver: async (_event, reply) => {
+      delivered.push(reply.text);
+    },
+  });
+
+  await surface.accept(activity("artifact", "assistant", "Generated: ![chart](./chart.png)", "assistant"));
+  await surface.accept(activity("final", "assistant", "<clawchat:no-reply/>", "final"));
+  await surface.complete();
+
+  expect(delivered).toEqual([]);
+});
+
+it("recognizes no-reply only when the completed final response starts with a signal-shaped line", async () => {
+  const delivered: string[] = [];
+  const surface = new ClawChatTurnSurface({
+    noReplyProtocol: true,
+    project: async () => undefined,
+    materialize: (event) => ({ text: event.text, requiredControl: false }),
+    deliver: async (_event, reply) => {
+      delivered.push(reply.text);
+    },
+  });
+
+  await surface.accept(activity("draft", "assistant", "<clawchat:no-reply/>", "assistant"));
+  await surface.accept(
+    activity("final", "assistant", "Use <clawchat:no-reply/> when a group answer is unnecessary.", "final"),
+  );
+  await surface.complete();
+
+  expect(delivered).toEqual(["Use <clawchat:no-reply/> when a group answer is unnecessary."]);
+});
+
+it("suppresses documented terminal no-reply variants and any ordinary caption", async () => {
+  for (const text of [
+    "clawchat:no-reply",
+    "  **<CLAWCHAT:NOREPLY/>**  ",
+    "[ClawChat : no_reply]\nThis caption is still ordinary output.",
+  ]) {
+    const delivered: string[] = [];
+    const surface = new ClawChatTurnSurface({
+      noReplyProtocol: true,
+      project: async () => undefined,
+      materialize: (event) => ({ text: event.text, requiredControl: false }),
+      deliver: async (_event, reply) => {
+        delivered.push(reply.text);
+      },
+    });
+
+    await surface.accept(activity("final", "assistant", text, "final"));
+    await surface.complete();
+
+    expect(delivered).toEqual([]);
+  }
+});
+
 it("does not interpret no-reply syntax on a direct ClawChat surface", async () => {
   const delivered: string[] = [];
   const surface = new ClawChatTurnSurface({

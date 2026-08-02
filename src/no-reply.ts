@@ -1,16 +1,18 @@
-const CLAWCHAT_NO_REPLY_SOURCE = "clawchat\\s*:\\s*(?:no[-_ ]?reply|silent)(?![A-Za-z0-9_])";
-const CLAWCHAT_NO_REPLY_CORE = new RegExp(CLAWCHAT_NO_REPLY_SOURCE, "iu");
-const CLAWCHAT_NO_REPLY_STRIP = new RegExp(`[<\\[{\`*_~]*${CLAWCHAT_NO_REPLY_SOURCE}[/>\\]}\`*_~]*`, "giu");
+const CLAWCHAT_NO_REPLY_SOURCE = "clawchat\\s*:\\s*(?:no[-_ ]?reply|silent)";
+const CLAWCHAT_NO_REPLY_PREFIX = new RegExp(
+  `^\\s*[\\[{\`*_~]*(?:<\\s*)?${CLAWCHAT_NO_REPLY_SOURCE}\\s*(?:/\\s*>)?[\\]}\`*_~]*\\s*(?=$|\\r?\\n)`,
+  "iu",
+);
 const HOST_SILENCE_MARKERS = new Set(["[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"]);
 const EXPLICIT_MEDIA_PATTERN = /!\[[^\]]*\]\(\s*(?:<[^>]+>|[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/u;
 
 export function containsNoReplySignal(text: string): boolean {
-  return CLAWCHAT_NO_REPLY_CORE.test(text) || isHostSilenceMarker(text);
+  return CLAWCHAT_NO_REPLY_PREFIX.test(text) || isHostSilenceMarker(text);
 }
 
 export function stripNoReplySignals(text: string): string {
   if (isHostSilenceMarker(text)) return "";
-  return text.replace(CLAWCHAT_NO_REPLY_STRIP, "").trim();
+  return text.replace(CLAWCHAT_NO_REPLY_PREFIX, "").trim();
 }
 
 export function containsExplicitReplyMedia(text: string): boolean {

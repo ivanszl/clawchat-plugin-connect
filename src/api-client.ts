@@ -134,34 +134,32 @@ export function createClawChatApiClient(options: {
         return { authoritative: false, rows: [] };
       }
       if (!data || typeof data !== "object" || Array.isArray(data)) return { authoritative: false, rows: [] };
-      const settings = Array.isArray(data.settings) ? data.settings : [];
-      const parsedRows = settings.flatMap((value): GroupSettingsRecord[] => {
-        if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+      if (!Array.isArray(data.settings)) return { authoritative: false, rows: [] };
+      const parsedRows: GroupSettingsRecord[] = [];
+      for (const value of data.settings) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          return { authoritative: false, rows: [] };
+        }
         const row = value as Record<string, unknown>;
         const conversationId = typeof row.conversation_id === "string" ? row.conversation_id.trim() : "";
         const replyMode = row.reply_mode === "mention" || row.reply_mode === "all" ? row.reply_mode : null;
-        const batchDelaySeconds = Number(row.batch_delay_seconds ?? 0);
-        const version = Number(row.version ?? 0);
+        const batchDelaySeconds = row.batch_delay_seconds;
+        const version = row.version;
         if (
           !conversationId ||
+          typeof row.muted !== "boolean" ||
           !replyMode ||
+          typeof batchDelaySeconds !== "number" ||
           !Number.isSafeInteger(batchDelaySeconds) ||
           batchDelaySeconds < 0 ||
+          typeof version !== "number" ||
           !Number.isSafeInteger(version) ||
           version < 0
         ) {
-          return [];
+          return { authoritative: false, rows: [] };
         }
-        return [
-          {
-            conversationId,
-            muted: Boolean(row.muted),
-            replyMode,
-            batchDelaySeconds,
-            version,
-          },
-        ];
-      });
+        parsedRows.push({ conversationId, muted: row.muted, replyMode, batchDelaySeconds, version });
+      }
       const rowsByConversation = new Map<string, GroupSettingsRecord>();
       for (const row of parsedRows) {
         const existing = rowsByConversation.get(row.conversationId);

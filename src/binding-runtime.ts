@@ -3,8 +3,9 @@ import { type ClawChatApiClient, createClawChatApiClient } from "./api-client";
 import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
 import type { TranscriptProjection } from "./client-interface/transcript-projection";
 import { getAgentBinding } from "./config";
-import { GroupIntakeCoordinator } from "./group-intake";
+import { type GroupIntakeClock, GroupIntakeCoordinator } from "./group-intake";
 import {
+  type AddressedInboundMessage,
   addressInboundMessage,
   buildReplyTextMessagePayload,
   buildTextMessagePayload,
@@ -37,6 +38,7 @@ export interface BindingRuntimeOptions {
   runtimeInteractions?: RuntimeInteractionCoordinator;
   wsTransport?: Transport;
   clawChatApi?: ClawChatApiClient;
+  groupIntakeClock?: GroupIntakeClock;
   protocolEventHandlers?: BindingProtocolEventHandlers;
   verifyInstalledSkills?: () => Promise<void>;
   writeError: (message: string) => void;
@@ -135,7 +137,16 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     messageHandler: (message) => inboundMessages.accept(message),
     interactionSubmitHandler: async (envelope) => await interactionRouter.handleInteractionSubmit(envelope),
     protocolEventHandler: async (type, envelope) => {
-      if (type === "notify") await groupIntake.handleNotifySignal(envelope);
+      if (type === "notify") {
+        try {
+          await groupIntake.handleNotifySignal(envelope);
+        } catch (error) {
+          options.writeError(
+            `${options.agentId}: group settings notification failed: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+          throw error;
+        }
+      }
       await dispatchProtocolEventHandler(options, type, envelope);
     },
     capabilities: {
@@ -200,6 +211,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     stateStore: options.stateStore,
     api: clawChatApi,
     writeError: options.writeError,
+    clock: options.groupIntakeClock,
     reject: async (message, reason) => {
       await wsClient.sendMessageEnvelope(
         EVENT.MESSAGE_REPLY,
@@ -347,7 +359,7 @@ class InboundMessageProcessor {
       await this.options.stateStore.markInboundMessageHandled(this.options.agentId, message.messageId, message.raw);
       markedHandled = true;
     };
-    const work =
+    const work = (
       message.chatType === "group"
         ? this.groupIntake.accept(message)
         : dispatchInboundMessage({
@@ -357,16 +369,16 @@ class InboundMessageProcessor {
             runtime: this.runtime,
             interactionRouter: this.interactionRouter,
             onTurnAccepted: markHandled,
+          }).then(async (handledWithoutTurn) => {
+            if (handledWithoutTurn) await markHandled();
           })
-            .then(async (handledWithoutTurn) => {
-              if (handledWithoutTurn) await markHandled();
-            })
-            .catch((error) =>
-              this.options.writeError(
-                `${this.options.agentId}: inbound message remains pending: ${error instanceof Error ? error.message : String(error)}\n`,
-              ),
-            )
-            .finally(() => this.pending.delete(key));
+    )
+      .catch((error) =>
+        this.options.writeError(
+          `${this.options.agentId}: inbound message remains pending: ${error instanceof Error ? error.message : String(error)}\n`,
+        ),
+      )
+      .finally(() => this.pending.delete(key));
     this.pending.set(key, work);
     return "accepted";
   }
@@ -446,26 +458,10 @@ async function dispatchInboundMessage(
 ): Promise<boolean> {
   const addressed =
     (params.message.groupBatch
-      ? {
-          message: params.message,
-          hasAddressingMention: false,
-          acceptsCommands: false,
-          hasAttachment: params.message.fragments.some((fragment) =>
-            ["image", "file", "audio", "video"].includes(fragment.kind),
-          ),
-          malformedLineBreakCommand: false,
-        }
+      ? unaddressedGroupMessage(params.message)
       : addressInboundMessage(params.message, params.activation.userId)) ??
     (params.allowUnaddressedGroup && params.message.chatType === "group"
-      ? {
-          message: params.message,
-          hasAddressingMention: false,
-          acceptsCommands: false,
-          hasAttachment: params.message.fragments.some((fragment) =>
-            ["image", "file", "audio", "video"].includes(fragment.kind),
-          ),
-          malformedLineBreakCommand: false,
-        }
+      ? unaddressedGroupMessage(params.message)
       : null);
   if (!addressed) return true;
   const message = addressed.message;
@@ -535,6 +531,16 @@ async function dispatchInboundMessage(
     params.onTurnAccepted,
   );
   return false;
+}
+
+function unaddressedGroupMessage(message: NormalizedInboundMessage): AddressedInboundMessage {
+  return {
+    message,
+    hasAddressingMention: false,
+    acceptsCommands: false,
+    hasAttachment: message.fragments.some((fragment) => ["image", "file", "audio", "video"].includes(fragment.kind)),
+    malformedLineBreakCommand: false,
+  };
 }
 
 async function recordConnectionStatus(

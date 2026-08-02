@@ -2,6 +2,7 @@ import type { ClawChatApiClient } from "./api-client";
 import { isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
 import { addressInboundMessage, isMessageAddressedToAgent, normalizeInboundMessage } from "./message-mapper";
 import type { Envelope, Fragment, NormalizedInboundMessage } from "./protocol";
+import { renderClawChatPrompt } from "./runtime/prompt-renderer";
 import { isRuntimeInteractionResponseText } from "./runtime/runtime-interaction-router";
 import type { ConnectStateStore, GroupSettingsRecord } from "./state";
 
@@ -17,7 +18,20 @@ export interface GroupIntakeCoordinatorOptions {
   ): Promise<boolean>;
   reject(message: NormalizedInboundMessage, reason: string): Promise<void>;
   writeError(message: string): void;
+  clock?: GroupIntakeClock;
 }
+
+export interface GroupIntakeClock {
+  now(): number;
+  setTimer(callback: () => void, delayMilliseconds: number): unknown;
+  clearTimer(timer: unknown): void;
+}
+
+const SYSTEM_CLOCK: GroupIntakeClock = {
+  now: () => Date.now(),
+  setTimer: (callback, delayMilliseconds) => setTimeout(callback, delayMilliseconds),
+  clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+};
 
 const DEFAULT_GROUP_SETTINGS: Omit<GroupSettingsRecord, "conversationId" | "version"> = {
   muted: false,
@@ -30,20 +44,25 @@ const SETTINGS_REFRESH_GATE_MS = 5_000;
 
 interface PendingGroupBatch {
   messages: NormalizedInboundMessage[];
-  idleTimer: ReturnType<typeof setTimeout>;
-  maximumTimer: ReturnType<typeof setTimeout>;
+  idleTimer: unknown;
+  maximumTimer: unknown;
   delaySeconds: number;
 }
 
 export class GroupIntakeCoordinator {
   private rows = new Map<string, GroupSettingsRecord>();
   private stale = false;
+  private settingsEpoch = 0;
   private refreshPromise: Promise<boolean> | null = null;
+  private settingsResolution: Promise<boolean> | null = null;
   private initialization: Promise<void> | null = null;
   private readonly batches = new Map<string, PendingGroupBatch>();
   private accepting = true;
+  private readonly clock: GroupIntakeClock;
 
-  constructor(private readonly options: GroupIntakeCoordinatorOptions) {}
+  constructor(private readonly options: GroupIntakeCoordinatorOptions) {
+    this.clock = options.clock ?? SYSTEM_CLOCK;
+  }
 
   async initialize(): Promise<void> {
     if (!this.initialization) {
@@ -63,17 +82,30 @@ export class GroupIntakeCoordinator {
   async handleNotifySignal(envelope: Envelope): Promise<boolean> {
     const payload = envelope.payload as Record<string, unknown>;
     if (payload.type !== "agent.config.changed") return false;
+    const activeRefresh = this.settingsResolution ?? this.refreshPromise;
+    this.settingsEpoch += 1;
     await this.initialize();
     this.stale = true;
     await this.options.stateStore.markGroupSettingsSnapshotStale(this.options.bindingId);
-    await this.refreshWithinGate();
+    const requiredRefresh = activeRefresh
+      ? activeRefresh.catch(() => false).then(async () => await this.refresh())
+      : this.refresh();
+    const resolution = requiredRefresh.finally(() => {
+      if (this.settingsResolution === resolution) this.settingsResolution = null;
+    });
+    this.settingsResolution = resolution;
+    void resolution.catch((error) => {
+      this.options.writeError(
+        `${this.options.bindingId}: group settings refresh failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    });
     return true;
   }
 
   async accept(message: NormalizedInboundMessage): Promise<void> {
     if (!this.accepting) throw new Error("group intake coordinator is closing");
     await this.initialize();
-    if (this.stale) await this.refreshWithinGate();
+    if (this.stale) await this.refreshWithinGate(this.settingsResolution ?? this.refresh());
     const settings = this.effective(message.chatId);
     const mentioned = isMessageAddressedToAgent(message, this.options.agentUserId);
     if (settings.muted || (settings.replyMode === "mention" && !mentioned)) {
@@ -93,6 +125,7 @@ export class GroupIntakeCoordinator {
       if (mentioned) await this.flush(message.chatId);
       return;
     }
+    if (await this.rejectIfOverCapacity(message)) return;
     if (settings.replyMode === "mention") message = await this.withMentionContext(message);
     await this.dispatch(message, settings.replyMode === "all");
   }
@@ -101,7 +134,7 @@ export class GroupIntakeCoordinator {
     message: NormalizedInboundMessage,
     allowUnaddressedGroup: boolean,
     sourceMessages: readonly NormalizedInboundMessage[] = [message],
-  ): Promise<void> {
+  ): Promise<boolean> {
     let accepted = false;
     const markAccepted = async () => {
       if (accepted) return;
@@ -110,13 +143,14 @@ export class GroupIntakeCoordinator {
     };
     const handledWithoutTurn = await this.options.dispatch(message, allowUnaddressedGroup, markAccepted);
     if (handledWithoutTurn) await markAccepted();
+    return accepted;
   }
 
   async close(): Promise<void> {
     this.accepting = false;
     for (const batch of this.batches.values()) {
-      clearTimeout(batch.idleTimer);
-      clearTimeout(batch.maximumTimer);
+      this.clock.clearTimer(batch.idleTimer);
+      this.clock.clearTimer(batch.maximumTimer);
     }
     this.batches.clear();
   }
@@ -131,7 +165,7 @@ export class GroupIntakeCoordinator {
     if (!batchCanAppend([], message)) {
       await this.options.reject(
         message,
-        `ClawChat group message exceeds the ${MAX_BATCH_CHARACTERS}-character or ${MAX_BATCH_ATTACHMENTS}-attachment batch limit.`,
+        "ClawChat group message exceeds the 64,000-character or 10-attachment batch limit.",
       );
       await this.markHandled(message, "policy-discarded");
       return;
@@ -139,12 +173,12 @@ export class GroupIntakeCoordinator {
     if (!batch) {
       batch = {
         messages: [],
-        idleTimer: setTimeout(() => undefined, 0),
-        maximumTimer: setTimeout(() => undefined, 0),
+        idleTimer: this.clock.setTimer(() => undefined, 0),
+        maximumTimer: this.clock.setTimer(() => undefined, 0),
         delaySeconds,
       };
-      clearTimeout(batch.idleTimer);
-      clearTimeout(batch.maximumTimer);
+      this.clock.clearTimer(batch.idleTimer);
+      this.clock.clearTimer(batch.maximumTimer);
       this.batches.set(message.chatId, batch);
     }
     batch.messages.push(message);
@@ -165,7 +199,7 @@ export class GroupIntakeCoordinator {
   private async flush(chatId: string): Promise<void> {
     const batch = this.batches.get(chatId);
     if (!batch) return;
-    if (this.stale) await this.refreshWithinGate();
+    if (this.stale) await this.refreshWithinGate(this.settingsResolution ?? this.refresh());
     const settings = this.effective(chatId);
     if (
       settings.muted ||
@@ -176,8 +210,8 @@ export class GroupIntakeCoordinator {
       return;
     }
     this.batches.delete(chatId);
-    clearTimeout(batch.idleTimer);
-    clearTimeout(batch.maximumTimer);
+    this.clock.clearTimer(batch.idleTimer);
+    this.clock.clearTimer(batch.maximumTimer);
     if (batch.messages.length === 0) return;
     await this.dispatch(coalescedMessage(batch.messages), true, batch.messages);
   }
@@ -195,37 +229,43 @@ export class GroupIntakeCoordinator {
 
   private async refresh(): Promise<boolean> {
     if (this.refreshPromise) return await this.refreshPromise;
-    this.refreshPromise = this.refreshOnce().finally(() => {
+    const epoch = this.settingsEpoch;
+    this.refreshPromise = this.refreshOnce(epoch).finally(() => {
       this.refreshPromise = null;
     });
     return await this.refreshPromise;
   }
 
-  private async refreshWithinGate(): Promise<boolean> {
-    const refresh = this.refresh().catch((error) => {
+  private async refreshWithinGate(requiredRefresh: Promise<boolean> = this.refresh()): Promise<boolean> {
+    const refresh = requiredRefresh.catch((error) => {
       this.options.writeError(
         `${this.options.bindingId}: group settings refresh failed: ${error instanceof Error ? error.message : String(error)}\n`,
       );
       return false;
     });
-    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let timeout: unknown;
     try {
       return await Promise.race([
         refresh,
         new Promise<boolean>((resolve) => {
-          timeout = setTimeout(() => resolve(false), SETTINGS_REFRESH_GATE_MS);
+          timeout = this.clock.setTimer(() => resolve(false), SETTINGS_REFRESH_GATE_MS);
         }),
       ]);
     } finally {
-      if (timeout) clearTimeout(timeout);
+      if (timeout !== undefined) this.clock.clearTimer(timeout);
     }
   }
 
-  private async refreshOnce(): Promise<boolean> {
+  private async refreshOnce(epoch: number): Promise<boolean> {
     await this.initialize();
     const result = await this.options.api.getMyGroupSettings();
     if (!result.authoritative) return false;
+    if (epoch !== this.settingsEpoch) return false;
     await this.options.stateStore.replaceGroupSettingsSnapshot(this.options.bindingId, result.rows);
+    if (epoch !== this.settingsEpoch) {
+      await this.options.stateStore.markGroupSettingsSnapshotStale(this.options.bindingId);
+      return false;
+    }
     this.rows = new Map(result.rows.map((row) => [row.conversationId, row]));
     this.stale = false;
     await this.reconcileBatches();
@@ -233,16 +273,16 @@ export class GroupIntakeCoordinator {
   }
 
   private schedule(batch: PendingGroupBatch, chatId: string): void {
-    clearTimeout(batch.idleTimer);
-    clearTimeout(batch.maximumTimer);
+    this.clock.clearTimer(batch.idleTimer);
+    this.clock.clearTimer(batch.maximumTimer);
     const first = batch.messages[0];
     const last = batch.messages.at(-1);
     if (!first || !last) return;
-    const now = Date.now();
+    const now = this.clock.now();
     const idleDeadline = last.emittedAt + batch.delaySeconds * 1_000;
     const maximumDeadline = first.emittedAt + Math.max(30, batch.delaySeconds) * 1_000;
-    batch.idleTimer = setTimeout(() => void this.flushSafely(chatId), Math.max(0, idleDeadline - now));
-    batch.maximumTimer = setTimeout(() => void this.flushSafely(chatId), Math.max(0, maximumDeadline - now));
+    batch.idleTimer = this.clock.setTimer(() => void this.flushSafely(chatId), Math.max(0, idleDeadline - now));
+    batch.maximumTimer = this.clock.setTimer(() => void this.flushSafely(chatId), Math.max(0, maximumDeadline - now));
   }
 
   private async reconcileBatches(): Promise<void> {
@@ -272,8 +312,8 @@ export class GroupIntakeCoordinator {
     const batch = this.batches.get(chatId);
     if (!batch) return;
     this.batches.delete(chatId);
-    clearTimeout(batch.idleTimer);
-    clearTimeout(batch.maximumTimer);
+    this.clock.clearTimer(batch.idleTimer);
+    this.clock.clearTimer(batch.maximumTimer);
     for (const message of batch.messages) await this.markHandled(message, "policy-discarded");
   }
 
@@ -300,7 +340,15 @@ export class GroupIntakeCoordinator {
         },
       ];
     });
-    return context.length > 0 ? { ...message, groupMentionContext: context } : message;
+    let contextual = context.length > 0 ? { ...message, groupMentionContext: context } : message;
+    while (contextual.groupMentionContext?.length && renderClawChatPrompt(contextual).length > MAX_BATCH_CHARACTERS) {
+      contextual = { ...contextual, groupMentionContext: contextual.groupMentionContext.slice(1) };
+    }
+    if (contextual.groupMentionContext?.length === 0) {
+      const { groupMentionContext: _emptyContext, ...withoutContext } = contextual;
+      return withoutContext;
+    }
+    return contextual;
   }
 
   private async markHandled(
@@ -314,6 +362,21 @@ export class GroupIntakeCoordinator {
       outcome,
     );
   }
+
+  private async rejectIfOverCapacity(message: NormalizedInboundMessage): Promise<boolean> {
+    if (
+      renderClawChatPrompt(message).length <= MAX_BATCH_CHARACTERS &&
+      attachmentCount(message.fragments) <= MAX_BATCH_ATTACHMENTS
+    ) {
+      return false;
+    }
+    await this.options.reject(
+      message,
+      "ClawChat group message exceeds the 64,000-character or 10-attachment batch limit.",
+    );
+    await this.markHandled(message, "policy-discarded");
+    return true;
+  }
 }
 
 function batchCanAppend(messages: readonly NormalizedInboundMessage[], next: NormalizedInboundMessage): boolean {
@@ -325,15 +388,7 @@ function batchCanAppend(messages: readonly NormalizedInboundMessage[], next: Nor
 }
 
 function renderedBatchCharacters(messages: readonly NormalizedInboundMessage[]): number {
-  const metadata = messages.map((message) => ({
-    message_id: message.messageId,
-    sender: { user_id: message.sender.id, display: message.sender.nick_name || message.sender.id },
-    emitted_at: message.emittedAt,
-    mentioned_user_ids: message.mentions,
-    reply_to_message_id: message.replyToMessageId,
-    fragments: message.fragments,
-  }));
-  return formatBatchText(messages).length + JSON.stringify(metadata).length;
+  return renderClawChatPrompt(coalescedMessage(messages)).length;
 }
 
 function attachmentCount(fragments: readonly Fragment[]): number {
@@ -367,17 +422,21 @@ function coalescedMessage(messages: readonly NormalizedInboundMessage[]): Normal
     replyAnchorFragments: last.fragments,
     mentions: [...new Set(messages.flatMap((message) => message.mentions))],
     groupBatch: {
-      messages: messages.map((message) => ({
-        message_id: message.messageId,
-        sender: {
-          user_id: message.sender.id,
-          display: message.sender.nick_name || message.sender.id,
-        },
-        emitted_at: message.emittedAt,
-        mentioned_user_ids: message.mentions,
-        reply_to_message_id: message.replyToMessageId,
-        fragments: message.fragments,
-      })),
+      messages: messages.map(groupBatchSource),
     },
+  };
+}
+
+function groupBatchSource(message: NormalizedInboundMessage) {
+  return {
+    message_id: message.messageId,
+    sender: {
+      user_id: message.sender.id,
+      display: message.sender.nick_name || message.sender.id,
+    },
+    emitted_at: message.emittedAt,
+    mentioned_user_ids: message.mentions,
+    reply_to_message_id: message.replyToMessageId,
+    fragments: message.fragments,
   };
 }

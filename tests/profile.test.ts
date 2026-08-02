@@ -35,6 +35,65 @@ describe("ClawChat user profiles", () => {
   });
 });
 
+describe("ClawChat group settings", () => {
+  it("accepts only a completely validated authoritative snapshot", async () => {
+    const payloads = [
+      { code: 0, data: {} },
+      {
+        code: 0,
+        data: {
+          settings: [
+            {
+              conversation_id: "group-1",
+              muted: false,
+              reply_mode: "all",
+              batch_delay_seconds: 60,
+              version: 2,
+            },
+            { conversation_id: "group-2", muted: "false", reply_mode: "mention" },
+          ],
+        },
+      },
+      {
+        code: 0,
+        data: {
+          settings: [
+            {
+              conversation_id: "group-1",
+              muted: false,
+              reply_mode: "all",
+              batch_delay_seconds: 60,
+              version: 2,
+            },
+          ],
+        },
+      },
+    ];
+    const fetchImpl = mock(async () => response(payloads.shift()));
+    const client = createClawChatApiClient({
+      baseUrl: "https://app.clawling.com",
+      deviceId: "device-local",
+      token: "secret-token",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await expect(client.getMyGroupSettings()).resolves.toEqual({ authoritative: false, rows: [] });
+    await expect(client.getMyGroupSettings()).resolves.toEqual({ authoritative: false, rows: [] });
+    await expect(client.getMyGroupSettings()).resolves.toEqual({
+      authoritative: true,
+      rows: [
+        {
+          conversationId: "group-1",
+          muted: false,
+          replyMode: "all",
+          batchDelaySeconds: 60,
+          version: 2,
+        },
+      ],
+    });
+  });
+});
+
 describe("updateAccountProfile", () => {
   it("updates the activated account with its stored access token", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-profile-"));
