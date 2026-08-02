@@ -22,6 +22,248 @@ afterEach(async () => {
 });
 
 describe("Connect Client Interface", () => {
+  it("starts listening before Runtime-backed Client catalog initialization completes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-readiness-"));
+    const assetsPath = join(directory, "assets");
+    await mkdir(assetsPath);
+    await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect readiness</title>");
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await store.upsertActivation({
+      localAgentId: "codex",
+      accessToken: "token-codex",
+      refreshToken: null,
+      serverAgentId: "agent-codex",
+      userId: "usr_agent_codex",
+      ownerUserId: "usr_owner",
+      conversationId: "chat-owner-agent",
+    });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    let publishDiscoveryStarted: () => void = () => undefined;
+    const discoveryStarted = new Promise<void>((resolve) => {
+      publishDiscoveryStarted = resolve;
+    });
+    let releaseDiscovery: () => void = () => undefined;
+    const discoveryGate = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    const registry = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        discoverAllThreads: async () => {
+          publishDiscoveryStarted();
+          await discoveryGate;
+          return [];
+        },
+        discoverArchivedThreads: async () => [],
+        start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+      }),
+    ]);
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
+    const port = 47_890;
+    const starting = startClientInterface({
+      config,
+      configPath: join(directory, "config.json"),
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      runtimes: [
+        {
+          agentId: "codex",
+          websocketUrl: config.websocketUrl,
+          deviceId: "device-readiness",
+          close: async () => undefined,
+        },
+      ],
+      assetsPath,
+      port,
+      serverFactory: (options) => {
+        fetchHandler = options.fetch;
+        return { stop: async () => undefined };
+      },
+    });
+    for (let attempt = 0; attempt < 50 && !fetchHandler; attempt += 1) await Bun.sleep(1);
+    if (!fetchHandler) throw new Error("Client listener was blocked by catalog initialization");
+    await discoveryStarted;
+
+    let handle: ClientInterfaceHandle | null = null;
+    try {
+      const origin = `http://127.0.0.1:${port}`;
+      const document = await localRequest(fetchHandler, origin, "/");
+      expect(document.status).toBe(200);
+      const warmingBootstrap = await localRequest(fetchHandler, origin, "/client/v1/bootstrap");
+      expect(warmingBootstrap.status).toBe(503);
+      await expect(warmingBootstrap.json()).resolves.toMatchObject({
+        error: { code: "client-warming-up", retryable: true },
+      });
+      await expect(Promise.race([starting.then(() => "ready"), Bun.sleep(10).then(() => "waiting")])).resolves.toBe(
+        "waiting",
+      );
+      releaseDiscovery();
+      handle = await starting;
+      const bootstrap = await localRequest(fetchHandler, handle.origin, "/client/v1/bootstrap");
+      expect(bootstrap.status).toBe(200);
+    } finally {
+      releaseDiscovery();
+      handle ??= await starting;
+      await handle.stop();
+      await registry.close();
+      await store.close();
+    }
+  });
+
+  it("closes an early Client listener when catalog initialization fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-readiness-failure-"));
+    const assetsPath = join(directory, "assets");
+    await mkdir(assetsPath);
+    await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect readiness failure</title>");
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await store.upsertActivation({
+      localAgentId: "codex",
+      accessToken: "token-codex",
+      refreshToken: null,
+      serverAgentId: "agent-codex",
+      userId: "usr_agent_codex",
+      ownerUserId: "usr_owner",
+      conversationId: "chat-owner-agent",
+    });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    let publishDiscoveryStarted: () => void = () => undefined;
+    const discoveryStarted = new Promise<void>((resolve) => {
+      publishDiscoveryStarted = resolve;
+    });
+    let releaseDiscovery: () => void = () => undefined;
+    const discoveryGate = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    const registry = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        discoverAllThreads: async () => {
+          publishDiscoveryStarted();
+          await discoveryGate;
+          throw new Error("catalog discovery failed");
+        },
+        discoverArchivedThreads: async () => [],
+        start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+      }),
+    ]);
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
+    const stop = mock(async () => undefined);
+    const port = 47_889;
+    const starting = startClientInterface({
+      config,
+      configPath: join(directory, "config.json"),
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      runtimes: [
+        {
+          agentId: "codex",
+          websocketUrl: config.websocketUrl,
+          deviceId: "device-readiness-failure",
+          close: async () => undefined,
+        },
+      ],
+      assetsPath,
+      port,
+      serverFactory: (options) => {
+        fetchHandler = options.fetch;
+        return { stop };
+      },
+    });
+    await discoveryStarted;
+
+    try {
+      if (!fetchHandler) throw new Error("Client listener was not created before failing initialization");
+      const document = await localRequest(fetchHandler, `http://127.0.0.1:${port}`, "/");
+      expect(document.status).toBe(200);
+      releaseDiscovery();
+      await expect(starting).rejects.toThrow("catalog discovery failed");
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(stop).toHaveBeenCalledWith(true);
+    } finally {
+      releaseDiscovery();
+      await starting.catch(() => undefined);
+      await registry.close();
+      await store.close();
+    }
+  });
+
+  it("joins every parallel warming task before reporting Client initialization failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-warming-join-"));
+    const assetsPath = join(directory, "assets");
+    await mkdir(assetsPath);
+    await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect warming join</title>");
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    store.listIncompleteSessionLifecycleOperations = mock(async () => {
+      throw new Error("lifecycle warming failed");
+    });
+    let publishCleanupStarted: () => void = () => undefined;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      publishCleanupStarted = resolve;
+    });
+    let releaseCleanup: () => void = () => undefined;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    store.deleteExpiredClientCommands = mock(async () => {
+      publishCleanupStarted();
+      await cleanupGate;
+    });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    const registry = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+      }),
+    ]);
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const stop = mock(async () => undefined);
+    const starting = startClientInterface({
+      config,
+      configPath: join(directory, "config.json"),
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      runtimes: [],
+      assetsPath,
+      port: 47_888,
+      serverFactory: () => ({ stop }),
+    });
+    const observed = starting.then(
+      () => "resolved" as const,
+      (error: unknown) => error,
+    );
+    await cleanupStarted;
+
+    try {
+      await expect(Promise.race([observed, Bun.sleep(20).then(() => "waiting" as const)])).resolves.toBe("waiting");
+      expect(stop).not.toHaveBeenCalled();
+      releaseCleanup();
+      const result = await observed;
+      expect(result).toBeInstanceOf(Error);
+      expect(result).toMatchObject({ message: "lifecycle warming failed" });
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(stop).toHaveBeenCalledWith(true);
+    } finally {
+      releaseCleanup();
+      await observed;
+      await registry.close();
+      await store.close();
+    }
+  });
+
   it("serves direct loopback snapshots and local turns", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-interface-"));
     const assetsPath = join(directory, "assets");

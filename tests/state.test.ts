@@ -282,6 +282,57 @@ describe("state store", () => {
     await reopened.close();
   });
 
+  it("deduplicates reordered protocol delivery content recursively", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    const original = {
+      version: "2",
+      event: "message.reply",
+      trace_id: "trace-original",
+      emitted_at: 1,
+      dseq: 1,
+      payload: {
+        message_id: "msg-reordered",
+        message: {
+          body: { fragments: [{ kind: "text", text: "same content" }] },
+          context: { mentions: [], reply: null },
+        },
+      },
+    };
+    const reordered = {
+      payload: {
+        message: {
+          context: { reply: null, mentions: [] },
+          body: { fragments: [{ text: "same content", kind: "text" }] },
+        },
+        message_id: "msg-reordered",
+      },
+      dseq: 2,
+      emitted_at: 2,
+      trace_id: "trace-replay",
+      event: "message.reply",
+      version: "2",
+    };
+    const input = (raw: typeof original | typeof reordered) => ({
+      agentId: "codex",
+      direction: "inbound" as const,
+      kind: "message" as const,
+      eventType: "message.reply",
+      traceId: raw.trace_id,
+      chatId: "chat-reordered",
+      messageId: "msg-reordered",
+      text: "same content",
+      raw,
+    });
+
+    await expect(store.upsertInboundMessage(input(original))).resolves.toBe("inserted");
+    await store.markInboundMessageHandled("codex", "msg-reordered", original);
+    await expect(store.upsertInboundMessage(input(reordered))).resolves.toBe("duplicate");
+    await expect(store.hasHandledInboundMessage("codex", "msg-reordered", reordered)).resolves.toBe(true);
+
+    await store.close();
+  });
+
   it("marks a batch atomically and exposes only mention-context discards", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });

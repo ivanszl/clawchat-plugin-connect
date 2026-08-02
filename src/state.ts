@@ -2,8 +2,15 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
-import type { ClientViewEvent, RuntimeInteractionBlock, TranscriptBlock } from "./client-contract";
+import type {
+  ClientViewEvent,
+  EmbeddedTranscriptBlock,
+  RuntimeInteractionBlock,
+  TranscriptBlock,
+} from "./client-contract";
 import { defaultStateDbPath } from "./config";
+import { inboundContentDigest, protocolDeliveryContentJson } from "./inbound-identity";
+import type { RuntimeInputIdentity } from "./runtime/types";
 import {
   type ActivationCredentials,
   type LivewareExposureRecord,
@@ -105,6 +112,7 @@ class BunSqliteAdapter {
     callback: (
       run: (sql: string, ...bindings: SQLQueryBindings[]) => { changes: number; lastInsertRowid: number | bigint },
       get: <Row>(sql: string, ...bindings: SQLQueryBindings[]) => Row | null,
+      all: <Row>(sql: string, ...bindings: SQLQueryBindings[]) => Row[],
     ) => T,
   ): T {
     return this.database.transaction(() =>
@@ -112,6 +120,8 @@ class BunSqliteAdapter {
         (sql, ...bindings) => this.database.query<unknown, SQLQueryBindings[]>(sql).run(...bindings),
         <Row>(sql: string, ...bindings: SQLQueryBindings[]) =>
           this.database.query<Row, SQLQueryBindings[]>(sql).get(...bindings),
+        <Row>(sql: string, ...bindings: SQLQueryBindings[]) =>
+          this.database.query<Row, SQLQueryBindings[]>(sql).all(...bindings),
       ),
     )();
   }
@@ -1070,6 +1080,20 @@ export class ConnectStateStore {
     );
     return row ? runtimeSessionFromRow(row) : null;
   }
+  async listProjectedInboundSessionRefs(agentId: string, chatId: string, messageId: string): Promise<string[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<Array<{ session_ref: string }>>(
+      `SELECT DISTINCT block.session_ref
+       FROM transcript_blocks AS block
+       JOIN session_refs AS ref ON ref.session_ref = block.session_ref
+       WHERE ref.agent_id = ? AND ref.chat_id = ?
+         AND block.block_id = ? AND block.origin = 'clawchat'`,
+      requireStateString(agentId, "agentId"),
+      requireStateString(chatId, "chatId"),
+      requireStateString(messageId, "messageId"),
+    );
+    return rows.map((row) => row.session_ref);
+  }
   async switchRuntimeSession(chatId: string, agentId: string, sessionId: string): Promise<boolean> {
     const db = await this.requireDb();
     await db.run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?", chatId, agentId);
@@ -1523,6 +1547,41 @@ export class ConnectStateStore {
       }
     });
   }
+
+  async markReconciledInboundIdentity(agentId: string, identity: RuntimeInputIdentity): Promise<number> {
+    const db = await this.requireDb();
+    const normalizedAgentId = requireStateString(agentId, "agentId");
+    const handledAt = Date.now();
+    const messages = new Map(
+      [...identity.actionable, ...identity.context].map((message) => [message.messageId, message] as const),
+    );
+    return db.transaction((run, get) => {
+      let handled = 0;
+      for (const message of messages.values()) {
+        const current = get<{ raw_json?: string }>(
+          `SELECT raw_json FROM clawchat_messages
+           WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?`,
+          normalizedAgentId,
+          requireStateString(message.messageId, "messageId"),
+        );
+        if (!current || inboundContentDigest(current.raw_json) !== message.contentDigest) continue;
+        const content = protocolDeliveryContentJson(current.raw_json);
+        const updated = run(
+          `UPDATE clawchat_messages
+           SET handled_content_json = ?, handled_at = ?, handling_outcome = 'runtime'
+           WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?
+             AND raw_json = ?`,
+          content,
+          handledAt,
+          normalizedAgentId,
+          message.messageId,
+          current.raw_json ?? null,
+        );
+        handled += updated.changes;
+      }
+      return handled;
+    });
+  }
   async listRecentGroupContext(
     agentId: string,
     chatId: string,
@@ -1550,34 +1609,6 @@ export class ConnectStateStore {
       Math.max(0, Math.min(10, Math.floor(limit))),
     );
     return rows.reverse().map((row) => parseJsonValue(row.raw_json));
-  }
-  async hasReconciledInboundMessage(agentId: string, messageId: string): Promise<boolean> {
-    const db = await this.requireDb();
-    const row = await db.get<{ present: number }>(
-      `SELECT 1 AS present
-       FROM clawchat_messages AS message
-       JOIN runtime_sessions AS session
-         ON session.chat_id = message.chat_id
-        AND session.agent_id = message.local_agent_id
-       JOIN session_refs AS ref
-         ON ref.chat_id = session.chat_id
-        AND ref.agent_id = session.agent_id
-        AND ref.session_id = session.session_id
-       JOIN transcript_blocks AS block
-         ON block.session_ref = ref.session_ref
-       WHERE message.local_agent_id = ?
-         AND message.direction = 'inbound'
-         AND message.kind = 'message'
-         AND message.message_id = ?
-         AND block.origin = 'clawchat'
-         AND substr(block.block_id, 1, 2) = 'b_'
-         AND block.plain_text = COALESCE(message.text, '')
-         AND ABS(block.created_at - message.created_at) <= 10000
-       LIMIT 1`,
-      requireStateString(agentId, "agentId"),
-      requireStateString(messageId, "messageId"),
-    );
-    return row?.present === 1;
   }
   async listUnhandledInboundMessages(agentId: string): Promise<unknown[]> {
     const db = await this.requireDb();
@@ -2121,6 +2152,95 @@ export class ConnectStateStore {
         }
       })
       .reverse();
+  }
+
+  async settleStreamingTranscriptBlocks(
+    sessionRef: string,
+    sequenceRange: { first: number; next: number },
+    state: "error" | "cancelled",
+  ): Promise<number> {
+    if (
+      !Number.isSafeInteger(sequenceRange.first) ||
+      !Number.isSafeInteger(sequenceRange.next) ||
+      sequenceRange.first < 0 ||
+      sequenceRange.next <= sequenceRange.first
+    ) {
+      throw new Error("Transcript sequence range is invalid");
+    }
+    const db = await this.requireDb();
+    const now = Date.now();
+    return db.transaction((run, get, all) => {
+      const rows = all<{ block_id: string }>(
+        `SELECT block_id FROM transcript_blocks
+         WHERE session_ref = ? AND sequence >= ? AND sequence < ?
+           AND block_type != 'runtime-interaction'
+           AND (state IN ('pending', 'streaming') OR block_type = 'subagent')
+         ORDER BY sequence`,
+        sessionRef,
+        sequenceRange.first,
+        sequenceRange.next,
+      );
+      let settled = 0;
+      for (const candidate of rows) {
+        const current = get<{ revision: number; block_json: string }>(
+          `SELECT revision, block_json FROM transcript_blocks
+           WHERE session_ref = ? AND block_id = ? AND sequence >= ? AND sequence < ?
+             AND block_type != 'runtime-interaction'
+             AND (state IN ('pending', 'streaming') OR block_type = 'subagent')`,
+          sessionRef,
+          candidate.block_id,
+          sequenceRange.first,
+          sequenceRange.next,
+        );
+        if (!current) continue;
+        let stored: TranscriptBlock;
+        try {
+          stored = JSON.parse(current.block_json) as TranscriptBlock;
+        } catch {
+          continue;
+        }
+        const settledInput = settleTranscriptBlock(stored, state);
+        if (sameTranscriptPayload(stored, settledInput)) continue;
+        const block = {
+          ...settledInput,
+          revision: current.revision + 1,
+          sequence: stored.sequence,
+          createdAt: stored.createdAt,
+          updatedAt: new Date(now).toISOString(),
+        } as TranscriptBlock;
+        const updated = run(
+          `UPDATE transcript_blocks SET revision = ?, state = ?, block_json = ?, updated_at = ?
+           WHERE session_ref = ? AND block_id = ? AND revision = ?
+             AND block_type != 'runtime-interaction'
+             AND (state IN ('pending', 'streaming') OR block_type = 'subagent')`,
+          block.revision,
+          block.state,
+          JSON.stringify(block),
+          now,
+          sessionRef,
+          candidate.block_id,
+          current.revision,
+        );
+        if (updated.changes !== 1) throw new Error("Runtime Turn transcript changed during settlement");
+        const event = {
+          type: "transcript.block-upserted",
+          cursor: 0,
+          sessionRef,
+          revision: block.revision,
+          block,
+        } satisfies ClientViewEvent;
+        run(
+          "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+          event.type,
+          sessionRef,
+          event.revision,
+          JSON.stringify(event),
+          now,
+        );
+        settled += 1;
+      }
+      return settled;
+    });
   }
 
   async getClientEventCursor(): Promise<number> {
@@ -2716,20 +2836,6 @@ function toJson(value: unknown): string | null {
     return JSON.stringify({ error: "unserializable" });
   }
 }
-function protocolDeliveryContentJson(value: unknown): string {
-  let parsed = value;
-  if (typeof value === "string") {
-    try {
-      parsed = JSON.parse(value) as unknown;
-    } catch {
-      return value;
-    }
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return toJson(parsed) ?? "null";
-  const content = { ...(parsed as Record<string, unknown>) };
-  for (const field of ["dseq", "emitted_at", "trace_id"]) delete content[field];
-  return toJson(content) ?? "null";
-}
 function parseJsonValue(value: unknown): unknown {
   try {
     return JSON.parse(stringValue(value)) as unknown;
@@ -2851,6 +2957,30 @@ function sameTranscriptPayload(stored: TranscriptBlock, input: TranscriptBlockIn
     delete inputPayload[key];
   }
   return JSON.stringify(storedPayload) === JSON.stringify(inputPayload);
+}
+function settleTranscriptBlock(block: TranscriptBlock, state: "error" | "cancelled"): TranscriptBlockInput {
+  return settleEmbeddedTranscriptBlock(block, state) as TranscriptBlockInput;
+}
+function settleEmbeddedTranscriptBlock(
+  block: EmbeddedTranscriptBlock,
+  state: "error" | "cancelled",
+): EmbeddedTranscriptBlock {
+  if (block.type === "runtime-interaction") return block;
+  const settledState = block.state === "pending" || block.state === "streaming" ? state : block.state;
+  if (block.type === "subagent") {
+    return {
+      ...block,
+      state: settledState,
+      blocks: block.blocks.map((child) => settleEmbeddedTranscriptBlock(child, state)),
+    };
+  }
+  if (
+    settledState !== block.state &&
+    (block.type === "command" || block.type === "tool-call" || block.type === "file-change")
+  ) {
+    return { ...block, state: settledState, status: state };
+  }
+  return settledState === block.state ? block : { ...block, state: settledState };
 }
 function preserveConnectOwnedMessageMetadata(
   stored: TranscriptBlock | null,

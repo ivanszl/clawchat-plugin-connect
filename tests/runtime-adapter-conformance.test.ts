@@ -9,7 +9,12 @@ import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
 import type { OpenCodeMessage, OpenCodeServerClient } from "../src/runtime/opencode-server";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { releasedRuntimeAdapters } from "../src/runtime/released-adapters";
-import { type ConnectRuntimeAdapter, RuntimeLifecycleError, runtimeActivityOrdinal } from "../src/runtime/types";
+import {
+  type ConnectRuntimeAdapter,
+  RuntimeLifecycleError,
+  runtimeActivityOrdinal,
+  runtimeInputIdentity,
+} from "../src/runtime/types";
 import { createStateStore } from "../src/state";
 import type { AgentBindingConfig } from "../src/types";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
@@ -26,9 +31,113 @@ interface AdapterHarness {
 
 const conformantReleasedKinds = new Set<string>();
 
+describe("Runtime input identity", () => {
+  it("rejects a partially identified ClawChat context", () => {
+    expect(
+      runtimeInputIdentity(
+        [
+          "<clawchat_turn_context>",
+          JSON.stringify({
+            origin: "clawchat",
+            message_id: "anchor",
+            content_digest: "sha256:anchor",
+            group_batch: { messages: [{ message_id: "missing-digest" }] },
+          }),
+          "</clawchat_turn_context>",
+          "input",
+        ].join("\n"),
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects a Group Message Batch without exactly one matching anchor", () => {
+    const context = (messages: Array<{ message_id: string; content_digest: string }>) =>
+      [
+        "<clawchat_turn_context>",
+        JSON.stringify({
+          origin: "clawchat",
+          message_id: "anchor",
+          content_digest: "digest-anchor",
+          group_batch: { messages },
+        }),
+        "</clawchat_turn_context>",
+        "input",
+      ].join("\n");
+
+    expect(runtimeInputIdentity(context([{ message_id: "other", content_digest: "digest-other" }]))).toBeNull();
+    expect(
+      runtimeInputIdentity(
+        context([
+          { message_id: "anchor", content_digest: "digest-anchor" },
+          { message_id: "anchor", content_digest: "digest-anchor" },
+        ]),
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects conflicting digests for one ClawChat message identity", () => {
+    expect(
+      runtimeInputIdentity(
+        [
+          "<clawchat_turn_context>",
+          JSON.stringify({
+            origin: "clawchat",
+            message_id: "anchor",
+            content_digest: "digest-anchor",
+            group_batch: {
+              messages: [
+                { message_id: "other", content_digest: "digest-actionable" },
+                { message_id: "anchor", content_digest: "digest-anchor" },
+              ],
+            },
+            recent_group_context: [{ message_id: "other", content_digest: "digest-context" }],
+          }),
+          "</clawchat_turn_context>",
+          "input",
+        ].join("\n"),
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects duplicate and overlapping group roles even when their digests match", () => {
+    const identity = (
+      messages: Array<{ message_id: string; content_digest: string }>,
+      context: Array<{ message_id: string; content_digest: string }>,
+    ) =>
+      runtimeInputIdentity(
+        [
+          "<clawchat_turn_context>",
+          JSON.stringify({
+            origin: "clawchat",
+            message_id: "anchor",
+            content_digest: "digest-anchor",
+            group_batch: { messages },
+            recent_group_context: context,
+          }),
+          "</clawchat_turn_context>",
+          "input",
+        ].join("\n"),
+      );
+    const anchor = { message_id: "anchor", content_digest: "digest-anchor" };
+    const other = { message_id: "other", content_digest: "digest-other" };
+    const context = { message_id: "context", content_digest: "digest-context" };
+
+    expect(identity([other, other, anchor], [])).toBeNull();
+    expect(identity([other, anchor], [context, context])).toBeNull();
+    expect(identity([other, anchor], [other])).toBeNull();
+  });
+});
+
 function runtimeAdapterConformance(name: string, createHarness: () => AdapterHarness, releasedKind?: string): void {
   if (releasedKind) conformantReleasedKinds.add(releasedKind);
   describe(`${name} Runtime Adapter conformance`, () => {
+    if (releasedKind) {
+      it("exposes authoritative Runtime input reconciliation", () => {
+        const { adapter } = createHarness();
+        expect(adapter.reconcileInput).toBeInstanceOf(Function);
+      });
+    }
+
     it("reports capabilities and distinguishes unsupported from supported-empty results", async () => {
       const { adapter, binding } = createHarness();
       const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);

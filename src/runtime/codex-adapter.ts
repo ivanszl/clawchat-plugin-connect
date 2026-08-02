@@ -23,15 +23,17 @@ import type {
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
   RuntimeActivity,
+  RuntimeInputIdentity,
   RuntimeInteractionPort,
   RuntimeModelOption,
   RuntimeSkillSummary,
   RuntimeThreadSummary,
   RuntimeTranscriptEntry,
 } from "./types";
+import { runtimeInputIdentity, runtimeInputIdentityContains } from "./types";
 
 interface CodexOutputEvent {
-  kind: "final" | "assistant" | "tool" | "progress" | "reasoning" | "control";
+  kind: "final" | "assistant" | "tool" | "progress" | "reasoning" | "control" | "turn";
   text: string;
   requiredControl?: boolean;
   itemId?: string;
@@ -152,6 +154,18 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
         limitations: snapshot.completeness === "complete" ? [] : ["correlation", "ordering"],
       };
     },
+    async reconcileInput(binding, runtimeThreadId, candidate) {
+      try {
+        const codexBinding = requireCodexBinding(binding);
+        const snapshot = await readCodexInputIdentities(await clientFor(codexBinding), runtimeThreadId);
+        const identity = snapshot.identities.find((value) => runtimeInputIdentityContains(value, candidate));
+        return identity
+          ? { outcome: "accepted", identity, receipts: snapshot }
+          : { outcome: snapshot.complete ? "absent" : "unknown", receipts: snapshot };
+      } catch {
+        return { outcome: "unknown" };
+      }
+    },
     async archiveThread(binding, runtimeThreadId) {
       const codexBinding = requireCodexBinding(binding);
       await (await clientFor(codexBinding)).archiveThread({ threadId: runtimeThreadId });
@@ -220,6 +234,38 @@ async function readCodexTranscript(
   return (await readCodexThreadTranscript(client, runtimeThreadId, new Set(), new Map())).entries;
 }
 
+async function readCodexInputIdentities(
+  client: CodexAppServerClient,
+  runtimeThreadId: string,
+): Promise<{ identities: RuntimeInputIdentity[]; complete: boolean }> {
+  const response = await client.readThread({ threadId: runtimeThreadId, includeTurns: true });
+  const identities: RuntimeInputIdentity[] = [];
+  let complete = Array.isArray(response.thread.turns);
+  for (const turn of response.thread.turns ?? []) {
+    for (const item of turn.items) {
+      if (item.type !== "userMessage") continue;
+      if (!Array.isArray(item.content)) {
+        complete = false;
+        continue;
+      }
+      const text = item.content
+        .flatMap((value) => {
+          const part = recordField(value);
+          return part?.type === "text" ? [stringField(part.text)] : [];
+        })
+        .join("\n");
+      const identity = runtimeInputIdentity(text);
+      if (identity) identities.push(identity);
+      else if (looksLikeClawChatTurnContext(text)) complete = false;
+    }
+  }
+  return { identities, complete };
+}
+
+function looksLikeClawChatTurnContext(text: string): boolean {
+  return text.trimStart().startsWith("<clawchat_turn_context>");
+}
+
 async function readCodexThreadTranscript(
   client: CodexAppServerClient,
   runtimeThreadId: string,
@@ -234,6 +280,8 @@ async function readCodexThreadTranscript(
   const lineage = new Set(ancestors).add(runtimeThreadId);
   const seenChildThreads = new Set<string>();
   for (const [turnIndex, turn] of (response.thread.turns ?? []).entries()) {
+    const lifecycle = historicalTurnLifecycle(turn, turnIndex);
+    if (lifecycle) entries.push(lifecycle);
     for (const [itemIndex, item] of turn.items.entries()) {
       const position = `${turnIndex}.${itemIndex + 1}`;
       if (item.type === "subAgentActivity") {
@@ -251,6 +299,21 @@ async function readCodexThreadTranscript(
     }
   }
   return { thread: response.thread, entries };
+}
+
+function historicalTurnLifecycle(
+  turn: NonNullable<CodexAppServerThread["turns"]>[number],
+  turnIndex: number,
+): RuntimeTranscriptEntry | null {
+  if (turn.status !== "interrupted" && turn.status !== "failed") return null;
+  return {
+    id: `turn:${turn.id}`,
+    position: `${turnIndex}.0`,
+    kind: "turn",
+    text: turn.status === "interrupted" ? "Codex turn interrupted." : "Codex turn failed.",
+    state: turn.status === "interrupted" ? "cancelled" : "error",
+    source: "history",
+  };
 }
 
 async function readCodexThread(
@@ -434,10 +497,12 @@ function codexActivity(
   position: string,
   parentId: string | null = null,
 ): RuntimeActivity {
+  const inputIdentity = entry.kind === "user" ? runtimeInputIdentity(entry.text) : null;
   return {
     ...entry,
     position: entry.position ?? position,
     parentId,
+    ...(inputIdentity ? { inputIdentity } : {}),
     children: entry.children?.map((child, index) =>
       codexActivity(child, child.position ?? `${entry.position ?? position}.${index}`, entry.id),
     ),
@@ -760,7 +825,6 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
         itemId: active.turnId ? `turn:${active.turnId}` : undefined,
         position: `${active.turnPositionPrefix}.0`,
         state: "streaming",
-        data: { itemType: "turn" },
       });
       return;
     }
@@ -841,12 +905,11 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     }
     if (active.turnId) {
       active.queue.push({
-        kind: "progress",
+        kind: "turn",
         text: turn?.status === "interrupted" ? "Codex turn interrupted." : "Codex turn completed.",
         itemId: `turn:${active.turnId}`,
         position: `${active.turnPositionPrefix}.0`,
         state: turn?.status === "interrupted" ? "cancelled" : turn?.status === "failed" ? "error" : "complete",
-        data: { itemType: "turn" },
       });
     }
     const errorMessage = stringField(turn?.error?.message);
@@ -1027,15 +1090,17 @@ function codexLiveActivity(active: ActiveTurn, event: CodexOutputEvent): Runtime
         ? "file-change"
         : itemType === "plan"
           ? "plan"
-          : isCodexToolItemType(itemType) || event.kind === "tool"
-            ? "tool"
-            : event.kind === "assistant" || (event.kind === "final" && state !== "error")
-              ? "assistant"
-              : event.kind === "reasoning"
-                ? "reasoning"
-                : event.kind === "control" || state === "error"
-                  ? "error"
-                  : "progress";
+          : event.kind === "turn"
+            ? "turn"
+            : isCodexToolItemType(itemType) || event.kind === "tool"
+              ? "tool"
+              : event.kind === "assistant" || (event.kind === "final" && state !== "error")
+                ? "assistant"
+                : event.kind === "reasoning"
+                  ? "reasoning"
+                  : event.kind === "control" || state === "error"
+                    ? "error"
+                    : "progress";
   const nextPosition = event.position ?? `${active.turnPositionPrefix}.${active.nextActivityPosition}`;
   const id = event.itemId ?? `turn:${active.connectTurnId}:activity:${nextPosition}`;
   let position = active.activityPositions.get(id);

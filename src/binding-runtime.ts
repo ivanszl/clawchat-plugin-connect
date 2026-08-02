@@ -4,6 +4,7 @@ import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionContr
 import type { TranscriptProjection } from "./client-interface/transcript-projection";
 import { getAgentBinding } from "./config";
 import { type GroupDispatchMode, type GroupIntakeClock, GroupIntakeCoordinator } from "./group-intake";
+import { inboundContentDigest } from "./inbound-identity";
 import {
   type AddressedInboundMessage,
   addressInboundMessage,
@@ -18,7 +19,13 @@ import type { RuntimeAdapterRegistry } from "./runtime/registry";
 import type { RuntimeInteractionCoordinator } from "./runtime/runtime-interaction-coordinator";
 import { RuntimeInteractionRouter } from "./runtime/runtime-interaction-router";
 import type { SessionActivity } from "./runtime/session-queue";
-import type { ConnectRuntimeMedia, QueuedClientTurn, RuntimeSlashSelection } from "./runtime/types";
+import {
+  type ConnectRuntimeMedia,
+  type QueuedClientTurn,
+  type RuntimeInputReceiptSnapshot,
+  type RuntimeSlashSelection,
+  runtimeInputIdentityContains,
+} from "./runtime/types";
 import { verifyInstalledSkills } from "./skills";
 import type { ConnectStateStore } from "./state";
 import { executeConnectTool } from "./tool-executor";
@@ -92,6 +99,7 @@ export interface BindingRuntimeHandle {
 }
 
 export async function startBindingRuntime(options: BindingRuntimeOptions): Promise<BindingRuntimeHandle> {
+  await resetRuntimeStatus(options);
   await (options.verifyInstalledSkills ?? verifyInstalledSkills)();
   const binding = getAgentBinding(options.config, options.agentId);
   const runtimeConfig: ConnectConfig = {
@@ -124,6 +132,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   let wsClient: ConnectWsClient;
   let interactionRouter: RuntimeInteractionRouter;
   let groupIntake: GroupIntakeCoordinator;
+  let runtimeProjectSynchronization = Promise.resolve();
   wsClient = new ConnectWsClient({
     agentId: options.agentId,
     url: options.config.websocketUrl,
@@ -243,13 +252,17 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   let groupRecoveryAfterSettings: Promise<void> | null = null;
   const recoverGroupMessages = (): Promise<void> => {
     if (groupRecoveryAfterSettings) return groupRecoveryAfterSettings;
-    groupRecoveryAfterSettings = (async () => {
-      await groupIntake.resolveForRecovery();
-      await inboundMessages.recover("group");
-    })().finally(() => {
-      groupRecoveryAfterSettings = null;
-    });
+    groupRecoveryAfterSettings = inboundMessages
+      .recover("group", async () => await groupIntake.resolveForRecovery())
+      .finally(() => {
+        groupRecoveryAfterSettings = null;
+      });
     return groupRecoveryAfterSettings;
+  };
+  const closeInboundProcessing = async (): Promise<void> => {
+    await inboundMessages.close();
+    const groupRecovery = groupRecoveryAfterSettings;
+    if (groupRecovery) await Promise.allSettled([groupRecovery]);
   };
   wireQuarantineEvents(wsClient, options);
   wsClient.on("error", (error: unknown) => {
@@ -288,20 +301,30 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
           `${options.agentId}: sender display name backfill failed: ${error instanceof Error ? error.message : String(error)}\n`,
         ),
       );
-    await inboundMessages.recover("direct");
-    await recordConnectionStatus(options, true, null);
-    try {
-      const synchronization = await runtime.synchronizeRuntimeProjects();
-      for (const failure of synchronization.failures) {
-        options.writeError(`${options.agentId}: Project synchronization skipped ${failure}\n`);
-      }
-    } catch (error) {
-      options.writeError(
-        `${options.agentId}: Project synchronization unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+    void inboundMessages
+      .recover("direct")
+      .catch((error) =>
+        options.writeError(
+          `${options.agentId}: direct inbound recovery failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        ),
       );
-    }
+    await recordConnectionStatus(options, true, null);
+    runtimeProjectSynchronization = runtime
+      .synchronizeRuntimeProjects()
+      .then((synchronization) => {
+        for (const failure of synchronization.failures) {
+          options.writeError(`${options.agentId}: Project synchronization skipped ${failure}\n`);
+        }
+      })
+      .catch((error) => {
+        options.writeError(
+          `${options.agentId}: Project synchronization unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
   } catch (error) {
     wsClient.close();
+    await Promise.all([closeInboundProcessing(), groupIntake.close()]);
+    await interactionRouter.close();
     await runtime.dispose();
     await recordConnectionStatus(options, false, error instanceof Error ? error.message : String(error));
     throw error;
@@ -341,10 +364,10 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       return await executeConnectTool(toolName, input, toolOptions);
     },
     async close() {
-      await inboundMessages.close();
-      await groupIntake.close();
-      await interactionRouter.close();
       wsClient.close();
+      await Promise.all([closeInboundProcessing(), groupIntake.close()]);
+      await interactionRouter.close();
+      await runtimeProjectSynchronization;
       await runtime.dispose();
       await recordConnectionStatus(options, false, null);
     },
@@ -353,7 +376,11 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
 
 class InboundMessageProcessor {
   private readonly pending = new Map<string, Promise<void>>();
+  private readonly deferredDuringRecovery = new Map<string, Promise<void>>();
+  private readonly unknownRecoveryKeys = new Set<string>();
   private readonly recoveries = new Map<NormalizedInboundMessage["chatType"], Promise<void>>();
+  private readonly recoveryRetryAttempts = new Map<NormalizedInboundMessage["chatType"], number>();
+  private readonly recoveryRetryTimers = new Map<NormalizedInboundMessage["chatType"], unknown>();
   private accepting = true;
 
   constructor(
@@ -367,7 +394,36 @@ class InboundMessageProcessor {
   accept(message: NormalizedInboundMessage): "accepted" {
     if (!this.accepting) throw new Error("inbound message processor is closing");
     const key = inboundHandlingKey(message);
-    if (this.pending.has(key)) return "accepted";
+    if (this.unknownRecoveryKeys.has(key)) return "accepted";
+    const activeRecovery = this.recoveries.get(message.chatType);
+    if (activeRecovery) {
+      if (this.deferredDuringRecovery.has(key)) return "accepted";
+      const deferred = activeRecovery
+        .then(async () => {
+          if (!this.accepting || this.unknownRecoveryKeys.has(key)) return;
+          const handled = await this.options.stateStore.hasHandledInboundMessage(
+            this.options.agentId,
+            message.messageId,
+            message.raw,
+          );
+          if (!this.accepting || this.unknownRecoveryKeys.has(key) || handled) return;
+          this.startProcessing(message, key);
+        })
+        .catch((error) =>
+          this.options.writeError(
+            `${this.options.agentId}: deferred inbound message remains pending: ${error instanceof Error ? error.message : String(error)}\n`,
+          ),
+        )
+        .finally(() => this.deferredDuringRecovery.delete(key));
+      this.deferredDuringRecovery.set(key, deferred);
+      return "accepted";
+    }
+    this.startProcessing(message, key);
+    return "accepted";
+  }
+
+  private startProcessing(message: NormalizedInboundMessage, key: string): void {
+    if (!this.accepting || this.pending.has(key)) return;
     let markedHandled = false;
     const markHandled = async () => {
       if (markedHandled) return;
@@ -395,13 +451,15 @@ class InboundMessageProcessor {
       )
       .finally(() => this.pending.delete(key));
     this.pending.set(key, work);
-    return "accepted";
   }
 
-  recover(chatType: NormalizedInboundMessage["chatType"]): Promise<void> {
+  recover(chatType: NormalizedInboundMessage["chatType"], beforeRecovery?: () => Promise<void>): Promise<void> {
     const active = this.recoveries.get(chatType);
     if (active) return active;
-    const recovery = this.recoverOnce(chatType).finally(() => {
+    const recovery = (async () => {
+      await beforeRecovery?.();
+      await this.recoverOnce(chatType);
+    })().finally(() => {
       if (this.recoveries.get(chatType) === recovery) this.recoveries.delete(chatType);
     });
     this.recoveries.set(chatType, recovery);
@@ -409,22 +467,120 @@ class InboundMessageProcessor {
   }
 
   private async recoverOnce(chatType: NormalizedInboundMessage["chatType"]): Promise<void> {
-    for (const raw of await this.options.stateStore.listUnhandledInboundMessages(this.options.agentId)) {
+    if (!this.accepting) return;
+    let hasUnknown = false;
+    const receiptSnapshots = new Map<string, RuntimeInputReceiptSnapshot | null>();
+    const unhandled = await this.options.stateStore.listUnhandledInboundMessages(this.options.agentId);
+    if (!this.accepting) return;
+    for (const raw of unhandled) {
+      if (!this.accepting) return;
       const message = normalizeStoredInboundMessage(raw);
       if (!message || message.chatType !== chatType) continue;
+      const key = inboundHandlingKey(message);
+      this.unknownRecoveryKeys.add(key);
       if (
-        message.chatType === "direct" &&
-        (await this.options.stateStore.hasReconciledInboundMessage(this.options.agentId, message.messageId))
+        await this.options.stateStore.hasHandledInboundMessage(this.options.agentId, message.messageId, message.raw)
       ) {
-        await this.options.stateStore.markInboundMessageHandled(this.options.agentId, message.messageId, message.raw);
+        this.unknownRecoveryKeys.delete(key);
         continue;
       }
+      if (!this.accepting) return;
+      const reconciliation = await this.reconcileInboundMessage(message, receiptSnapshots);
+      if (!this.accepting) return;
+      if (reconciliation.outcome === "accepted") {
+        await this.options.stateStore.markReconciledInboundIdentity(this.options.agentId, reconciliation.identity);
+        this.unknownRecoveryKeys.delete(key);
+        continue;
+      }
+      if (reconciliation.outcome === "unknown") {
+        this.unknownRecoveryKeys.add(key);
+        hasUnknown = true;
+        continue;
+      }
+      this.unknownRecoveryKeys.delete(key);
       this.accept(message);
     }
+    if (hasUnknown) this.scheduleRecoveryRetry(chatType);
+    else {
+      this.recoveryRetryAttempts.delete(chatType);
+      const timer = this.recoveryRetryTimers.get(chatType);
+      if (timer !== undefined) {
+        if (this.options.groupIntakeClock) this.options.groupIntakeClock.clearTimer(timer);
+        else clearTimeout(timer as ReturnType<typeof setTimeout>);
+        this.recoveryRetryTimers.delete(chatType);
+      }
+    }
+  }
+
+  private async reconcileInboundMessage(
+    message: NormalizedInboundMessage,
+    receiptSnapshots: Map<string, RuntimeInputReceiptSnapshot | null>,
+  ) {
+    const candidate = { messageId: message.messageId, contentDigest: inboundContentDigest(message.raw) };
+    const sessions = await this.options.stateStore.listRuntimeSessions(message.chatId, this.options.agentId);
+    const projectedRefs = new Set(
+      await this.options.stateStore.listProjectedInboundSessionRefs(
+        this.options.agentId,
+        message.chatId,
+        message.messageId,
+      ),
+    );
+    sessions.sort(
+      (left, right) => Number(projectedRefs.has(right.sessionRef)) - Number(projectedRefs.has(left.sessionRef)),
+    );
+    const materialized = sessions.filter((session) => session.runtimeSessionId);
+    if (materialized.length === 0) return { outcome: "absent" } as const;
+    const binding = getAgentBinding(this.options.config, this.options.agentId);
+    let unknown = false;
+    for (const session of materialized) {
+      const runtimeSessionId = session.runtimeSessionId as string;
+      const cached = receiptSnapshots.get(runtimeSessionId);
+      if (receiptSnapshots.has(runtimeSessionId)) {
+        if (!cached) {
+          unknown = true;
+          continue;
+        }
+        const identity = cached.identities.find((value) => runtimeInputIdentityContains(value, candidate));
+        if (identity) return { outcome: "accepted", identity } as const;
+        if (!cached.complete) unknown = true;
+        continue;
+      }
+      const reconciliation = await this.options.runtimeAdapters.reconcileInput(binding, runtimeSessionId, candidate);
+      if (reconciliation.receipts) receiptSnapshots.set(runtimeSessionId, reconciliation.receipts);
+      else if (reconciliation.outcome === "unknown") receiptSnapshots.set(runtimeSessionId, null);
+      if (reconciliation.outcome === "accepted") return reconciliation;
+      if (reconciliation.outcome === "unknown") unknown = true;
+    }
+    return unknown ? ({ outcome: "unknown" } as const) : ({ outcome: "absent" } as const);
+  }
+
+  private scheduleRecoveryRetry(chatType: NormalizedInboundMessage["chatType"]): void {
+    if (!this.accepting || this.recoveryRetryTimers.has(chatType)) return;
+    const attempt = this.recoveryRetryAttempts.get(chatType) ?? 0;
+    this.recoveryRetryAttempts.set(chatType, attempt + 1);
+    const clock = this.options.groupIntakeClock;
+    const callback = () => {
+      this.recoveryRetryTimers.delete(chatType);
+      void this.recover(chatType).catch((error) =>
+        this.options.writeError(
+          `${this.options.agentId}: inbound recovery retry failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        ),
+      );
+    };
+    const delay = Math.min(250 * 2 ** Math.min(attempt, 5), 5_000);
+    const timer = clock ? clock.setTimer(callback, delay) : setTimeout(callback, delay);
+    this.recoveryRetryTimers.set(chatType, timer);
   }
 
   async close(): Promise<void> {
     this.accepting = false;
+    for (const timer of this.recoveryRetryTimers.values()) {
+      if (this.options.groupIntakeClock) this.options.groupIntakeClock.clearTimer(timer);
+      else clearTimeout(timer as ReturnType<typeof setTimeout>);
+    }
+    this.recoveryRetryTimers.clear();
+    await Promise.allSettled(this.recoveries.values());
+    await Promise.allSettled(this.deferredDuringRecovery.values());
     await Promise.allSettled(this.pending.values());
   }
 }
@@ -435,9 +591,7 @@ function normalizeStoredInboundMessage(raw: unknown): NormalizedInboundMessage |
 }
 
 function inboundHandlingKey(message: NormalizedInboundMessage): string {
-  const content = { ...message.raw } as Record<string, unknown>;
-  for (const field of ["dseq", "emitted_at", "trace_id"]) delete content[field];
-  return `${message.messageId}:${JSON.stringify(content)}`;
+  return `${message.messageId}:${inboundContentDigest(message.raw)}`;
 }
 
 async function dispatchProtocolEventHandler(
@@ -569,4 +723,15 @@ async function recordConnectionStatus(
   recentError: string | null,
 ): Promise<void> {
   await options.stateStore.setRuntimeConnectionStatus(options.agentId, websocketConnected, recentError);
+}
+
+async function resetRuntimeStatus(options: BindingRuntimeOptions): Promise<void> {
+  await options.stateStore.upsertRuntimeStatus({
+    websocketConnected: false,
+    activeAgent: options.agentId,
+    activeChats: 0,
+    globalRunning: 0,
+    globalQueued: 0,
+    recentError: null,
+  });
 }

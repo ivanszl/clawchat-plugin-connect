@@ -1,5 +1,6 @@
 import type { ClawChatApiClient } from "./api-client";
 import { isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
+import { inboundContentDigest } from "./inbound-identity";
 import { addressInboundMessage, isMessageAddressedToAgent, normalizeInboundMessage } from "./message-mapper";
 import type { Envelope, Fragment, NormalizedInboundMessage } from "./protocol";
 import { renderClawChatPrompt } from "./runtime/prompt-renderer";
@@ -49,6 +50,13 @@ interface PendingGroupBatch {
   idleTimer: unknown;
   maximumTimer: unknown;
   delaySeconds: number;
+  firstEmittedAt: number;
+  lastActivityAt: number;
+}
+
+interface MentionContextSelection {
+  message: NormalizedInboundMessage;
+  sourceMessages: NormalizedInboundMessage[];
 }
 
 export class GroupIntakeCoordinator {
@@ -58,6 +66,7 @@ export class GroupIntakeCoordinator {
   private refreshPromise: Promise<boolean> | null = null;
   private settingsResolution: Promise<boolean> | null = null;
   private initialization: Promise<void> | null = null;
+  private readonly notificationTasks = new Set<Promise<boolean>>();
   private readonly batches = new Map<string, PendingGroupBatch>();
   private readonly groupTails = new Map<string, Promise<void>>();
   private accepting = true;
@@ -75,6 +84,7 @@ export class GroupIntakeCoordinator {
   }
 
   refreshInBackground(): void {
+    if (!this.accepting) return;
     void this.refresh().catch((error) => {
       this.options.writeError(
         `${this.options.bindingId}: group settings refresh failed: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -91,14 +101,25 @@ export class GroupIntakeCoordinator {
     });
   }
 
-  async handleNotifySignal(envelope: Envelope): Promise<boolean> {
+  handleNotifySignal(envelope: Envelope): Promise<boolean> {
+    const notification = this.handleNotifySignalOnce(envelope).finally(() => {
+      this.notificationTasks.delete(notification);
+    });
+    this.notificationTasks.add(notification);
+    return notification;
+  }
+
+  private async handleNotifySignalOnce(envelope: Envelope): Promise<boolean> {
     const payload = envelope.payload as Record<string, unknown>;
     if (payload.type !== "agent.config.changed") return false;
+    if (!this.accepting) return false;
     const activeRefresh = this.settingsResolution ?? this.refreshPromise;
     this.settingsEpoch += 1;
     await this.initialize();
+    if (!this.accepting) return false;
     this.stale = true;
     await this.options.stateStore.markGroupSettingsSnapshotStale(this.options.bindingId);
+    if (!this.accepting) return false;
     const requiredRefresh = activeRefresh
       ? activeRefresh.catch(() => false).then(async () => await this.refresh())
       : this.refresh();
@@ -120,8 +141,14 @@ export class GroupIntakeCoordinator {
     if (this.stale) await this.refreshWithinGate(this.settingsResolution ?? this.refresh());
     const settings = this.effective(message.chatId);
     const mentioned = isMessageAddressedToAgent(message, this.options.agentUserId);
-    if (settings.muted || (settings.replyMode === "mention" && !mentioned)) {
-      await this.markHandled(message, settings.muted ? "muted" : "mention-context");
+    if (settings.muted) {
+      await this.markHandled(message, "muted");
+      return;
+    }
+    if (settings.replyMode === "mention" && !mentioned) {
+      await this.withBatchOwnership(message.chatId, async () => {
+        await this.markHandled(message, "mention-context");
+      });
       return;
     }
     const addressed = addressInboundMessage(message, this.options.agentUserId);
@@ -148,8 +175,18 @@ export class GroupIntakeCoordinator {
       return;
     }
     if (await this.rejectIfOverCapacity(message)) return;
-    if (settings.replyMode === "mention") message = await this.withMentionContext(message);
-    await this.dispatch(message, settings.replyMode === "all" ? "policy-eligible" : "addressed-only");
+    if (settings.replyMode === "mention") {
+      if (addressed?.hasAddressingMention && !commandText.trim() && !addressed.hasAttachment) {
+        await this.dispatch(message, "addressed-only");
+        return;
+      }
+      await this.withBatchOwnership(message.chatId, async () => {
+        const selection = await this.withMentionContext(message);
+        await this.dispatch(selection.message, "addressed-only", [message, ...selection.sourceMessages]);
+      });
+      return;
+    }
+    await this.dispatch(message, "policy-eligible");
   }
 
   private async dispatch(
@@ -186,6 +223,13 @@ export class GroupIntakeCoordinator {
       this.clock.clearTimer(batch.maximumTimer);
     }
     await Promise.allSettled(this.groupTails.values());
+    await Promise.allSettled(this.notificationTasks);
+    const background: Promise<unknown>[] = [];
+    if (this.initialization) background.push(this.initialization);
+    if (this.settingsResolution) background.push(this.settingsResolution);
+    if (this.refreshPromise) background.push(this.refreshPromise);
+    await Promise.allSettled(background);
+    await Promise.allSettled(this.groupTails.values());
     for (const batch of this.batches.values()) {
       this.clock.clearTimer(batch.idleTimer);
       this.clock.clearTimer(batch.maximumTimer);
@@ -196,7 +240,35 @@ export class GroupIntakeCoordinator {
 
   private async enqueueOwned(message: NormalizedInboundMessage, delaySeconds: number): Promise<void> {
     let batch = this.batches.get(message.chatId);
-    if (batch?.messages.some((candidate) => candidate.messageId === message.messageId)) return;
+    const existingIndex = batch?.messages.findIndex((candidate) => candidate.messageId === message.messageId) ?? -1;
+    if (batch && existingIndex >= 0) {
+      const remaining = batch.messages.filter((_, index) => index !== existingIndex);
+      if (!batchCanAppend(remaining, message)) {
+        batch.messages = remaining;
+        if (remaining.length > 0) {
+          batch.firstEmittedAt = Math.min(...remaining.map((candidate) => candidate.emittedAt));
+          batch.lastActivityAt = Math.max(...remaining.map((candidate) => candidate.emittedAt));
+        }
+        await this.options.reject(
+          message,
+          "ClawChat group message exceeds the 64,000-character or 10-attachment batch limit.",
+        );
+        await this.markHandled(message, "oversized");
+        if (batch.messages.length === 0) {
+          this.clock.clearTimer(batch.idleTimer);
+          this.clock.clearTimer(batch.maximumTimer);
+          this.batches.delete(message.chatId);
+        } else {
+          this.schedule(batch, message.chatId);
+        }
+        return;
+      }
+      batch.messages.splice(existingIndex, 1, message);
+      batch.delaySeconds = delaySeconds;
+      batch.lastActivityAt = Math.max(batch.lastActivityAt, message.emittedAt);
+      this.schedule(batch, message.chatId);
+      return;
+    }
     if (batch && !batchCanAppend(batch.messages, message)) {
       if (!(await this.flushOwned(message.chatId))) return;
       batch = undefined;
@@ -215,6 +287,8 @@ export class GroupIntakeCoordinator {
         idleTimer: this.clock.setTimer(() => undefined, 0),
         maximumTimer: this.clock.setTimer(() => undefined, 0),
         delaySeconds,
+        firstEmittedAt: message.emittedAt,
+        lastActivityAt: message.emittedAt,
       };
       this.clock.clearTimer(batch.idleTimer);
       this.clock.clearTimer(batch.maximumTimer);
@@ -222,6 +296,7 @@ export class GroupIntakeCoordinator {
     }
     batch.messages.push(message);
     batch.delaySeconds = delaySeconds;
+    batch.lastActivityAt = Math.max(batch.lastActivityAt, message.emittedAt);
     this.schedule(batch, message.chatId);
   }
 
@@ -297,10 +372,13 @@ export class GroupIntakeCoordinator {
 
   private async refreshOnce(epoch: number): Promise<boolean> {
     await this.initialize();
+    if (!this.accepting) return false;
     const result = await this.options.api.getMyGroupSettings();
+    if (!this.accepting) return false;
     if (!result.authoritative) return false;
     if (epoch !== this.settingsEpoch) return false;
     await this.options.stateStore.replaceGroupSettingsSnapshot(this.options.bindingId, result.rows);
+    if (!this.accepting) return false;
     if (epoch !== this.settingsEpoch) {
       await this.options.stateStore.markGroupSettingsSnapshotStale(this.options.bindingId);
       return false;
@@ -315,12 +393,10 @@ export class GroupIntakeCoordinator {
   private schedule(batch: PendingGroupBatch, chatId: string): void {
     this.clock.clearTimer(batch.idleTimer);
     this.clock.clearTimer(batch.maximumTimer);
-    const first = batch.messages[0];
-    const last = batch.messages.at(-1);
-    if (!first || !last) return;
+    if (batch.messages.length === 0) return;
     const now = this.clock.now();
-    const idleDeadline = last.emittedAt + batch.delaySeconds * 1_000;
-    const maximumDeadline = first.emittedAt + Math.max(30, batch.delaySeconds) * 1_000;
+    const idleDeadline = batch.lastActivityAt + batch.delaySeconds * 1_000;
+    const maximumDeadline = batch.firstEmittedAt + Math.max(30, batch.delaySeconds) * 1_000;
     batch.idleTimer = this.clock.setTimer(() => void this.flushSafely(chatId), Math.max(0, idleDeadline - now));
     batch.maximumTimer = this.clock.setTimer(() => void this.flushSafely(chatId), Math.max(0, maximumDeadline - now));
   }
@@ -396,38 +472,49 @@ export class GroupIntakeCoordinator {
     }
   }
 
-  private async withMentionContext(message: NormalizedInboundMessage): Promise<NormalizedInboundMessage> {
+  private async withMentionContext(message: NormalizedInboundMessage): Promise<MentionContextSelection> {
     const recent = await this.options.stateStore.listRecentGroupContext(
       this.options.bindingId,
       message.chatId,
       message.messageId,
       10,
     );
-    const context = recent.flatMap((raw) => {
+    let selected = recent.flatMap((raw) => {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
       const candidate = normalizeInboundMessage(raw as Envelope);
       if (candidate?.chatType !== "group" || candidate.chatId !== message.chatId) return [];
       return [
         {
-          message_id: candidate.messageId,
-          sender: {
-            user_id: candidate.sender.id,
-            display: candidate.sender.nick_name || candidate.sender.id,
+          message: candidate,
+          context: {
+            message_id: candidate.messageId,
+            content_digest: inboundContentDigest(candidate.raw),
+            sender: {
+              user_id: candidate.sender.id,
+              display: candidate.sender.nick_name || candidate.sender.id,
+            },
+            emitted_at: candidate.emittedAt,
+            text: candidate.text,
           },
-          emitted_at: candidate.emittedAt,
-          text: candidate.text,
         },
       ];
     });
-    let contextual = context.length > 0 ? { ...message, groupMentionContext: context } : message;
+    let contextual =
+      selected.length > 0
+        ? { ...message, groupMentionContext: selected.map((candidate) => candidate.context) }
+        : message;
     while (contextual.groupMentionContext?.length && renderClawChatPrompt(contextual).length > MAX_BATCH_CHARACTERS) {
-      contextual = { ...contextual, groupMentionContext: contextual.groupMentionContext.slice(1) };
+      selected = selected.slice(1);
+      contextual = { ...contextual, groupMentionContext: selected.map((candidate) => candidate.context) };
     }
     if (contextual.groupMentionContext?.length === 0) {
       const { groupMentionContext: _emptyContext, ...withoutContext } = contextual;
-      return withoutContext;
+      contextual = withoutContext;
     }
-    return contextual;
+    return {
+      message: contextual,
+      sourceMessages: selected.map((candidate) => candidate.message),
+    };
   }
 
   private async markHandled(
@@ -509,6 +596,7 @@ function coalescedMessage(messages: readonly NormalizedInboundMessage[]): Normal
 function groupBatchSource(message: NormalizedInboundMessage) {
   return {
     message_id: message.messageId,
+    content_digest: inboundContentDigest(message.raw),
     sender: {
       user_id: message.sender.id,
       display: message.sender.nick_name || message.sender.id,

@@ -1,3 +1,4 @@
+import { inboundContentDigest } from "../inbound-identity";
 import type { NormalizedInboundMessage } from "../protocol";
 
 export function renderClawChatPrompt(message: NormalizedInboundMessage): string {
@@ -27,6 +28,7 @@ export function renderClawChatPrompt(message: NormalizedInboundMessage): string 
       chat_id: message.chatId,
       chat_type: message.chatType,
       message_id: message.messageId,
+      content_digest: inboundContentDigest(message.raw),
       sender: { user_id: message.sender.id, display: sender },
       mentioned_users: mentionedUsers,
       ...(message.groupBatch ? { group_batch: message.groupBatch } : {}),

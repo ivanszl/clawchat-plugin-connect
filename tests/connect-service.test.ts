@@ -148,6 +148,78 @@ describe("Connect Service", () => {
     expect(errors.join("")).toContain("broken: invalid credentials");
   });
 
+  it("keeps a Tool Request worker alive after a transient state-store failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-tool-worker-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await stateStore.upsertActivation(activation("work"));
+    const config = serviceConfig(["work"]);
+    config.stateDbPath = stateStore.dbPath;
+    let releaseShutdown: () => void = () => undefined;
+    const shutdown = new Promise<void>((resolve) => {
+      releaseShutdown = resolve;
+    });
+    let reportInjectedFailure: () => void = () => undefined;
+    const injectedFailure = new Promise<void>((resolve) => {
+      reportInjectedFailure = resolve;
+    });
+    const originalClaim = stateStore.claimNextToolRequest.bind(stateStore);
+    let shouldFailClaim = true;
+    stateStore.claimNextToolRequest = async (bindingId) => {
+      if (shouldFailClaim) {
+        shouldFailClaim = false;
+        reportInjectedFailure();
+        throw new Error("injected transient claim failure");
+      }
+      return await originalClaim(bindingId);
+    };
+    const errors: string[] = [];
+    const service = startConnectService(
+      {
+        config,
+        stateStore,
+        waitUntilShutdown: async () => await shutdown,
+        writeOutput: () => undefined,
+        writeError: (message) => errors.push(message),
+      },
+      {
+        startBindingRuntime: async () => ({
+          agentId: "work",
+          websocketUrl: config.websocketUrl,
+          deviceId: "device-1",
+          executeTool: async () => ({ nickname: "work" }),
+          close: async () => undefined,
+        }),
+        startClientInterface: async () => ({
+          origin: "http://127.0.0.1:47823",
+          stop: async () => undefined,
+        }),
+        verifyInstalledSkills: async () => undefined,
+      },
+    );
+
+    try {
+      await injectedFailure;
+      await stateStore.submitToolRequest({
+        requestId: "request-after-claim-failure",
+        bindingId: "work",
+        toolName: "clawchat_get_account_profile",
+        normalizedInput: {},
+        timeoutMs: 1_000,
+      });
+      const deadline = Date.now() + 800;
+      let record = await stateStore.getToolRequest("request-after-claim-failure");
+      while (record?.state === "pending" && Date.now() < deadline) {
+        await Bun.sleep(10);
+        record = await stateStore.getToolRequest("request-after-claim-failure");
+      }
+      expect(record).toMatchObject({ state: "succeeded", attemptCount: 1 });
+      expect(errors.join("")).toContain("injected transient claim failure");
+    } finally {
+      releaseShutdown();
+      await service;
+    }
+  });
+
   it("starts Liveware after the Client Interface and closes it before the Client", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-liveware-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });

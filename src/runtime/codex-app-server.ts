@@ -404,24 +404,20 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
       const response = new Promise<unknown>((resolve, reject) => {
         this.pending.set(id, { resolve, reject });
       });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<never>(
+        (_, reject) =>
+          (timeout = setTimeout(
+            () => reject(new Error(`Codex app-server ${method} timed out after ${this.requestTimeoutMs}ms`)),
+            this.requestTimeoutMs,
+          )),
+      );
       try {
-        await this.write({ id, method, params });
+        await Promise.race([this.write({ id, method, params }), timedOut]);
+        return (await Promise.race([response, timedOut])) as TResult;
       } catch (error) {
         this.pending.delete(id);
         throw error;
-      }
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return (await Promise.race([
-          response,
-          new Promise<never>(
-            (_, reject) =>
-              (timeout = setTimeout(
-                () => reject(new Error(`Codex app-server ${method} timed out after ${this.requestTimeoutMs}ms`)),
-                this.requestTimeoutMs,
-              )),
-          ),
-        ])) as TResult;
       } finally {
         if (timeout) clearTimeout(timeout);
         this.pending.delete(id);

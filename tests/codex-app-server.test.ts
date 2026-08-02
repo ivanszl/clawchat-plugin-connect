@@ -214,6 +214,38 @@ describe("Codex app-server stdio client", () => {
     await client.close();
   });
 
+  it("bounds stdin backpressure within the app-server request timeout", async () => {
+    const process = new FakeProcess();
+    startFakeServer(process, []);
+    const client = await createCodexAppServerClient(
+      { kind: "codex", codexPathOverride: "/opt/codex" },
+      {
+        readVersion: async () => CODEX_VERSION_FIXTURE,
+        spawnAppServer: () => process,
+        requestTimeoutMs: 10,
+      },
+    );
+    const write = process.stdin.write.bind(process.stdin);
+    process.stdin.write = (() => false) as typeof process.stdin.write;
+
+    const request = client.listThreads({});
+    try {
+      const outcome = await Promise.race([
+        request.then(
+          () => "resolved",
+          (error) => (error instanceof Error ? error.message : String(error)),
+        ),
+        Bun.sleep(50).then(() => "still pending"),
+      ]);
+      expect(outcome).toBe("Codex app-server thread/list timed out after 10ms");
+    } finally {
+      process.stdin.write = write;
+      process.stdin.emit("drain");
+      await request.catch(() => undefined);
+      await client.close();
+    }
+  });
+
   it("archives, restores, and deletes threads through the v2 methods", async () => {
     const process = new FakeProcess();
     const received: Array<Record<string, unknown>> = [];

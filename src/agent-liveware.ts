@@ -5,6 +5,7 @@ import {
   type LivewareControlSession,
   resolveLivewareExecutablePath,
 } from "./liveware-exposure";
+import { ClawChatToolApiError } from "./tool-executor";
 import type { ActivationCredentials } from "./types";
 
 export const AGENT_LIVEWARE_OPERATIONS = [
@@ -76,7 +77,7 @@ export async function executeAgentLiveware(
       return await inspect(control, appId);
     case "liveware_app_delete":
       await assertMutable(control, appId, options.managedAppId);
-      await options.unregisterApp(appId);
+      await unregisterAppIfPresent(options.unregisterApp, appId);
       await control.deleteApp(appId);
       return { deleted: true, appId };
     case "liveware_tunnel_bind": {
@@ -87,10 +88,22 @@ export async function executeAgentLiveware(
     }
     case "liveware_tunnel_unbind":
       await assertMutable(control, appId, options.managedAppId);
-      await options.unregisterApp(appId);
+      await unregisterAppIfPresent(options.unregisterApp, appId);
       if (!control.unbindTunnel) throw new Error("bundled Liveware does not support tunnel unbind");
       await control.unbindTunnel(appId);
       return { appId, unbound: true, unregisteredFromClawChat: true };
+  }
+}
+
+async function unregisterAppIfPresent(
+  unregisterApp: (appId: string) => Promise<unknown>,
+  appId: string,
+): Promise<void> {
+  try {
+    await unregisterApp(appId);
+  } catch (error) {
+    if (error instanceof ClawChatToolApiError && error.code === 16016) return;
+    throw error;
   }
 }
 

@@ -46,10 +46,23 @@ async function flush(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+async function waitForTransport(transport: MemoryTransport): Promise<void> {
+  for (let attempt = 0; attempt < 50 && !transport.handlers; attempt += 1) await Bun.sleep(1);
+  if (!transport.handlers) throw new Error("Binding transport did not start");
+}
+
 describe("Binding Runtime Protocol v2 assembly", () => {
   it("rejects Binding startup before opening transport when managed skills do not match", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-skills-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await stateStore.upsertRuntimeStatus({
+      websocketConnected: true,
+      activeAgent: "codex",
+      activeChats: 1,
+      globalRunning: 1,
+      globalQueued: 2,
+      recentError: "stale process state",
+    });
     const config = defaultConfig();
     config.defaultAgent = "codex";
     config.agents = { codex: { kind: "codex" } };
@@ -90,6 +103,13 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       }),
     ).rejects.toThrow("managed skills mismatch");
     expect(transport.state).toBe("closed");
+    await expect(stateStore.getRuntimeStatus("codex")).resolves.toMatchObject({
+      websocketConnected: false,
+      activeChats: 0,
+      globalRunning: 0,
+      globalQueued: 0,
+      recentError: null,
+    });
     await runtimeAdapters.close();
     await stateStore.close();
   });
@@ -134,7 +154,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       verifyInstalledSkills: async () => undefined,
       writeError: () => undefined,
     });
-    await flush();
+    await waitForTransport(transport);
     transport.receive({
       version: "2",
       event: EVENT.CONNECT_CHALLENGE,
@@ -157,6 +177,940 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     await runtimeAdapters.close();
     await stateStore.close();
     void starting.catch(() => undefined);
+  });
+
+  it("does not block Binding readiness on optional Runtime Project synchronization", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-project-sync-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    let releaseDiscovery: () => void = () => undefined;
+    const discoveryGate = new Promise<void>((resolve) => {
+      releaseDiscovery = resolve;
+    });
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        discoverAllThreads: async () => {
+          await discoveryGate;
+          return [];
+        },
+        start: async () => {
+          throw new Error("not used by this assembly test");
+        },
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    await waitForTransport(transport);
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 1,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 2,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AB" },
+    });
+
+    let handle: Awaited<typeof starting> | null = null;
+    let closed = false;
+    try {
+      handle = await Promise.race([starting, Bun.sleep(50).then(() => null)]);
+      expect(handle).not.toBeNull();
+      if (handle === null) throw new Error("Binding readiness was blocked by Runtime Project synchronization");
+      const closing = handle.close();
+      await expect(Promise.race([closing.then(() => "closed"), Bun.sleep(10).then(() => "waiting")])).resolves.toBe(
+        "waiting",
+      );
+      releaseDiscovery();
+      await closing;
+      closed = true;
+    } finally {
+      releaseDiscovery();
+      handle ??= await starting;
+      if (!closed) await handle.close();
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("does not block Binding readiness on native input receipt recovery", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-receipt-readiness-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    const envelope: Envelope = {
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "receipt-readiness",
+      emitted_at: 1,
+      chat_id: "chat-receipt-readiness",
+      chat_type: "direct",
+      sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
+      payload: {
+        message_id: "msg-receipt-readiness",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "recover after readiness" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    };
+    await stateStore.upsertInboundMessage({
+      agentId: "codex",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: "msg-receipt-readiness",
+      text: "recover after readiness",
+      raw: envelope,
+    });
+    await stateStore.upsertRuntimeSession({
+      chatId: "chat-receipt-readiness",
+      sessionId: "session-receipt-readiness",
+      agentId: "codex",
+      runtimeSessionId: "thread-receipt-readiness",
+      isCurrent: true,
+      hasMessages: true,
+    });
+    let releaseReceiptScan: () => void = () => undefined;
+    const receiptScanGate = new Promise<void>((resolve) => {
+      releaseReceiptScan = resolve;
+    });
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        reconcileInput: async () => {
+          await receiptScanGate;
+          return { outcome: "unknown" };
+        },
+        start: async () => {
+          throw new Error("not used by this readiness test");
+        },
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    await waitForTransport(transport);
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 2,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 3,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AF" },
+    });
+
+    let handle: Awaited<typeof starting> | null = null;
+    let closing: Promise<void> | null = null;
+    try {
+      handle = await Promise.race([starting, Bun.sleep(50).then(() => null)]);
+      expect(handle).not.toBeNull();
+      if (!handle) throw new Error("Binding readiness was blocked by native input receipt recovery");
+      closing = handle.close();
+      await expect(Promise.race([closing.then(() => "closed"), Bun.sleep(10).then(() => "waiting")])).resolves.toBe(
+        "waiting",
+      );
+      releaseReceiptScan();
+      await closing;
+    } finally {
+      releaseReceiptScan();
+      handle ??= await starting;
+      if (!closing) await handle.close();
+      else await closing;
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("joins background receipt recovery before disposing a Binding whose startup later fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-receipt-startup-failure-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    const envelope: Envelope = {
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "receipt-startup-failure",
+      emitted_at: 1,
+      chat_id: "chat-receipt-startup-failure",
+      chat_type: "direct",
+      sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
+      payload: {
+        message_id: "msg-receipt-startup-failure",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "do not replay after failed startup" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    };
+    await stateStore.upsertInboundMessage({
+      agentId: "codex",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: "msg-receipt-startup-failure",
+      text: "do not replay after failed startup",
+      raw: envelope,
+    });
+    await stateStore.upsertRuntimeSession({
+      chatId: "chat-receipt-startup-failure",
+      sessionId: "session-receipt-startup-failure",
+      agentId: "codex",
+      runtimeSessionId: "thread-receipt-startup-failure",
+      isCurrent: true,
+      hasMessages: true,
+    });
+    let publishReceiptScanStarted: () => void = () => undefined;
+    const receiptScanStarted = new Promise<void>((resolve) => {
+      publishReceiptScanStarted = resolve;
+    });
+    let releaseReceiptScan: () => void = () => undefined;
+    const receiptScanGate = new Promise<void>((resolve) => {
+      releaseReceiptScan = resolve;
+    });
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        reconcileInput: async () => {
+          publishReceiptScanStarted();
+          await receiptScanGate;
+          return { outcome: "absent", receipts: { identities: [], complete: true } };
+        },
+        start: async () => {
+          throw new Error("must not replay after failed startup");
+        },
+      }),
+    ]);
+    const persistConnectionStatus = stateStore.setRuntimeConnectionStatus.bind(stateStore);
+    stateStore.setRuntimeConnectionStatus = mock(async (agentId, connected, recentError) => {
+      if (connected) {
+        await receiptScanStarted;
+        throw new Error("connection status persistence failed");
+      }
+      await persistConnectionStatus(agentId, connected, recentError);
+    });
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    const observed = starting.then(
+      () => "resolved" as const,
+      (error: unknown) => error,
+    );
+    await waitForTransport(transport);
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 2,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 3,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AG" },
+    });
+    await receiptScanStarted;
+
+    try {
+      await expect(Promise.race([observed, Bun.sleep(20).then(() => "waiting" as const)])).resolves.toBe("waiting");
+      releaseReceiptScan();
+      const result = await observed;
+      expect(result).toBeInstanceOf(Error);
+      expect(result).toMatchObject({ message: "connection status persistence failed" });
+      await expect(stateStore.hasHandledInboundMessage("codex", "msg-receipt-startup-failure", envelope)).resolves.toBe(
+        false,
+      );
+    } finally {
+      releaseReceiptScan();
+      await observed;
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("joins startup group settings refresh when Runtime preparation fails before connecting", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-settings-prepare-failure-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    let publishSettingsReadStarted: () => void = () => undefined;
+    const settingsReadStarted = new Promise<void>((resolve) => {
+      publishSettingsReadStarted = resolve;
+    });
+    let releaseSettingsRead: () => void = () => undefined;
+    const settingsReadGate = new Promise<void>((resolve) => {
+      releaseSettingsRead = resolve;
+    });
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        prepare: async () => {
+          await settingsReadStarted;
+          throw new Error("Runtime preparation failed");
+        },
+        start: async () => {
+          throw new Error("not used by this startup failure test");
+        },
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      clawChatApi: {
+        getUserProfile: async () => ({ nickname: null }),
+        getMyGroupSettings: async () => {
+          publishSettingsReadStarted();
+          await settingsReadGate;
+          return { authoritative: true, rows: [] };
+        },
+      } as never,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    const observed = starting.then(
+      () => "resolved" as const,
+      (error: unknown) => error,
+    );
+    await settingsReadStarted;
+
+    try {
+      await expect(Promise.race([observed, Bun.sleep(20).then(() => "waiting" as const)])).resolves.toBe("waiting");
+      releaseSettingsRead();
+      const result = await observed;
+      expect(result).toBeInstanceOf(Error);
+      expect(result).toMatchObject({ message: "Runtime preparation failed" });
+      expect(transport.state).toBe("closed");
+    } finally {
+      releaseSettingsRead();
+      await observed;
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("defers replayed WebSocket input until native receipt absence is authoritative", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-receipt-replay-gate-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    const envelope: Envelope = {
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "receipt-replay-stored",
+      emitted_at: 1,
+      chat_id: "chat-receipt-replay",
+      chat_type: "direct",
+      sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
+      payload: {
+        message_id: "msg-receipt-replay",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "submit only after authoritative absence" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    };
+    await stateStore.upsertInboundMessage({
+      agentId: "codex",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: "msg-receipt-replay",
+      text: "submit only after authoritative absence",
+      raw: envelope,
+    });
+    await stateStore.upsertRuntimeSession({
+      chatId: "chat-receipt-replay",
+      sessionId: "session-receipt-replay",
+      agentId: "codex",
+      runtimeSessionId: "thread-receipt-replay",
+      isCurrent: true,
+      hasMessages: true,
+    });
+    let publishReceiptScanStarted: () => void = () => undefined;
+    const receiptScanStarted = new Promise<void>((resolve) => {
+      publishReceiptScanStarted = resolve;
+    });
+    let releaseFirstReceiptScan: () => void = () => undefined;
+    const firstReceiptScanGate = new Promise<void>((resolve) => {
+      releaseFirstReceiptScan = resolve;
+    });
+    let reconcileAttempts = 0;
+    const prompts: ConnectRuntimePrompt[] = [];
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        reconcileInput: async () => {
+          reconcileAttempts += 1;
+          if (reconcileAttempts === 1) {
+            publishReceiptScanStarted();
+            await firstReceiptScanGate;
+            return { outcome: "unknown" };
+          }
+          return { outcome: "absent", receipts: { identities: [], complete: true } };
+        },
+        start: async () => ({
+          prompt: async function* (input) {
+            prompts.push(input);
+            await input.onAccepted?.();
+            yield* [];
+          },
+          close: mock(async () => undefined),
+        }),
+      }),
+    ]);
+    let publishRetry: (callback: () => void) => void = () => undefined;
+    const retryScheduled = new Promise<() => void>((resolve) => {
+      publishRetry = resolve;
+    });
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      groupIntakeClock: {
+        now: () => Date.now(),
+        setTimer: (callback) => {
+          publishRetry(callback);
+          return callback;
+        },
+        clearTimer: () => undefined,
+      },
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    await waitForTransport(transport);
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 2,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 3,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AH" },
+    });
+    const handle = await starting;
+    await receiptScanStarted;
+
+    try {
+      transport.receive({ ...envelope, trace_id: "receipt-replay-live-one", emitted_at: 4, dseq: 1 });
+      await Bun.sleep(20);
+      expect(prompts).toEqual([]);
+
+      releaseFirstReceiptScan();
+      const retry = await retryScheduled;
+      await Bun.sleep(10);
+      expect(prompts).toEqual([]);
+
+      transport.receive({
+        chat_type: "direct",
+        sender: { nick_name: "Bob", type: "direct", id: "usr_bob" },
+        chat_id: "chat-receipt-replay",
+        payload: {
+          message: {
+            streaming: { mutation_policy: "sealed", sequence: 0, status: "static" },
+            context: { reply: null, mentions: [] },
+            body: { fragments: [{ text: "submit only after authoritative absence", kind: "text" }] },
+          },
+          message_mode: "normal",
+          message_id: "msg-receipt-replay",
+        },
+        dseq: 2,
+        emitted_at: 5,
+        trace_id: "receipt-replay-live-two",
+        event: EVENT.MESSAGE_SEND,
+        version: "2",
+      });
+      await Bun.sleep(10);
+      expect(prompts).toEqual([]);
+
+      retry();
+      for (let attempt = 0; attempt < 100 && prompts.length === 0; attempt += 1) await Bun.sleep(2);
+      expect(reconcileAttempts).toBe(2);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]?.prompt).toContain("submit only after authoritative absence");
+    } finally {
+      releaseFirstReceiptScan();
+      await handle.close();
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("joins group settings recovery before Binding shutdown completes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-group-recovery-close-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    let publishSettingsReadStarted: () => void = () => undefined;
+    const settingsReadStarted = new Promise<void>((resolve) => {
+      publishSettingsReadStarted = resolve;
+    });
+    let releaseSettingsRead: () => void = () => undefined;
+    const settingsReadGate = new Promise<void>((resolve) => {
+      releaseSettingsRead = resolve;
+    });
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        start: async () => {
+          throw new Error("not used by this shutdown test");
+        },
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      clawChatApi: {
+        getUserProfile: async () => ({ nickname: null }),
+        getMyGroupSettings: async () => {
+          publishSettingsReadStarted();
+          await settingsReadGate;
+          return { authoritative: true, rows: [] };
+        },
+      } as never,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    await waitForTransport(transport);
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 1,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 2,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AJ" },
+    });
+    const handle = await starting;
+    await settingsReadStarted;
+    const closing = handle.close();
+
+    try {
+      await expect(Promise.race([closing.then(() => "closed"), Bun.sleep(20).then(() => "waiting")])).resolves.toBe(
+        "waiting",
+      );
+      releaseSettingsRead();
+      await closing;
+    } finally {
+      releaseSettingsRead();
+      await closing;
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("gates group replay intake while authoritative settings and native receipts are resolving", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-group-replay-gate-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await stateStore.replaceGroupSettingsSnapshot("codex", [
+      {
+        conversationId: "group-replay-gate",
+        muted: false,
+        replyMode: "mention",
+        batchDelaySeconds: 60,
+        version: 1,
+      },
+    ]);
+    const envelope: Envelope = {
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "group-replay-stored",
+      emitted_at: 1,
+      chat_id: "group-replay-gate",
+      chat_type: "group",
+      sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
+      payload: {
+        message_id: "msg-group-replay-gate",
+        message_mode: "normal",
+        message: {
+          body: {
+            fragments: [
+              { kind: "mention", user_id: "usr_alice", display: "Alice" },
+              { kind: "text", text: " do not replay before settings and receipts" },
+            ],
+          },
+          context: { mentions: [{ user_id: "usr_alice", display: "Alice" }], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    };
+    await stateStore.upsertInboundMessage({
+      agentId: "codex",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: "msg-group-replay-gate",
+      text: "@Alice do not replay before settings and receipts",
+      raw: envelope,
+    });
+    await stateStore.upsertRuntimeSession({
+      chatId: "group-replay-gate",
+      sessionId: "session-group-replay-gate",
+      agentId: "codex",
+      runtimeSessionId: "thread-group-replay-gate",
+      isCurrent: true,
+      hasMessages: true,
+    });
+    let publishSettingsReadStarted: () => void = () => undefined;
+    const settingsReadStarted = new Promise<void>((resolve) => {
+      publishSettingsReadStarted = resolve;
+    });
+    let releaseSettingsRead: () => void = () => undefined;
+    const settingsReadGate = new Promise<void>((resolve) => {
+      releaseSettingsRead = resolve;
+    });
+    const prompts: ConnectRuntimePrompt[] = [];
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        reconcileInput: async (_binding, _runtimeThreadId, candidate) => ({
+          outcome: "accepted",
+          identity: { origin: "clawchat", anchor: candidate, actionable: [candidate], context: [] },
+        }),
+        start: async () => ({
+          prompt: async function* (input) {
+            prompts.push(input);
+            await input.onAccepted?.();
+            yield* [];
+          },
+          close: mock(async () => undefined),
+        }),
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config: {
+        ...defaultConfig(),
+        defaultAgent: "codex",
+        agents: { codex: { kind: "codex", displayName: "Alice" } },
+      },
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      clawChatApi: {
+        getUserProfile: async () => ({ nickname: null }),
+        getMyGroupSettings: async () => {
+          publishSettingsReadStarted();
+          await settingsReadGate;
+          return {
+            authoritative: true,
+            rows: [
+              {
+                conversationId: "group-replay-gate",
+                muted: false,
+                replyMode: "mention",
+                batchDelaySeconds: 60,
+                version: 1,
+              },
+            ],
+          };
+        },
+      } as never,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    await waitForTransport(transport);
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 2,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 3,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AK" },
+    });
+    const handle = await starting;
+    await settingsReadStarted;
+
+    try {
+      transport.receive({ ...envelope, trace_id: "group-replay-live", emitted_at: 4, dseq: 1 });
+      await Bun.sleep(20);
+      expect(prompts).toEqual([]);
+      releaseSettingsRead();
+      for (
+        let attempt = 0;
+        attempt < 100 && !(await stateStore.hasHandledInboundMessage("codex", "msg-group-replay-gate", envelope));
+        attempt += 1
+      )
+        await Bun.sleep(2);
+      await expect(stateStore.hasHandledInboundMessage("codex", "msg-group-replay-gate", envelope)).resolves.toBe(true);
+      expect(prompts).toEqual([]);
+    } finally {
+      releaseSettingsRead();
+      await handle.close();
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("resets stale active-turn counters when a new Binding Runtime starts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-runtime-status-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await stateStore.upsertRuntimeStatus({
+      websocketConnected: true,
+      activeAgent: "codex",
+      activeChats: 1,
+      globalRunning: 1,
+      globalQueued: 2,
+      recentError: "stale process state",
+    });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        start: async () => {
+          throw new Error("not used by this assembly test");
+        },
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    await waitForTransport(transport);
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 1,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 2,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AB" },
+    });
+    const handle = await starting;
+
+    await expect(stateStore.getRuntimeStatus("codex")).resolves.toMatchObject({
+      websocketConnected: true,
+      activeChats: 0,
+      globalRunning: 0,
+      globalQueued: 0,
+      recentError: null,
+    });
+
+    await handle.close();
+    await runtimeAdapters.close();
+    await stateStore.close();
   });
 
   it("waits for a reliable production handler before acknowledging its dseq", async () => {
@@ -207,7 +1161,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       verifyInstalledSkills: async () => undefined,
       writeError: () => undefined,
     });
-    await flush();
+    await waitForTransport(transport);
     transport.receive({
       version: "2",
       event: EVENT.CONNECT_CHALLENGE,
@@ -322,23 +1276,33 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       sessionId: "session-reconciled",
       agentId: "codex",
       runtimeSessionId: "thread-reconciled",
+      isCurrent: false,
+      hasMessages: true,
+    });
+    await Bun.sleep(2);
+    for (let index = 0; index < 101; index += 1) {
+      await stateStore.upsertRuntimeSession({
+        chatId: "chat-reconciled",
+        sessionId: `session-decoy-${index}`,
+        agentId: "codex",
+        runtimeSessionId: `thread-decoy-${index}`,
+        isCurrent: false,
+        hasMessages: true,
+      });
+    }
+    await stateStore.upsertRuntimeSession({
+      chatId: "chat-reconciled",
+      sessionId: "session-current",
+      agentId: "codex",
+      runtimeSessionId: "thread-current",
       isCurrent: true,
       hasMessages: true,
     });
     const reconciledSession = await stateStore.getCurrentRuntimeSession("chat-reconciled", "codex");
     if (!reconciledSession) throw new Error("expected reconciled Session");
-    await stateStore.upsertTranscriptBlock(reconciledSession.sessionRef, {
-      id: "b_reconciled_runtime_message",
-      type: "message",
-      origin: "clawchat",
-      state: "complete",
-      plainText: "already accepted",
-      role: "user",
-      author: "ClawChat",
-      markdown: "already accepted",
-    });
 
     const prompts: ConnectRuntimePrompt[] = [];
+    const reconciledThreads: string[] = [];
     let releaseFirstPrompt: (() => void) | undefined;
     const firstPromptGate = new Promise<void>((resolve) => {
       releaseFirstPrompt = resolve;
@@ -347,6 +1311,20 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       fixedRuntimeAdapter({
         kind: "codex",
         modes: ["read-only"],
+        reconcileInput: async (_binding, runtimeThreadId, candidate) => {
+          if (candidate.messageId === "msg-reconciled") reconciledThreads.push(runtimeThreadId);
+          return runtimeThreadId === "thread-reconciled"
+            ? {
+                outcome: "accepted",
+                identity: {
+                  origin: "clawchat",
+                  anchor: candidate,
+                  actionable: [candidate],
+                  context: [],
+                },
+              }
+            : { outcome: "absent" };
+        },
         start: async () => ({
           prompt: async function* (input: ConnectRuntimePrompt) {
             prompts.push(input);
@@ -390,7 +1368,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       verifyInstalledSkills: async () => undefined,
       writeError: (message) => errors.push(message),
     });
-    await flush();
+    await waitForTransport(transport);
     transport.receive({
       version: "2",
       event: EVENT.CONNECT_CHALLENGE,
@@ -417,6 +1395,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       true,
     );
     expect(prompts.some((prompt) => prompt.prompt.includes("already accepted"))).toBe(false);
+    expect(reconciledThreads.indexOf("thread-reconciled")).toBeGreaterThan(100);
 
     const liveEnvelope: Envelope = {
       ...recoveredEnvelope,
@@ -457,6 +1436,336 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     } finally {
       releaseFirstPrompt?.();
       await handle.close();
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("keeps unknown native acceptance pending through capped backoff until absence is authoritative", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-unknown-recovery-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    const envelope: Envelope = {
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "unknown-recovery",
+      emitted_at: 1,
+      chat_id: "chat-unknown",
+      chat_type: "direct",
+      sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
+      payload: {
+        message_id: "msg-unknown",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "retry only after certainty" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    };
+    await stateStore.upsertInboundMessage({
+      agentId: "codex",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: "msg-unknown",
+      text: "retry only after certainty",
+      raw: envelope,
+    });
+    const secondEnvelope: Envelope = {
+      ...envelope,
+      trace_id: "unknown-recovery-second",
+      payload: {
+        message_id: "msg-unknown-second",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "share one authoritative receipt read" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    };
+    await stateStore.upsertInboundMessage({
+      agentId: "codex",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: secondEnvelope.trace_id,
+      chatId: secondEnvelope.chat_id,
+      messageId: "msg-unknown-second",
+      text: "share one authoritative receipt read",
+      raw: secondEnvelope,
+    });
+    await stateStore.upsertRuntimeSession({
+      chatId: "chat-unknown",
+      sessionId: "session-unknown",
+      agentId: "codex",
+      runtimeSessionId: "thread-unknown",
+      isCurrent: true,
+      hasMessages: true,
+    });
+    let attempts = 0;
+    const prompts: ConnectRuntimePrompt[] = [];
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        reconcileInput: async () => {
+          attempts += 1;
+          if (attempts <= 6) throw new Error("native receipt history unavailable");
+          return { outcome: "absent", receipts: { identities: [], complete: true } };
+        },
+        start: async () => ({
+          prompt: async function* (input) {
+            prompts.push(input);
+            await input.onAccepted?.();
+            yield* [];
+          },
+          close: mock(async () => undefined),
+        }),
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    let recoveryRetryTimers = 0;
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      groupIntakeClock: {
+        now: () => Date.now(),
+        setTimer: (callback) => {
+          recoveryRetryTimers += 1;
+          return setTimeout(callback, 0);
+        },
+        clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+      },
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    await waitForTransport(transport);
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 2,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 3,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AD" },
+    });
+    const handle = await starting;
+    try {
+      for (let attempt = 0; attempt < 100 && prompts.length < 2; attempt += 1) await Bun.sleep(2);
+      expect(attempts).toBe(7);
+      expect(recoveryRetryTimers).toBe(6);
+      expect(prompts).toHaveLength(2);
+      expect(prompts.some((prompt) => prompt.prompt.includes("retry only after certainty"))).toBe(true);
+      expect(prompts.some((prompt) => prompt.prompt.includes("share one authoritative receipt read"))).toBe(true);
+      await expect(stateStore.hasHandledInboundMessage("codex", "msg-unknown", envelope)).resolves.toBe(true);
+      await expect(stateStore.hasHandledInboundMessage("codex", "msg-unknown-second", secondEnvelope)).resolves.toBe(
+        true,
+      );
+    } finally {
+      await handle.close();
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("joins an active receipt recovery and prevents shutdown-time recovery side effects", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-close-recovery-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "codex";
+    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    const envelope = (messageId: string, text: string): Envelope => ({
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: `trace-${messageId}`,
+      emitted_at: 1,
+      chat_id: "chat-close-recovery",
+      chat_type: "direct",
+      sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
+      payload: {
+        message_id: messageId,
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    });
+    const acceptedEnvelope = envelope("msg-close-accepted", "accepted while closing");
+    const absentEnvelope = envelope("msg-close-absent", "absent while closing");
+    for (const [raw, messageId, text] of [
+      [acceptedEnvelope, "msg-close-accepted", "accepted while closing"],
+      [absentEnvelope, "msg-close-absent", "absent while closing"],
+    ] as const) {
+      await stateStore.upsertInboundMessage({
+        agentId: "codex",
+        direction: "inbound",
+        kind: "message",
+        eventType: EVENT.MESSAGE_SEND,
+        traceId: raw.trace_id,
+        chatId: raw.chat_id,
+        messageId,
+        text,
+        raw,
+      });
+    }
+    await stateStore.upsertRuntimeSession({
+      chatId: "chat-close-recovery",
+      sessionId: "session-close-recovery",
+      agentId: "codex",
+      runtimeSessionId: "thread-close-recovery",
+      isCurrent: true,
+      hasMessages: true,
+    });
+
+    let reconcileAttempts = 0;
+    let releaseReceiptScan: () => void = () => undefined;
+    const receiptScanGate = new Promise<void>((resolve) => {
+      releaseReceiptScan = resolve;
+    });
+    const prompts: ConnectRuntimePrompt[] = [];
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["read-only"],
+        reconcileInput: async (_binding, _runtimeThreadId, candidate) => {
+          reconcileAttempts += 1;
+          if (reconcileAttempts === 1) return { outcome: "unknown" };
+          await receiptScanGate;
+          return candidate.messageId === "msg-close-accepted"
+            ? {
+                outcome: "accepted",
+                identity: { origin: "clawchat", anchor: candidate, actionable: [candidate], context: [] },
+              }
+            : { outcome: "absent", receipts: { identities: [], complete: true } };
+        },
+        start: async () => ({
+          prompt: async function* (input) {
+            prompts.push(input);
+            await input.onAccepted?.();
+            yield* [];
+          },
+          close: mock(async () => undefined),
+        }),
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const errors: string[] = [];
+    let publishRecoveryRetry: (callback: () => void) => void = () => undefined;
+    const recoveryRetryScheduled = new Promise<() => void>((resolve) => {
+      publishRecoveryRetry = resolve;
+    });
+    const starting = startBindingRuntime({
+      agentId: "codex",
+      activation: {
+        localAgentId: "codex",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      projects: new ProjectCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      clawChatApi: {
+        getUserProfile: async () => ({ nickname: null }),
+        getMyGroupSettings: async () => ({ authoritative: true, rows: [] }),
+      } as never,
+      groupIntakeClock: {
+        now: () => Date.now(),
+        setTimer: (callback, delay) => {
+          if (delay === 250) publishRecoveryRetry(callback);
+          return callback;
+        },
+        clearTimer: () => undefined,
+      },
+      verifyInstalledSkills: async () => undefined,
+      writeError: (message) => errors.push(message),
+    });
+    await waitForTransport(transport);
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 2,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    await flush();
+    const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+    if (!connect) throw new Error("connect frame was not sent");
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: connect.trace_id,
+      emitted_at: 3,
+      payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AE" },
+    });
+    const handle = await starting;
+
+    let closing: Promise<void> | null = null;
+    try {
+      for (let attempt = 0; attempt < 50 && reconcileAttempts === 0; attempt += 1) await Bun.sleep(1);
+      expect(reconcileAttempts).toBe(1);
+      const retryRecovery = await recoveryRetryScheduled;
+      retryRecovery();
+      for (let attempt = 0; attempt < 50 && reconcileAttempts < 2; attempt += 1) await Bun.sleep(1);
+      expect(reconcileAttempts).toBe(2);
+
+      closing = handle.close();
+      const closedBeforeReceipt = await Promise.race([closing.then(() => true), Bun.sleep(20).then(() => false)]);
+      releaseReceiptScan();
+      await closing;
+      await Bun.sleep(10);
+
+      expect(closedBeforeReceipt).toBe(false);
+      expect(prompts).toEqual([]);
+      await expect(stateStore.hasHandledInboundMessage("codex", "msg-close-accepted", acceptedEnvelope)).resolves.toBe(
+        false,
+      );
+      await expect(stateStore.hasHandledInboundMessage("codex", "msg-close-absent", absentEnvelope)).resolves.toBe(
+        false,
+      );
+      expect(errors).toEqual([]);
+    } finally {
+      releaseReceiptScan();
+      if (!closing) await handle.close();
+      else await closing;
       await runtimeAdapters.close();
       await stateStore.close();
     }
@@ -515,7 +1824,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       verifyInstalledSkills: async () => undefined,
       writeError: (message) => errors.push(message),
     });
-    await flush();
+    await waitForTransport(transport);
     transport.receive({
       version: "2",
       event: EVENT.CONNECT_CHALLENGE,
@@ -650,7 +1959,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       verifyInstalledSkills: async () => undefined,
       writeError: () => undefined,
     });
-    await flush();
+    await waitForTransport(transport);
     transport.receive({
       version: "2",
       event: EVENT.CONNECT_CHALLENGE,
@@ -990,7 +2299,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       verifyInstalledSkills: async () => undefined,
       writeError: (message) => errors.push(message),
     });
-    await flush();
+    await waitForTransport(transport);
     transport.receive({
       version: "2",
       event: EVENT.CONNECT_CHALLENGE,

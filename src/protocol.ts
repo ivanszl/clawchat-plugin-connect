@@ -267,6 +267,7 @@ export interface NormalizedInboundMessage {
   groupBatch?: {
     messages: Array<{
       message_id: string;
+      content_digest: string;
       sender: { user_id: string; display: string };
       emitted_at: number;
       mentioned_user_ids: string[];
@@ -276,6 +277,7 @@ export interface NormalizedInboundMessage {
   };
   groupMentionContext?: Array<{
     message_id: string;
+    content_digest: string;
     sender: { user_id: string; display: string };
     emitted_at: number;
     text: string;
@@ -312,6 +314,17 @@ export function parseEnvelope(data: string | Buffer): Envelope {
   const record = parsed as Record<string, unknown>;
   if (record.version !== "2") throw new ProtocolError("unsupported protocol version");
   if (typeof record.event !== "string" || !record.event) throw new ProtocolError("missing event");
+  if (
+    (record.trace_id === undefined || record.trace_id === "") &&
+    (record.event === EVENT.SYNC_MARK || record.event === EVENT.REPLAY_DONE) &&
+    Number.isSafeInteger(record.dseq) &&
+    Number(record.dseq) > 0
+  ) {
+    // The reference server currently omits trace_id or sends an empty string
+    // on reliable-delivery control frames. Keep Envelope's non-empty trace
+    // invariant locally without weakening business or non-dseq validation.
+    record.trace_id = `server-control:${record.event}:${record.dseq}`;
+  }
   if (typeof record.trace_id !== "string" || !record.trace_id) throw new ProtocolError("missing trace_id");
   if (typeof record.emitted_at !== "number" || !Number.isFinite(record.emitted_at))
     throw new ProtocolError("missing emitted_at");
@@ -465,6 +478,38 @@ export function isMaterializedMessagePayload(value: unknown): value is MessagePa
       !value.message.body.fragments.some(
         (fragment) => fragment.kind === "text" && "delta" in fragment && fragment.delta !== undefined,
       ),
+  );
+}
+
+export function isSystemPermissionResultPayload(value: unknown): value is MessagePayload {
+  if (!isMessagePayload(value)) return false;
+  const record = objectRecord(value);
+  const message = objectRecord(record?.message);
+  const metadata = objectRecord(record?.metadata);
+  return Boolean(
+    message &&
+      message.streaming === undefined &&
+      nonEmptyString(record?.message_id) &&
+      String(record?.message_id).startsWith("sys-") &&
+      metadata?.kind === "permission_result" &&
+      nonEmptyString(metadata.operation) &&
+      nonEmptyString(metadata.outcome) &&
+      nonEmptyString(metadata.request_id) &&
+      (metadata.reason === undefined || typeof metadata.reason === "string") &&
+      (metadata.scenario === undefined || typeof metadata.scenario === "string") &&
+      !value.message.body.fragments.some(
+        (fragment) => fragment.kind === "text" && "delta" in fragment && fragment.delta !== undefined,
+      ),
+  );
+}
+
+export function isSystemPermissionResultEnvelope(envelope: Envelope): boolean {
+  return (
+    envelope.event === EVENT.MESSAGE_SEND &&
+    envelope.chat_type === "direct" &&
+    envelope.sender?.id === "system" &&
+    envelope.sender.type === "direct" &&
+    isSystemPermissionResultPayload(envelope.payload)
   );
 }
 

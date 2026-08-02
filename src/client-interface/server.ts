@@ -121,12 +121,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       return claim ? await claim(sessionRef) : async () => undefined;
     },
   });
-  await catalog.reconcileLifecycle();
   const runtimeInteractions =
     options.runtimeInteractions ?? new RuntimeInteractionCoordinator(options.transcriptProjection);
   const submissionStaging = new FileTurnSubmissionStaging(options.config.stateDbPath);
   const activeTurnSubmissions = new Map<string, AbortController>();
-  await submissionStaging.cleanupExpired();
   const turnSubmissions = new TurnSubmission({
     capabilityFor: async (sessionRef) => {
       const view = await catalog.sessionView(sessionRef);
@@ -167,7 +165,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     },
   });
   const publishClientViews = clientViewPublisher(options.stateStore, catalog);
-  await publishClientViews();
+  let ready = false;
 
   const serverFactory: ClientHttpServerFactory = options.serverFactory ?? ((serverOptions) => Bun.serve(serverOptions));
   const server = serverFactory({
@@ -185,6 +183,9 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
         }
         const requestScope = new ClientBindingRequestScope(bindingScope, catalog);
         if (url.pathname.startsWith(CLIENT_API_PREFIX)) {
+          if (!ready) {
+            return errorResponse(503, "client-warming-up", "Connect Client is still initializing", true);
+          }
           if (bindingScope) {
             const bindingPath = url.pathname.match(/^\/client\/v1\/bindings\/([^/]+)(?:\/|$)/u);
             if (bindingPath && !requestScope.includesBinding(decodeURIComponent(bindingPath[1] ?? ""))) {
@@ -1015,7 +1016,20 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       }
     },
   });
-  await options.stateStore.deleteExpiredClientCommands();
+  try {
+    const warming = await Promise.allSettled([
+      catalog.reconcileLifecycle(),
+      submissionStaging.cleanupExpired(),
+      options.stateStore.deleteExpiredClientCommands(),
+    ]);
+    const failure = warming.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failure) throw failure.reason;
+    await publishClientViews();
+    ready = true;
+  } catch (error) {
+    await server.stop(true);
+    throw error;
+  }
   return {
     origin,
     async stop() {

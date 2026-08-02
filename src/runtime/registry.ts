@@ -5,6 +5,8 @@ import type {
   ConnectRuntimeStartContext,
   RuntimeActivitySnapshot,
   RuntimeCommandSummary,
+  RuntimeInputMessageIdentity,
+  RuntimeInputReconciliation,
   RuntimeLifecycleCapabilities,
   RuntimeModelOption,
   RuntimeSessionOption,
@@ -150,6 +152,20 @@ export class RuntimeAdapterRegistry {
       completeness: "live-only",
       limitations: ["identity", "correlation", "ordering"],
     };
+  }
+
+  async reconcileInput(
+    binding: AgentBindingConfig,
+    runtimeThreadId: string,
+    candidate: RuntimeInputMessageIdentity,
+  ): Promise<RuntimeInputReconciliation> {
+    const operation = this.require(binding).reconcileInput;
+    if (!operation) return { outcome: "unknown" };
+    try {
+      return await operation(binding, runtimeThreadId, candidate);
+    } catch {
+      return { outcome: "unknown" };
+    }
   }
 
   async archiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {

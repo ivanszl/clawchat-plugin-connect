@@ -180,6 +180,255 @@ function emitCompletedTurn(
 }
 
 describe("Codex app-server runtime adapter", () => {
+  it("reconciles exact ClawChat input identities from authoritative native user messages", async () => {
+    const directIdentity = { messageId: "direct-1", contentDigest: "sha256:direct" };
+    const batchIdentity = { messageId: "group-1", contentDigest: "sha256:group" };
+    const contextIdentity = { messageId: "context-1", contentDigest: "sha256:context" };
+    const client = new FakeAppServer();
+    client.readThread.mockResolvedValue({
+      thread: thread("thread-identities", {
+        turns: [
+          {
+            id: "turn-direct",
+            status: "completed",
+            items: [
+              {
+                type: "userMessage",
+                id: "user-direct",
+                content: [
+                  {
+                    type: "text",
+                    text: [
+                      "<clawchat_turn_context>",
+                      JSON.stringify({
+                        origin: "clawchat",
+                        message_id: directIdentity.messageId,
+                        content_digest: directIdentity.contentDigest,
+                      }),
+                      "</clawchat_turn_context>",
+                      "direct input",
+                    ].join("\n"),
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            id: "turn-group",
+            status: "completed",
+            items: [
+              {
+                type: "userMessage",
+                id: "user-group",
+                content: [
+                  {
+                    type: "text",
+                    text: [
+                      "<clawchat_turn_context>",
+                      JSON.stringify({
+                        origin: "clawchat",
+                        message_id: batchIdentity.messageId,
+                        content_digest: batchIdentity.contentDigest,
+                        group_batch: {
+                          messages: [
+                            {
+                              message_id: batchIdentity.messageId,
+                              content_digest: batchIdentity.contentDigest,
+                            },
+                          ],
+                        },
+                        recent_group_context: [
+                          {
+                            message_id: contextIdentity.messageId,
+                            content_digest: contextIdentity.contentDigest,
+                          },
+                        ],
+                      }),
+                      "</clawchat_turn_context>",
+                      "group input",
+                    ].join("\n"),
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+
+    await expect(adapter.reconcileInput?.(agent, "thread-identities", directIdentity)).resolves.toMatchObject({
+      outcome: "accepted",
+      identity: {
+        origin: "clawchat",
+        anchor: directIdentity,
+        actionable: [directIdentity],
+        context: [],
+      },
+    });
+    await expect(adapter.reconcileInput?.(agent, "thread-identities", batchIdentity)).resolves.toMatchObject({
+      outcome: "accepted",
+      identity: { actionable: [batchIdentity], context: [contextIdentity] },
+    });
+    await expect(adapter.reconcileInput?.(agent, "thread-identities", contextIdentity)).resolves.toMatchObject({
+      outcome: "accepted",
+      identity: { actionable: [batchIdentity], context: [contextIdentity] },
+    });
+    await expect(
+      adapter.reconcileInput?.(agent, "thread-identities", {
+        messageId: batchIdentity.messageId,
+        contentDigest: "sha256:different-content",
+      }),
+    ).resolves.toMatchObject({ outcome: "absent", receipts: { complete: true } });
+
+    const history = await adapter.readActivity?.(agent, "thread-identities");
+    expect(history?.activities.find((activity) => activity.id === "user-direct")?.inputIdentity).toEqual({
+      origin: "clawchat",
+      anchor: directIdentity,
+      actionable: [directIdentity],
+      context: [],
+    });
+
+    client.readThread.mockRejectedValueOnce(new Error("native history unavailable"));
+    await expect(adapter.reconcileInput?.(agent, "thread-identities", directIdentity)).resolves.toEqual({
+      outcome: "unknown",
+    });
+
+    client.readThread.mockResolvedValueOnce({ thread: { ...thread("thread-identities"), turns: undefined } });
+    await expect(adapter.reconcileInput?.(agent, "thread-identities", directIdentity)).resolves.toMatchObject({
+      outcome: "unknown",
+      receipts: { complete: false },
+    });
+
+    client.readThread.mockResolvedValueOnce({
+      thread: thread("thread-identities", {
+        turns: [
+          {
+            id: "turn-overlapping-group-roles",
+            status: "completed",
+            items: [
+              {
+                type: "userMessage",
+                id: "overlapping-group-roles",
+                content: [
+                  {
+                    type: "text",
+                    text: [
+                      "<clawchat_turn_context>",
+                      JSON.stringify({
+                        origin: "clawchat",
+                        message_id: directIdentity.messageId,
+                        content_digest: directIdentity.contentDigest,
+                        group_batch: {
+                          messages: [
+                            { message_id: "other", content_digest: "digest-other" },
+                            {
+                              message_id: directIdentity.messageId,
+                              content_digest: directIdentity.contentDigest,
+                            },
+                          ],
+                        },
+                        recent_group_context: [{ message_id: "other", content_digest: "digest-other" }],
+                      }),
+                      "</clawchat_turn_context>",
+                      "overlapping group roles",
+                    ].join("\n"),
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    await expect(adapter.reconcileInput?.(agent, "thread-identities", directIdentity)).resolves.toMatchObject({
+      outcome: "unknown",
+      receipts: { complete: false },
+    });
+
+    client.readThread.mockResolvedValueOnce({
+      thread: thread("thread-identities", {
+        turns: [
+          {
+            id: "turn-malformed-group-anchor",
+            status: "completed",
+            items: [
+              {
+                type: "userMessage",
+                id: "malformed-group-anchor",
+                content: [
+                  {
+                    type: "text",
+                    text: [
+                      "<clawchat_turn_context>",
+                      JSON.stringify({
+                        origin: "clawchat",
+                        message_id: directIdentity.messageId,
+                        content_digest: directIdentity.contentDigest,
+                        group_batch: {
+                          messages: [{ message_id: "other", content_digest: "digest-other" }],
+                        },
+                      }),
+                      "</clawchat_turn_context>",
+                      "malformed group input",
+                    ].join("\n"),
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    await expect(adapter.reconcileInput?.(agent, "thread-identities", directIdentity)).resolves.toMatchObject({
+      outcome: "unknown",
+      receipts: { complete: false },
+    });
+
+    client.readThread.mockResolvedValueOnce({
+      thread: thread("thread-identities", {
+        turns: [
+          {
+            id: "turn-malformed-user-message",
+            status: "completed",
+            items: [{ type: "userMessage", id: "malformed-user-message", content: undefined as never }],
+          },
+        ],
+      }),
+    });
+    await expect(adapter.reconcileInput?.(agent, "thread-identities", directIdentity)).resolves.toMatchObject({
+      outcome: "unknown",
+      receipts: { complete: false },
+    });
+
+    client.readThread.mockResolvedValueOnce({
+      thread: thread("thread-identities", {
+        turns: [
+          {
+            id: "turn-legacy",
+            status: "completed",
+            items: [
+              {
+                type: "userMessage",
+                id: "legacy-user",
+                content: [
+                  {
+                    type: "text",
+                    text: '<clawchat_turn_context>\n{"origin":"clawchat","message_id":"direct-1"}\n</clawchat_turn_context>\nlegacy',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    await expect(adapter.reconcileInput?.(agent, "thread-identities", directIdentity)).resolves.toMatchObject({
+      outcome: "unknown",
+      receipts: { complete: false },
+    });
+  });
+
   it("discovers project Skills and invokes the selected Skill through native structured input", async () => {
     const client = new FakeAppServer();
     client.startTurn.mockImplementationOnce(async () => {
@@ -321,6 +570,37 @@ describe("Codex app-server runtime adapter", () => {
     expect(
       history?.activities.filter((activity) => activity.kind === "assistant").map((activity) => activity.position),
     ).toEqual(["0.2", "1.2"]);
+  });
+
+  it("recovers an interrupted turn lifecycle from Runtime history", async () => {
+    const client = new FakeAppServer();
+    client.readThread.mockResolvedValueOnce({
+      thread: thread("thread-interrupted", {
+        turns: [
+          {
+            id: "turn-interrupted",
+            status: "interrupted",
+            items: [
+              { type: "userMessage", id: "user-interrupted", content: [{ type: "text", text: "wait" }] },
+              { type: "agentMessage", id: "agent-interrupted", text: "working" },
+            ],
+          },
+        ],
+      }),
+    });
+    const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
+
+    const history = await adapter.readActivity?.(agent, "thread-interrupted");
+
+    expect(history?.activities).toContainEqual({
+      id: "turn:turn-interrupted",
+      position: "0.0",
+      parentId: null,
+      kind: "turn",
+      text: "Codex turn interrupted.",
+      state: "cancelled",
+      source: "history",
+    });
   });
 
   it("uses interactive approvals when a legacy Binding has no stored policy", async () => {
@@ -1120,7 +1400,7 @@ describe("Codex app-server runtime adapter", () => {
     });
     await expect(iterator.next()).resolves.toMatchObject({
       done: false,
-      value: { kind: "progress", state: "cancelled", id: "turn:turn-1" },
+      value: { kind: "turn", state: "cancelled", id: "turn:turn-1" },
     });
     await expect(iterator.next()).resolves.toMatchObject({ done: true });
   });
@@ -1196,7 +1476,7 @@ describe("Codex app-server runtime adapter", () => {
     expect(client.interruptTurn).toHaveBeenCalledWith({ threadId: "thread-new", turnId: "turn-1" });
     await expect(iterator.next()).resolves.toMatchObject({
       done: false,
-      value: { kind: "progress", state: "cancelled", id: "turn:turn-1" },
+      value: { kind: "turn", state: "cancelled", id: "turn:turn-1" },
     });
     await expect(iterator.next()).resolves.toMatchObject({ done: true });
     await expect(session.cancel?.()).resolves.toBe(false);

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ClawChat Connect QA"
+  short_description: "Run complete real ClawChat Connect acceptance tests"
+  default_prompt: "Use $clawchat-connect-qa to run a fresh real ClawChat Connect acceptance pass."

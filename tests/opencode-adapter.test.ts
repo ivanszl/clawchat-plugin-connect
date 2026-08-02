@@ -356,6 +356,135 @@ function fixture() {
 }
 
 describe("OpenCode Runtime Adapter", () => {
+  it("reconciles exact ClawChat input identities from authoritative native user messages", async () => {
+    const batchIdentity = { messageId: "group-1", contentDigest: "sha256:group" };
+    const contextIdentity = { messageId: "context-1", contentDigest: "sha256:context" };
+    const test = fixture();
+    test.client.messages = async () => [
+      {
+        info: {
+          id: "message-group",
+          sessionID: "session-1",
+          role: "user",
+          time: { created: 11 },
+          agent: "build",
+          model: { providerID: "anthropic", modelID: "claude-sonnet" },
+        },
+        parts: [
+          {
+            id: "part-group",
+            sessionID: "session-1",
+            messageID: "message-group",
+            type: "text",
+            text: [
+              "<clawchat_turn_context>",
+              JSON.stringify({
+                origin: "clawchat",
+                message_id: batchIdentity.messageId,
+                content_digest: batchIdentity.contentDigest,
+                group_batch: { messages: [{ message_id: "group-1", content_digest: "sha256:group" }] },
+                recent_group_context: [{ message_id: "context-1", content_digest: "sha256:context" }],
+              }),
+              "</clawchat_turn_context>",
+              "group input",
+            ].join("\n"),
+          },
+        ],
+      },
+    ];
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const binding = { kind: "opencode" as const };
+
+    await expect(adapter.reconcileInput?.(binding, "session-1", batchIdentity)).resolves.toMatchObject({
+      outcome: "accepted",
+      identity: { actionable: [batchIdentity], context: [contextIdentity] },
+    });
+    await expect(adapter.reconcileInput?.(binding, "session-1", contextIdentity)).resolves.toMatchObject({
+      outcome: "accepted",
+      identity: { actionable: [batchIdentity], context: [contextIdentity] },
+    });
+    await expect(
+      adapter.reconcileInput?.(binding, "session-1", {
+        messageId: batchIdentity.messageId,
+        contentDigest: "sha256:different-content",
+      }),
+    ).resolves.toMatchObject({ outcome: "absent", receipts: { complete: true } });
+
+    const history = await adapter.readActivity?.(binding, "session-1");
+    expect(history?.activities[0]?.inputIdentity).toMatchObject({
+      actionable: [batchIdentity],
+      context: [contextIdentity],
+    });
+
+    test.client.messages = async () => {
+      throw new Error("native history unavailable");
+    };
+    await expect(adapter.reconcileInput?.(binding, "session-1", batchIdentity)).resolves.toEqual({
+      outcome: "unknown",
+    });
+    test.client.messages = async () => [
+      {
+        info: {
+          id: "legacy-message",
+          sessionID: "session-1",
+          role: "user",
+          time: { created: 12 },
+          agent: "build",
+          model: { providerID: "anthropic", modelID: "claude-sonnet" },
+        },
+        parts: [
+          {
+            id: "legacy-part",
+            sessionID: "session-1",
+            messageID: "legacy-message",
+            type: "text",
+            text: '<clawchat_turn_context>\n{"origin":"clawchat","message_id":"group-1"}\n</clawchat_turn_context>\nlegacy',
+          },
+        ],
+      },
+    ];
+    await expect(adapter.reconcileInput?.(binding, "session-1", batchIdentity)).resolves.toMatchObject({
+      outcome: "unknown",
+      receipts: { complete: false },
+    });
+    test.client.messages = async () => [
+      {
+        info: {
+          id: "malformed-group-message",
+          sessionID: "session-1",
+          role: "user",
+          time: { created: 13 },
+          agent: "build",
+          model: { providerID: "anthropic", modelID: "claude-sonnet" },
+        },
+        parts: [
+          {
+            id: "malformed-group-part",
+            sessionID: "session-1",
+            messageID: "malformed-group-message",
+            type: "text",
+            text: [
+              "<clawchat_turn_context>",
+              JSON.stringify({
+                origin: "clawchat",
+                message_id: batchIdentity.messageId,
+                content_digest: batchIdentity.contentDigest,
+                group_batch: { messages: [{ message_id: "other", content_digest: "digest-other" }] },
+              }),
+              "</clawchat_turn_context>",
+              "malformed group input",
+            ].join("\n"),
+          },
+        ],
+      },
+    ];
+    await expect(adapter.reconcileInput?.(binding, "session-1", batchIdentity)).resolves.toMatchObject({
+      outcome: "unknown",
+      receipts: { complete: false },
+    });
+    await adapter.close?.();
+  });
+
   it("discovers user-invocable Skills and runs the selected Skill as a native Session command", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });

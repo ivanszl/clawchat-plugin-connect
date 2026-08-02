@@ -278,42 +278,70 @@ function startToolRequestWorkers(
 ): () => Promise<void> {
   let stopping = false;
   const workers = handles.map(async (handle) => {
-    await store.markInterruptedToolRequestsIndeterminate(handle.agentId);
     while (!stopping) {
-      const request = await store.claimNextToolRequest(handle.agentId);
-      if (!request) {
-        await Bun.sleep(100);
-        continue;
-      }
-      const tool = getConnectTool(request.toolName);
-      const timeoutMs = tool?.timeoutMs ?? (isAgentLivewareOperation(request.toolName) ? 120_000 : null);
-      if (!timeoutMs || !handle.executeTool) {
-        await store.settleToolRequest(request.requestId, {
-          state: "failed",
-          error: `unsupported tool ${request.toolName}`,
-        });
-        continue;
-      }
-      const remainingMs = Math.max(1, Math.min(timeoutMs, request.expiresAt - Date.now()));
-      let timer: ReturnType<typeof setTimeout> | null = null;
       try {
-        const result = await Promise.race([
-          handle.executeTool(request.toolName, request.input),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new ToolExecutionTimeout()), remainingMs);
-          }),
-        ]);
-        await store.settleToolRequest(request.requestId, { state: "succeeded", result });
+        await store.markInterruptedToolRequestsIndeterminate(handle.agentId);
+        break;
+      } catch (error) {
+        writeError(
+          `${handle.agentId}: Tool Request worker recovery failed; retrying: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+        await Bun.sleep(100);
+      }
+    }
+    while (!stopping) {
+      let request: Awaited<ReturnType<ConnectStateStore["claimNextToolRequest"]>> = null;
+      try {
+        request = await store.claimNextToolRequest(handle.agentId);
+        if (!request) {
+          await Bun.sleep(100);
+          continue;
+        }
+        const tool = getConnectTool(request.toolName);
+        const timeoutMs = tool?.timeoutMs ?? (isAgentLivewareOperation(request.toolName) ? 120_000 : null);
+        if (!timeoutMs || !handle.executeTool) {
+          await store.settleToolRequest(request.requestId, {
+            state: "failed",
+            error: `unsupported tool ${request.toolName}`,
+          });
+          continue;
+        }
+        const remainingMs = Math.max(1, Math.min(timeoutMs, request.expiresAt - Date.now()));
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let outcome: { state: "succeeded"; result: unknown } | { state: "failed" | "indeterminate"; error: string };
+        try {
+          const result = await Promise.race([
+            handle.executeTool(request.toolName, request.input),
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new ToolExecutionTimeout()), remainingMs);
+            }),
+          ]);
+          outcome = { state: "succeeded", result };
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          outcome = { state: toolFailureState(error), error: detail };
+          writeError(`${handle.agentId}: tool ${request.toolName} failed: ${detail}\n`);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+        await store.settleToolRequest(request.requestId, outcome);
+        await store.pruneSettledToolRequests(handle.agentId);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        await store.settleToolRequest(request.requestId, {
-          state: toolFailureState(error),
-          error: detail,
-        });
-        writeError(`${handle.agentId}: tool ${request.toolName} failed: ${detail}\n`);
-      } finally {
-        if (timer) clearTimeout(timer);
-        await store.pruneSettledToolRequests(handle.agentId);
+        writeError(`${handle.agentId}: Tool Request worker failed; retrying: ${detail}\n`);
+        if (request) {
+          try {
+            await store.settleToolRequest(request.requestId, {
+              state: "indeterminate",
+              error: `Tool Request worker failed after claiming this request: ${detail}`,
+            });
+          } catch (settlementError) {
+            writeError(
+              `${handle.agentId}: Tool Request worker could not settle ${request.requestId} indeterminate: ${settlementError instanceof Error ? settlementError.message : String(settlementError)}\n`,
+            );
+          }
+        }
+        if (!stopping) await Bun.sleep(100);
       }
     }
   });

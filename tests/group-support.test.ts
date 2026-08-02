@@ -6,6 +6,7 @@ import type { ClawChatApiClient } from "../src/api-client";
 import { startBindingRuntime } from "../src/binding-runtime";
 import { defaultConfig } from "../src/config";
 import { type GroupIntakeClock, GroupIntakeCoordinator } from "../src/group-intake";
+import { inboundContentDigest } from "../src/inbound-identity";
 import { normalizeInboundMessage } from "../src/message-mapper";
 import { ProjectCatalog } from "../src/projects";
 import {
@@ -18,7 +19,11 @@ import {
   type TransportState,
 } from "../src/protocol";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import type { ConnectRuntimePrompt } from "../src/runtime/types";
+import {
+  type ConnectRuntimePrompt,
+  type RuntimeInputIdentity,
+  runtimeInputIdentityContains,
+} from "../src/runtime/types";
 import { createStateStore, type GroupSettingsRecord } from "../src/state";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
@@ -192,11 +197,18 @@ it("applies a persisted real-time all-message group policy without changing dire
   config.defaultAgent = "work";
   config.agents = { work: { kind: "codex", displayName: "Work" } };
   const prompts: ConnectRuntimePrompt[] = [];
+  let acceptedRecoveryIdentity: RuntimeInputIdentity | null = null;
   let refuseRuntimeTurnOnce = true;
   const runtimeAdapters = new RuntimeAdapterRegistry([
     fixedRuntimeAdapter({
       kind: "codex",
       modes: ["read-only"],
+      reconcileInput: async (_binding, runtimeThreadId, candidate) =>
+        runtimeThreadId === "thread-accepted-batch" &&
+        acceptedRecoveryIdentity &&
+        runtimeInputIdentityContains(acceptedRecoveryIdentity, candidate)
+          ? { outcome: "accepted", identity: acceptedRecoveryIdentity }
+          : { outcome: "absent" },
       start: async () => ({
         prompt: async function* (input) {
           prompts.push(input);
@@ -566,6 +578,12 @@ it("applies a persisted real-time all-message group policy without changing dire
   expect(mentionedPrompt.prompt).toContain('"recent_group_context"');
   expect(mentionedPrompt.prompt).toContain("the deployment is tonight");
   expect(mentionedPrompt.prompt).toContain("what do you think?");
+  const mentionedContext = JSON.parse(mentionedPrompt.prompt.split("\n")[1] ?? "null") as {
+    content_digest?: string;
+    recent_group_context?: Array<{ content_digest?: string }>;
+  };
+  expect(mentionedContext.content_digest).toMatch(/^[a-f0-9]{64}$/u);
+  expect(mentionedContext.recent_group_context?.[0]?.content_digest).toMatch(/^[a-f0-9]{64}$/u);
   const mentionedReply = await waitFor(() =>
     transport.sent.find((event) => event.event === EVENT.MESSAGE_REPLY && event.chat_id === "group-context"),
   );
@@ -856,6 +874,62 @@ it("applies a persisted real-time all-message group policy without changing dire
     text: "must wait for authoritative startup settings",
     raw: startupMuted,
   });
+  const acceptedContext = groupMessage({
+    id: "accepted-context",
+    text: "read-only background",
+    chatId: "group-accepted",
+    emittedAt: Date.now() - 3_000,
+    dseq: 20,
+  });
+  const acceptedFirst = groupMessage({
+    id: "accepted-first",
+    text: "first accepted batch input",
+    chatId: "group-accepted",
+    emittedAt: Date.now() - 2_000,
+    dseq: 21,
+  });
+  const acceptedAnchor = groupMessage({
+    id: "accepted-anchor",
+    text: "second accepted batch input",
+    chatId: "group-accepted",
+    emittedAt: Date.now() - 1_000,
+    dseq: 22,
+  });
+  for (const [message, messageId, text] of [
+    [acceptedContext, "accepted-context", "read-only background"],
+    [acceptedFirst, "accepted-first", "first accepted batch input"],
+    [acceptedAnchor, "accepted-anchor", "second accepted batch input"],
+  ] as const) {
+    await stateStore.upsertInboundMessage({
+      agentId: "work",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: message.trace_id,
+      chatId: message.chat_id,
+      messageId,
+      text,
+      raw: message,
+    });
+  }
+  await stateStore.markInboundMessageHandled("work", "accepted-context", acceptedContext, "mention-context");
+  acceptedRecoveryIdentity = {
+    origin: "clawchat",
+    anchor: { messageId: "accepted-anchor", contentDigest: inboundContentDigest(acceptedAnchor) },
+    actionable: [
+      { messageId: "accepted-first", contentDigest: inboundContentDigest(acceptedFirst) },
+      { messageId: "accepted-anchor", contentDigest: inboundContentDigest(acceptedAnchor) },
+    ],
+    context: [{ messageId: "accepted-context", contentDigest: inboundContentDigest(acceptedContext) }],
+  };
+  await stateStore.upsertRuntimeSession({
+    chatId: "group-accepted",
+    sessionId: "session-accepted-batch",
+    agentId: "work",
+    runtimeSessionId: "thread-accepted-batch",
+    isCurrent: true,
+    hasMessages: true,
+  });
   const directRecovery = directMessage({
     id: "direct-recovery-message",
     text: "private recovery must not wait for group settings",
@@ -971,6 +1045,9 @@ it("applies a persisted real-time all-message group policy without changing dire
   });
   await expect(stateStore.hasHandledInboundMessage("work", "overdue-message", overdue)).resolves.toBe(true);
   await expect(stateStore.hasHandledInboundMessage("work", "startup-muted-message", startupMuted)).resolves.toBe(true);
+  await expect(stateStore.hasHandledInboundMessage("work", "accepted-first", acceptedFirst)).resolves.toBe(true);
+  await expect(stateStore.hasHandledInboundMessage("work", "accepted-anchor", acceptedAnchor)).resolves.toBe(true);
+  expect(prompts.some((candidate) => candidate.prompt.includes("accepted batch input"))).toBe(false);
   expect(prompts.some((candidate) => candidate.prompt.includes("authoritative startup settings"))).toBe(false);
   await recoveryHandle.close();
   await runtimeAdapters.close();
@@ -1046,6 +1123,309 @@ it("keeps a startup configuration invalidation stale after persisted settings fi
 
   expect(runtimeDispatches).toBe(0);
   await expect(stateStore.hasHandledInboundMessage("work", message.messageId, envelope)).resolves.toBe(true);
+  await coordinator.close();
+  await stateStore.close();
+});
+
+it("supplies mention context only until it first enters the Runtime", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-mention-context-once-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "group-context-once",
+      muted: false,
+      replyMode: "mention",
+      batchDelaySeconds: 0,
+      version: 1,
+    },
+  ]);
+  const dispatchedContexts: string[][] = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: { getMyGroupSettings: async () => ({ authoritative: false, rows: [] }) },
+    dispatch: async (message, _mode, onTurnAccepted) => {
+      dispatchedContexts.push(message.groupMentionContext?.map((entry) => entry.message_id) ?? []);
+      await onTurnAccepted();
+      return false;
+    },
+    reject: async () => undefined,
+    writeError: () => undefined,
+  });
+  const accept = async (envelope: Envelope) => {
+    const message = normalizeInboundMessage(envelope);
+    if (!message) throw new Error("group fixture did not normalize");
+    await stateStore.upsertInboundMessage({
+      agentId: "work",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: message.messageId,
+      text: message.text,
+      raw: envelope,
+    });
+    await coordinator.accept(message);
+  };
+
+  await accept(groupMessage({ id: "old-context", text: "old context", chatId: "group-context-once" }));
+  await accept(
+    groupMessage({
+      id: "first-mention",
+      text: "use old context once",
+      chatId: "group-context-once",
+      mentioned: true,
+    }),
+  );
+  await accept(groupMessage({ id: "fresh-context", text: "fresh context", chatId: "group-context-once" }));
+  await accept(
+    groupMessage({
+      id: "second-mention",
+      text: "use only fresh context",
+      chatId: "group-context-once",
+      mentioned: true,
+    }),
+  );
+
+  expect(dispatchedContexts).toEqual([["old-context"], ["fresh-context"]]);
+  await coordinator.close();
+  await stateStore.close();
+});
+
+it("preserves mention context when an empty addressing mention does not enter the Runtime", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-empty-mention-context-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "group-empty-mention",
+      muted: false,
+      replyMode: "mention",
+      batchDelaySeconds: 0,
+      version: 1,
+    },
+  ]);
+  const dispatchedContexts: string[][] = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: { getMyGroupSettings: async () => ({ authoritative: false, rows: [] }) },
+    dispatch: async (message, _mode, onTurnAccepted) => {
+      dispatchedContexts.push(message.groupMentionContext?.map((entry) => entry.message_id) ?? []);
+      await onTurnAccepted();
+      return false;
+    },
+    reject: async () => undefined,
+    writeError: () => undefined,
+  });
+  const accept = async (envelope: Envelope) => {
+    const message = normalizeInboundMessage(envelope);
+    if (!message) throw new Error("group fixture did not normalize");
+    await stateStore.upsertInboundMessage({
+      agentId: "work",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: message.messageId,
+      text: message.text,
+      raw: envelope,
+    });
+    await coordinator.accept(message);
+  };
+
+  await accept(groupMessage({ id: "preserved-context", text: "keep me", chatId: "group-empty-mention" }));
+  await accept(groupMessage({ id: "empty-mention", text: "", chatId: "group-empty-mention", mentioned: true }));
+  await accept(
+    groupMessage({
+      id: "real-mention-after-empty",
+      text: "now enter the Runtime",
+      chatId: "group-empty-mention",
+      mentioned: true,
+    }),
+  );
+
+  expect(dispatchedContexts).toEqual([[], ["preserved-context"]]);
+  await coordinator.close();
+  await stateStore.close();
+});
+
+it("does not select the same mention context for concurrent Runtime turns", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-mention-context-race-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "group-context-race",
+      muted: false,
+      replyMode: "mention",
+      batchDelaySeconds: 0,
+      version: 1,
+    },
+  ]);
+  let releaseFirstDispatch: (() => void) | undefined;
+  const firstDispatchGate = new Promise<void>((resolve) => {
+    releaseFirstDispatch = resolve;
+  });
+  let signalFirstDispatch: (() => void) | undefined;
+  const firstDispatchStarted = new Promise<void>((resolve) => {
+    signalFirstDispatch = resolve;
+  });
+  const dispatchedContexts: string[][] = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: { getMyGroupSettings: async () => ({ authoritative: false, rows: [] }) },
+    dispatch: async (message, _mode, onTurnAccepted) => {
+      dispatchedContexts.push(message.groupMentionContext?.map((entry) => entry.message_id) ?? []);
+      if (dispatchedContexts.length === 1) {
+        signalFirstDispatch?.();
+        await firstDispatchGate;
+      }
+      await onTurnAccepted();
+      return false;
+    },
+    reject: async () => undefined,
+    writeError: () => undefined,
+  });
+  const persist = async (envelope: Envelope) => {
+    const message = normalizeInboundMessage(envelope);
+    if (!message) throw new Error("group fixture did not normalize");
+    await stateStore.upsertInboundMessage({
+      agentId: "work",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: message.messageId,
+      text: message.text,
+      raw: envelope,
+    });
+    return message;
+  };
+
+  await coordinator.accept(
+    await persist(groupMessage({ id: "race-context", text: "shared context", chatId: "group-context-race" })),
+  );
+  const first = coordinator.accept(
+    await persist(
+      groupMessage({
+        id: "race-first-mention",
+        text: "first turn",
+        chatId: "group-context-race",
+        mentioned: true,
+      }),
+    ),
+  );
+  await firstDispatchStarted;
+  const second = coordinator.accept(
+    await persist(
+      groupMessage({
+        id: "race-second-mention",
+        text: "second turn",
+        chatId: "group-context-race",
+        mentioned: true,
+      }),
+    ),
+  );
+  await Bun.sleep(10);
+  expect(dispatchedContexts).toEqual([["race-context"]]);
+  releaseFirstDispatch?.();
+  await Promise.all([first, second]);
+
+  expect(dispatchedContexts).toEqual([["race-context"], []]);
+  await coordinator.close();
+  await stateStore.close();
+});
+
+it("waits for preceding mention context to become selectable before dispatching a concurrent mention", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-preceding-context-race-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "group-preceding-context-race",
+      muted: false,
+      replyMode: "mention",
+      batchDelaySeconds: 0,
+      version: 1,
+    },
+  ]);
+  let releaseContextMark: () => void = () => undefined;
+  const contextMarkGate = new Promise<void>((resolve) => {
+    releaseContextMark = resolve;
+  });
+  let signalContextMark: () => void = () => undefined;
+  const contextMarkStarted = new Promise<void>((resolve) => {
+    signalContextMark = resolve;
+  });
+  const originalMark = stateStore.markInboundMessageHandled.bind(stateStore);
+  stateStore.markInboundMessageHandled = async (bindingId, messageId, raw, outcome) => {
+    if (messageId === "concurrent-preceding-context") {
+      signalContextMark();
+      await contextMarkGate;
+    }
+    await originalMark(bindingId, messageId, raw, outcome);
+  };
+  const dispatchedContexts: string[][] = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: { getMyGroupSettings: async () => ({ authoritative: false, rows: [] }) },
+    dispatch: async (message, _mode, onTurnAccepted) => {
+      dispatchedContexts.push(message.groupMentionContext?.map((entry) => entry.message_id) ?? []);
+      await onTurnAccepted();
+      return false;
+    },
+    reject: async () => undefined,
+    writeError: () => undefined,
+  });
+  const persist = async (envelope: Envelope) => {
+    const message = normalizeInboundMessage(envelope);
+    if (!message) throw new Error("group fixture did not normalize");
+    await stateStore.upsertInboundMessage({
+      agentId: "work",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: message.messageId,
+      text: message.text,
+      raw: envelope,
+    });
+    return message;
+  };
+
+  const context = coordinator.accept(
+    await persist(
+      groupMessage({
+        id: "concurrent-preceding-context",
+        text: "must precede the mention",
+        chatId: "group-preceding-context-race",
+      }),
+    ),
+  );
+  await contextMarkStarted;
+  const mention = coordinator.accept(
+    await persist(
+      groupMessage({
+        id: "concurrent-following-mention",
+        text: "use the preceding context",
+        chatId: "group-preceding-context-race",
+        mentioned: true,
+      }),
+    ),
+  );
+  await Bun.sleep(10);
+  releaseContextMark();
+  await Promise.all([context, mention]);
+
+  expect(dispatchedContexts).toEqual([["concurrent-preceding-context"]]);
   await coordinator.close();
   await stateStore.close();
 });
@@ -1219,6 +1599,338 @@ it("blocks an ordered mutation after a refused batch and enforces the absolute b
 
   await coordinator.close();
   await stateStore.close();
+});
+
+it("replaces delayed Group Message Batch content when the same message id is updated", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-batch-update-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "group-batch-update",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 5,
+      version: 1,
+    },
+  ]);
+  const clock = new ManualClock(0);
+  const dispatched: string[] = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: { getMyGroupSettings: async () => ({ authoritative: false, rows: [] }) },
+    dispatch: async (message, _mode, onTurnAccepted) => {
+      dispatched.push(message.text);
+      await onTurnAccepted();
+      return false;
+    },
+    reject: async () => undefined,
+    writeError: () => undefined,
+    clock,
+  });
+  const originalEnvelope = groupMessage({
+    id: "updated-in-place",
+    text: "obsolete batch content",
+    chatId: "group-batch-update",
+    emittedAt: 0,
+  });
+  const updatedEnvelope = groupMessage({
+    id: "updated-in-place",
+    text: "current batch content",
+    chatId: "group-batch-update",
+    emittedAt: 4_000,
+  });
+  const accept = async (envelope: Envelope) => {
+    const message = normalizeInboundMessage(envelope);
+    if (!message) throw new Error("group batch update fixture did not normalize");
+    await stateStore.upsertInboundMessage({
+      agentId: "work",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: message.messageId,
+      text: message.text,
+      raw: envelope,
+    });
+    await coordinator.accept(message);
+  };
+
+  try {
+    await accept(originalEnvelope);
+    clock.advance(4_000);
+    await accept(updatedEnvelope);
+    clock.advance(4_000);
+    await flush();
+    expect(dispatched).toEqual([]);
+    clock.advance(1_000);
+    await waitFor(() => (dispatched.length === 1 ? dispatched[0] : undefined));
+
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]).toContain("current batch content");
+    expect(dispatched[0]).not.toContain("obsolete batch content");
+    await expect(stateStore.hasHandledInboundMessage("work", "updated-in-place", updatedEnvelope)).resolves.toBe(true);
+    await expect(stateStore.hasHandledInboundMessage("work", "updated-in-place", originalEnvelope)).resolves.toBe(
+      false,
+    );
+
+    await accept(
+      groupMessage({
+        id: "updated-maximum",
+        text: "maximum original content",
+        chatId: "group-batch-update",
+        emittedAt: clock.now(),
+      }),
+    );
+    for (let index = 1; index <= 7; index += 1) {
+      clock.advance(4_000);
+      await accept(
+        groupMessage({
+          id: "updated-maximum",
+          text: `maximum update ${index}`,
+          chatId: "group-batch-update",
+          emittedAt: clock.now(),
+        }),
+      );
+    }
+    expect(dispatched).toHaveLength(1);
+    clock.advance(2_000);
+    await waitFor(() => (dispatched.length === 2 ? dispatched[1] : undefined));
+    expect(dispatched[1]).toContain("maximum update 7");
+    expect(dispatched[1]).not.toContain("maximum original content");
+  } finally {
+    await coordinator.close();
+    await stateStore.close();
+  }
+});
+
+it("restarts the absolute batch window when an oversized update removes the first source", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-batch-oversized-update-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "group-batch-oversized-update",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 60,
+      version: 1,
+    },
+  ]);
+  const clock = new ManualClock(0);
+  const dispatched: string[] = [];
+  const rejections: string[] = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: { getMyGroupSettings: async () => ({ authoritative: false, rows: [] }) },
+    dispatch: async (message, _mode, onTurnAccepted) => {
+      dispatched.push(message.text);
+      await onTurnAccepted();
+      return false;
+    },
+    reject: async (_message, reason) => {
+      rejections.push(reason);
+    },
+    writeError: () => undefined,
+    clock,
+  });
+  const accept = async (envelope: Envelope) => {
+    const message = normalizeInboundMessage(envelope);
+    if (!message) throw new Error("oversized group batch update fixture did not normalize");
+    await stateStore.upsertInboundMessage({
+      agentId: "work",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: message.messageId,
+      text: message.text,
+      raw: envelope,
+    });
+    await coordinator.accept(message);
+  };
+
+  try {
+    await accept(
+      groupMessage({
+        id: "removed-first-source",
+        text: "obsolete first source",
+        chatId: "group-batch-oversized-update",
+        emittedAt: clock.now(),
+      }),
+    );
+    clock.advance(30_000);
+    await accept(
+      groupMessage({
+        id: "remaining-source",
+        text: "remaining source",
+        chatId: "group-batch-oversized-update",
+        emittedAt: clock.now(),
+      }),
+    );
+    await accept(
+      groupMessage({
+        id: "removed-first-source",
+        text: "x".repeat(64_001),
+        chatId: "group-batch-oversized-update",
+        emittedAt: clock.now(),
+      }),
+    );
+
+    expect(rejections).toHaveLength(1);
+    clock.advance(30_000);
+    await flush();
+    expect(dispatched).toEqual([]);
+    clock.advance(30_000);
+    await waitFor(() => (dispatched.length === 1 ? dispatched[0] : undefined));
+    expect(dispatched[0]).toContain("remaining source");
+    expect(dispatched[0]).not.toContain("obsolete first source");
+  } finally {
+    await coordinator.close();
+    await stateStore.close();
+  }
+});
+
+it("joins an in-flight settings notification before group shutdown returns", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-notify-close-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", []);
+  const originalMarkStale = stateStore.markGroupSettingsSnapshotStale.bind(stateStore);
+  let publishMarkStarted: () => void = () => undefined;
+  const markStarted = new Promise<void>((resolve) => {
+    publishMarkStarted = resolve;
+  });
+  let releaseMark: () => void = () => undefined;
+  const markGate = new Promise<void>((resolve) => {
+    releaseMark = resolve;
+  });
+  stateStore.markGroupSettingsSnapshotStale = async (bindingId) => {
+    publishMarkStarted();
+    await markGate;
+    await originalMarkStale(bindingId);
+  };
+  let settingsReads = 0;
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: {
+      getMyGroupSettings: async () => {
+        settingsReads += 1;
+        return { authoritative: true, rows: [] };
+      },
+    },
+    dispatch: async () => false,
+    reject: async () => undefined,
+    writeError: () => undefined,
+  });
+  await coordinator.initialize();
+  const notification = coordinator.handleNotifySignal({
+    version: "2",
+    event: EVENT.NOTIFY_SIGNAL,
+    trace_id: "notify-close",
+    emitted_at: 1,
+    payload: { type: "agent.config.changed", event_id: "notify-close" },
+  });
+  await markStarted;
+  const closing = coordinator.close();
+
+  try {
+    await expect(Promise.race([closing.then(() => "closed"), Bun.sleep(20).then(() => "waiting")])).resolves.toBe(
+      "waiting",
+    );
+    releaseMark();
+    await Promise.all([notification, closing]);
+    expect(settingsReads).toBe(0);
+  } finally {
+    releaseMark();
+    await Promise.allSettled([notification, closing]);
+    await stateStore.close();
+  }
+});
+
+it("does not dispatch a pending batch from a settings refresh after shutdown begins", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-refresh-close-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "group-refresh-close",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 60,
+      version: 1,
+    },
+  ]);
+  let publishSettingsReadStarted: () => void = () => undefined;
+  const settingsReadStarted = new Promise<void>((resolve) => {
+    publishSettingsReadStarted = resolve;
+  });
+  let releaseSettingsRead: () => void = () => undefined;
+  const settingsReadGate = new Promise<void>((resolve) => {
+    releaseSettingsRead = resolve;
+  });
+  const dispatched: string[] = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: {
+      getMyGroupSettings: async () => {
+        publishSettingsReadStarted();
+        await settingsReadGate;
+        return {
+          authoritative: true,
+          rows: [
+            {
+              conversationId: "group-refresh-close",
+              muted: false,
+              replyMode: "all" as const,
+              batchDelaySeconds: 0,
+              version: 2,
+            },
+          ],
+        };
+      },
+    },
+    dispatch: async (message) => {
+      dispatched.push(message.text);
+      return false;
+    },
+    reject: async () => undefined,
+    writeError: () => undefined,
+  });
+  await coordinator.initialize();
+  const envelope = groupMessage({
+    id: "refresh-close-pending",
+    text: "must not dispatch during close",
+    chatId: "group-refresh-close",
+  });
+  const message = normalizeInboundMessage(envelope);
+  if (!message) throw new Error("group refresh close fixture did not normalize");
+  await coordinator.accept(message);
+  const notification = coordinator.handleNotifySignal({
+    version: "2",
+    event: EVENT.NOTIFY_SIGNAL,
+    trace_id: "refresh-close-notify",
+    emitted_at: 2,
+    payload: { type: "agent.config.changed", event_id: "refresh-close-notify" },
+  });
+  await settingsReadStarted;
+  const closing = coordinator.close();
+
+  try {
+    releaseSettingsRead();
+    await Promise.all([notification, closing]);
+    expect(dispatched).toEqual([]);
+  } finally {
+    releaseSettingsRead();
+    await Promise.allSettled([notification, closing]);
+    await stateStore.close();
+  }
 });
 
 it("isolates identical group ids across Agent Bindings", async () => {

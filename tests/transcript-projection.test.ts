@@ -463,6 +463,188 @@ describe("Connect Transcript Projection", () => {
     }
   });
 
+  it("settles orphaned streaming blocks when Runtime history reports that turn interrupted", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-interrupted-turn-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-interrupted",
+        sessionId: "session-interrupted",
+        agentId: "codex",
+        runtimeSessionId: "thread-interrupted",
+        name: "Interrupted turn",
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-interrupted", "codex");
+      if (!session) throw new Error("test Session was not created");
+      const config = defaultConfig();
+      config.agents = { codex: { kind: "codex" } };
+      const runtimeAdapters = new RuntimeAdapterRegistry([
+        fixedRuntimeAdapter({
+          kind: "codex",
+          modes: [],
+          readActivity: async () => ({
+            completeness: "partial",
+            limitations: ["correlation"],
+            activities: [
+              {
+                id: "turn:turn-interrupted",
+                position: "0.0",
+                parentId: null,
+                kind: "turn",
+                text: "Codex turn interrupted.",
+                state: "cancelled",
+                source: "history",
+              },
+              {
+                id: "history-agent",
+                aliases: ["live-agent"],
+                position: "0.3",
+                parentId: null,
+                kind: "assistant",
+                text: "working",
+                state: "cancelled",
+                source: "history",
+              },
+              {
+                id: "fallback-command",
+                aliases: ["live-command"],
+                position: "0.4",
+                parentId: null,
+                kind: "command",
+                text: "Codex running command: sleep 25",
+                state: "streaming",
+                source: "fallback",
+                data: { command: "sleep 25", status: "running" },
+              },
+              {
+                id: "fallback-subagent",
+                aliases: ["live-subagent"],
+                position: "0.5",
+                parentId: null,
+                kind: "subagent",
+                text: "Worker",
+                state: "complete",
+                source: "fallback",
+                data: { title: "Worker", activityKind: "started" },
+                children: [
+                  {
+                    id: "fallback-subagent-command",
+                    aliases: ["live-subagent-command"],
+                    position: "0.5.1",
+                    parentId: "fallback-subagent",
+                    kind: "command",
+                    text: "still running",
+                    state: "streaming",
+                    source: "fallback",
+                    data: { command: "sleep 25", status: "running" },
+                  },
+                ],
+              },
+            ],
+          }),
+          start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+        }),
+      ]);
+      const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters });
+      await projection.upsertRuntimeActivity(session.sessionRef, {
+        id: "turn:turn-interrupted",
+        position: "0.0",
+        parentId: null,
+        kind: "progress",
+        text: "Codex turn started.",
+        state: "streaming",
+        source: "live",
+      });
+      await projection.upsertRuntimeActivity(session.sessionRef, {
+        id: "live-agent",
+        position: "0.3",
+        parentId: null,
+        kind: "assistant",
+        text: "working",
+        state: "streaming",
+        source: "live",
+      });
+      await projection.upsertRuntimeActivity(session.sessionRef, {
+        id: "live-command",
+        position: "0.4",
+        parentId: null,
+        kind: "command",
+        text: "Codex running command: sleep 25",
+        state: "streaming",
+        source: "live",
+        data: { command: "sleep 25", status: "running" },
+      });
+      await projection.upsertRuntimeActivity(session.sessionRef, {
+        id: "live-subagent",
+        position: "0.5",
+        parentId: null,
+        kind: "subagent",
+        text: "Worker",
+        state: "complete",
+        source: "live",
+        data: { title: "Worker", activityKind: "started" },
+        children: [
+          {
+            id: "live-subagent-command",
+            position: "0.5.1",
+            parentId: "live-subagent",
+            kind: "command",
+            text: "still running",
+            state: "streaming",
+            source: "live",
+            data: { command: "sleep 25", status: "running" },
+          },
+        ],
+      });
+      await projection.upsertRuntimeInteraction(session.sessionRef, {
+        id: "runtime-interaction:approval-1",
+        type: "runtime-interaction",
+        origin: "runtime",
+        state: "pending",
+        plainText: "Approve command?",
+        interactionId: "approval-1",
+        interactionType: "approval",
+        action: "command",
+        title: "Approve command?",
+        description: "Approval remains coordinator-owned.",
+        responseState: "pending",
+        options: [{ id: "deny", label: "Deny" }],
+        questions: [],
+        command: "sleep 25",
+        cwd: null,
+        files: [],
+        autoResolutionAt: null,
+        resolvedOptionId: null,
+        resolvedBy: null,
+      });
+
+      await projection.reconcile(session);
+
+      const blocks = await store.listTranscriptBlocks(session.sessionRef);
+      expect(blocks.filter((block) => block.state === "streaming")).toEqual([]);
+      expect(blocks.find((block) => block.type === "command")).toMatchObject({
+        state: "cancelled",
+        command: "sleep 25",
+      });
+      expect(blocks.find((block) => block.type === "progress")).toMatchObject({
+        state: "cancelled",
+        plainText: "Codex turn interrupted.",
+      });
+      expect(blocks.find((block) => block.type === "runtime-interaction")).toMatchObject({
+        state: "pending",
+        responseState: "pending",
+      });
+      expect(blocks.find((block) => block.type === "subagent")).toMatchObject({
+        state: "complete",
+        blocks: [{ type: "command", state: "cancelled", status: "cancelled" }],
+      });
+    } finally {
+      await store.close();
+    }
+  });
+
   it("reconciles history onto an already projected live item when the Runtime changes its item id", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-transcript-live-history-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });

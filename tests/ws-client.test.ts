@@ -1136,6 +1136,140 @@ describe("ConnectWsClient", () => {
     client.close();
   });
 
+  it("accepts reference-server system permission results without static streaming state", async () => {
+    const transport = new MemoryTransport();
+    const stateStore = createStore();
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore,
+      transport,
+      traceIdFactory: () => "trace-system-permission-result",
+      heartbeat: { enabled: false },
+      reliability: { ackDebounceMs: 0, ackResendMs: 0 },
+    });
+    const messages = mock();
+    client.on("message", messages);
+    await handshake(client, transport, "trace-system-permission-result");
+
+    transport.receive({
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "system-sys-01KZ1J5E94M8Y6TD20HKEW3GZK",
+      emitted_at: 1_785_685_260_580,
+      dseq: 1,
+      chat_id: "chat-direct",
+      chat_type: "direct",
+      sender: { id: "system", type: "direct", nick_name: "System" },
+      payload: {
+        message_id: "sys-prq_01KZ1HVEF2ENRT0ZSXYEJ8W729",
+        message_mode: "normal",
+        message: {
+          body: {
+            fragments: [
+              {
+                kind: "text",
+                text: "⏱ 你请求的「删除动态」因 owner 未在时限内响应已自动拒绝，请不要重试。",
+              },
+            ],
+          },
+          context: { mentions: [], reply: null },
+        },
+        metadata: {
+          kind: "permission_result",
+          operation: "moment.delete",
+          outcome: "expired",
+          reason: "owner_timeout",
+          request_id: "prq_01KZ1HVEF2ENRT0ZSXYEJ8W729",
+          scenario: "active",
+        },
+      },
+    });
+    await Bun.sleep(10);
+
+    expect(stateStore.recordProtocolDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dseq: 1,
+        eventType: EVENT.MESSAGE_SEND,
+        messageId: "sys-prq_01KZ1HVEF2ENRT0ZSXYEJ8W729",
+      }),
+    );
+    expect(stateStore.quarantineProtocolDelivery).not.toHaveBeenCalled();
+    expect(messages).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "sys-prq_01KZ1HVEF2ENRT0ZSXYEJ8W729",
+        sender: expect.objectContaining({ id: "system" }),
+      }),
+    );
+    client.close();
+  });
+
+  it("limits missing-streaming system permission results to direct message.send frames", async () => {
+    const transport = new MemoryTransport();
+    const stateStore = createStore();
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore,
+      transport,
+      traceIdFactory: () => "trace-system-permission-scope",
+      heartbeat: { enabled: false },
+      reliability: { ackDebounceMs: 0, ackResendMs: 0 },
+    });
+    const messages = mock();
+    client.on("message", messages);
+    await handshake(client, transport, "trace-system-permission-scope");
+    const payload = {
+      message_id: "sys-prq_scope",
+      message_mode: "normal",
+      message: {
+        body: { fragments: [{ kind: "text", text: "permission result" }] },
+        context: { mentions: [], reply: null },
+      },
+      metadata: {
+        kind: "permission_result",
+        operation: "moment.delete",
+        outcome: "expired",
+        request_id: "prq_scope",
+      },
+    };
+
+    transport.receive({
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "system-permission-group",
+      emitted_at: 1,
+      dseq: 1,
+      chat_id: "chat-group",
+      chat_type: "group",
+      sender: { id: "system", type: "direct", nick_name: "System" },
+      payload,
+    });
+    transport.receive({
+      version: "2",
+      event: EVENT.MESSAGE_REPLY,
+      trace_id: "system-permission-reply",
+      emitted_at: 2,
+      dseq: 2,
+      chat_id: "chat-direct",
+      chat_type: "direct",
+      sender: { id: "system", type: "direct", nick_name: "System" },
+      payload: { ...payload, message_id: "sys-prq_scope_reply" },
+    });
+    await Bun.sleep(10);
+
+    expect(stateStore.quarantineProtocolDelivery).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ dseq: 1, error: "invalid message.send payload" }),
+    );
+    expect(stateStore.quarantineProtocolDelivery).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ dseq: 2, error: "invalid message.reply payload" }),
+    );
+    expect(messages).not.toHaveBeenCalled();
+    client.close();
+  });
+
   it("quarantines materialized media fragments that omit their URL", async () => {
     const transport = new MemoryTransport();
     const stateStore = createStore();
@@ -1241,6 +1375,83 @@ describe("ConnectWsClient", () => {
     expect(stateStore.recordProtocolDelivery).not.toHaveBeenCalled();
     expect(transport.sent.at(-1)).toMatchObject({ event: EVENT.MESSAGE_SYNC_ACK, payload: { dseq: 1 } });
     expect(replayDone).toHaveBeenCalledWith(expect.objectContaining({ event: EVENT.REPLAY_DONE }));
+    client.close();
+  });
+
+  it("accepts trace-less reliable control frames emitted by the reference server", async () => {
+    const transport = new MemoryTransport();
+    const stateStore = createStore();
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore,
+      transport,
+      traceIdFactory: () => "trace-control-compat",
+      heartbeat: { enabled: false },
+      reliability: { ackDebounceMs: 1_000, ackResendMs: 0 },
+    });
+    const replayDone = mock();
+    client.on("replay_done", replayDone);
+    await handshake(client, transport, "trace-control-compat");
+
+    transport.receive({
+      version: "2",
+      event: EVENT.SYNC_MARK,
+      emitted_at: 5,
+      dseq: 1,
+      payload: { covers_seq: 107_858 },
+    } as unknown as Envelope);
+    transport.receive({
+      version: "2",
+      event: EVENT.REPLAY_DONE,
+      emitted_at: 6,
+      dseq: 2,
+      payload: {},
+    } as unknown as Envelope);
+    transport.receive({
+      version: "2",
+      event: EVENT.SYNC_MARK,
+      trace_id: "",
+      emitted_at: 7,
+      dseq: 3,
+      payload: { covers_seq: 107_859 },
+    });
+    transport.receive({
+      version: "2",
+      event: EVENT.SYNC_MARK,
+      trace_id: null,
+      emitted_at: 8,
+      dseq: 4,
+      payload: { covers_seq: 107_860 },
+    } as unknown as Envelope);
+    await flush();
+
+    expect(stateStore.advanceProtocolDelivery).toHaveBeenNthCalledWith(
+      1,
+      "test-binding",
+      "01JXYZ8K3MNPQRSTVWXYZ0AB",
+      1,
+    );
+    expect(stateStore.advanceProtocolDelivery).toHaveBeenNthCalledWith(
+      2,
+      "test-binding",
+      "01JXYZ8K3MNPQRSTVWXYZ0AB",
+      2,
+    );
+    expect(stateStore.advanceProtocolDelivery).toHaveBeenNthCalledWith(
+      3,
+      "test-binding",
+      "01JXYZ8K3MNPQRSTVWXYZ0AB",
+      3,
+    );
+    expect(stateStore.advanceProtocolDelivery).toHaveBeenCalledTimes(3);
+    expect(stateStore.quarantineProtocolDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({ dseq: 4, error: "missing trace_id" }),
+    );
+    expect(transport.sent.at(-1)).toMatchObject({ event: EVENT.MESSAGE_SYNC_ACK, payload: { dseq: 2 } });
+    expect(replayDone).toHaveBeenCalledWith(
+      expect.objectContaining({ event: EVENT.REPLAY_DONE, trace_id: "server-control:replay.done:2" }),
+    );
     client.close();
   });
 

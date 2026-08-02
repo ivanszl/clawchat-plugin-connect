@@ -182,13 +182,13 @@ Activities:
 The Adapter attaches the output-visibility category used for ClawChat materialization as Activity metadata; it is not a
 second projection representation.
 
-The runtime applies `minimal`, `normal`, or `full` visibility and sends complete ClawChat `message.reply` frames. Direct-message responses do not quote the triggering message. Group responses retain that reply context, and only group messages that explicitly mention the activated ClawChat Agent enter Connect routing. Protocol streaming lifecycle events are not used.
+The runtime applies `minimal`, `normal`, or `full` visibility and sends complete ClawChat `message.reply` frames. Direct-message responses do not quote the triggering message. Group responses retain that reply context. Group messages enter Runtime routing according to the conversation's Group Intake Policy: mention-only requires a structured Agent Mention, while `all` uses the configured delayed or real-time Group Message Batch window; mute suppresses routing. Protocol streaming lifecycle events are not used.
 
 Local Markdown images become outbound media only when their canonical path is inside the media cache or resolved Runtime Workspace and their extension plus binary signature identify PNG, JPEG, GIF, or WebP content. Arbitrary Markdown file references remain text.
 
 ## Reliable inbound processing
 
-Protocol v2 frames and materialized messages are recorded before dispatch. Once a materialized message has been durably handed to the recoverable inbound processor, Connect may advance the live ACK without waiting for a long command or Runtime turn. The processor stores a content-specific completion marker after processing and scans persisted rows without a matching marker at startup and after reconnect. An exact completed replay is skipped, while a coalesced message update is dispatched as new content. Delivery is therefore at least once: a process failure after an external side effect but before its completion marker can repeat that side effect after restart.
+Protocol v2 frames and materialized messages are recorded before dispatch. Once a materialized message has been durably handed to the recoverable inbound processor, Connect may advance the live ACK without waiting for a long command or Runtime turn. The processor stores a content-specific completion marker after processing and scans persisted rows without a matching marker at startup and after reconnect. Before retrying an unfinished row, Connect asks every candidate Runtime Thread for an authoritative receipt keyed by the ClawChat message ID and canonical delivery-content digest. An exact accepted receipt atomically completes every matching actionable Batch and consumed-context row; only authoritative absence permits another submission. Incomplete or failed native history is `unknown`, leaves the row pending, and is retried with bounded backoff. A coalesced update with the same message ID but a different digest remains new input. See ADR-0039.
 
 ## External capability policy
 

@@ -30,9 +30,11 @@ import type {
   ConnectRuntimeStartContext,
   RuntimeActivity,
   RuntimeActivitySnapshot,
+  RuntimeInputIdentity,
   RuntimeModelOption,
   RuntimeSessionOption,
 } from "./types";
+import { runtimeInputIdentity, runtimeInputIdentityContains } from "./types";
 
 export interface OpenCodeRuntimeAdapterOptions {
   createServer?: (binding: OpenCodeAgentBindingConfig) => Promise<OpenCodeServerClient>;
@@ -211,6 +213,18 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
     async readActivity(binding, runtimeThreadId) {
       const { client, session } = await locateSession(binding, runtimeThreadId);
       return await reconcileSessionActivity(client, session, observedUserMessages);
+    },
+    async reconcileInput(binding, runtimeThreadId, candidate) {
+      try {
+        const { client, session } = await locateSession(binding, runtimeThreadId);
+        const snapshot = openCodeInputIdentities(await client.messages(session.id, session.directory));
+        const identity = snapshot.identities.find((value) => runtimeInputIdentityContains(value, candidate));
+        return identity
+          ? { outcome: "accepted", identity, receipts: snapshot }
+          : { outcome: snapshot.complete ? "absent" : "unknown", receipts: snapshot };
+      } catch {
+        return { outcome: "unknown" };
+      }
     },
     async deleteThread(binding, runtimeThreadId) {
       let located: { client: OpenCodeServerClient; session: Session };
@@ -782,6 +796,19 @@ function activitySnapshot(messages: OpenCodeMessage[]): RuntimeActivitySnapshot 
   };
 }
 
+function openCodeInputIdentities(messages: OpenCodeMessage[]) {
+  const identities: RuntimeInputIdentity[] = [];
+  let complete = true;
+  for (const message of messages) {
+    if (message.info.role !== "user") continue;
+    const text = message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+    const identity = runtimeInputIdentity(text);
+    if (identity) identities.push(identity);
+    else if (text.trimStart().startsWith("<clawchat_turn_context>")) complete = false;
+  }
+  return { identities, complete };
+}
+
 async function reconcileSessionActivity(
   client: OpenCodeServerClient,
   session: Session,
@@ -897,7 +924,13 @@ function activityForPart(message: Message, part: Part, position: string): Runtim
     source: "history" as const,
   };
   if (part.type === "text") {
-    return { ...base, kind: message.role === "user" ? ("user" as const) : ("assistant" as const), text: part.text };
+    const inputIdentity = message.role === "user" ? runtimeInputIdentity(part.text) : null;
+    return {
+      ...base,
+      kind: message.role === "user" ? ("user" as const) : ("assistant" as const),
+      text: part.text,
+      ...(inputIdentity ? { inputIdentity } : {}),
+    };
   }
   if (part.type === "reasoning") return { ...base, kind: "reasoning", text: part.text };
   if (part.type === "tool") return { ...base, ...toolActivity(part) };

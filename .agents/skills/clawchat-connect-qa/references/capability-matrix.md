@@ -1,0 +1,54 @@
+# ClawChat Connect real-E2E capability matrix
+
+Use a fresh Session and unique run label for every acceptance pass. A successful CLI call is supporting evidence unless the row explicitly targets CLI behavior.
+
+| Area | Real-surface action | Required evidence | Cleanup / constraint |
+|---|---|---|---|
+| Installation | Inspect version, doctor, service, Binding status | Doctor OK; service running; intended Binding connected | Read-only |
+| Session | Send `/new <run-label>`, then `/status` | New Session is current and named; status identifies it | Fresh Session required |
+| Commands | Exercise `/help`, `/status`, `/sessions`, `/clawchat-output minimal\|normal\|full`, `/cancel` | Correct owner authorization and visible response | Restore output mode to `normal` |
+| Runtime | Send a deterministic prompt in direct chat | One accepted Turn and one anchored final reply | No prior transcript dependence |
+| Attachments | Send one safe image/file and ask the Agent to identify it | Runtime receives media; reply stays anchored | Use non-sensitive fixture |
+| Client | Open the loopback Connect Client and current Session | Transcript matches ClawChat/Runtime activity | Browser surface only; no available Browser is an environment block, not permission to substitute Playwright |
+| Group mention | Structurally mention the bound Agent in the authorized test group | Immediate eligible Turn and anchored reply | Never rely on visible `@name` text alone |
+| Group Intake Policy | Test mention-only, delayed, real-time, and muted settings | Live settings notification applies without restart | Restore the original per-group settings |
+| Group Message Batch | Send an ordered burst and a final Agent mention | One Turn contains every source in order | Unique messages for provenance |
+| Group Mention Context | Send unmentioned context, then an addressed question | Context is read-only and bounded; current input is actionable | Mention-only mode |
+| No-Reply Signal | Ask for canonical no-reply after intermediate activity | No ordinary ClawChat output or token leaks | Connect transcript may retain activity |
+| ClawChat Output Visibility | Repeat a controlled multi-kind Turn under all three levels | Visibility filters before final no-reply veto | Restore `normal` |
+| Runtime Interaction | Trigger one safe question/approval and answer it | Required control is immediate and settles once | Never approve unexpected access |
+| Tool catalog | Invoke each supported ClawChat tool through the bound Agent | Tool succeeds or returns the expected controlled validation/auth error | Follow mutation rules below |
+| Liveware | Open the registered Connect app inside ClawChat | Embedded Client connects and renders current data | Do not substitute external Browser |
+| Recovery | Restart service with a controlled pending input | Direct recovery is not blocked by group settings; group work uses resolved policy | Avoid duplicate user-visible replies |
+
+## Protocol and presentation checks
+
+- After every service restart, inspect the reliable-delivery quarantine high-water before and after one real reply. The reference message-hub implementation may omit `trace_id` or send it as an empty string on dseq-bearing `sync.mark` and `replay.done`; those control frames must advance and ACK without adding a `missing trace_id` quarantine record. Business frames, null/non-string traces, and control frames without a valid dseq remain strict.
+- For an apparently missing Runtime final, compare three independent observations: the ClawChat conversation history, the Connect outbound record and `message.ack`, and the Connect Client transcript. An acknowledged reply missing only from desktop history is a ClawChat presentation failure.
+- Command receipt can take several seconds in the real desktop app. Use an evidence-based bounded wait and re-fetch fresh UI state instead of sending a duplicate command.
+- Measure group policy windows from Connect's inbound receipt, not the desktop send action. The desktop/message-hub path can hold several group messages and release them together after a variable delay; this is distinct from Connect's configured inactivity window. Do not infer an upstream batch boundary merely because adjacent `message.send` frames arrive within milliseconds.
+- If the message hub updates a delayed Group Message Batch source with the same `message_id` but different canonical content, the eventual batch must contain only the latest content in the original source position. Verify the latest raw is handled and the superseded raw is not mistaken for that acceptance.
+- Group shutdown must join in-flight settings notifications, authoritative refreshes, and batch tails. Once closing begins, a delayed refresh result may update no batch policy and release no Runtime turn; verify a blocked refresh that resolves during shutdown cannot dispatch a pending batch.
+- In the embedded Liveware Client, an initial black WebView is not proof of failure. Force-refresh once from the WebView toolbar, wait for the app URL and Binding status, expand the intended Project, and select the Session by its exact name. A Client-origin token should render with Web provenance and remain absent from `clawchat_messages`.
+- A system `permission_result` may arrive as `message.send` from sender `system`, with a `sys-` message ID and no static streaming object. It must be durably delivered rather than quarantined, but an ordinary user/agent message with the same missing streaming state must remain invalid.
+- A mention-context message should be supplied only until a Runtime accepts a turn that actually includes it. Repeating two structural mentions must not inject the same old context twice; same-group concurrent mentions need the same assertion. Context dropped to satisfy the prompt-size cap must remain eligible for a later turn.
+- A healthy Binding status is not enough to qualify Service readiness or Tool Requests. Verify the Client port is listening and the service emitted its ready/Client log before submitting a unique read-only request. `expired` with `attempt_count=0` can mean workers never started because optional Binding startup work blocked global readiness; only classify a dead worker after proving the Service was ready. After any tool failure, verify a subsequent unique request reaches `attempt_count=1` and a terminal result.
+- Measure cold-start listener readiness separately from full Client API readiness. Static assets may answer while the Runtime-backed catalog establishes its event baseline; during that interval every `/client/v1/*` route must return a consistent retryable `503 client-warming-up`, never a partial snapshot or mutation success. API readiness requires a subsequent 200 response, while failed warming must release the listener.
+- If the desktop photo/plus controls do not open a chooser and pasting from Finder produces no composer attachment, mark attachment ingress `environment-blocked`; never infer success from the selected file existing on disk.
+- A Runtime prompt to mount or authorize the exact test workspace is expected human-in-the-loop behavior. Pause for the user to approve that exact directory, resume the same Turn, and do not classify the pause as a product failure. An unrelated or broader path is not authorized.
+- Distinguish pending-input recovery from an already accepted active Runtime Turn. Restarting after native acceptance must not automatically replay that Turn; verify no duplicate prompt or outbound. Then reconcile native interrupted/failed history and require the Client Transcript to contain no orphaned streaming block and Runtime status to report zero active work.
+- Pending-input replay requires exhaustive, authoritative absence of the exact `(message_id, content_digest)` identity across every materialized Runtime Session for that chat. An accepted receipt settles the matching inbound rows, while unavailable, malformed, partial, or failed native history is `unknown` and must remain pending for background retry. Reused message IDs with different canonical content must not be mistaken for old acceptance; Group Message Batch receipts must also preserve unique, disjoint actionable/context roles and exactly one matching anchor. Replayed WebSocket intake must stay behind the same canonical digest gate for the full direct recovery and Group settings-plus-receipt chain, including nested JSON key reordering, and shutdown must not admit deferred work after closing begins.
+- Native receipt recovery must not sit on the Binding or Client readiness critical path. On a cold restart, measure from the restart command until the loopback Client port answers, then confirm receipt work can continue in the background and `close()` still joins an active scan without post-close replay or state mutation.
+- To exercise true pending-input recovery through the desktop, the message must reach ClawChat while Connect has not handed it to the Runtime. If ClawChat disables sending while the Agent is offline, mark that real-surface case `environment-blocked`; do not substitute an already accepted long-running command or send an uncertain concatenated composer draft.
+
+## Tool-catalog groups
+
+- Read-only success paths: account profile, user profile, friends, friend requests, user search, Moments feed, app list.
+- Conversation mutations: real mention and message reaction. Use only exact test-conversation and message IDs; remove a test reaction after verifying it.
+- Reversible ephemeral mutations: create/delete a uniquely labeled Moment; create/delete its own comment and reaction; register/unregister only a dedicated ephemeral app.
+- Relationship/account mutations: profile update, avatar update, friend request acceptance/rejection/removal, and group leave require explicit targets and authorization. A schema/validation failure is not a successful mutation test.
+- Liveware tunnel lifecycle belongs to the `clawchat-liveware` workflow and must use a dedicated ephemeral app/tunnel with deterministic cleanup.
+- Record each tool request ID, terminal status, bounded result, and wall time. User-directory success fixtures should be authoritative known users; a valid Agent username may legitimately return no matches.
+- A message reaction requires an exact `chatId`, `chatType`, and disposable `targetMessageId`; remove with the identical tuple after verification.
+- Agent-created Moment deletion may require time-bounded Owner approval. Confirm that the approval surface is available before creating the fixture, coordinate action-time confirmation, and never assume CLI deletion alone can clean it up.
+- If a dedicated Liveware App was explicitly unregistered before tunnel cleanup, unbind/delete must treat ClawChat `agent app not found` as already unregistered and continue deleting only the exact Liveware App. Verify the managed Connect App remains listed.

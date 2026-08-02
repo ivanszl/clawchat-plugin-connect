@@ -19,6 +19,20 @@ export class IndeterminateToolExecutionError extends Error {
   override name = "IndeterminateToolExecutionError";
 }
 
+export class ClawChatToolApiError extends Error {
+  override name = "ClawChatToolApiError";
+
+  constructor(
+    message: string,
+    readonly code: number,
+    readonly status: number,
+    readonly path: string,
+    readonly data: unknown,
+  ) {
+    super(message);
+  }
+}
+
 export function isIndeterminateToolError(error: unknown): boolean {
   return (
     error instanceof IndeterminateToolExecutionError || (error instanceof Error && error.name === "AckTimeoutError")
@@ -113,8 +127,15 @@ async function callClawChat(
   }
   if (payload && typeof payload === "object" && "code" in payload) {
     const envelope = payload as { code?: unknown; msg?: unknown; data?: unknown };
-    if (Number(envelope.code) !== 0)
-      throw new Error(typeof envelope.msg === "string" ? envelope.msg : `ClawChat API code ${envelope.code}`);
+    const code = Number(envelope.code);
+    if (code !== 0)
+      throw new ClawChatToolApiError(
+        typeof envelope.msg === "string" ? envelope.msg : `ClawChat API code ${envelope.code}`,
+        code,
+        response.status,
+        path,
+        envelope.data,
+      );
     return envelope.data;
   }
   if (!response.ok) throw new Error(`ClawChat ${path} failed with HTTP ${response.status}`);

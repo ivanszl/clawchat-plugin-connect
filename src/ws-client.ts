@@ -34,6 +34,7 @@ import {
   isPermissionResolvedPayload,
   isPresencePayload,
   isSyncMarkPayload,
+  isSystemPermissionResultEnvelope,
   isTypingUpdatePayload,
   type MessageAckPayload,
   type MessageAddPayload,
@@ -1324,7 +1325,7 @@ function dseqPayloadError(envelope: Envelope): string | null {
       !envelope.chat_id ||
       !envelope.chat_type ||
       !envelope.sender ||
-      !isMaterializedMessagePayload(envelope.payload) ||
+      (!isMaterializedMessagePayload(envelope.payload) && !isSystemPermissionResultEnvelope(envelope)) ||
       typeof payload.message_id !== "string" ||
       !payload.message_id
     )

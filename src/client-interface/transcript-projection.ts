@@ -66,8 +66,18 @@ export class TranscriptProjection {
     const binding = getAgentBinding(this.options.config, session.agentId);
     const snapshot = await this.options.runtimeAdapters.readActivity(binding, session.runtimeSessionId);
     this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), snapshot.completeness);
+    const settlements: Array<NonNullable<ReturnType<typeof terminalTurnSettlement>>> = [];
     for (const activity of snapshot.activities) {
       await this.upsertRuntimeActivity(session.sessionRef, activity);
+      const settlement = terminalTurnSettlement(activity);
+      if (settlement) settlements.push(settlement);
+    }
+    for (const settlement of settlements) {
+      await this.options.stateStore.settleStreamingTranscriptBlocks(
+        session.sessionRef,
+        settlement.sequenceRange,
+        settlement.state,
+      );
     }
   }
 
@@ -256,7 +266,9 @@ export class TranscriptProjection {
         detail: text,
       };
     }
-    if (entry.kind === "progress") return { ...base, type: "progress" as const, label: text };
+    if (entry.kind === "progress" || entry.kind === "turn") {
+      return { ...base, type: "progress" as const, label: text };
+    }
     if (entry.kind === "subagent") {
       return {
         ...base,
@@ -311,6 +323,23 @@ function runtimeActivitySequence(position: string): number | undefined {
   const { turn, item } = ordinal;
   if (turn >= 9_000_000_000 || item >= 1_000_000) return undefined;
   return (turn + 1) * 1_000_000 + item;
+}
+
+function terminalTurnSettlement(
+  activity: RuntimeActivity,
+): { sequenceRange: { first: number; next: number }; state: "error" | "cancelled" } | null {
+  if (
+    activity.source !== "history" ||
+    activity.kind !== "turn" ||
+    (activity.state !== "error" && activity.state !== "cancelled")
+  ) {
+    return null;
+  }
+  const ordinal = runtimeActivityOrdinal(activity.position);
+  const first = runtimeActivitySequence(activity.position);
+  return ordinal?.item === 0 && first !== undefined
+    ? { sequenceRange: { first, next: first + 1_000_000 }, state: activity.state }
+    : null;
 }
 
 function subagentActivityKind(value: unknown): "started" | "interacted" | "interrupted" | "unknown" {
