@@ -1252,6 +1252,62 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     await fixture.store.close();
   });
 
+  it("accepts a queued Client turn immediately and exposes it for withdrawal", async () => {
+    const fixture = await runtimeFixture();
+    fixture.config.maxConcurrentTurns = 1;
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    expect(current).not.toBeNull();
+    let releaseFirst: () => void = () => undefined;
+    let markFirstStarted: () => void = () => undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const prompts: string[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      start: async () => ({
+        prompt: async function* (input) {
+          prompts.push(input.prompt);
+          if (input.prompt === "first") {
+            markFirstStarted();
+            await firstGate;
+          }
+          yield activity("done");
+        },
+        close: async () => undefined,
+      }),
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
+    });
+
+    const first = await runtime.enqueueClientTurn(current?.sessionRef ?? "", "first");
+    await firstStarted;
+    const queued = await runtime.enqueueClientTurn(current?.sessionRef ?? "", "second");
+
+    expect(queued.turnId).not.toBe(first.turnId);
+    expect(runtime.queuedClientTurns(current?.sessionRef ?? "")).toMatchObject([
+      { turnId: queued.turnId, prompt: "second", attachments: [] },
+    ]);
+    expect(runtime.cancelQueuedClientTurn(current?.sessionRef ?? "", queued.turnId)).toBe(true);
+    expect(runtime.queuedClientTurns(current?.sessionRef ?? "")).toEqual([]);
+
+    releaseFirst();
+    await Bun.sleep(0);
+    expect(prompts).toEqual(["first"]);
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
   it("cancels the selected Session immediately while its turn is active", async () => {
     const fixture = await runtimeFixture();
     let releaseTurn: (() => void) | undefined;

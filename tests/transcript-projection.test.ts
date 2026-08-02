@@ -134,6 +134,66 @@ describe("Connect Transcript Projection", () => {
     }
   });
 
+  it("reconciles a selected Web Skill with Codex history that serializes the prefix as a dollar command", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-web-skill-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-web-skill",
+        sessionId: "session-web-skill",
+        agentId: "codex",
+        runtimeSessionId: "thread-web-skill",
+        name: "Web Skill reconciliation",
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-web-skill", "codex");
+      if (!session) throw new Error("test Session was not created");
+      const projection = new TranscriptProjection({
+        stateStore: store,
+        config: defaultConfig(),
+        runtimeAdapters: new RuntimeAdapterRegistry([]),
+      });
+
+      await projection.appendUserMessage({
+        sessionRef: session.sessionRef,
+        text: "/clawchat-browser-qa LIVEWARE-QA-FIRST-DONE",
+        origin: "client",
+        author: "You",
+        id: "turn_skill_user",
+      });
+      await projection.upsertRuntimeActivity(session.sessionRef, {
+        id: "runtime-skill-user",
+        position: "0.1",
+        parentId: null,
+        kind: "user",
+        text: "$clawchat-browser-qa LIVEWARE-QA-FIRST-DONE",
+        state: "complete",
+        source: "history",
+      });
+      await projection.upsertRuntimeActivity(session.sessionRef, {
+        id: "runtime-skill-user",
+        position: "0.1",
+        parentId: null,
+        kind: "user",
+        text: "$clawchat-browser-qa LIVEWARE-QA-FIRST-DONE",
+        state: "complete",
+        source: "history",
+      });
+
+      await expect(store.listTranscriptBlocks(session.sessionRef)).resolves.toMatchObject([
+        {
+          id: expect.stringMatching(/^b_/u),
+          origin: "client",
+          runtimeSource: "history",
+          plainText: "/clawchat-browser-qa LIVEWARE-QA-FIRST-DONE",
+        },
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("repairs stored Web and Runtime history duplicates during reconciliation", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-transcript-stored-web-user-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });

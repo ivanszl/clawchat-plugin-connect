@@ -10,8 +10,15 @@ export interface SessionQueueOptions {
   onStatsChange?: (stats: QueueStats) => Promise<void> | void;
 }
 interface QueueItem {
+  state: SessionQueueTicketState;
   run: () => Promise<void>;
   settle(failure: Error | null): void;
+}
+export type SessionQueueTicketState = "queued" | "running" | "completed" | "failed" | "cancelled";
+export interface SessionQueueTicket {
+  readonly state: SessionQueueTicketState;
+  readonly completion: Promise<void>;
+  cancel(): boolean;
 }
 export class SessionQueue {
   private readonly maxConcurrentTurns: number;
@@ -31,20 +38,22 @@ export class SessionQueue {
     run: () => Promise<void>,
     displayIdentity = `Session ${sessionIdentity}`,
   ): Promise<void> {
+    await this.submit(sessionIdentity, run, displayIdentity).completion;
+  }
+  submit(
+    sessionIdentity: string,
+    run: () => Promise<void>,
+    displayIdentity = `Session ${sessionIdentity}`,
+  ): SessionQueueTicket {
     this.assertAccepting(sessionIdentity, displayIdentity);
     const queue = this.queues.get(sessionIdentity) ?? [];
     if (queue.length >= this.maxPendingPerSession) throw new Error(`too many pending turns for ${displayIdentity}`);
     this.queues.set(sessionIdentity, queue);
-    await new Promise<void>((resolve, reject) => {
-      queue.push({
-        run,
-        settle: (failure) => {
-          if (failure) reject(failure);
-          else resolve();
-        },
-      });
-      this.pump();
-    });
+    const { item, ticket } = this.createItem(sessionIdentity, run);
+    queue.push(item);
+    this.pump();
+    void this.notifyStats().catch(() => undefined);
+    return ticket;
   }
 
   assertAccepting(sessionIdentity: string, displayIdentity = `Session ${sessionIdentity}`): void {
@@ -97,8 +106,9 @@ export class SessionQueue {
       settleOperation = resolve;
     });
     return await new Promise<() => Promise<void>>((resolve, reject) => {
-      queue.push({
-        run: async () => {
+      const { item, ticket } = this.createItem(
+        sessionIdentity,
+        async () => {
           await onAcquired?.();
           resolve(async () => {
             releaseOperation();
@@ -106,7 +116,7 @@ export class SessionQueue {
           });
           await released;
         },
-        settle: (failure) => {
+        (failure) => {
           try {
             if (failure) reject(failure);
           } finally {
@@ -114,7 +124,9 @@ export class SessionQueue {
             settleOperation();
           }
         },
-      });
+      );
+      void ticket.completion.catch(() => undefined);
+      queue.push(item);
       this.pump();
     });
   }
@@ -140,6 +152,7 @@ export class SessionQueue {
       }
       this.running += 1;
       this.runningSessions.add(sessionIdentity);
+      item.state = "running";
       void this.runItem(sessionIdentity, item);
     }
   }
@@ -159,6 +172,49 @@ export class SessionQueue {
       this.pump();
     }
     item.settle(failure);
+  }
+
+  private createItem(
+    sessionIdentity: string,
+    run: () => Promise<void>,
+    onSettled?: (failure: Error | null) => void,
+  ): { item: QueueItem; ticket: SessionQueueTicket } {
+    let resolveCompletion: () => void = () => undefined;
+    let rejectCompletion: (error: Error) => void = () => undefined;
+    const completion = new Promise<void>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
+    const item: QueueItem = {
+      state: "queued",
+      run,
+      settle: (failure) => {
+        if (item.state !== "cancelled") item.state = failure ? "failed" : "completed";
+        if (failure) rejectCompletion(failure);
+        else resolveCompletion();
+        onSettled?.(failure);
+      },
+    };
+    const ticket: SessionQueueTicket = {
+      get state() {
+        return item.state;
+      },
+      completion,
+      cancel: () => {
+        if (item.state !== "queued") return false;
+        const queue = this.queues.get(sessionIdentity);
+        const index = queue?.indexOf(item) ?? -1;
+        if (!queue || index < 0) return false;
+        queue.splice(index, 1);
+        item.state = "cancelled";
+        item.settle(new Error(`Session ${sessionIdentity} queued turn cancelled before execution`));
+        if (queue.length === 0 && !this.runningSessions.has(sessionIdentity)) this.queues.delete(sessionIdentity);
+        void this.notifyStats().catch(() => undefined);
+        this.pump();
+        return true;
+      },
+    };
+    return { item, ticket };
   }
 
   private async notifyStats(): Promise<void> {

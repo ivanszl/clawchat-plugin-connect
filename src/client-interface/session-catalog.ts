@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type {
+  QueuedTurnView,
   SessionAction,
   SessionCatalogAction,
   SessionCatalogBindingView,
@@ -32,6 +33,7 @@ export interface SessionCatalogOptions {
   projects?: ProjectCatalog;
   sessionActivity?: (bindingId: string, sessionRef: string) => SessionActivity | Promise<SessionActivity>;
   activeTurnId?: (bindingId: string, sessionRef: string) => string | null | Promise<string | null>;
+  queuedTurns?: (bindingId: string, sessionRef: string) => QueuedTurnView[] | Promise<QueuedTurnView[]>;
   claimSessionLifecycle?: (bindingId: string, sessionRef: string) => Promise<() => Promise<void>>;
 }
 
@@ -230,6 +232,7 @@ export class SessionCatalog {
       status: sessionStatus(runtimeStatus, activity),
       runtimeThreadAvailable,
       activeTurnId: (await this.options.activeTurnId?.(entry.bindingId, normalized)) ?? null,
+      queuedTurns: (await this.options.queuedTurns?.(entry.bindingId, normalized)) ?? [],
       transcriptCompleteness:
         this.options.transcriptProjection.completeness(normalized) ??
         (runtimeThreadAvailable ? "partial" : "live-only"),

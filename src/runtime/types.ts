@@ -41,6 +41,15 @@ export type RuntimeSlashSelection =
   | ({ kind: "skill" } & RuntimeSkillSummary)
   | ({ kind: "command" } & RuntimeCommandSummary);
 
+export interface QueuedClientTurn {
+  turnId: string;
+  sessionRef: string;
+  prompt: string;
+  selection: RuntimeSlashSelection | null;
+  attachments: Array<{ name: string }>;
+  createdAt: string;
+}
+
 export type RuntimeInteractionRequest =
   | {
       kind: "approval";

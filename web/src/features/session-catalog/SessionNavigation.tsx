@@ -5,7 +5,9 @@ import { LinkProvider } from "@astryxdesign/core/Link";
 import { Selector } from "@astryxdesign/core/Selector";
 import { SideNav, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { HStack, StackItem, VStack } from "@astryxdesign/core/Stack";
 import { StatusDot } from "@astryxdesign/core/StatusDot";
+import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { TreeList, type TreeListItemData } from "@astryxdesign/core/TreeList";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -31,6 +33,7 @@ export function SessionNavigation() {
   const projects = useQuery(projectsQueryOptions);
   const navigate = useNavigate();
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [navigationCollapsed, setNavigationCollapsed] = useState(false);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const selectedRef = pathname.match(/^\/sessions\/([^/]+)$/u)?.[1]?.toUpperCase() ?? null;
   const [search, setSearch] = useState("");
@@ -51,19 +54,28 @@ export function SessionNavigation() {
       <LinkProvider component={Link}>
         <SideNav
           className="session-nav"
-          collapsible={{ buttonLabel: "折叠 Session 导航" }}
+          data-mode={navigationCollapsed ? "collapsed" : "expanded"}
+          collapsible={{
+            isCollapsed: navigationCollapsed,
+            onCollapsedChange: setNavigationCollapsed,
+            buttonLabel: "折叠 Session 导航",
+          }}
           resizable={{ defaultWidth: 304, minWidth: 248, maxWidth: 440, autoSaveId: "connect-client-session-nav" }}
           topContent={
-            <div className="session-nav-tools">
-              <TextInput
-                label="搜索 Session"
-                isLabelHidden
-                value={search}
-                onChange={setSearch}
-                placeholder="搜索 session 或 project"
-                hasClear
-                width="100%"
-              />
+            <HStack gap={2} padding={2} align="end" justify={navigationCollapsed ? "center" : "start"}>
+              {navigationCollapsed ? null : (
+                <StackItem size="fill">
+                  <TextInput
+                    label="搜索 Session"
+                    isLabelHidden
+                    value={search}
+                    onChange={setSearch}
+                    placeholder="搜索 session 或 project"
+                    hasClear
+                    width="100%"
+                  />
+                </StackItem>
+              )}
               <Button
                 label="新建 Session"
                 isIconOnly
@@ -72,15 +84,17 @@ export function SessionNavigation() {
                 variant="primary"
                 onClick={() => setNewSessionOpen(true)}
               />
-            </div>
+            </HStack>
           }
         >
-          {catalog.isPending ? (
-            <div className="nav-loading">
+          {navigationCollapsed ? null : catalog.isPending ? (
+            <VStack padding={4} align="center">
               <Spinner label="正在加载 Session" />
-            </div>
+            </VStack>
           ) : catalog.isError ? (
-            <p className="nav-error">无法加载 Session。Connect Service 可能尚未就绪。</p>
+            <Text color="secondary" display="block" justify="center">
+              无法加载 Session。Connect Service 可能尚未就绪。
+            </Text>
           ) : (
             sections.map(({ binding, items }) => (
               <SideNavSection
@@ -109,7 +123,9 @@ export function SessionNavigation() {
                 {items.length > 0 ? (
                   <TreeList items={items} density="compact" />
                 ) : (
-                  <p className="nav-empty">没有匹配的 Session</p>
+                  <Text color="secondary" display="block" justify="center">
+                    没有匹配的 Session
+                  </Text>
                 )}
               </SideNavSection>
             ))

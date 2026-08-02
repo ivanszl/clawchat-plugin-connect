@@ -2,6 +2,33 @@ import { describe, expect, it } from "bun:test";
 import { SessionQueue } from "../src/runtime/session-queue";
 
 describe("SessionQueue", () => {
+  it("returns an immediate ticket and lets callers cancel queued work", async () => {
+    const queue = new SessionQueue({ maxConcurrentTurns: 1 });
+    let releaseFirst: () => void = () => undefined;
+    const first = queue.submit(
+      "a",
+      async () =>
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        }),
+    );
+    await Bun.sleep(0);
+    const secondRan: string[] = [];
+    const second = queue.submit("a", async () => {
+      secondRan.push("ran");
+    });
+
+    expect(first.state).toBe("running");
+    expect(second.state).toBe("queued");
+    expect(second.cancel()).toBe(true);
+    expect(second.state).toBe("cancelled");
+    await expect(second.completion).rejects.toThrow("cancelled before execution");
+    expect(secondRan).toEqual([]);
+
+    releaseFirst();
+    await first.completion;
+  });
+
   it("serializes turns per Session while allowing different Sessions", async () => {
     const queue = new SessionQueue({ maxConcurrentTurns: 2 });
     const order: string[] = [];

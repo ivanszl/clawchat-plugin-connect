@@ -10,7 +10,7 @@ import type {
 import { getAgentBinding } from "../config";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { type RuntimeActivity, type RuntimeTranscriptCompleteness, runtimeActivityOrdinal } from "../runtime/types";
-import type { ConnectStateStore } from "../state";
+import type { ConnectStateStore, TranscriptBlockInput } from "../state";
 import type { ConnectConfig, RuntimeSessionRecord } from "../types";
 
 export interface TranscriptProjectionOptions {
@@ -97,10 +97,16 @@ export class TranscriptProjection {
     );
     const claimed = new Set<string>();
     for (const candidate of optimistic) {
-      const stable = history.find((block) => !claimed.has(block.id) && block.plainText === candidate.plainText);
+      const stable = history.find(
+        (block) => !claimed.has(block.id) && clientPromptMatchesRuntimeHistory(candidate.plainText, block.plainText),
+      );
       if (!stable) continue;
       claimed.add(stable.id);
-      await this.options.stateStore.rekeyTranscriptBlock(sessionRef, candidate.id, stable);
+      await this.options.stateStore.rekeyTranscriptBlock(
+        sessionRef,
+        candidate.id,
+        preserveClientAuthoredPrompt(stable, candidate),
+      );
     }
   }
 
@@ -165,10 +171,14 @@ export class TranscriptProjection {
           block.role === "user" &&
           block.origin === "client" &&
           block.runtimeSource === undefined &&
-          block.plainText === input.plainText,
+          clientPromptMatchesRuntimeHistory(block.plainText, input.plainText),
       );
       if (optimistic) {
-        const block = await this.options.stateStore.rekeyTranscriptBlock(sessionRef, optimistic.id, input);
+        const block = await this.options.stateStore.rekeyTranscriptBlock(
+          sessionRef,
+          optimistic.id,
+          preserveClientAuthoredPrompt(input, optimistic),
+        );
         if (block) return block;
       }
     }
@@ -268,6 +278,31 @@ export class TranscriptProjection {
     }
     return { ...base, type: "unknown" as const, label: entry.kind, detail: text };
   }
+}
+
+function clientPromptMatchesRuntimeHistory(clientPrompt: string, runtimePrompt: string): boolean {
+  if (clientPrompt === runtimePrompt) return true;
+  if (!clientPrompt.startsWith("/")) return false;
+  return `$${clientPrompt.slice(1)}` === runtimePrompt;
+}
+
+function preserveClientAuthoredPrompt(
+  runtimeInput: TranscriptBlockInput,
+  clientBlock: TranscriptBlock,
+): TranscriptBlockInput {
+  if (
+    runtimeInput.type !== "message" ||
+    runtimeInput.role !== "user" ||
+    clientBlock.type !== "message" ||
+    clientBlock.role !== "user"
+  ) {
+    return runtimeInput;
+  }
+  return {
+    ...runtimeInput,
+    plainText: clientBlock.plainText,
+    markdown: clientBlock.markdown,
+  };
 }
 
 function runtimeActivitySequence(position: string): number | undefined {

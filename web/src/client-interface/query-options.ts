@@ -114,6 +114,16 @@ export async function respondToRuntimeInteraction(
   );
 }
 
+export async function withdrawQueuedTurn(sessionRef: string, turnId: string): Promise<void> {
+  await clientFetch(
+    `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(sessionRef)}/queued-turns/${encodeURIComponent(turnId)}/withdraw`,
+    {
+      method: "POST",
+      body: JSON.stringify({ requestId: requestId() }),
+    },
+  );
+}
+
 export async function createSession(input: Omit<CreateSessionRequest, "requestId">): Promise<SessionView> {
   return await clientFetch<SessionView>(`${CLIENT_API_PREFIX}/sessions`, {
     method: "POST",

@@ -19,110 +19,124 @@ try {
   const executablePath = await localChromiumPath();
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   try {
-    await verifyRuntimeApproval(browser, origin);
-    await verifyTranscriptCompletenessIsSilent(browser, origin);
-    await verifySessionNavigationStaysInSpa(browser, origin);
-    await verifyExternalTuiRefresh(browser, origin);
-    await verifyComposerWorkingState(browser, origin);
-    await verifyEmbeddedMobileNavigationDoesNotOverflow(browser, origin);
-    await verifySmallWindowNavigation(browser, origin);
-    await verifyResponsiveArtifactWorkspace(browser, origin);
-    await verifyTranscriptAlwaysFollowsLatest(browser, origin);
-    await verifyTranscriptPresentation(browser, origin);
-    await verifyContinueInClawChat(browser, origin);
-    await verifyImeConfirmationDoesNotSubmit(browser, origin);
-    await verifyComposerReturnsIdleAfterTurn(browser, origin);
-    await verifyComposerDoesNotStickAfterUnobservedFastTurn(browser, origin);
-    await verifySkillPicker(browser, origin);
-    const page = await browser.newPage();
-    const createRequests: unknown[] = [];
-    page.on("request", (request) => {
-      if (request.method() !== "POST" || new URL(request.url()).pathname !== "/client/v1/sessions") return;
-      createRequests.push(request.postDataJSON());
-    });
-    await page.goto(origin);
-    const projectViews = await page.evaluate(async () => await (await fetch("/client/v1/projects")).json());
-    const connectWorkspaceId = (projectViews as Array<{ workspaceId: string; name: string }>).find(
-      (project) => project.name === "clawchat-plugin-connect",
-    )?.workspaceId;
-    assert(connectWorkspaceId, "preview Project must expose its Workspace ID");
-    await expect(page.getByRole("heading", { name: "选择一个 Session" })).toBeVisible();
-    const navigation = page.locator(".session-nav");
-    await navigation.getByText("clawchat-plugin-connect", { exact: true }).click();
-    await expect(navigation.getByText("ABCDEFGH", { exact: false })).toHaveCount(0);
-    await expect(navigation.getByText("JKLMNPQR", { exact: false })).toHaveCount(0);
-    await expect(navigation.getByRole("img", { name: "空闲" })).toHaveCount(0);
-    await expect(navigation.getByRole("img", { name: "已连接" })).toHaveCount(1);
+    if (process.argv.includes("--astryx-regressions")) {
+      await verifyRuntimeApproval(browser, origin);
+      await verifyQueuedTurnControls(browser, origin);
+      await verifyTextOnlySubmissionCopy(browser, origin);
+      await verifySkillPicker(browser, origin);
+      await verifyCollapsedSessionNavigation(browser, origin);
+      process.stdout.write("Verified Astryx composer, queue, Skill picker, and collapsed SideNav regressions.\n");
+    } else {
+      await verifyRuntimeApproval(browser, origin);
+      await verifyTranscriptCompletenessIsSilent(browser, origin);
+      await verifySessionNavigationStaysInSpa(browser, origin);
+      await verifyExternalTuiRefresh(browser, origin);
+      await verifyComposerWorkingState(browser, origin);
+      await verifyEmbeddedMobileNavigationDoesNotOverflow(browser, origin);
+      await verifySmallWindowNavigation(browser, origin);
+      await verifyResponsiveArtifactWorkspace(browser, origin);
+      await verifyTranscriptAlwaysFollowsLatest(browser, origin);
+      await verifyTranscriptPresentation(browser, origin);
+      await verifyContinueInClawChat(browser, origin);
+      await verifyImeConfirmationDoesNotSubmit(browser, origin);
+      await verifyComposerReturnsIdleAfterTurn(browser, origin);
+      await verifyComposerDoesNotStickAfterUnobservedFastTurn(browser, origin);
+      await verifyQueuedTurnControls(browser, origin);
+      await verifyTextOnlySubmissionCopy(browser, origin);
+      await verifySkillPicker(browser, origin);
+      await verifyCollapsedSessionNavigation(browser, origin);
+      const page = await browser.newPage();
+      const createRequests: unknown[] = [];
+      page.on("request", (request) => {
+        if (request.method() !== "POST" || new URL(request.url()).pathname !== "/client/v1/sessions") return;
+        createRequests.push(request.postDataJSON());
+      });
+      await page.goto(origin);
+      const projectViews = await page.evaluate(async () => await (await fetch("/client/v1/projects")).json());
+      const connectWorkspaceId = (projectViews as Array<{ workspaceId: string; name: string }>).find(
+        (project) => project.name === "clawchat-plugin-connect",
+      )?.workspaceId;
+      assert(connectWorkspaceId, "preview Project must expose its Workspace ID");
+      await expect(page.getByRole("heading", { name: "选择一个 Session" })).toBeVisible();
+      const navigation = page.locator(".session-nav");
+      await navigation.getByText("clawchat-plugin-connect", { exact: true }).click();
+      await expect(navigation.getByText("ABCDEFGH", { exact: false })).toHaveCount(0);
+      await expect(navigation.getByText("JKLMNPQR", { exact: false })).toHaveCount(0);
+      await expect(navigation.getByRole("img", { name: "空闲" })).toHaveCount(0);
+      await expect(navigation.getByRole("img", { name: "已连接" })).toHaveCount(1);
 
-    await page.getByRole("button", { name: "新建 Session" }).click();
-    const dialog = page.getByRole("dialog");
-    await expect(dialog).toBeVisible();
-    await dialog.getByRole("textbox", { name: /^名称/u }).fill("Browser-created Session");
-    await expect(dialog.getByRole("textbox", { name: "首个任务" })).toHaveCount(0);
-    await dialog.getByRole("combobox", { name: "Project" }).click();
-    await expect(page.getByRole("option", { name: "discovered-workspace", exact: true })).toHaveCount(1);
-    await expect(page.getByText("已发现工作区", { exact: false })).toHaveCount(0);
-    await expect(page.getByRole("option", { name: "clawchat-plugin-connect", exact: true })).toBeVisible();
-    await expect(page.getByRole("option", { name: "connect-qa", exact: true })).toHaveCount(0);
-    await page.keyboard.press("Escape");
-    await choose(page, dialog.getByRole("combobox", { name: "Project" }), "clawchat-plugin-connect");
-    await choose(page, dialog.getByRole("combobox", { name: "模式" }), "read-only");
-    await choose(page, dialog.getByRole("combobox", { name: "模型" }), "Deep model (gpt-deep)");
+      await page.getByRole("button", { name: "新建 Session" }).click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      await dialog.getByRole("textbox", { name: /^名称/u }).fill("Browser-created Session");
+      await expect(dialog.getByRole("textbox", { name: "首个任务" })).toHaveCount(0);
+      await dialog.getByRole("combobox", { name: "Project" }).click();
+      await expect(page.getByRole("option", { name: "discovered-workspace", exact: true })).toHaveCount(1);
+      await expect(page.getByText("已发现工作区", { exact: false })).toHaveCount(0);
+      await expect(page.getByRole("option", { name: "clawchat-plugin-connect", exact: true })).toBeVisible();
+      await expect(page.getByRole("option", { name: "connect-qa", exact: true })).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      await choose(page, dialog.getByRole("combobox", { name: "Project" }), "clawchat-plugin-connect");
+      await choose(page, dialog.getByRole("combobox", { name: "模式" }), "read-only");
+      await choose(page, dialog.getByRole("combobox", { name: "模型" }), "Deep model (gpt-deep)");
 
-    const effort = dialog.getByRole("combobox", { name: "推理强度" });
-    await expect(effort).toContainText("high");
-    await effort.click();
-    await expect(page.getByRole("option", { name: "xhigh", exact: true })).toBeVisible();
-    await page.getByRole("option", { name: "xhigh", exact: true }).click();
-    await dialog.getByRole("button", { name: "创建 Session" }).click();
+      const effort = dialog.getByRole("combobox", { name: "推理强度" });
+      await expect(effort).toContainText("high");
+      await effort.click();
+      await expect(page.getByRole("option", { name: "xhigh", exact: true })).toBeVisible();
+      await page.getByRole("option", { name: "xhigh", exact: true }).click();
+      await dialog.getByRole("button", { name: "创建 Session" }).click();
 
-    await expect(page.getByRole("heading", { name: "Browser-created Session" })).toBeVisible();
-    const createdSessionRef = new URL(page.url()).pathname.split("/").at(-1);
-    assert(createdSessionRef, "created Session URL must include its Session Ref");
-    await expect(page.locator(".session-header").getByText(/clawchat-plugin-connect/iu)).toHaveCount(0);
-    await expect(page.locator(".composer-note")).toHaveText(`clawchat-plugin-connect / ${createdSessionRef}`);
-    await expect(page.getByRole("link", { name: "继续在 ClawChat 聊天" })).toHaveCount(0);
-    await expect(page.locator(".session-header").getByRole("combobox", { name: "Session 模型" })).toHaveCount(0);
-    const modelTrigger = page.getByRole("button", { name: /模型设置：Deep model · xhigh/u });
-    await expect(modelTrigger).toBeVisible();
-    await modelTrigger.click();
-    const modelPopover = page.getByRole("dialog", { name: "Session 模型设置" });
-    await expect(modelPopover.getByRole("combobox", { name: "Session 模型" })).toContainText("Deep model");
-    await expect(modelPopover.getByRole("combobox", { name: "推理强度" })).toContainText("xhigh");
-    await page.keyboard.press("Escape");
-    assert.equal(createRequests.length, 1, "new Session UI must submit one semantic request");
-    assert.deepEqual(withoutRequestId(createRequests[0]), {
-      bindingId: "codex",
-      workspaceId: connectWorkspaceId,
-      name: "Browser-created Session",
-      mode: "read-only",
-      model: "gpt-deep",
-      reasoningEffort: "xhigh",
-    });
+      await expect(page.getByRole("heading", { name: "Browser-created Session" })).toBeVisible();
+      const createdSessionRef = new URL(page.url()).pathname.split("/").at(-1);
+      assert(createdSessionRef, "created Session URL must include its Session Ref");
+      await expect(page.locator(".session-header").getByText(/clawchat-plugin-connect/iu)).toHaveCount(0);
+      await expect(page.locator(".composer-note")).toHaveText(`clawchat-plugin-connect / ${createdSessionRef}`);
+      await expect(page.getByRole("link", { name: "继续在 ClawChat 聊天" })).toHaveCount(0);
+      await expect(page.locator(".session-header").getByRole("combobox", { name: "Session 模型" })).toHaveCount(0);
+      const modelTrigger = page.getByRole("button", { name: /模型设置：Deep model · xhigh/u });
+      await expect(modelTrigger).toBeVisible();
+      await modelTrigger.click();
+      const modelPopover = page.getByRole("dialog", { name: "Session 模型设置" });
+      await expect(modelPopover.getByRole("combobox", { name: "Session 模型" })).toContainText("Deep model");
+      await expect(modelPopover.getByRole("combobox", { name: "推理强度" })).toContainText("xhigh");
+      await page.keyboard.press("Escape");
+      assert.equal(createRequests.length, 1, "new Session UI must submit one semantic request");
+      assert.deepEqual(withoutRequestId(createRequests[0]), {
+        bindingId: "codex",
+        workspaceId: connectWorkspaceId,
+        name: "Browser-created Session",
+        mode: "read-only",
+        model: "gpt-deep",
+        reasoningEffort: "xhigh",
+      });
 
-    await page.getByText("Non-Project scratch", { exact: true }).click();
-    await expect(page.getByRole("heading", { name: "Non-Project scratch" })).toBeVisible();
-    await page.getByRole("button", { name: /模型设置：gpt-removed · high/u }).click();
-    const unavailablePopover = page.getByRole("dialog", { name: "Session 模型设置" });
-    await expect(unavailablePopover.getByText("模型不可用", { exact: true })).toBeVisible();
-    await expect(unavailablePopover.getByRole("combobox", { name: "Session 模型" })).toContainText(
-      "gpt-removed（不可用）",
-    );
-    await page.keyboard.press("Escape");
+      await page.getByText("Non-Project scratch", { exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Non-Project scratch" })).toBeVisible();
+      await page.getByRole("button", { name: /模型设置：gpt-removed · high/u }).click();
+      const unavailablePopover = page.getByRole("dialog", { name: "Session 模型设置" });
+      await expect(unavailablePopover.getByText("模型不可用", { exact: true })).toBeVisible();
+      await expect(unavailablePopover.getByRole("combobox", { name: "Session 模型" })).toContainText(
+        "gpt-removed（不可用）",
+      );
+      await page.keyboard.press("Escape");
 
-    await verifyLongSessionNameDoesNotOverflow(page);
-    await page.getByRole("button", { name: "设置", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "安全偏好设置" })).toBeVisible();
-    await page
-      .locator(".project-settings-row")
-      .filter({ hasText: "clawchat-plugin-connect" })
-      .getByRole("button", { name: "移除", exact: true })
-      .click();
-    await expect(page.getByRole("alert").filter({ hasText: "移除失败" })).toContainText("still reference this Project");
+      await verifyLongSessionNameDoesNotOverflow(page);
+      await page.getByRole("button", { name: "设置", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "安全偏好设置" })).toBeVisible();
+      await page
+        .locator(".project-settings-row")
+        .filter({ hasText: "clawchat-plugin-connect" })
+        .getByRole("button", { name: "移除", exact: true })
+        .click();
+      await expect(page.getByRole("alert").filter({ hasText: "移除失败" })).toContainText(
+        "still reference this Project",
+      );
 
-    process.stdout.write(
-      "Verified accessible Connect Client Session creation, model choices, unavailable state, and Project conflicts.\n",
-    );
+      process.stdout.write(
+        "Verified accessible Connect Client Session creation, model choices, unavailable state, and Project conflicts.\n",
+      );
+    }
   } finally {
     await browser.close();
   }
@@ -228,7 +242,7 @@ async function verifyImeConfirmationDoesNotSubmit(
     });
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
-    const input = page.locator(".session-composer [contenteditable='true']");
+    const input = page.getByRole("combobox", { name: "Message input" });
     await input.fill("中文");
     await input.dispatchEvent("compositionstart");
     await input.dispatchEvent("keydown", {
@@ -267,15 +281,24 @@ async function verifySkillPicker(browser: Awaited<ReturnType<typeof chromium.lau
     await input.fill("/gr");
     const picker = page.getByRole("listbox", { name: "命令和 Skills" });
     await expect(picker).toBeVisible();
+    const inputBox = await input.locator("..").boundingBox();
+    const pickerBox = await picker.boundingBox();
+    assert(inputBox && pickerBox, "Skill picker and ChatComposerInput must have measurable bounds");
+    assert(
+      Math.abs(pickerBox.x - inputBox.x) <= 2 && Math.abs(pickerBox.width - inputBox.width) <= 2,
+      `Skill picker must align to the ChatComposerInput instead of the viewport: ${JSON.stringify({ inputBox, pickerBox })}`,
+    );
     await expect(picker.getByRole("option", { name: /grill-with-docs/u })).toContainText("结合官方文档追问并检验方案");
     await expect(picker).not.toContainText("/repo/");
     await input.fill("/com");
     await expect(picker.getByRole("option", { name: /compact/u })).toContainText("Compact the Session context");
     await picker.getByRole("option", { name: /compact/u }).click();
     await expect(input).toHaveText("/compact ");
+    await expect(input.locator('[data-astryx-token-value="/compact"]')).toHaveCount(1);
     await input.fill("/gr");
     await picker.getByRole("option", { name: /grill-with-docs/u }).click();
     await expect(input).toHaveText("/grill-with-docs ");
+    await expect(input.locator('[data-astryx-token-value="/grill-with-docs"]')).toHaveCount(1);
     await input.fill("/res");
     await picker.getByRole("option", { name: /research/u }).click();
     await expect(input).toHaveText("/research ");
@@ -284,6 +307,108 @@ async function verifySkillPicker(browser: Awaited<ReturnType<typeof chromium.lau
     await input.fill("/grill-with-docs 评审 Skill discovery 方案");
     await page.getByRole("button", { name: "Send" }).click();
     await expect(page.getByText("/grill-with-docs 评审 Skill discovery 方案", { exact: true })).toBeVisible();
+  } finally {
+    await page.close();
+  }
+}
+
+async function verifyCollapsedSessionNavigation(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  try {
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    const navigation = page.locator(".session-nav");
+    await navigation.getByRole("button", { name: /折叠|Collapse sidebar/iu }).click();
+    await expect(navigation).toHaveAttribute("data-mode", "collapsed");
+    await expect(navigation.getByRole("textbox", { name: "搜索 Session" })).toHaveCount(0);
+    await expect(navigation.locator(".astryx-tree-list")).toHaveCount(0);
+    const navigationBox = await navigation.boundingBox();
+    const createBox = await navigation.getByRole("button", { name: "新建 Session" }).boundingBox();
+    assert(navigationBox && createBox, "collapsed SideNav and create button must have measurable bounds");
+    assert(
+      createBox.x >= navigationBox.x && createBox.x + createBox.width <= navigationBox.x + navigationBox.width,
+      `collapsed SideNav create button must remain inside the rail: ${JSON.stringify({ navigationBox, createBox })}`,
+    );
+  } finally {
+    await page.close();
+  }
+}
+
+async function verifyTextOnlySubmissionCopy(
+  browser: Awaited<ReturnType<typeof chromium.launch>>,
+  previewOrigin: string,
+) {
+  const page = await browser.newPage();
+  try {
+    await page.route(/\/client\/v1\/sessions\/ABCDEFGH\/turn-submissions\//u, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({ accepted: true, turnId: "delayed-text-turn", sessionRef: "ABCDEFGH" }),
+      });
+    });
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+    const input = page.locator(".session-composer [contenteditable='true']");
+    await input.fill("纯文本提交状态文案");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const progress = page.locator(".composer-submission-progress");
+    await expect(progress).toBeVisible();
+    await expect(progress).not.toContainText("附件");
+  } finally {
+    await page.close();
+  }
+}
+
+async function verifyQueuedTurnControls(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
+  const page = await browser.newPage();
+  const queuedTurns: Array<Record<string, unknown>> = [];
+  try {
+    await page.route(/\/client\/v1\/events/u, async (route) => await route.abort("blockedbyclient"));
+    await page.route(/\/client\/v1\/sessions\/ABCDEFGH(?:\?refresh=1)?$/u, async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as Record<string, unknown>;
+      await route.fulfill({ response, json: { ...body, status: "running", queuedTurns } });
+    });
+    await page.route(/\/client\/v1\/sessions\/ABCDEFGH\/turn-submissions\//u, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      queuedTurns.push({
+        turnId: "queued-ui-turn",
+        prompt: "撤回后继续编辑这条消息",
+        selection: null,
+        attachments: [],
+        createdAt: new Date(0).toISOString(),
+      });
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({ accepted: true, turnId: "queued-ui-turn", sessionRef: "ABCDEFGH" }),
+      });
+    });
+    await page.route(/\/client\/v1\/sessions\/ABCDEFGH\/queued-turns\/queued-ui-turn\/withdraw$/u, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      queuedTurns.splice(0);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ cancelled: true, turnId: "queued-ui-turn", sessionRef: "ABCDEFGH" }),
+      });
+    });
+    await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
+    const input = page.getByRole("combobox", { name: "Message input" });
+    await input.fill("撤回后继续编辑这条消息");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    const queue = page.locator(".composer-queue");
+    await expect(input).toHaveText("", { timeout: 250 });
+    await expect(queue).toContainText("撤回后继续编辑这条消息", { timeout: 250 });
+    await expect(queue).toContainText("正在提交", { timeout: 250 });
+    await expect(queue).toContainText("等待当前任务完成后发送", { timeout: 2_000 });
+    await queue.getByRole("button", { name: "撤回并编辑" }).click();
+    await expect(queue).toHaveCount(0, { timeout: 250 });
+    await expect(input).toHaveText("撤回后继续编辑这条消息", { timeout: 250 });
   } finally {
     await page.close();
   }

@@ -5,6 +5,7 @@ import {
   ChatMessageBubble,
   ChatMessageMetadata,
   ChatSystemMessage,
+  ChatTokenizedText,
   type ChatToolCallItem,
   type ChatToolCallStatus,
   ChatToolCalls,
@@ -18,22 +19,28 @@ import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import type {
   EmbeddedTranscriptBlock,
   RuntimeInteractionBlock,
+  SlashSuggestionView,
   TranscriptBlock,
 } from "../../../../src/client-contract";
 import { normalizeWorkspaceArtifactHref, workspaceArtifactUrl } from "../../../../src/workspace-artifact";
 import { respondToRuntimeInteraction } from "../../client-interface/query-options";
+import { leadingSlashSuggestion, slashSuggestionToken } from "../slash-suggestions";
 
 export function TranscriptBlockView({
   block,
   sessionRef,
   onOpenArtifact,
+  slashSuggestions = [],
 }: {
   block: TranscriptBlock | EmbeddedTranscriptBlock;
   sessionRef: string;
   onOpenArtifact?: (path: string) => void;
+  slashSuggestions?: SlashSuggestionView[];
 }) {
   if (block.type === "message") {
     const sender = block.role === "user" ? "user" : "assistant";
+    const markdown = visibleMessageMarkdown(block);
+    const selectedSlash = sender === "user" ? leadingSlashSuggestion(markdown, slashSuggestions) : null;
     return (
       <ChatMessage sender={sender} density="balanced">
         <ChatMessageBubble
@@ -60,14 +67,23 @@ export function TranscriptBlockView({
               </a>
             ) : null,
           )}
-          {visibleMessageMarkdown(block) ? (
-            <SafeMarkdown
-              markdown={visibleMessageMarkdown(block)}
-              isStreaming={block.state === "streaming"}
-              preserveLineBreaks
-              sessionRef={sessionRef}
-              onOpenArtifact={onOpenArtifact}
-            />
+          {markdown ? (
+            selectedSlash ? (
+              <ChatTokenizedText
+                className="transcript-message-tokenized"
+                tokens={[slashSuggestionToken(selectedSlash)]}
+              >
+                {markdown}
+              </ChatTokenizedText>
+            ) : (
+              <SafeMarkdown
+                markdown={markdown}
+                isStreaming={block.state === "streaming"}
+                preserveLineBreaks
+                sessionRef={sessionRef}
+                onOpenArtifact={onOpenArtifact}
+              />
+            )
           ) : null}
         </ChatMessageBubble>
       </ChatMessage>
@@ -86,7 +102,12 @@ export function TranscriptBlockView({
             {block.blocks.length > 0 ? (
               block.blocks.map((child) => (
                 <article className="subagent-transcript-item" data-block-type={child.type} key={child.id}>
-                  <TranscriptBlockView block={child} sessionRef={sessionRef} onOpenArtifact={onOpenArtifact} />
+                  <TranscriptBlockView
+                    block={child}
+                    sessionRef={sessionRef}
+                    onOpenArtifact={onOpenArtifact}
+                    slashSuggestions={slashSuggestions}
+                  />
                 </article>
               ))
             ) : (

@@ -37,7 +37,7 @@ export const Route = createFileRoute("/sessions/$sessionRef")({ component: Sessi
 function SessionPage() {
   const { sessionRef } = Route.useParams();
   const session = useQuery(sessionQueryOptions(sessionRef));
-  useQuery(slashSuggestionsQueryOptions(sessionRef));
+  const slashSuggestions = useQuery(slashSuggestionsQueryOptions(sessionRef));
   const transcript = useInfiniteQuery(transcriptQueryOptions(sessionRef));
   const bootstrap = useQuery(bootstrapQueryOptions);
   const queryClient = useQueryClient();
@@ -179,6 +179,7 @@ function SessionPage() {
               isLoadingOlder={transcript.isFetchingNextPage}
               loadOlder={transcript.fetchNextPage}
               onOpenArtifact={artifactWorkspace.open}
+              slashSuggestions={slashSuggestions.data?.entries ?? []}
             />
           </div>
           <div className="session-composer-surface">
@@ -189,6 +190,9 @@ function SessionPage() {
               canSend={view.allowedActions.includes("send") && view.status !== "offline"}
               isRuntimeActive={view.status === "running" || view.status === "queued"}
               capability={view.turnSubmissionCapability}
+              slashSuggestions={slashSuggestions.data?.entries ?? []}
+              queuedTurns={view.queuedTurns}
+              slashSuggestionsError={slashSuggestions.isError}
               hasPendingInteraction={view.pendingInteractions.length > 0}
               modelControl={<SessionModelControls view={view} />}
             />

@@ -115,6 +115,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     sessionActivity: async (bindingId, sessionRef) =>
       (await runtimes.get(bindingId)?.sessionActivity?.(sessionRef)) ?? "idle",
     activeTurnId: (bindingId, sessionRef) => runtimes.get(bindingId)?.activeClientTurnId?.(sessionRef) ?? null,
+    queuedTurns: (bindingId, sessionRef) => runtimes.get(bindingId)?.queuedClientTurns?.(sessionRef) ?? [],
     claimSessionLifecycle: async (bindingId, sessionRef) => {
       const claim = runtimes.get(bindingId)?.claimSessionLifecycle;
       return claim ? await claim(sessionRef) : async () => undefined;
@@ -860,6 +861,33 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 return view
                   ? { status: 200, body: view }
                   : commandError(404, "session-not-found", "Session was not found");
+              },
+            );
+          }
+          const queuedTurnMatch = url.pathname.match(
+            /^\/client\/v1\/sessions\/([^/]+)\/queued-turns\/([^/]+)\/withdraw$/u,
+          );
+          if (queuedTurnMatch && request.method === "POST") {
+            const sessionRef = normalizeSessionRef(queuedTurnMatch[1] ?? "");
+            const turnId = decodeURIComponent(queuedTurnMatch[2] ?? "");
+            if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
+            if (!turnId) return errorResponse(400, "invalid-turn-id", "turnId is required");
+            const body = await readJsonBody<{ requestId?: string }>(request);
+            if (!validRequestId(body.requestId))
+              return errorResponse(400, "invalid-request-id", "requestId is required");
+            return await idempotentCommand(
+              options.stateStore,
+              body.requestId,
+              "queued-turn.withdraw",
+              `${sessionRef}:${turnId}`,
+              async () => {
+                const session = await options.stateStore.getRuntimeSessionByRef(sessionRef);
+                const runtime = session ? runtimes.get(session.agentId) : null;
+                const cancelled = runtime?.cancelQueuedClientTurn?.(sessionRef, turnId) ?? false;
+                if (!cancelled) return commandError(409, "queued-turn-not-found", "Queued turn is no longer pending");
+                catalog.invalidate();
+                await publishClientViews();
+                return { status: 200, body: { cancelled: true, sessionRef, turnId } };
               },
             );
           }

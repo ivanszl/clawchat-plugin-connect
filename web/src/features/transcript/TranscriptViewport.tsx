@@ -4,7 +4,7 @@ import { EmptyState } from "@astryxdesign/core/EmptyState";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { TranscriptBlock, TranscriptPageView } from "../../../../src/client-contract";
+import type { SlashSuggestionView, TranscriptBlock, TranscriptPageView } from "../../../../src/client-contract";
 import { ThreadIcon } from "../../components/icons";
 import { TranscriptBlockView, TranscriptToolCallsView } from "./TranscriptBlockView";
 import { groupBlocksForRendering, groupTranscriptBlocks, type TranscriptGroup } from "./transcript-render-groups";
@@ -14,6 +14,7 @@ export interface TranscriptViewportProps {
   pages: TranscriptPageView[];
   hasOlder: boolean;
   isLoadingOlder: boolean;
+  slashSuggestions: SlashSuggestionView[];
   loadOlder(): Promise<unknown>;
   onOpenArtifact?: (path: string) => void;
 }
@@ -23,6 +24,7 @@ export function TranscriptViewport({
   pages,
   hasOlder,
   isLoadingOlder,
+  slashSuggestions,
   loadOlder,
   onOpenArtifact,
 }: TranscriptViewportProps) {
@@ -151,6 +153,7 @@ export function TranscriptViewport({
                           block={entry.block}
                           sessionRef={sessionRef}
                           onOpenArtifact={onOpenArtifact}
+                          slashSuggestions={slashSuggestions}
                         />
                       </div>
                     ),

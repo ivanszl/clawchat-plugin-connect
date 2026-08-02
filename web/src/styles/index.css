@@ -37,32 +37,10 @@ textarea {
   min-height: 0;
 }
 
-.session-nav-tools {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: var(--spacing-2);
-  padding: 0 var(--spacing-2) var(--spacing-2);
-}
-
 .top-nav-actions {
   display: flex;
   align-items: center;
   gap: var(--spacing-1);
-}
-
-.nav-loading,
-.nav-error,
-.nav-empty {
-  display: flex;
-  justify-content: center;
-  padding: var(--spacing-4);
-  color: var(--color-text-secondary);
-  text-align: center;
-}
-
-.nav-error {
-  color: var(--color-text-red);
 }
 
 .home-page {
@@ -288,6 +266,10 @@ textarea {
   white-space: pre-wrap;
 }
 
+.transcript-message-tokenized {
+  white-space: pre-wrap;
+}
+
 .runtime-block {
   max-width: 780px;
   margin-inline: auto;
@@ -451,46 +433,6 @@ textarea {
   margin: 0 auto;
   padding: var(--spacing-2) clamp(14px, 4vw, 42px) var(--spacing-4);
   background: linear-gradient(0deg, var(--color-background-surface) 76%, transparent);
-}
-
-.slash-suggestions {
-  position: absolute;
-  z-index: 6;
-  right: clamp(14px, 4vw, 42px);
-  bottom: calc(100% - var(--spacing-2));
-  left: clamp(14px, 4vw, 42px);
-  display: grid;
-  max-height: min(360px, 45vh);
-  padding: var(--spacing-1);
-  overflow-y: auto;
-  border: 1px solid var(--color-border);
-  border-radius: var(--border-radius-lg);
-  background: var(--color-background-surface);
-  box-shadow: var(--shadow-lg);
-}
-
-.slash-suggestion,
-.slash-suggestion-error {
-  display: grid;
-  gap: 2px;
-  padding: var(--spacing-2);
-  border: 0;
-  border-radius: var(--border-radius-md);
-  background: transparent;
-  color: var(--color-text-primary);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.slash-suggestion small {
-  color: var(--color-text-secondary);
-}
-
-.slash-suggestion:hover,
-.slash-suggestion[aria-selected="true"],
-.slash-suggestion-error:hover {
-  background: var(--color-background-muted);
 }
 
 .artifact-dock {
@@ -838,9 +780,6 @@ textarea {
 
 .composer-submission-progress {
   margin-bottom: var(--spacing-1);
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  text-align: center;
 }
 
 .composer-context-actions {
@@ -865,32 +804,6 @@ textarea {
   height: 1px;
   overflow: hidden;
   clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.composer-attachments {
-  display: flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: var(--spacing-2);
-}
-
-.composer-attachment {
-  display: flex;
-  max-width: min(100%, 300px);
-  min-width: 0;
-  align-items: center;
-  gap: var(--spacing-1);
-  padding: 2px 4px 2px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--border-radius-lg);
-  background: var(--color-background-surface);
-}
-
-.composer-attachment > span {
-  overflow: hidden;
-  font-size: var(--font-size-sm);
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

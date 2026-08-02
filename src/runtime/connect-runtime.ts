@@ -35,11 +35,12 @@ import type { ConnectWsClient } from "../ws-client";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
 import type { RuntimeAdapterRegistry } from "./registry";
-import { type QueueStats, type SessionActivity, SessionQueue } from "./session-queue";
+import { type QueueStats, type SessionActivity, SessionQueue, type SessionQueueTicket } from "./session-queue";
 import { SessionTurnExecutor } from "./session-turn-executor";
 import { ClawChatTurnSurface, ClientTurnSurface } from "./turn-surface";
 import type {
   ConnectRuntimeMedia,
+  QueuedClientTurn,
   RuntimeInteractionPort,
   RuntimeModelOption,
   RuntimeSlashSelection,
@@ -66,6 +67,7 @@ export class ConnectRuntime {
   private readonly executor: SessionTurnExecutor;
   private readonly activeTurnSessionChats = new Map<string, string>();
   private readonly acceptedClientTurnIds = new Map<string, string>();
+  private readonly clientTurnTickets = new Map<string, { turn: QueuedClientTurn; ticket: SessionQueueTicket }>();
   private readonly routingTails = new Map<string, Promise<void>>();
   private readonly hydratedSenderIds = new Set<string>();
   private readonly queue: SessionQueue;
@@ -217,7 +219,7 @@ export class ConnectRuntime {
       );
     }
     signal?.throwIfAborted();
-    const completion = this.queue.enqueue(
+    const ticket = this.queue.submit(
       key,
       async () => {
         this.activeTurnSessionChats.set(key, current.chatId);
@@ -231,15 +233,41 @@ export class ConnectRuntime {
       },
       `Session ${current.sessionRef}`,
     );
+    const turn: QueuedClientTurn = {
+      turnId,
+      sessionRef: current.sessionRef,
+      prompt: text,
+      selection,
+      attachments: media.map((item) => ({ name: item.name ?? "附件" })),
+      createdAt: new Date().toISOString(),
+    };
+    this.clientTurnTickets.set(turnId, { turn, ticket });
     this.acceptedClientTurnIds.set(current.sessionRef, turnId);
-    void completion
+    void ticket.completion
       .catch(() => undefined)
       .finally(() => {
+        this.clientTurnTickets.delete(turnId);
         if (this.acceptedClientTurnIds.get(current.sessionRef) === turnId) {
           this.acceptedClientTurnIds.delete(current.sessionRef);
         }
       });
     return { turnId, sessionRef: current.sessionRef };
+  }
+
+  queuedClientTurns(sessionRef: string): QueuedClientTurn[] {
+    const normalized = sessionRef.toUpperCase();
+    return [...this.clientTurnTickets.values()]
+      .filter(({ turn, ticket }) => turn.sessionRef.toUpperCase() === normalized && ticket.state === "queued")
+      .map(({ turn }) => turn)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  cancelQueuedClientTurn(sessionRef: string, turnId: string): boolean {
+    const queued = this.clientTurnTickets.get(turnId);
+    if (!queued || queued.turn.sessionRef.toUpperCase() !== sessionRef.toUpperCase()) return false;
+    const cancelled = queued.ticket.cancel();
+    if (cancelled) this.clientTurnTickets.delete(turnId);
+    return cancelled;
   }
 
   async cancelClientTurn(sessionRef: string): Promise<boolean> {

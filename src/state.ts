@@ -2710,10 +2710,18 @@ function preserveConnectOwnedMessageMetadata(
     ...input,
     origin: stored.origin,
     author: stored.author,
+    ...(connectPromptMatchesRuntimeHistory(stored.plainText, input.plainText)
+      ? { plainText: stored.plainText, markdown: stored.markdown }
+      : {}),
     ...(stored.sender ? { sender: stored.sender } : {}),
     ...(stored.conversationType ? { conversationType: stored.conversationType } : {}),
     ...(stored.media && !input.media ? { media: stored.media } : {}),
   };
+}
+function connectPromptMatchesRuntimeHistory(connectPrompt: string, runtimePrompt: string): boolean {
+  return (
+    connectPrompt === runtimePrompt || (connectPrompt.startsWith("/") && `$${connectPrompt.slice(1)}` === runtimePrompt)
+  );
 }
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : Number(value ?? 0) || 0;

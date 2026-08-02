@@ -217,11 +217,20 @@ describe("Connect Client Interface", () => {
         sessionRef,
       }),
     );
+    const queuedTurns: import("../src/runtime/types").QueuedClientTurn[] = [];
+    const cancelQueuedClientTurn = mock((_sessionRef: string, turnId: string) => {
+      const index = queuedTurns.findIndex((turn) => turn.turnId === turnId);
+      if (index < 0) return false;
+      queuedTurns.splice(index, 1);
+      return true;
+    });
     const runtime: BindingRuntimeHandle = {
       agentId: "codex",
       websocketUrl: config.websocketUrl,
       deviceId: "device-1",
       enqueueClientTurn,
+      queuedClientTurns: () => queuedTurns,
+      cancelQueuedClientTurn,
       close: async () => undefined,
     };
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
@@ -726,6 +735,39 @@ describe("Connect Client Interface", () => {
     expect(listModels.mock.calls.length - modelReadsBeforeSubmission).toBe(0);
     expect(listSessionOptions.mock.calls.length - optionReadsBeforeSubmission).toBe(0);
     await expect(turn.json()).resolves.toEqual({ accepted: true, turnId: "turn-123", sessionRef: session.sessionRef });
+    queuedTurns.push({
+      turnId: "turn-queued",
+      sessionRef: session.sessionRef,
+      prompt: "edit this queued prompt",
+      selection: null,
+      attachments: [],
+      createdAt: new Date(0).toISOString(),
+    });
+    const queuedSession = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}?refresh=1`,
+    );
+    await expect(queuedSession.json()).resolves.toMatchObject({
+      queuedTurns: [{ turnId: "turn-queued", prompt: "edit this queued prompt" }],
+    });
+    const withdrawn = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/queued-turns/turn-queued/withdraw`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({ requestId: "withdraw_queued_1" }),
+      },
+    );
+    expect(withdrawn.status).toBe(200);
+    await expect(withdrawn.json()).resolves.toEqual({
+      cancelled: true,
+      sessionRef: session.sessionRef,
+      turnId: "turn-queued",
+    });
+    expect(cancelQueuedClientTurn).toHaveBeenCalledWith(session.sessionRef, "turn-queued");
     expect(enqueueClientTurn).toHaveBeenCalledWith(
       session.sessionRef,
       "/grill-with-docs from web",

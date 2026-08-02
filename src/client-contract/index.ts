@@ -234,11 +234,20 @@ export interface SessionView {
   status: "idle" | "running" | "queued" | "offline" | "error";
   runtimeThreadAvailable: boolean;
   activeTurnId: string | null;
+  queuedTurns: QueuedTurnView[];
   transcriptCompleteness: "complete" | "partial" | "live-only";
   pendingInteractions: RuntimeInteractionBlock[];
   turnSubmissionCapability: TurnSubmissionCapability;
   allowedActions: SessionAction[];
   updatedAt: string;
+}
+
+export interface QueuedTurnView {
+  turnId: string;
+  prompt: string;
+  selection: SlashSuggestionView | null;
+  attachments: Array<{ name: string }>;
+  createdAt: string;
 }
 
 export interface TurnSubmissionCapability {

@@ -77,6 +77,25 @@ describe("Connect Client session layout", () => {
     expect(composer).not.toContain("等待 Session 队列接收");
   });
 
+  it("uses Astryx Chat primitives for slash selection, tokenized messages, attachments, and progress", async () => {
+    const [composer, transcript, stylesheet] = await Promise.all([
+      Bun.file(sessionComposerUrl).text(),
+      Bun.file(transcriptBlockUrl).text(),
+      Bun.file(stylesheetUrl).text(),
+    ]);
+
+    expect(composer).toContain("type ChatComposerTrigger");
+    expect(composer).toContain("triggers={[slashTrigger]}");
+    expect(composer).toContain("<TypeaheadItem");
+    expect(composer).toContain("<Token");
+    expect(composer).toContain("<ProgressBar");
+    expect(composer).not.toContain('className="slash-suggestions"');
+    expect(composer).not.toContain("onKeyDownCapture");
+    expect(stylesheet).not.toContain(".slash-suggestions");
+    expect(stylesheet).not.toContain(".composer-attachment");
+    expect(transcript).toContain("<ChatTokenizedText");
+  });
+
   it("keeps a pointer-accessible enqueue action while the Agent is working", async () => {
     const composer = await Bun.file(sessionComposerUrl).text();
 

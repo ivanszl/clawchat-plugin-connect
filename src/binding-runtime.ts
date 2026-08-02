@@ -16,7 +16,7 @@ import type { RuntimeAdapterRegistry } from "./runtime/registry";
 import type { RuntimeInteractionCoordinator } from "./runtime/runtime-interaction-coordinator";
 import { RuntimeInteractionRouter } from "./runtime/runtime-interaction-router";
 import type { SessionActivity } from "./runtime/session-queue";
-import type { ConnectRuntimeMedia, RuntimeSlashSelection } from "./runtime/types";
+import type { ConnectRuntimeMedia, QueuedClientTurn, RuntimeSlashSelection } from "./runtime/types";
 import { verifyInstalledSkills } from "./skills";
 import type { ConnectStateStore } from "./state";
 import { executeConnectTool } from "./tool-executor";
@@ -79,6 +79,8 @@ export interface BindingRuntimeHandle {
   ): Promise<{ turnId: string; sessionRef: string }>;
   uploadClientMedia?(file: Blob, filename: string): Promise<ConnectRuntimeMedia>;
   cancelClientTurn?(sessionRef: string): Promise<boolean>;
+  queuedClientTurns?(sessionRef: string): QueuedClientTurn[];
+  cancelQueuedClientTurn?(sessionRef: string, turnId: string): boolean;
   sessionActivity?(sessionRef: string): Promise<SessionActivity>;
   activeClientTurnId?(sessionRef: string): string | null;
   claimSessionLifecycle?(sessionRef: string): Promise<() => Promise<void>>;
@@ -243,6 +245,8 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       await runtime.enqueueClientTurn(sessionRef, prompt, media, selection, signal),
     uploadClientMedia: async (file, filename) => await runtime.uploadClientMedia(file, filename),
     cancelClientTurn: async (sessionRef) => await runtime.cancelClientTurn(sessionRef),
+    queuedClientTurns: (sessionRef) => runtime.queuedClientTurns(sessionRef),
+    cancelQueuedClientTurn: (sessionRef, turnId) => runtime.cancelQueuedClientTurn(sessionRef, turnId),
     sessionActivity: async (sessionRef) => await runtime.sessionActivity(sessionRef),
     activeClientTurnId: (sessionRef) => runtime.activeClientTurnId(sessionRef),
     claimSessionLifecycle: async (sessionRef) => await runtime.claimSessionLifecycle(sessionRef),
