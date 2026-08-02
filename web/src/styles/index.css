@@ -37,6 +37,10 @@ textarea {
   min-height: 0;
 }
 
+.astryx-app-shell-sidenav {
+  overflow: clip;
+}
+
 .top-nav-actions {
   display: flex;
   align-items: center;

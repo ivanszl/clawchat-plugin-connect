@@ -316,10 +316,41 @@ async function verifyCollapsedSessionNavigation(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   previewOrigin: string,
 ) {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 320 } });
   try {
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     const navigation = page.locator(".session-nav");
+    const panelOverflow = await page.locator(".astryx-app-shell-sidenav").evaluate((panel) => {
+      panel.scrollLeft = 1;
+      return {
+        clientWidth: panel.clientWidth,
+        scrollWidth: panel.scrollWidth,
+        scrollLeft: panel.scrollLeft,
+        overflowX: getComputedStyle(panel).overflowX,
+      };
+    });
+    assert.equal(
+      panelOverflow.scrollLeft,
+      0,
+      `expanded SideNav panel must not scroll horizontally: ${JSON.stringify(panelOverflow)}`,
+    );
+    const verticalScroll = await navigation.evaluate((root) => {
+      const scrollable = [...root.querySelectorAll<HTMLElement>("*")].find((element) => {
+        const overflowY = getComputedStyle(element).overflowY;
+        return (overflowY === "auto" || overflowY === "scroll") && element.scrollHeight > element.clientHeight;
+      });
+      if (!scrollable) return null;
+      scrollable.scrollTop = 1;
+      return {
+        clientHeight: scrollable.clientHeight,
+        scrollHeight: scrollable.scrollHeight,
+        scrollTop: scrollable.scrollTop,
+      };
+    });
+    assert(
+      verticalScroll && verticalScroll.scrollTop > 0,
+      `expanded SideNav must remain vertically scrollable: ${JSON.stringify(verticalScroll)}`,
+    );
     await navigation.getByRole("button", { name: /折叠|Collapse sidebar/iu }).click();
     await expect(navigation).toHaveAttribute("data-mode", "collapsed");
     await expect(navigation.getByRole("textbox", { name: "搜索 Session" })).toHaveCount(0);
