@@ -3,27 +3,33 @@ import type { RuntimeActivity } from "../../src/runtime/types";
 import { createWorkBuddyRuntimeAdapter } from "../../src/runtime/workbuddy-adapter";
 import { inspectInstalledWorkBuddyTaskTranscript } from "../../src/runtime/workbuddy-task-transcript";
 import type { WorkBuddyAgentBindingConfig } from "../../src/types";
+import {
+  requiredWorkBuddyTestEnv,
+  workBuddyTestBindingId,
+  workBuddyTestEnv,
+  workBuddyTestProfile,
+} from "./workbuddy-test-profile";
 
-const taskId = process.env.WORKBUDDY_AI_TEST_TASK_ID;
-const workspace = process.env.WORKBUDDY_AI_TEST_TASK_WORKSPACE;
-const priorUserMarker = process.env.WORKBUDDY_AI_TEST_PRIOR_USER_MARKER;
-const priorAssistantMarker = process.env.WORKBUDDY_AI_TEST_PRIOR_ASSISTANT_MARKER;
-if (!taskId || !workspace || !priorUserMarker || !priorAssistantMarker) {
-  throw new Error(
-    "Set WORKBUDDY_AI_TEST_TASK_ID, WORKBUDDY_AI_TEST_TASK_WORKSPACE, WORKBUDDY_AI_TEST_PRIOR_USER_MARKER, and WORKBUDDY_AI_TEST_PRIOR_ASSISTANT_MARKER to a dedicated WorkBuddy AI test Task.",
-  );
-}
+const {
+  TASK_ID: taskId,
+  TASK_WORKSPACE: workspace,
+  PRIOR_USER_MARKER: priorUserMarker,
+  PRIOR_ASSISTANT_MARKER: priorAssistantMarker,
+} = requiredWorkBuddyTestEnv(
+  ["TASK_ID", "TASK_WORKSPACE", "PRIOR_USER_MARKER", "PRIOR_ASSISTANT_MARKER"],
+  "verify context, persistence, and UI synchronization",
+);
 
 const canonicalWorkspace = await realpath(workspace);
-const turnMarker = process.env.WORKBUDDY_AI_TEST_TURN_MARKER ?? `WB_CONNECT_TURN_${Date.now()}`;
-const before = await inspectInstalledWorkBuddyTaskTranscript(taskId, "");
+const turnMarker = workBuddyTestEnv("TURN_MARKER") ?? `WB_CONNECT_TURN_${Date.now()}`;
+const before = await inspectInstalledWorkBuddyTaskTranscript(taskId, "", workBuddyTestProfile);
 const priorModel = before.latestCompletedAssistantModel;
 if (!priorModel) throw new Error("The dedicated WorkBuddy Task has no prior assistant model to preserve");
 
-const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: "workbuddy-ai" };
+const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: workBuddyTestProfile };
 const adapter = createWorkBuddyRuntimeAdapter();
 const session = await adapter.start(binding, {
-  agentId: "installed-workbuddy-ai",
+  agentId: workBuddyTestBindingId,
   chatId: "client-installed-verification",
   sessionId: "client-installed-verification",
   runtimeSessionId: taskId,
@@ -61,7 +67,8 @@ if (accepted !== 1) throw new Error(`Expected one native prompt acceptance, obse
 if (!activities.some((activity) => activity.state === "streaming")) {
   throw new Error("The installed WorkBuddy turn emitted no streaming Runtime Activity");
 }
-for (const kind of ["user", "assistant", "reasoning", "progress"] as const) {
+// Thought chunks are model-dependent: a valid native turn may stream no private reasoning at all.
+for (const kind of ["user", "assistant", "progress"] as const) {
   if (!activities.some((activity) => activity.kind === kind)) {
     throw new Error(`The installed WorkBuddy turn emitted no ${kind} Runtime Activity`);
   }
@@ -97,7 +104,7 @@ if (
   throw new Error("The persisted WorkBuddy history omitted the synchronized assistant result");
 }
 
-const after = await inspectInstalledWorkBuddyTaskTranscript(taskId, turnMarker);
+const after = await inspectInstalledWorkBuddyTaskTranscript(taskId, turnMarker, workBuddyTestProfile);
 if (!after.hasCompletedAssistantMarker) {
   throw new Error("The native WorkBuddy transcript did not contain the unique turn marker");
 }
@@ -110,6 +117,7 @@ await adapter.close?.();
 console.log(
   JSON.stringify(
     {
+      profile: workBuddyTestProfile,
       taskId,
       workspace: canonicalWorkspace,
       turnMarker,

@@ -1,18 +1,16 @@
 import { realpath } from "node:fs/promises";
 import { discoverWorkBuddyTask } from "../../src/runtime/workbuddy-task-discovery";
-import { createWorkBuddyAiMacosDiscoverySource } from "../../src/runtime/workbuddy-task-discovery-macos";
+import { createWorkBuddyMacosDiscoverySource } from "../../src/runtime/workbuddy-task-discovery-macos";
+import { requiredWorkBuddyTestEnv, workBuddyTestProfile } from "./workbuddy-test-profile";
 
-const taskId = process.env.WORKBUDDY_AI_TEST_TASK_ID;
-const workspace = process.env.WORKBUDDY_AI_TEST_TASK_WORKSPACE;
-if (!taskId || !workspace) {
-  throw new Error(
-    "Set WORKBUDDY_AI_TEST_TASK_ID and WORKBUDDY_AI_TEST_TASK_WORKSPACE to a dedicated WorkBuddy AI test Task.",
-  );
-}
+const { TASK_ID: taskId, TASK_WORKSPACE: workspace } = requiredWorkBuddyTestEnv(
+  ["TASK_ID", "TASK_WORKSPACE"],
+  "discover and verify",
+);
 
 const discovered = await discoverWorkBuddyTask(
-  { profile: "workbuddy-ai", taskId, expectedWorkspace: await realpath(workspace) },
-  createWorkBuddyAiMacosDiscoverySource(),
+  { profile: workBuddyTestProfile, taskId, expectedWorkspace: await realpath(workspace) },
+  createWorkBuddyMacosDiscoverySource(workBuddyTestProfile),
 );
 
 process.stdout.write(

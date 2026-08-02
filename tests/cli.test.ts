@@ -124,9 +124,21 @@ describe("runConnectCli", () => {
     });
 
     await expect(
+      runConnectCli(
+        ["agent", "add", "mainland", "--kind", "workbuddy", "--profile", "workbuddy-cn", "--config", path],
+        output.deps,
+      ),
+    ).resolves.toBe(0);
+    await expect(loadConfig(path)).resolves.toMatchObject({
+      agents: { mainland: { kind: "workbuddy", profile: "workbuddy-cn" } },
+    });
+
+    await expect(
       runConnectCli(["agent", "add", "missing-profile", "--kind", "workbuddy", "--config", path], output.deps),
     ).resolves.toBe(1);
-    expect(output.stderr.join("")).toContain("WorkBuddy profile must be explicitly set to: workbuddy-ai");
+    expect(output.stderr.join("")).toContain(
+      "WorkBuddy profile must be explicitly set to one of: workbuddy-ai, workbuddy-cn",
+    );
   });
 
   it("requires explicit confirmation before removing an Agent Binding and its local data", async () => {

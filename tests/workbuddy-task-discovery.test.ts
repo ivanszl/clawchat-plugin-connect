@@ -162,6 +162,41 @@ describe("WorkBuddy Task discovery contract", () => {
     expect(closes).toBe(1);
   });
 
+  it("prepares a writable Task endpoint before inspecting and retaining it", async () => {
+    const calls: string[] = [];
+    const discoverySource = source();
+    const inspect = discoverySource.inspect;
+    discoverySource.prepareEndpoint = async () => {
+      calls.push("prepare");
+    };
+    discoverySource.inspect = async (input) => {
+      calls.push("inspect");
+      return await inspect(input);
+    };
+    discoverySource.connectEndpoint = async () => ({
+      verification: {
+        taskId,
+        replayFingerprint: nativeReplayFingerprint,
+        replayStarted: true,
+        replayCompleted: true,
+        activities: [],
+        connectionOwner: observation().endpointOwner,
+      },
+      prompt: async function* () {
+        yield* [];
+      },
+      close: async () => undefined,
+    });
+
+    const attachment = await connectWorkBuddyTask(
+      { profile: "workbuddy-ai", taskId, expectedWorkspace: workspace },
+      discoverySource,
+    );
+
+    expect(calls.slice(0, 3)).toEqual(["inspect", "prepare", "inspect"]);
+    await attachment.close();
+  });
+
   it("fails closed when an empty Task has no independent native identity record", async () => {
     expect(
       await failureCode(
@@ -236,7 +271,7 @@ describe("WorkBuddy Task discovery contract", () => {
       },
     ],
     [
-      "wrong-owning-process",
+      "incompatible-version",
       (value: WorkBuddyDiscoveryObservation): void => {
         if (value.sidecarRegistration) value.sidecarRegistration.version = 2;
         if (value.sidecarIdentity) value.sidecarIdentity.version = 2;

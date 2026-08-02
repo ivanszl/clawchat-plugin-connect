@@ -1,7 +1,7 @@
 import type { AgentBindingConfig } from "../types";
 import type { ConnectRuntimeAdapter, ConnectRuntimeSession, RuntimeActivitySnapshot } from "./types";
 import { attachWorkBuddyTask, connectWorkBuddyTask, type WorkBuddyProfile } from "./workbuddy-task-discovery";
-import { createWorkBuddyAiMacosDiscoverySource, listWorkBuddyAiTasks } from "./workbuddy-task-discovery-macos";
+import { createWorkBuddyMacosDiscoverySource, listWorkBuddyTasks } from "./workbuddy-task-discovery-macos";
 
 export interface WorkBuddyTaskSummary {
   id: string;
@@ -105,20 +105,28 @@ function idempotentSession(session: ConnectRuntimeSession): ConnectRuntimeSessio
 }
 
 function createDefaultSource(): WorkBuddyRuntimeSource {
-  const discoverySource = createWorkBuddyAiMacosDiscoverySource();
+  const discoverySources = new Map<WorkBuddyProfile, ReturnType<typeof createWorkBuddyMacosDiscoverySource>>();
+  const discoverySource = (profile: WorkBuddyProfile) => {
+    let source = discoverySources.get(profile);
+    if (!source) {
+      source = createWorkBuddyMacosDiscoverySource(profile);
+      discoverySources.set(profile, source);
+    }
+    return source;
+  };
   return {
-    listTasks: async (profile) => await listWorkBuddyAiTasks(profile),
+    listTasks: async (profile) => await listWorkBuddyTasks(profile),
     findTask: async (profile, taskId) =>
-      (await listWorkBuddyAiTasks(profile)).find((candidate) => candidate.id === taskId) ?? null,
+      (await listWorkBuddyTasks(profile)).find((candidate) => candidate.id === taskId) ?? null,
     attachTask: async (input) =>
       await attachWorkBuddyTask(
         { profile: input.profile, taskId: input.taskId, expectedWorkspace: input.workspace },
-        discoverySource,
+        discoverySource(input.profile),
       ),
     startTask: async (input) =>
       await connectWorkBuddyTask(
         { profile: input.profile, taskId: input.taskId, expectedWorkspace: input.workspace },
-        discoverySource,
+        discoverySource(input.profile),
       ),
   };
 }

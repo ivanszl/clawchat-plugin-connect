@@ -158,6 +158,29 @@ describe("Agent Binding configuration", () => {
     ).toThrow("WorkBuddy endpoint and credentials are discovered at attachment time");
   });
 
+  it("normalizes an explicit mainland WorkBuddy profile without falling back to WorkBuddy AI", () => {
+    const config = normalizeConfig({
+      defaultAgent: "mainland-desktop",
+      agents: {
+        "mainland-desktop": {
+          kind: "workbuddy",
+          profile: "workbuddy-cn",
+          displayName: "Mainland WorkBuddy",
+        },
+      },
+    });
+
+    expect(getAgentBinding(config, "mainland-desktop")).toEqual({
+      kind: "workbuddy",
+      profile: "workbuddy-cn",
+      displayName: "Mainland WorkBuddy",
+      env: { CLAWCHAT_CONNECT_AGENT_ID: "mainland-desktop" },
+    });
+    expect(() =>
+      normalizeConfig({ agents: { desktop: { kind: "workbuddy", profile: "workbuddy-mainland" } } }),
+    ).toThrow("WorkBuddy profile must be explicitly set to one of: workbuddy-ai, workbuddy-cn");
+  });
+
   it("rejects OpenCode Server controls that Connect owns", () => {
     expect(() =>
       normalizeConfig({

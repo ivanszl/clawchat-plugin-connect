@@ -44,7 +44,7 @@ export interface OpenCodeAgentBindingConfig extends AgentBindingConfigBase {
 
 export interface WorkBuddyAgentBindingConfig extends AgentBindingConfigBase {
   kind: "workbuddy";
-  profile: "workbuddy-ai";
+  profile: "workbuddy-ai" | "workbuddy-cn";
   executablePathOverride?: never;
   sessionOptions?: never;
   additionalDirectories?: never;

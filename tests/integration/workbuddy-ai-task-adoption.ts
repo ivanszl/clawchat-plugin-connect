@@ -7,24 +7,30 @@ import { defaultConfig } from "../../src/config";
 import { createReleasedRuntimeAdapterRegistry } from "../../src/runtime/released-adapters";
 import { createStateStore } from "../../src/state";
 import type { WorkBuddyAgentBindingConfig } from "../../src/types";
+import {
+  requiredWorkBuddyTestEnv,
+  workBuddyTestBindingId,
+  workBuddyTestCompatibility,
+  workBuddyTestProfile,
+} from "./workbuddy-test-profile";
 
-const taskId = process.env.WORKBUDDY_AI_TEST_TASK_ID;
-const workspace = process.env.WORKBUDDY_AI_TEST_TASK_WORKSPACE;
-const userMarker = process.env.WORKBUDDY_AI_TEST_USER_MARKER;
-const assistantMarker = process.env.WORKBUDDY_AI_TEST_ASSISTANT_MARKER;
-if (!taskId || !workspace || !userMarker || !assistantMarker) {
-  throw new Error(
-    "Set WORKBUDDY_AI_TEST_TASK_ID, WORKBUDDY_AI_TEST_TASK_WORKSPACE, WORKBUDDY_AI_TEST_USER_MARKER, and WORKBUDDY_AI_TEST_ASSISTANT_MARKER to a dedicated UI-seeded WorkBuddy AI Task.",
-  );
-}
+const {
+  TASK_ID: taskId,
+  TASK_WORKSPACE: workspace,
+  USER_MARKER: userMarker,
+  ASSISTANT_MARKER: assistantMarker,
+} = requiredWorkBuddyTestEnv(
+  ["TASK_ID", "TASK_WORKSPACE", "USER_MARKER", "ASSISTANT_MARKER"],
+  "adopt UI-seeded history",
+);
 
-const directory = await mkdtemp(join(tmpdir(), "clawchat-workbuddy-ai-adoption-"));
+const directory = await mkdtemp(join(tmpdir(), `clawchat-${workBuddyTestProfile}-adoption-`));
 const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
 const runtimeAdapters = createReleasedRuntimeAdapterRegistry();
-const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: "workbuddy-ai" };
+const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: workBuddyTestProfile };
 const config = defaultConfig();
-config.defaultAgent = "installed-workbuddy-ai";
-config.agents = { "installed-workbuddy-ai": binding };
+config.defaultAgent = workBuddyTestBindingId;
+config.agents = { [workBuddyTestBindingId]: binding };
 const transcriptProjection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters });
 const catalog = new SessionCatalog({ config, stateStore: store, runtimeAdapters, transcriptProjection });
 
@@ -32,9 +38,15 @@ try {
   const canonicalWorkspace = await realpath(workspace);
   const threads = await runtimeAdapters.discoverAllThreads(binding);
   const thread = threads.find((candidate) => candidate.runtimeThreadId === taskId);
-  if (!thread) throw new Error("The dedicated WorkBuddy AI Task was not discovered as a Runtime Thread");
+  if (!thread) {
+    throw new Error(
+      `The dedicated ${workBuddyTestCompatibility.displayName} Task was not discovered as a Runtime Thread`,
+    );
+  }
   if (thread.workingDirectory !== canonicalWorkspace) {
-    throw new Error("The discovered WorkBuddy AI Task workspace did not match the dedicated UI Task");
+    throw new Error(
+      `The discovered ${workBuddyTestCompatibility.displayName} Task workspace did not match the dedicated UI Task`,
+    );
   }
 
   const view = await catalog.view(true);
@@ -46,7 +58,11 @@ try {
       break;
     }
   }
-  if (!sessionRef) throw new Error("The dedicated WorkBuddy AI Task was not exposed through Session Catalog");
+  if (!sessionRef) {
+    throw new Error(
+      `The dedicated ${workBuddyTestCompatibility.displayName} Task was not exposed through Session Catalog`,
+    );
+  }
   const adopted = await catalog.adopt(sessionRef);
   if (adopted?.runtimeSessionId !== taskId) throw new Error("Session adoption did not persist the stable Task ID");
   if (!(await catalog.ensureProjection(sessionRef, true))) throw new Error("The adopted Task could not be projected");

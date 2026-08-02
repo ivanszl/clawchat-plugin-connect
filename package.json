@@ -58,7 +58,10 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
-    "check": "bun run check:generated && biome check . && bun run typecheck && bun test && bun run test:client-web"
+    "check": "bun run check:generated && biome check . && bun run typecheck && bun test && bun run test:client-web",
+    "test:integration:workbuddy-cn-discovery": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-discovery.ts",
+    "test:integration:workbuddy-cn-adoption": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-adoption.ts",
+    "test:integration:workbuddy-cn-turn": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-turn.ts"
   },
   "dependencies": {
     "@astryxdesign/core": "0.2.0",

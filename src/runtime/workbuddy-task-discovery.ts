@@ -1,13 +1,60 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+export type WorkBuddyProfile = "workbuddy-ai" | "workbuddy-cn";
+
+export interface WorkBuddyProfileCompatibility {
+  profile: WorkBuddyProfile;
+  displayName: string;
+  applicationPath: string;
+  bundleIdentifier: string;
+  applicationVersion: string;
+  embeddedCodeBuddyVersion: string;
+  configDirectory: string;
+  endpointSessionPrefix: string | null;
+  sidecarVersion: number;
+  acpVersion: number;
+}
+
 export const WORKBUDDY_AI_COMPATIBILITY = {
   profile: "workbuddy-ai",
+  displayName: "WorkBuddy AI",
+  applicationPath: "/Applications/WorkBuddy AI.app",
   bundleIdentifier: "com.workbuddy.workbuddy-ai",
   applicationVersion: "5.2.7",
   embeddedCodeBuddyVersion: "2.106.4",
+  configDirectory: join(homedir(), ".workbuddy-ai"),
+  endpointSessionPrefix: null,
   sidecarVersion: 1,
   acpVersion: 1,
-} as const;
+} as const satisfies WorkBuddyProfileCompatibility;
 
-export type WorkBuddyProfile = typeof WORKBUDDY_AI_COMPATIBILITY.profile;
+export const WORKBUDDY_CN_COMPATIBILITY = {
+  profile: "workbuddy-cn",
+  displayName: "WorkBuddy",
+  applicationPath: "/Applications/WorkBuddy.app",
+  bundleIdentifier: "com.workbuddy.workbuddy",
+  applicationVersion: "5.3.8",
+  embeddedCodeBuddyVersion: "2.115.0",
+  configDirectory: join(homedir(), ".workbuddy"),
+  endpointSessionPrefix: "__workbuddy_cli_host__-",
+  sidecarVersion: 3,
+  acpVersion: 1,
+} as const satisfies WorkBuddyProfileCompatibility;
+
+const WORKBUDDY_PROFILE_COMPATIBILITY: Record<WorkBuddyProfile, WorkBuddyProfileCompatibility> = {
+  "workbuddy-ai": WORKBUDDY_AI_COMPATIBILITY,
+  "workbuddy-cn": WORKBUDDY_CN_COMPATIBILITY,
+};
+
+export function workBuddyProfileCompatibility(profile: WorkBuddyProfile): WorkBuddyProfileCompatibility {
+  return WORKBUDDY_PROFILE_COMPATIBILITY[profile];
+}
+
+export function isWorkBuddyProfileHostSession(profile: WorkBuddyProfile, sessionId: string): boolean {
+  const prefix = workBuddyProfileCompatibility(profile).endpointSessionPrefix;
+  return prefix !== null && sessionId.startsWith(prefix) && /^\d+-[0-9a-f]{8}$/u.test(sessionId.slice(prefix.length));
+}
 
 export interface WorkBuddyProcessIdentity {
   pid: number;
@@ -57,6 +104,7 @@ export interface WorkBuddyEndpointInput {
 }
 
 export interface WorkBuddyTaskDiscoverySource {
+  prepareEndpoint?(input: WorkBuddyTaskDiscoveryInput): Promise<void>;
   inspect(input: WorkBuddyTaskDiscoveryInput): Promise<WorkBuddyDiscoveryObservation>;
   canonicalizeWorkspace?(workspace: string): Promise<string>;
   verifyEndpoint(input: WorkBuddyEndpointInput): Promise<WorkBuddyEndpointVerification>;
@@ -139,6 +187,13 @@ export async function connectWorkBuddyTask(
   if (!connectEndpoint) throw new Error("WorkBuddy discovery source cannot retain a Task Attachment");
   let attachment: import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment | null = null;
   try {
+    if (source.prepareEndpoint) {
+      // A profile-host endpoint may be safe for replay but intentionally read-only. Pin its
+      // application, Task, transcript, sidecar, and ACP identities before asking the product's
+      // deterministic sidecar to materialize the writable per-Task runtime.
+      await verifyWorkBuddyTask(input, source);
+      await source.prepareEndpoint(input);
+    }
     await verifyWorkBuddyTask(input, source, async (endpointInput) => {
       attachment = await connectEndpoint(endpointInput);
       return attachment.verification;
@@ -156,49 +211,59 @@ async function verifyWorkBuddyTask(
   source: WorkBuddyTaskDiscoverySource,
   verifyEndpoint = source.verifyEndpoint,
 ): Promise<{ discovered: DiscoveredWorkBuddyTask; verification: WorkBuddyEndpointVerification }> {
+  const compatibility = workBuddyProfileCompatibility(input.profile);
+  const product = compatibility.displayName;
   const observation = await source.inspect(input);
   const application = observation.application;
   if (!application) {
     throw failure(
       "application-absent",
-      "WorkBuddy AI is not installed at the selected application path; install WorkBuddy AI 5.2.7.",
+      `${product} is not installed at the selected application path; install ${product} ${compatibility.applicationVersion}.`,
+      { selectedProfile: input.profile },
     );
   }
-  if (application.bundleIdentifier !== WORKBUDDY_AI_COMPATIBILITY.bundleIdentifier) {
-    throw failure("wrong-distribution", "The selected application is not the WorkBuddy AI distribution.", {
+  if (
+    application.path !== compatibility.applicationPath ||
+    application.bundleIdentifier !== compatibility.bundleIdentifier
+  ) {
+    throw failure("wrong-distribution", `The selected application is not the ${product} distribution.`, {
       selectedProfile: input.profile,
+      selectedApplicationPath: compatibility.applicationPath,
+      detectedApplicationPath: application.path,
       detectedBundleIdentifier: application.bundleIdentifier,
     });
   }
   if (
-    application.version !== WORKBUDDY_AI_COMPATIBILITY.applicationVersion ||
-    application.embeddedCodeBuddyVersion !== WORKBUDDY_AI_COMPATIBILITY.embeddedCodeBuddyVersion
+    application.version !== compatibility.applicationVersion ||
+    application.embeddedCodeBuddyVersion !== compatibility.embeddedCodeBuddyVersion
   ) {
-    throw failure("incompatible-version", "The installed WorkBuddy AI compatibility tuple is unsupported.", {
+    throw failure("incompatible-version", `The installed ${product} compatibility tuple is unsupported.`, {
       selectedProfile: input.profile,
       detectedApplicationVersion: application.version,
       detectedEmbeddedCodeBuddyVersion: application.embeddedCodeBuddyVersion,
-      supportedApplicationVersion: WORKBUDDY_AI_COMPATIBILITY.applicationVersion,
-      supportedEmbeddedCodeBuddyVersion: WORKBUDDY_AI_COMPATIBILITY.embeddedCodeBuddyVersion,
+      supportedApplicationVersion: compatibility.applicationVersion,
+      supportedEmbeddedCodeBuddyVersion: compatibility.embeddedCodeBuddyVersion,
+      supportedAcpVersion: compatibility.acpVersion,
     });
   }
   const applicationProcess = observation.applicationProcess;
   if (!applicationProcess) {
     throw failure(
       "application-stopped",
-      "WorkBuddy AI is installed but not running; open it before discovering a Task.",
+      `${product} is installed but not running; open it before discovering a Task.`,
+      { selectedProfile: input.profile },
     );
   }
   if (!ownedExecutable(applicationProcess, application.path)) {
     throw failure(
       "wrong-owning-process",
-      "The running application process is not owned by the selected WorkBuddy AI bundle.",
+      `The running application process is not owned by the selected ${product} bundle.`,
     );
   }
 
   const task = observation.task;
   if (!task || task.id !== input.taskId) {
-    throw failure("task-not-found", "The requested Task is not present in WorkBuddy AI's authoritative Task store.", {
+    throw failure("task-not-found", `The requested Task is not present in ${product}'s authoritative Task store.`, {
       taskId: input.taskId,
     });
   }
@@ -209,20 +274,16 @@ async function verifyWorkBuddyTask(
     ? await source.canonicalizeWorkspace(input.expectedWorkspace)
     : input.expectedWorkspace;
   if (authoritativeWorkspace !== expectedWorkspace) {
-    throw failure(
-      "workspace-identity-mismatch",
-      "The requested workspace does not match WorkBuddy AI's Task metadata.",
-      {
-        taskId: task.id,
-        expectedWorkspace,
-        authoritativeWorkspace,
-      },
-    );
+    throw failure("workspace-identity-mismatch", `The requested workspace does not match ${product}'s Task metadata.`, {
+      taskId: task.id,
+      expectedWorkspace,
+      authoritativeWorkspace,
+    });
   }
   if (!task.transcriptIdentityMatches) {
     throw failure(
       "workspace-identity-mismatch",
-      "WorkBuddy AI's native Task transcript has conflicting identity metadata.",
+      `${product}'s native Task transcript has conflicting identity metadata.`,
       {
         taskId: task.id,
         authoritativeWorkspace,
@@ -235,7 +296,7 @@ async function verifyWorkBuddyTask(
   if (!registration || !sidecarIdentity || !observation.sidecarProcess) {
     throw failure(
       "endpoint-unavailable",
-      "WorkBuddy AI is running but its deterministic sidecar control surface is unavailable.",
+      `${product} is running but its deterministic sidecar control surface is unavailable.`,
     );
   }
   if (
@@ -243,19 +304,22 @@ async function verifyWorkBuddyTask(
     registration.version !== sidecarIdentity.version ||
     !sidecarIdentity.registrationTokenMatches
   ) {
-    throw failure(
-      "endpoint-stale",
-      "WorkBuddy AI's sidecar registration no longer identifies the live control socket.",
-    );
+    throw failure("endpoint-stale", `${product}'s sidecar registration no longer identifies the live control socket.`);
+  }
+  if (registration.version !== compatibility.sidecarVersion) {
+    throw failure("incompatible-version", `The installed ${product} sidecar version is unsupported.`, {
+      selectedProfile: input.profile,
+      detectedSidecarVersion: registration.version,
+      supportedSidecarVersion: compatibility.sidecarVersion,
+    });
   }
   if (
-    registration.version !== WORKBUDDY_AI_COMPATIBILITY.sidecarVersion ||
     !ownedExecutable(observation.sidecarProcess, application.path) ||
     !isDescendant(observation.sidecarProcess, applicationProcess)
   ) {
     throw failure(
       "wrong-owning-process",
-      "The sidecar control surface is not owned by the selected WorkBuddy AI process.",
+      `The sidecar control surface is not owned by the selected ${product} process.`,
     );
   }
 
@@ -263,10 +327,11 @@ async function verifyWorkBuddyTask(
   if (!endpointSession) {
     throw failure(
       "endpoint-unavailable",
-      "WorkBuddy AI has no active ACP endpoint for this Task; open the Task and run one native turn before attaching.",
+      `${product} has no active ACP endpoint for this Task; open the Task and run one native turn before attaching.`,
     );
   }
-  if (endpointSession.sessionId !== task.id) {
+  const isProfileHost = isWorkBuddyProfileHostSession(input.profile, endpointSession.sessionId);
+  if (endpointSession.sessionId !== task.id && !isProfileHost) {
     throw failure("task-identity-mismatch", "The discovered ACP endpoint belongs to a different WorkBuddy session.", {
       expectedTaskId: task.id,
       detectedSessionId: endpointSession.sessionId,
@@ -287,7 +352,7 @@ async function verifyWorkBuddyTask(
       endpoint: endpointSession.endpoint,
       taskId: task.id,
       workspace: authoritativeWorkspace,
-      acpVersion: WORKBUDDY_AI_COMPATIBILITY.acpVersion,
+      acpVersion: compatibility.acpVersion,
       applicationPath: application.path,
       expectedEndpointProcessId: endpointOwner.pid,
       expectedSidecarProcessId: observation.sidecarProcess.pid,
@@ -295,7 +360,7 @@ async function verifyWorkBuddyTask(
   } catch (error) {
     if (error instanceof WorkBuddyDiscoveryError) throw error;
     const message = redactSecrets(error instanceof Error ? error.message : String(error));
-    throw failure("endpoint-verification-failed", `WorkBuddy AI ACP identity verification failed: ${message}`);
+    throw failure("endpoint-verification-failed", `${product} ACP identity verification failed: ${message}`);
   }
   assertExpectedEndpointOwner(
     verification.connectionOwner,
@@ -317,7 +382,7 @@ async function verifyWorkBuddyTask(
     );
   }
   if (verification.replayFingerprint !== task.replayFingerprint) {
-    throw failure("task-identity-mismatch", "The ACP replay does not match WorkBuddy AI's native Task transcript.", {
+    throw failure("task-identity-mismatch", `The ACP replay does not match ${product}'s native Task transcript.`, {
       taskId: task.id,
     });
   }

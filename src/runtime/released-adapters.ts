@@ -33,6 +33,7 @@ const CODEX_REASONING_EFFORTS = new Set<CodexReasoningEffort>(["minimal", "low",
 const CODEX_APPROVAL_POLICIES = new Set<CodexApprovalPolicy>(["never", "on-request", "untrusted"]);
 const CODEX_WEB_SEARCH_MODES = new Set<CodexWebSearchMode>(["disabled", "cached", "live"]);
 const OUTPUT_VISIBILITIES = new Set<OutputVisibility>(["minimal", "normal", "full"]);
+const WORKBUDDY_PROFILES = new Set<WorkBuddyAgentBindingConfig["profile"]>(["workbuddy-ai", "workbuddy-cn"]);
 
 const RELEASED_RUNTIME_ADAPTERS: readonly ReleasedRuntimeAdapterDefinition[] = [
   {
@@ -168,8 +169,10 @@ function normalizeWorkBuddyAgentBinding(record: Record<string, unknown>): WorkBu
       throw new Error("WorkBuddy endpoint and credentials are discovered at attachment time");
     }
   }
-  const profile = readString(record.profile);
-  if (profile !== "workbuddy-ai") throw new Error("WorkBuddy profile must be explicitly set to: workbuddy-ai");
+  const profile = readString(record.profile) as WorkBuddyAgentBindingConfig["profile"];
+  if (!WORKBUDDY_PROFILES.has(profile)) {
+    throw new Error("WorkBuddy profile must be explicitly set to one of: workbuddy-ai, workbuddy-cn");
+  }
   const outputVisibility = readOptionalEnum(record.outputVisibility, OUTPUT_VISIBILITIES, "outputVisibility");
   return {
     kind: "workbuddy",

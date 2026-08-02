@@ -1,37 +1,47 @@
 import { Database } from "bun:sqlite";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { access, readFile, realpath } from "node:fs/promises";
 import { connect } from "node:net";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  openWorkBuddyAiTaskEndpoint,
-  verifyWorkBuddyAiEndpoint,
+  openWorkBuddyTaskEndpoint,
+  verifyWorkBuddyEndpoint,
   type WorkBuddyConnectedSocketIdentity,
 } from "./workbuddy-acp-client";
 import {
-  WORKBUDDY_AI_COMPATIBILITY,
+  isWorkBuddyProfileHostSession,
   WorkBuddyDiscoveryError,
   type WorkBuddyDiscoveryObservation,
   type WorkBuddyProcessIdentity,
   type WorkBuddyProfile,
+  type WorkBuddyProfileCompatibility,
   type WorkBuddyTaskDiscoveryInput,
   type WorkBuddyTaskDiscoverySource,
+  workBuddyProfileCompatibility,
 } from "./workbuddy-task-discovery";
-import { readWorkBuddyTaskTranscriptIdentity } from "./workbuddy-task-transcript";
+import { inspectWorkBuddyTaskTranscript, readWorkBuddyTaskTranscriptIdentity } from "./workbuddy-task-transcript";
 
-const DEFAULT_APPLICATION_PATH = "/Applications/WorkBuddy AI.app";
-const BUNDLE_IDENTIFIER = "com.workbuddy.workbuddy-ai";
-
-export interface WorkBuddyAiMacosDiscoveryOptions {
+export interface WorkBuddyMacosDiscoveryOptions {
   applicationPath?: string;
   configDirectory?: string;
   commandTimeoutMs?: number;
   requestTimeoutMs?: number;
+  prepareTaskRuntime?: (input: WorkBuddyTaskRuntimeInput) => Promise<void>;
+  readTaskModel?: (configDirectory: string, taskId: string) => Promise<string | null>;
 }
 
-export interface WorkBuddyAiTaskCatalogEntry {
+export interface WorkBuddyTaskRuntimeInput {
+  applicationPath: string;
+  configDirectory: string;
+  taskId: string;
+  workspace: string;
+  model: string | null;
+  commandTimeoutMs: number;
+}
+
+export interface WorkBuddyTaskCatalogEntry {
   id: string;
   title: string | null;
   workspace: string;
@@ -44,40 +54,58 @@ interface WorkBuddyApplicationInspection {
   processes: WorkBuddyProcessIdentity[];
 }
 
-export async function listWorkBuddyAiTasks(
+export async function listWorkBuddyTasks(
   profile: WorkBuddyProfile,
-  options: WorkBuddyAiMacosDiscoveryOptions = {},
-): Promise<WorkBuddyAiTaskCatalogEntry[]> {
-  const applicationPath = options.applicationPath ?? DEFAULT_APPLICATION_PATH;
-  const configDirectory = options.configDirectory ?? join(homedir(), ".workbuddy-ai");
+  options: WorkBuddyMacosDiscoveryOptions = {},
+): Promise<WorkBuddyTaskCatalogEntry[]> {
+  const compatibility = workBuddyProfileCompatibility(profile);
+  const applicationPath = options.applicationPath ?? compatibility.applicationPath;
+  const configDirectory = options.configDirectory ?? compatibility.configDirectory;
   const commandTimeoutMs = options.commandTimeoutMs ?? 5_000;
-  const { application, applicationProcess } = await inspectWorkBuddyApplication(applicationPath, commandTimeoutMs);
+  const { application, applicationProcess } = await inspectWorkBuddyApplication(
+    applicationPath,
+    compatibility,
+    commandTimeoutMs,
+  );
   if (!application) {
     throw new WorkBuddyDiscoveryError(
       "application-absent",
-      "WorkBuddy AI is not installed at the selected application path; install WorkBuddy AI 5.2.7.",
+      `${compatibility.displayName} is not installed at the selected application path; install ${compatibility.displayName} ${compatibility.applicationVersion}.`,
+      { selectedProfile: profile },
     );
   }
-  if (application.bundleIdentifier !== BUNDLE_IDENTIFIER) {
-    throw new WorkBuddyDiscoveryError("wrong-distribution", "The selected application is not WorkBuddy AI.", {
-      selectedProfile: profile,
-      detectedBundleIdentifier: application.bundleIdentifier,
-    });
+  if (application.bundleIdentifier !== compatibility.bundleIdentifier) {
+    throw new WorkBuddyDiscoveryError(
+      "wrong-distribution",
+      `The selected application is not ${compatibility.displayName}.`,
+      {
+        selectedProfile: profile,
+        detectedBundleIdentifier: application.bundleIdentifier,
+      },
+    );
   }
   if (
-    application.version !== WORKBUDDY_AI_COMPATIBILITY.applicationVersion ||
-    application.embeddedCodeBuddyVersion !== WORKBUDDY_AI_COMPATIBILITY.embeddedCodeBuddyVersion
+    application.version !== compatibility.applicationVersion ||
+    application.embeddedCodeBuddyVersion !== compatibility.embeddedCodeBuddyVersion
   ) {
-    throw new WorkBuddyDiscoveryError("incompatible-version", "The installed WorkBuddy AI tuple is unsupported.", {
-      selectedProfile: profile,
-      detectedApplicationVersion: application.version,
-      detectedEmbeddedCodeBuddyVersion: application.embeddedCodeBuddyVersion,
-    });
+    throw new WorkBuddyDiscoveryError(
+      "incompatible-version",
+      `The installed ${compatibility.displayName} tuple is unsupported for profile ${profile}.`,
+      {
+        selectedProfile: profile,
+        detectedApplicationVersion: application.version,
+        detectedEmbeddedCodeBuddyVersion: application.embeddedCodeBuddyVersion,
+        supportedApplicationVersion: compatibility.applicationVersion,
+        supportedEmbeddedCodeBuddyVersion: compatibility.embeddedCodeBuddyVersion,
+        supportedAcpVersion: compatibility.acpVersion,
+      },
+    );
   }
   if (!applicationProcess) {
     throw new WorkBuddyDiscoveryError(
       "application-stopped",
-      "WorkBuddy AI is installed but not running; open it before discovering Tasks.",
+      `${compatibility.displayName} is installed but not running; open it before discovering Tasks.`,
+      { selectedProfile: profile },
     );
   }
   const database = new Database(join(configDirectory, "workbuddy.db"), { readonly: true });
@@ -100,41 +128,101 @@ export async function listWorkBuddyAiTasks(
   }
 }
 
-export function createWorkBuddyAiMacosDiscoverySource(
-  options: WorkBuddyAiMacosDiscoveryOptions = {},
+export function createWorkBuddyMacosDiscoverySource(
+  profile: WorkBuddyProfile,
+  options: WorkBuddyMacosDiscoveryOptions = {},
 ): WorkBuddyTaskDiscoverySource {
-  const applicationPath = options.applicationPath ?? DEFAULT_APPLICATION_PATH;
-  const configDirectory = options.configDirectory ?? join(homedir(), ".workbuddy-ai");
+  const compatibility = workBuddyProfileCompatibility(profile);
+  const applicationPath = options.applicationPath ?? compatibility.applicationPath;
+  const configDirectory = options.configDirectory ?? compatibility.configDirectory;
   const commandTimeoutMs = options.commandTimeoutMs ?? 5_000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
   return {
+    ...(profile === "workbuddy-cn"
+      ? {
+          prepareEndpoint: async (input: WorkBuddyTaskDiscoveryInput) => {
+            if (input.profile !== profile) throw wrongDiscoverySource(profile, input.profile);
+            const model = options.readTaskModel
+              ? await options.readTaskModel(configDirectory, input.taskId)
+              : (await inspectWorkBuddyTaskTranscript(configDirectory, input.taskId, "")).latestCompletedAssistantModel;
+            await (options.prepareTaskRuntime ?? prepareWorkBuddyTaskRuntime)({
+              applicationPath,
+              configDirectory,
+              taskId: input.taskId,
+              workspace: await realpath(input.expectedWorkspace),
+              model,
+              commandTimeoutMs,
+            });
+          },
+        }
+      : {}),
     canonicalizeWorkspace: async (workspace) => await realpath(workspace),
-    inspect: async (input) => await inspectWorkBuddyAi(input, { applicationPath, configDirectory, commandTimeoutMs }),
+    inspect: async (input) => {
+      if (input.profile !== profile) {
+        throw wrongDiscoverySource(profile, input.profile);
+      }
+      return await inspectWorkBuddy(input, { applicationPath, configDirectory, commandTimeoutMs, compatibility });
+    },
     verifyEndpoint: async (input) =>
-      await verifyWorkBuddyAiEndpoint(input, requestTimeoutMs, async (identity) =>
+      await verifyWorkBuddyEndpoint(input, requestTimeoutMs, async (identity) =>
         assertConnectedEndpointOwner(await confirmConnectedEndpointOwner(identity, commandTimeoutMs), input),
       ),
     connectEndpoint: async (input) =>
-      await openWorkBuddyAiTaskEndpoint(input, requestTimeoutMs, async (identity) =>
+      await openWorkBuddyTaskEndpoint(input, requestTimeoutMs, async (identity) =>
         assertConnectedEndpointOwner(await confirmConnectedEndpointOwner(identity, commandTimeoutMs), input),
       ),
     confirmEndpointOwner: async (endpoint) => await confirmEndpointOwner(endpoint, commandTimeoutMs),
   };
 }
 
-async function inspectWorkBuddyAi(
+function wrongDiscoverySource(
+  sourceProfile: WorkBuddyProfile,
+  selectedProfile: WorkBuddyProfile,
+): WorkBuddyDiscoveryError {
+  return new WorkBuddyDiscoveryError(
+    "wrong-distribution",
+    `The ${sourceProfile} discovery source cannot inspect profile ${selectedProfile}.`,
+    { selectedProfile, discoverySourceProfile: sourceProfile },
+  );
+}
+
+export type WorkBuddyAiMacosDiscoveryOptions = WorkBuddyMacosDiscoveryOptions;
+export type WorkBuddyAiTaskCatalogEntry = WorkBuddyTaskCatalogEntry;
+
+export async function listWorkBuddyAiTasks(
+  profile: WorkBuddyProfile,
+  options: WorkBuddyAiMacosDiscoveryOptions = {},
+): Promise<WorkBuddyAiTaskCatalogEntry[]> {
+  return await listWorkBuddyTasks(profile, options);
+}
+
+export function createWorkBuddyAiMacosDiscoverySource(
+  options: WorkBuddyAiMacosDiscoveryOptions = {},
+): WorkBuddyTaskDiscoverySource {
+  return createWorkBuddyMacosDiscoverySource("workbuddy-ai", options);
+}
+
+async function inspectWorkBuddy(
   input: WorkBuddyTaskDiscoveryInput,
-  options: { applicationPath: string; configDirectory: string; commandTimeoutMs: number },
+  options: {
+    applicationPath: string;
+    configDirectory: string;
+    commandTimeoutMs: number;
+    compatibility: WorkBuddyProfileCompatibility;
+  },
 ): Promise<WorkBuddyDiscoveryObservation> {
   const { application, applicationProcess, processes } = await inspectWorkBuddyApplication(
     options.applicationPath,
+    options.compatibility,
     options.commandTimeoutMs,
   );
   if (!application) return emptyObservation();
-  if (application.bundleIdentifier !== BUNDLE_IDENTIFIER) return { ...emptyObservation(), application };
+  if (application.bundleIdentifier !== options.compatibility.bundleIdentifier) {
+    return { ...emptyObservation(), application };
+  }
   if (!applicationProcess) return { ...emptyObservation(), application };
 
-  const task = await readTask(options.configDirectory, input.taskId);
+  const task = await readTask(options.configDirectory, input.taskId, input.profile);
   const runtimeDirectory = sidecarRuntimeDirectory(options.configDirectory);
   const registration = await readJsonFile<{ pid: number; token: string; version: number }>(
     join(runtimeDirectory, "sidecar.pid"),
@@ -161,12 +249,13 @@ async function inspectWorkBuddyAi(
         options.commandTimeoutMs,
       ).catch(() => [])
     : [];
-  const endpointCandidates = sessions.filter(
-    (session) =>
-      session.sessionId === input.taskId &&
-      Number.isSafeInteger(session.pid) &&
-      typeof session.acpEndpoint === "string",
+  const validSessions = sessions.filter(
+    (session) => Number.isSafeInteger(session.pid) && typeof session.acpEndpoint === "string",
   );
+  const exactTaskCandidates = validSessions.filter((session) => session.sessionId === input.taskId);
+  const endpointCandidates = exactTaskCandidates.length
+    ? exactTaskCandidates
+    : validSessions.filter((session) => isWorkBuddyProfileHostSession(input.profile, session.sessionId));
   const endpointCandidate = endpointCandidates[0];
   const endpointSession =
     endpointCandidates.length === 1 && endpointCandidate
@@ -195,6 +284,7 @@ async function inspectWorkBuddyAi(
 
 async function inspectWorkBuddyApplication(
   applicationPath: string,
+  compatibility: WorkBuddyProfileCompatibility,
   commandTimeoutMs: number,
 ): Promise<WorkBuddyApplicationInspection> {
   if (!(await exists(applicationPath))) return { application: null, applicationProcess: null, processes: [] };
@@ -202,7 +292,7 @@ async function inspectWorkBuddyApplication(
     readPlistValue(join(applicationPath, "Contents", "Info.plist"), "CFBundleIdentifier", commandTimeoutMs),
     readPlistValue(join(applicationPath, "Contents", "Info.plist"), "CFBundleShortVersionString", commandTimeoutMs),
   ]);
-  if (bundleIdentifier !== BUNDLE_IDENTIFIER) {
+  if (bundleIdentifier !== compatibility.bundleIdentifier) {
     return {
       application: {
         path: applicationPath,
@@ -249,13 +339,14 @@ async function readEmbeddedCodeBuddyVersion(applicationPath: string): Promise<st
     await readFile(join(applicationPath, "Contents", "Resources", "app.asar.unpacked", "cli", "package.json"), "utf8"),
   ) as { publishConfig?: { customPackage?: { version?: unknown } } };
   const version = manifest.publishConfig?.customPackage?.version;
-  if (typeof version !== "string") throw new Error("WorkBuddy AI embedded CodeBuddy manifest has no pinned version");
+  if (typeof version !== "string") throw new Error("WorkBuddy embedded CodeBuddy manifest has no pinned version");
   return version;
 }
 
 async function readTask(
   configDirectory: string,
   taskId: string,
+  profile: WorkBuddyProfile,
 ): Promise<{
   id: string;
   workspace: string;
@@ -268,7 +359,7 @@ async function readTask(
       .query<{ id: string; cwd: string }, [string]>("SELECT id, cwd FROM sessions WHERE id = ? AND deleted_at IS NULL")
       .get(taskId);
     if (!row) return null;
-    const transcript = await readWorkBuddyTaskTranscriptIdentity(configDirectory, row.id, row.cwd);
+    const transcript = await readWorkBuddyTaskTranscriptIdentity(configDirectory, row.id, row.cwd, profile);
     return { id: row.id, workspace: row.cwd, ...transcript };
   } finally {
     database.close();
@@ -396,12 +487,117 @@ function assertConnectedEndpointOwner(
   return owner;
 }
 
-async function sidecarRpc<Result>(socketPath: string, method: string, timeoutMs: number): Promise<Result> {
+async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Promise<void> {
+  const runtimeDirectory = sidecarRuntimeDirectory(input.configDirectory);
+  const socketPath = join(runtimeDirectory, "sidecar.sock");
+  const existing = await sidecarRpc<Array<{ sessionId: string }>>(socketPath, "session.list", input.commandTimeoutMs);
+  if (existing.some((session) => session.sessionId === input.taskId)) return;
+
+  const resourcesPath = join(input.applicationPath, "Contents", "Resources");
+  const cliRoot = join(resourcesPath, "app.asar.unpacked", "cli");
+  const cliCandidates = [join(cliRoot, "bin", "codebuddy"), join(cliRoot, "dist", "codebuddy.js")];
+  const cliPath = (
+    await Promise.all(cliCandidates.map(async (candidate) => ((await exists(candidate)) ? candidate : null)))
+  ).find((candidate): candidate is string => candidate !== null);
+  if (!cliPath) {
+    throw new WorkBuddyDiscoveryError(
+      "incompatible-version",
+      "The installed WorkBuddy Task runtime executable is unavailable for profile workbuddy-cn.",
+      { selectedProfile: "workbuddy-cn" },
+    );
+  }
+  const trustedWorkspace = `${input.workspace.replace(/[/\\]+$/u, "") || input.workspace}/**`;
+  const gatewaySecret = randomBytes(32).toString("base64url");
+  const request = {
+    sessionId: input.taskId,
+    command: join(input.applicationPath, "Contents", "MacOS", "Electron"),
+    args: [
+      cliPath,
+      "--serve",
+      "--session-id",
+      input.taskId,
+      "--permission-mode",
+      "bypassPermissions",
+      "--allowedTools",
+      "present_files",
+      "read_me",
+      "show_widget",
+      "connect_cloud_service",
+      "WebFetch",
+      "Bash(mcporter:*)",
+      ...(input.model ? ["--model", input.model] : []),
+      "--settings",
+      JSON.stringify({ trustedDirectories: [trustedWorkspace] }),
+    ],
+    cwd: input.workspace,
+    env: {
+      DISABLE_AUTOUPDATER: "1",
+      ELECTRON_RUN_AS_NODE: "1",
+      CODEBUDDY_DISABLE_IDE: "1",
+      SERVER__PORT: "0",
+      SERVER__HOST: "127.0.0.1",
+      CODEBUDDY_CONFIG_DIR: input.configDirectory,
+      WORKBUDDY_CONFIG_DIR: input.configDirectory,
+      WORKBUDDY_DATA_FOLDER_NAME: ".workbuddy",
+      CODEBUDDY_GATEWAY_AUTH: "password",
+      CODEBUDDY_GATEWAY_PASSWORD: gatewaySecret,
+      CODEBUDDY_GATEWAY_DISABLE_API_DOCS: "1",
+      CODEBUDDY_DISABLE_CRON: "1",
+      CODEBUDDY_INCLUDE_TOPIC_MESSAGE: "1",
+      CODEBUDDY_CODE_DISABLE_SESSION_SUMMARY: "1",
+      CODEBUDDY_BUILTIN_SKILLS_DIR: join(resourcesPath, "app.asar.unpacked", "resources", "builtin-skills"),
+      CODEBUDDY_DISABLE_AUTO_MEMORY: "1",
+      CODEBUDDY_DISABLE_SYSTEM_REMINDER_MD: "1",
+      CODEBUDDY_DISABLE_REQUEST_VALIDATION: "1",
+      CODEBUDDY_SKIP_GIT_BASH_CHECK: "1",
+      CODEBUDDY_HOST: "workbuddy-desktop",
+      CODEBUDDY_HIGH_CREDIT_APPROVAL_ENABLED: "1",
+      CODEBUDDY_DISABLE_EXTENDED_PLUGIN_HOOKS: "1",
+      CODEBUDDY_DISABLE_SESSION_HISTORY_CLEANUP: "1",
+      CODEBUDDY_POWERSHELL_USE_PTY: "1",
+      CODEBUDDY_REPLAY_SHOW_PRE_COMPACT: "1",
+      CODEBUDDY_REASONING_ONLY_END_TURN: "1",
+      CODEBUDDY_CODE_IMAGE_COMPRESSION_MAX_DIMENSION: "1080",
+      CODEBUDDY_SKILL_TOOL_CHAR_BUDGET: "30000",
+      CODEBUDDY_DISABLE_FORK_SUBAGENT: "1",
+      CODEBUDDY_ENABLE_SECURITY_AUDIT: "1",
+      CODEBUDDY_HOST_CAPABILITIES: "elicitation.form,weixinpay.interception",
+      ACC_PRODUCT_CONFIG_PATH: join(cliRoot, "product.json"),
+      WORKBUDDY_APP_PATH: input.applicationPath,
+      WORKBUDDY_APP_VERSION: workBuddyProfileCompatibility("workbuddy-cn").applicationVersion,
+      WORKBUDDY_IS_PACKAGED: "true",
+      WORKBUDDY_NODE_ENV: "production",
+      WORKBUDDY_RESOURCES_PATH: resourcesPath,
+    },
+    port: 0,
+  };
+  try {
+    await sidecarRpc(socketPath, "session.create", Math.max(input.commandTimeoutMs, 180_000), request);
+  } catch (error) {
+    const raced = await sidecarRpc<Array<{ sessionId: string }>>(
+      socketPath,
+      "session.list",
+      input.commandTimeoutMs,
+    ).catch(() => []);
+    if (!raced.some((session) => session.sessionId === input.taskId)) throw error;
+  }
+}
+
+async function sidecarRpc<Result>(
+  socketPath: string,
+  method: string,
+  timeoutMs: number,
+  params?: unknown,
+): Promise<Result> {
   return await new Promise<Result>((resolve, reject) => {
     const socket = connect(socketPath);
     let buffer = "";
     socket.setTimeout(timeoutMs, () => socket.destroy(new Error("WorkBuddy sidecar control request timed out")));
-    socket.once("connect", () => socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method })}\n`));
+    socket.once("connect", () =>
+      socket.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id: 1, method, ...(params === undefined ? {} : { params }) })}\n`,
+      ),
+    );
     socket.on("data", (chunk) => {
       buffer += chunk.toString("utf8");
       const newline = buffer.indexOf("\n");

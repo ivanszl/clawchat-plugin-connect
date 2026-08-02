@@ -21,12 +21,12 @@ export interface WorkBuddyAcpTaskAttachment {
   close(): Promise<void>;
 }
 
-export async function verifyWorkBuddyAiEndpoint(
+export async function verifyWorkBuddyEndpoint(
   input: { endpoint: string; taskId: string; workspace: string; acpVersion: number },
   timeoutMs: number,
   readConnectedOwner: (identity: WorkBuddyConnectedSocketIdentity) => Promise<WorkBuddyProcessIdentity | null>,
 ): Promise<WorkBuddyEndpointVerification> {
-  const attachment = await openWorkBuddyAiTaskEndpoint(input, timeoutMs, readConnectedOwner);
+  const attachment = await openWorkBuddyTaskEndpoint(input, timeoutMs, readConnectedOwner);
   try {
     return attachment.verification;
   } finally {
@@ -34,7 +34,7 @@ export async function verifyWorkBuddyAiEndpoint(
   }
 }
 
-export async function openWorkBuddyAiTaskEndpoint(
+export async function openWorkBuddyTaskEndpoint(
   input: { endpoint: string; taskId: string; workspace: string; acpVersion: number },
   timeoutMs: number,
   readConnectedOwner: (identity: WorkBuddyConnectedSocketIdentity) => Promise<WorkBuddyProcessIdentity | null>,
@@ -121,6 +121,9 @@ export async function openWorkBuddyAiTaskEndpoint(
     throw new Error(redact(error instanceof Error ? error.message : String(error), [connectionId, sessionToken]));
   }
 }
+
+export const verifyWorkBuddyAiEndpoint = verifyWorkBuddyEndpoint;
+export const openWorkBuddyAiTaskEndpoint = openWorkBuddyTaskEndpoint;
 
 interface RpcObservation {
   result?: unknown;

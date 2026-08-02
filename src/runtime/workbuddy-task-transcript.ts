@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { access, readdir, readFile, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { type WorkBuddyProfile, workBuddyProfileCompatibility } from "./workbuddy-task-discovery";
 
 export interface WorkBuddyTaskTranscriptIdentity {
   transcriptIdentityMatches: boolean;
@@ -17,8 +17,13 @@ export interface WorkBuddyTaskTranscriptInspection {
 export async function inspectInstalledWorkBuddyTaskTranscript(
   taskId: string,
   assistantMarker: string,
+  profile: WorkBuddyProfile = "workbuddy-ai",
 ): Promise<WorkBuddyTaskTranscriptInspection> {
-  return await inspectWorkBuddyTaskTranscript(join(homedir(), ".workbuddy-ai"), taskId, assistantMarker);
+  return await inspectWorkBuddyTaskTranscript(
+    workBuddyProfileCompatibility(profile).configDirectory,
+    taskId,
+    assistantMarker,
+  );
 }
 
 export async function inspectWorkBuddyTaskTranscript(
@@ -49,6 +54,7 @@ export async function readWorkBuddyTaskTranscriptIdentity(
   configDirectory: string,
   taskId: string,
   workspace: string,
+  profile: WorkBuddyProfile = "workbuddy-ai",
 ): Promise<WorkBuddyTaskTranscriptIdentity> {
   const transcript = await findTaskTranscript(configDirectory, taskId);
   if (!transcript) return mismatch();
@@ -76,7 +82,9 @@ export async function readWorkBuddyTaskTranscriptIdentity(
         if (typeof parsed.id !== "string" || parsed.sessionId !== taskId || typeof parsed.cwd !== "string") {
           return mismatch();
         }
-        if (!messageIds.includes(parsed.id)) messageIds.push(parsed.id);
+        const messageId = nativeReplayMessageId(parsed, profile);
+        if (!messageId) return mismatch();
+        if (!messageIds.includes(messageId)) messageIds.push(messageId);
       }
     }
   } catch {
@@ -86,6 +94,16 @@ export async function readWorkBuddyTaskTranscriptIdentity(
     transcriptIdentityMatches: observedTaskId && observedWorkspace,
     replayFingerprint: replayFingerprint(messageIds),
   };
+}
+
+function nativeReplayMessageId(record: Record<string, unknown>, profile: WorkBuddyProfile): string | null {
+  if (profile !== "workbuddy-cn" || record.role !== "assistant") {
+    return typeof record.id === "string" ? record.id : null;
+  }
+  const providerData = record.providerData;
+  if (!providerData || typeof providerData !== "object" || Array.isArray(providerData)) return null;
+  const messageId = (providerData as Record<string, unknown>).messageId;
+  return typeof messageId === "string" && messageId ? messageId : null;
 }
 
 async function findTaskTranscript(configDirectory: string, taskId: string): Promise<string | null> {

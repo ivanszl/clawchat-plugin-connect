@@ -38,6 +38,26 @@ describe("WorkBuddy native Task transcript identity", () => {
     });
   });
 
+  it("uses mainland provider message identity for assistant replay parity", async () => {
+    const configDirectory = await fixture([
+      { type: "message", id: "user-record", role: "user", sessionId: taskId, cwd: workspace },
+      {
+        type: "message",
+        id: "gen-record",
+        role: "assistant",
+        sessionId: taskId,
+        cwd: workspace,
+        providerData: { messageId: "provider-message" },
+      },
+    ]);
+    await expect(
+      readWorkBuddyTaskTranscriptIdentity(configDirectory, taskId, workspace, "workbuddy-cn"),
+    ).resolves.toEqual({
+      transcriptIdentityMatches: true,
+      replayFingerprint: fingerprint(["user-record", "provider-message"]),
+    });
+  });
+
   it.each([
     { name: "a missing transcript", records: null },
     { name: "an empty transcript", records: [] },
