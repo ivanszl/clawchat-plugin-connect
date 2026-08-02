@@ -2,6 +2,12 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.27] - 2026-08-02
+
+### Fixed
+
+- Removed horizontal scrolling from the desktop resizable Session SideNav while preserving its independently scrollable vertical Session list.
+
 ## [0.1.0-alpha.26] - 2026-08-02
 
 ### Added
