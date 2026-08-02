@@ -47,13 +47,16 @@ try {
   $env:CONNECT_TEST_OLD_BINARY_HASH = $oldHash
   $env:CONNECT_TEST_PREFLIGHT_OBSERVATION = $observationPath
   $env:CONNECT_TEST_INVALID_SKILL_PARENT = $invalidSkillParent
-  $failed = $false
+  $failure = $null
   try {
     & (Join-Path $repositoryRoot "install.ps1") -Version "v0.0.1" -InstallDirectory $installDirectory -LicenseDirectory $licenseDirectory
   } catch {
-    $failed = $true
+    $failure = $_
   }
-  if (-not $failed) { throw "Installer unexpectedly succeeded with an invalid Skill target" }
+  if (-not $failure) { throw "Installer unexpectedly succeeded with an invalid Skill target" }
+  if (-not (Test-Path -LiteralPath $observationPath)) {
+    throw "Installer failed before Skill preflight: $($failure.Exception.Message)"
+  }
   if ((Get-Content -Raw -LiteralPath $observationPath) -ne "old`n") {
     throw "Installer replaced Connect assets before Skill preflight"
   }
