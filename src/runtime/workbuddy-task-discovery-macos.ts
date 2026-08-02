@@ -5,43 +5,49 @@ import { access, readFile, realpath } from "node:fs/promises";
 import { connect } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  WorkbuddyDiscoveryObservation,
-  WorkbuddyEndpointVerification,
-  WorkbuddyProcessIdentity,
-  WorkbuddyTaskDiscoveryInput,
-  WorkbuddyTaskDiscoverySource,
+import { verifyWorkBuddyAiEndpoint, type WorkBuddyConnectedSocketIdentity } from "./workbuddy-acp-client";
+import {
+  WorkBuddyDiscoveryError,
+  type WorkBuddyDiscoveryObservation,
+  type WorkBuddyProcessIdentity,
+  type WorkBuddyTaskDiscoveryInput,
+  type WorkBuddyTaskDiscoverySource,
 } from "./workbuddy-task-discovery";
+import { readWorkBuddyTaskTranscriptIdentity } from "./workbuddy-task-transcript";
 
 const DEFAULT_APPLICATION_PATH = "/Applications/WorkBuddy AI.app";
 const BUNDLE_IDENTIFIER = "com.workbuddy.workbuddy-ai";
 const HOST_SESSION_PREFIX = "__workbuddy_cli_host__-";
 
-export interface WorkbuddyAiMacosDiscoveryOptions {
+export interface WorkBuddyAiMacosDiscoveryOptions {
   applicationPath?: string;
   configDirectory?: string;
   commandTimeoutMs?: number;
   requestTimeoutMs?: number;
 }
 
-export function createWorkbuddyAiMacosDiscoverySource(
-  options: WorkbuddyAiMacosDiscoveryOptions = {},
-): WorkbuddyTaskDiscoverySource {
+export function createWorkBuddyAiMacosDiscoverySource(
+  options: WorkBuddyAiMacosDiscoveryOptions = {},
+): WorkBuddyTaskDiscoverySource {
   const applicationPath = options.applicationPath ?? DEFAULT_APPLICATION_PATH;
   const configDirectory = options.configDirectory ?? join(homedir(), ".workbuddy-ai");
   const commandTimeoutMs = options.commandTimeoutMs ?? 5_000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
   return {
     canonicalizeWorkspace: async (workspace) => await realpath(workspace),
-    inspect: async (input) => await inspectWorkbuddyAi(input, { applicationPath, configDirectory, commandTimeoutMs }),
-    verifyEndpoint: async (input) => await verifyWorkbuddyAiEndpoint(input, requestTimeoutMs),
+    inspect: async (input) => await inspectWorkBuddyAi(input, { applicationPath, configDirectory, commandTimeoutMs }),
+    verifyEndpoint: async (input) =>
+      await verifyWorkBuddyAiEndpoint(input, requestTimeoutMs, async (identity) =>
+        assertConnectedEndpointOwner(await confirmConnectedEndpointOwner(identity, commandTimeoutMs), input),
+      ),
+    confirmEndpointOwner: async (endpoint) => await confirmEndpointOwner(endpoint, commandTimeoutMs),
   };
 }
 
-async function inspectWorkbuddyAi(
-  input: WorkbuddyTaskDiscoveryInput,
+async function inspectWorkBuddyAi(
+  input: WorkBuddyTaskDiscoveryInput,
   options: { applicationPath: string; configDirectory: string; commandTimeoutMs: number },
-): Promise<WorkbuddyDiscoveryObservation> {
+): Promise<WorkBuddyDiscoveryObservation> {
   if (!(await exists(options.applicationPath))) return emptyObservation();
   const [bundleIdentifier, version] = await Promise.all([
     readPlistValue(
@@ -76,7 +82,7 @@ async function inspectWorkbuddyAi(
     processes.find((candidate) => candidate.parentPid === 1 && candidate.executablePath === executablePath) ?? null;
   if (!applicationProcess) return { ...emptyObservation(), application };
 
-  const task = readTask(options.configDirectory, input.taskId);
+  const task = await readTask(options.configDirectory, input.taskId);
   const runtimeDirectory = sidecarRuntimeDirectory(options.configDirectory);
   const registration = await readJsonFile<{ pid: number; token: string; version: number }>(
     join(runtimeDirectory, "sidecar.pid"),
@@ -84,12 +90,19 @@ async function inspectWorkbuddyAi(
   if (!registration) {
     return { ...emptyObservation(), application, applicationProcess, task };
   }
-  const sidecarIdentity = await sidecarRpc<{ pid: number; token: string; version: number }>(
+  const liveSidecarIdentity = await sidecarRpc<{ pid: number; token: string; version: number }>(
     join(runtimeDirectory, "sidecar.sock"),
     "sidecar.ping",
     options.commandTimeoutMs,
   ).catch(() => null);
-  const sessions = sidecarIdentity
+  const sidecarIdentity = liveSidecarIdentity
+    ? {
+        pid: liveSidecarIdentity.pid,
+        version: liveSidecarIdentity.version,
+        registrationTokenMatches: liveSidecarIdentity.token === registration.token,
+      }
+    : null;
+  const sessions = liveSidecarIdentity
     ? await sidecarRpc<Array<{ sessionId: string; pid: number; acpEndpoint: string }>>(
         join(runtimeDirectory, "sidecar.sock"),
         "session.list",
@@ -120,7 +133,7 @@ async function inspectWorkbuddyAi(
     application,
     applicationProcess,
     task,
-    sidecarRegistration: registration,
+    sidecarRegistration: { pid: registration.pid, version: registration.version },
     sidecarIdentity,
     sidecarProcess,
     endpointSession,
@@ -128,163 +141,7 @@ async function inspectWorkbuddyAi(
   };
 }
 
-async function verifyWorkbuddyAiEndpoint(
-  input: { endpoint: string; taskId: string; workspace: string; acpVersion: number },
-  timeoutMs: number,
-): Promise<WorkbuddyEndpointVerification> {
-  let connectionId = "";
-  let sessionToken = "";
-  try {
-    const bootstrap = await fetch(`${input.endpoint}/connect`, {
-      method: "POST",
-      headers: { "x-codebuddy-request": "1" },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!bootstrap.ok) throw new Error(`ACP connect failed with HTTP ${bootstrap.status}`);
-    const credentials = (await bootstrap.json()) as { connectionId?: unknown; sessionToken?: unknown };
-    if (typeof credentials.connectionId !== "string" || !credentials.connectionId)
-      throw new Error("ACP connect response omitted its connection identifier");
-    connectionId = credentials.connectionId;
-    sessionToken = typeof credentials.sessionToken === "string" ? credentials.sessionToken : "";
-    const headers = acpHeaders(connectionId, sessionToken);
-    const initialized = await postRpc(
-      input.endpoint,
-      headers,
-      1,
-      "initialize",
-      {
-        protocolVersion: input.acpVersion,
-        clientInfo: { name: "clawchat-connect-discovery", version: "1" },
-        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-      },
-      timeoutMs,
-    );
-    const initializedProtocol = (initialized.result as { protocolVersion?: unknown } | undefined)?.protocolVersion;
-    if (initializedProtocol !== input.acpVersion)
-      throw new Error("ACP initialize returned an incompatible protocol version");
-    const loaded = await postRpc(
-      input.endpoint,
-      headers,
-      2,
-      "session/load",
-      { sessionId: input.taskId, cwd: input.workspace, mcpServers: [] },
-      timeoutMs,
-    );
-    const observedTaskId = loaded.taskIds.find((candidate) => candidate !== input.taskId) ?? loaded.taskIds[0];
-    if (!observedTaskId) throw new Error("ACP replay emitted no Task identity");
-    return {
-      taskId: observedTaskId,
-      replayStarted: loaded.replayStarted,
-      replayCompleted: loaded.replayCompleted,
-    };
-  } catch (error) {
-    throw new Error(redact(error instanceof Error ? error.message : String(error), [connectionId, sessionToken]));
-  } finally {
-    if (connectionId) {
-      await fetch(input.endpoint, {
-        method: "DELETE",
-        headers: acpHeaders(connectionId, sessionToken),
-        signal: AbortSignal.timeout(Math.min(timeoutMs, 5_000)),
-      }).catch(() => undefined);
-    }
-  }
-}
-
-interface RpcObservation {
-  result?: unknown;
-  taskIds: string[];
-  replayStarted: boolean;
-  replayCompleted: boolean;
-}
-
-async function postRpc(
-  endpoint: string,
-  headers: Record<string, string>,
-  id: number,
-  method: string,
-  params: unknown,
-  timeoutMs: number,
-): Promise<RpcObservation> {
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok) throw new Error(`ACP ${method} failed with HTTP ${response.status}`);
-  const observation: RpcObservation = { taskIds: [], replayStarted: false, replayCompleted: false };
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.includes("text/event-stream")) {
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error(`ACP ${method} returned no response stream`);
-    const decoder = new TextDecoder();
-    let buffer = "";
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-        buffer = consumeSse(buffer, (payload) => observeRpcPayload(payload, id, observation));
-        if (done) break;
-      }
-      if (buffer.trim()) consumeSse(`${buffer}\n\n`, (payload) => observeRpcPayload(payload, id, observation));
-    } finally {
-      reader.releaseLock();
-    }
-  } else {
-    const payload = await response.json();
-    observeRpcPayload(payload, id, observation);
-  }
-  if (observation.result === undefined) throw new Error(`ACP ${method} returned no JSON-RPC result`);
-  return observation;
-}
-
-function consumeSse(buffer: string, onPayload: (payload: unknown) => void): string {
-  let boundary = buffer.search(/\r?\n\r?\n/u);
-  while (boundary >= 0) {
-    const block = buffer.slice(0, boundary);
-    const separator = /^\r\n\r\n/u.test(buffer.slice(boundary)) ? 4 : 2;
-    buffer = buffer.slice(boundary + separator);
-    const data = block
-      .split(/\r?\n/u)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trimStart())
-      .join("\n");
-    if (data) onPayload(JSON.parse(data));
-    boundary = buffer.search(/\r?\n\r?\n/u);
-  }
-  return buffer;
-}
-
-function observeRpcPayload(payload: unknown, expectedId: number, observation: RpcObservation): void {
-  if (typeof payload !== "object" || payload === null) return;
-  const message = payload as Record<string, unknown>;
-  if (message.id === expectedId && !("method" in message)) {
-    const error = message.error as { message?: unknown } | undefined;
-    if (error) throw new Error(typeof error.message === "string" ? error.message : "ACP JSON-RPC request failed");
-    observation.result = message.result ?? {};
-    return;
-  }
-  if (message.method !== "session/update") return;
-  const params = message.params as Record<string, unknown> | undefined;
-  const taskId = params?.sessionId;
-  if (typeof taskId === "string" && !observation.taskIds.includes(taskId)) observation.taskIds.push(taskId);
-  const update = params?.update as Record<string, unknown> | undefined;
-  const meta = update?._meta as Record<string, unknown> | undefined;
-  if (meta?.["codebuddy.ai/historyReplay"] === "start") observation.replayStarted = true;
-  if (meta?.["codebuddy.ai/historyReplay"] === "end") observation.replayCompleted = true;
-}
-
-function acpHeaders(connectionId: string, sessionToken: string): Record<string, string> {
-  return {
-    Accept: "application/json, text/event-stream",
-    "Content-Type": "application/json",
-    "x-codebuddy-request": "1",
-    "acp-connection-id": connectionId,
-    ...(sessionToken ? { "acp-session-token": sessionToken } : {}),
-  };
-}
-
-function emptyObservation(): WorkbuddyDiscoveryObservation {
+function emptyObservation(): WorkBuddyDiscoveryObservation {
   return {
     application: null,
     applicationProcess: null,
@@ -312,19 +169,29 @@ async function readEmbeddedCodeBuddyVersion(applicationPath: string): Promise<st
   return version;
 }
 
-function readTask(configDirectory: string, taskId: string): { id: string; workspace: string } | null {
+async function readTask(
+  configDirectory: string,
+  taskId: string,
+): Promise<{
+  id: string;
+  workspace: string;
+  transcriptIdentityMatches: boolean;
+  replayFingerprint: string;
+} | null> {
   const database = new Database(join(configDirectory, "workbuddy.db"), { readonly: true });
   try {
     const row = database
       .query<{ id: string; cwd: string }, [string]>("SELECT id, cwd FROM sessions WHERE id = ? AND deleted_at IS NULL")
       .get(taskId);
-    return row ? { id: row.id, workspace: row.cwd } : null;
+    if (!row) return null;
+    const transcript = await readWorkBuddyTaskTranscriptIdentity(configDirectory, row.id, row.cwd);
+    return { id: row.id, workspace: row.cwd, ...transcript };
   } finally {
     database.close();
   }
 }
 
-async function readProcesses(timeoutMs: number): Promise<WorkbuddyProcessIdentity[]> {
+async function readProcesses(timeoutMs: number): Promise<WorkBuddyProcessIdentity[]> {
   const output = await runCommand("/bin/ps", ["-axo", "pid=,ppid=,comm="], timeoutMs, "process inventory");
   const base = output
     .split("\n")
@@ -343,8 +210,8 @@ async function readProcesses(timeoutMs: number): Promise<WorkbuddyProcessIdentit
 }
 
 function ancestorPids(
-  processIdentity: WorkbuddyProcessIdentity,
-  byPid: Map<number, WorkbuddyProcessIdentity>,
+  processIdentity: WorkBuddyProcessIdentity,
+  byPid: Map<number, WorkBuddyProcessIdentity>,
 ): number[] {
   const result: number[] = [];
   const seen = new Set<number>([processIdentity.pid]);
@@ -357,7 +224,7 @@ function ancestorPids(
   return result;
 }
 
-function processIdentity(processes: WorkbuddyProcessIdentity[], pid: number): WorkbuddyProcessIdentity {
+function processIdentity(processes: WorkBuddyProcessIdentity[], pid: number): WorkBuddyProcessIdentity {
   return processes.find((candidate) => candidate.pid === pid) ?? { pid, parentPid: 0, executablePath: "[unknown]" };
 }
 
@@ -379,6 +246,70 @@ async function readEndpointOwner(endpoint: string, timeoutMs: number): Promise<n
     ),
   ];
   return pids.length === 1 ? (pids[0] ?? null) : null;
+}
+
+async function confirmEndpointOwner(endpoint: string, timeoutMs: number): Promise<WorkBuddyProcessIdentity | null> {
+  const ownerPid = await readEndpointOwner(endpoint, timeoutMs).catch(() => null);
+  if (ownerPid === null) return null;
+  const processes = await readProcesses(timeoutMs);
+  return processIdentity(processes, ownerPid);
+}
+
+async function confirmConnectedEndpointOwner(
+  identity: WorkBuddyConnectedSocketIdentity,
+  timeoutMs: number,
+): Promise<WorkBuddyProcessIdentity | null> {
+  const output = await runCommand(
+    "/usr/sbin/lsof",
+    ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-Fpfn"],
+    timeoutMs,
+    "established ACP connection owner",
+    true,
+  );
+  const expectedConnection = `n${formatSocketAddress(identity.remoteAddress)}:${identity.remotePort}->${formatSocketAddress(identity.localAddress)}:${identity.localPort}`;
+  const owners = new Set<number>();
+  let processId: number | undefined;
+  for (const line of output.split("\n")) {
+    if (/^p\d+$/u.test(line)) processId = Number(line.slice(1));
+    if (line === expectedConnection && processId !== undefined) owners.add(processId);
+  }
+  if (owners.size !== 1) return null;
+  const [ownerPid] = owners;
+  if (ownerPid === undefined) return null;
+  return processIdentity(await readProcesses(timeoutMs), ownerPid);
+}
+
+function formatSocketAddress(address: string): string {
+  return address.includes(":") && !address.startsWith("[") ? `[${address}]` : address;
+}
+
+function assertConnectedEndpointOwner(
+  owner: WorkBuddyProcessIdentity | null,
+  expected: { applicationPath: string; expectedEndpointProcessId: number; expectedSidecarProcessId: number },
+): WorkBuddyProcessIdentity {
+  if (!owner) {
+    throw new WorkBuddyDiscoveryError(
+      "endpoint-stale",
+      "The established WorkBuddy AI ACP connection has no owning process.",
+    );
+  }
+  if (owner.pid !== expected.expectedEndpointProcessId) {
+    throw new WorkBuddyDiscoveryError("recycled-endpoint", "The established ACP connection has a recycled owner.", {
+      expectedProcessId: expected.expectedEndpointProcessId,
+      detectedProcessId: owner.pid,
+    });
+  }
+  if (
+    !owner.executablePath.startsWith(`${expected.applicationPath}/Contents/`) ||
+    (owner.parentPid !== expected.expectedSidecarProcessId &&
+      owner.ancestorPids?.includes(expected.expectedSidecarProcessId) !== true)
+  ) {
+    throw new WorkBuddyDiscoveryError(
+      "wrong-owning-process",
+      "The established ACP connection is not owned by the selected WorkBuddy AI sidecar.",
+    );
+  }
+  return owner;
 }
 
 async function sidecarRpc<Result>(socketPath: string, method: string, timeoutMs: number): Promise<Result> {
@@ -454,8 +385,4 @@ async function readStream(stream: NodeJS.ReadableStream): Promise<string> {
   stream.setEncoding?.("utf8");
   for await (const chunk of stream) result += String(chunk);
   return result;
-}
-
-function redact(value: string, secrets: string[]): string {
-  return secrets.reduce((result, secret) => (secret ? result.replaceAll(secret, "[REDACTED]") : result), value);
 }

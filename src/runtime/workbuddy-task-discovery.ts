@@ -7,57 +7,67 @@ export const WORKBUDDY_AI_COMPATIBILITY = {
   acpVersion: 1,
 } as const;
 
-export type WorkbuddyProfile = typeof WORKBUDDY_AI_COMPATIBILITY.profile;
+export type WorkBuddyProfile = typeof WORKBUDDY_AI_COMPATIBILITY.profile;
 
-export interface WorkbuddyProcessIdentity {
+export interface WorkBuddyProcessIdentity {
   pid: number;
   parentPid: number;
   executablePath: string;
   ancestorPids?: number[];
 }
 
-export interface WorkbuddyDiscoveryObservation {
+export interface WorkBuddyDiscoveryObservation {
   application: {
     path: string;
     bundleIdentifier: string;
     version: string;
     embeddedCodeBuddyVersion: string;
   } | null;
-  applicationProcess: WorkbuddyProcessIdentity | null;
-  task: { id: string; workspace: string } | null;
-  sidecarRegistration: { pid: number; token: string; version: number } | null;
-  sidecarIdentity: { pid: number; token: string; version: number } | null;
-  sidecarProcess: WorkbuddyProcessIdentity | null;
+  applicationProcess: WorkBuddyProcessIdentity | null;
+  task: {
+    id: string;
+    workspace: string;
+    transcriptIdentityMatches: boolean;
+    replayFingerprint: string;
+  } | null;
+  sidecarRegistration: { pid: number; version: number } | null;
+  sidecarIdentity: { pid: number; version: number; registrationTokenMatches: boolean } | null;
+  sidecarProcess: WorkBuddyProcessIdentity | null;
   endpointSession: { sessionId: string; pid: number; endpoint: string } | null;
-  endpointOwner: WorkbuddyProcessIdentity | null;
+  endpointOwner: WorkBuddyProcessIdentity | null;
 }
 
-export interface WorkbuddyEndpointVerification {
+export interface WorkBuddyEndpointVerification {
   taskId: string;
-  workspace?: string;
+  replayFingerprint: string;
   replayStarted: boolean;
   replayCompleted: boolean;
+  connectionOwner: WorkBuddyProcessIdentity | null;
 }
 
-export interface WorkbuddyTaskDiscoverySource {
-  inspect(input: WorkbuddyTaskDiscoveryInput): Promise<WorkbuddyDiscoveryObservation>;
+export interface WorkBuddyTaskDiscoverySource {
+  inspect(input: WorkBuddyTaskDiscoveryInput): Promise<WorkBuddyDiscoveryObservation>;
   canonicalizeWorkspace?(workspace: string): Promise<string>;
   verifyEndpoint(input: {
     endpoint: string;
     taskId: string;
     workspace: string;
     acpVersion: number;
-  }): Promise<WorkbuddyEndpointVerification>;
+    applicationPath: string;
+    expectedEndpointProcessId: number;
+    expectedSidecarProcessId: number;
+  }): Promise<WorkBuddyEndpointVerification>;
+  confirmEndpointOwner(endpoint: string): Promise<WorkBuddyProcessIdentity | null>;
 }
 
-export interface WorkbuddyTaskDiscoveryInput {
-  profile: WorkbuddyProfile;
+export interface WorkBuddyTaskDiscoveryInput {
+  profile: WorkBuddyProfile;
   taskId: string;
   expectedWorkspace: string;
 }
 
-export interface DiscoveredWorkbuddyTask {
-  profile: WorkbuddyProfile;
+export interface DiscoveredWorkBuddyTask {
+  profile: WorkBuddyProfile;
   application: {
     path: string;
     version: string;
@@ -69,7 +79,7 @@ export interface DiscoveredWorkbuddyTask {
   endpoint: string;
 }
 
-export type WorkbuddyDiscoveryFailureCode =
+export type WorkBuddyDiscoveryFailureCode =
   | "application-absent"
   | "application-stopped"
   | "wrong-distribution"
@@ -85,11 +95,11 @@ export type WorkbuddyDiscoveryFailureCode =
   | "task-replay-incomplete"
   | "endpoint-verification-failed";
 
-export class WorkbuddyDiscoveryError extends Error {
-  readonly name = "WorkbuddyDiscoveryError";
+export class WorkBuddyDiscoveryError extends Error {
+  readonly name = "WorkBuddyDiscoveryError";
 
   constructor(
-    readonly code: WorkbuddyDiscoveryFailureCode,
+    readonly code: WorkBuddyDiscoveryFailureCode,
     message: string,
     readonly details: Record<string, unknown> = {},
     options?: ErrorOptions,
@@ -102,10 +112,10 @@ export class WorkbuddyDiscoveryError extends Error {
   }
 }
 
-export async function discoverWorkbuddyTask(
-  input: WorkbuddyTaskDiscoveryInput,
-  source: WorkbuddyTaskDiscoverySource,
-): Promise<DiscoveredWorkbuddyTask> {
+export async function discoverWorkBuddyTask(
+  input: WorkBuddyTaskDiscoveryInput,
+  source: WorkBuddyTaskDiscoverySource,
+): Promise<DiscoveredWorkBuddyTask> {
   const observation = await source.inspect(input);
   const application = observation.application;
   if (!application) {
@@ -169,6 +179,16 @@ export async function discoverWorkbuddyTask(
       },
     );
   }
+  if (!task.transcriptIdentityMatches) {
+    throw failure(
+      "workspace-identity-mismatch",
+      "WorkBuddy AI's native Task transcript has conflicting identity metadata.",
+      {
+        taskId: task.id,
+        authoritativeWorkspace,
+      },
+    );
+  }
 
   const registration = observation.sidecarRegistration;
   const sidecarIdentity = observation.sidecarIdentity;
@@ -181,7 +201,7 @@ export async function discoverWorkbuddyTask(
   if (
     registration.pid !== sidecarIdentity.pid ||
     registration.version !== sidecarIdentity.version ||
-    registration.token !== sidecarIdentity.token
+    !sidecarIdentity.registrationTokenMatches
   ) {
     throw failure(
       "endpoint-stale",
@@ -207,50 +227,41 @@ export async function discoverWorkbuddyTask(
     );
   }
   assertLoopbackEndpoint(endpointSession.endpoint);
-  const endpointOwner = observation.endpointOwner;
-  if (!endpointOwner) {
-    throw failure("endpoint-stale", "The discovered WorkBuddy AI ACP endpoint is no longer listening.");
-  }
-  if (endpointOwner.pid !== endpointSession.pid) {
-    throw failure("recycled-endpoint", "The discovered ACP port is now owned by another process.", {
-      expectedProcessId: endpointSession.pid,
-      detectedProcessId: endpointOwner.pid,
-    });
-  }
-  if (!ownedExecutable(endpointOwner, application.path) || !isDescendant(endpointOwner, observation.sidecarProcess)) {
-    throw failure(
-      "wrong-owning-process",
-      "The ACP endpoint process is not owned by the selected WorkBuddy AI sidecar.",
-    );
-  }
+  const endpointOwner = assertExpectedEndpointOwner(
+    observation.endpointOwner,
+    endpointSession.pid,
+    application.path,
+    observation.sidecarProcess,
+    "during discovery",
+  );
 
-  let verification: WorkbuddyEndpointVerification;
+  let verification: WorkBuddyEndpointVerification;
   try {
     verification = await source.verifyEndpoint({
       endpoint: endpointSession.endpoint,
       taskId: task.id,
       workspace: authoritativeWorkspace,
       acpVersion: WORKBUDDY_AI_COMPATIBILITY.acpVersion,
+      applicationPath: application.path,
+      expectedEndpointProcessId: endpointOwner.pid,
+      expectedSidecarProcessId: observation.sidecarProcess.pid,
     });
   } catch (error) {
-    const message = redactSecrets(error instanceof Error ? error.message : String(error), [registration.token]);
+    if (error instanceof WorkBuddyDiscoveryError) throw error;
+    const message = redactSecrets(error instanceof Error ? error.message : String(error));
     throw failure("endpoint-verification-failed", `WorkBuddy AI ACP identity verification failed: ${message}`);
   }
+  assertExpectedEndpointOwner(
+    verification.connectionOwner,
+    endpointOwner.pid,
+    application.path,
+    observation.sidecarProcess,
+    "before Task content exchange",
+  );
   if (verification.taskId !== task.id) {
     throw failure("task-identity-mismatch", "The ACP replay belongs to a different WorkBuddy Task.", {
       expectedTaskId: task.id,
       detectedTaskId: verification.taskId,
-    });
-  }
-  const verifiedWorkspace =
-    verification.workspace !== undefined && source.canonicalizeWorkspace
-      ? await source.canonicalizeWorkspace(verification.workspace)
-      : verification.workspace;
-  if (verifiedWorkspace !== undefined && verifiedWorkspace !== authoritativeWorkspace) {
-    throw failure("workspace-identity-mismatch", "The ACP endpoint reported a different Task workspace.", {
-      taskId: task.id,
-      authoritativeWorkspace,
-      detectedWorkspace: verifiedWorkspace,
     });
   }
   if (!verification.replayStarted || !verification.replayCompleted) {
@@ -259,6 +270,19 @@ export async function discoverWorkbuddyTask(
       "The ACP endpoint did not emit the complete pinned history replay boundary.",
     );
   }
+  if (verification.replayFingerprint !== task.replayFingerprint) {
+    throw failure("task-identity-mismatch", "The ACP replay does not match WorkBuddy AI's native Task transcript.", {
+      taskId: task.id,
+    });
+  }
+
+  const confirmedOwner = assertExpectedEndpointOwner(
+    await source.confirmEndpointOwner(endpointSession.endpoint),
+    endpointOwner.pid,
+    application.path,
+    observation.sidecarProcess,
+    "after Task identity verification",
+  );
 
   return {
     profile: input.profile,
@@ -269,7 +293,7 @@ export async function discoverWorkbuddyTask(
       processId: applicationProcess.pid,
     },
     task: { id: task.id, workspace: authoritativeWorkspace },
-    owner: { sidecarProcessId: observation.sidecarProcess.pid, endpointProcessId: endpointOwner.pid },
+    owner: { sidecarProcessId: observation.sidecarProcess.pid, endpointProcessId: confirmedOwner.pid },
     endpoint: endpointSession.endpoint,
   };
 }
@@ -293,27 +317,50 @@ function assertLoopbackEndpoint(endpoint: string): void {
   }
 }
 
-function ownedExecutable(processIdentity: WorkbuddyProcessIdentity, applicationPath: string): boolean {
+function ownedExecutable(processIdentity: WorkBuddyProcessIdentity, applicationPath: string): boolean {
   return processIdentity.executablePath.startsWith(`${applicationPath}/Contents/`);
 }
 
-function isDescendant(child: WorkbuddyProcessIdentity, parent: WorkbuddyProcessIdentity): boolean {
+function isDescendant(child: WorkBuddyProcessIdentity, parent: WorkBuddyProcessIdentity): boolean {
   return child.parentPid === parent.pid || child.ancestorPids?.includes(parent.pid) === true;
 }
 
-function redactSecrets(value: string, knownSecrets: string[]): string {
-  let redacted = value;
-  for (const secret of knownSecrets) if (secret) redacted = redacted.replaceAll(secret, "[REDACTED]");
-  return redacted
+function assertExpectedEndpointOwner(
+  candidate: WorkBuddyProcessIdentity | null,
+  expectedProcessId: number,
+  applicationPath: string,
+  sidecarProcess: WorkBuddyProcessIdentity,
+  stage: string,
+): WorkBuddyProcessIdentity {
+  if (!candidate) {
+    throw failure("endpoint-stale", `The WorkBuddy AI ACP endpoint is no longer listening ${stage}.`);
+  }
+  if (candidate.pid !== expectedProcessId) {
+    throw failure("recycled-endpoint", `The ACP port changed owners ${stage}.`, {
+      expectedProcessId,
+      detectedProcessId: candidate.pid,
+    });
+  }
+  if (!ownedExecutable(candidate, applicationPath) || !isDescendant(candidate, sidecarProcess)) {
+    throw failure(
+      "wrong-owning-process",
+      `The ACP endpoint is not owned by the selected WorkBuddy AI sidecar ${stage}.`,
+    );
+  }
+  return candidate;
+}
+
+function redactSecrets(value: string): string {
+  return value
     .replace(/\b(connectionId|sessionToken|bearer|password)\s*[=:]\s*[^\s,;]+/giu, "$1=[REDACTED]")
     .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]");
 }
 
 function failure(
-  code: WorkbuddyDiscoveryFailureCode,
+  code: WorkBuddyDiscoveryFailureCode,
   message: string,
   details: Record<string, unknown> = {},
   options?: ErrorOptions,
-): WorkbuddyDiscoveryError {
-  return new WorkbuddyDiscoveryError(code, message, details, options);
+): WorkBuddyDiscoveryError {
+  return new WorkBuddyDiscoveryError(code, message, details, options);
 }

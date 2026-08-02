@@ -1,5 +1,6 @@
 import { realpath } from "node:fs/promises";
-import { createWorkbuddyAiMacosDiscoverySource, discoverWorkbuddyTask } from "../../src";
+import { discoverWorkBuddyTask } from "../../src/runtime/workbuddy-task-discovery";
+import { createWorkBuddyAiMacosDiscoverySource } from "../../src/runtime/workbuddy-task-discovery-macos";
 
 const taskId = process.env.WORKBUDDY_AI_TEST_TASK_ID;
 const workspace = process.env.WORKBUDDY_AI_TEST_TASK_WORKSPACE;
@@ -9,9 +10,9 @@ if (!taskId || !workspace) {
   );
 }
 
-const discovered = await discoverWorkbuddyTask(
+const discovered = await discoverWorkBuddyTask(
   { profile: "workbuddy-ai", taskId, expectedWorkspace: await realpath(workspace) },
-  createWorkbuddyAiMacosDiscoverySource(),
+  createWorkBuddyAiMacosDiscoverySource(),
 );
 
 process.stdout.write(
