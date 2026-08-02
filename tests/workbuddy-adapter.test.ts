@@ -7,7 +7,9 @@ import { TranscriptProjection } from "../src/client-interface/transcript-project
 import { defaultConfig } from "../src/config";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimePrompt, ConnectRuntimeStartContext, RuntimeActivity } from "../src/runtime/types";
+import { WorkBuddyPromptTransportError } from "../src/runtime/workbuddy-acp-client";
 import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
+import { WorkBuddyDiscoveryError, type WorkBuddyDiscoveryFailureCode } from "../src/runtime/workbuddy-task-discovery";
 import { createStateStore } from "../src/state";
 import type { WorkBuddyAgentBindingConfig } from "../src/types";
 
@@ -269,6 +271,55 @@ describe("WorkBuddy Runtime Adapter", () => {
     }
   });
 
+  it.each([
+    "application-stopped",
+    "endpoint-unavailable",
+    "authentication-failed",
+    "task-identity-mismatch",
+  ] satisfies WorkBuddyDiscoveryFailureCode[])(
+    "preserves the stable Task mapping when recovery reports %s",
+    async (failureCode) => {
+      const directory = await mkdtemp(join(tmpdir(), "workbuddy-adapter-unavailable-"));
+      const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+      await store.upsertRuntimeSession({
+        chatId: "client",
+        sessionId: "connect-session",
+        agentId: "desktop",
+        runtimeSessionId: taskId,
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const mapped = await store.getCurrentRuntimeSession("client", "desktop");
+      if (!mapped) throw new Error("fixture Session was not created");
+      const runtimeSource: WorkBuddyRuntimeSource = {
+        ...source(),
+        startTask: async () => {
+          throw new WorkBuddyDiscoveryError(failureCode, `unavailable: ${failureCode}`);
+        },
+      };
+      const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+      try {
+        await expect(
+          adapter.start(binding, {
+            agentId: "desktop",
+            chatId: "client",
+            sessionId: "connect-session",
+            runtimeSessionId: taskId,
+            configPath: "/private/tmp/connect.json",
+            stateDbPath: "/private/tmp/connect.sqlite",
+            onRuntimeSessionId: async () => undefined,
+          }),
+        ).rejects.toMatchObject({ code: failureCode });
+        await expect(store.getRuntimeSessionByRef(mapped.sessionRef)).resolves.toMatchObject({
+          runtimeSessionId: taskId,
+        });
+      } finally {
+        await store.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("starts only an adopted Task Attachment and preserves its current model without an explicit override", async () => {
     const prompts: ConnectRuntimePrompt[] = [];
     let attachmentCloses = 0;
@@ -277,7 +328,8 @@ describe("WorkBuddy Runtime Adapter", () => {
       startTask: async (input) => {
         expect(input).toEqual({ profile: "workbuddy-ai", taskId, workspace });
         return {
-          async *prompt(prompt): AsyncIterable<RuntimeActivity> {
+          verification: verifiedHistory(),
+          async *prompt(prompt: ConnectRuntimePrompt): AsyncIterable<RuntimeActivity> {
             prompts.push(prompt);
             yield {
               id: "workbuddy:assistant:native-turn",
@@ -331,4 +383,378 @@ describe("WorkBuddy Runtime Adapter", () => {
     await session.close();
     expect(attachmentCloses).toBe(1);
   });
+
+  it("rediscovers the same adopted Task after a pre-acceptance transport loss", async () => {
+    const attachmentInputs: Array<{ profile: string; taskId: string; workspace: string }> = [];
+    let accepted = 0;
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      ...source(),
+      startTask: async (input) => {
+        attachmentInputs.push(input);
+        const generation = attachmentInputs.length;
+        return {
+          verification: verifiedHistory(
+            generation === 1
+              ? history.activities
+              : [
+                  ...history.activities,
+                  {
+                    id: "workbuddy:user:desktop-between-connections",
+                    position: "1.1",
+                    parentId: null,
+                    kind: "user",
+                    text: "native turn between connections",
+                    state: "complete",
+                    source: "history",
+                  },
+                  {
+                    id: "workbuddy:assistant:desktop-between-connections",
+                    position: "1.2",
+                    parentId: null,
+                    kind: "assistant",
+                    text: "native result between connections",
+                    state: "complete",
+                    source: "history",
+                  },
+                ],
+          ),
+          async *prompt(prompt): AsyncIterable<RuntimeActivity> {
+            if (generation === 1) throw new Error("rotated endpoint closed before native acceptance");
+            await prompt.onAccepted?.();
+            yield {
+              id: "workbuddy:assistant:recovered-turn",
+              position: "1.2",
+              parentId: null,
+              kind: "assistant",
+              text: "continued through rotated credentials",
+              state: "complete",
+              source: "live",
+            };
+          },
+          close: async () => undefined,
+        };
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const session = await adapter.start(binding, {
+      agentId: "desktop",
+      chatId: "client",
+      sessionId: "connect-session",
+      runtimeSessionId: taskId,
+      configPath: "/private/tmp/connect.json",
+      stateDbPath: "/private/tmp/connect.sqlite",
+      onRuntimeSessionId: async () => undefined,
+    });
+    const prompt: ConnectRuntimePrompt = {
+      prompt: "continue the adopted task",
+      turnId: "recovery-turn",
+      onAccepted: async () => {
+        accepted += 1;
+      },
+      workspace: {
+        projectId: null,
+        workingDirectory: workspace,
+        additionalDirectories: [],
+        skipGitRepoCheck: false,
+      },
+    };
+
+    await expect(collect(session.prompt(prompt))).rejects.toThrow("before native acceptance");
+    expect(accepted).toBe(0);
+    const recovered = await collect(session.prompt(prompt));
+    expect(recovered.map((activity) => activity.id)).toEqual([
+      "workbuddy:user:desktop-between-connections",
+      "workbuddy:assistant:desktop-between-connections",
+      "workbuddy:assistant:recovered-turn",
+    ]);
+    expect(recovered[1]?.data).toMatchObject({ suppressRemoteDelivery: true });
+    expect(accepted).toBe(1);
+    expect(attachmentInputs).toEqual([
+      { profile: "workbuddy-ai", taskId, workspace },
+      { profile: "workbuddy-ai", taskId, workspace },
+    ]);
+  });
+
+  it("reconciles an accepted prompt from rotated Task history without resubmitting it", async () => {
+    const promptCalls: string[] = [];
+    let attachmentGeneration = 0;
+    const recoveredHistory = {
+      taskId,
+      replayFingerprint: "rotated-history",
+      replayStarted: true,
+      replayCompleted: true,
+      connectionOwner: null,
+      activities: [
+        ...history.activities,
+        {
+          id: "workbuddy:user:desktop-during-disconnect",
+          position: "1.1",
+          parentId: null,
+          kind: "user" as const,
+          text: "desktop turn while Connect was offline",
+          state: "complete" as const,
+          source: "history" as const,
+        },
+        {
+          id: "workbuddy:assistant:desktop-during-disconnect",
+          position: "1.2",
+          parentId: null,
+          kind: "assistant" as const,
+          text: "desktop-only result",
+          state: "complete" as const,
+          source: "history" as const,
+        },
+        {
+          id: "workbuddy:user:clawchat-connect-clawchat-uncertain-turn",
+          position: "2.1",
+          parentId: null,
+          kind: "user" as const,
+          text: "perform the uncertain operation",
+          state: "complete" as const,
+          source: "history" as const,
+        },
+        {
+          id: "workbuddy:assistant:uncertain-result",
+          position: "2.2",
+          parentId: null,
+          kind: "assistant" as const,
+          text: "the uncertain operation completed once",
+          state: "complete" as const,
+          source: "history" as const,
+        },
+      ],
+    };
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      ...source(),
+      startTask: async () => {
+        attachmentGeneration += 1;
+        const generation = attachmentGeneration;
+        return {
+          verification: generation === 1 ? { ...recoveredHistory, activities: history.activities } : recoveredHistory,
+          async *prompt(prompt): AsyncIterable<RuntimeActivity> {
+            promptCalls.push(`${generation}:${prompt.prompt}`);
+            if (generation === 1) {
+              await prompt.onAccepted?.();
+              yield {
+                id: "workbuddy:assistant:uncertain-result",
+                position: "2.2",
+                parentId: null,
+                kind: "assistant",
+                text: "the uncertain operation",
+                state: "streaming",
+                source: "live",
+              };
+              throw new Error("transport closed after possible native acceptance");
+            }
+            yield* [];
+          },
+          close: async () => undefined,
+        };
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const session = await adapter.start(binding, {
+      agentId: "desktop",
+      chatId: "clawchat",
+      sessionId: "connect-session",
+      runtimeSessionId: taskId,
+      configPath: "/private/tmp/connect.json",
+      stateDbPath: "/private/tmp/connect.sqlite",
+      onRuntimeSessionId: async () => undefined,
+    });
+
+    const activities = await collect(
+      session.prompt({
+        prompt: "perform the uncertain operation",
+        turnId: "uncertain-turn",
+        turnOrigin: "clawchat",
+        workspace: {
+          projectId: null,
+          workingDirectory: workspace,
+          additionalDirectories: [],
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+
+    expect(promptCalls).toEqual(["1:perform the uncertain operation"]);
+    expect(attachmentGeneration).toBe(2);
+    expect(activities.map((activity) => activity.id)).toEqual([
+      "workbuddy:assistant:uncertain-result",
+      "workbuddy:user:desktop-during-disconnect",
+      "workbuddy:assistant:desktop-during-disconnect",
+      "workbuddy:user:clawchat-connect-clawchat-uncertain-turn",
+      "workbuddy:assistant:uncertain-result",
+    ]);
+    expect(activities[2]?.data).toMatchObject({ suppressRemoteDelivery: true });
+    expect(activities.findLast((activity) => activity.id === "workbuddy:assistant:uncertain-result")).toMatchObject({
+      text: "the uncertain operation completed once",
+      state: "complete",
+    });
+  });
+
+  it("reconciles transmission loss even when native acceptance was never observed", async () => {
+    let attachmentGeneration = 0;
+    let accepted = 0;
+    const submittedId = "workbuddy:user:clawchat-connect-client-unobserved-acceptance";
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      ...source(),
+      startTask: async () => {
+        attachmentGeneration += 1;
+        const generation = attachmentGeneration;
+        return {
+          verification: {
+            taskId,
+            replayFingerprint: `generation-${generation}`,
+            replayStarted: true,
+            replayCompleted: true,
+            connectionOwner: null,
+            activities:
+              generation === 1
+                ? history.activities
+                : [
+                    ...history.activities,
+                    {
+                      id: submittedId,
+                      position: "1.1",
+                      parentId: null,
+                      kind: "user",
+                      text: "possibly accepted",
+                      state: "complete",
+                      source: "history",
+                    },
+                    {
+                      id: "workbuddy:assistant:unobserved-result",
+                      position: "1.2",
+                      parentId: null,
+                      kind: "assistant",
+                      text: "committed before the socket closed",
+                      state: "complete",
+                      source: "history",
+                    },
+                  ],
+          },
+          async *prompt(): AsyncIterable<RuntimeActivity> {
+            if (generation === 1) throw new WorkBuddyPromptTransportError();
+            yield* [];
+          },
+          close: async () => undefined,
+        };
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const session = await adapter.start(binding, {
+      agentId: "desktop",
+      chatId: "client",
+      sessionId: "connect-session",
+      runtimeSessionId: taskId,
+      configPath: "/private/tmp/connect.json",
+      stateDbPath: "/private/tmp/connect.sqlite",
+      onRuntimeSessionId: async () => undefined,
+    });
+
+    await expect(
+      collect(
+        session.prompt({
+          prompt: "possibly accepted",
+          turnId: "unobserved-acceptance",
+          onAccepted: async () => {
+            accepted += 1;
+          },
+          workspace: {
+            projectId: null,
+            workingDirectory: workspace,
+            additionalDirectories: [],
+            skipGitRepoCheck: false,
+          },
+        }),
+      ),
+    ).resolves.toMatchObject([{ id: submittedId }, { id: "workbuddy:assistant:unobserved-result" }]);
+    expect(accepted).toBe(0);
+    expect(attachmentGeneration).toBe(2);
+  });
+
+  it.each([
+    ["prompt-not-committed", []],
+    [
+      "prompt-outcome-indeterminate",
+      [
+        {
+          id: "workbuddy:user:clawchat-connect-client-unsettled-turn",
+          position: "1.1",
+          parentId: null,
+          kind: "user" as const,
+          text: "unsettled prompt",
+          state: "complete" as const,
+          source: "history" as const,
+        },
+      ],
+    ],
+  ] as const)("surfaces %s without retrying an uncertain prompt", async (expectedCode, recoveredTurn) => {
+    let attachmentGeneration = 0;
+    let promptCalls = 0;
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      ...source(),
+      startTask: async () => {
+        attachmentGeneration += 1;
+        const generation = attachmentGeneration;
+        return {
+          verification: verifiedHistory(
+            generation === 1 ? history.activities : [...history.activities, ...recoveredTurn],
+          ),
+          async *prompt(input): AsyncIterable<RuntimeActivity> {
+            promptCalls += 1;
+            await input.onAccepted?.();
+            yield* [];
+            throw new WorkBuddyPromptTransportError();
+          },
+          close: async () => undefined,
+        };
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const session = await adapter.start(binding, {
+      agentId: "desktop",
+      chatId: "client",
+      sessionId: "connect-session",
+      runtimeSessionId: taskId,
+      configPath: "/private/tmp/connect.json",
+      stateDbPath: "/private/tmp/connect.sqlite",
+      onRuntimeSessionId: async () => undefined,
+    });
+
+    await expect(
+      collect(
+        session.prompt({
+          prompt: "unsettled prompt",
+          turnId: "unsettled-turn",
+          workspace: {
+            projectId: null,
+            workingDirectory: workspace,
+            additionalDirectories: [],
+            skipGitRepoCheck: false,
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: expectedCode });
+    expect(promptCalls).toBe(1);
+    expect(attachmentGeneration).toBe(2);
+  });
 });
+
+async function collect(activities: AsyncIterable<RuntimeActivity>): Promise<RuntimeActivity[]> {
+  const result: RuntimeActivity[] = [];
+  for await (const activity of activities) result.push(activity);
+  return result;
+}
+
+function verifiedHistory(activities: RuntimeActivity[] = history.activities) {
+  return {
+    taskId,
+    replayFingerprint: "verified-history",
+    replayStarted: true,
+    replayCompleted: true,
+    activities,
+    connectionOwner: null,
+  };
+}

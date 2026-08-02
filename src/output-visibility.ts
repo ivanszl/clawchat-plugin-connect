@@ -36,6 +36,7 @@ export function materializeRuntimeOutput(
   activity: RuntimeActivity,
   policy: OutputVisibilityPolicy,
 ): MaterializedRuntimeReply | null {
+  if (activity.data?.suppressRemoteDelivery === true) return null;
   const outputKind = runtimeOutputKind(activity);
   if (!policy.includeKinds.has(outputKind)) return null;
   return {

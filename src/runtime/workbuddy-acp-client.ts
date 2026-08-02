@@ -1,5 +1,5 @@
 import { connect, type Socket } from "node:net";
-import type { ConnectRuntimePrompt, RuntimeActivity } from "./types";
+import type { ConnectRuntimePrompt, ConnectRuntimeSession, RuntimeActivity } from "./types";
 import {
   WorkBuddyDiscoveryError,
   type WorkBuddyEndpointVerification,
@@ -15,10 +15,21 @@ export interface WorkBuddyConnectedSocketIdentity {
   remotePort: number;
 }
 
-export interface WorkBuddyAcpTaskAttachment {
+export interface WorkBuddyAcpTaskAttachment extends ConnectRuntimeSession {
   readonly verification: WorkBuddyEndpointVerification;
-  prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeActivity>;
-  close(): Promise<void>;
+}
+
+export class WorkBuddyPromptTransportError extends Error {
+  readonly name = "WorkBuddyPromptTransportError";
+  readonly nativeAcceptance = "uncertain" as const;
+
+  constructor(options?: ErrorOptions) {
+    super("WorkBuddy prompt transport failed after transmission; native acceptance is uncertain.", options);
+  }
+}
+
+class WorkBuddyRpcRejectionError extends Error {
+  readonly name = "WorkBuddyRpcRejectionError";
 }
 
 export async function verifyWorkBuddyAiEndpoint(
@@ -54,6 +65,12 @@ export async function openWorkBuddyAiTaskEndpoint(
     const bootstrap = await connection.request("POST", `${connection.pathname}/connect`, {
       "x-codebuddy-request": "1",
     });
+    if (bootstrap.statusCode === 401 || bootstrap.statusCode === 403) {
+      throw new WorkBuddyDiscoveryError(
+        "authentication-failed",
+        "WorkBuddy AI rejected the reacquired ACP authorization for this Task Attachment.",
+      );
+    }
     if (bootstrap.statusCode < 200 || bootstrap.statusCode >= 300) {
       throw new Error(`ACP connect failed with HTTP ${bootstrap.statusCode}`);
     }
@@ -165,8 +182,14 @@ async function postRpc(
     Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params })),
     (chunk) => decoder.push(chunk.toString("utf8")),
   );
+  if (response.statusCode === 401 || response.statusCode === 403) {
+    throw new WorkBuddyDiscoveryError(
+      "authentication-failed",
+      "WorkBuddy AI rejected the reacquired ACP authorization for this Task Attachment.",
+    );
+  }
   if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`ACP ${method} failed with HTTP ${response.statusCode}`);
+    throw new WorkBuddyRpcRejectionError(`ACP ${method} failed with HTTP ${response.statusCode}`);
   }
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("text/event-stream")) {
@@ -216,7 +239,7 @@ function observeRpcPayload(payload: unknown, expectedId: number, observation: Rp
   if (typeof payload !== "object" || payload === null) return;
   const message = payload as Record<string, unknown>;
   if (message.id === expectedId && !("method" in message)) {
-    if (message.error) throw new Error("ACP JSON-RPC request failed");
+    if (message.error) throw new WorkBuddyRpcRejectionError("ACP JSON-RPC request failed");
     observation.result = message.result ?? {};
     return;
   }
@@ -400,7 +423,15 @@ function streamPrompt(
       for (const activity of projector.complete(observation.result)) queue.push(activity);
       queue.end();
     })
-    .catch((error) => queue.fail(error instanceof Error ? error : new Error(String(error))));
+    .catch((error) =>
+      queue.fail(
+        error instanceof WorkBuddyRpcRejectionError || error instanceof WorkBuddyDiscoveryError
+          ? error
+          : new WorkBuddyPromptTransportError({
+              cause: error instanceof Error ? error : new Error(String(error)),
+            }),
+      ),
+    );
   return queue;
 }
 
@@ -648,6 +679,7 @@ interface HttpResponse {
 
 class PersistentHttpConnection {
   readonly pathname: string;
+  private closed = false;
   private pending:
     | {
         resolve: (response: HttpResponse) => void;
@@ -677,7 +709,10 @@ class PersistentHttpConnection {
       }
     });
     socket.on("error", (error) => this.rejectPending(error));
-    socket.on("close", () => this.rejectPending(new Error("ACP HTTP connection closed unexpectedly")));
+    socket.on("close", () => {
+      this.closed = true;
+      this.rejectPending(new Error("ACP HTTP connection closed unexpectedly"));
+    });
   }
 
   static async open(endpoint: string, timeoutMs: number): Promise<PersistentHttpConnection> {
@@ -711,6 +746,7 @@ class PersistentHttpConnection {
     body = Buffer.alloc(0),
     onBodyChunk?: (chunk: Buffer) => void,
   ): Promise<HttpResponse> {
+    if (this.closed || this.socket.destroyed) throw new Error("ACP HTTP connection is closed");
     if (this.pending) throw new Error("Concurrent ACP HTTP requests are not supported");
     const requestHeaders = {
       Host: `${this.hostname}:${this.port}`,
@@ -737,6 +773,7 @@ class PersistentHttpConnection {
   }
 
   close(): void {
+    this.closed = true;
     this.socket.destroy();
   }
 

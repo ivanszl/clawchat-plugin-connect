@@ -178,6 +178,13 @@ describe("WorkBuddy private ACP client", () => {
     await expect(result).rejects.not.toThrow(/connection-secret|session-secret/u);
   });
 
+  it("reports authentication expiry distinctly from transport loss", async () => {
+    const endpoint = await serve(() => jsonResponse({ error: "expired credential" }, false, 401));
+    await expect(
+      openWorkBuddyAiTaskEndpoint({ endpoint, taskId, workspace, acpVersion: 1 }, 1_000, async () => null),
+    ).rejects.toMatchObject({ code: "authentication-failed" });
+  });
+
   it("rejects unbounded HTTP response framing", async () => {
     const endpoint = await serve(() => ({ raw: "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\n\r\n{}" }));
     await expect(
@@ -359,6 +366,105 @@ describe("WorkBuddy private ACP client", () => {
     await attachment.close();
     expect(deleteRequests).toBe(1);
   });
+
+  it("marks a disconnect after prompt transmission as uncertain without recording native acceptance", async () => {
+    const endpoint = await serve((request, socket) => {
+      if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "uncertain-connection" });
+      if (request.method === "DELETE") return emptyResponse();
+      const rpc = JSON.parse(request.body) as { id: number; method: string };
+      if (rpc.method === "initialize") {
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+      }
+      if (rpc.method === "session/load") {
+        return sseResponse([
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+          { jsonrpc: "2.0", id: rpc.id, result: {} },
+        ]);
+      }
+      socket.destroy();
+      return null;
+    });
+    const attachment = await openWorkBuddyAiTaskEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => ({
+        pid: 120,
+        parentPid: 110,
+        executablePath: `${applicationPath}/Contents/MacOS/Electron`,
+      }),
+    );
+    let accepted = 0;
+
+    const result = collect(
+      attachment.prompt({
+        prompt: "may have reached WorkBuddy",
+        turnId: "uncertain-transmission",
+        onAccepted: async () => {
+          accepted += 1;
+        },
+        workspace: {
+          projectId: null,
+          workingDirectory: workspace,
+          additionalDirectories: [],
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+
+    await expect(result).rejects.toMatchObject({ nativeAcceptance: "uncertain" });
+    expect(accepted).toBe(0);
+    await attachment.close();
+  });
+
+  it("reports authentication expiry on an attached Task without marking the prompt accepted", async () => {
+    const endpoint = await serve((request) => {
+      if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "expiring-connection" });
+      if (request.method === "DELETE") return emptyResponse();
+      const rpc = JSON.parse(request.body) as { id: number; method: string };
+      if (rpc.method === "initialize") {
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+      }
+      if (rpc.method === "session/load") {
+        return sseResponse([
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+          { jsonrpc: "2.0", id: rpc.id, result: {} },
+        ]);
+      }
+      return jsonResponse({ error: "expired" }, false, 401);
+    });
+    const attachment = await openWorkBuddyAiTaskEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => ({
+        pid: 120,
+        parentPid: 110,
+        executablePath: `${applicationPath}/Contents/MacOS/Electron`,
+      }),
+    );
+    let accepted = 0;
+
+    const result = collect(
+      attachment.prompt({
+        prompt: "credential expires now",
+        turnId: "expired-credential",
+        onAccepted: async () => {
+          accepted += 1;
+        },
+        workspace: {
+          projectId: null,
+          workingDirectory: workspace,
+          additionalDirectories: [],
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+
+    await expect(result).rejects.toMatchObject({ code: "authentication-failed" });
+    expect(accepted).toBe(0);
+    await attachment.close();
+  });
 });
 
 interface FakeRequest {
@@ -367,7 +473,9 @@ interface FakeRequest {
   body: string;
 }
 
-type FakeResponse = { raw: string } | { body: string; contentType: string; chunked?: boolean; fragmented?: boolean };
+type FakeResponse =
+  | { raw: string }
+  | { body: string; contentType: string; chunked?: boolean; fragmented?: boolean; statusCode?: number };
 
 async function serve(respond: (request: FakeRequest, socket: Socket) => FakeResponse | null): Promise<string> {
   const sockets = new Set<Socket>();
@@ -423,7 +531,8 @@ function writeResponse(socket: Socket, response: FakeResponse): void {
   const framing = response.chunked
     ? "Transfer-Encoding: chunked"
     : `Content-Length: ${Buffer.byteLength(response.body)}`;
-  const value = `HTTP/1.1 200 OK\r\nContent-Type: ${response.contentType}\r\n${framing}\r\nConnection: keep-alive\r\n\r\n${body}`;
+  const statusCode = response.statusCode ?? 200;
+  const value = `HTTP/1.1 ${statusCode} ${statusCode === 200 ? "OK" : "Rejected"}\r\nContent-Type: ${response.contentType}\r\n${framing}\r\nConnection: keep-alive\r\n\r\n${body}`;
   if (!response.fragmented) {
     socket.write(value);
     return;
@@ -467,8 +576,8 @@ function writeHeartbeatSse(socket: Socket, requestId: number): void {
   }, 50);
 }
 
-function jsonResponse(value: unknown, fragmented = false): FakeResponse {
-  return { body: JSON.stringify(value), contentType: "application/json", fragmented };
+function jsonResponse(value: unknown, fragmented = false, statusCode = 200): FakeResponse {
+  return { body: JSON.stringify(value), contentType: "application/json", fragmented, statusCode };
 }
 
 function sseResponse(values: unknown[], fragmented = false): FakeResponse {
@@ -498,4 +607,10 @@ function fingerprint(messageIds: string[]): string {
 
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+async function collect(activities: AsyncIterable<RuntimeActivity>): Promise<RuntimeActivity[]> {
+  const result: RuntimeActivity[] = [];
+  for await (const activity of activities) result.push(activity);
+  return result;
 }

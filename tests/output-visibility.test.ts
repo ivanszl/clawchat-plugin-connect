@@ -39,4 +39,22 @@ describe("output visibility", () => {
       requiredControl: true,
     });
   });
+  it("projects recovered native activity without republishing it to a remote surface", () => {
+    const policy = policyForOutputVisibility("full");
+    expect(
+      materializeRuntimeOutput(
+        {
+          id: "recovered-native-assistant",
+          position: "1.2",
+          parentId: null,
+          kind: "assistant",
+          text: "authored while Connect was disconnected",
+          state: "complete",
+          source: "history",
+          data: { suppressRemoteDelivery: true },
+        },
+        policy,
+      ),
+    ).toBeNull();
+  });
 });
