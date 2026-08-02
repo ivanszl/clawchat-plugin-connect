@@ -2,6 +2,12 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.30] - 2026-08-02
+
+### Fixed
+
+- Ensured the Windows installer preflight CI exits successfully after verifying its expected staged Skill failure.
+
 ## [0.1.0-alpha.29] - 2026-08-02
 
 ### Fixed
