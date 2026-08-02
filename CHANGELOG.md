@@ -2,6 +2,13 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.29] - 2026-08-02
+
+### Fixed
+
+- Moved the new-Session form outside the AppShell mobile navigation dialog so the drawer closes cleanly and releases pointer interaction before the composer becomes active.
+- Corrected the Windows installer preflight fixture so its mocked release archive cannot be shadowed by installer-local PowerShell variables.
+
 ## [0.1.0-alpha.28] - 2026-08-02
 
 ### Fixed

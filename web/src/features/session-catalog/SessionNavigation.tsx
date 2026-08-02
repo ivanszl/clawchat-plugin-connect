@@ -1,3 +1,4 @@
+import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
@@ -19,20 +20,12 @@ import type {
   SessionCatalogBindingView,
   SessionCatalogEntryView,
 } from "../../../../src/client-contract";
-import {
-  bootstrapQueryOptions,
-  catalogQueryOptions,
-  createSession,
-  projectsQueryOptions,
-} from "../../client-interface/query-options";
+import { catalogQueryOptions, createSession } from "../../client-interface/query-options";
 import { AddIcon, FolderIcon, ThreadIcon } from "../../components/icons";
 
-export function SessionNavigation() {
+export function SessionNavigation({ onNewSession }: { onNewSession: () => void }) {
   const catalog = useQuery(catalogQueryOptions);
-  const bootstrap = useQuery(bootstrapQueryOptions);
-  const projects = useQuery(projectsQueryOptions);
   const navigate = useNavigate();
-  const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [navigationCollapsed, setNavigationCollapsed] = useState(false);
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const selectedRef = pathname.match(/^\/sessions\/([^/]+)$/u)?.[1]?.toUpperCase() ?? null;
@@ -50,106 +43,87 @@ export function SessionNavigation() {
   );
 
   return (
-    <>
-      <LinkProvider component={Link}>
-        <SideNav
-          className="session-nav"
-          data-mode={navigationCollapsed ? "collapsed" : "expanded"}
-          collapsible={{
-            isCollapsed: navigationCollapsed,
-            onCollapsedChange: setNavigationCollapsed,
-            buttonLabel: "折叠 Session 导航",
-          }}
-          resizable={{ defaultWidth: 304, minWidth: 248, maxWidth: 440, autoSaveId: "connect-client-session-nav" }}
-          topContent={
-            <HStack gap={2} padding={2} align="end" justify={navigationCollapsed ? "center" : "start"}>
-              {navigationCollapsed ? null : (
-                <StackItem size="fill">
-                  <TextInput
-                    label="搜索 Session"
-                    isLabelHidden
-                    value={search}
-                    onChange={setSearch}
-                    placeholder="搜索 session 或 project"
-                    hasClear
-                    width="100%"
-                  />
-                </StackItem>
-              )}
-              <Button
-                label="新建 Session"
-                isIconOnly
-                icon={<AddIcon />}
-                size="sm"
-                variant="primary"
-                onClick={() => setNewSessionOpen(true)}
-              />
-            </HStack>
-          }
-        >
-          {navigationCollapsed ? null : catalog.isPending ? (
-            <VStack padding={4} align="center">
-              <Spinner label="正在加载 Session" />
-            </VStack>
-          ) : catalog.isError ? (
-            <Text color="secondary" display="block" justify="center">
-              无法加载 Session。Connect Service 可能尚未就绪。
-            </Text>
-          ) : (
-            sections.map(({ binding, items }) => (
-              <SideNavSection
-                key={binding.bindingId}
-                title={binding.displayName}
-                endContent={
-                  <StatusDot
-                    variant={
-                      binding.status === "connected"
-                        ? "success"
-                        : binding.status === "disconnected"
-                          ? "error"
-                          : "neutral"
-                    }
-                    label={
-                      binding.status === "connected"
-                        ? "已连接"
-                        : binding.status === "disconnected"
-                          ? "已断开"
-                          : "状态未知"
-                    }
-                    isPulsing={binding.status === "connected"}
-                  />
-                }
-              >
-                {items.length > 0 ? (
-                  <TreeList items={items} density="compact" />
-                ) : (
-                  <Text color="secondary" display="block" justify="center">
-                    没有匹配的 Session
-                  </Text>
-                )}
-              </SideNavSection>
-            ))
-          )}
-        </SideNav>
-      </LinkProvider>
-      <NewSessionDialog
-        isOpen={newSessionOpen}
-        bindings={bootstrap.data?.bindings ?? []}
-        catalogBindings={catalog.data?.bindings ?? []}
-        projects={projects.data ?? []}
-        onOpenChange={setNewSessionOpen}
-        onCreated={(sessionRef) => {
-          setNewSessionOpen(false);
-          requestAnimationFrame(() => {
-            void navigate({ to: "/sessions/$sessionRef", params: { sessionRef } });
-          });
+    <LinkProvider component={Link}>
+      <SideNav
+        className="session-nav"
+        data-mode={navigationCollapsed ? "collapsed" : "expanded"}
+        collapsible={{
+          isCollapsed: navigationCollapsed,
+          onCollapsedChange: setNavigationCollapsed,
+          buttonLabel: "折叠 Session 导航",
         }}
-      />
-    </>
+        resizable={{ defaultWidth: 304, minWidth: 248, maxWidth: 440, autoSaveId: "connect-client-session-nav" }}
+        topContent={
+          <HStack gap={2} padding={2} align="end" justify={navigationCollapsed ? "center" : "start"}>
+            {navigationCollapsed ? null : (
+              <StackItem size="fill">
+                <TextInput
+                  label="搜索 Session"
+                  isLabelHidden
+                  value={search}
+                  onChange={setSearch}
+                  placeholder="搜索 session 或 project"
+                  hasClear
+                  width="100%"
+                />
+              </StackItem>
+            )}
+            <Button
+              label="新建 Session"
+              isIconOnly
+              icon={<AddIcon />}
+              size="sm"
+              variant="primary"
+              onClick={onNewSession}
+            />
+          </HStack>
+        }
+      >
+        {navigationCollapsed ? null : catalog.isPending ? (
+          <VStack padding={4} align="center">
+            <Spinner label="正在加载 Session" />
+          </VStack>
+        ) : catalog.isError ? (
+          <Text color="secondary" display="block" justify="center">
+            无法加载 Session。Connect Service 可能尚未就绪。
+          </Text>
+        ) : (
+          sections.map(({ binding, items }) => (
+            <SideNavSection
+              key={binding.bindingId}
+              title={binding.displayName}
+              endContent={
+                <StatusDot
+                  variant={
+                    binding.status === "connected" ? "success" : binding.status === "disconnected" ? "error" : "neutral"
+                  }
+                  label={
+                    binding.status === "connected"
+                      ? "已连接"
+                      : binding.status === "disconnected"
+                        ? "已断开"
+                        : "状态未知"
+                  }
+                  isPulsing={binding.status === "connected"}
+                />
+              }
+            >
+              {items.length > 0 ? (
+                <TreeList items={items} density="compact" />
+              ) : (
+                <Text color="secondary" display="block" justify="center">
+                  没有匹配的 Session
+                </Text>
+              )}
+            </SideNavSection>
+          ))
+        )}
+      </SideNav>
+    </LinkProvider>
   );
 }
 
-function NewSessionDialog({
+export function NewSessionDialog({
   isOpen,
   bindings,
   catalogBindings,
@@ -206,13 +180,13 @@ function NewSessionDialog({
       onOpenChange={onOpenChange}
       purpose="form"
       width={520}
-      maxHeight="calc(100dvh - 24px)"
+      maxHeight="calc(100dvh - var(--spacing-6))"
     >
       <Layout
         header={<DialogHeader title="新建 Session" subtitle="一次选择工作区和运行选项。" onOpenChange={onOpenChange} />}
         content={
           <LayoutContent className="new-session-dialog-content">
-            <div className="new-session-form">
+            <VStack gap={4}>
               <TextInput label="名称" value={name} onChange={setName} isOptional width="100%" />
               <Selector
                 label="Agent Binding"
@@ -269,13 +243,13 @@ function NewSessionDialog({
                 disabledMessage="先选择一个 Session 模型。"
                 width="100%"
               />
-              {create.isError ? <p className="form-error">创建失败：{create.error.message}</p> : null}
-            </div>
+              {create.isError ? <Banner status="error" title="创建失败" description={create.error.message} /> : null}
+            </VStack>
           </LayoutContent>
         }
         footer={
           <LayoutFooter hasDivider>
-            <div className="dialog-actions">
+            <HStack gap={2} justify="end">
               <Button label="取消" onClick={() => onOpenChange(false)} />
               <Button
                 label="创建 Session"
@@ -284,7 +258,7 @@ function NewSessionDialog({
                 isDisabled={!bindingId}
                 onClick={() => create.mutate()}
               />
-            </div>
+            </HStack>
           </LayoutFooter>
         }
       />

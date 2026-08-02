@@ -858,7 +858,7 @@ async function verifySmallWindowNavigation(browser: Awaited<ReturnType<typeof ch
     await createDialog.getByRole("textbox", { name: /^名称/u }).fill("Small-window Session");
     await submit.click();
     await expect(page.getByRole("heading", { name: "Small-window Session" })).toBeVisible();
-    await expect(createDialog).not.toBeVisible();
+    await expect(page.locator("dialog[open]")).toHaveCount(0);
 
     const composerInput = page.locator(".session-composer [contenteditable='true']");
     await composerInput.click();

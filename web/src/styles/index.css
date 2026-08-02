@@ -41,12 +41,6 @@ textarea {
   overflow: clip;
 }
 
-.top-nav-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-1);
-}
-
 .home-page {
   position: relative;
   display: grid;
@@ -935,22 +929,6 @@ textarea {
   color: var(--color-text-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.new-session-form {
-  display: grid;
-  gap: 14px;
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.form-error {
-  margin: 0;
-  color: var(--color-text-danger, #b42318);
 }
 
 .sr-only {
