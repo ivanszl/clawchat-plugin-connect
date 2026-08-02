@@ -1,8 +1,11 @@
 import { realpath } from "node:fs/promises";
 import type { RuntimeActivity } from "../../src/runtime/types";
 import { createWorkBuddyRuntimeAdapter } from "../../src/runtime/workbuddy-adapter";
+import { workBuddyProfileCompatibility } from "../../src/runtime/workbuddy-task-discovery";
+import { readWorkBuddyTaskRuntimeSelection } from "../../src/runtime/workbuddy-task-discovery-macos";
 import { inspectInstalledWorkBuddyTaskTranscript } from "../../src/runtime/workbuddy-task-transcript";
 import type { WorkBuddyAgentBindingConfig } from "../../src/types";
+import { verifyInstalledWorkBuddyNativeUi } from "./workbuddy-native-ui";
 import {
   requiredWorkBuddyTestEnv,
   workBuddyTestBindingId,
@@ -22,9 +25,15 @@ const {
 
 const canonicalWorkspace = await realpath(workspace);
 const turnMarker = workBuddyTestEnv("TURN_MARKER") ?? `WB_CONNECT_TURN_${Date.now()}`;
+const uiTaskTitle = workBuddyTestEnv("UI_TASK_TITLE");
+if (workBuddyTestProfile === "workbuddy-cn" && !uiTaskTitle) {
+  throw new Error("Set WORKBUDDY_CN_TEST_UI_TASK_TITLE to automate the native WorkBuddy UI synchronization check");
+}
 const before = await inspectInstalledWorkBuddyTaskTranscript(taskId, "", workBuddyTestProfile);
-const priorModel = before.latestCompletedAssistantModel;
-if (!priorModel) throw new Error("The dedicated WorkBuddy Task has no prior assistant model to preserve");
+const selectedModel = (
+  await readWorkBuddyTaskRuntimeSelection(workBuddyProfileCompatibility(workBuddyTestProfile).configDirectory, taskId)
+).model;
+if (!selectedModel) throw new Error("The dedicated WorkBuddy Task has no selected model to preserve");
 
 const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: workBuddyTestProfile };
 const adapter = createWorkBuddyRuntimeAdapter();
@@ -109,11 +118,20 @@ if (!after.hasCompletedAssistantMarker) {
   throw new Error("The native WorkBuddy transcript did not contain the unique turn marker");
 }
 const persistedModel = after.latestCompletedAssistantModel;
-if (persistedModel !== priorModel) {
-  throw new Error(`WorkBuddy Task model changed without an override: ${priorModel} -> ${persistedModel ?? "missing"}`);
+if (persistedModel !== selectedModel) {
+  throw new Error(
+    `WorkBuddy Task model changed without an override: ${selectedModel} -> ${persistedModel ?? "missing"}`,
+  );
 }
 
 await adapter.close?.();
+if (uiTaskTitle) {
+  await verifyInstalledWorkBuddyNativeUi({
+    compatibility: workBuddyProfileCompatibility(workBuddyTestProfile),
+    taskTitle: uiTaskTitle,
+    marker: turnMarker,
+  });
+}
 console.log(
   JSON.stringify(
     {
@@ -127,6 +145,7 @@ console.log(
       activityCount: activities.length,
       replayActivityCount: replay.activities.length,
       nativeRecordDelta: after.recordCount - before.recordCount,
+      nativeUiVerified: uiTaskTitle !== undefined,
     },
     null,
     2,

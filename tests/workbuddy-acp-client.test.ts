@@ -5,8 +5,10 @@ import type { RuntimeActivity } from "../src/runtime/types";
 import {
   openWorkBuddyAiTaskEndpoint,
   verifyWorkBuddyAiEndpoint,
+  verifyWorkBuddyEndpoint,
   type WorkBuddyConnectedSocketIdentity,
 } from "../src/runtime/workbuddy-acp-client";
+import type { WorkBuddyProfile } from "../src/runtime/workbuddy-task-discovery";
 
 const taskId = "00000000-0000-4000-8000-000000000001";
 const workspace = "/private/tmp/workbuddy-acp-client";
@@ -177,6 +179,25 @@ describe("WorkBuddy private ACP client", () => {
     await expect(result).rejects.toThrow("ACP JSON-RPC request failed");
     await expect(result).rejects.not.toThrow(/connection-secret|session-secret/u);
   });
+
+  it.each(["workbuddy-ai", "workbuddy-cn"] as WorkBuddyProfile[])(
+    "reports an incompatible ACP protocol with %s profile details",
+    async (profile) => {
+      const endpoint = await serve((request) => {
+        if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "version-connection" });
+        if (request.method === "DELETE") return emptyResponse();
+        const rpc = JSON.parse(request.body) as { id: number };
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 2 } }]);
+      });
+
+      await expect(
+        verifyWorkBuddyEndpoint({ profile, endpoint, taskId, workspace, acpVersion: 1 }, 1_000, async () => null),
+      ).rejects.toMatchObject({
+        code: "incompatible-version",
+        details: { selectedProfile: profile, detectedAcpVersion: 2, supportedAcpVersion: 1 },
+      });
+    },
+  );
 
   it("rejects unbounded HTTP response framing", async () => {
     const endpoint = await serve(() => ({ raw: "HTTP/1.1 200 OK\r\nConnection: keep-alive\r\n\r\n{}" }));

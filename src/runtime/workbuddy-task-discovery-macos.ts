@@ -21,15 +21,18 @@ import {
   type WorkBuddyTaskDiscoverySource,
   workBuddyProfileCompatibility,
 } from "./workbuddy-task-discovery";
-import { inspectWorkBuddyTaskTranscript, readWorkBuddyTaskTranscriptIdentity } from "./workbuddy-task-transcript";
+import { readWorkBuddyTaskTranscriptIdentity } from "./workbuddy-task-transcript";
 
 export interface WorkBuddyMacosDiscoveryOptions {
-  applicationPath?: string;
-  configDirectory?: string;
   commandTimeoutMs?: number;
   requestTimeoutMs?: number;
   prepareTaskRuntime?: (input: WorkBuddyTaskRuntimeInput) => Promise<void>;
-  readTaskModel?: (configDirectory: string, taskId: string) => Promise<string | null>;
+  readTaskRuntimeSelection?: (configDirectory: string, taskId: string) => Promise<WorkBuddyTaskRuntimeSelection>;
+}
+
+export interface WorkBuddyTaskRuntimeSelection {
+  model: string | null;
+  permissionMode: "fullAccess" | "plan" | "default" | "acceptEdits" | "bypassPermissions";
 }
 
 export interface WorkBuddyTaskRuntimeInput {
@@ -37,8 +40,17 @@ export interface WorkBuddyTaskRuntimeInput {
   configDirectory: string;
   taskId: string;
   workspace: string;
-  model: string | null;
+  selection: WorkBuddyTaskRuntimeSelection;
   commandTimeoutMs: number;
+}
+
+export interface WorkBuddyTaskRuntimeRequest {
+  sessionId: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
+  port: number;
 }
 
 export interface WorkBuddyTaskCatalogEntry {
@@ -59,8 +71,8 @@ export async function listWorkBuddyTasks(
   options: WorkBuddyMacosDiscoveryOptions = {},
 ): Promise<WorkBuddyTaskCatalogEntry[]> {
   const compatibility = workBuddyProfileCompatibility(profile);
-  const applicationPath = options.applicationPath ?? compatibility.applicationPath;
-  const configDirectory = options.configDirectory ?? compatibility.configDirectory;
+  const applicationPath = compatibility.applicationPath;
+  const configDirectory = compatibility.configDirectory;
   const commandTimeoutMs = options.commandTimeoutMs ?? 5_000;
   const { application, applicationProcess } = await inspectWorkBuddyApplication(
     applicationPath,
@@ -133,8 +145,8 @@ export function createWorkBuddyMacosDiscoverySource(
   options: WorkBuddyMacosDiscoveryOptions = {},
 ): WorkBuddyTaskDiscoverySource {
   const compatibility = workBuddyProfileCompatibility(profile);
-  const applicationPath = options.applicationPath ?? compatibility.applicationPath;
-  const configDirectory = options.configDirectory ?? compatibility.configDirectory;
+  const applicationPath = compatibility.applicationPath;
+  const configDirectory = compatibility.configDirectory;
   const commandTimeoutMs = options.commandTimeoutMs ?? 5_000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
   return {
@@ -142,15 +154,15 @@ export function createWorkBuddyMacosDiscoverySource(
       ? {
           prepareEndpoint: async (input: WorkBuddyTaskDiscoveryInput) => {
             if (input.profile !== profile) throw wrongDiscoverySource(profile, input.profile);
-            const model = options.readTaskModel
-              ? await options.readTaskModel(configDirectory, input.taskId)
-              : (await inspectWorkBuddyTaskTranscript(configDirectory, input.taskId, "")).latestCompletedAssistantModel;
+            const selection = options.readTaskRuntimeSelection
+              ? await options.readTaskRuntimeSelection(configDirectory, input.taskId)
+              : await readWorkBuddyTaskRuntimeSelection(configDirectory, input.taskId);
             await (options.prepareTaskRuntime ?? prepareWorkBuddyTaskRuntime)({
               applicationPath,
               configDirectory,
               taskId: input.taskId,
               workspace: await realpath(input.expectedWorkspace),
-              model,
+              selection,
               commandTimeoutMs,
             });
           },
@@ -366,6 +378,44 @@ async function readTask(
   }
 }
 
+const WORKBUDDY_PERMISSION_MODES = new Set<WorkBuddyTaskRuntimeSelection["permissionMode"]>([
+  "fullAccess",
+  "plan",
+  "default",
+  "acceptEdits",
+  "bypassPermissions",
+]);
+
+export async function readWorkBuddyTaskRuntimeSelection(
+  configDirectory: string,
+  taskId: string,
+): Promise<WorkBuddyTaskRuntimeSelection> {
+  const database = new Database(join(configDirectory, "workbuddy.db"), { readonly: true });
+  try {
+    const row = database
+      .query<{ model: string | null; permission_mode: string | null }, [string]>(
+        "SELECT model, permission_mode FROM sessions WHERE id = ? AND deleted_at IS NULL",
+      )
+      .get(taskId);
+    if (!row) {
+      throw new WorkBuddyDiscoveryError("task-not-found", "The requested WorkBuddy Task has no runtime selection.", {
+        taskId,
+      });
+    }
+    const permissionMode = WORKBUDDY_PERMISSION_MODES.has(
+      row.permission_mode as WorkBuddyTaskRuntimeSelection["permissionMode"],
+    )
+      ? (row.permission_mode as WorkBuddyTaskRuntimeSelection["permissionMode"])
+      : "bypassPermissions";
+    return {
+      model: typeof row.model === "string" && row.model.trim() ? row.model.trim() : null,
+      permissionMode,
+    };
+  } finally {
+    database.close();
+  }
+}
+
 async function readProcesses(timeoutMs: number): Promise<WorkBuddyProcessIdentity[]> {
   const output = await runCommand("/bin/ps", ["-axo", "pid=,ppid=,comm="], timeoutMs, "process inventory");
   const base = output
@@ -460,12 +510,18 @@ function formatSocketAddress(address: string): string {
 
 function assertConnectedEndpointOwner(
   owner: WorkBuddyProcessIdentity | null,
-  expected: { applicationPath: string; expectedEndpointProcessId: number; expectedSidecarProcessId: number },
+  expected: {
+    profile: WorkBuddyProfile;
+    applicationPath: string;
+    expectedEndpointProcessId: number;
+    expectedSidecarProcessId: number;
+  },
 ): WorkBuddyProcessIdentity {
+  const product = workBuddyProfileCompatibility(expected.profile).displayName;
   if (!owner) {
     throw new WorkBuddyDiscoveryError(
       "endpoint-stale",
-      "The established WorkBuddy AI ACP connection has no owning process.",
+      `The established ${product} ACP connection has no owning process.`,
     );
   }
   if (owner.pid !== expected.expectedEndpointProcessId) {
@@ -481,7 +537,7 @@ function assertConnectedEndpointOwner(
   ) {
     throw new WorkBuddyDiscoveryError(
       "wrong-owning-process",
-      "The established ACP connection is not owned by the selected WorkBuddy AI sidecar.",
+      `The established ACP connection is not owned by the selected ${product} sidecar.`,
     );
   }
   return owner;
@@ -506,9 +562,28 @@ async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Pr
       { selectedProfile: "workbuddy-cn" },
     );
   }
+  const request = buildWorkBuddyTaskRuntimeRequest(input, cliPath);
+  try {
+    await sidecarRpc(socketPath, "session.create", Math.max(input.commandTimeoutMs, 180_000), request);
+  } catch (error) {
+    const raced = await sidecarRpc<Array<{ sessionId: string }>>(
+      socketPath,
+      "session.list",
+      input.commandTimeoutMs,
+    ).catch(() => []);
+    if (!raced.some((session) => session.sessionId === input.taskId)) throw error;
+  }
+}
+
+export function buildWorkBuddyTaskRuntimeRequest(
+  input: WorkBuddyTaskRuntimeInput,
+  cliPath: string,
+  gatewaySecret = randomBytes(32).toString("base64url"),
+): WorkBuddyTaskRuntimeRequest {
+  const resourcesPath = join(input.applicationPath, "Contents", "Resources");
+  const cliRoot = join(resourcesPath, "app.asar.unpacked", "cli");
   const trustedWorkspace = `${input.workspace.replace(/[/\\]+$/u, "") || input.workspace}/**`;
-  const gatewaySecret = randomBytes(32).toString("base64url");
-  const request = {
+  return {
     sessionId: input.taskId,
     command: join(input.applicationPath, "Contents", "MacOS", "Electron"),
     args: [
@@ -517,7 +592,7 @@ async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Pr
       "--session-id",
       input.taskId,
       "--permission-mode",
-      "bypassPermissions",
+      input.selection.permissionMode,
       "--allowedTools",
       "present_files",
       "read_me",
@@ -525,7 +600,7 @@ async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Pr
       "connect_cloud_service",
       "WebFetch",
       "Bash(mcporter:*)",
-      ...(input.model ? ["--model", input.model] : []),
+      ...(input.selection.model ? ["--model", input.selection.model] : []),
       "--settings",
       JSON.stringify({ trustedDirectories: [trustedWorkspace] }),
     ],
@@ -571,16 +646,6 @@ async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Pr
     },
     port: 0,
   };
-  try {
-    await sidecarRpc(socketPath, "session.create", Math.max(input.commandTimeoutMs, 180_000), request);
-  } catch (error) {
-    const raced = await sidecarRpc<Array<{ sessionId: string }>>(
-      socketPath,
-      "session.list",
-      input.commandTimeoutMs,
-    ).catch(() => []);
-    if (!raced.some((session) => session.sessionId === input.taskId)) throw error;
-  }
 }
 
 async function sidecarRpc<Result>(

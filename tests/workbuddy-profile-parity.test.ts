@@ -1,5 +1,6 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionCatalog } from "../src/client-interface/session-catalog";
@@ -17,7 +18,11 @@ import {
   type WorkBuddyTaskDiscoverySource,
   workBuddyProfileCompatibility,
 } from "../src/runtime/workbuddy-task-discovery";
-import { createWorkBuddyMacosDiscoverySource } from "../src/runtime/workbuddy-task-discovery-macos";
+import {
+  buildWorkBuddyTaskRuntimeRequest,
+  createWorkBuddyMacosDiscoverySource,
+  readWorkBuddyTaskRuntimeSelection,
+} from "../src/runtime/workbuddy-task-discovery-macos";
 import { createStateStore } from "../src/state";
 import type { WorkBuddyAgentBindingConfig } from "../src/types";
 
@@ -194,7 +199,7 @@ it("accepts the mainland sidecar v3 control surface while retaining ACP v1", asy
 it("materializes a writable mainland Task runtime only for the explicit mainland profile", async () => {
   const prepared: Array<{ taskId: string; workspace: string; applicationPath: string; configDirectory: string }> = [];
   const source = createWorkBuddyMacosDiscoverySource("workbuddy-cn", {
-    readTaskModel: async () => "hy3",
+    readTaskRuntimeSelection: async () => ({ model: "hy3", permissionMode: "default" }),
     prepareTaskRuntime: async (input) => {
       prepared.push(input);
     },
@@ -208,10 +213,94 @@ it("materializes a writable mainland Task runtime only for the explicit mainland
       workspace: await realpath(tmpdir()),
       applicationPath: "/Applications/WorkBuddy.app",
       configDirectory: workBuddyProfileCompatibility("workbuddy-cn").configDirectory,
-      model: "hy3",
+      selection: { model: "hy3", permissionMode: "default" },
     }),
   ]);
   expect(createWorkBuddyMacosDiscoverySource("workbuddy-ai").prepareEndpoint).toBeUndefined();
+});
+
+it("builds the production mainland Task runtime request from the native Task selection", () => {
+  const request = buildWorkBuddyTaskRuntimeRequest(
+    {
+      applicationPath: "/Applications/WorkBuddy.app",
+      configDirectory: "/Users/test/.workbuddy",
+      taskId,
+      workspace: "/private/tmp/workspace",
+      selection: { model: "hy3", permissionMode: "default" },
+      commandTimeoutMs: 5_000,
+    },
+    "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+    "test-gateway-secret",
+  );
+
+  expect(request).toMatchObject({
+    sessionId: taskId,
+    command: "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+    cwd: "/private/tmp/workspace",
+    port: 0,
+    env: {
+      CODEBUDDY_CONFIG_DIR: "/Users/test/.workbuddy",
+      CODEBUDDY_GATEWAY_PASSWORD: "test-gateway-secret",
+      WORKBUDDY_APP_PATH: "/Applications/WorkBuddy.app",
+    },
+  });
+  expect(request.args.slice(request.args.indexOf("--session-id"), request.args.indexOf("--session-id") + 2)).toEqual([
+    "--session-id",
+    taskId,
+  ]);
+  expect(
+    request.args.slice(request.args.indexOf("--permission-mode"), request.args.indexOf("--permission-mode") + 2),
+  ).toEqual(["--permission-mode", "default"]);
+  expect(request.args.slice(request.args.indexOf("--model"), request.args.indexOf("--model") + 2)).toEqual([
+    "--model",
+    "hy3",
+  ]);
+  expect(request.args).not.toContain("--no-session-persistence");
+  expect(request.args.join(" ")).toContain("/private/tmp/workspace/**");
+});
+
+it("reads the current Task model from the catalog even when no assistant history exists", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workbuddy-cn-selection-"));
+  const database = new Database(join(directory, "workbuddy.db"));
+  try {
+    database.run("CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, permission_mode TEXT, deleted_at INTEGER)");
+    database
+      .query("INSERT INTO sessions (id, model, permission_mode, deleted_at) VALUES (?, ?, ?, NULL)")
+      .run(taskId, "hy3", "acceptEdits");
+
+    await expect(readWorkBuddyTaskRuntimeSelection(directory, taskId)).resolves.toEqual({
+      model: "hy3",
+      permissionMode: "acceptEdits",
+    });
+  } finally {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("prefers the current catalog model over stale assistant transcript metadata", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workbuddy-cn-current-selection-"));
+  const database = new Database(join(directory, "workbuddy.db"));
+  try {
+    database.run("CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, permission_mode TEXT, deleted_at INTEGER)");
+    database
+      .query("INSERT INTO sessions (id, model, permission_mode, deleted_at) VALUES (?, ?, ?, NULL)")
+      .run(taskId, "hy3", "default");
+    const transcriptDirectory = join(directory, "projects", "workspace");
+    await mkdir(transcriptDirectory, { recursive: true });
+    await writeFile(
+      join(transcriptDirectory, `${taskId}.jsonl`),
+      `${JSON.stringify({ type: "assistant", providerData: { model: "stale-model" } })}\n`,
+    );
+
+    await expect(readWorkBuddyTaskRuntimeSelection(directory, taskId)).resolves.toEqual({
+      model: "hy3",
+      permissionMode: "default",
+    });
+  } finally {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it("accepts the mainland profile host only after exact Task replay verification", async () => {

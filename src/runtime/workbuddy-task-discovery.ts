@@ -94,6 +94,7 @@ export interface WorkBuddyEndpointVerification {
 }
 
 export interface WorkBuddyEndpointInput {
+  profile: WorkBuddyProfile;
   endpoint: string;
   taskId: string;
   workspace: string;
@@ -344,11 +345,13 @@ async function verifyWorkBuddyTask(
     application.path,
     observation.sidecarProcess,
     "during discovery",
+    product,
   );
 
   let verification: WorkBuddyEndpointVerification;
   try {
     verification = await verifyEndpoint({
+      profile: input.profile,
       endpoint: endpointSession.endpoint,
       taskId: task.id,
       workspace: authoritativeWorkspace,
@@ -368,6 +371,7 @@ async function verifyWorkBuddyTask(
     application.path,
     observation.sidecarProcess,
     "before Task content exchange",
+    product,
   );
   if (verification.taskId !== task.id) {
     throw failure("task-identity-mismatch", "The ACP replay belongs to a different WorkBuddy Task.", {
@@ -393,6 +397,7 @@ async function verifyWorkBuddyTask(
     application.path,
     observation.sidecarProcess,
     "after Task identity verification",
+    product,
   );
 
   return {
@@ -445,9 +450,10 @@ function assertExpectedEndpointOwner(
   applicationPath: string,
   sidecarProcess: WorkBuddyProcessIdentity,
   stage: string,
+  product: string,
 ): WorkBuddyProcessIdentity {
   if (!candidate) {
-    throw failure("endpoint-stale", `The WorkBuddy AI ACP endpoint is no longer listening ${stage}.`);
+    throw failure("endpoint-stale", `The ${product} ACP endpoint is no longer listening ${stage}.`);
   }
   if (candidate.pid !== expectedProcessId) {
     throw failure("recycled-endpoint", `The ACP port changed owners ${stage}.`, {
@@ -456,10 +462,7 @@ function assertExpectedEndpointOwner(
     });
   }
   if (!ownedExecutable(candidate, applicationPath) || !isDescendant(candidate, sidecarProcess)) {
-    throw failure(
-      "wrong-owning-process",
-      `The ACP endpoint is not owned by the selected WorkBuddy AI sidecar ${stage}.`,
-    );
+    throw failure("wrong-owning-process", `The ACP endpoint is not owned by the selected ${product} sidecar ${stage}.`);
   }
   return candidate;
 }

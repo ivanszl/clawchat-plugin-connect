@@ -4,6 +4,8 @@ import {
   WorkBuddyDiscoveryError,
   type WorkBuddyEndpointVerification,
   type WorkBuddyProcessIdentity,
+  type WorkBuddyProfile,
+  workBuddyProfileCompatibility,
 } from "./workbuddy-task-discovery";
 
 const MAX_HTTP_BODY_BYTES = 64 * 1024 * 1024;
@@ -22,7 +24,7 @@ export interface WorkBuddyAcpTaskAttachment {
 }
 
 export async function verifyWorkBuddyEndpoint(
-  input: { endpoint: string; taskId: string; workspace: string; acpVersion: number },
+  input: WorkBuddyAcpEndpointInput,
   timeoutMs: number,
   readConnectedOwner: (identity: WorkBuddyConnectedSocketIdentity) => Promise<WorkBuddyProcessIdentity | null>,
 ): Promise<WorkBuddyEndpointVerification> {
@@ -35,7 +37,7 @@ export async function verifyWorkBuddyEndpoint(
 }
 
 export async function openWorkBuddyTaskEndpoint(
-  input: { endpoint: string; taskId: string; workspace: string; acpVersion: number },
+  input: WorkBuddyAcpEndpointInput,
   timeoutMs: number,
   readConnectedOwner: (identity: WorkBuddyConnectedSocketIdentity) => Promise<WorkBuddyProcessIdentity | null>,
 ): Promise<WorkBuddyAcpTaskAttachment> {
@@ -77,7 +79,17 @@ export async function openWorkBuddyTaskEndpoint(
     });
     const initializedProtocol = (initialized.result as { protocolVersion?: unknown } | undefined)?.protocolVersion;
     if (initializedProtocol !== input.acpVersion) {
-      throw new Error("ACP initialize returned an incompatible protocol version");
+      const profile = input.profile ?? "workbuddy-ai";
+      const compatibility = workBuddyProfileCompatibility(profile);
+      throw new WorkBuddyDiscoveryError(
+        "incompatible-version",
+        `The ${compatibility.displayName} ACP protocol version is unsupported for profile ${profile}.`,
+        {
+          selectedProfile: profile,
+          detectedAcpVersion: initializedProtocol ?? "[missing]",
+          supportedAcpVersion: input.acpVersion,
+        },
+      );
     }
     const loaded = await postRpc(connection, headers, 2, "session/load", {
       sessionId: input.taskId,
@@ -120,6 +132,14 @@ export async function openWorkBuddyTaskEndpoint(
     if (error instanceof WorkBuddyDiscoveryError) throw error;
     throw new Error(redact(error instanceof Error ? error.message : String(error), [connectionId, sessionToken]));
   }
+}
+
+interface WorkBuddyAcpEndpointInput {
+  profile?: WorkBuddyProfile;
+  endpoint: string;
+  taskId: string;
+  workspace: string;
+  acpVersion: number;
 }
 
 export const verifyWorkBuddyAiEndpoint = verifyWorkBuddyEndpoint;
