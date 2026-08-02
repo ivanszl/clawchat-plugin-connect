@@ -28,9 +28,9 @@ try {
   Add-Content -LiteralPath $installedBinary -Value "old-release-overlay"
   $oldHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedBinary).Hash.ToLowerInvariant()
 
-  $archivePath = Join-Path $fixtureDirectory $asset
-  Compress-Archive -Path (Join-Path $payloadDirectory "*") -DestinationPath $archivePath
-  $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
+  $fixtureArchivePath = Join-Path $fixtureDirectory $asset
+  Compress-Archive -Path (Join-Path $payloadDirectory "*") -DestinationPath $fixtureArchivePath
+  $archiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fixtureArchivePath).Hash.ToLowerInvariant()
   Set-Content -LiteralPath (Join-Path $fixtureDirectory "checksums.txt") -Value "$archiveHash  $asset"
   Set-Content -LiteralPath $invalidSkillParent -Value "not a directory"
 
@@ -39,7 +39,7 @@ try {
     if ($Uri.EndsWith("checksums.txt")) {
       Copy-Item -LiteralPath (Join-Path $fixtureDirectory "checksums.txt") -Destination $OutFile
     } else {
-      Copy-Item -LiteralPath $archivePath -Destination $OutFile
+      Copy-Item -LiteralPath $fixtureArchivePath -Destination $OutFile
     }
   }
 
