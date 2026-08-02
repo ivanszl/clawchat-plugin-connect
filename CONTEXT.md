@@ -12,6 +12,10 @@ _Avoid_: Agent, when referring to the configured association rather than the ext
 A concrete integration that lets Connect start and operate one kind of coding agent runtime. Codex is the first Runtime Adapter, not the definition of Connect or Agent Binding.
 _Avoid_: Agent Binding, Codex, when referring to the adapter role
 
+**CodeBuddy Runtime**:
+A user-installed CodeBuddy Code CLI installation whose native Sessions can be operated through an Agent Binding. It is distinct from Tencent WorkBuddy Desktop, and its Sessions are not WorkBuddy Tasks.
+_Avoid_: WorkBuddy Runtime, WorkBuddy Task
+
 **Binding Runtime Instance**:
 The stateful runtime process and adapter state owned by one Agent Binding. Instances of the same Runtime Adapter kind remain isolated even when that kind supports multiple Agent Bindings.
 _Avoid_: Runtime Adapter, shared runtime process
@@ -65,8 +69,36 @@ Connect-derived Agent-visible metadata attached to one ClawChat-originated turn.
 _Avoid_: Prompt text, process environment, Client Turn context
 
 **ClawChat Addressing Mention**:
-The single leading structured mention whose stable user identity identifies the activated ClawChat Agent intended to receive a group message. It is addressing metadata rather than user-authored prompt content and is distinct from display-name text or any other mention in the message.
+The single leading ClawChat Agent Mention used to address a group control command or textual Runtime Interaction response. It is addressing metadata rather than user-authored prompt content and is distinct from display-name text or any other mention in the message.
 _Avoid_: Prompt mention, command prefix
+
+**ClawChat Agent Mention**:
+A structured group-message mention whose stable user identity matches the activated ClawChat Agent. It makes a message eligible under mention-only Group Intake Policy, joins the conversation's pending Group Message Batch, and causes that entire Batch to submit immediately; visible display-name text is not an Agent Mention.
+_Avoid_: Text mention, Addressing Mention, when the mention is not the leading command or interaction address
+
+**Group Intake Policy**:
+The rule selected for one Agent Binding in one ClawChat group that governs whether inbound messages are muted, mention-only, or eligible for delayed batching. Muting suppresses Runtime Turns without preventing Connect from receiving the messages; muted messages and pending Batches are not replayed after unmute. A group without an authoritative selected rule defaults to mention-only.
+_Avoid_: Group permissions, Runtime policy
+
+**Group Settings Snapshot**:
+The complete authoritative read-only view of one Agent Binding's per-conversation Group Intake Policies, persisted with each row scoped by Binding and ClawChat conversation rather than Project or installation-wide group identity. A content-free change notification invalidates the affected Binding's current view and requires a refresh; a failed or non-authoritative refresh preserves only a Snapshot that has not been marked stale.
+_Avoid_: Notification payload, writable Connect configuration
+
+**Group Message Batch**:
+An ordered collection of eligible messages from one ClawChat group submitted to the Agent Binding as a single Runtime Turn. Its activity delay is an inactivity interval, with a maximum wait that is never shorter than the selected delay; its final message is the ClawChat reply anchor without becoming the sole sender or source of the Batch. A Batch is bounded to 64,000 rendered characters and ten attachments and splits before a newly appended message would exceed either limit.
+_Avoid_: Offline batch, Runtime queue
+
+**Group Mention Context**:
+Up to ten recent group messages supplied as read-only context with an ordinary mention-only Runtime Turn because those messages did not previously enter the Runtime. It excludes the current message or Batch, is not added to delayed Batch Turns or group control commands, and does not itself request a response.
+_Avoid_: Group Message Batch, replay backlog
+
+**No-Reply Signal**:
+A model-emitted group-response marker whose canonical form is `<clawchat:no-reply/>` and whose recognized compatibility forms carry the same `clawchat:no-reply` meaning. It requests that Connect publish no ordinary textual or Runtime Activity response for the originating group Turn and is never itself user-visible content; explicit media remains deliverable with the marker removed from its caption. Direct-message Turns do not use this protocol.
+_Avoid_: Empty response, No replay, Silent message
+
+**ClawChat Output Visibility**:
+The effective `minimal`, `normal`, or `full` policy selected for one Agent Binding and conversation that determines which Runtime Activities are eligible for remote delivery. It never removes activities from the Connect Transcript Projection and is applied before any No-Reply Signal veto.
+_Avoid_: Runtime logging level, Client Transcript filter
 
 **Client View Continuity**:
 The rule that a reconnecting Connect Client restores the complete latest Client view without replaying transient streaming states. Every committed displayable occurrence remains present, and an older view never replaces a newer view.
@@ -239,7 +271,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Runtime Adapters provide a stable Runtime Thread-local position for each Runtime Activity across live and recovered observations. The Connect Transcript Projection maps that runtime-neutral order into Client Transcript sequence and treats an Adapter-declared ordering limitation as partial completeness instead of guessing from arrival time.
 - Runtime Activity kinds are runtime-neutral and closed over Connect's shared display semantics. An Adapter maps an unsupported native kind to a sanitized `unknown` Activity; adapter-specific kinds and raw native payloads never cross the Runtime Adapter seam.
 - The Codex Runtime Adapter uses app-server as its primary history interface and may supplement omitted displayable tool calls from the matching pinned-version rollout JSONL. Raw rollout records and private reasoning never cross the Runtime Adapter seam.
-- ClawChat `outputVisibility` is resolved from a Binding-scoped chat override, then the Agent Binding default, then the installation default. It filters remote delivery only and never discards an event from the Connect Transcript Projection.
+- ClawChat Output Visibility is resolved from a Binding-scoped chat override, then the Agent Binding default, then the installation default. It filters remote delivery only and never discards an event from the Connect Transcript Projection. For a group Turn, a terminal No-Reply Signal vetoes every ordinary textual or Runtime Activity output that survived that filter without removing projected Runtime Activities or making another output kind visible. Required control output is delivered immediately and remains visible even if the group Turn later ends with a No-Reply Signal; explicit media remains deliverable after the marker is removed from any caption. Direct-message delivery is unchanged.
 - Every displayable Runtime Activity is committed to the Connect Transcript Projection before Turn Surface delivery is attempted. A Turn Surface delivery failure does not remove or hide Activity already projected for the Client Transcript.
 - Session names are display and selection labels; Session Refs are stable unambiguous selectors, while internal Session and Runtime Thread IDs remain hidden.
 - Session lifecycle commands resolve a Session Ref to its native Runtime Thread and are delegated through that Agent Binding's Runtime Adapter.
@@ -248,7 +280,18 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Permanent deletion succeeds at the runtime before Connect removes the Session mapping and Connect Transcript Projection. Connect does not independently cascade deletion to Subagent Threads.
 - A Non-Project Session receives a deterministic isolated workspace and never inherits `process.cwd()`.
 - Connect control commands are restricted to the Binding Owner of the Agent Binding that received them.
-- Direct messages are addressed to the Agent Binding without a mention. A group message enters Connect routing when it explicitly mentions the activated ClawChat Agent; only a ClawChat Addressing Mention expresses control-command or textual Runtime Interaction response intent and is excluded from effective prompt content.
+- Direct messages are addressed to the Agent Binding without a mention. Group messages enter Runtime Turn routing according to the effective Group Intake Policy: muted messages create no Runtime Turn, mention-only mode requires a ClawChat Agent Mention, and other eligible messages enter a Group Message Batch. A ClawChat Agent Mention joins and immediately submits the whole pending Batch in original message order; only a ClawChat Addressing Mention expresses control-command or textual Runtime Interaction response intent and is excluded from effective prompt content.
+- Enabling mute discards any pending Group Message Batch for that conversation. Disabling mute applies only to subsequently received group messages and never replays messages received while muted.
+- Connect consumes Group Settings Snapshots as read-only state and never writes a default policy back to ClawChat. Snapshot persistence is scoped by Agent Binding and conversation and never belongs to a Project. A settings-change notification marks the affected Binding's Snapshot stale and triggers a bounded group-only refresh gate; direct messages never wait on it, and a timeout uses a non-stale trusted Snapshot or the mention-only default.
+- An authoritative Group Settings Snapshot replaces the complete persisted set for only its Agent Binding; an absent conversation or authoritative empty set removes prior rows, while a non-authoritative fetch never clears them. A stale persisted Snapshot is not used for routing until an authoritative refresh replaces it.
+- A refreshed Group Intake Policy takes effect without restarting Connect and immediately reconciles an existing Batch: mute discards it, mention-only discards one without an Agent Mention, a changed delay recomputes its idle and maximum deadlines from original message times, and zero delay submits it immediately. Relaxing a policy affects only new messages and never resurrects discarded input.
+- Group Intake Policy is resolved again when a Group Message Batch is ready to submit so a newly muted or mention-only group cannot dispatch a stale pending Batch.
+- An ordinary mention-only group Turn carries Group Mention Context for understanding prior discussion. Delayed Batch Turns and group control commands never receive that additional history, and context messages never become separate actionable inputs.
+- A recognized group control command never becomes Group Message Batch content. A command that changes the Session or its subsequent runtime choices first submits an existing Batch and then executes in conversation order; inspection, output-visibility, and cancellation commands execute immediately without changing the pending Batch.
+- A Group Message Batch reply and its Runtime Interactions quote the Batch's final source message. Every constituent message retains its own stable identity, sender, structured mentions, order, and attachments in the Runtime Turn context.
+- Group Message Batch capacity is enforced between messages rather than by truncating content: Connect submits the current Batch before an appended message would cross 64,000 rendered characters or ten attachments, then starts another Batch with that intact message. An individually invalid message fails visibly and is never silently dropped.
+- An unsubmitted Group Message Batch remains recoverable from its constituent durable inbound messages across Connect restart. Recovery preserves original ordering and timing deadlines, re-evaluates current Group Intake Policy and capacity, and marks each constituent handled only after the Runtime accepts the reconstructed Batch.
+- A zero-second Group Intake Policy is real-time delivery: each eligible message becomes its own Runtime Turn immediately and is ordered only by the existing Session Queue, never merged into a same-tick micro-batch.
 - Every runtime turn records its Turn Origin, and every Runtime Interaction inherits that origin.
 - A Codex Agent Binding without an explicit approval policy normalizes to `on-request`, allowing Connect to surface Runtime Interactions while still requiring a human decision before an escalation is granted.
 - A Runtime Interaction is visible and answerable only through its originating Turn Surface and, for ClawChat, its originating direct or group conversation; it never falls back or duplicates into another response route.
@@ -289,6 +332,6 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - The Agent-facing command is `clawchat-connect tool call <tool-name> --input-json <json-or-stdin>`, with optional explicit request and Agent Binding identifiers. Binding selection resolves explicit CLI input, then the Binding Runtime Instance context, then the configured default.
 - Every accepted Tool Command prints one JSON Tool Call Record envelope to stdout. Failed, expired, and indeterminate outcomes also use a non-zero exit status; pre-submission CLI errors use stderr.
 - ClawChat Tool Commands do not add a generic confirmation parameter beyond their canonical schemas. Connect Agent Skills require explicit user intent and authoritative target identifiers for mutating operations, while Connect Service enforces structural, Binding, and reserved-resource constraints.
-- ClawChat Tool Commands do not add Turn-correlation CLI parameters or Service-level normal-reply suppression. After a successful mention or message reaction, the Connect Agent Skill instructs the Agent not to emit a duplicate ordinary reply.
+- ClawChat Tool Commands do not add Turn-correlation CLI parameters. After a successful mention or message reaction in a group Turn, the Connect Agent Skill may instruct the Agent to emit a No-Reply Signal so that Turn does not publish a duplicate ordinary response; direct-message Turns keep their existing delivery behavior.
 - Tool Catalog is the sole definition of the first release's 24 ClawChat Tool Commands. CLI validation and routing, static discovery, and generated skill references consume it directly; CI rejects a generated-reference diff.
 - ClawChat Profile updates are explicit authenticated CLI operations.

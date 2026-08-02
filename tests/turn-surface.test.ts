@@ -56,6 +56,100 @@ it("delivers only the completed current state when a Runtime Activity streamed b
   expect(delivered).toEqual(["hello"]);
 });
 
+it("suppresses buffered group output when the terminal response is no-reply", async () => {
+  const projected: string[] = [];
+  const delivered: string[] = [];
+  const surface = new ClawChatTurnSurface({
+    noReplyProtocol: true,
+    project: async (event) => {
+      projected.push(event.text);
+    },
+    materialize: (event) => ({ text: event.text, requiredControl: false }),
+    deliver: async (_event, reply) => {
+      delivered.push(reply.text);
+    },
+  });
+
+  await surface.accept(activity("thinking", "reasoning", "checking", "reasoning"));
+  await surface.accept(activity("progress", "progress", "still working", "progress"));
+  await surface.accept(activity("draft", "assistant", "maybe this", "assistant"));
+  await surface.accept(activity("final", "assistant", "<clawchat:no-reply/>", "final"));
+  await surface.complete();
+
+  expect(projected).toEqual(["checking", "still working", "maybe this", "<clawchat:no-reply/>"]);
+  expect(delivered).toEqual([]);
+});
+
+it("keeps required group controls immediate when a later response is no-reply", async () => {
+  const delivered: string[] = [];
+  const surface = new ClawChatTurnSurface({
+    noReplyProtocol: true,
+    project: async () => undefined,
+    materialize: (event) => ({ text: event.text, requiredControl: event.data?.requiredControl === true }),
+    deliver: async (_event, reply) => {
+      delivered.push(reply.text);
+    },
+  });
+
+  await surface.accept(activity("control", "error", "approval required", "control"));
+  await surface.accept(activity("final", "assistant", "[ClawChat : no_reply]", "final"));
+  await surface.complete();
+
+  expect(delivered).toEqual(["approval required"]);
+});
+
+it("strips a group no-reply signal while preserving explicit media", async () => {
+  const delivered: string[] = [];
+  const surface = new ClawChatTurnSurface({
+    noReplyProtocol: true,
+    project: async () => undefined,
+    materialize: (event) => ({ text: event.text, requiredControl: false }),
+    deliver: async (_event, reply) => {
+      delivered.push(reply.text);
+    },
+  });
+
+  await surface.accept(
+    activity("final", "assistant", "<clawchat:noreply/>\nHere it is: ![chart](./chart.png)", "final"),
+  );
+  await surface.complete();
+
+  expect(delivered).toEqual(["Here it is: ![chart](./chart.png)"]);
+});
+
+it("does not interpret no-reply syntax on a direct ClawChat surface", async () => {
+  const delivered: string[] = [];
+  const surface = new ClawChatTurnSurface({
+    project: async () => undefined,
+    materialize: (event) => ({ text: event.text, requiredControl: false }),
+    deliver: async (_event, reply) => {
+      delivered.push(reply.text);
+    },
+  });
+
+  await surface.accept(activity("final", "assistant", "<clawchat:no-reply/>", "final"));
+  await surface.complete();
+
+  expect(delivered).toEqual(["<clawchat:no-reply/>"]);
+});
+
+it("does not suppress ordinary group prose that merely discusses a missing reply", async () => {
+  const delivered: string[] = [];
+  const surface = new ClawChatTurnSurface({
+    noReplyProtocol: true,
+    project: async () => undefined,
+    materialize: (event) => ({ text: event.text, requiredControl: false }),
+    deliver: async (_event, reply) => {
+      delivered.push(reply.text);
+    },
+  });
+
+  await surface.accept(activity("final", "assistant", "There is no reply from the server yet.", "final"));
+  await surface.complete();
+
+  expect(delivered).toEqual(["There is no reply from the server yet."]);
+});
+
 it("keeps Client-originated Runtime Activity local", async () => {
   const projected: string[] = [];
   const surface = new ClientTurnSurface({

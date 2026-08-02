@@ -1,8 +1,9 @@
 import { executeAgentLiveware, isAgentLivewareOperation } from "./agent-liveware";
-import { createClawChatApiClient } from "./api-client";
+import { type ClawChatApiClient, createClawChatApiClient } from "./api-client";
 import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
 import type { TranscriptProjection } from "./client-interface/transcript-projection";
 import { getAgentBinding } from "./config";
+import { GroupIntakeCoordinator } from "./group-intake";
 import {
   addressInboundMessage,
   buildReplyTextMessagePayload,
@@ -35,6 +36,7 @@ export interface BindingRuntimeOptions {
   transcriptProjection?: TranscriptProjection;
   runtimeInteractions?: RuntimeInteractionCoordinator;
   wsTransport?: Transport;
+  clawChatApi?: ClawChatApiClient;
   protocolEventHandlers?: BindingProtocolEventHandlers;
   verifyInstalledSkills?: () => Promise<void>;
   writeError: (message: string) => void;
@@ -94,11 +96,13 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     ...options.config,
     agents: { ...options.config.agents, [options.agentId]: binding },
   };
-  const clawChatApi = createClawChatApiClient({
-    baseUrl: options.config.baseUrl,
-    deviceId: options.deviceId,
-    token: options.activation.accessToken,
-  });
+  const clawChatApi =
+    options.clawChatApi ??
+    createClawChatApiClient({
+      baseUrl: options.config.baseUrl,
+      deviceId: options.deviceId,
+      token: options.activation.accessToken,
+    });
   const senderDisplayNames = new Map<string, Promise<string | null>>();
   const resolveSenderDisplayName = async (senderId: string): Promise<string | null> => {
     const active = senderDisplayNames.get(senderId);
@@ -117,6 +121,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   let inboundMessages: InboundMessageProcessor;
   let wsClient: ConnectWsClient;
   let interactionRouter: RuntimeInteractionRouter;
+  let groupIntake: GroupIntakeCoordinator;
   wsClient = new ConnectWsClient({
     agentId: options.agentId,
     url: options.config.websocketUrl,
@@ -129,10 +134,13 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     transport: options.wsTransport,
     messageHandler: (message) => inboundMessages.accept(message),
     interactionSubmitHandler: async (envelope) => await interactionRouter.handleInteractionSubmit(envelope),
-    protocolEventHandler: async (type, envelope) => await dispatchProtocolEventHandler(options, type, envelope),
+    protocolEventHandler: async (type, envelope) => {
+      if (type === "notify") await groupIntake.handleNotifySignal(envelope);
+      await dispatchProtocolEventHandler(options, type, envelope);
+    },
     capabilities: {
       chatMetadataEvents: Boolean(options.protocolEventHandlers?.metadata_invalidated),
-      notifySignals: Boolean(options.protocolEventHandlers?.notify),
+      notifySignals: true,
       permissionEvents: Boolean(options.protocolEventHandlers?.permission),
       historySync: Boolean(options.protocolEventHandlers?.history_transit),
     },
@@ -186,7 +194,40 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     runtimeInteractions: interactionRouter,
     resolveSenderDisplayName,
   });
-  inboundMessages = new InboundMessageProcessor(options, wsClient, runtime, interactionRouter);
+  groupIntake = new GroupIntakeCoordinator({
+    bindingId: options.agentId,
+    agentUserId: options.activation.userId,
+    stateStore: options.stateStore,
+    api: clawChatApi,
+    writeError: options.writeError,
+    reject: async (message, reason) => {
+      await wsClient.sendMessageEnvelope(
+        EVENT.MESSAGE_REPLY,
+        message.chatId,
+        buildReplyTextMessagePayload(reason, message),
+        { toType: message.chatType },
+      );
+    },
+    dispatch: async (message, allowUnaddressedGroup, onTurnAccepted) =>
+      await dispatchInboundMessage({
+        ...options,
+        message,
+        wsClient,
+        runtime,
+        interactionRouter,
+        onTurnAccepted,
+        allowUnaddressedGroup,
+      }),
+  });
+  void groupIntake
+    .initialize()
+    .then(() => groupIntake.refreshInBackground())
+    .catch((error) =>
+      options.writeError(
+        `${options.agentId}: group settings initialization failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      ),
+    );
+  inboundMessages = new InboundMessageProcessor(options, wsClient, runtime, interactionRouter, groupIntake);
   wireQuarantineEvents(wsClient, options);
   wsClient.on("error", (error: unknown) => {
     const detail = error instanceof Error ? error.message : String(error);
@@ -196,6 +237,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   wsClient.on("state", (state: string) => {
     if (state === "connected") {
       void recordConnectionStatus(options, true, null).catch(() => undefined);
+      groupIntake.refreshInBackground();
       void inboundMessages
         .recover()
         .catch((error) =>
@@ -273,6 +315,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     },
     async close() {
       await inboundMessages.close();
+      await groupIntake.close();
       await interactionRouter.close();
       wsClient.close();
       await runtime.dispose();
@@ -291,6 +334,7 @@ class InboundMessageProcessor {
     private readonly wsClient: ConnectWsClient,
     private readonly runtime: ConnectRuntime,
     private readonly interactionRouter: RuntimeInteractionRouter,
+    private readonly groupIntake: GroupIntakeCoordinator,
   ) {}
 
   accept(message: NormalizedInboundMessage): "accepted" {
@@ -303,23 +347,26 @@ class InboundMessageProcessor {
       await this.options.stateStore.markInboundMessageHandled(this.options.agentId, message.messageId, message.raw);
       markedHandled = true;
     };
-    const work = dispatchInboundMessage({
-      ...this.options,
-      message,
-      wsClient: this.wsClient,
-      runtime: this.runtime,
-      interactionRouter: this.interactionRouter,
-      onTurnAccepted: markHandled,
-    })
-      .then(async (handledWithoutTurn) => {
-        if (handledWithoutTurn) await markHandled();
-      })
-      .catch((error) =>
-        this.options.writeError(
-          `${this.options.agentId}: inbound message remains pending: ${error instanceof Error ? error.message : String(error)}\n`,
-        ),
-      )
-      .finally(() => this.pending.delete(key));
+    const work =
+      message.chatType === "group"
+        ? this.groupIntake.accept(message)
+        : dispatchInboundMessage({
+            ...this.options,
+            message,
+            wsClient: this.wsClient,
+            runtime: this.runtime,
+            interactionRouter: this.interactionRouter,
+            onTurnAccepted: markHandled,
+          })
+            .then(async (handledWithoutTurn) => {
+              if (handledWithoutTurn) await markHandled();
+            })
+            .catch((error) =>
+              this.options.writeError(
+                `${this.options.agentId}: inbound message remains pending: ${error instanceof Error ? error.message : String(error)}\n`,
+              ),
+            )
+            .finally(() => this.pending.delete(key));
     this.pending.set(key, work);
     return "accepted";
   }
@@ -394,9 +441,32 @@ async function dispatchInboundMessage(
     runtime: ConnectRuntime;
     interactionRouter: RuntimeInteractionRouter;
     onTurnAccepted: () => Promise<void>;
+    allowUnaddressedGroup?: boolean;
   },
 ): Promise<boolean> {
-  const addressed = addressInboundMessage(params.message, params.activation.userId);
+  const addressed =
+    (params.message.groupBatch
+      ? {
+          message: params.message,
+          hasAddressingMention: false,
+          acceptsCommands: false,
+          hasAttachment: params.message.fragments.some((fragment) =>
+            ["image", "file", "audio", "video"].includes(fragment.kind),
+          ),
+          malformedLineBreakCommand: false,
+        }
+      : addressInboundMessage(params.message, params.activation.userId)) ??
+    (params.allowUnaddressedGroup && params.message.chatType === "group"
+      ? {
+          message: params.message,
+          hasAddressingMention: false,
+          acceptsCommands: false,
+          hasAttachment: params.message.fragments.some((fragment) =>
+            ["image", "file", "audio", "video"].includes(fragment.kind),
+          ),
+          malformedLineBreakCommand: false,
+        }
+      : null);
   if (!addressed) return true;
   const message = addressed.message;
   const canRouteCommand = addressed.acceptsCommands || addressed.malformedLineBreakCommand;

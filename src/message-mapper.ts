@@ -186,7 +186,7 @@ export function buildReplyTextMessagePayload(text: string, source: NormalizedInb
     replyPreview: {
       id: source.sender.id,
       nickName: source.sender.nick_name,
-      fragments: source.fragments,
+      fragments: source.replyAnchorFragments ?? source.fragments,
     },
   });
 }

@@ -1,3 +1,4 @@
+import type { GroupSettingsRecord } from "./state";
 import { type ActivationCredentials, AGENT_TYPE, PLATFORM_ID } from "./types";
 export type FetchLike = typeof fetch;
 export type ClawChatApiErrorKind = "validation" | "transport" | "api" | "auth";
@@ -24,6 +25,7 @@ export interface ClawChatApiClient {
   agentsConnect(params: { code: string; existingUserId?: string | null }): Promise<AgentConnectResult>;
   getUserProfile(userId: string): Promise<ClawChatUserProfile>;
   updateMyProfile(patch: unknown): Promise<unknown>;
+  getMyGroupSettings(): Promise<{ authoritative: boolean; rows: GroupSettingsRecord[] }>;
 }
 
 export function createClawChatApiClient(options: {
@@ -122,6 +124,50 @@ export function createClawChatApiClient(options: {
     },
     async updateMyProfile(patch) {
       return await call<unknown>("PATCH", "/v1/users/me", json(patch));
+    },
+    async getMyGroupSettings() {
+      let data: Record<string, unknown>;
+      try {
+        data = await call<Record<string, unknown>>("GET", "/v1/agents/me/group-settings");
+      } catch (error) {
+        if (error instanceof ClawChatApiError && error.kind === "auth") throw error;
+        return { authoritative: false, rows: [] };
+      }
+      if (!data || typeof data !== "object" || Array.isArray(data)) return { authoritative: false, rows: [] };
+      const settings = Array.isArray(data.settings) ? data.settings : [];
+      const parsedRows = settings.flatMap((value): GroupSettingsRecord[] => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+        const row = value as Record<string, unknown>;
+        const conversationId = typeof row.conversation_id === "string" ? row.conversation_id.trim() : "";
+        const replyMode = row.reply_mode === "mention" || row.reply_mode === "all" ? row.reply_mode : null;
+        const batchDelaySeconds = Number(row.batch_delay_seconds ?? 0);
+        const version = Number(row.version ?? 0);
+        if (
+          !conversationId ||
+          !replyMode ||
+          !Number.isSafeInteger(batchDelaySeconds) ||
+          batchDelaySeconds < 0 ||
+          !Number.isSafeInteger(version) ||
+          version < 0
+        ) {
+          return [];
+        }
+        return [
+          {
+            conversationId,
+            muted: Boolean(row.muted),
+            replyMode,
+            batchDelaySeconds,
+            version,
+          },
+        ];
+      });
+      const rowsByConversation = new Map<string, GroupSettingsRecord>();
+      for (const row of parsedRows) {
+        const existing = rowsByConversation.get(row.conversationId);
+        if (!existing || row.version >= existing.version) rowsByConversation.set(row.conversationId, row);
+      }
+      return { authoritative: true, rows: [...rowsByConversation.values()] };
     },
   };
 }

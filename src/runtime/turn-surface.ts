@@ -1,3 +1,4 @@
+import { containsExplicitReplyMedia, containsNoReplySignal, stripNoReplySignals } from "../no-reply";
 import type { MaterializedRuntimeReply } from "../output-visibility";
 import type { RuntimeActivity } from "./types";
 
@@ -37,6 +38,7 @@ export class ClientTurnSurface implements TurnSurface {
 }
 
 export interface ClawChatTurnSurfaceOptions {
+  noReplyProtocol?: boolean;
   project(event: RuntimeActivity): Promise<void>;
   materialize(event: RuntimeActivity): MaterializedRuntimeReply | null;
   deliver(event: RuntimeActivity, reply: MaterializedRuntimeReply): Promise<void>;
@@ -62,6 +64,26 @@ export class ClawChatTurnSurface implements TurnSurface {
   async complete(): Promise<void> {
     const deliveries = [...this.buffered.values()];
     this.buffered.clear();
-    for (const { event, reply } of deliveries) await this.options.deliver(event, reply);
+    const terminal = deliveries.findLast(
+      ({ event }) => event.data?.outputKind === "final" && event.state === "complete",
+    );
+    if (this.options.noReplyProtocol && terminal && containsNoReplySignal(terminal.reply.text)) {
+      if (containsExplicitReplyMedia(terminal.reply.text)) {
+        await this.options.deliver(terminal.event, {
+          ...terminal.reply,
+          text: stripNoReplySignals(terminal.reply.text),
+        });
+      }
+      return;
+    }
+    for (const { event, reply } of deliveries) {
+      if (this.options.noReplyProtocol && containsNoReplySignal(reply.text)) {
+        if (containsExplicitReplyMedia(reply.text)) {
+          await this.options.deliver(event, { ...reply, text: stripNoReplySignals(reply.text) });
+        }
+        continue;
+      }
+      await this.options.deliver(event, reply);
+    }
   }
 }

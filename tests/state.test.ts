@@ -33,6 +33,85 @@ describe("agent-only config", () => {
 });
 
 describe("state store", () => {
+  it("persists authoritative group settings snapshots per Agent Binding", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath });
+
+    await store.replaceGroupSettingsSnapshot("work", [
+      {
+        conversationId: "shared-group",
+        muted: false,
+        replyMode: "all",
+        batchDelaySeconds: 60,
+        version: 4,
+      },
+      {
+        conversationId: "removed-group",
+        muted: true,
+        replyMode: "mention",
+        batchDelaySeconds: 5,
+        version: 2,
+      },
+    ]);
+    await store.replaceGroupSettingsSnapshot("personal", [
+      {
+        conversationId: "shared-group",
+        muted: true,
+        replyMode: "mention",
+        batchDelaySeconds: 0,
+        version: 9,
+      },
+    ]);
+    await store.replaceGroupSettingsSnapshot("work", [
+      {
+        conversationId: "shared-group",
+        muted: false,
+        replyMode: "all",
+        batchDelaySeconds: 5,
+        version: 5,
+      },
+    ]);
+    await store.markGroupSettingsSnapshotStale("work");
+    await store.close();
+
+    const reopened = createStateStore({ dbPath });
+    await expect(reopened.getGroupSettingsSnapshot("work")).resolves.toEqual({
+      authoritative: true,
+      stale: true,
+      rows: [
+        {
+          conversationId: "shared-group",
+          muted: false,
+          replyMode: "all",
+          batchDelaySeconds: 5,
+          version: 5,
+        },
+      ],
+    });
+    await expect(reopened.getGroupSettingsSnapshot("personal")).resolves.toEqual({
+      authoritative: true,
+      stale: false,
+      rows: [
+        {
+          conversationId: "shared-group",
+          muted: true,
+          replyMode: "mention",
+          batchDelaySeconds: 0,
+          version: 9,
+        },
+      ],
+    });
+
+    await reopened.replaceGroupSettingsSnapshot("work", []);
+    await expect(reopened.getGroupSettingsSnapshot("work")).resolves.toEqual({
+      authoritative: true,
+      stale: false,
+      rows: [],
+    });
+    await reopened.close();
+  });
+
   it("scopes output visibility by Agent Binding and migrates legacy overrides", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");

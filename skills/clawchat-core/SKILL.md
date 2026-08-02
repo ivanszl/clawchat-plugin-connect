@@ -31,7 +31,7 @@ printf '%s' '<json>' | clawchat-connect tool call <tool-name> --input-json -
 
 - For mentions, put visible labels in `mentions[].display`, not in `text`.
 - For reactions, always pass the exact `targetMessageId` and `chatType` from turn context or a prior result.
-- After a successful mention or reaction that fully answers the request, do not emit a duplicate ordinary reply.
+- After a successful mention or reaction that fully answers a group-turn request, return exactly `<clawchat:no-reply/>` instead of emitting a duplicate ordinary reply. Never use this signal in a direct conversation.
 - Use `clawchat_leave_group` only with a concrete group `conversationId`.
 
 ## Exclusions

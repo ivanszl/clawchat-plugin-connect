@@ -263,6 +263,23 @@ export interface NormalizedInboundMessage {
   mentions: string[];
   replyToMessageId: string | null;
   raw: Envelope<MessagePayload>;
+  replyAnchorFragments?: Fragment[];
+  groupBatch?: {
+    messages: Array<{
+      message_id: string;
+      sender: { user_id: string; display: string };
+      emitted_at: number;
+      mentioned_user_ids: string[];
+      reply_to_message_id: string | null;
+      fragments: Fragment[];
+    }>;
+  };
+  groupMentionContext?: Array<{
+    message_id: string;
+    sender: { user_id: string; display: string };
+    emitted_at: number;
+    text: string;
+  }>;
 }
 
 export class AuthError extends Error {

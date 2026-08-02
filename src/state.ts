@@ -20,6 +20,22 @@ export interface ConnectStateOptions {
   sessionRefFactory?: () => string;
 }
 
+export type GroupReplyMode = "all" | "mention";
+
+export interface GroupSettingsRecord {
+  conversationId: string;
+  muted: boolean;
+  replyMode: GroupReplyMode;
+  batchDelaySeconds: number;
+  version: number;
+}
+
+export interface GroupSettingsSnapshotRecord {
+  authoritative: boolean;
+  stale: boolean;
+  rows: GroupSettingsRecord[];
+}
+
 export type ToolRequestState = "pending" | "running" | "succeeded" | "failed" | "expired" | "indeterminate";
 export interface ToolRequestRecord {
   requestId: string;
@@ -401,6 +417,8 @@ export class ConnectStateStore {
       run("DELETE FROM tool_requests WHERE binding_id = ?", bindingId);
       run("DELETE FROM runtime_workspace_mappings WHERE binding_id = ?", bindingId);
       run("DELETE FROM output_visibility WHERE local_agent_id = ?", bindingId);
+      run("DELETE FROM group_settings WHERE local_agent_id = ?", bindingId);
+      run("DELETE FROM group_settings_snapshots WHERE local_agent_id = ?", bindingId);
       run("DELETE FROM runtime_sessions WHERE agent_id = ?", bindingId);
       run("DELETE FROM session_intents WHERE agent_id = ?", bindingId);
       run("DELETE FROM session_refs WHERE agent_id = ?", bindingId);
@@ -424,6 +442,67 @@ export class ConnectStateStore {
       localAgentId,
     );
     return row ? livewareExposureFromRow(row) : null;
+  }
+
+  async replaceGroupSettingsSnapshot(localAgentId: string, rows: readonly GroupSettingsRecord[]): Promise<void> {
+    const bindingId = requireStateString(localAgentId, "Agent Binding ID");
+    const normalizedRows = rows.map(normalizeGroupSettingsRecord);
+    const db = await this.requireDb();
+    const now = Date.now();
+    db.transaction((run) => {
+      run("DELETE FROM group_settings WHERE local_agent_id = ?", bindingId);
+      for (const row of normalizedRows) {
+        run(
+          `INSERT INTO group_settings(
+             local_agent_id, conversation_id, muted, reply_mode, batch_delay_seconds, version, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          bindingId,
+          row.conversationId,
+          row.muted ? 1 : 0,
+          row.replyMode,
+          row.batchDelaySeconds,
+          row.version,
+          now,
+        );
+      }
+      run(
+        `INSERT INTO group_settings_snapshots(local_agent_id, authoritative, stale, updated_at)
+         VALUES (?, 1, 0, ?)
+         ON CONFLICT(local_agent_id) DO UPDATE SET authoritative = 1, stale = 0, updated_at = excluded.updated_at`,
+        bindingId,
+        now,
+      );
+    });
+  }
+
+  async markGroupSettingsSnapshotStale(localAgentId: string): Promise<void> {
+    const db = await this.requireDb();
+    await db.run(
+      `INSERT INTO group_settings_snapshots(local_agent_id, authoritative, stale, updated_at)
+       VALUES (?, 0, 1, ?)
+       ON CONFLICT(local_agent_id) DO UPDATE SET stale = 1, updated_at = excluded.updated_at`,
+      requireStateString(localAgentId, "Agent Binding ID"),
+      Date.now(),
+    );
+  }
+
+  async getGroupSettingsSnapshot(localAgentId: string): Promise<GroupSettingsSnapshotRecord> {
+    const bindingId = requireStateString(localAgentId, "Agent Binding ID");
+    const db = await this.requireDb();
+    const metadata = await db.get<Record<string, unknown>>(
+      "SELECT authoritative, stale FROM group_settings_snapshots WHERE local_agent_id = ?",
+      bindingId,
+    );
+    const rows = await db.all<Array<Record<string, unknown>>>(
+      `SELECT conversation_id, muted, reply_mode, batch_delay_seconds, version
+       FROM group_settings WHERE local_agent_id = ? ORDER BY conversation_id`,
+      bindingId,
+    );
+    return {
+      authoritative: Number(metadata?.authoritative ?? 0) === 1,
+      stale: Number(metadata?.stale ?? 0) === 1,
+      rows: rows.map(groupSettingsRecordFromRow),
+    };
   }
 
   async listLivewareExposures(): Promise<LivewareExposureRecord[]> {
@@ -1369,7 +1448,7 @@ export class ConnectStateStore {
     await db.run(
       `UPDATE clawchat_messages
        SET event_type = ?, trace_id = ?, chat_id = ?, text = ?, raw_json = ?, created_at = ?,
-           handled_content_json = NULL, handled_at = NULL
+           handled_content_json = NULL, handled_at = NULL, handling_outcome = NULL
        WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?`,
       input.eventType,
       input.traceId ?? null,
@@ -1392,7 +1471,12 @@ export class ConnectStateStore {
     );
     return row?.handled_content_json === protocolDeliveryContentJson(raw);
   }
-  async markInboundMessageHandled(agentId: string, messageId: string, raw: unknown): Promise<void> {
+  async markInboundMessageHandled(
+    agentId: string,
+    messageId: string,
+    raw: unknown,
+    outcome: "runtime" | "policy-discarded" = "runtime",
+  ): Promise<void> {
     const db = await this.requireDb();
     const normalizedAgentId = requireStateString(agentId, "agentId");
     const normalizedMessageId = requireStateString(messageId, "messageId");
@@ -1406,11 +1490,12 @@ export class ConnectStateStore {
     if (protocolDeliveryContentJson(current.raw_json) !== protocolDeliveryContentJson(raw)) return;
     const result = await db.run(
       `UPDATE clawchat_messages
-       SET handled_content_json = ?, handled_at = ?
+       SET handled_content_json = ?, handled_at = ?, handling_outcome = ?
        WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?
          AND raw_json = ?`,
       protocolDeliveryContentJson(raw),
       Date.now(),
+      outcome,
       normalizedAgentId,
       normalizedMessageId,
       current.raw_json ?? null,
@@ -1418,6 +1503,34 @@ export class ConnectStateStore {
     // A concurrent coalesced update deliberately wins. Its own handler will
     // write the completion marker for the newer content.
     if ((result.changes ?? 0) === 0) return;
+  }
+  async listRecentGroupContext(
+    agentId: string,
+    chatId: string,
+    beforeMessageId: string,
+    limit = 10,
+  ): Promise<unknown[]> {
+    const db = await this.requireDb();
+    const normalizedAgentId = requireStateString(agentId, "agentId");
+    const rows = await db.all<Array<{ raw_json?: string }>>(
+      `SELECT raw_json FROM clawchat_messages
+       WHERE local_agent_id = ?
+         AND direction = 'inbound'
+         AND kind = 'message'
+         AND chat_id = ?
+         AND handling_outcome = 'policy-discarded'
+         AND id < COALESCE((
+           SELECT id FROM clawchat_messages
+           WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?
+         ), 9223372036854775807)
+       ORDER BY id DESC LIMIT ?`,
+      normalizedAgentId,
+      requireStateString(chatId, "chatId"),
+      normalizedAgentId,
+      requireStateString(beforeMessageId, "beforeMessageId"),
+      Math.max(0, Math.min(10, Math.floor(limit))),
+    );
+    return rows.reverse().map((row) => parseJsonValue(row.raw_json));
   }
   async hasReconciledInboundMessage(agentId: string, messageId: string): Promise<boolean> {
     const db = await this.requireDb();
@@ -2304,6 +2417,22 @@ export class ConnectStateStore {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY(local_agent_id, chat_id)
       );
+      CREATE TABLE IF NOT EXISTS group_settings_snapshots(
+        local_agent_id TEXT PRIMARY KEY,
+        authoritative INTEGER NOT NULL CHECK(authoritative IN (0, 1)),
+        stale INTEGER NOT NULL CHECK(stale IN (0, 1)),
+        updated_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS group_settings(
+        local_agent_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        muted INTEGER NOT NULL CHECK(muted IN (0, 1)),
+        reply_mode TEXT NOT NULL CHECK(reply_mode IN ('all', 'mention')),
+        batch_delay_seconds INTEGER NOT NULL CHECK(batch_delay_seconds >= 0),
+        version INTEGER NOT NULL CHECK(version >= 0),
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(local_agent_id, conversation_id)
+      );
       CREATE TABLE IF NOT EXISTS clawchat_messages(
         id INTEGER PRIMARY KEY,
         platform TEXT NOT NULL,
@@ -2323,7 +2452,8 @@ export class ConnectStateStore {
         rejected_at INTEGER,
         send_error TEXT,
         handled_content_json TEXT,
-        handled_at INTEGER
+        handled_at INTEGER,
+        handling_outcome TEXT
       );
       CREATE UNIQUE INDEX IF NOT EXISTS idx_clawchat_connect_message_unique
         ON clawchat_messages(local_agent_id, direction, kind, message_id)
@@ -2507,6 +2637,8 @@ export class ConnectStateStore {
       await db.exec("ALTER TABLE clawchat_messages ADD COLUMN handled_content_json TEXT");
     if (!messageColumns.some((column) => column.name === "handled_at"))
       await db.exec("ALTER TABLE clawchat_messages ADD COLUMN handled_at INTEGER");
+    if (!messageColumns.some((column) => column.name === "handling_outcome"))
+      await db.exec("ALTER TABLE clawchat_messages ADD COLUMN handling_outcome TEXT");
     const toolRequestColumns = await db.all<{ name: string }[]>("PRAGMA table_info(tool_requests)");
     if (!toolRequestColumns.some((column) => column.name === "attempt_count"))
       await db.exec("ALTER TABLE tool_requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
@@ -2654,6 +2786,32 @@ function requireStateString(value: string, field: string): string {
 function nullableString(value: unknown): string | null {
   const text = stringValue(value).trim();
   return text ? text : null;
+}
+function normalizeGroupSettingsRecord(row: GroupSettingsRecord): GroupSettingsRecord {
+  const replyMode = row.replyMode;
+  if (replyMode !== "all" && replyMode !== "mention") throw new Error("group replyMode must be all or mention");
+  if (!Number.isSafeInteger(row.batchDelaySeconds) || row.batchDelaySeconds < 0) {
+    throw new Error("group batchDelaySeconds must be a non-negative integer");
+  }
+  if (!Number.isSafeInteger(row.version) || row.version < 0) {
+    throw new Error("group settings version must be a non-negative integer");
+  }
+  return {
+    conversationId: requireStateString(row.conversationId, "group conversationId"),
+    muted: row.muted,
+    replyMode,
+    batchDelaySeconds: row.batchDelaySeconds,
+    version: row.version,
+  };
+}
+function groupSettingsRecordFromRow(row: Record<string, unknown>): GroupSettingsRecord {
+  return {
+    conversationId: stringValue(row.conversation_id),
+    muted: Number(row.muted) === 1,
+    replyMode: stringValue(row.reply_mode) as GroupReplyMode,
+    batchDelaySeconds: numberValue(row.batch_delay_seconds),
+    version: numberValue(row.version),
+  };
 }
 function livewareExposureFromRow(row: Record<string, unknown>): LivewareExposureRecord | null {
   const accessPolicy = stringValue(row.access_policy);

@@ -1004,7 +1004,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     expect(connect.payload).toMatchObject({
       capabilities: {
         chat_meta_events: false,
-        notify_signals: false,
+        notify_signals: true,
         permission_events: false,
         history_sync: false,
       },

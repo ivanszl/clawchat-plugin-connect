@@ -52,6 +52,10 @@ interface ConnectInteractionAction {
 
 type RuntimeInteractionQuestion = Extract<RuntimeInteractionRequest, { kind: "user-input" }>["questions"][number];
 
+export function isRuntimeInteractionResponseText(text: string): boolean {
+  return runtimeResponseKind(text) !== null || approvalOptionId(text) !== null;
+}
+
 export class RuntimeInteractionRouter implements RuntimeInteractionPort {
   private readonly pending = new Map<string, PendingClawChatInteraction>();
   private readonly terminalResponses = new Map<string, string>();
