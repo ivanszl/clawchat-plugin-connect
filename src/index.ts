@@ -3,5 +3,7 @@ export * from "./profile";
 export * from "./projects";
 export * from "./runtime/registry";
 export * from "./runtime/types";
+export * from "./runtime/workbuddy-task-discovery";
+export * from "./runtime/workbuddy-task-discovery-macos";
 export * from "./state";
 export * from "./types";
