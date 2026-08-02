@@ -42,6 +42,14 @@ export async function openWorkBuddyAiTaskEndpoint(
   let connectionId = "";
   let sessionToken = "";
   const connection = await PersistentHttpConnection.open(input.endpoint, timeoutMs);
+  const teardown = async (): Promise<void> => {
+    if (connectionId) {
+      await connection
+        .request("DELETE", connection.pathname, acpHeaders(connectionId, sessionToken))
+        .catch(() => undefined);
+    }
+    connection.close();
+  };
   try {
     const bootstrap = await connection.request("POST", `${connection.pathname}/connect`, {
       "x-codebuddy-request": "1",
@@ -86,16 +94,12 @@ export async function openWorkBuddyAiTaskEndpoint(
       activities: replayActivities(loaded.replayMessages),
       connectionOwner,
     };
+    let nextLiveTurnOrdinal = nextTurnOrdinal(verification.activities);
     let closed = false;
     const close = async (): Promise<void> => {
       if (closed) return;
       closed = true;
-      if (connectionId) {
-        await connection
-          .request("DELETE", connection.pathname, acpHeaders(connectionId, sessionToken))
-          .catch(() => undefined);
-      }
-      connection.close();
+      await teardown();
     };
     return {
       verification,
@@ -105,19 +109,14 @@ export async function openWorkBuddyAiTaskEndpoint(
           connection,
           acpHeaders(connectionId, sessionToken),
           input.taskId,
-          verification,
+          nextLiveTurnOrdinal++,
           promptInput,
         );
       },
       close,
     };
   } catch (error) {
-    if (connectionId) {
-      await connection
-        .request("DELETE", connection.pathname, acpHeaders(connectionId, sessionToken))
-        .catch(() => undefined);
-    }
-    connection.close();
+    await teardown();
     if (error instanceof WorkBuddyDiscoveryError) throw error;
     throw new Error(redact(error instanceof Error ? error.message : String(error), [connectionId, sessionToken]));
   }
@@ -360,14 +359,14 @@ function streamPrompt(
   connection: PersistentHttpConnection,
   headers: Record<string, string>,
   taskId: string,
-  verification: WorkBuddyEndpointVerification,
+  turnOrdinal: number,
   input: ConnectRuntimePrompt,
 ): AsyncIterable<RuntimeActivity> {
   const prompt = input.prompt.trim();
   if (!prompt) throw new Error("WorkBuddy text prompt is required");
   if (input.media?.length) throw new Error("WorkBuddy Task Attachments currently support text turns only");
   const queue = new AsyncActivityQueue();
-  const projector = new LiveTurnProjector(nextTurnOrdinal(verification.activities), input);
+  const projector = new LiveTurnProjector(turnOrdinal, input);
   const requestId = Date.now();
   const userMessageId = workBuddyUserMessageId(input, requestId);
   let accepted: Promise<void> | null = null;
@@ -653,7 +652,7 @@ class PersistentHttpConnection {
     | {
         resolve: (response: HttpResponse) => void;
         reject: (error: Error) => void;
-        timer: ReturnType<typeof setTimeout>;
+        timer: ReturnType<typeof setTimeout> | undefined;
         parser: IncrementalHttpResponseParser;
       }
     | undefined;
@@ -668,7 +667,10 @@ class PersistentHttpConnection {
     this.pathname = pathname;
     socket.on("data", (chunk) => {
       try {
-        this.pending?.parser.push(Buffer.from(chunk));
+        const pending = this.pending;
+        if (!pending) return;
+        this.refreshResponseTimeout();
+        pending.parser.push(Buffer.from(chunk));
       } catch (error) {
         this.rejectPending(error instanceof Error ? error : new Error(String(error)));
         socket.destroy();
@@ -720,19 +722,15 @@ class PersistentHttpConnection {
       .map(([name, value]) => `${name}: ${value}`)
       .join("\r\n")}\r\n\r\n`;
     const response = new Promise<HttpResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending = undefined;
-        reject(new Error("ACP HTTP response timed out"));
-        this.socket.destroy();
-      }, this.timeoutMs);
       const parser = new IncrementalHttpResponseParser(onBodyChunk, (parsed) => {
         const pending = this.pending;
         if (!pending) return;
         this.pending = undefined;
-        clearTimeout(pending.timer);
+        if (pending.timer) clearTimeout(pending.timer);
         pending.resolve(parsed);
       });
-      this.pending = { resolve, reject, timer, parser };
+      this.pending = { resolve, reject, timer: undefined, parser };
+      this.refreshResponseTimeout();
     });
     this.socket.write(Buffer.concat([Buffer.from(head, "utf8"), body]));
     return await response;
@@ -746,8 +744,20 @@ class PersistentHttpConnection {
     if (!this.pending) return;
     const { reject, timer } = this.pending;
     this.pending = undefined;
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
     reject(error);
+  }
+
+  private refreshResponseTimeout(): void {
+    const pending = this.pending;
+    if (!pending) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.timer = setTimeout(() => {
+      if (this.pending !== pending) return;
+      this.pending = undefined;
+      pending.reject(new Error("ACP HTTP response timed out"));
+      this.socket.destroy();
+    }, this.timeoutMs);
   }
 }
 

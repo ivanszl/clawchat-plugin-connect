@@ -46,27 +46,21 @@ export interface WorkBuddyEndpointVerification {
   connectionOwner: WorkBuddyProcessIdentity | null;
 }
 
+export interface WorkBuddyEndpointInput {
+  endpoint: string;
+  taskId: string;
+  workspace: string;
+  acpVersion: number;
+  applicationPath: string;
+  expectedEndpointProcessId: number;
+  expectedSidecarProcessId: number;
+}
+
 export interface WorkBuddyTaskDiscoverySource {
   inspect(input: WorkBuddyTaskDiscoveryInput): Promise<WorkBuddyDiscoveryObservation>;
   canonicalizeWorkspace?(workspace: string): Promise<string>;
-  verifyEndpoint(input: {
-    endpoint: string;
-    taskId: string;
-    workspace: string;
-    acpVersion: number;
-    applicationPath: string;
-    expectedEndpointProcessId: number;
-    expectedSidecarProcessId: number;
-  }): Promise<WorkBuddyEndpointVerification>;
-  connectEndpoint?(input: {
-    endpoint: string;
-    taskId: string;
-    workspace: string;
-    acpVersion: number;
-    applicationPath: string;
-    expectedEndpointProcessId: number;
-    expectedSidecarProcessId: number;
-  }): Promise<import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment>;
+  verifyEndpoint(input: WorkBuddyEndpointInput): Promise<WorkBuddyEndpointVerification>;
+  connectEndpoint?(input: WorkBuddyEndpointInput): Promise<import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment>;
   confirmEndpointOwner(endpoint: string): Promise<WorkBuddyProcessIdentity | null>;
 }
 

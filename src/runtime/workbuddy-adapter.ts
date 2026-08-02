@@ -36,13 +36,11 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
     }));
   };
   const attachTask = async (binding: AgentBindingConfig, runtimeThreadId: string) => {
-    if (binding.kind !== "workbuddy") throw new Error("WorkBuddy Runtime Adapter requires a WorkBuddy Binding");
-    const task = source.findTask
-      ? await source.findTask(binding.profile, runtimeThreadId)
-      : (await source.listTasks(binding.profile)).find((candidate) => candidate.id === runtimeThreadId);
+    const profile = requireWorkBuddyProfile(binding);
+    const task = await resolveTask(source, profile, runtimeThreadId);
     if (!task) throw new Error(`WorkBuddy Task was not found: ${runtimeThreadId}`);
     return await source.attachTask({
-      profile: binding.profile,
+      profile,
       taskId: task.id,
       workspace: task.workspace,
     });
@@ -57,7 +55,7 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
     verifyThreadReady: async (binding, runtimeThreadId) => void (await attachTask(binding, runtimeThreadId)),
     readActivity: attachTask,
     start: async (binding, context) => {
-      if (binding.kind !== "workbuddy") throw new Error("WorkBuddy Runtime Adapter requires a WorkBuddy Binding");
+      const profile = requireWorkBuddyProfile(binding);
       if (!context.runtimeSessionId) {
         throw new Error(
           "This conversation is not mapped to a WorkBuddy Task; adopt an existing WorkBuddy Task before submitting a turn.",
@@ -65,20 +63,31 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
       }
       if (!source.startTask)
         throw new Error("WorkBuddy Task turn submission is unavailable for this Attachment source");
-      const task = source.findTask
-        ? await source.findTask(binding.profile, context.runtimeSessionId)
-        : (await source.listTasks(binding.profile)).find((candidate) => candidate.id === context.runtimeSessionId);
+      const task = await resolveTask(source, profile, context.runtimeSessionId);
       if (!task) {
         throw new Error(
           `This conversation's adopted WorkBuddy Task is unavailable: ${context.runtimeSessionId}; reopen it in WorkBuddy and retry.`,
         );
       }
-      return idempotentSession(
-        await source.startTask({ profile: binding.profile, taskId: task.id, workspace: task.workspace }),
-      );
+      return idempotentSession(await source.startTask({ profile, taskId: task.id, workspace: task.workspace }));
     },
     close: async () => await source.close?.(),
   };
+}
+
+async function resolveTask(
+  source: WorkBuddyRuntimeSource,
+  profile: WorkBuddyProfile,
+  taskId: string,
+): Promise<WorkBuddyTaskSummary | null> {
+  return source.findTask
+    ? await source.findTask(profile, taskId)
+    : ((await source.listTasks(profile)).find((candidate) => candidate.id === taskId) ?? null);
+}
+
+function requireWorkBuddyProfile(binding: AgentBindingConfig): WorkBuddyProfile {
+  if (binding.kind !== "workbuddy") throw new Error("WorkBuddy Runtime Adapter requires a WorkBuddy Binding");
+  return binding.profile;
 }
 
 function idempotentSession(session: ConnectRuntimeSession): ConnectRuntimeSession {

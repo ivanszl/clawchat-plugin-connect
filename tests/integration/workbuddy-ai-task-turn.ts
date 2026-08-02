@@ -1,8 +1,7 @@
-import { readdir, readFile, realpath } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { realpath } from "node:fs/promises";
 import type { RuntimeActivity } from "../../src/runtime/types";
 import { createWorkBuddyRuntimeAdapter } from "../../src/runtime/workbuddy-adapter";
+import { inspectInstalledWorkBuddyTaskTranscript } from "../../src/runtime/workbuddy-task-transcript";
 import type { WorkBuddyAgentBindingConfig } from "../../src/types";
 
 const taskId = process.env.WORKBUDDY_AI_TEST_TASK_ID;
@@ -17,9 +16,8 @@ if (!taskId || !workspace || !priorUserMarker || !priorAssistantMarker) {
 
 const canonicalWorkspace = await realpath(workspace);
 const turnMarker = process.env.WORKBUDDY_AI_TEST_TURN_MARKER ?? `WB_CONNECT_TURN_${Date.now()}`;
-const transcriptPath = await findTranscript(taskId);
-const before = await transcriptRecords(transcriptPath);
-const priorModel = lastAssistantModel(before);
+const before = await inspectInstalledWorkBuddyTaskTranscript(taskId, "");
+const priorModel = before.latestCompletedAssistantModel;
 if (!priorModel) throw new Error("The dedicated WorkBuddy Task has no prior assistant model to preserve");
 
 const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: "workbuddy-ai" };
@@ -99,12 +97,11 @@ if (
   throw new Error("The persisted WorkBuddy history omitted the synchronized assistant result");
 }
 
-const after = await transcriptRecords(transcriptPath);
-const persisted = after.findLast(
-  (record) => record.role === "assistant" && JSON.stringify(record.content).includes(turnMarker),
-);
-if (!persisted) throw new Error("The native WorkBuddy JSONL did not contain the unique turn marker");
-const persistedModel = recordModel(persisted);
+const after = await inspectInstalledWorkBuddyTaskTranscript(taskId, turnMarker);
+if (!after.hasCompletedAssistantMarker) {
+  throw new Error("The native WorkBuddy transcript did not contain the unique turn marker");
+}
+const persistedModel = after.latestCompletedAssistantModel;
 if (persistedModel !== priorModel) {
   throw new Error(`WorkBuddy Task model changed without an override: ${priorModel} -> ${persistedModel ?? "missing"}`);
 }
@@ -121,40 +118,9 @@ console.log(
       activityKinds: [...new Set(activities.map((activity) => activity.kind))],
       activityCount: activities.length,
       replayActivityCount: replay.activities.length,
-      nativeRecordDelta: after.length - before.length,
+      nativeRecordDelta: after.recordCount - before.recordCount,
     },
     null,
     2,
   ),
 );
-
-async function findTranscript(targetTaskId: string): Promise<string> {
-  const projectsDirectory = join(homedir(), ".workbuddy-ai", "projects");
-  const entries = await readdir(projectsDirectory, { withFileTypes: true });
-  const candidates = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => join(projectsDirectory, entry.name, `${targetTaskId}.jsonl`));
-  const existing: string[] = [];
-  for (const candidate of candidates) {
-    if (await Bun.file(candidate).exists()) existing.push(candidate);
-  }
-  if (existing.length !== 1) throw new Error(`Expected one native WorkBuddy transcript, found ${existing.length}`);
-  return existing[0] as string;
-}
-
-async function transcriptRecords(path: string): Promise<Record<string, unknown>[]> {
-  return (await readFile(path, "utf8"))
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as Record<string, unknown>);
-}
-
-function lastAssistantModel(records: Record<string, unknown>[]): string | null {
-  const assistant = records.findLast((record) => record.role === "assistant" && record.status === "completed");
-  return assistant ? recordModel(assistant) : null;
-}
-
-function recordModel(record: Record<string, unknown>): string | null {
-  const providerData = record.providerData as Record<string, unknown> | undefined;
-  return typeof providerData?.model === "string" ? providerData.model : null;
-}

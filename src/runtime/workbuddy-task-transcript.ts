@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { access, readdir, readFile, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 export interface WorkBuddyTaskTranscriptIdentity {
@@ -7,27 +8,57 @@ export interface WorkBuddyTaskTranscriptIdentity {
   replayFingerprint: string;
 }
 
+export interface WorkBuddyTaskTranscriptInspection {
+  recordCount: number;
+  latestCompletedAssistantModel: string | null;
+  hasCompletedAssistantMarker: boolean;
+}
+
+export async function inspectInstalledWorkBuddyTaskTranscript(
+  taskId: string,
+  assistantMarker: string,
+): Promise<WorkBuddyTaskTranscriptInspection> {
+  return await inspectWorkBuddyTaskTranscript(join(homedir(), ".workbuddy-ai"), taskId, assistantMarker);
+}
+
+export async function inspectWorkBuddyTaskTranscript(
+  configDirectory: string,
+  taskId: string,
+  assistantMarker: string,
+): Promise<WorkBuddyTaskTranscriptInspection> {
+  const transcript = await findTaskTranscript(configDirectory, taskId);
+  if (!transcript) throw new Error(`Expected one native WorkBuddy transcript for Task ${taskId}`);
+  const records = (await readFile(transcript, "utf8"))
+    .split("\n")
+    .filter(Boolean)
+    .map((record) => parseRecord(record))
+    .filter((record): record is Record<string, unknown> => record !== null);
+  const completedAssistants = records.filter((record) => record.role === "assistant" && record.status === "completed");
+  const latest = completedAssistants.at(-1);
+  const providerData = latest?.providerData as Record<string, unknown> | undefined;
+  return {
+    recordCount: records.length,
+    latestCompletedAssistantModel: typeof providerData?.model === "string" ? providerData.model : null,
+    hasCompletedAssistantMarker: completedAssistants.some((record) =>
+      JSON.stringify(record.content).includes(assistantMarker),
+    ),
+  };
+}
+
 export async function readWorkBuddyTaskTranscriptIdentity(
   configDirectory: string,
   taskId: string,
   workspace: string,
 ): Promise<WorkBuddyTaskTranscriptIdentity> {
-  const projectsDirectory = join(configDirectory, "projects");
-  const entries = await readdir(projectsDirectory, { withFileTypes: true }).catch(() => []);
-  const candidates: string[] = [];
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (!entry.isDirectory()) continue;
-    const candidate = join(projectsDirectory, entry.name, `${taskId}.jsonl`);
-    if (await exists(candidate)) candidates.push(candidate);
-  }
-  if (candidates.length !== 1) return mismatch();
+  const transcript = await findTaskTranscript(configDirectory, taskId);
+  if (!transcript) return mismatch();
 
   const canonicalWorkspace = await canonicalPathOrSelf(workspace);
   const messageIds: string[] = [];
   let observedTaskId = false;
   let observedWorkspace = false;
   try {
-    const records = (await readFile(candidates[0] as string, "utf8")).split("\n").filter(Boolean);
+    const records = (await readFile(transcript, "utf8")).split("\n").filter(Boolean);
     for (const record of records) {
       const parsed = parseRecord(record);
       if (!parsed) return mismatch();
@@ -55,6 +86,18 @@ export async function readWorkBuddyTaskTranscriptIdentity(
     transcriptIdentityMatches: observedTaskId && observedWorkspace,
     replayFingerprint: replayFingerprint(messageIds),
   };
+}
+
+async function findTaskTranscript(configDirectory: string, taskId: string): Promise<string | null> {
+  const projectsDirectory = join(configDirectory, "projects");
+  const entries = await readdir(projectsDirectory, { withFileTypes: true }).catch(() => []);
+  const candidates: string[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isDirectory()) continue;
+    const candidate = join(projectsDirectory, entry.name, `${taskId}.jsonl`);
+    if (await exists(candidate)) candidates.push(candidate);
+  }
+  return candidates.length === 1 ? (candidates[0] as string) : null;
 }
 
 function parseRecord(record: string): Record<string, unknown> | null {

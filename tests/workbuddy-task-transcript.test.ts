@@ -3,7 +3,10 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readWorkBuddyTaskTranscriptIdentity } from "../src/runtime/workbuddy-task-transcript";
+import {
+  inspectWorkBuddyTaskTranscript,
+  readWorkBuddyTaskTranscriptIdentity,
+} from "../src/runtime/workbuddy-task-transcript";
 
 const taskId = "00000000-0000-4000-8000-000000000001";
 const workspace = "/private/tmp/workbuddy-transcript-workspace";
@@ -45,6 +48,27 @@ describe("WorkBuddy native Task transcript identity", () => {
     const configDirectory = await fixture(records);
     await expect(readWorkBuddyTaskTranscriptIdentity(configDirectory, taskId, workspace)).resolves.toMatchObject({
       transcriptIdentityMatches: false,
+    });
+  });
+});
+
+describe("WorkBuddy native Task transcript inspection", () => {
+  it("summarizes native persistence without exposing record layout to callers", async () => {
+    const configDirectory = await fixture([
+      { role: "assistant", status: "completed", content: "prior answer", providerData: { model: "fast-model" } },
+      { role: "user", status: "completed", content: "turn-marker" },
+      {
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "text", text: "turn-marker answer" }],
+        providerData: { model: "fast-model" },
+      },
+    ]);
+
+    await expect(inspectWorkBuddyTaskTranscript(configDirectory, taskId, "turn-marker")).resolves.toEqual({
+      recordCount: 3,
+      latestCompletedAssistantModel: "fast-model",
+      hasCompletedAssistantMarker: true,
     });
   });
 });
