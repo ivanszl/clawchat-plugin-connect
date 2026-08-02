@@ -22,6 +22,7 @@ import {
   buildWorkBuddyTaskRuntimeRequest,
   createWorkBuddyMacosDiscoverySource,
   readWorkBuddyTaskRuntimeSelection,
+  reconcileWorkBuddyTaskRuntime,
 } from "../src/runtime/workbuddy-task-discovery-macos";
 import { createStateStore } from "../src/state";
 import type { WorkBuddyAgentBindingConfig } from "../src/types";
@@ -278,6 +279,28 @@ it("reads the current Task model from the catalog even when no assistant history
   }
 });
 
+it("fails closed when the Task catalog contains an unknown permission mode", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "workbuddy-cn-permission-selection-"));
+  const database = new Database(join(directory, "workbuddy.db"));
+  try {
+    database.run("CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, permission_mode TEXT, deleted_at INTEGER)");
+    database
+      .query("INSERT INTO sessions (id, model, permission_mode, deleted_at) VALUES (?, ?, ?, NULL)")
+      .run(taskId, "hy3", "future-unverified-mode");
+
+    await expect(readWorkBuddyTaskRuntimeSelection(directory, taskId)).rejects.toMatchObject({
+      code: "incompatible-version",
+      details: {
+        selectedProfile: "workbuddy-cn",
+        detectedPermissionMode: "future-unverified-mode",
+      },
+    });
+  } finally {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it("prefers the current catalog model over stale assistant transcript metadata", async () => {
   const directory = await mkdtemp(join(tmpdir(), "workbuddy-cn-current-selection-"));
   const database = new Database(join(directory, "workbuddy.db"));
@@ -301,6 +324,36 @@ it("prefers the current catalog model over stale assistant transcript metadata",
     database.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+it("replaces an existing Task runtime before applying a changed catalog model", async () => {
+  const request = buildWorkBuddyTaskRuntimeRequest(
+    {
+      applicationPath: "/Applications/WorkBuddy.app",
+      configDirectory: "/Users/test/.workbuddy",
+      taskId,
+      workspace: "/private/tmp/workspace",
+      selection: { model: "new-catalog-model", permissionMode: "default" },
+      commandTimeoutMs: 5_000,
+    },
+    "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+    "test-gateway-secret",
+  );
+  const calls: Array<{ method: string; params: unknown }> = [];
+
+  await reconcileWorkBuddyTaskRuntime(request, 5_000, async (method, _timeoutMs, params) => {
+    calls.push({ method, params });
+    if (method === "session.list") return [{ sessionId: taskId }];
+    return { ok: true };
+  });
+
+  expect(calls.map((call) => call.method)).toEqual(["session.list", "session.kill", "session.create"]);
+  expect(calls[1]?.params).toEqual({ sessionId: taskId });
+  expect(calls[2]?.params).toBe(request);
+  expect(request.args.slice(request.args.indexOf("--model"), request.args.indexOf("--model") + 2)).toEqual([
+    "--model",
+    "new-catalog-model",
+  ]);
 });
 
 it("accepts the mainland profile host only after exact Task replay verification", async () => {

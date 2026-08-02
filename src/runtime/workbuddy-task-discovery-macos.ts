@@ -402,14 +402,20 @@ export async function readWorkBuddyTaskRuntimeSelection(
         taskId,
       });
     }
-    const permissionMode = WORKBUDDY_PERMISSION_MODES.has(
-      row.permission_mode as WorkBuddyTaskRuntimeSelection["permissionMode"],
-    )
-      ? (row.permission_mode as WorkBuddyTaskRuntimeSelection["permissionMode"])
-      : "bypassPermissions";
+    if (!WORKBUDDY_PERMISSION_MODES.has(row.permission_mode as WorkBuddyTaskRuntimeSelection["permissionMode"])) {
+      throw new WorkBuddyDiscoveryError(
+        "incompatible-version",
+        "The WorkBuddy Task permission mode is unsupported for profile workbuddy-cn.",
+        {
+          selectedProfile: "workbuddy-cn",
+          detectedPermissionMode: row.permission_mode ?? "[missing]",
+          supportedPermissionModes: [...WORKBUDDY_PERMISSION_MODES],
+        },
+      );
+    }
     return {
       model: typeof row.model === "string" && row.model.trim() ? row.model.trim() : null,
-      permissionMode,
+      permissionMode: row.permission_mode as WorkBuddyTaskRuntimeSelection["permissionMode"],
     };
   } finally {
     database.close();
@@ -546,9 +552,6 @@ function assertConnectedEndpointOwner(
 async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Promise<void> {
   const runtimeDirectory = sidecarRuntimeDirectory(input.configDirectory);
   const socketPath = join(runtimeDirectory, "sidecar.sock");
-  const existing = await sidecarRpc<Array<{ sessionId: string }>>(socketPath, "session.list", input.commandTimeoutMs);
-  if (existing.some((session) => session.sessionId === input.taskId)) return;
-
   const resourcesPath = join(input.applicationPath, "Contents", "Resources");
   const cliRoot = join(resourcesPath, "app.asar.unpacked", "cli");
   const cliCandidates = [join(cliRoot, "bin", "codebuddy"), join(cliRoot, "dist", "codebuddy.js")];
@@ -563,15 +566,33 @@ async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Pr
     );
   }
   const request = buildWorkBuddyTaskRuntimeRequest(input, cliPath);
+  await reconcileWorkBuddyTaskRuntime(
+    request,
+    input.commandTimeoutMs,
+    async (method, timeoutMs, params) => await sidecarRpc<unknown>(socketPath, method, timeoutMs, params),
+  );
+}
+
+type WorkBuddySidecarInvoke = (method: string, timeoutMs: number, params?: unknown) => Promise<unknown>;
+
+export async function reconcileWorkBuddyTaskRuntime(
+  request: WorkBuddyTaskRuntimeRequest,
+  commandTimeoutMs: number,
+  invoke: WorkBuddySidecarInvoke,
+): Promise<void> {
+  const existing = (await invoke("session.list", commandTimeoutMs)) as Array<{ sessionId: string }>;
+  if (existing.some((session) => session.sessionId === request.sessionId)) {
+    // session.list does not expose the argv that fixed the existing runtime's model and permission
+    // selection. Replace it only after the first host replay has authenticated this exact Task.
+    await invoke("session.kill", commandTimeoutMs, { sessionId: request.sessionId });
+  }
   try {
-    await sidecarRpc(socketPath, "session.create", Math.max(input.commandTimeoutMs, 180_000), request);
+    await invoke("session.create", Math.max(commandTimeoutMs, 180_000), request);
   } catch (error) {
-    const raced = await sidecarRpc<Array<{ sessionId: string }>>(
-      socketPath,
-      "session.list",
-      input.commandTimeoutMs,
-    ).catch(() => []);
-    if (!raced.some((session) => session.sessionId === input.taskId)) throw error;
+    const raced = ((await invoke("session.list", commandTimeoutMs).catch(() => [])) ?? []) as Array<{
+      sessionId: string;
+    }>;
+    if (!raced.some((session) => session.sessionId === request.sessionId)) throw error;
   }
 }
 

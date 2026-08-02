@@ -19,7 +19,7 @@ export async function verifyInstalledWorkBuddyNativeUi(input: NativeUiVerificati
   await runCommand(
     "/usr/bin/osascript",
     ["-e", WORKBUDDY_UI_MARKER_SCRIPT, "--", String(processId), input.taskTitle, input.marker],
-    60_000,
+    120_000,
   );
 }
 
@@ -80,13 +80,21 @@ on elementContains(candidate, expectedText)
   return false
 end elementContains
 
-on visibleMarker(targetProcess, marker)
+on selectedTaskContainsMarker(targetProcess, taskTitle, marker)
   tell application "System Events"
     tell targetProcess
       if (count of windows) is 0 then return false
       set candidates to entire contents of front window
       repeat with candidate in candidates
-        if my elementContains(candidate, marker) then return true
+        try
+          if (role of candidate is "AXStaticText") and (name of candidate as text is taskTitle) then
+            set taskRegion to parent of candidate
+            set taskContents to entire contents of taskRegion
+            repeat with taskElement in taskContents
+              if my elementContains(taskElement, marker) then return true
+            end repeat
+          end if
+        end try
       end repeat
     end tell
   end tell
@@ -99,7 +107,12 @@ on openTask(targetProcess, taskTitle)
       if (count of windows) is 0 then return false
       set candidates to entire contents of front window
       repeat with candidate in candidates
-        if my elementContains(candidate, taskTitle) then
+        try
+          set candidateRole to role of candidate
+        on error
+          set candidateRole to ""
+        end try
+        if candidateRole is "AXButton" and my elementContains(candidate, taskTitle) then
           try
             perform action "AXPress" of candidate
             return true
@@ -123,13 +136,17 @@ on run argv
     set targetProcess to first application process whose unix id is targetPid
     set frontmost of targetProcess to true
   end tell
+  set taskOpened to false
   repeat 30 times
-    if my visibleMarker(targetProcess, marker) then return "visible"
+    if my openTask(targetProcess, taskTitle) then
+      set taskOpened to true
+      exit repeat
+    end if
     delay 1
   end repeat
-  if not my openTask(targetProcess, taskTitle) then error "The dedicated WorkBuddy Task was not visible after reopening the application"
+  if not taskOpened then error "The dedicated WorkBuddy Task was not visible after reopening the application"
   repeat 30 times
-    if my visibleMarker(targetProcess, marker) then return "visible"
+    if my selectedTaskContainsMarker(targetProcess, taskTitle, marker) then return "visible"
     delay 1
   end repeat
   error "The synchronized marker did not appear in the reopened native WorkBuddy Task"
