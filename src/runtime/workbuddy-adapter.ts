@@ -279,7 +279,7 @@ function reconcilePromptOutcome(
       activity: index === submittedIndex ? correlateRecoveredSubmittedActivity(activity, input) : activity,
       index,
     }))
-    .filter(({ activity }) => !sameActivityState(knownActivities.get(activity.id), activity))
+    .filter(({ activity }) => !isDeepStrictEqual(knownActivities.get(activity.id), activity))
     .map(({ activity, index }) =>
       submittedIndex >= 0 && index >= submittedIndex && index < turnEnd
         ? activity
@@ -296,12 +296,8 @@ function recoveredNativeActivities(
   knownActivities: ReadonlyMap<string, RuntimeActivity>,
 ): RuntimeActivity[] {
   return history
-    .filter((activity) => !sameActivityState(knownActivities.get(activity.id), activity))
+    .filter((activity) => !isDeepStrictEqual(knownActivities.get(activity.id), activity))
     .map(recoveredProjectionOnlyActivity);
-}
-
-function sameActivityState(left: RuntimeActivity | undefined, right: RuntimeActivity): boolean {
-  return isDeepStrictEqual(left, right);
 }
 
 function recoveredProjectionOnlyActivity(activity: RuntimeActivity): RuntimeActivity {
