@@ -125,6 +125,39 @@ describe("Agent Binding configuration", () => {
     });
   });
 
+  it("normalizes an explicit WorkBuddy AI profile without accepting ephemeral endpoint configuration", () => {
+    const config = normalizeConfig({
+      defaultAgent: "desktop-task",
+      agents: {
+        "desktop-task": {
+          kind: "workbuddy",
+          profile: "workbuddy-ai",
+          displayName: "Desktop Task",
+        },
+      },
+    });
+
+    expect(getAgentBinding(config, "desktop-task")).toEqual({
+      kind: "workbuddy",
+      profile: "workbuddy-ai",
+      displayName: "Desktop Task",
+      env: { CLAWCHAT_CONNECT_AGENT_ID: "desktop-task" },
+    });
+    expect(() =>
+      normalizeConfig({
+        agents: {
+          arbitrary: {
+            kind: "workbuddy",
+            profile: "workbuddy-ai",
+            endpoint: "http://127.0.0.1:43129/api/v1/acp",
+            connectionId: "ephemeral-connection",
+            sessionToken: "ephemeral-token",
+          },
+        },
+      }),
+    ).toThrow("WorkBuddy endpoint and credentials are discovered at attachment time");
+  });
+
   it("rejects OpenCode Server controls that Connect owns", () => {
     expect(() =>
       normalizeConfig({

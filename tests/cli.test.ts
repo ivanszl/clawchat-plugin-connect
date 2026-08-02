@@ -75,7 +75,7 @@ describe("runConnectCli", () => {
     const path = await tempConfig();
     const output = io();
     await expect(runConnectCli(["init", "--config", path, "--agent", "codex"], output.deps)).resolves.toBe(1);
-    expect(output.stderr.join("")).toContain("--kind codex, opencode is required");
+    expect(output.stderr.join("")).toContain("--kind codex, opencode, workbuddy is required");
   });
 
   it("adds an explicitly named first-party Codex agent", async () => {
@@ -108,6 +108,27 @@ describe("runConnectCli", () => {
     });
   });
 
+  it("adds WorkBuddy only with an explicit distribution profile", async () => {
+    const path = await tempConfig();
+    const output = io();
+    await runConnectCli(["init", "--config", path], output.deps);
+
+    await expect(
+      runConnectCli(
+        ["agent", "add", "desktop", "--kind", "workbuddy", "--profile", "workbuddy-ai", "--config", path],
+        output.deps,
+      ),
+    ).resolves.toBe(0);
+    await expect(loadConfig(path)).resolves.toMatchObject({
+      agents: { desktop: { kind: "workbuddy", profile: "workbuddy-ai" } },
+    });
+
+    await expect(
+      runConnectCli(["agent", "add", "missing-profile", "--kind", "workbuddy", "--config", path], output.deps),
+    ).resolves.toBe(1);
+    expect(output.stderr.join("")).toContain("WorkBuddy profile must be explicitly set to: workbuddy-ai");
+  });
+
   it("requires explicit confirmation before removing an Agent Binding and its local data", async () => {
     const path = await tempConfig();
     const output = io();
@@ -138,7 +159,7 @@ describe("runConnectCli", () => {
     const output = io();
     await runConnectCli(["init", "--config", path], output.deps);
     await expect(runConnectCli(["agent", "add", "claude", "--config", path], output.deps)).resolves.toBe(1);
-    expect(output.stderr.join("")).toContain("--kind codex, opencode is required");
+    expect(output.stderr.join("")).toContain("--kind codex, opencode, workbuddy is required");
   });
 
   it("reads and updates config through the config subcommands", async () => {

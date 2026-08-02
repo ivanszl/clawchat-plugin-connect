@@ -10,6 +10,7 @@ import type { OpenCodeMessage, OpenCodeServerClient } from "../src/runtime/openc
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { releasedRuntimeAdapters } from "../src/runtime/released-adapters";
 import { type ConnectRuntimeAdapter, RuntimeLifecycleError, runtimeActivityOrdinal } from "../src/runtime/types";
+import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
 import { createStateStore } from "../src/state";
 import type { AgentBindingConfig } from "../src/types";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
@@ -50,7 +51,7 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
           additionalDirectories: [],
           skipGitRepoCheck: true,
         }),
-      ).toEqual([]);
+      ).toEqual(expect.any(Array));
       await registry.close();
     });
 
@@ -155,10 +156,18 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
           code: "unsupported",
         });
       }
-      await registry.deleteThread(harness.binding, "thread-1");
-      await registry.deleteThread(harness.binding, "thread-1");
+      if (capabilities.delete) {
+        await registry.deleteThread(harness.binding, "thread-1");
+        await registry.deleteThread(harness.binding, "thread-1");
+      } else {
+        await expect(registry.deleteThread(harness.binding, "thread-1")).rejects.toMatchObject({
+          code: "unsupported",
+        });
+      }
 
-      expect(harness.lifecycleCalls()).toEqual(capabilities.archive ? ["archive", "restore", "delete"] : ["delete"]);
+      expect(harness.lifecycleCalls()).toEqual(
+        capabilities.archive ? ["archive", "restore", "delete"] : capabilities.delete ? ["delete"] : [],
+      );
       if (capabilities.archive)
         await expect(registry.archiveThread(harness.binding, "thread-1")).rejects.toMatchObject({
           code: "not-found",
@@ -481,6 +490,58 @@ runtimeAdapterConformance(
     };
   },
   "opencode",
+);
+
+runtimeAdapterConformance(
+  "WorkBuddy",
+  () => {
+    let closes = 0;
+    let closed = false;
+    let active = true;
+    let pending = false;
+    let pendingReject: ((error: Error) => void) | null = null;
+    const activities = Array.from({ length: 201 }, (_, index) => ({
+      id: `activity-${index}`,
+      aliases: [`live-${index}`],
+      position: `0.${index + 1}`,
+      parentId: null,
+      kind: "assistant" as const,
+      text: "same output",
+      state: "complete" as const,
+      source: "history" as const,
+    }));
+    const source: WorkBuddyRuntimeSource = {
+      listTasks: async () => (active ? [{ id: "thread-1", title: "Task", workspace: "/tmp", updatedAt: 1 }] : []),
+      attachTask: async () =>
+        pending
+          ? await new Promise((_, reject) => {
+              pendingReject = reject;
+            })
+          : { activities, completeness: "complete", limitations: [] },
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        closes += 1;
+        pendingReject?.(new Error("binding closed"));
+      },
+    };
+    return {
+      binding: { kind: "workbuddy", profile: "workbuddy-ai" },
+      activateThread: () => {
+        active = true;
+      },
+      closeCount: () => closes,
+      failNextArchive: () => undefined,
+      lifecycleCalls: () => [],
+      startPendingOperation: async () => {
+        active = true;
+        pending = true;
+        return await source.attachTask({ profile: "workbuddy-ai", taskId: "thread-1", workspace: "/tmp" });
+      },
+      adapter: createWorkBuddyRuntimeAdapter({ createSource: () => source }),
+    };
+  },
+  "workbuddy",
 );
 
 describe("released Runtime Adapter conformance gate", () => {

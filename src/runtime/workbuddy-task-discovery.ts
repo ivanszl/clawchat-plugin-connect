@@ -42,6 +42,7 @@ export interface WorkBuddyEndpointVerification {
   replayFingerprint: string;
   replayStarted: boolean;
   replayCompleted: boolean;
+  activities: import("./types").RuntimeActivity[];
   connectionOwner: WorkBuddyProcessIdentity | null;
 }
 
@@ -116,6 +117,21 @@ export async function discoverWorkBuddyTask(
   input: WorkBuddyTaskDiscoveryInput,
   source: WorkBuddyTaskDiscoverySource,
 ): Promise<DiscoveredWorkBuddyTask> {
+  return (await verifyWorkBuddyTask(input, source)).discovered;
+}
+
+export async function attachWorkBuddyTask(
+  input: WorkBuddyTaskDiscoveryInput,
+  source: WorkBuddyTaskDiscoverySource,
+): Promise<import("./types").RuntimeActivitySnapshot> {
+  const { verification } = await verifyWorkBuddyTask(input, source);
+  return { activities: verification.activities, completeness: "complete", limitations: [] };
+}
+
+async function verifyWorkBuddyTask(
+  input: WorkBuddyTaskDiscoveryInput,
+  source: WorkBuddyTaskDiscoverySource,
+): Promise<{ discovered: DiscoveredWorkBuddyTask; verification: WorkBuddyEndpointVerification }> {
   const observation = await source.inspect(input);
   const application = observation.application;
   if (!application) {
@@ -285,16 +301,19 @@ export async function discoverWorkBuddyTask(
   );
 
   return {
-    profile: input.profile,
-    application: {
-      path: application.path,
-      version: application.version,
-      embeddedCodeBuddyVersion: application.embeddedCodeBuddyVersion,
-      processId: applicationProcess.pid,
+    discovered: {
+      profile: input.profile,
+      application: {
+        path: application.path,
+        version: application.version,
+        embeddedCodeBuddyVersion: application.embeddedCodeBuddyVersion,
+        processId: applicationProcess.pid,
+      },
+      task: { id: task.id, workspace: authoritativeWorkspace },
+      owner: { sidecarProcessId: observation.sidecarProcess.pid, endpointProcessId: confirmedOwner.pid },
+      endpoint: endpointSession.endpoint,
     },
-    task: { id: task.id, workspace: authoritativeWorkspace },
-    owner: { sidecarProcessId: observation.sidecarProcess.pid, endpointProcessId: confirmedOwner.pid },
-    endpoint: endpointSession.endpoint,
+    verification,
   };
 }
 

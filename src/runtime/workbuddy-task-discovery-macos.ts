@@ -7,9 +7,11 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifyWorkBuddyAiEndpoint, type WorkBuddyConnectedSocketIdentity } from "./workbuddy-acp-client";
 import {
+  WORKBUDDY_AI_COMPATIBILITY,
   WorkBuddyDiscoveryError,
   type WorkBuddyDiscoveryObservation,
   type WorkBuddyProcessIdentity,
+  type WorkBuddyProfile,
   type WorkBuddyTaskDiscoveryInput,
   type WorkBuddyTaskDiscoverySource,
 } from "./workbuddy-task-discovery";
@@ -24,6 +26,75 @@ export interface WorkBuddyAiMacosDiscoveryOptions {
   configDirectory?: string;
   commandTimeoutMs?: number;
   requestTimeoutMs?: number;
+}
+
+export interface WorkBuddyAiTaskCatalogEntry {
+  id: string;
+  title: string | null;
+  workspace: string;
+  updatedAt: number;
+}
+
+export async function listWorkBuddyAiTasks(
+  profile: WorkBuddyProfile,
+  options: WorkBuddyAiMacosDiscoveryOptions = {},
+): Promise<WorkBuddyAiTaskCatalogEntry[]> {
+  const applicationPath = options.applicationPath ?? DEFAULT_APPLICATION_PATH;
+  const configDirectory = options.configDirectory ?? join(homedir(), ".workbuddy-ai");
+  const commandTimeoutMs = options.commandTimeoutMs ?? 5_000;
+  if (!(await exists(applicationPath))) {
+    throw new WorkBuddyDiscoveryError(
+      "application-absent",
+      "WorkBuddy AI is not installed at the selected application path; install WorkBuddy AI 5.2.7.",
+    );
+  }
+  const [bundleIdentifier, version, embeddedCodeBuddyVersion, processes] = await Promise.all([
+    readPlistValue(join(applicationPath, "Contents", "Info.plist"), "CFBundleIdentifier", commandTimeoutMs),
+    readPlistValue(join(applicationPath, "Contents", "Info.plist"), "CFBundleShortVersionString", commandTimeoutMs),
+    readEmbeddedCodeBuddyVersion(applicationPath).catch(() => "[unreadable]"),
+    readProcesses(commandTimeoutMs),
+  ]);
+  if (bundleIdentifier !== BUNDLE_IDENTIFIER) {
+    throw new WorkBuddyDiscoveryError("wrong-distribution", "The selected application is not WorkBuddy AI.", {
+      selectedProfile: profile,
+      detectedBundleIdentifier: bundleIdentifier,
+    });
+  }
+  if (
+    version !== WORKBUDDY_AI_COMPATIBILITY.applicationVersion ||
+    embeddedCodeBuddyVersion !== WORKBUDDY_AI_COMPATIBILITY.embeddedCodeBuddyVersion
+  ) {
+    throw new WorkBuddyDiscoveryError("incompatible-version", "The installed WorkBuddy AI tuple is unsupported.", {
+      selectedProfile: profile,
+      detectedApplicationVersion: version,
+      detectedEmbeddedCodeBuddyVersion: embeddedCodeBuddyVersion,
+    });
+  }
+  const executablePath = join(applicationPath, "Contents", "MacOS", "Electron");
+  if (!processes.some((candidate) => candidate.parentPid === 1 && candidate.executablePath === executablePath)) {
+    throw new WorkBuddyDiscoveryError(
+      "application-stopped",
+      "WorkBuddy AI is installed but not running; open it before discovering Tasks.",
+    );
+  }
+  const database = new Database(join(configDirectory, "workbuddy.db"), { readonly: true });
+  try {
+    const rows = database
+      .query<{ id: string; cwd: string; title: string | null; custom_title: string | null; updated_at: number }, []>(
+        "SELECT id, cwd, title, custom_title, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC, id",
+      )
+      .all();
+    return await Promise.all(
+      rows.map(async (row) => ({
+        id: row.id,
+        title: row.custom_title || row.title || null,
+        workspace: await realpath(row.cwd).catch(() => row.cwd),
+        updatedAt: row.updated_at,
+      })),
+    );
+  } finally {
+    database.close();
+  }
 }
 
 export function createWorkBuddyAiMacosDiscoverySource(

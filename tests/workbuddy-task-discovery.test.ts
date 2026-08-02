@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  attachWorkBuddyTask,
   discoverWorkBuddyTask,
   type WorkBuddyDiscoveryObservation,
   type WorkBuddyEndpointVerification,
@@ -54,6 +55,7 @@ function source(
       replayFingerprint: nativeReplayFingerprint,
       replayStarted: true,
       replayCompleted: true,
+      activities: [],
       connectionOwner: lastOwner,
       ...verification,
     }),
@@ -85,6 +87,41 @@ describe("WorkBuddy Task discovery contract", () => {
       task: { id: taskId, workspace },
       owner: { sidecarProcessId: 110, endpointProcessId: 120 },
       endpoint: "http://127.0.0.1:43129/api/v1/acp",
+    });
+  });
+
+  it("reports an Attachment ready only with the complete verified authoritative replay", async () => {
+    await expect(
+      attachWorkBuddyTask(
+        { profile: "workbuddy-ai", taskId, expectedWorkspace: workspace },
+        source(undefined, {
+          activities: [
+            {
+              id: "native-message",
+              position: "0.1",
+              parentId: null,
+              kind: "user",
+              text: "authoritative history",
+              state: "complete",
+              source: "history",
+            },
+          ],
+        }),
+      ),
+    ).resolves.toEqual({
+      activities: [
+        {
+          id: "native-message",
+          position: "0.1",
+          parentId: null,
+          kind: "user",
+          text: "authoritative history",
+          state: "complete",
+          source: "history",
+        },
+      ],
+      completeness: "complete",
+      limitations: [],
     });
   });
 

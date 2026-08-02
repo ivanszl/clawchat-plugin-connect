@@ -229,6 +229,7 @@ describe("RuntimeAdapterRegistry", () => {
     expect(releasedRuntimeAdapters()).toEqual([
       { kind: "codex", displayName: "Codex" },
       { kind: "opencode", displayName: "OpenCode" },
+      { kind: "workbuddy", displayName: "WorkBuddy" },
     ]);
     expect(createReleasedRuntimeAdapterRegistry().modesFor({ kind: "codex" })).toEqual([
       "read-only",

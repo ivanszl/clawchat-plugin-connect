@@ -16,6 +16,7 @@ describe("WorkBuddy private ACP client", () => {
   it("uses one established socket for content-length bootstrap and fragmented chunked SSE replay", async () => {
     const serverSockets = new Set<Socket>();
     let loadReceived = false;
+    const rpcMethods: string[] = [];
     const endpoint = await serve((request, socket) => {
       serverSockets.add(socket);
       if (request.path.endsWith("/connect")) {
@@ -23,6 +24,7 @@ describe("WorkBuddy private ACP client", () => {
       }
       if (request.method === "DELETE") return emptyResponse();
       const rpc = JSON.parse(request.body) as { id: number; method: string };
+      rpcMethods.push(rpc.method);
       if (rpc.method === "initialize") {
         return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }], true);
       }
@@ -30,7 +32,21 @@ describe("WorkBuddy private ACP client", () => {
       return sseResponse(
         [
           update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
-          update({ sessionUpdate: "user_message_chunk", messageId: "message-1", content: { type: "text" } }),
+          update({
+            sessionUpdate: "user_message_chunk",
+            messageId: "message-1",
+            content: { type: "text", text: "remember " },
+          }),
+          update({
+            sessionUpdate: "user_message_chunk",
+            messageId: "message-1",
+            content: { type: "text", text: "this" },
+          }),
+          update({
+            sessionUpdate: "agent_message_chunk",
+            messageId: "message-2",
+            content: { type: "text", text: "remembered" },
+          }),
           update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
           { jsonrpc: "2.0", id: rpc.id, result: { models: [] } },
         ],
@@ -55,11 +71,32 @@ describe("WorkBuddy private ACP client", () => {
 
     expect(observedSocket?.remotePort).toBe(Number(new URL(endpoint).port));
     expect(serverSockets.size).toBe(1);
+    expect(rpcMethods).toEqual(["initialize", "session/load"]);
     expect(verification).toEqual({
       taskId,
-      replayFingerprint: fingerprint(["message-1"]),
+      replayFingerprint: fingerprint(["message-1", "message-2"]),
       replayStarted: true,
       replayCompleted: true,
+      activities: [
+        {
+          id: "message-1",
+          position: "0.1",
+          parentId: null,
+          kind: "user",
+          text: "remember this",
+          state: "complete",
+          source: "history",
+        },
+        {
+          id: "message-2",
+          position: "0.2",
+          parentId: null,
+          kind: "assistant",
+          text: "remembered",
+          state: "complete",
+          source: "history",
+        },
+      ],
       connectionOwner: {
         pid: 120,
         parentPid: 110,

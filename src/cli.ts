@@ -71,6 +71,7 @@ export interface ConnectCliDeps extends Partial<CliIo> {
 
 interface AgentCliOptions {
   kind?: string;
+  profile?: string;
   runtimePath?: string;
   codexPath?: string;
 }
@@ -80,7 +81,7 @@ const HELP_TEXT = `${[
   "",
   "Commands:",
   "  init [--agent <id> --kind codex] [--config <path>]",
-  "  agent add <id> --kind <kind> [--runtime-path <path>] [--config <path>]",
+  "  agent add <id> --kind <kind> [--profile <profile>] [--runtime-path <path>] [--config <path>]",
   "  agent list [--config <path>]",
   "  agent remove <id> --yes [--config <path>]",
   "  project add <absolute-path> [--additional-directory <absolute-path>] [--config <path>]",
@@ -172,13 +173,21 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     .option("--config <path>", "Config path")
     .option("--agent <id>", "Agent id")
     .option("--kind <kind>", `Agent kind: ${releasedKinds}`)
+    .option("--profile <profile>", "Runtime distribution profile")
     .option("--runtime-path <path>", "Runtime executable override")
     .option("--codex-path <path>", "Codex executable override")
     .action(
-      async (options: { config?: string; agent?: string; kind?: string; runtimePath?: string; codexPath?: string }) => {
+      async (options: {
+        config?: string;
+        agent?: string;
+        kind?: string;
+        profile?: string;
+        runtimePath?: string;
+        codexPath?: string;
+      }) => {
         commandRan = true;
         let config = defaultConfig();
-        if (options.agent || options.kind || options.runtimePath || options.codexPath) {
+        if (options.agent || options.kind || options.profile || options.runtimePath || options.codexPath) {
           if (!options.agent) throw new Error("init requires --agent when agent options are provided");
           config = upsertAgentBinding(config, options.agent, agentBindingFromCli(options));
         }
@@ -190,10 +199,14 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     .command("agent add <id>", "Add/update agent")
     .option("--config <path>", "Config path")
     .option("--kind <kind>", `Agent kind: ${releasedKinds}`)
+    .option("--profile <profile>", "Runtime distribution profile")
     .option("--runtime-path <path>", "Runtime executable override")
     .option("--codex-path <path>", "Codex executable override")
     .action(
-      async (id: string, options: { config?: string; kind?: string; runtimePath?: string; codexPath?: string }) => {
+      async (
+        id: string,
+        options: { config?: string; kind?: string; profile?: string; runtimePath?: string; codexPath?: string },
+      ) => {
         commandRan = true;
         const config = upsertAgentBinding(await loadConfig(options.config), id, agentBindingFromCli(options));
         io.writeStdout(`Updated agent ${id}: ${await saveConfig(config, options.config)}\n`);
@@ -591,6 +604,7 @@ async function maybeRunNestedAgentCommand(
         id,
         agentBindingFromCli({
           kind: optionValue(argv, "--kind"),
+          profile: optionValue(argv, "--profile"),
           runtimePath: optionValue(argv, "--runtime-path"),
           codexPath: optionValue(argv, "--codex-path"),
         }),
@@ -767,16 +781,18 @@ function agentBindingFromCli(options: AgentCliOptions): AgentBindingConfig {
   try {
     const binding = createReleasedAgentBinding(options.kind, {
       executablePath: options.runtimePath ?? options.codexPath,
+      profile: options.profile,
     });
     if (options.codexPath && !options.runtimePath && binding.kind === "codex") {
       delete binding.executablePathOverride;
       binding.codexPathOverride = options.codexPath;
     }
     return binding;
-  } catch {
+  } catch (error) {
     const kinds = releasedRuntimeAdapters()
       .map((adapter) => adapter.kind)
       .join(", ");
+    if (releasedRuntimeAdapters().some((adapter) => adapter.kind === options.kind?.trim().toLowerCase())) throw error;
     throw new Error(`--kind ${kinds} is required`);
   }
 }
@@ -785,7 +801,8 @@ function formatAgentListRow(id: string, binding: AgentBindingConfig, isDefault: 
   const selected = isDefault ? " (default)" : "";
   const executablePath =
     binding.executablePathOverride ?? (binding.kind === "codex" ? binding.codexPathOverride : undefined);
-  return `- ${id}${selected}: ${binding.kind}${executablePath ? ` (${executablePath})` : ""}`;
+  const profile = binding.kind === "workbuddy" ? `/${binding.profile}` : "";
+  return `- ${id}${selected}: ${binding.kind}${profile}${executablePath ? ` (${executablePath})` : ""}`;
 }
 
 function optionValue(argv: string[], name: string): string | undefined {

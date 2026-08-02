@@ -7,11 +7,13 @@ import type {
   CodexSandboxMode,
   CodexWebSearchMode,
   OutputVisibility,
+  WorkBuddyAgentBindingConfig,
 } from "../types";
 import { createCodexRuntimeAdapter } from "./codex-adapter";
 import { createOpenCodeRuntimeAdapter } from "./opencode-adapter";
 import { RuntimeAdapterRegistry } from "./registry";
 import type { ConnectRuntimeAdapter } from "./types";
+import { createWorkBuddyRuntimeAdapter } from "./workbuddy-adapter";
 
 export const DEFAULT_CODEX_APPROVAL_POLICY = "on-request" as const;
 
@@ -43,6 +45,11 @@ const RELEASED_RUNTIME_ADAPTERS: readonly ReleasedRuntimeAdapterDefinition[] = [
     normalize: normalizeOpenCodeAgentBinding,
     create: createOpenCodeRuntimeAdapter,
   },
+  {
+    metadata: { kind: "workbuddy", displayName: "WorkBuddy" },
+    normalize: normalizeWorkBuddyAgentBinding,
+    create: createWorkBuddyRuntimeAdapter,
+  },
 ];
 
 export function releasedRuntimeAdapters(): readonly ReleasedRuntimeAdapterMetadata[] {
@@ -51,11 +58,12 @@ export function releasedRuntimeAdapters(): readonly ReleasedRuntimeAdapterMetada
 
 export function createReleasedAgentBinding(
   kind: string | undefined,
-  options: { executablePath?: string } = {},
+  options: { executablePath?: string; profile?: string } = {},
 ): AgentBindingConfig {
   const normalizedKind = kind?.trim().toLowerCase() ?? "";
   return normalizeReleasedAgentBinding("CLI", {
     kind: normalizedKind,
+    ...(options.profile?.trim() ? { profile: options.profile.trim() } : {}),
     ...(options.executablePath?.trim() ? { executablePathOverride: options.executablePath.trim() } : {}),
   });
 }
@@ -142,6 +150,32 @@ function normalizeOpenCodeAgentBinding(record: Record<string, unknown>): AgentBi
       ? { additionalDirectories: readAbsolutePathArray(record.additionalDirectories, "additionalDirectories") }
       : {}),
     ...(sessionOptions ? { sessionOptions } : {}),
+  };
+}
+
+function normalizeWorkBuddyAgentBinding(record: Record<string, unknown>): WorkBuddyAgentBindingConfig {
+  for (const field of [
+    "endpoint",
+    "port",
+    "acpEndpoint",
+    "connectionId",
+    "sessionToken",
+    "bearer",
+    "bearerToken",
+    "password",
+  ]) {
+    if (field in record) {
+      throw new Error("WorkBuddy endpoint and credentials are discovered at attachment time");
+    }
+  }
+  const profile = readString(record.profile);
+  if (profile !== "workbuddy-ai") throw new Error("WorkBuddy profile must be explicitly set to: workbuddy-ai");
+  const outputVisibility = readOptionalEnum(record.outputVisibility, OUTPUT_VISIBILITIES, "outputVisibility");
+  return {
+    kind: "workbuddy",
+    profile,
+    ...(outputVisibility ? { outputVisibility } : {}),
+    ...(readString(record.displayName) ? { displayName: readString(record.displayName) } : {}),
   };
 }
 

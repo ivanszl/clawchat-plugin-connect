@@ -63,6 +63,7 @@ export async function verifyWorkBuddyAiEndpoint(
       replayFingerprint: replayFingerprint(loaded.messageIds),
       replayStarted: loaded.replayStarted,
       replayCompleted: loaded.replayCompleted,
+      activities: replayActivities(loaded.replayMessages),
       connectionOwner,
     };
   } catch (error) {
@@ -85,6 +86,13 @@ interface RpcObservation {
   replayCompleted: boolean;
   replayActive: boolean;
   messageIds: string[];
+  replayMessages: ReplayMessage[];
+}
+
+interface ReplayMessage {
+  id: string;
+  kind: "user" | "assistant" | "reasoning";
+  text: string;
 }
 
 async function postRpc(
@@ -109,6 +117,7 @@ async function postRpc(
     replayCompleted: false,
     replayActive: false,
     messageIds: [],
+    replayMessages: [],
   };
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("text/event-stream")) {
@@ -154,11 +163,60 @@ function observeRpcPayload(payload: unknown, expectedId: number, observation: Rp
     if (typeof messageId === "string" && !observation.messageIds.includes(messageId)) {
       observation.messageIds.push(messageId);
     }
+    const kind = replayMessageKind(update?.sessionUpdate);
+    const text = visibleText(update?.content);
+    if (typeof messageId === "string" && kind && text) {
+      const existing = observation.replayMessages.find(
+        (candidate) => candidate.id === messageId && candidate.kind === kind,
+      );
+      if (existing) existing.text += text;
+      else observation.replayMessages.push({ id: messageId, kind, text });
+    }
   }
   if (meta?.["codebuddy.ai/historyReplay"] === "end") {
     observation.replayCompleted = true;
     observation.replayActive = false;
   }
+}
+
+function replayMessageKind(value: unknown): ReplayMessage["kind"] | null {
+  if (value === "user_message_chunk") return "user";
+  if (value === "agent_message_chunk") return "assistant";
+  if (value === "agent_thought_chunk") return "reasoning";
+  return null;
+}
+
+function visibleText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(visibleText).join("");
+  if (!value || typeof value !== "object") return "";
+  const content = value as Record<string, unknown>;
+  return content.type === "text" && typeof content.text === "string" ? content.text : "";
+}
+
+function replayActivities(messages: ReplayMessage[]): import("./types").RuntimeActivity[] {
+  let turn = 0;
+  let item = 0;
+  let started = false;
+  return messages.map((message) => {
+    if (message.kind === "user") {
+      if (started) turn += 1;
+      item = 1;
+      started = true;
+    } else {
+      if (!started) started = true;
+      item += 1;
+    }
+    return {
+      id: message.id,
+      position: `${turn}.${item}`,
+      parentId: null,
+      kind: message.kind,
+      text: message.text,
+      state: "complete",
+      source: "history",
+    };
+  });
 }
 
 function acpHeaders(connectionId: string, sessionToken: string): Record<string, string> {
