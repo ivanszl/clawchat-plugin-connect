@@ -1,5 +1,6 @@
 import { connect, type Socket } from "node:net";
 import type { ConnectRuntimePrompt, ConnectRuntimeSession, RuntimeActivity } from "./types";
+import { workBuddySubmittedUserLiveNativeId, workBuddySubmittedUserMessageId } from "./workbuddy-activity-identity";
 import {
   WorkBuddyDiscoveryError,
   type WorkBuddyEndpointVerification,
@@ -391,7 +392,7 @@ function streamPrompt(
   const queue = new AsyncActivityQueue();
   const projector = new LiveTurnProjector(turnOrdinal, input);
   const requestId = Date.now();
-  const userMessageId = workBuddyUserMessageId(input, requestId);
+  const userMessageId = workBuddySubmittedUserMessageId(input, requestId);
   let accepted: Promise<void> | null = null;
   void postRpc(
     connection,
@@ -435,12 +436,6 @@ function streamPrompt(
   return queue;
 }
 
-function workBuddyUserMessageId(input: ConnectRuntimePrompt, requestId: number): string {
-  const origin = input.turnOrigin === "clawchat" ? "clawchat" : "client";
-  const turnId = (input.turnId ?? `request-${requestId}`).replace(/[^a-zA-Z0-9._-]+/gu, "-");
-  return `clawchat-connect-${origin}-${turnId}`;
-}
-
 function isTaskUpdate(payload: unknown, taskId: string): boolean {
   if (!payload || typeof payload !== "object") return false;
   const message = payload as Record<string, unknown>;
@@ -471,7 +466,7 @@ class LiveTurnProjector {
 
   accepted(): RuntimeActivity[] {
     if (this.submittedUserId) return [];
-    const nativeId = this.input.turnId ? `connect:${this.input.turnId}` : `connect-turn:${this.turn}`;
+    const nativeId = workBuddySubmittedUserLiveNativeId(this.input, this.turn);
     const activity = this.upsert(
       "user:submitted",
       "user",

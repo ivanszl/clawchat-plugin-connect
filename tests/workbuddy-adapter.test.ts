@@ -384,44 +384,59 @@ describe("WorkBuddy Runtime Adapter", () => {
     expect(attachmentCloses).toBe(1);
   });
 
-  it("reacquires rotated credentials for the same adopted Task after pre-acceptance authentication expiry", async () => {
+  it("recovers the same Task when its process, port, and credentials rotate before acceptance", async () => {
     const attachmentInputs: Array<{ profile: string; taskId: string; workspace: string }> = [];
-    const acquiredCredentials: string[] = [];
+    const attachmentRotations = [
+      {
+        process: { pid: 101, parentPid: 10, executablePath: "/Applications/WorkBuddy AI.app/old-endpoint" },
+        endpoint: "http://127.0.0.1:41001/acp",
+        credential: "expired-attachment-credential",
+      },
+      {
+        process: { pid: 202, parentPid: 20, executablePath: "/Applications/WorkBuddy AI.app/new-endpoint" },
+        endpoint: "http://127.0.0.1:42002/acp",
+        credential: "reacquired-attachment-credential",
+      },
+    ] as const;
     let accepted = 0;
     const runtimeSource: WorkBuddyRuntimeSource = {
       ...source(),
       startTask: async (input) => {
         attachmentInputs.push(input);
         const generation = attachmentInputs.length;
-        acquiredCredentials.push(`attachment-credential-${generation}`);
+        const ephemeral = attachmentRotations[generation - 1];
+        if (!ephemeral) throw new Error("unexpected Attachment generation");
         return {
-          verification: verifiedHistory(
-            generation === 1
-              ? history.activities
-              : [
-                  ...history.activities,
-                  {
-                    id: "workbuddy:user:desktop-between-connections",
-                    position: "1.1",
-                    parentId: null,
-                    kind: "user",
-                    text: "native turn between connections",
-                    state: "complete",
-                    source: "history",
-                  },
-                  {
-                    id: "workbuddy:assistant:desktop-between-connections",
-                    position: "1.2",
-                    parentId: null,
-                    kind: "assistant",
-                    text: "native result between connections",
-                    state: "complete",
-                    source: "history",
-                  },
-                ],
-          ),
+          verification: {
+            ...verifiedHistory(
+              generation === 1
+                ? history.activities
+                : [
+                    ...history.activities,
+                    {
+                      id: "workbuddy:user:desktop-between-connections",
+                      position: "1.1",
+                      parentId: null,
+                      kind: "user",
+                      text: "native turn between connections",
+                      state: "complete",
+                      source: "history",
+                    },
+                    {
+                      id: "workbuddy:assistant:desktop-between-connections",
+                      position: "1.2",
+                      parentId: null,
+                      kind: "assistant",
+                      text: "native result between connections",
+                      state: "complete",
+                      source: "history",
+                    },
+                  ],
+            ),
+            connectionOwner: ephemeral.process,
+          },
           async *prompt(prompt): AsyncIterable<RuntimeActivity> {
-            if (generation === 1) {
+            if (ephemeral.credential.startsWith("expired") && ephemeral.endpoint.includes(":41001")) {
               throw new WorkBuddyDiscoveryError(
                 "authentication-failed",
                 "rotated credential was rejected before native acceptance",
@@ -480,7 +495,6 @@ describe("WorkBuddy Runtime Adapter", () => {
       { profile: "workbuddy-ai", taskId, workspace },
       { profile: "workbuddy-ai", taskId, workspace },
     ]);
-    expect(acquiredCredentials).toEqual(["attachment-credential-1", "attachment-credential-2"]);
   });
 
   it("reconciles an accepted prompt from rotated Task history without resubmitting it", async () => {

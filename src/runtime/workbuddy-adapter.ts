@@ -9,6 +9,10 @@ import type {
   RuntimeInteractionPort,
 } from "./types";
 import { type WorkBuddyAcpTaskAttachment, WorkBuddyPromptTransportError } from "./workbuddy-acp-client";
+import {
+  workBuddySubmittedUserHistoryActivityId,
+  workBuddySubmittedUserLiveActivityId,
+} from "./workbuddy-activity-identity";
 import type { WorkBuddyEndpointVerification } from "./workbuddy-task-discovery";
 import { attachWorkBuddyTask, connectWorkBuddyTask, type WorkBuddyProfile } from "./workbuddy-task-discovery";
 import { createWorkBuddyAiMacosDiscoverySource, listWorkBuddyAiTasks } from "./workbuddy-task-discovery-macos";
@@ -252,7 +256,7 @@ function reconcilePromptOutcome(
   state: "completed" | "failed" | "not-committed" | "indeterminate";
   activities: RuntimeActivity[];
 } {
-  const submittedId = workBuddySubmittedUserActivityId(input);
+  const submittedId = workBuddySubmittedUserHistoryActivityId(input);
   const submittedIndex = submittedId ? history.findIndex((activity) => activity.id === submittedId) : -1;
   const nextUserIndex =
     submittedIndex < 0
@@ -312,7 +316,7 @@ function recoveredProjectionOnlyActivity(activity: RuntimeActivity): RuntimeActi
 }
 
 function correlateRecoveredSubmittedActivity(activity: RuntimeActivity, input: ConnectRuntimePrompt): RuntimeActivity {
-  const liveSubmittedId = workBuddyLiveSubmittedUserActivityId(input);
+  const liveSubmittedId = workBuddySubmittedUserLiveActivityId(input);
   return {
     ...activity,
     ...(liveSubmittedId ? { aliases: [...new Set([...(activity.aliases ?? []), liveSubmittedId])] } : {}),
@@ -325,17 +329,6 @@ function correlateRecoveredSubmittedActivity(activity: RuntimeActivity, input: C
         : {}),
     },
   };
-}
-
-function workBuddySubmittedUserActivityId(input: ConnectRuntimePrompt): string | null {
-  if (!input.turnId) return null;
-  const origin = input.turnOrigin === "clawchat" ? "clawchat" : "client";
-  const turnId = input.turnId.replace(/[^a-zA-Z0-9._-]+/gu, "-");
-  return `workbuddy:user:clawchat-connect-${origin}-${turnId}`;
-}
-
-function workBuddyLiveSubmittedUserActivityId(input: ConnectRuntimePrompt): string | null {
-  return input.turnId ? `workbuddy:user:connect:${input.turnId}` : null;
 }
 
 function expiringInteractionPort(
