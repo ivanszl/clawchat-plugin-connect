@@ -88,7 +88,7 @@ on selectedTaskContainsMarker(targetProcess, taskTitle, marker)
       repeat with candidate in candidates
         try
           if (role of candidate is "AXStaticText") and (name of candidate as text is taskTitle) then
-            set taskRegion to parent of candidate
+            set taskRegion to value of attribute "AXParent" of candidate
             set taskContents to entire contents of taskRegion
             repeat with taskElement in taskContents
               if my elementContains(taskElement, marker) then return true
@@ -99,7 +99,7 @@ on selectedTaskContainsMarker(targetProcess, taskTitle, marker)
     end tell
   end tell
   return false
-end visibleMarker
+end selectedTaskContainsMarker
 
 on openTask(targetProcess, taskTitle)
   tell application "System Events"
