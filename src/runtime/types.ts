@@ -294,6 +294,7 @@ export interface ConnectRuntimeAdapter {
   discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
+  verifyThreadReady?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;
   readActivity?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeActivitySnapshot>;
   archiveThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;
   unarchiveThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;

@@ -306,6 +306,10 @@ export class SessionCatalog {
     }
     const target = await this.options.stateStore.getSessionRefTarget(normalized);
     if (!target?.runtimeSessionId || !entry) return null;
+    await this.options.runtimeAdapters.verifyThreadReady(
+      getAgentBinding(this.options.config, target.agentId),
+      target.runtimeSessionId,
+    );
     await this.sessionContinuity.inConversation({ chatId: target.chatId, bindingId: target.agentId }).adopt({
       sessionRef: normalized,
       sessionId: randomUUID(),

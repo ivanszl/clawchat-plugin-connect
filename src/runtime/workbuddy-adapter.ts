@@ -1,3 +1,4 @@
+import type { AgentBindingConfig } from "../types";
 import type { ConnectRuntimeAdapter, RuntimeActivitySnapshot } from "./types";
 import { attachWorkBuddyTask, type WorkBuddyProfile } from "./workbuddy-task-discovery";
 import { createWorkBuddyAiMacosDiscoverySource, listWorkBuddyAiTasks } from "./workbuddy-task-discovery-macos";
@@ -11,6 +12,7 @@ export interface WorkBuddyTaskSummary {
 
 export interface WorkBuddyRuntimeSource {
   listTasks(profile: WorkBuddyProfile): Promise<WorkBuddyTaskSummary[]>;
+  findTask?(profile: WorkBuddyProfile, taskId: string): Promise<WorkBuddyTaskSummary | null>;
   attachTask(input: { profile: WorkBuddyProfile; taskId: string; workspace: string }): Promise<RuntimeActivitySnapshot>;
   close?(): Promise<void>;
 }
@@ -32,6 +34,18 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
       workspaceIdentity: { key: task.workspace, kind: "persistent" as const, localRoot: task.workspace },
     }));
   };
+  const attachTask = async (binding: AgentBindingConfig, runtimeThreadId: string) => {
+    if (binding.kind !== "workbuddy") throw new Error("WorkBuddy Runtime Adapter requires a WorkBuddy Binding");
+    const task = source.findTask
+      ? await source.findTask(binding.profile, runtimeThreadId)
+      : (await source.listTasks(binding.profile)).find((candidate) => candidate.id === runtimeThreadId);
+    if (!task) throw new Error(`WorkBuddy Task was not found: ${runtimeThreadId}`);
+    return await source.attachTask({
+      profile: binding.profile,
+      taskId: task.id,
+      workspace: task.workspace,
+    });
+  };
   return {
     kind: "workbuddy",
     modes: [],
@@ -39,16 +53,8 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
     discoverAllThreads,
     discoverThreads: async (binding, workspace) =>
       (await discoverAllThreads(binding)).filter((thread) => thread.workingDirectory === workspace.workingDirectory),
-    readActivity: async (binding, runtimeThreadId) => {
-      if (binding.kind !== "workbuddy") throw new Error("WorkBuddy Runtime Adapter requires a WorkBuddy Binding");
-      const task = (await source.listTasks(binding.profile)).find((candidate) => candidate.id === runtimeThreadId);
-      if (!task) throw new Error(`WorkBuddy Task was not found: ${runtimeThreadId}`);
-      return await source.attachTask({
-        profile: binding.profile,
-        taskId: task.id,
-        workspace: task.workspace,
-      });
-    },
+    verifyThreadReady: async (binding, runtimeThreadId) => void (await attachTask(binding, runtimeThreadId)),
+    readActivity: attachTask,
     start: async () => {
       throw new Error("WorkBuddy Task turn submission is not available until a Task is adopted");
     },
@@ -60,6 +66,8 @@ function createDefaultSource(): WorkBuddyRuntimeSource {
   const discoverySource = createWorkBuddyAiMacosDiscoverySource();
   return {
     listTasks: async (profile) => await listWorkBuddyAiTasks(profile),
+    findTask: async (profile, taskId) =>
+      (await listWorkBuddyAiTasks(profile)).find((candidate) => candidate.id === taskId) ?? null,
     attachTask: async (input) =>
       await attachWorkBuddyTask(
         { profile: input.profile, taskId: input.taskId, expectedWorkspace: input.workspace },

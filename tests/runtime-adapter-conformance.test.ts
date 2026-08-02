@@ -51,7 +51,7 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
           additionalDirectories: [],
           skipGitRepoCheck: true,
         }),
-      ).toEqual(expect.any(Array));
+      ).toEqual([]);
       await registry.close();
     });
 
@@ -497,7 +497,7 @@ runtimeAdapterConformance(
   () => {
     let closes = 0;
     let closed = false;
-    let active = true;
+    let active = false;
     let pending = false;
     let pendingReject: ((error: Error) => void) | null = null;
     const activities = Array.from({ length: 201 }, (_, index) => ({
@@ -512,6 +512,7 @@ runtimeAdapterConformance(
     }));
     const source: WorkBuddyRuntimeSource = {
       listTasks: async () => (active ? [{ id: "thread-1", title: "Task", workspace: "/tmp", updatedAt: 1 }] : []),
+      findTask: async () => ({ id: "thread-1", title: "Task", workspace: "/tmp", updatedAt: 1 }),
       attachTask: async () =>
         pending
           ? await new Promise((_, reject) => {

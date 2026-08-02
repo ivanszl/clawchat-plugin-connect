@@ -43,6 +43,22 @@ describe("WorkBuddy private ACP client", () => {
             content: { type: "text", text: "this" },
           }),
           update({
+            sessionUpdate: "tool_call",
+            toolCallId: "tool-1",
+            title: "Inspect workspace",
+            status: "completed",
+          }),
+          update({
+            sessionUpdate: "codebuddy_vendor_event",
+            updateId: "vendor-1",
+            privatePayload: "must not cross the Runtime Adapter seam",
+          }),
+          update({
+            sessionUpdate: "agent_thought_chunk",
+            messageId: "message-2",
+            content: { type: "text", text: "considering" },
+          }),
+          update({
             sessionUpdate: "agent_message_chunk",
             messageId: "message-2",
             content: { type: "text", text: "remembered" },
@@ -79,7 +95,7 @@ describe("WorkBuddy private ACP client", () => {
       replayCompleted: true,
       activities: [
         {
-          id: "message-1",
+          id: "workbuddy:user:message-1",
           position: "0.1",
           parentId: null,
           kind: "user",
@@ -88,8 +104,35 @@ describe("WorkBuddy private ACP client", () => {
           source: "history",
         },
         {
-          id: "message-2",
+          id: "workbuddy:tool:tool-1",
           position: "0.2",
+          parentId: null,
+          kind: "tool",
+          text: "Inspect workspace",
+          state: "complete",
+          source: "history",
+        },
+        {
+          id: "workbuddy:unknown:vendor-1:codebuddy_vendor_event",
+          position: "0.3",
+          parentId: null,
+          kind: "unknown",
+          text: "WorkBuddy codebuddy_vendor_event",
+          state: "complete",
+          source: "history",
+        },
+        {
+          id: "workbuddy:reasoning:message-2",
+          position: "0.4",
+          parentId: null,
+          kind: "reasoning",
+          text: "considering",
+          state: "complete",
+          source: "history",
+        },
+        {
+          id: "workbuddy:assistant:message-2",
+          position: "0.5",
           parentId: null,
           kind: "assistant",
           text: "remembered",
@@ -103,6 +146,7 @@ describe("WorkBuddy private ACP client", () => {
         executablePath: `${applicationPath}/Contents/MacOS/Electron`,
       },
     });
+    expect(new Set(verification.activities.map((activity) => activity.id)).size).toBe(verification.activities.length);
   });
 
   it("redacts connection credentials when the server rejects JSON-RPC", async () => {

@@ -152,6 +152,10 @@ export class RuntimeAdapterRegistry {
     };
   }
 
+  async verifyThreadReady(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
+    await this.require(binding).verifyThreadReady?.(binding, runtimeThreadId);
+  }
+
   async archiveThread(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void> {
     const adapter = this.require(binding);
     const operation = adapter.archiveThread;

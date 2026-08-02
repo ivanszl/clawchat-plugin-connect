@@ -35,6 +35,12 @@ export interface WorkBuddyAiTaskCatalogEntry {
   updatedAt: number;
 }
 
+interface WorkBuddyApplicationInspection {
+  application: NonNullable<WorkBuddyDiscoveryObservation["application"]> | null;
+  applicationProcess: WorkBuddyProcessIdentity | null;
+  processes: WorkBuddyProcessIdentity[];
+}
+
 export async function listWorkBuddyAiTasks(
   profile: WorkBuddyProfile,
   options: WorkBuddyAiMacosDiscoveryOptions = {},
@@ -42,36 +48,30 @@ export async function listWorkBuddyAiTasks(
   const applicationPath = options.applicationPath ?? DEFAULT_APPLICATION_PATH;
   const configDirectory = options.configDirectory ?? join(homedir(), ".workbuddy-ai");
   const commandTimeoutMs = options.commandTimeoutMs ?? 5_000;
-  if (!(await exists(applicationPath))) {
+  const { application, applicationProcess } = await inspectWorkBuddyApplication(applicationPath, commandTimeoutMs);
+  if (!application) {
     throw new WorkBuddyDiscoveryError(
       "application-absent",
       "WorkBuddy AI is not installed at the selected application path; install WorkBuddy AI 5.2.7.",
     );
   }
-  const [bundleIdentifier, version, embeddedCodeBuddyVersion, processes] = await Promise.all([
-    readPlistValue(join(applicationPath, "Contents", "Info.plist"), "CFBundleIdentifier", commandTimeoutMs),
-    readPlistValue(join(applicationPath, "Contents", "Info.plist"), "CFBundleShortVersionString", commandTimeoutMs),
-    readEmbeddedCodeBuddyVersion(applicationPath).catch(() => "[unreadable]"),
-    readProcesses(commandTimeoutMs),
-  ]);
-  if (bundleIdentifier !== BUNDLE_IDENTIFIER) {
+  if (application.bundleIdentifier !== BUNDLE_IDENTIFIER) {
     throw new WorkBuddyDiscoveryError("wrong-distribution", "The selected application is not WorkBuddy AI.", {
       selectedProfile: profile,
-      detectedBundleIdentifier: bundleIdentifier,
+      detectedBundleIdentifier: application.bundleIdentifier,
     });
   }
   if (
-    version !== WORKBUDDY_AI_COMPATIBILITY.applicationVersion ||
-    embeddedCodeBuddyVersion !== WORKBUDDY_AI_COMPATIBILITY.embeddedCodeBuddyVersion
+    application.version !== WORKBUDDY_AI_COMPATIBILITY.applicationVersion ||
+    application.embeddedCodeBuddyVersion !== WORKBUDDY_AI_COMPATIBILITY.embeddedCodeBuddyVersion
   ) {
     throw new WorkBuddyDiscoveryError("incompatible-version", "The installed WorkBuddy AI tuple is unsupported.", {
       selectedProfile: profile,
-      detectedApplicationVersion: version,
-      detectedEmbeddedCodeBuddyVersion: embeddedCodeBuddyVersion,
+      detectedApplicationVersion: application.version,
+      detectedEmbeddedCodeBuddyVersion: application.embeddedCodeBuddyVersion,
     });
   }
-  const executablePath = join(applicationPath, "Contents", "MacOS", "Electron");
-  if (!processes.some((candidate) => candidate.parentPid === 1 && candidate.executablePath === executablePath)) {
+  if (!applicationProcess) {
     throw new WorkBuddyDiscoveryError(
       "application-stopped",
       "WorkBuddy AI is installed but not running; open it before discovering Tasks.",
@@ -119,38 +119,12 @@ async function inspectWorkBuddyAi(
   input: WorkBuddyTaskDiscoveryInput,
   options: { applicationPath: string; configDirectory: string; commandTimeoutMs: number },
 ): Promise<WorkBuddyDiscoveryObservation> {
-  if (!(await exists(options.applicationPath))) return emptyObservation();
-  const [bundleIdentifier, version] = await Promise.all([
-    readPlistValue(
-      join(options.applicationPath, "Contents", "Info.plist"),
-      "CFBundleIdentifier",
-      options.commandTimeoutMs,
-    ),
-    readPlistValue(
-      join(options.applicationPath, "Contents", "Info.plist"),
-      "CFBundleShortVersionString",
-      options.commandTimeoutMs,
-    ),
-  ]);
-  if (bundleIdentifier !== BUNDLE_IDENTIFIER) {
-    return {
-      ...emptyObservation(),
-      application: {
-        path: options.applicationPath,
-        bundleIdentifier,
-        version,
-        embeddedCodeBuddyVersion: "[wrong-distribution]",
-      },
-    };
-  }
-  const [embeddedCodeBuddyVersion, processes] = await Promise.all([
-    readEmbeddedCodeBuddyVersion(options.applicationPath).catch(() => "[unreadable]"),
-    readProcesses(options.commandTimeoutMs),
-  ]);
-  const application = { path: options.applicationPath, bundleIdentifier, version, embeddedCodeBuddyVersion };
-  const executablePath = join(options.applicationPath, "Contents", "MacOS", "Electron");
-  const applicationProcess =
-    processes.find((candidate) => candidate.parentPid === 1 && candidate.executablePath === executablePath) ?? null;
+  const { application, applicationProcess, processes } = await inspectWorkBuddyApplication(
+    options.applicationPath,
+    options.commandTimeoutMs,
+  );
+  if (!application) return emptyObservation();
+  if (application.bundleIdentifier !== BUNDLE_IDENTIFIER) return { ...emptyObservation(), application };
   if (!applicationProcess) return { ...emptyObservation(), application };
 
   const task = await readTask(options.configDirectory, input.taskId);
@@ -210,6 +184,38 @@ async function inspectWorkBuddyAi(
     endpointSession,
     endpointOwner,
   };
+}
+
+async function inspectWorkBuddyApplication(
+  applicationPath: string,
+  commandTimeoutMs: number,
+): Promise<WorkBuddyApplicationInspection> {
+  if (!(await exists(applicationPath))) return { application: null, applicationProcess: null, processes: [] };
+  const [bundleIdentifier, version] = await Promise.all([
+    readPlistValue(join(applicationPath, "Contents", "Info.plist"), "CFBundleIdentifier", commandTimeoutMs),
+    readPlistValue(join(applicationPath, "Contents", "Info.plist"), "CFBundleShortVersionString", commandTimeoutMs),
+  ]);
+  if (bundleIdentifier !== BUNDLE_IDENTIFIER) {
+    return {
+      application: {
+        path: applicationPath,
+        bundleIdentifier,
+        version,
+        embeddedCodeBuddyVersion: "[wrong-distribution]",
+      },
+      applicationProcess: null,
+      processes: [],
+    };
+  }
+  const [embeddedCodeBuddyVersion, processes] = await Promise.all([
+    readEmbeddedCodeBuddyVersion(applicationPath).catch(() => "[unreadable]"),
+    readProcesses(commandTimeoutMs),
+  ]);
+  const application = { path: applicationPath, bundleIdentifier, version, embeddedCodeBuddyVersion };
+  const executablePath = join(applicationPath, "Contents", "MacOS", "Electron");
+  const applicationProcess =
+    processes.find((candidate) => candidate.parentPid === 1 && candidate.executablePath === executablePath) ?? null;
+  return { application, applicationProcess, processes };
 }
 
 function emptyObservation(): WorkBuddyDiscoveryObservation {

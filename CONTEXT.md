@@ -236,7 +236,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Removing an Agent Binding retires its Liveware Exposure, deletes its credentials, and purges its database records, Client commands/events, staged Turn Submissions, and isolated Non-Project workspaces before its ID may be reused; unrelated Bindings and installation-global Projects remain intact.
 - A Connect installation has one Connect Service; Agent Bindings and Runtime Adapters do not own background services.
 - Agent Binding IDs are arbitrary; Runtime Adapter selection comes only from the Binding's explicit `kind`.
-- The current release registers Codex and OpenCode Runtime Adapters; released kinds remain product scope, not a domain invariant.
+- The current release registers Codex, OpenCode, and WorkBuddy Runtime Adapters; released kinds remain product scope, not a domain invariant. WorkBuddy requires an explicit distribution profile and currently releases only `workbuddy-ai`.
 - Connect defines Project, Session, and Runtime Thread semantics uniformly across Runtime Adapter kinds. Each Runtime Adapter translates its coding agent's native project, workspace, conversation, session, or thread concepts into that Connect model rather than changing the model for its kind.
 - Successful activation synchronizes the Agent Binding ID to the connected ClawChat Profile nickname.
 - Projects are global and reusable across Agent Bindings.

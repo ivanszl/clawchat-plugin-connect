@@ -91,7 +91,7 @@ interface RpcObservation {
 
 interface ReplayMessage {
   id: string;
-  kind: "user" | "assistant" | "reasoning";
+  kind: import("./types").RuntimeActivity["kind"];
   text: string;
 }
 
@@ -163,20 +163,84 @@ function observeRpcPayload(payload: unknown, expectedId: number, observation: Rp
     if (typeof messageId === "string" && !observation.messageIds.includes(messageId)) {
       observation.messageIds.push(messageId);
     }
-    const kind = replayMessageKind(update?.sessionUpdate);
-    const text = visibleText(update?.content);
-    if (typeof messageId === "string" && kind && text) {
-      const existing = observation.replayMessages.find(
-        (candidate) => candidate.id === messageId && candidate.kind === kind,
-      );
-      if (existing) existing.text += text;
-      else observation.replayMessages.push({ id: messageId, kind, text });
-    }
+    if (update) observeReplayUpdate(update, observation.replayMessages);
   }
   if (meta?.["codebuddy.ai/historyReplay"] === "end") {
     observation.replayCompleted = true;
     observation.replayActive = false;
   }
+}
+
+function observeReplayUpdate(update: Record<string, unknown>, messages: ReplayMessage[]): void {
+  const updateKind = typeof update.sessionUpdate === "string" ? update.sessionUpdate : "native_update";
+  if (NON_TRANSCRIPT_UPDATES.has(updateKind)) return;
+  const messageKind = replayMessageKind(updateKind);
+  const messageId = stringField(update, "messageId");
+  const content = visibleText(update.content);
+  if (messageKind && messageId && content) {
+    upsertReplayMessage(messages, { id: messageId, kind: messageKind, text: content }, true);
+    return;
+  }
+  if (updateKind === "tool_call" || updateKind === "tool_call_update") {
+    const id = stringField(update, "toolCallId", "callId", "id") ?? syntheticReplayId(updateKind, messages);
+    const text =
+      stringField(update, "title", "name", "status") ?? (visibleText(update.content) || "WorkBuddy tool activity");
+    upsertReplayMessage(messages, { id, kind: "tool", text }, false);
+    return;
+  }
+  if (updateKind === "plan") {
+    const id = stringField(update, "planId", "id") ?? syntheticReplayId(updateKind, messages);
+    const text = planText(update.entries) || "WorkBuddy plan update";
+    upsertReplayMessage(messages, { id, kind: "plan", text }, false);
+    return;
+  }
+  const nativeId = stringField(update, "updateId", "id");
+  const id = nativeId
+    ? `${nativeId}:${updateKind}`
+    : messageId
+      ? `${messageId}:${updateKind}`
+      : syntheticReplayId(updateKind, messages);
+  upsertReplayMessage(messages, { id, kind: "unknown", text: `WorkBuddy ${updateKind}` }, false);
+}
+
+const NON_TRANSCRIPT_UPDATES = new Set([
+  "session_info_update",
+  "available_commands_update",
+  "current_mode_update",
+  "config_options_update",
+]);
+
+function upsertReplayMessage(messages: ReplayMessage[], message: ReplayMessage, append: boolean): void {
+  const existing = messages.find((candidate) => candidate.id === message.id && candidate.kind === message.kind);
+  if (!existing) {
+    messages.push(message);
+    return;
+  }
+  existing.text = append ? existing.text + message.text : message.text || existing.text;
+}
+
+function stringField(record: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function syntheticReplayId(updateKind: string, messages: ReplayMessage[]): string {
+  return `${updateKind}:${messages.length}`;
+}
+
+function planText(value: unknown): string {
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((entry) =>
+      entry && typeof entry === "object"
+        ? stringField(entry as Record<string, unknown>, "content", "title", "status")
+        : null,
+    )
+    .filter((entry): entry is string => Boolean(entry))
+    .join("\n");
 }
 
 function replayMessageKind(value: unknown): ReplayMessage["kind"] | null {
@@ -208,7 +272,7 @@ function replayActivities(messages: ReplayMessage[]): import("./types").RuntimeA
       item += 1;
     }
     return {
-      id: message.id,
+      id: `workbuddy:${message.kind}:${message.id}`,
       position: `${turn}.${item}`,
       parentId: null,
       kind: message.kind,
