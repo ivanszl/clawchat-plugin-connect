@@ -2,6 +2,25 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.26] - 2026-08-02
+
+### Added
+
+- Added Runtime-native Skill and command discovery to the Connect Client composer, with Astryx tokenized selection and transcript rendering.
+- Added a visible Session turn queue with optimistic submission feedback plus delete and withdraw-to-edit controls.
+
+### Changed
+
+- Upgraded the Connect Client to Astryx 0.2 and composed navigation, chat, queue, attachment, and progress states from Astryx primitives.
+- Separated the Conversation surface from Artifact tabs so Session navigation and workspace content keep independent identities.
+
+### Fixed
+
+- Accepted queued Client turns without waiting for the active Agent output, restored the composer automatically after completion, and made queue edits update immediately.
+- Preserved authored `/skill` messages and token highlighting across Runtime history reconciliation and hard refresh without duplicate transcript entries.
+- Constrained the Skill Typeahead to the composer and made collapsed SideNav render a clean rail without clipped TreeList content.
+- Removed duplicate Session title/tab presentation and stabilized text-only submission status copy.
+
 ## [0.1.0-alpha.25] - 2026-07-31
 
 ### Added
