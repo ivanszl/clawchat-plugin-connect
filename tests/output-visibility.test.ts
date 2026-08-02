@@ -51,7 +51,7 @@ describe("output visibility", () => {
           text: "authored while Connect was disconnected",
           state: "complete",
           source: "history",
-          data: { suppressRemoteDelivery: true },
+          data: { deliveryDisposition: "projection-only" },
         },
         policy,
       ),

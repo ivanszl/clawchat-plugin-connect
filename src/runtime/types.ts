@@ -243,8 +243,17 @@ export interface RuntimeActivity {
   text: string;
   state: RuntimeTranscriptEntry["state"] | "pending";
   source: "live" | RuntimeTranscriptSource;
-  data?: Record<string, unknown>;
+  data?: RuntimeActivityData;
   children?: RuntimeActivity[];
+}
+
+export interface RuntimeActivityData extends Record<string, unknown> {
+  deliveryDisposition?: "projection-only";
+  recoveredWhileDisconnected?: boolean;
+}
+
+export function isProjectionOnlyRuntimeActivity(activity: RuntimeActivity): boolean {
+  return activity.data?.deliveryDisposition === "projection-only";
 }
 
 export function runtimeActivityOrdinal(position: string): { turn: number; item: number } | null {

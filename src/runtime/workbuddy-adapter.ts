@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { AgentBindingConfig } from "../types";
 import type {
   ConnectRuntimeAdapter,
@@ -5,6 +6,7 @@ import type {
   ConnectRuntimeSession,
   RuntimeActivity,
   RuntimeActivitySnapshot,
+  RuntimeInteractionPort,
 } from "./types";
 import { type WorkBuddyAcpTaskAttachment, WorkBuddyPromptTransportError } from "./workbuddy-acp-client";
 import type { WorkBuddyEndpointVerification } from "./workbuddy-task-discovery";
@@ -34,7 +36,10 @@ export interface WorkBuddyRuntimeAdapterOptions {
   createSource?: () => WorkBuddyRuntimeSource;
 }
 
-export type WorkBuddyPromptRecoveryFailureCode = "prompt-not-committed" | "prompt-outcome-indeterminate";
+export type WorkBuddyPromptRecoveryFailureCode =
+  | "prompt-not-committed"
+  | "prompt-failed"
+  | "prompt-outcome-indeterminate";
 
 export class WorkBuddyPromptRecoveryError extends Error {
   readonly name = "WorkBuddyPromptRecoveryError";
@@ -135,6 +140,7 @@ function recoverableSession(
 ): ConnectRuntimeSession {
   let session: WorkBuddyAcpTaskAttachment | null = initialSession;
   let closed = false;
+  let activeTurnAbort: AbortController | null = null;
   const knownActivities = new Map(
     verificationActivities(initialSession).map((activity) => [activity.id, activity] as const),
   );
@@ -153,8 +159,11 @@ function recoverableSession(
       }
       for (const activity of attachmentHistory) knownActivities.set(activity.id, activity);
       let accepted = false;
+      const turnAbort = new AbortController();
+      activeTurnAbort = turnAbort;
       const trackedInput: ConnectRuntimePrompt = {
         ...input,
+        interactionPort: expiringInteractionPort(input.interactionPort, turnAbort.signal),
         onAccepted: async () => {
           accepted = true;
           await input.onAccepted?.();
@@ -166,6 +175,7 @@ function recoverableSession(
           yield activity;
         }
       } catch (error) {
+        turnAbort.abort("WorkBuddy Task Attachment was lost");
         if (session === active) session = null;
         await active.close().catch(() => undefined);
         if (!accepted && !(error instanceof WorkBuddyPromptTransportError)) throw error;
@@ -199,17 +209,29 @@ function recoverableSession(
             { cause: error },
           );
         }
+        if (outcome.state === "failed") {
+          throw new WorkBuddyPromptRecoveryError(
+            "prompt-failed",
+            "WorkBuddy authoritative history proves the disconnected prompt failed; it was not retried.",
+            { cause: error },
+          );
+        }
         throw new WorkBuddyPromptRecoveryError(
           "prompt-outcome-indeterminate",
           "WorkBuddy authoritative history contains the disconnected prompt but no completed assistant result; the outcome is indeterminate and was not retried.",
           { cause: error },
         );
+      } finally {
+        turnAbort.abort("WorkBuddy turn ended");
+        if (activeTurnAbort === turnAbort) activeTurnAbort = null;
       }
     },
     cancel: async () => (await session?.cancel?.()) ?? false,
     close: async () => {
       if (closed) return;
       closed = true;
+      activeTurnAbort?.abort("WorkBuddy Task Attachment was closed");
+      activeTurnAbort = null;
       const active = session;
       session = null;
       await active?.close();
@@ -227,7 +249,7 @@ function reconcilePromptOutcome(
   input: ConnectRuntimePrompt,
   knownActivities: ReadonlyMap<string, RuntimeActivity>,
 ): {
-  state: "completed" | "not-committed" | "indeterminate";
+  state: "completed" | "failed" | "not-committed" | "indeterminate";
   activities: RuntimeActivity[];
 } {
   const submittedId = workBuddySubmittedUserActivityId(input);
@@ -242,23 +264,25 @@ function reconcilePromptOutcome(
     history
       .slice(submittedIndex + 1, turnEnd)
       .some((activity) => activity.kind === "assistant" && activity.state === "complete");
+  const failed =
+    submittedIndex >= 0 &&
+    history
+      .slice(submittedIndex + 1, turnEnd)
+      .some((activity) => activity.kind === "error" || activity.state === "error" || activity.state === "cancelled");
   const activities = history
     .map((activity, index) => ({ activity, index }))
+    .map(({ activity, index }) => ({
+      activity: index === submittedIndex ? correlateRecoveredSubmittedActivity(activity, input) : activity,
+      index,
+    }))
     .filter(({ activity }) => !sameActivityState(knownActivities.get(activity.id), activity))
     .map(({ activity, index }) =>
       submittedIndex >= 0 && index >= submittedIndex && index < turnEnd
         ? activity
-        : {
-            ...activity,
-            data: {
-              ...activity.data,
-              recoveredWhileDisconnected: true,
-              suppressRemoteDelivery: true,
-            },
-          },
+        : recoveredProjectionOnlyActivity(activity),
     );
   return {
-    state: completed ? "completed" : submittedIndex < 0 ? "not-committed" : "indeterminate",
+    state: completed ? "completed" : failed ? "failed" : submittedIndex < 0 ? "not-committed" : "indeterminate",
     activities,
   };
 }
@@ -269,24 +293,38 @@ function recoveredNativeActivities(
 ): RuntimeActivity[] {
   return history
     .filter((activity) => !sameActivityState(knownActivities.get(activity.id), activity))
-    .map((activity) => ({
-      ...activity,
-      data: {
-        ...activity.data,
-        recoveredWhileDisconnected: true,
-        suppressRemoteDelivery: true,
-      },
-    }));
+    .map(recoveredProjectionOnlyActivity);
 }
 
 function sameActivityState(left: RuntimeActivity | undefined, right: RuntimeActivity): boolean {
-  return (
-    left?.position === right.position &&
-    left.parentId === right.parentId &&
-    left.kind === right.kind &&
-    left.text === right.text &&
-    left.state === right.state
-  );
+  return isDeepStrictEqual(left, right);
+}
+
+function recoveredProjectionOnlyActivity(activity: RuntimeActivity): RuntimeActivity {
+  return {
+    ...activity,
+    data: {
+      ...activity.data,
+      recoveredWhileDisconnected: true,
+      deliveryDisposition: "projection-only",
+    },
+  };
+}
+
+function correlateRecoveredSubmittedActivity(activity: RuntimeActivity, input: ConnectRuntimePrompt): RuntimeActivity {
+  const liveSubmittedId = workBuddyLiveSubmittedUserActivityId(input);
+  return {
+    ...activity,
+    ...(liveSubmittedId ? { aliases: [...new Set([...(activity.aliases ?? []), liveSubmittedId])] } : {}),
+    data: {
+      ...activity.data,
+      ...(input.turnId
+        ? input.turnOrigin === "clawchat"
+          ? { clawchatMessageId: input.turnId }
+          : { clientMessageId: `turn_${input.turnId}_user` }
+        : {}),
+    },
+  };
 }
 
 function workBuddySubmittedUserActivityId(input: ConnectRuntimePrompt): string | null {
@@ -294,6 +332,24 @@ function workBuddySubmittedUserActivityId(input: ConnectRuntimePrompt): string |
   const origin = input.turnOrigin === "clawchat" ? "clawchat" : "client";
   const turnId = input.turnId.replace(/[^a-zA-Z0-9._-]+/gu, "-");
   return `workbuddy:user:clawchat-connect-${origin}-${turnId}`;
+}
+
+function workBuddyLiveSubmittedUserActivityId(input: ConnectRuntimePrompt): string | null {
+  return input.turnId ? `workbuddy:user:connect:${input.turnId}` : null;
+}
+
+function expiringInteractionPort(
+  interactionPort: RuntimeInteractionPort | undefined,
+  attachmentSignal: AbortSignal,
+): RuntimeInteractionPort | undefined {
+  if (!interactionPort) return undefined;
+  return {
+    request: async (request, context) =>
+      await interactionPort.request(request, {
+        ...context,
+        signal: context.signal ? AbortSignal.any([context.signal, attachmentSignal]) : attachmentSignal,
+      }),
+  };
 }
 
 function createDefaultSource(): WorkBuddyRuntimeSource {

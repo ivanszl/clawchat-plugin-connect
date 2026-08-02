@@ -384,14 +384,16 @@ describe("WorkBuddy Runtime Adapter", () => {
     expect(attachmentCloses).toBe(1);
   });
 
-  it("rediscovers the same adopted Task after a pre-acceptance transport loss", async () => {
+  it("reacquires rotated credentials for the same adopted Task after pre-acceptance authentication expiry", async () => {
     const attachmentInputs: Array<{ profile: string; taskId: string; workspace: string }> = [];
+    const acquiredCredentials: string[] = [];
     let accepted = 0;
     const runtimeSource: WorkBuddyRuntimeSource = {
       ...source(),
       startTask: async (input) => {
         attachmentInputs.push(input);
         const generation = attachmentInputs.length;
+        acquiredCredentials.push(`attachment-credential-${generation}`);
         return {
           verification: verifiedHistory(
             generation === 1
@@ -419,7 +421,12 @@ describe("WorkBuddy Runtime Adapter", () => {
                 ],
           ),
           async *prompt(prompt): AsyncIterable<RuntimeActivity> {
-            if (generation === 1) throw new Error("rotated endpoint closed before native acceptance");
+            if (generation === 1) {
+              throw new WorkBuddyDiscoveryError(
+                "authentication-failed",
+                "rotated credential was rejected before native acceptance",
+              );
+            }
             await prompt.onAccepted?.();
             yield {
               id: "workbuddy:assistant:recovered-turn",
@@ -459,7 +466,7 @@ describe("WorkBuddy Runtime Adapter", () => {
       },
     };
 
-    await expect(collect(session.prompt(prompt))).rejects.toThrow("before native acceptance");
+    await expect(collect(session.prompt(prompt))).rejects.toMatchObject({ code: "authentication-failed" });
     expect(accepted).toBe(0);
     const recovered = await collect(session.prompt(prompt));
     expect(recovered.map((activity) => activity.id)).toEqual([
@@ -467,12 +474,13 @@ describe("WorkBuddy Runtime Adapter", () => {
       "workbuddy:assistant:desktop-between-connections",
       "workbuddy:assistant:recovered-turn",
     ]);
-    expect(recovered[1]?.data).toMatchObject({ suppressRemoteDelivery: true });
+    expect(recovered[1]?.data).toMatchObject({ deliveryDisposition: "projection-only" });
     expect(accepted).toBe(1);
     expect(attachmentInputs).toEqual([
       { profile: "workbuddy-ai", taskId, workspace },
       { profile: "workbuddy-ai", taskId, workspace },
     ]);
+    expect(acquiredCredentials).toEqual(["attachment-credential-1", "attachment-credential-2"]);
   });
 
   it("reconciles an accepted prompt from rotated Task history without resubmitting it", async () => {
@@ -485,7 +493,11 @@ describe("WorkBuddy Runtime Adapter", () => {
       replayCompleted: true,
       connectionOwner: null,
       activities: [
-        ...history.activities,
+        ...history.activities.map((activity) =>
+          activity.id === "workbuddy:reasoning:native-message"
+            ? { ...activity, aliases: ["workbuddy:reasoning:recovered-alias"], data: { phase: "complete" } }
+            : activity,
+        ),
         {
           id: "workbuddy:user:desktop-during-disconnect",
           position: "1.1",
@@ -581,12 +593,27 @@ describe("WorkBuddy Runtime Adapter", () => {
     expect(attachmentGeneration).toBe(2);
     expect(activities.map((activity) => activity.id)).toEqual([
       "workbuddy:assistant:uncertain-result",
+      "workbuddy:reasoning:native-message",
       "workbuddy:user:desktop-during-disconnect",
       "workbuddy:assistant:desktop-during-disconnect",
       "workbuddy:user:clawchat-connect-clawchat-uncertain-turn",
       "workbuddy:assistant:uncertain-result",
     ]);
-    expect(activities[2]?.data).toMatchObject({ suppressRemoteDelivery: true });
+    expect(activities.find((activity) => activity.id === "workbuddy:reasoning:native-message")).toMatchObject({
+      aliases: ["workbuddy:reasoning:recovered-alias"],
+      data: { phase: "complete", deliveryDisposition: "projection-only" },
+    });
+    expect(
+      activities.find((activity) => activity.id === "workbuddy:assistant:desktop-during-disconnect")?.data,
+    ).toMatchObject({
+      deliveryDisposition: "projection-only",
+    });
+    expect(
+      activities.find((activity) => activity.id === "workbuddy:user:clawchat-connect-clawchat-uncertain-turn"),
+    ).toMatchObject({
+      aliases: ["workbuddy:user:connect:uncertain-turn"],
+      data: { clawchatMessageId: "uncertain-turn" },
+    });
     expect(activities.findLast((activity) => activity.id === "workbuddy:assistant:uncertain-result")).toMatchObject({
       text: "the uncertain operation completed once",
       state: "complete",
@@ -674,8 +701,119 @@ describe("WorkBuddy Runtime Adapter", () => {
     expect(attachmentGeneration).toBe(2);
   });
 
+  it("expires lost-Attachment interactions and routes later cancellation only to the recovered Attachment", async () => {
+    let attachmentGeneration = 0;
+    let lostInteractionSignal: AbortSignal | undefined;
+    let lostInteractionExpired = false;
+    const cancelCalls: number[] = [];
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      ...source(),
+      startTask: async () => {
+        attachmentGeneration += 1;
+        const generation = attachmentGeneration;
+        return {
+          verification: verifiedHistory(),
+          async *prompt(input): AsyncIterable<RuntimeActivity> {
+            if (generation !== 1) return;
+            await input.onAccepted?.();
+            void input.interactionPort
+              ?.request(
+                {
+                  kind: "approval",
+                  action: "command",
+                  title: "Old Attachment approval",
+                  description: "Must expire on connection loss",
+                  options: [{ id: "approve-once", label: "Approve" }],
+                },
+                {
+                  sessionRef: "session-ref",
+                  turnId: "interaction-turn",
+                  origin: "client",
+                  deliveryConfirmation: Promise.resolve(),
+                },
+              )
+              .catch(() => {
+                lostInteractionExpired = true;
+              });
+            throw new WorkBuddyPromptTransportError();
+          },
+          cancel: async () => {
+            cancelCalls.push(generation);
+            return true;
+          },
+          close: async () => undefined,
+        };
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const session = await adapter.start(binding, {
+      agentId: "desktop",
+      chatId: "client",
+      sessionId: "connect-session",
+      runtimeSessionId: taskId,
+      configPath: "/private/tmp/connect.json",
+      stateDbPath: "/private/tmp/connect.sqlite",
+      onRuntimeSessionId: async () => undefined,
+    });
+
+    await expect(
+      collect(
+        session.prompt({
+          prompt: "request approval before rotation",
+          turnId: "interaction-turn",
+          interactionPort: {
+            request: async (_request, context) => {
+              lostInteractionSignal = context.signal;
+              await new Promise<void>((_resolve, reject) => {
+                context.signal?.addEventListener("abort", () => reject(new Error("interaction expired")), {
+                  once: true,
+                });
+              });
+              throw new Error("unreachable");
+            },
+          },
+          workspace: {
+            projectId: null,
+            workingDirectory: workspace,
+            additionalDirectories: [],
+            skipGitRepoCheck: false,
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "prompt-not-committed" });
+    await Promise.resolve();
+
+    expect(lostInteractionSignal?.aborted).toBeTrue();
+    expect(lostInteractionExpired).toBeTrue();
+    await expect(session.cancel?.()).resolves.toBeTrue();
+    expect(cancelCalls).toEqual([2]);
+  });
+
   it.each([
     ["prompt-not-committed", []],
+    [
+      "prompt-failed",
+      [
+        {
+          id: "workbuddy:user:clawchat-connect-client-unsettled-turn",
+          position: "1.1",
+          parentId: null,
+          kind: "user" as const,
+          text: "unsettled prompt",
+          state: "complete" as const,
+          source: "history" as const,
+        },
+        {
+          id: "workbuddy:assistant:failed-turn",
+          position: "1.2",
+          parentId: null,
+          kind: "assistant" as const,
+          text: "native prompt failed",
+          state: "error" as const,
+          source: "history" as const,
+        },
+      ],
+    ],
     [
       "prompt-outcome-indeterminate",
       [
