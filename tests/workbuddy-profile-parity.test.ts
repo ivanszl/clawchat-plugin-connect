@@ -114,6 +114,14 @@ describe.each(profiles)("WorkBuddy profile parity: %s", (profile) => {
       startTask: async (input) => {
         expect(input).toEqual({ profile, taskId, workspace });
         return {
+          verification: {
+            taskId,
+            replayFingerprint: "verified-history",
+            replayStarted: true,
+            replayCompleted: true,
+            activities: history,
+            connectionOwner: null,
+          },
           async *prompt(request) {
             prompts.push(request.prompt);
             yield activity("native-assistant", "assistant", "continued answer", "live", "1.1");

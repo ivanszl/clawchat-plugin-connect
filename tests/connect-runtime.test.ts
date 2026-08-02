@@ -110,6 +110,14 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         startTask: async () => {
           starts += 1;
           return {
+            verification: {
+              taskId,
+              replayFingerprint: "verified-history",
+              replayStarted: true,
+              replayCompleted: true,
+              activities: [],
+              connectionOwner: null,
+            },
             prompt: async function* (input) {
               const turn = prompts.length;
               prompts.push(input);
@@ -195,7 +203,18 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       attachTask: async () => ({ activities: [], completeness: "complete", limitations: [] }),
       startTask: async () => {
         nativeStarts += 1;
-        return { prompt: async function* () {}, close: async () => undefined };
+        return {
+          verification: {
+            taskId: "unmapped",
+            replayFingerprint: "verified-history",
+            replayStarted: true,
+            replayCompleted: true,
+            activities: [],
+            connectionOwner: null,
+          },
+          prompt: async function* () {},
+          close: async () => undefined,
+        };
       },
     };
     const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });

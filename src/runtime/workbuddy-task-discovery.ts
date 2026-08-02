@@ -146,6 +146,7 @@ export type WorkBuddyDiscoveryFailureCode =
   | "wrong-owning-process"
   | "task-identity-mismatch"
   | "task-replay-incomplete"
+  | "authentication-failed"
   | "endpoint-verification-failed";
 
 export class WorkBuddyDiscoveryError extends Error {
