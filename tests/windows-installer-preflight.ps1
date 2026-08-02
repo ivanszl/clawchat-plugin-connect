@@ -25,8 +25,8 @@ try {
 
   $installedBinary = Join-Path $installDirectory "clawchat-connect.exe"
   Copy-Item -LiteralPath (Join-Path $payloadDirectory "clawchat-connect.exe") -Destination $installedBinary
+  Add-Content -LiteralPath $installedBinary -Value "old-release-overlay"
   $oldHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedBinary).Hash.ToLowerInvariant()
-  Add-Content -LiteralPath (Join-Path $payloadDirectory "clawchat-connect.exe") -Value "new-release-overlay"
 
   $archivePath = Join-Path $fixtureDirectory $asset
   Compress-Archive -Path (Join-Path $payloadDirectory "*") -DestinationPath $archivePath

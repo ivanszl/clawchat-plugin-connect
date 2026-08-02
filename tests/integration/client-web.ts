@@ -168,6 +168,7 @@ async function verifyTranscriptCompletenessIsSilent(
       page.getByText("仅显示 Connect 已同步的消息；此 Session 的早期 Runtime 历史不可用。", { exact: true }),
     ).toHaveCount(0);
   } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     await page.close();
   }
 }
@@ -441,6 +442,7 @@ async function verifyQueuedTurnControls(browser: Awaited<ReturnType<typeof chrom
     await expect(queue).toHaveCount(0, { timeout: 250 });
     await expect(input).toHaveText("撤回后继续编辑这条消息", { timeout: 250 });
   } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     await page.close();
   }
 }
@@ -478,6 +480,7 @@ async function verifyComposerWorkingState(browser: Awaited<ReturnType<typeof chr
     await send.click();
     await expect(input).toHaveText("");
   } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     await page.close();
   }
 }
@@ -527,6 +530,7 @@ async function verifyComposerDoesNotStickAfterUnobservedFastTurn(
     await expect(page.getByTestId("agent-working-spinner")).toHaveCount(0, { timeout: 1_000 });
     await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
   } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     await page.close();
   }
 }

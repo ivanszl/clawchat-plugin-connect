@@ -2,6 +2,12 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.28] - 2026-08-02
+
+### Fixed
+
+- Stabilized release validation by draining intercepted browser requests before teardown and keeping the Windows installer preflight payload executable.
+
 ## [0.1.0-alpha.27] - 2026-08-02
 
 ### Fixed
