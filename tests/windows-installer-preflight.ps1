@@ -70,3 +70,5 @@ try {
   Remove-Item Env:CONNECT_TEST_INVALID_SKILL_PARENT -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+exit 0
