@@ -77,12 +77,6 @@ export class ClawChatTurnSurface implements TurnSurface {
       return;
     }
     for (const { event, reply } of deliveries) {
-      if (this.options.noReplyProtocol && containsNoReplySignal(reply.text)) {
-        if (containsExplicitReplyMedia(reply.text)) {
-          await this.options.deliver(event, { ...reply, text: stripNoReplySignals(reply.text) });
-        }
-        continue;
-      }
       await this.options.deliver(event, reply);
     }
   }

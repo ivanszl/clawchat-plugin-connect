@@ -1,6 +1,8 @@
 import { expect, it } from "bun:test";
+import { materializeRuntimeOutput, policyForOutputVisibility } from "../src/output-visibility";
 import { ClawChatTurnSurface, ClientTurnSurface } from "../src/runtime/turn-surface";
 import type { RuntimeActivity } from "../src/runtime/types";
+import type { OutputVisibility } from "../src/types";
 
 function activity(id: string, kind: RuntimeActivity["kind"], text: string, outputKind: string): RuntimeActivity {
   return {
@@ -80,6 +82,32 @@ it("suppresses buffered group output when the terminal response is no-reply", as
   expect(delivered).toEqual([]);
 });
 
+it("applies every output visibility level before the terminal no-reply veto", async () => {
+  for (const mode of ["minimal", "normal", "full"] satisfies OutputVisibility[]) {
+    const projected: string[] = [];
+    const delivered: string[] = [];
+    const policy = policyForOutputVisibility(mode);
+    const surface = new ClawChatTurnSurface({
+      noReplyProtocol: true,
+      project: async (event) => {
+        projected.push(event.text);
+      },
+      materialize: (event) => materializeRuntimeOutput(event, policy),
+      deliver: async (_event, reply) => {
+        delivered.push(reply.text);
+      },
+    });
+
+    await surface.accept(activity("reasoning", "reasoning", "private reasoning", "reasoning"));
+    await surface.accept(activity("assistant", "assistant", "candidate response", "assistant"));
+    await surface.accept(activity("final", "assistant", "<clawchat:no-reply/>", "final"));
+    await surface.complete();
+
+    expect(projected).toEqual(["private reasoning", "candidate response", "<clawchat:no-reply/>"]);
+    expect(delivered).toEqual([]);
+  }
+});
+
 it("keeps required group controls immediate when a later response is no-reply", async () => {
   const delivered: string[] = [];
   const surface = new ClawChatTurnSurface({
@@ -109,9 +137,7 @@ it("strips a group no-reply signal while preserving explicit media", async () =>
     },
   });
 
-  await surface.accept(
-    activity("final", "assistant", "<clawchat:noreply/>\nHere it is: ![chart](./chart.png)", "final"),
-  );
+  await surface.accept(activity("final", "assistant", "clawchat:no-reply Here it is: ![chart](./chart.png)", "final"));
   await surface.complete();
 
   expect(delivered).toEqual(["Here it is: ![chart](./chart.png)"]);
@@ -146,7 +172,7 @@ it("recognizes no-reply only when the completed final response starts with a sig
     },
   });
 
-  await surface.accept(activity("draft", "assistant", "<clawchat:no-reply/>", "assistant"));
+  await surface.accept(activity("final", "assistant", "<clawchat:no-reply/>", "assistant"));
   await surface.accept(
     activity("final", "assistant", "Use <clawchat:no-reply/> when a group answer is unnecessary.", "final"),
   );
@@ -159,6 +185,8 @@ it("suppresses documented terminal no-reply variants and any ordinary caption", 
   for (const text of [
     "clawchat:no-reply",
     "  **<CLAWCHAT:NOREPLY/>**  ",
+    "<clawchat-noreply/>",
+    "<clawchat:no-reply/> This caption is still ordinary output.",
     "[ClawChat : no_reply]\nThis caption is still ordinary output.",
   ]) {
     const delivered: string[] = [];

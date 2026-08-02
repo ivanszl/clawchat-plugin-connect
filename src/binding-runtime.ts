@@ -3,7 +3,7 @@ import { type ClawChatApiClient, createClawChatApiClient } from "./api-client";
 import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
 import type { TranscriptProjection } from "./client-interface/transcript-projection";
 import { getAgentBinding } from "./config";
-import { type GroupIntakeClock, GroupIntakeCoordinator } from "./group-intake";
+import { type GroupDispatchMode, type GroupIntakeClock, GroupIntakeCoordinator } from "./group-intake";
 import {
   type AddressedInboundMessage,
   addressInboundMessage,
@@ -220,7 +220,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         { toType: message.chatType },
       );
     },
-    dispatch: async (message, allowUnaddressedGroup, onTurnAccepted) =>
+    dispatch: async (message, groupDispatchMode, onTurnAccepted) =>
       await dispatchInboundMessage({
         ...options,
         message,
@@ -228,7 +228,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         runtime,
         interactionRouter,
         onTurnAccepted,
-        allowUnaddressedGroup,
+        groupDispatchMode,
       }),
   });
   void groupIntake
@@ -240,6 +240,17 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       ),
     );
   inboundMessages = new InboundMessageProcessor(options, wsClient, runtime, interactionRouter, groupIntake);
+  let groupRecoveryAfterSettings: Promise<void> | null = null;
+  const recoverGroupMessages = (): Promise<void> => {
+    if (groupRecoveryAfterSettings) return groupRecoveryAfterSettings;
+    groupRecoveryAfterSettings = (async () => {
+      await groupIntake.resolveForRecovery();
+      await inboundMessages.recover("group");
+    })().finally(() => {
+      groupRecoveryAfterSettings = null;
+    });
+    return groupRecoveryAfterSettings;
+  };
   wireQuarantineEvents(wsClient, options);
   wsClient.on("error", (error: unknown) => {
     const detail = error instanceof Error ? error.message : String(error);
@@ -249,14 +260,18 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   wsClient.on("state", (state: string) => {
     if (state === "connected") {
       void recordConnectionStatus(options, true, null).catch(() => undefined);
-      groupIntake.refreshInBackground();
       void inboundMessages
-        .recover()
+        .recover("direct")
         .catch((error) =>
           options.writeError(
-            `${options.agentId}: inbound recovery failed: ${error instanceof Error ? error.message : String(error)}\n`,
+            `${options.agentId}: direct inbound recovery failed: ${error instanceof Error ? error.message : String(error)}\n`,
           ),
         );
+      void recoverGroupMessages().catch((error) =>
+        options.writeError(
+          `${options.agentId}: group inbound recovery failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        ),
+      );
     } else if (state === "disconnected") void recordConnectionStatus(options, false, null).catch(() => undefined);
   });
   try {
@@ -273,7 +288,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
           `${options.agentId}: sender display name backfill failed: ${error instanceof Error ? error.message : String(error)}\n`,
         ),
       );
-    await inboundMessages.recover();
+    await inboundMessages.recover("direct");
     await recordConnectionStatus(options, true, null);
     try {
       const synchronization = await runtime.synchronizeRuntimeProjects();
@@ -338,7 +353,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
 
 class InboundMessageProcessor {
   private readonly pending = new Map<string, Promise<void>>();
-  private recovery: Promise<void> | null = null;
+  private readonly recoveries = new Map<NormalizedInboundMessage["chatType"], Promise<void>>();
   private accepting = true;
 
   constructor(
@@ -383,19 +398,24 @@ class InboundMessageProcessor {
     return "accepted";
   }
 
-  recover(): Promise<void> {
-    if (this.recovery) return this.recovery;
-    this.recovery = this.recoverOnce().finally(() => {
-      this.recovery = null;
+  recover(chatType: NormalizedInboundMessage["chatType"]): Promise<void> {
+    const active = this.recoveries.get(chatType);
+    if (active) return active;
+    const recovery = this.recoverOnce(chatType).finally(() => {
+      if (this.recoveries.get(chatType) === recovery) this.recoveries.delete(chatType);
     });
-    return this.recovery;
+    this.recoveries.set(chatType, recovery);
+    return recovery;
   }
 
-  private async recoverOnce(): Promise<void> {
+  private async recoverOnce(chatType: NormalizedInboundMessage["chatType"]): Promise<void> {
     for (const raw of await this.options.stateStore.listUnhandledInboundMessages(this.options.agentId)) {
       const message = normalizeStoredInboundMessage(raw);
-      if (!message) continue;
-      if (await this.options.stateStore.hasReconciledInboundMessage(this.options.agentId, message.messageId)) {
+      if (!message || message.chatType !== chatType) continue;
+      if (
+        message.chatType === "direct" &&
+        (await this.options.stateStore.hasReconciledInboundMessage(this.options.agentId, message.messageId))
+      ) {
         await this.options.stateStore.markInboundMessageHandled(this.options.agentId, message.messageId, message.raw);
         continue;
       }
@@ -453,14 +473,14 @@ async function dispatchInboundMessage(
     runtime: ConnectRuntime;
     interactionRouter: RuntimeInteractionRouter;
     onTurnAccepted: () => Promise<void>;
-    allowUnaddressedGroup?: boolean;
+    groupDispatchMode?: GroupDispatchMode;
   },
 ): Promise<boolean> {
   const addressed =
     (params.message.groupBatch
       ? unaddressedGroupMessage(params.message)
       : addressInboundMessage(params.message, params.activation.userId)) ??
-    (params.allowUnaddressedGroup && params.message.chatType === "group"
+    (params.groupDispatchMode === "policy-eligible" && params.message.chatType === "group"
       ? unaddressedGroupMessage(params.message)
       : null);
   if (!addressed) return true;

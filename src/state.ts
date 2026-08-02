@@ -36,6 +36,13 @@ export interface GroupSettingsSnapshotRecord {
   rows: GroupSettingsRecord[];
 }
 
+export type InboundHandlingOutcome = "runtime" | "mention-context" | "muted" | "oversized" | "policy-discarded";
+
+export interface HandledInboundMessage {
+  messageId: string;
+  raw: unknown;
+}
+
 export type ToolRequestState = "pending" | "running" | "succeeded" | "failed" | "expired" | "indeterminate";
 export interface ToolRequestRecord {
   requestId: string;
@@ -1475,34 +1482,46 @@ export class ConnectStateStore {
     agentId: string,
     messageId: string,
     raw: unknown,
-    outcome: "runtime" | "policy-discarded" = "runtime",
+    outcome: InboundHandlingOutcome = "runtime",
   ): Promise<void> {
+    await this.markInboundMessagesHandled(agentId, [{ messageId, raw }], outcome);
+  }
+  async markInboundMessagesHandled(
+    agentId: string,
+    messages: readonly HandledInboundMessage[],
+    outcome: InboundHandlingOutcome = "runtime",
+  ): Promise<void> {
+    if (messages.length === 0) return;
     const db = await this.requireDb();
     const normalizedAgentId = requireStateString(agentId, "agentId");
-    const normalizedMessageId = requireStateString(messageId, "messageId");
-    const current = await db.get<{ raw_json?: string }>(
-      `SELECT raw_json FROM clawchat_messages
-       WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?`,
-      normalizedAgentId,
-      normalizedMessageId,
-    );
-    if (!current) throw new Error(`inbound message was not persisted before handling: ${messageId}`);
-    if (protocolDeliveryContentJson(current.raw_json) !== protocolDeliveryContentJson(raw)) return;
-    const result = await db.run(
-      `UPDATE clawchat_messages
-       SET handled_content_json = ?, handled_at = ?, handling_outcome = ?
-       WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?
-         AND raw_json = ?`,
-      protocolDeliveryContentJson(raw),
-      Date.now(),
-      outcome,
-      normalizedAgentId,
-      normalizedMessageId,
-      current.raw_json ?? null,
-    );
-    // A concurrent coalesced update deliberately wins. Its own handler will
-    // write the completion marker for the newer content.
-    if ((result.changes ?? 0) === 0) return;
+    const handledAt = Date.now();
+    db.transaction((run, get) => {
+      for (const message of messages) {
+        const normalizedMessageId = requireStateString(message.messageId, "messageId");
+        const current = get<{ raw_json?: string }>(
+          `SELECT raw_json FROM clawchat_messages
+           WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?`,
+          normalizedAgentId,
+          normalizedMessageId,
+        );
+        if (!current) throw new Error(`inbound message was not persisted before handling: ${message.messageId}`);
+        if (protocolDeliveryContentJson(current.raw_json) !== protocolDeliveryContentJson(message.raw)) continue;
+        run(
+          `UPDATE clawchat_messages
+           SET handled_content_json = ?, handled_at = ?, handling_outcome = ?
+           WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?
+             AND raw_json = ?`,
+          protocolDeliveryContentJson(message.raw),
+          handledAt,
+          outcome,
+          normalizedAgentId,
+          normalizedMessageId,
+          current.raw_json ?? null,
+        );
+        // A concurrent coalesced update deliberately wins. Its own handler will
+        // write the completion marker for the newer content.
+      }
+    });
   }
   async listRecentGroupContext(
     agentId: string,
@@ -1518,7 +1537,7 @@ export class ConnectStateStore {
          AND direction = 'inbound'
          AND kind = 'message'
          AND chat_id = ?
-         AND handling_outcome = 'policy-discarded'
+         AND handling_outcome = 'mention-context'
          AND id < COALESCE((
            SELECT id FROM clawchat_messages
            WHERE local_agent_id = ? AND direction = 'inbound' AND kind = 'message' AND message_id = ?

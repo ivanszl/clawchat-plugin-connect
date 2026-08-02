@@ -11,6 +11,7 @@ import { ProjectCatalog } from "../src/projects";
 import {
   type Envelope,
   EVENT,
+  type Fragment,
   parseEnvelope,
   type Transport,
   type TransportEvents,
@@ -102,13 +103,21 @@ function groupMessage(params: {
   emittedAt?: number;
   dseq?: number;
   senderId?: string;
+  attachmentCount?: number;
 }): Envelope {
-  const fragments = params.mentioned
+  const fragments: Fragment[] = params.mentioned
     ? [
         { kind: "mention", user_id: "agent-user", display: "Work" },
         { kind: "text", text: ` ${params.text}` },
       ]
     : [{ kind: "text", text: params.text }];
+  for (let index = 0; index < (params.attachmentCount ?? 0); index += 1) {
+    fragments.push({
+      kind: "file",
+      url: `https://media.example/${params.id}-${index}.bin`,
+      name: `${params.id}-${index}.bin`,
+    });
+  }
   return {
     version: "2",
     event: EVENT.MESSAGE_SEND,
@@ -614,6 +623,15 @@ it("applies a persisted real-time all-message group policy without changing dire
   const rolloverFirstReply = await waitFor(() =>
     transport.sent.findLast((event) => event.event === EVENT.MESSAGE_REPLY && event.chat_id === "group-rollover"),
   );
+  transport.receive(
+    groupMessage({
+      id: "rollover-concurrent",
+      text: "arrived while the preceding batch was submitting",
+      chatId: "group-rollover",
+      emittedAt: clock.now() + 2,
+      dseq: 16,
+    }),
+  );
   transport.receive({
     version: "2",
     event: EVENT.MESSAGE_ACK,
@@ -644,8 +662,8 @@ it("applies a persisted real-time all-message group policy without changing dire
       text: "/status",
       chatId: "group-rollover",
       mentioned: true,
-      emittedAt: clock.now() + 2,
-      dseq: 16,
+      emittedAt: clock.now() + 3,
+      dseq: 17,
       senderId: "owner-user",
     }),
   );
@@ -671,14 +689,15 @@ it("applies a persisted real-time all-message group policy without changing dire
       text: "flush the second intact batch",
       chatId: "group-rollover",
       mentioned: true,
-      emittedAt: clock.now() + 3,
-      dseq: 17,
+      emittedAt: clock.now() + 4,
+      dseq: 18,
     }),
   );
   const rolloverSecondPrompt = await waitFor(() =>
     prompts.find((candidate) => candidate.prompt.includes("rollover-second-")),
   );
   expect(rolloverSecondPrompt.prompt).toContain("flush the second intact batch");
+  expect(rolloverSecondPrompt.prompt).toContain("arrived while the preceding batch was submitting");
   expect(rolloverSecondPrompt.prompt).not.toContain("/status");
   const rolloverSecondReply = await waitFor(() => {
     const replies = transport.sent.filter(
@@ -699,7 +718,7 @@ it("applies a persisted real-time all-message group policy without changing dire
     id: "refused-message",
     text: "reject this turn once",
     chatId: "group-refusal",
-    dseq: 18,
+    dseq: 19,
   });
   transport.receive(refusedMessage);
   await waitFor(() => prompts.find((candidate) => candidate.prompt.includes("reject this turn once")));
@@ -724,7 +743,7 @@ it("applies a persisted real-time all-message group policy without changing dire
       text: "flush after the idle deadline",
       chatId: "group-timer",
       emittedAt: clock.now(),
-      dseq: 19,
+      dseq: 20,
     }),
   );
   await flush();
@@ -763,8 +782,24 @@ it("applies a persisted real-time all-message group policy without changing dire
       batchDelaySeconds: 0,
       version: 3,
     },
+    {
+      conversationId: "group-startup-muted",
+      muted: true,
+      replyMode: "mention",
+      batchDelaySeconds: 0,
+      version: 3,
+    },
   ];
-  await stateStore.replaceGroupSettingsSnapshot("work", remoteRows);
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    ...remoteRows.filter((row) => row.conversationId !== "group-startup-muted"),
+    {
+      conversationId: "group-startup-muted",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 0,
+      version: 2,
+    },
+  ]);
   const overdue = groupMessage({
     id: "overdue-message",
     text: "recover this batch",
@@ -783,7 +818,62 @@ it("applies a persisted real-time all-message group policy without changing dire
     text: "recover this batch",
     raw: overdue,
   });
+  await stateStore.upsertRuntimeSession({
+    chatId: "group-recovery",
+    sessionId: "session-from-failed-group-submit",
+    agentId: "work",
+    runtimeSessionId: "thread-from-failed-group-submit",
+    isCurrent: true,
+    hasMessages: true,
+  });
+  const failedGroupSession = await stateStore.getCurrentRuntimeSession("group-recovery", "work");
+  if (!failedGroupSession) throw new Error("expected failed group Session");
+  await stateStore.upsertTranscriptBlock(failedGroupSession.sessionRef, {
+    id: "b_failed_group_submit",
+    type: "message",
+    origin: "clawchat",
+    state: "complete",
+    plainText: "recover this batch",
+    role: "user",
+    author: "ClawChat",
+    markdown: "recover this batch",
+  });
+  const startupMuted = groupMessage({
+    id: "startup-muted-message",
+    text: "must wait for authoritative startup settings",
+    chatId: "group-startup-muted",
+    emittedAt: Date.now() - 1_000,
+    dseq: 2,
+  });
+  await stateStore.upsertInboundMessage({
+    agentId: "work",
+    direction: "inbound",
+    kind: "message",
+    eventType: EVENT.MESSAGE_SEND,
+    traceId: startupMuted.trace_id,
+    chatId: startupMuted.chat_id,
+    messageId: "startup-muted-message",
+    text: "must wait for authoritative startup settings",
+    raw: startupMuted,
+  });
+  const directRecovery = directMessage({
+    id: "direct-recovery-message",
+    text: "private recovery must not wait for group settings",
+    dseq: 3,
+  });
+  await stateStore.upsertInboundMessage({
+    agentId: "work",
+    direction: "inbound",
+    kind: "message",
+    eventType: EVENT.MESSAGE_SEND,
+    traceId: directRecovery.trace_id,
+    chatId: directRecovery.chat_id,
+    messageId: "direct-recovery-message",
+    text: "private recovery must not wait for group settings",
+    raw: directRecovery,
+  });
   const recoveryTransport = new MemoryTransport();
+  blockNextGroupSettingsRead = true;
   const recoveryStarting = startBindingRuntime({
     agentId: "work",
     activation: {
@@ -825,6 +915,25 @@ it("applies a persisted real-time all-message group policy without changing dire
     emitted_at: 31,
     payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AC" },
   });
+  await waitFor(() => (releaseBlockedGroupSettingsRead ? true : undefined));
+  await waitFor(() => prompts.find((candidate) => candidate.prompt.includes("private recovery must not wait")));
+  const directRecoveryReply = await waitFor(() =>
+    recoveryTransport.sent.find(
+      (event) => event.event === EVENT.MESSAGE_REPLY && event.chat_id === directRecovery.chat_id,
+    ),
+  );
+  recoveryTransport.receive({
+    version: "2",
+    event: EVENT.MESSAGE_ACK,
+    trace_id: directRecoveryReply.trace_id,
+    emitted_at: 31,
+    chat_id: directRecovery.chat_id,
+    payload: { message_id: "direct-recovery-reply", accepted_at: 31 },
+  });
+  await Bun.sleep(20);
+  expect(prompts.some((candidate) => candidate.prompt.includes("authoritative startup settings"))).toBe(false);
+  releaseBlockedGroupSettingsRead?.();
+  releaseBlockedGroupSettingsRead = undefined;
   const recoveryHandle = await recoveryStarting;
   const refusedRecoveryPrompt = await waitFor(() => {
     const matches = prompts.filter((candidate) => candidate.prompt.includes("reject this turn once"));
@@ -861,6 +970,8 @@ it("applies a persisted real-time all-message group policy without changing dire
     payload: { message_id: "recovery-reply", accepted_at: 32 },
   });
   await expect(stateStore.hasHandledInboundMessage("work", "overdue-message", overdue)).resolves.toBe(true);
+  await expect(stateStore.hasHandledInboundMessage("work", "startup-muted-message", startupMuted)).resolves.toBe(true);
+  expect(prompts.some((candidate) => candidate.prompt.includes("authoritative startup settings"))).toBe(false);
   await recoveryHandle.close();
   await runtimeAdapters.close();
   await stateStore.close();
@@ -935,6 +1046,565 @@ it("keeps a startup configuration invalidation stale after persisted settings fi
 
   expect(runtimeDispatches).toBe(0);
   await expect(stateStore.hasHandledInboundMessage("work", message.messageId, envelope)).resolves.toBe(true);
+  await coordinator.close();
+  await stateStore.close();
+});
+
+it("blocks an ordered mutation after a refused batch and enforces the absolute batch deadline", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-ordering-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "group-ordering",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 60,
+      version: 1,
+    },
+    {
+      conversationId: "group-maximum-wait",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 5,
+      version: 1,
+    },
+    {
+      conversationId: "group-attachments",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 60,
+      version: 1,
+    },
+  ]);
+  const clock = new ManualClock(1_000_000);
+  const dispatched: Array<{ chatId: string; text: string; attachments: number }> = [];
+  const rejections: string[] = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: { getMyGroupSettings: async () => ({ authoritative: false, rows: [] }) },
+    clock,
+    dispatch: async (message, _mode, onTurnAccepted) => {
+      dispatched.push({
+        chatId: message.chatId,
+        text: message.text,
+        attachments: message.fragments.filter((fragment) => fragment.kind === "file").length,
+      });
+      if (message.chatId === "group-attachments") await onTurnAccepted();
+      return false;
+    },
+    reject: async (_message, reason) => {
+      rejections.push(reason);
+    },
+    writeError: () => undefined,
+  });
+  const accept = async (envelope: Envelope) => {
+    const message = normalizeInboundMessage(envelope);
+    if (!message) throw new Error("group fixture did not normalize");
+    await stateStore.upsertInboundMessage({
+      agentId: "work",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: message.messageId,
+      text: message.text,
+      raw: envelope,
+    });
+    await coordinator.accept(message);
+  };
+
+  await accept(
+    groupMessage({
+      id: "before-refused-mutation",
+      text: "batch must be accepted before mutation",
+      chatId: "group-ordering",
+      emittedAt: clock.now(),
+    }),
+  );
+  await accept(
+    groupMessage({
+      id: "refused-mutation",
+      text: "/new",
+      chatId: "group-ordering",
+      mentioned: true,
+      senderId: "owner-user",
+      emittedAt: clock.now() + 1,
+    }),
+  );
+  expect(dispatched).toHaveLength(1);
+  expect(dispatched[0]?.text).toContain("batch must be accepted before mutation");
+  expect(dispatched[0]?.text).not.toContain("/new");
+  await expect(
+    stateStore.hasHandledInboundMessage(
+      "work",
+      "refused-mutation",
+      groupMessage({
+        id: "refused-mutation",
+        text: "/new",
+        chatId: "group-ordering",
+        mentioned: true,
+        senderId: "owner-user",
+        emittedAt: clock.now() + 1,
+      }),
+    ),
+  ).resolves.toBe(false);
+
+  for (let index = 0; index < 8; index += 1) {
+    if (index > 0) clock.advance(4_000);
+    await flush();
+    await accept(
+      groupMessage({
+        id: `maximum-wait-${index}`,
+        text: `continuous activity ${index}`,
+        chatId: "group-maximum-wait",
+        emittedAt: clock.now(),
+      }),
+    );
+  }
+  expect(dispatched).toHaveLength(1);
+  clock.advance(2_000);
+  await waitFor(() => (dispatched.length === 2 ? dispatched[1] : undefined));
+  expect(dispatched[1]?.text).toContain("continuous activity 0");
+  expect(dispatched[1]?.text).toContain("continuous activity 7");
+
+  await accept(
+    groupMessage({
+      id: "ten-attachments",
+      text: "first intact attachment batch",
+      chatId: "group-attachments",
+      attachmentCount: 10,
+      emittedAt: clock.now(),
+    }),
+  );
+  await accept(
+    groupMessage({
+      id: "overflow-attachment",
+      text: "next intact attachment batch",
+      chatId: "group-attachments",
+      attachmentCount: 1,
+      emittedAt: clock.now() + 1,
+    }),
+  );
+  expect(dispatched[2]).toMatchObject({ chatId: "group-attachments", attachments: 10 });
+  expect(dispatched[2]?.text).not.toContain("next intact attachment batch");
+  await accept(
+    groupMessage({
+      id: "flush-overflow-attachment",
+      text: "flush the attachment rollover",
+      chatId: "group-attachments",
+      mentioned: true,
+      emittedAt: clock.now() + 2,
+    }),
+  );
+  expect(dispatched[3]).toMatchObject({ chatId: "group-attachments", attachments: 1 });
+  expect(dispatched[3]?.text).toContain("next intact attachment batch");
+  expect(dispatched[3]?.text).toContain("flush the attachment rollover");
+  const tooManyAttachments = groupMessage({
+    id: "too-many-attachments",
+    text: "reject this intact message",
+    chatId: "group-attachments",
+    attachmentCount: 11,
+    emittedAt: clock.now() + 3,
+  });
+  await accept(tooManyAttachments);
+  expect(dispatched).toHaveLength(4);
+  expect(rejections).toHaveLength(1);
+  expect(rejections[0]).toContain("10-attachment");
+  await expect(stateStore.hasHandledInboundMessage("work", "too-many-attachments", tooManyAttachments)).resolves.toBe(
+    true,
+  );
+
+  await coordinator.close();
+  await stateStore.close();
+});
+
+it("isolates identical group ids across Agent Bindings", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-binding-scope-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "shared-group",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 60,
+      version: 1,
+    },
+  ]);
+  await stateStore.replaceGroupSettingsSnapshot("personal", [
+    {
+      conversationId: "shared-group",
+      muted: true,
+      replyMode: "mention",
+      batchDelaySeconds: 0,
+      version: 1,
+    },
+  ]);
+  const workDispatches: string[] = [];
+  let personalDispatches = 0;
+  const coordinator = (bindingId: "work" | "personal") =>
+    new GroupIntakeCoordinator({
+      bindingId,
+      agentUserId: "agent-user",
+      stateStore,
+      api: { getMyGroupSettings: async () => ({ authoritative: false, rows: [] }) },
+      dispatch: async (message, _mode, onTurnAccepted) => {
+        if (bindingId === "work") workDispatches.push(message.text);
+        else personalDispatches += 1;
+        await onTurnAccepted();
+        return false;
+      },
+      reject: async () => undefined,
+      writeError: () => undefined,
+    });
+  const work = coordinator("work");
+  const personal = coordinator("personal");
+  const firstEnvelope = groupMessage({
+    id: "binding-scoped-first",
+    text: "only the work Binding may batch this",
+    chatId: "shared-group",
+  });
+  const flushEnvelope = groupMessage({
+    id: "binding-scoped-flush",
+    text: "flush work only",
+    chatId: "shared-group",
+    mentioned: true,
+  });
+  const first = normalizeInboundMessage(firstEnvelope);
+  const flushMessage = normalizeInboundMessage(flushEnvelope);
+  if (!first || !flushMessage) throw new Error("group fixture did not normalize");
+  for (const bindingId of ["work", "personal"] as const) {
+    await stateStore.upsertInboundMessage({
+      agentId: bindingId,
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: firstEnvelope.trace_id,
+      chatId: firstEnvelope.chat_id,
+      messageId: first.messageId,
+      text: first.text,
+      raw: firstEnvelope,
+    });
+  }
+  await stateStore.upsertInboundMessage({
+    agentId: "work",
+    direction: "inbound",
+    kind: "message",
+    eventType: EVENT.MESSAGE_SEND,
+    traceId: flushEnvelope.trace_id,
+    chatId: flushEnvelope.chat_id,
+    messageId: flushMessage.messageId,
+    text: flushMessage.text,
+    raw: flushEnvelope,
+  });
+
+  await Promise.all([work.accept(first), personal.accept(first)]);
+  await work.accept(flushMessage);
+
+  expect(workDispatches).toHaveLength(1);
+  expect(workDispatches[0]).toContain("only the work Binding may batch this");
+  expect(workDispatches[0]).toContain("flush work only");
+  expect(personalDispatches).toBe(0);
+  await expect(stateStore.hasHandledInboundMessage("personal", first.messageId, firstEnvelope)).resolves.toBe(true);
+  await work.close();
+  await personal.close();
+  await stateStore.close();
+});
+
+it("submits a batch once when its timer and settings reconciliation race", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-reconcile-race-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "group-race",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 1,
+      version: 1,
+    },
+  ]);
+  let signalSettingsRead: (() => void) | undefined;
+  const settingsRead = new Promise<void>((resolve) => {
+    signalSettingsRead = resolve;
+  });
+  let releaseSettingsRead: (() => void) | undefined;
+  const settingsGate = new Promise<void>((resolve) => {
+    releaseSettingsRead = resolve;
+  });
+  const clock = new ManualClock(2_000_000);
+  const dispatched: string[] = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: {
+      getMyGroupSettings: async () => {
+        signalSettingsRead?.();
+        await settingsGate;
+        return {
+          authoritative: true,
+          rows: [
+            {
+              conversationId: "group-race",
+              muted: false,
+              replyMode: "all" as const,
+              batchDelaySeconds: 0,
+              version: 2,
+            },
+          ],
+        };
+      },
+    },
+    clock,
+    dispatch: async (message, _mode, onTurnAccepted) => {
+      dispatched.push(message.text);
+      await onTurnAccepted();
+      return false;
+    },
+    reject: async () => undefined,
+    writeError: () => undefined,
+  });
+  const envelope = groupMessage({
+    id: "timer-reconcile-race",
+    text: "submit exactly once",
+    chatId: "group-race",
+    emittedAt: clock.now(),
+  });
+  const message = normalizeInboundMessage(envelope);
+  if (!message) throw new Error("group fixture did not normalize");
+  await stateStore.upsertInboundMessage({
+    agentId: "work",
+    direction: "inbound",
+    kind: "message",
+    eventType: EVENT.MESSAGE_SEND,
+    traceId: envelope.trace_id,
+    chatId: envelope.chat_id,
+    messageId: message.messageId,
+    text: message.text,
+    raw: envelope,
+  });
+  await coordinator.accept(message);
+  const notification = coordinator.handleNotifySignal({
+    version: "2",
+    event: EVENT.NOTIFY_SIGNAL,
+    trace_id: "timer-reconcile-settings",
+    emitted_at: clock.now(),
+    payload: { type: "agent.config.changed", event_id: "timer-reconcile-settings" },
+  });
+  await settingsRead;
+  clock.advance(1_000);
+  await flush();
+  releaseSettingsRead?.();
+  await notification;
+  await waitFor(() => (dispatched.length > 0 ? dispatched[0] : undefined));
+  await flush();
+  expect(dispatched).toHaveLength(1);
+  expect(dispatched[0]).toContain("submit exactly once");
+
+  await coordinator.close();
+  await stateStore.close();
+});
+
+it("does not let an obsolete reconciliation discard a batch after a newer notification", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-notification-race-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  const allMessages = {
+    conversationId: "group-notification-race",
+    muted: false,
+    replyMode: "all" as const,
+    batchDelaySeconds: 60,
+    version: 1,
+  };
+  await stateStore.replaceGroupSettingsSnapshot("work", [allMessages]);
+  let settingsReads = 0;
+  let releaseFirstDispatch: (() => void) | undefined;
+  const firstDispatchGate = new Promise<void>((resolve) => {
+    releaseFirstDispatch = resolve;
+  });
+  const dispatched: Array<{ text: string; attachments: number }> = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: {
+      getMyGroupSettings: async () => {
+        settingsReads += 1;
+        return settingsReads === 1
+          ? {
+              authoritative: true,
+              rows: [{ ...allMessages, replyMode: "mention" as const, batchDelaySeconds: 0, version: 2 }],
+            }
+          : { authoritative: true, rows: [{ ...allMessages, version: 3 }] };
+      },
+    },
+    dispatch: async (message, _mode, onTurnAccepted) => {
+      dispatched.push({
+        text: message.text,
+        attachments: message.fragments.filter((fragment) => fragment.kind === "file").length,
+      });
+      await onTurnAccepted();
+      if (dispatched.length === 1) await firstDispatchGate;
+      return false;
+    },
+    reject: async () => undefined,
+    writeError: () => undefined,
+  });
+  const accept = async (envelope: Envelope) => {
+    const message = normalizeInboundMessage(envelope);
+    if (!message) throw new Error("group fixture did not normalize");
+    await stateStore.upsertInboundMessage({
+      agentId: "work",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: message.messageId,
+      text: message.text,
+      raw: envelope,
+    });
+    await coordinator.accept(message);
+  };
+  await accept(
+    groupMessage({
+      id: "notification-race-full",
+      text: "first full batch",
+      chatId: "group-notification-race",
+      attachmentCount: 10,
+    }),
+  );
+  const overflow = accept(
+    groupMessage({
+      id: "notification-race-overflow",
+      text: "must survive obsolete reconciliation",
+      chatId: "group-notification-race",
+      attachmentCount: 1,
+    }),
+  );
+  await waitFor(() => (dispatched.length === 1 ? true : undefined));
+  const firstNotification = coordinator.handleNotifySignal({
+    version: "2",
+    event: EVENT.NOTIFY_SIGNAL,
+    trace_id: "notification-race-first",
+    emitted_at: 1,
+    payload: { type: "agent.config.changed", event_id: "notification-race-first" },
+  });
+  await waitFor(() => (settingsReads === 1 ? true : undefined));
+  const secondNotification = coordinator.handleNotifySignal({
+    version: "2",
+    event: EVENT.NOTIFY_SIGNAL,
+    trace_id: "notification-race-second",
+    emitted_at: 2,
+    payload: { type: "agent.config.changed", event_id: "notification-race-second" },
+  });
+  releaseFirstDispatch?.();
+  await Promise.all([overflow, firstNotification, secondNotification]);
+  expect(settingsReads).toBe(2);
+
+  await accept(
+    groupMessage({
+      id: "notification-race-flush",
+      text: "flush the surviving batch",
+      chatId: "group-notification-race",
+      mentioned: true,
+    }),
+  );
+  expect(dispatched).toHaveLength(2);
+  expect(dispatched[1]).toMatchObject({ attachments: 1 });
+  expect(dispatched[1]?.text).toContain("must survive obsolete reconciliation");
+  expect(dispatched[1]?.text).toContain("flush the surviving batch");
+
+  await coordinator.close();
+  await stateStore.close();
+});
+
+it("leaves zero-delay turns and inspection commands to the Runtime queue", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "clawchat-group-runtime-queue-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.replaceGroupSettingsSnapshot("work", [
+    {
+      conversationId: "group-zero-delay",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 0,
+      version: 1,
+    },
+    {
+      conversationId: "group-inspection",
+      muted: false,
+      replyMode: "all",
+      batchDelaySeconds: 60,
+      version: 1,
+    },
+  ]);
+  let releaseDispatches: (() => void) | undefined;
+  const dispatchGate = new Promise<void>((resolve) => {
+    releaseDispatches = resolve;
+  });
+  const dispatched: Array<{ chatId: string; text: string; batch: boolean }> = [];
+  const coordinator = new GroupIntakeCoordinator({
+    bindingId: "work",
+    agentUserId: "agent-user",
+    stateStore,
+    api: { getMyGroupSettings: async () => ({ authoritative: false, rows: [] }) },
+    dispatch: async (message) => {
+      dispatched.push({ chatId: message.chatId, text: message.text, batch: Boolean(message.groupBatch) });
+      if (message.chatId === "group-zero-delay" || message.groupBatch) await dispatchGate;
+      return false;
+    },
+    reject: async () => undefined,
+    writeError: () => undefined,
+  });
+  const normalized = (envelope: Envelope) => {
+    const message = normalizeInboundMessage(envelope);
+    if (!message) throw new Error("group fixture did not normalize");
+    return message;
+  };
+
+  const firstZeroDelay = coordinator.accept(
+    normalized(groupMessage({ id: "zero-first", text: "first immediate", chatId: "group-zero-delay" })),
+  );
+  await waitFor(() => (dispatched.length === 1 ? true : undefined));
+  const secondZeroDelay = coordinator.accept(
+    normalized(groupMessage({ id: "zero-second", text: "second immediate", chatId: "group-zero-delay" })),
+  );
+  await waitFor(() => (dispatched.length === 2 ? true : undefined));
+
+  await coordinator.accept(
+    normalized(groupMessage({ id: "inspection-pending", text: "pending batch", chatId: "group-inspection" })),
+  );
+  const batchFlush = coordinator.accept(
+    normalized(
+      groupMessage({
+        id: "inspection-flush",
+        text: "flush pending batch",
+        chatId: "group-inspection",
+        mentioned: true,
+      }),
+    ),
+  );
+  await waitFor(() => (dispatched.some((candidate) => candidate.batch) ? true : undefined));
+  const inspection = coordinator.accept(
+    normalized(
+      groupMessage({
+        id: "inspection-status",
+        text: "/status",
+        chatId: "group-inspection",
+        mentioned: true,
+        senderId: "owner-user",
+      }),
+    ),
+  );
+  await waitFor(() =>
+    dispatched.some((candidate) => !candidate.batch && candidate.text.includes("/status")) ? true : undefined,
+  );
+
+  releaseDispatches?.();
+  await Promise.all([firstZeroDelay, secondZeroDelay, batchFlush, inspection]);
+  expect(dispatched.filter((candidate) => candidate.chatId === "group-zero-delay")).toHaveLength(2);
+  expect(dispatched.some((candidate) => !candidate.batch && candidate.text.includes("/status"))).toBe(true);
   await coordinator.close();
   await stateStore.close();
 });

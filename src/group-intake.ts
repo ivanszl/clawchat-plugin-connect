@@ -4,7 +4,7 @@ import { addressInboundMessage, isMessageAddressedToAgent, normalizeInboundMessa
 import type { Envelope, Fragment, NormalizedInboundMessage } from "./protocol";
 import { renderClawChatPrompt } from "./runtime/prompt-renderer";
 import { isRuntimeInteractionResponseText } from "./runtime/runtime-interaction-router";
-import type { ConnectStateStore, GroupSettingsRecord } from "./state";
+import type { ConnectStateStore, GroupSettingsRecord, InboundHandlingOutcome } from "./state";
 
 export interface GroupIntakeCoordinatorOptions {
   bindingId: string;
@@ -13,13 +13,15 @@ export interface GroupIntakeCoordinatorOptions {
   api: Pick<ClawChatApiClient, "getMyGroupSettings">;
   dispatch(
     message: NormalizedInboundMessage,
-    allowUnaddressedGroup: boolean,
+    mode: GroupDispatchMode,
     onTurnAccepted: () => Promise<void>,
   ): Promise<boolean>;
   reject(message: NormalizedInboundMessage, reason: string): Promise<void>;
   writeError(message: string): void;
   clock?: GroupIntakeClock;
 }
+
+export type GroupDispatchMode = "addressed-only" | "policy-eligible";
 
 export interface GroupIntakeClock {
   now(): number;
@@ -50,13 +52,14 @@ interface PendingGroupBatch {
 }
 
 export class GroupIntakeCoordinator {
-  private rows = new Map<string, GroupSettingsRecord>();
+  private settingsByConversation = new Map<string, GroupSettingsRecord>();
   private stale = false;
   private settingsEpoch = 0;
   private refreshPromise: Promise<boolean> | null = null;
   private settingsResolution: Promise<boolean> | null = null;
   private initialization: Promise<void> | null = null;
   private readonly batches = new Map<string, PendingGroupBatch>();
+  private readonly groupTails = new Map<string, Promise<void>>();
   private accepting = true;
   private readonly clock: GroupIntakeClock;
 
@@ -75,6 +78,15 @@ export class GroupIntakeCoordinator {
     void this.refresh().catch((error) => {
       this.options.writeError(
         `${this.options.bindingId}: group settings refresh failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    });
+  }
+
+  async resolveForRecovery(): Promise<void> {
+    await this.initialize();
+    await (this.settingsResolution ?? this.refresh()).catch((error) => {
+      this.options.writeError(
+        `${this.options.bindingId}: group settings refresh failed before recovery: ${error instanceof Error ? error.message : String(error)}\n`,
       );
     });
   }
@@ -109,39 +121,60 @@ export class GroupIntakeCoordinator {
     const settings = this.effective(message.chatId);
     const mentioned = isMessageAddressedToAgent(message, this.options.agentUserId);
     if (settings.muted || (settings.replyMode === "mention" && !mentioned)) {
-      await this.markHandled(message, "policy-discarded");
+      await this.markHandled(message, settings.muted ? "muted" : "mention-context");
       return;
     }
     const addressed = addressInboundMessage(message, this.options.agentUserId);
     const commandText = addressed?.message.text ?? "";
     const commandForm = Boolean(addressed && (addressed.acceptsCommands || addressed.malformedLineBreakCommand));
     if (commandForm && (isConnectControlMessage(commandText) || isRuntimeInteractionResponseText(commandText))) {
-      if (requiresOrderedSessionControl(commandText)) await this.flush(message.chatId);
-      await this.dispatch(message, false);
+      if (requiresOrderedSessionControl(commandText)) {
+        await this.withBatchOwnership(message.chatId, async () => {
+          if (await this.flushOwned(message.chatId)) await this.dispatch(message, "addressed-only");
+        });
+        return;
+      }
+      await this.dispatch(message, "addressed-only");
       return;
     }
     if (settings.replyMode === "all" && settings.batchDelaySeconds > 0) {
-      await this.enqueue(addressed?.hasAddressingMention ? addressed.message : message, settings.batchDelaySeconds);
-      if (mentioned) await this.flush(message.chatId);
+      await this.withBatchOwnership(message.chatId, async () => {
+        await this.enqueueOwned(
+          addressed?.hasAddressingMention ? addressed.message : message,
+          settings.batchDelaySeconds,
+        );
+        if (mentioned) await this.flushOwned(message.chatId);
+      });
       return;
     }
     if (await this.rejectIfOverCapacity(message)) return;
     if (settings.replyMode === "mention") message = await this.withMentionContext(message);
-    await this.dispatch(message, settings.replyMode === "all");
+    await this.dispatch(message, settings.replyMode === "all" ? "policy-eligible" : "addressed-only");
   }
 
   private async dispatch(
     message: NormalizedInboundMessage,
-    allowUnaddressedGroup: boolean,
+    mode: GroupDispatchMode,
     sourceMessages: readonly NormalizedInboundMessage[] = [message],
   ): Promise<boolean> {
     let accepted = false;
+    let acceptance: Promise<void> | null = null;
     const markAccepted = async () => {
       if (accepted) return;
-      accepted = true;
-      for (const source of sourceMessages) await this.markHandled(source);
+      acceptance ??= this.options.stateStore
+        .markInboundMessagesHandled(
+          this.options.bindingId,
+          sourceMessages.map((source) => ({ messageId: source.messageId, raw: source.raw })),
+        )
+        .then(() => {
+          accepted = true;
+        })
+        .finally(() => {
+          acceptance = null;
+        });
+      await acceptance;
     };
-    const handledWithoutTurn = await this.options.dispatch(message, allowUnaddressedGroup, markAccepted);
+    const handledWithoutTurn = await this.options.dispatch(message, mode, markAccepted);
     if (handledWithoutTurn) await markAccepted();
     return accepted;
   }
@@ -152,14 +185,20 @@ export class GroupIntakeCoordinator {
       this.clock.clearTimer(batch.idleTimer);
       this.clock.clearTimer(batch.maximumTimer);
     }
+    await Promise.allSettled(this.groupTails.values());
+    for (const batch of this.batches.values()) {
+      this.clock.clearTimer(batch.idleTimer);
+      this.clock.clearTimer(batch.maximumTimer);
+    }
     this.batches.clear();
+    this.groupTails.clear();
   }
 
-  private async enqueue(message: NormalizedInboundMessage, delaySeconds: number): Promise<void> {
+  private async enqueueOwned(message: NormalizedInboundMessage, delaySeconds: number): Promise<void> {
     let batch = this.batches.get(message.chatId);
     if (batch?.messages.some((candidate) => candidate.messageId === message.messageId)) return;
     if (batch && !batchCanAppend(batch.messages, message)) {
-      await this.flush(message.chatId);
+      if (!(await this.flushOwned(message.chatId))) return;
       batch = undefined;
     }
     if (!batchCanAppend([], message)) {
@@ -167,7 +206,7 @@ export class GroupIntakeCoordinator {
         message,
         "ClawChat group message exceeds the 64,000-character or 10-attachment batch limit.",
       );
-      await this.markHandled(message, "policy-discarded");
+      await this.markHandled(message, "oversized");
       return;
     }
     if (!batch) {
@@ -188,7 +227,8 @@ export class GroupIntakeCoordinator {
 
   private async flushSafely(chatId: string): Promise<void> {
     try {
-      await this.flush(chatId);
+      if (this.stale) await this.refreshWithinGate(this.settingsResolution ?? this.refresh());
+      await this.withBatchOwnership(chatId, async () => await this.flushOwned(chatId));
     } catch (error) {
       this.options.writeError(
         `${this.options.bindingId}: group batch dispatch failed for ${chatId}: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -196,34 +236,33 @@ export class GroupIntakeCoordinator {
     }
   }
 
-  private async flush(chatId: string): Promise<void> {
+  private async flushOwned(chatId: string): Promise<boolean> {
     const batch = this.batches.get(chatId);
-    if (!batch) return;
-    if (this.stale) await this.refreshWithinGate(this.settingsResolution ?? this.refresh());
+    if (!batch) return true;
     const settings = this.effective(chatId);
     if (
       settings.muted ||
       (settings.replyMode === "mention" &&
         !batch.messages.some((message) => isMessageAddressedToAgent(message, this.options.agentUserId)))
     ) {
-      await this.discard(chatId);
-      return;
+      await this.discardOwned(chatId, settings.muted ? "muted" : "mention-context");
+      return true;
     }
     this.batches.delete(chatId);
     this.clock.clearTimer(batch.idleTimer);
     this.clock.clearTimer(batch.maximumTimer);
-    if (batch.messages.length === 0) return;
-    await this.dispatch(coalescedMessage(batch.messages), true, batch.messages);
+    if (batch.messages.length === 0) return true;
+    return await this.dispatch(coalescedMessage(batch.messages), "policy-eligible", batch.messages);
   }
 
   private effective(conversationId: string): Omit<GroupSettingsRecord, "conversationId" | "version"> {
     if (this.stale) return DEFAULT_GROUP_SETTINGS;
-    return this.rows.get(conversationId) ?? DEFAULT_GROUP_SETTINGS;
+    return this.settingsByConversation.get(conversationId) ?? DEFAULT_GROUP_SETTINGS;
   }
 
   private async loadPersistedSnapshot(): Promise<void> {
     const snapshot = await this.options.stateStore.getGroupSettingsSnapshot(this.options.bindingId);
-    this.rows = new Map(snapshot.rows.map((row) => [row.conversationId, row]));
+    this.settingsByConversation = new Map(snapshot.rows.map((row) => [row.conversationId, row]));
     this.stale = snapshot.stale;
   }
 
@@ -266,9 +305,10 @@ export class GroupIntakeCoordinator {
       await this.options.stateStore.markGroupSettingsSnapshotStale(this.options.bindingId);
       return false;
     }
-    this.rows = new Map(result.rows.map((row) => [row.conversationId, row]));
+    const resolvedSettings = new Map(result.rows.map((row) => [row.conversationId, row]));
+    this.settingsByConversation = resolvedSettings;
     this.stale = false;
-    await this.reconcileBatches();
+    await this.reconcileBatches(epoch, resolvedSettings);
     return true;
   }
 
@@ -285,36 +325,75 @@ export class GroupIntakeCoordinator {
     batch.maximumTimer = this.clock.setTimer(() => void this.flushSafely(chatId), Math.max(0, maximumDeadline - now));
   }
 
-  private async reconcileBatches(): Promise<void> {
-    for (const [chatId, batch] of [...this.batches]) {
-      const settings = this.effective(chatId);
-      if (settings.muted || settings.replyMode === "mention") {
-        if (
-          settings.replyMode === "mention" &&
-          batch.messages.some((message) => isMessageAddressedToAgent(message, this.options.agentUserId))
-        ) {
-          await this.flush(chatId);
-        } else {
-          await this.discard(chatId);
-        }
-        continue;
-      }
-      if (settings.batchDelaySeconds === 0) {
-        await this.flush(chatId);
-        continue;
-      }
-      batch.delaySeconds = settings.batchDelaySeconds;
-      this.schedule(batch, chatId);
-    }
+  private async reconcileBatches(
+    epoch: number,
+    resolvedSettings: ReadonlyMap<string, GroupSettingsRecord>,
+  ): Promise<void> {
+    await Promise.all(
+      [...this.batches.keys()].map(
+        async (chatId) =>
+          await this.withBatchOwnership(
+            chatId,
+            async () => await this.reconcileBatchOwned(chatId, epoch, resolvedSettings),
+          ),
+      ),
+    );
   }
 
-  private async discard(chatId: string): Promise<void> {
+  private async reconcileBatchOwned(
+    chatId: string,
+    epoch: number,
+    resolvedSettings: ReadonlyMap<string, GroupSettingsRecord>,
+  ): Promise<void> {
+    if (epoch !== this.settingsEpoch || this.stale) return;
+    const batch = this.batches.get(chatId);
+    if (!batch) return;
+    const settings = resolvedSettings.get(chatId) ?? DEFAULT_GROUP_SETTINGS;
+    if (settings.muted || settings.replyMode === "mention") {
+      if (
+        settings.replyMode === "mention" &&
+        batch.messages.some((message) => isMessageAddressedToAgent(message, this.options.agentUserId))
+      ) {
+        await this.flushOwned(chatId);
+      } else {
+        await this.discardOwned(chatId, settings.muted ? "muted" : "mention-context");
+      }
+      return;
+    }
+    if (settings.batchDelaySeconds === 0) {
+      await this.flushOwned(chatId);
+      return;
+    }
+    batch.delaySeconds = settings.batchDelaySeconds;
+    this.schedule(batch, chatId);
+  }
+
+  private async discardOwned(chatId: string, outcome: InboundHandlingOutcome): Promise<void> {
     const batch = this.batches.get(chatId);
     if (!batch) return;
     this.batches.delete(chatId);
     this.clock.clearTimer(batch.idleTimer);
     this.clock.clearTimer(batch.maximumTimer);
-    for (const message of batch.messages) await this.markHandled(message, "policy-discarded");
+    await this.options.stateStore.markInboundMessagesHandled(
+      this.options.bindingId,
+      batch.messages.map((message) => ({ messageId: message.messageId, raw: message.raw })),
+      outcome,
+    );
+  }
+
+  private async withBatchOwnership<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.groupTails.get(chatId) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(operation);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.groupTails.set(chatId, tail);
+    try {
+      return await result;
+    } finally {
+      if (this.groupTails.get(chatId) === tail) this.groupTails.delete(chatId);
+    }
   }
 
   private async withMentionContext(message: NormalizedInboundMessage): Promise<NormalizedInboundMessage> {
@@ -353,7 +432,7 @@ export class GroupIntakeCoordinator {
 
   private async markHandled(
     message: NormalizedInboundMessage,
-    outcome: "runtime" | "policy-discarded" = "runtime",
+    outcome: InboundHandlingOutcome = "runtime",
   ): Promise<void> {
     await this.options.stateStore.markInboundMessageHandled(
       this.options.bindingId,
@@ -374,7 +453,7 @@ export class GroupIntakeCoordinator {
       message,
       "ClawChat group message exceeds the 64,000-character or 10-attachment batch limit.",
     );
-    await this.markHandled(message, "policy-discarded");
+    await this.markHandled(message, "oversized");
     return true;
   }
 }

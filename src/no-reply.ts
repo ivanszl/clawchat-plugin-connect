@@ -1,18 +1,28 @@
-const CLAWCHAT_NO_REPLY_SOURCE = "clawchat\\s*:\\s*(?:no[-_ ]?reply|silent)";
-const CLAWCHAT_NO_REPLY_PREFIX = new RegExp(
-  `^\\s*[\\[{\`*_~]*(?:<\\s*)?${CLAWCHAT_NO_REPLY_SOURCE}\\s*(?:/\\s*>)?[\\]}\`*_~]*\\s*(?=$|\\r?\\n)`,
+const CLAWCHAT_NO_REPLY_SOURCE = "clawchat\\s*(?::\\s*|[-_]\\s*)(?:no[-_ ]?reply|silent)";
+const MARKDOWN_DECORATION = "[`*_~]*";
+const CLAWCHAT_WRAPPED_NO_REPLY_PREFIX = new RegExp(
+  `^\\s*${MARKDOWN_DECORATION}(?:<\\s*${CLAWCHAT_NO_REPLY_SOURCE}\\s*/?\\s*>|\\[\\s*${CLAWCHAT_NO_REPLY_SOURCE}\\s*\\]|\\{\\s*${CLAWCHAT_NO_REPLY_SOURCE}\\s*\\})${MARKDOWN_DECORATION}[ \\t]*`,
+  "iu",
+);
+const CLAWCHAT_BARE_NO_REPLY_PREFIX = new RegExp(
+  `^\\s*${MARKDOWN_DECORATION}${CLAWCHAT_NO_REPLY_SOURCE}(?=[\\s\`*_~]|$)${MARKDOWN_DECORATION}[ \\t]*`,
   "iu",
 );
 const HOST_SILENCE_MARKERS = new Set(["[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"]);
 const EXPLICIT_MEDIA_PATTERN = /!\[[^\]]*\]\(\s*(?:<[^>]+>|[^\s)]+)(?:\s+["'][^"']*["'])?\s*\)/u;
 
 export function containsNoReplySignal(text: string): boolean {
-  return CLAWCHAT_NO_REPLY_PREFIX.test(text) || isHostSilenceMarker(text);
+  return noReplyPrefix(text) !== null || isHostSilenceMarker(text);
 }
 
 export function stripNoReplySignals(text: string): string {
   if (isHostSilenceMarker(text)) return "";
-  return text.replace(CLAWCHAT_NO_REPLY_PREFIX, "").trim();
+  const prefix = noReplyPrefix(text);
+  return prefix ? text.slice(prefix.length).trim() : text;
+}
+
+function noReplyPrefix(text: string): string | null {
+  return text.match(CLAWCHAT_WRAPPED_NO_REPLY_PREFIX)?.[0] ?? text.match(CLAWCHAT_BARE_NO_REPLY_PREFIX)?.[0] ?? null;
 }
 
 export function containsExplicitReplyMedia(text: string): boolean {

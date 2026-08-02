@@ -282,6 +282,58 @@ describe("state store", () => {
     await reopened.close();
   });
 
+  it("marks a batch atomically and exposes only mention-context discards", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    const inbound = (messageId: string, text: string) => ({
+      agentId: "codex",
+      direction: "inbound" as const,
+      kind: "message" as const,
+      eventType: "message.send",
+      traceId: `trace-${messageId}`,
+      chatId: "group-1",
+      messageId,
+      text,
+      raw: { messageId, text },
+    });
+    const mentionContext = inbound("context", "eligible context");
+    const muted = inbound("muted", "muted content");
+    const oversized = inbound("oversized", "oversized content");
+    for (const message of [mentionContext, muted, oversized]) await store.upsertInboundMessage(message);
+    await store.markInboundMessageHandled("codex", mentionContext.messageId, mentionContext.raw, "mention-context");
+    await store.markInboundMessageHandled("codex", muted.messageId, muted.raw, "muted");
+    await store.markInboundMessageHandled("codex", oversized.messageId, oversized.raw, "oversized");
+    await expect(store.listRecentGroupContext("codex", "group-1", "later", 10)).resolves.toEqual([mentionContext.raw]);
+
+    const boundedContext = Array.from({ length: 12 }, (_, index) =>
+      inbound(`bounded-${index}`, `bounded context ${index}`),
+    );
+    for (const message of boundedContext) {
+      await store.upsertInboundMessage(message);
+      await store.markInboundMessageHandled("codex", message.messageId, message.raw, "mention-context");
+    }
+    const current = inbound("current", "current addressed message");
+    await store.upsertInboundMessage(current);
+    await expect(store.listRecentGroupContext("codex", "group-1", current.messageId, 10)).resolves.toEqual(
+      boundedContext.slice(2).map((message) => message.raw),
+    );
+
+    const first = inbound("batch-first", "first");
+    await store.upsertInboundMessage(first);
+    await expect(
+      store.markInboundMessagesHandled(
+        "codex",
+        [
+          { messageId: first.messageId, raw: first.raw },
+          { messageId: "missing", raw: { messageId: "missing" } },
+        ],
+        "runtime",
+      ),
+    ).rejects.toThrow("inbound message was not persisted before handling: missing");
+    await expect(store.hasHandledInboundMessage("codex", first.messageId, first.raw)).resolves.toBe(false);
+    await store.close();
+  });
+
   it("quarantines an unpersistable Protocol v2 frame without stalling its dseq", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
