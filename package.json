@@ -52,6 +52,7 @@
     "test:integration:opencode": "bun tests/integration/opencode-server.ts",
     "test:integration:workbuddy-ai-discovery": "bun tests/integration/workbuddy-ai-task-discovery.ts",
     "test:integration:workbuddy-ai-adoption": "bun tests/integration/workbuddy-ai-task-adoption.ts",
+    "test:integration:workbuddy-ai-turn": "bun tests/integration/workbuddy-ai-task-turn.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.web.json",
     "check:generated": "bun scripts/check-generated.ts",
     "format": "biome format --write .",

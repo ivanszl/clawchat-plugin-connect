@@ -16,6 +16,7 @@ import type {
   ConnectRuntimeStartContext,
   RuntimeActivity,
 } from "../src/runtime/types";
+import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
 import { createStateStore } from "../src/state";
 import type { ConnectWsClient } from "../src/ws-client";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
@@ -88,6 +89,144 @@ async function runtimeFixture() {
 }
 
 describe("ConnectRuntime Agent Binding sessions", () => {
+  it("serializes Client and ClawChat turns through one adopted WorkBuddy Task Attachment", async () => {
+    const fixture = await runtimeFixture();
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!current) throw new Error("current Session is missing");
+    const taskId = "00000000-0000-4000-8000-000000000001";
+    await fixture.store.setRuntimeSessionId(current.chatId, current.agentId, current.sessionId, taskId);
+    fixture.config.agents.codex = { kind: "workbuddy", profile: "workbuddy-ai" };
+    const prompts: ConnectRuntimePrompt[] = [];
+    let starts = 0;
+    let releaseFirst: (() => void) | undefined;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      listTasks: async () => [{ id: taskId, title: "Adopted", workspace: tmpdir(), updatedAt: Date.now() }],
+      attachTask: async () => ({ activities: [], completeness: "complete", limitations: [] }),
+      startTask: async () => {
+        starts += 1;
+        return {
+          prompt: async function* (input) {
+            const turn = prompts.length;
+            prompts.push(input);
+            if (turn === 0) await firstGate;
+            const nativeId = input.turnId ?? `turn-${turn}`;
+            yield {
+              id: `workbuddy:user:${nativeId}`,
+              position: `${turn}.1`,
+              parentId: null,
+              kind: "user",
+              text: input.prompt,
+              state: "complete",
+              source: "live",
+              data:
+                input.turnOrigin === "clawchat"
+                  ? { clawchatMessageId: nativeId }
+                  : { clientMessageId: `turn_${nativeId}_user` },
+            };
+            yield {
+              id: `workbuddy:assistant:${nativeId}`,
+              position: `${turn}.2`,
+              parentId: null,
+              kind: "assistant",
+              text: `answer ${turn + 1}`,
+              state: "complete",
+              source: "live",
+            };
+          },
+          close: async () => undefined,
+        };
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const runtimeAdapters = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const transcriptProjection = new TranscriptProjection({
+      stateStore: fixture.store,
+      config: fixture.config,
+      runtimeAdapters,
+    });
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters,
+      transcriptProjection,
+    });
+
+    const accepted = await runtime.enqueueClientTurn(current.sessionRef, "client asks first");
+    while (prompts.length === 0) await Bun.sleep(0);
+    const clawchatTurn = runtime.handleInboundMessage({
+      ...message("clawchat asks second"),
+      messageId: "clawchat-turn",
+    });
+    await Bun.sleep(5);
+    expect(prompts).toHaveLength(1);
+
+    releaseFirst?.();
+    await clawchatTurn;
+    while (runtime.activeClientTurnId(current.sessionRef) === accepted.turnId) await Bun.sleep(0);
+
+    expect(starts).toBe(1);
+    expect(prompts.map((prompt) => prompt.turnOrigin)).toEqual(["client", "clawchat"]);
+    const blocks = await fixture.store.listTranscriptBlocks(current.sessionRef);
+    expect(blocks.filter((block) => block.type === "message" && block.role === "user")).toHaveLength(2);
+    expect(blocks.filter((block) => block.type === "message" && block.role === "assistant")).toHaveLength(2);
+
+    await runtime.dispose();
+    await runtimeAdapters.close();
+    await fixture.store.close();
+  });
+
+  it("returns an actionable mapping error on both turn surfaces without creating a WorkBuddy Task", async () => {
+    const fixture = await runtimeFixture();
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    if (!current) throw new Error("current Session is missing");
+    fixture.config.agents.codex = { kind: "workbuddy", profile: "workbuddy-ai" };
+    let nativeStarts = 0;
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      listTasks: async () => [],
+      attachTask: async () => ({ activities: [], completeness: "complete", limitations: [] }),
+      startTask: async () => {
+        nativeStarts += 1;
+        return { prompt: async function* () {}, close: async () => undefined };
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const runtimeAdapters = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const transcriptProjection = new TranscriptProjection({
+      stateStore: fixture.store,
+      config: fixture.config,
+      runtimeAdapters,
+    });
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters,
+      transcriptProjection,
+    });
+
+    const accepted = await runtime.enqueueClientTurn(current.sessionRef, "client without mapping");
+    while (runtime.activeClientTurnId(current.sessionRef) === accepted.turnId) await Bun.sleep(0);
+    const clientBlocks = await fixture.store.listTranscriptBlocks(current.sessionRef);
+    expect(clientBlocks.some((block) => block.plainText.includes("adopt an existing WorkBuddy Task"))).toBeTrue();
+
+    await runtime.handleInboundMessage({ ...message("clawchat without mapping"), messageId: "unmapped-clawchat" });
+    expect(JSON.stringify(fixture.sendMessageEnvelope.mock.calls)).toContain("adopt an existing WorkBuddy Task");
+    expect(nativeStarts).toBe(0);
+    expect(await fixture.store.getRuntimeSessionByRef(current.sessionRef)).toMatchObject({ runtimeSessionId: null });
+
+    await runtime.dispose();
+    await runtimeAdapters.close();
+    await fixture.store.close();
+  });
+
   it("synchronizes the persistent Runtime Workspace groups used by Connect Client into Projects", async () => {
     const fixture = await runtimeFixture();
     const registeredRoot = join(dirname(fixture.config.stateDbPath), "clawchat-plugin-connect");

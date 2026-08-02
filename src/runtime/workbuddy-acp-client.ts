@@ -1,4 +1,5 @@
 import { connect, type Socket } from "node:net";
+import type { ConnectRuntimePrompt, RuntimeActivity } from "./types";
 import {
   WorkBuddyDiscoveryError,
   type WorkBuddyEndpointVerification,
@@ -14,11 +15,30 @@ export interface WorkBuddyConnectedSocketIdentity {
   remotePort: number;
 }
 
+export interface WorkBuddyAcpTaskAttachment {
+  readonly verification: WorkBuddyEndpointVerification;
+  prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeActivity>;
+  close(): Promise<void>;
+}
+
 export async function verifyWorkBuddyAiEndpoint(
   input: { endpoint: string; taskId: string; workspace: string; acpVersion: number },
   timeoutMs: number,
   readConnectedOwner: (identity: WorkBuddyConnectedSocketIdentity) => Promise<WorkBuddyProcessIdentity | null>,
 ): Promise<WorkBuddyEndpointVerification> {
+  const attachment = await openWorkBuddyAiTaskEndpoint(input, timeoutMs, readConnectedOwner);
+  try {
+    return attachment.verification;
+  } finally {
+    await attachment.close();
+  }
+}
+
+export async function openWorkBuddyAiTaskEndpoint(
+  input: { endpoint: string; taskId: string; workspace: string; acpVersion: number },
+  timeoutMs: number,
+  readConnectedOwner: (identity: WorkBuddyConnectedSocketIdentity) => Promise<WorkBuddyProcessIdentity | null>,
+): Promise<WorkBuddyAcpTaskAttachment> {
   let connectionId = "";
   let sessionToken = "";
   const connection = await PersistentHttpConnection.open(input.endpoint, timeoutMs);
@@ -58,7 +78,7 @@ export async function verifyWorkBuddyAiEndpoint(
     });
     const observedTaskId = loaded.taskIds.find((candidate) => candidate !== input.taskId) ?? loaded.taskIds[0];
     if (!observedTaskId) throw new Error("ACP replay emitted no Task identity");
-    return {
+    const verification = {
       taskId: observedTaskId,
       replayFingerprint: replayFingerprint(loaded.messageIds),
       replayStarted: loaded.replayStarted,
@@ -66,16 +86,40 @@ export async function verifyWorkBuddyAiEndpoint(
       activities: replayActivities(loaded.replayMessages),
       connectionOwner,
     };
+    let closed = false;
+    const close = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      if (connectionId) {
+        await connection
+          .request("DELETE", connection.pathname, acpHeaders(connectionId, sessionToken))
+          .catch(() => undefined);
+      }
+      connection.close();
+    };
+    return {
+      verification,
+      prompt: (promptInput) => {
+        if (closed) throw new Error("WorkBuddy Task Attachment is closed");
+        return streamPrompt(
+          connection,
+          acpHeaders(connectionId, sessionToken),
+          input.taskId,
+          verification,
+          promptInput,
+        );
+      },
+      close,
+    };
   } catch (error) {
-    if (error instanceof WorkBuddyDiscoveryError) throw error;
-    throw new Error(redact(error instanceof Error ? error.message : String(error), [connectionId, sessionToken]));
-  } finally {
     if (connectionId) {
       await connection
         .request("DELETE", connection.pathname, acpHeaders(connectionId, sessionToken))
         .catch(() => undefined);
     }
     connection.close();
+    if (error instanceof WorkBuddyDiscoveryError) throw error;
+    throw new Error(redact(error instanceof Error ? error.message : String(error), [connectionId, sessionToken]));
   }
 }
 
@@ -101,16 +145,12 @@ async function postRpc(
   id: number,
   method: string,
   params: unknown,
+  onPayload?: (payload: unknown) => void,
 ): Promise<RpcObservation> {
-  const response = await connection.request(
-    "POST",
-    connection.pathname,
-    headers,
-    Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params })),
-  );
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    throw new Error(`ACP ${method} failed with HTTP ${response.statusCode}`);
-  }
+  const decoder = new SseDecoder((payload) => {
+    observeRpcPayload(payload, id, observation);
+    onPayload?.(payload);
+  });
   const observation: RpcObservation = {
     taskIds: [],
     replayStarted: false,
@@ -119,24 +159,57 @@ async function postRpc(
     messageIds: [],
     replayMessages: [],
   };
+  const response = await connection.request(
+    "POST",
+    connection.pathname,
+    headers,
+    Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params })),
+    (chunk) => decoder.push(chunk.toString("utf8")),
+  );
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new Error(`ACP ${method} failed with HTTP ${response.statusCode}`);
+  }
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("text/event-stream")) {
-    consumeSse(response.body.toString("utf8"), (payload) => observeRpcPayload(payload, id, observation));
+    decoder.finish();
   } else {
-    observeRpcPayload(parseJson(response.body.toString("utf8"), `${method} response`), id, observation);
+    const payload = parseJson(response.body.toString("utf8"), `${method} response`);
+    observeRpcPayload(payload, id, observation);
+    onPayload?.(payload);
   }
   if (observation.result === undefined) throw new Error(`ACP ${method} returned no JSON-RPC result`);
   return observation;
 }
 
-function consumeSse(value: string, onPayload: (payload: unknown) => void): void {
-  for (const block of value.split(/\r?\n\r?\n/u)) {
+class SseDecoder {
+  private buffer = "";
+
+  constructor(private readonly onPayload: (payload: unknown) => void) {}
+
+  push(value: string): void {
+    this.buffer += value;
+    this.consume(false);
+  }
+
+  finish(): void {
+    this.consume(true);
+  }
+
+  private consume(final: boolean): void {
+    const blocks = this.buffer.split(/\r?\n\r?\n/u);
+    const tail = blocks.pop() ?? "";
+    this.buffer = final ? "" : tail;
+    for (const block of blocks) this.consumeBlock(block);
+    if (final && tail.trim()) this.consumeBlock(tail);
+  }
+
+  private consumeBlock(block: string): void {
     const data = block
       .split(/\r?\n/u)
       .filter((line) => line.startsWith("data:"))
       .map((line) => line.slice(5).trimStart())
       .join("\n");
-    if (data) onPayload(parseJson(data, "event stream payload"));
+    if (data) this.onPayload(parseJson(data, "event stream payload"));
   }
 }
 
@@ -283,6 +356,281 @@ function replayActivities(messages: ReplayMessage[]): import("./types").RuntimeA
   });
 }
 
+function streamPrompt(
+  connection: PersistentHttpConnection,
+  headers: Record<string, string>,
+  taskId: string,
+  verification: WorkBuddyEndpointVerification,
+  input: ConnectRuntimePrompt,
+): AsyncIterable<RuntimeActivity> {
+  const prompt = input.prompt.trim();
+  if (!prompt) throw new Error("WorkBuddy text prompt is required");
+  if (input.media?.length) throw new Error("WorkBuddy Task Attachments currently support text turns only");
+  const queue = new AsyncActivityQueue();
+  const projector = new LiveTurnProjector(nextTurnOrdinal(verification.activities), input);
+  const requestId = Date.now();
+  const userMessageId = workBuddyUserMessageId(input, requestId);
+  let accepted: Promise<void> | null = null;
+  void postRpc(
+    connection,
+    headers,
+    requestId,
+    "session/prompt",
+    {
+      sessionId: taskId,
+      prompt: [{ type: "text", text: input.prompt }],
+      _meta: {
+        messageId: userMessageId,
+        "codebuddy.ai": {
+          userMessageId,
+          messageRequestId: userMessageId,
+        },
+      },
+    },
+    (payload) => {
+      if (!isTaskUpdate(payload, taskId)) return;
+      if (!accepted) {
+        accepted = input.onAccepted?.() ?? Promise.resolve();
+        for (const activity of projector.accepted()) queue.push(activity);
+      }
+      for (const activity of projector.observe(payload)) queue.push(activity);
+    },
+  )
+    .then(async (observation) => {
+      await accepted;
+      for (const activity of projector.complete(observation.result)) queue.push(activity);
+      queue.end();
+    })
+    .catch((error) => queue.fail(error instanceof Error ? error : new Error(String(error))));
+  return queue;
+}
+
+function workBuddyUserMessageId(input: ConnectRuntimePrompt, requestId: number): string {
+  const origin = input.turnOrigin === "clawchat" ? "clawchat" : "client";
+  const turnId = (input.turnId ?? `request-${requestId}`).replace(/[^a-zA-Z0-9._-]+/gu, "-");
+  return `clawchat-connect-${origin}-${turnId}`;
+}
+
+function isTaskUpdate(payload: unknown, taskId: string): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const message = payload as Record<string, unknown>;
+  if (message.method !== "session/update") return false;
+  const params = message.params as Record<string, unknown> | undefined;
+  return params?.sessionId === taskId;
+}
+
+function nextTurnOrdinal(activities: RuntimeActivity[]): number {
+  let result = -1;
+  for (const activity of activities) {
+    const turn = Number(activity.position.split(".", 1)[0]);
+    if (Number.isSafeInteger(turn)) result = Math.max(result, turn);
+  }
+  return result + 1;
+}
+
+class LiveTurnProjector {
+  private readonly activities = new Map<string, RuntimeActivity>();
+  private nextItem = 1;
+  private terminal = false;
+  private submittedUserId: string | null = null;
+
+  constructor(
+    private readonly turn: number,
+    private readonly input: ConnectRuntimePrompt,
+  ) {}
+
+  accepted(): RuntimeActivity[] {
+    if (this.submittedUserId) return [];
+    const nativeId = this.input.turnId ? `connect:${this.input.turnId}` : `connect-turn:${this.turn}`;
+    const activity = this.upsert(
+      "user:submitted",
+      "user",
+      nativeId,
+      this.input.prompt,
+      "complete",
+      false,
+      this.userData(),
+    );
+    this.submittedUserId = activity.id;
+    return [activity];
+  }
+
+  observe(payload: unknown): RuntimeActivity[] {
+    const message = payload as Record<string, unknown>;
+    const params = message.params as Record<string, unknown> | undefined;
+    const update = params?.update as Record<string, unknown> | undefined;
+    if (!update) return [];
+    const kind = typeof update.sessionUpdate === "string" ? update.sessionUpdate : "";
+    if (kind === "session_end") return this.terminalize(terminalState(update.stopReason));
+    if (kind === "user_message_chunk" || kind === "agent_message_chunk" || kind === "agent_thought_chunk") {
+      const activityKind = replayMessageKind(kind);
+      const meta = update._meta as Record<string, unknown> | undefined;
+      const nativeId = stringField(update, "messageId") ?? stringField(meta ?? {}, "codebuddy.ai/messageId");
+      const text = visibleText(update.content);
+      if (!activityKind || !nativeId || !text) return [];
+      const activity = this.upsert(
+        `${activityKind}:${nativeId}`,
+        activityKind,
+        nativeId,
+        text,
+        activityKind === "user" ? "complete" : "streaming",
+        true,
+        activityKind === "user" ? this.userData() : undefined,
+      );
+      if (activityKind === "user" && this.submittedUserId && activity.id !== this.submittedUserId) {
+        const aliased = { ...activity, aliases: [this.submittedUserId] };
+        this.activities.set(`${activityKind}:${nativeId}`, aliased);
+        return [aliased];
+      }
+      return [activity];
+    }
+    if (kind === "tool_call" || kind === "tool_call_update") {
+      const nativeId = stringField(update, "toolCallId", "callId", "id");
+      if (!nativeId) return [];
+      const status = stringField(update, "status") ?? "running";
+      const detail =
+        visibleText(update.content) ||
+        visibleText(update.toolResult) ||
+        stringField(update, "title", "name") ||
+        this.activities.get(`tool:${nativeId}`)?.text ||
+        "WorkBuddy tool activity";
+      return [
+        this.upsert(`tool:${nativeId}`, "tool", nativeId, detail, toolState(status), false, {
+          title: stringField(update, "title", "name") ?? detail.split("\n", 1)[0],
+          status,
+        }),
+      ];
+    }
+    if (kind === "plan") {
+      const nativeId = stringField(update, "planId", "id") ?? "current";
+      return [this.upsert(`plan:${nativeId}`, "plan", nativeId, planText(update.entries), "streaming", false)];
+    }
+    if (kind === "session_info_update") {
+      const meta = update._meta as Record<string, unknown> | undefined;
+      const phase = meta?.["codebuddy.ai/agentPhase"] as Record<string, unknown> | undefined;
+      const phaseName = stringField(phase ?? {}, "phase");
+      if (!phaseName) return [];
+      const requestId = stringField(meta ?? {}, "codebuddy.ai/requestId") ?? this.input.turnId ?? "current";
+      const toolName = stringField(phase ?? {}, "toolName", "streamingToolName");
+      const text = toolName ? `WorkBuddy ${phaseName}: ${toolName}` : `WorkBuddy ${phaseName}`;
+      return [
+        this.upsert(
+          `progress:${requestId}`,
+          "progress",
+          requestId,
+          text,
+          phaseName === "idle" ? "complete" : "streaming",
+          false,
+          { phase: phaseName },
+        ),
+      ];
+    }
+    return [];
+  }
+
+  complete(result: unknown): RuntimeActivity[] {
+    if (this.terminal) return [];
+    const record = result && typeof result === "object" ? (result as Record<string, unknown>) : {};
+    return this.terminalize(terminalState(record.stopReason));
+  }
+
+  private upsert(
+    key: string,
+    kind: RuntimeActivity["kind"],
+    nativeId: string,
+    text: string,
+    state: RuntimeActivity["state"],
+    append: boolean,
+    data?: Record<string, unknown>,
+  ): RuntimeActivity {
+    const existing = this.activities.get(key);
+    const activity: RuntimeActivity = {
+      id: existing?.id ?? `workbuddy:${kind}:${nativeId}`,
+      position: existing?.position ?? `${this.turn}.${this.nextItem++}`,
+      parentId: null,
+      kind,
+      text: append ? (existing?.text ?? "") + text : text || existing?.text || "",
+      state,
+      source: "live",
+      ...(data || existing?.data ? { data: { ...existing?.data, ...data } } : {}),
+    };
+    this.activities.set(key, activity);
+    return activity;
+  }
+
+  private terminalize(state: RuntimeActivity["state"]): RuntimeActivity[] {
+    if (this.terminal) return [];
+    this.terminal = true;
+    const updates: RuntimeActivity[] = [];
+    for (const [key, activity] of this.activities) {
+      if (activity.state === "complete" || activity.state === "error" || activity.state === "cancelled") continue;
+      const completed = { ...activity, state };
+      this.activities.set(key, completed);
+      updates.push(completed);
+    }
+    return updates;
+  }
+
+  private userData(): Record<string, unknown> | undefined {
+    if (!this.input.turnId) return undefined;
+    return this.input.turnOrigin === "clawchat"
+      ? { clawchatMessageId: this.input.turnId }
+      : { clientMessageId: `turn_${this.input.turnId}_user` };
+  }
+}
+
+function terminalState(stopReason: unknown): RuntimeActivity["state"] {
+  if (stopReason === "cancelled") return "cancelled";
+  if (stopReason === "refusal") return "error";
+  return "complete";
+}
+
+function toolState(status: string): RuntimeActivity["state"] {
+  if (status === "completed") return "complete";
+  if (status === "failed") return "error";
+  return "streaming";
+}
+
+class AsyncActivityQueue implements AsyncIterable<RuntimeActivity> {
+  private readonly values: RuntimeActivity[] = [];
+  private readonly waiters: Array<{
+    resolve: (result: IteratorResult<RuntimeActivity>) => void;
+    reject: (error: Error) => void;
+  }> = [];
+  private failure: Error | null = null;
+  private completed = false;
+
+  push(value: RuntimeActivity): void {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter.resolve({ done: false, value });
+    else this.values.push(value);
+  }
+
+  end(): void {
+    this.completed = true;
+    for (const waiter of this.waiters.splice(0)) waiter.resolve({ done: true, value: undefined });
+  }
+
+  fail(error: Error): void {
+    this.failure = error;
+    for (const waiter of this.waiters.splice(0)) waiter.reject(error);
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<RuntimeActivity> {
+    return {
+      next: async () => {
+        const value = this.values.shift();
+        if (value) return { done: false, value };
+        if (this.failure) throw this.failure;
+        if (this.completed) return { done: true, value: undefined };
+        return await new Promise<IteratorResult<RuntimeActivity>>((resolve, reject) => {
+          this.waiters.push({ resolve, reject });
+        });
+      },
+    };
+  }
+}
+
 function acpHeaders(connectionId: string, sessionToken: string): Record<string, string> {
   return {
     Accept: "application/json, text/event-stream",
@@ -301,12 +649,12 @@ interface HttpResponse {
 
 class PersistentHttpConnection {
   readonly pathname: string;
-  private buffer = Buffer.alloc(0);
   private pending:
     | {
         resolve: (response: HttpResponse) => void;
         reject: (error: Error) => void;
         timer: ReturnType<typeof setTimeout>;
+        parser: IncrementalHttpResponseParser;
       }
     | undefined;
 
@@ -319,8 +667,12 @@ class PersistentHttpConnection {
   ) {
     this.pathname = pathname;
     socket.on("data", (chunk) => {
-      this.buffer = Buffer.concat([this.buffer, Buffer.from(chunk)]);
-      this.consumePendingResponse();
+      try {
+        this.pending?.parser.push(Buffer.from(chunk));
+      } catch (error) {
+        this.rejectPending(error instanceof Error ? error : new Error(String(error)));
+        socket.destroy();
+      }
     });
     socket.on("error", (error) => this.rejectPending(error));
     socket.on("close", () => this.rejectPending(new Error("ACP HTTP connection closed unexpectedly")));
@@ -355,6 +707,7 @@ class PersistentHttpConnection {
     pathname: string,
     headers: Record<string, string>,
     body = Buffer.alloc(0),
+    onBodyChunk?: (chunk: Buffer) => void,
   ): Promise<HttpResponse> {
     if (this.pending) throw new Error("Concurrent ACP HTTP requests are not supported");
     const requestHeaders = {
@@ -372,31 +725,21 @@ class PersistentHttpConnection {
         reject(new Error("ACP HTTP response timed out"));
         this.socket.destroy();
       }, this.timeoutMs);
-      this.pending = { resolve, reject, timer };
+      const parser = new IncrementalHttpResponseParser(onBodyChunk, (parsed) => {
+        const pending = this.pending;
+        if (!pending) return;
+        this.pending = undefined;
+        clearTimeout(pending.timer);
+        pending.resolve(parsed);
+      });
+      this.pending = { resolve, reject, timer, parser };
     });
     this.socket.write(Buffer.concat([Buffer.from(head, "utf8"), body]));
-    this.consumePendingResponse();
     return await response;
   }
 
   close(): void {
     this.socket.destroy();
-  }
-
-  private consumePendingResponse(): void {
-    if (!this.pending) return;
-    try {
-      const parsed = parseHttpResponse(this.buffer);
-      if (!parsed) return;
-      this.buffer = this.buffer.subarray(parsed.consumedBytes);
-      const { resolve, timer } = this.pending;
-      this.pending = undefined;
-      clearTimeout(timer);
-      resolve(parsed.response);
-    } catch (error) {
-      this.rejectPending(error instanceof Error ? error : new Error(String(error)));
-      this.socket.destroy();
-    }
   }
 
   private rejectPending(error: Error): void {
@@ -408,73 +751,141 @@ class PersistentHttpConnection {
   }
 }
 
-function parseHttpResponse(buffer: Buffer): { response: HttpResponse; consumedBytes: number } | null {
-  const headerEnd = buffer.indexOf("\r\n\r\n");
-  if (headerEnd < 0) return null;
-  const headerLines = buffer.subarray(0, headerEnd).toString("latin1").split("\r\n");
-  const statusMatch = /^HTTP\/1\.[01]\s+(\d{3})\b/u.exec(headerLines.shift() ?? "");
-  if (!statusMatch) throw new Error("ACP HTTP response had an invalid status line");
-  const headers = new Map<string, string>();
-  for (const line of headerLines) {
-    const separator = line.indexOf(":");
-    if (separator <= 0) throw new Error("ACP HTTP response had an invalid header");
-    headers.set(line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim());
-  }
-  const bodyOffset = headerEnd + 4;
-  const contentLength = headers.get("content-length");
-  let body: Buffer;
-  let consumedBytes: number;
-  if (contentLength !== undefined) {
-    const length = Number(contentLength);
-    if (!Number.isSafeInteger(length) || length < 0 || length > MAX_HTTP_BODY_BYTES) {
-      throw new Error("ACP HTTP response declared an invalid body length");
-    }
-    if (buffer.byteLength < bodyOffset + length) return null;
-    body = buffer.subarray(bodyOffset, bodyOffset + length);
-    consumedBytes = bodyOffset + length;
-  } else if (headers.get("transfer-encoding")?.toLowerCase().includes("chunked")) {
-    const chunked = parseChunkedBody(buffer, bodyOffset);
-    if (!chunked) return null;
-    body = chunked.body;
-    consumedBytes = chunked.consumedBytes;
-  } else {
-    throw new Error("ACP HTTP response omitted a bounded body framing header");
-  }
-  return {
-    response: { statusCode: Number(statusMatch[1]), headers, body: Buffer.from(body) },
-    consumedBytes,
-  };
-}
+class IncrementalHttpResponseParser {
+  private buffer = Buffer.alloc(0);
+  private statusCode: number | null = null;
+  private headers: Map<string, string> | null = null;
+  private remainingContentLength: number | null = null;
+  private chunkBytesRemaining: number | null = null;
+  private awaitingChunkBoundary = false;
+  private awaitingFinalChunkBoundary = false;
+  private totalBytes = 0;
+  private readonly body: Buffer[] = [];
+  private completed = false;
 
-function parseChunkedBody(buffer: Buffer, bodyOffset: number): { body: Buffer; consumedBytes: number } | null {
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-  let offset = bodyOffset;
-  while (true) {
-    const lineEnd = buffer.indexOf("\r\n", offset);
-    if (lineEnd < 0) return null;
-    const sizeText = buffer.subarray(offset, lineEnd).toString("ascii").split(";", 1)[0] ?? "";
-    if (!/^[0-9a-f]+$/iu.test(sizeText)) throw new Error("ACP HTTP response had an invalid chunk size");
-    const size = Number.parseInt(sizeText, 16);
-    offset = lineEnd + 2;
-    if (size === 0) {
-      if (buffer.byteLength < offset + 2) return null;
-      if (buffer.subarray(offset, offset + 2).equals(Buffer.from("\r\n"))) {
-        return { body: Buffer.concat(chunks), consumedBytes: offset + 2 };
+  constructor(
+    private readonly onBodyChunk: ((chunk: Buffer) => void) | undefined,
+    private readonly onComplete: (response: HttpResponse) => void,
+  ) {}
+
+  push(chunk: Buffer): void {
+    if (this.completed) return;
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    try {
+      this.consume();
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  private consume(): void {
+    if (!this.headers && !this.consumeHeaders()) return;
+    if (this.remainingContentLength !== null) {
+      this.consumeContentLength();
+      return;
+    }
+    this.consumeChunked();
+  }
+
+  private consumeHeaders(): boolean {
+    const headerEnd = this.buffer.indexOf("\r\n\r\n");
+    if (headerEnd < 0) return false;
+    const headerLines = this.buffer.subarray(0, headerEnd).toString("latin1").split("\r\n");
+    const statusMatch = /^HTTP\/1\.[01]\s+(\d{3})\b/u.exec(headerLines.shift() ?? "");
+    if (!statusMatch) throw new Error("ACP HTTP response had an invalid status line");
+    const headers = new Map<string, string>();
+    for (const line of headerLines) {
+      const separator = line.indexOf(":");
+      if (separator <= 0) throw new Error("ACP HTTP response had an invalid header");
+      headers.set(line.slice(0, separator).trim().toLowerCase(), line.slice(separator + 1).trim());
+    }
+    const contentLength = headers.get("content-length");
+    if (contentLength !== undefined) {
+      const length = Number(contentLength);
+      if (!Number.isSafeInteger(length) || length < 0 || length > MAX_HTTP_BODY_BYTES) {
+        throw new Error("ACP HTTP response declared an invalid body length");
       }
-      const trailersEnd = buffer.indexOf("\r\n\r\n", offset);
-      if (trailersEnd < 0) return null;
-      return { body: Buffer.concat(chunks), consumedBytes: trailersEnd + 4 };
+      this.remainingContentLength = length;
+    } else if (!headers.get("transfer-encoding")?.toLowerCase().includes("chunked")) {
+      throw new Error("ACP HTTP response omitted a bounded body framing header");
     }
-    totalBytes += size;
-    if (totalBytes > MAX_HTTP_BODY_BYTES) throw new Error("ACP HTTP response exceeded its body limit");
-    if (buffer.byteLength < offset + size + 2) return null;
-    chunks.push(buffer.subarray(offset, offset + size));
-    offset += size;
-    if (!buffer.subarray(offset, offset + 2).equals(Buffer.from("\r\n"))) {
-      throw new Error("ACP HTTP response had an invalid chunk boundary");
+    this.statusCode = Number(statusMatch[1]);
+    this.headers = headers;
+    this.buffer = this.buffer.subarray(headerEnd + 4);
+    if (this.remainingContentLength === 0) this.finish();
+    return true;
+  }
+
+  private consumeContentLength(): void {
+    if (this.remainingContentLength === null || this.completed) return;
+    const length = Math.min(this.buffer.byteLength, this.remainingContentLength);
+    if (length > 0) this.emit(this.take(length));
+    this.remainingContentLength -= length;
+    if (this.remainingContentLength === 0) this.finish();
+  }
+
+  private consumeChunked(): void {
+    while (!this.completed) {
+      if (this.awaitingFinalChunkBoundary) {
+        if (this.buffer.byteLength < 2) return;
+        if (this.buffer.subarray(0, 2).equals(Buffer.from("\r\n"))) {
+          this.buffer = this.buffer.subarray(2);
+          this.finish();
+          return;
+        }
+        const trailersEnd = this.buffer.indexOf("\r\n\r\n");
+        if (trailersEnd < 0) return;
+        this.buffer = this.buffer.subarray(trailersEnd + 4);
+        this.finish();
+        return;
+      }
+      if (this.awaitingChunkBoundary) {
+        if (this.buffer.byteLength < 2) return;
+        if (!this.buffer.subarray(0, 2).equals(Buffer.from("\r\n"))) {
+          throw new Error("ACP HTTP response had an invalid chunk boundary");
+        }
+        this.buffer = this.buffer.subarray(2);
+        this.awaitingChunkBoundary = false;
+        this.chunkBytesRemaining = null;
+      }
+      if (this.chunkBytesRemaining === null) {
+        const lineEnd = this.buffer.indexOf("\r\n");
+        if (lineEnd < 0) return;
+        const sizeText = this.buffer.subarray(0, lineEnd).toString("ascii").split(";", 1)[0] ?? "";
+        if (!/^[0-9a-f]+$/iu.test(sizeText)) throw new Error("ACP HTTP response had an invalid chunk size");
+        const size = Number.parseInt(sizeText, 16);
+        this.buffer = this.buffer.subarray(lineEnd + 2);
+        if (size === 0) {
+          this.awaitingFinalChunkBoundary = true;
+          continue;
+        }
+        this.chunkBytesRemaining = size;
+      }
+      const length = Math.min(this.buffer.byteLength, this.chunkBytesRemaining);
+      if (length === 0) return;
+      this.emit(this.take(length));
+      this.chunkBytesRemaining -= length;
+      if (this.chunkBytesRemaining === 0) this.awaitingChunkBoundary = true;
     }
-    offset += 2;
+  }
+
+  private take(length: number): Buffer {
+    const value = Buffer.from(this.buffer.subarray(0, length));
+    this.buffer = this.buffer.subarray(length);
+    return value;
+  }
+
+  private emit(value: Buffer): void {
+    this.totalBytes += value.byteLength;
+    if (this.totalBytes > MAX_HTTP_BODY_BYTES) throw new Error("ACP HTTP response exceeded its body limit");
+    this.body.push(value);
+    this.onBodyChunk?.(value);
+  }
+
+  private finish(): void {
+    if (this.completed || this.statusCode === null || !this.headers) return;
+    this.completed = true;
+    this.onComplete({ statusCode: this.statusCode, headers: this.headers, body: Buffer.concat(this.body) });
   }
 }
 

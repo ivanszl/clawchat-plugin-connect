@@ -147,12 +147,16 @@ export class TranscriptProjection {
 
   async upsertRuntimeActivity(sessionRef: string, activity: RuntimeActivity): Promise<TranscriptBlock> {
     const input = this.fromRuntimeActivity(sessionRef, activity);
-    const clawchatMessageId =
-      activity.kind === "user" && typeof activity.data?.clawchatMessageId === "string"
-        ? activity.data.clawchatMessageId
+    const surfaceMessageId =
+      activity.kind === "user"
+        ? typeof activity.data?.clawchatMessageId === "string"
+          ? activity.data.clawchatMessageId
+          : typeof activity.data?.clientMessageId === "string"
+            ? activity.data.clientMessageId
+            : null
         : null;
-    if (clawchatMessageId) {
-      const block = await this.options.stateStore.rekeyTranscriptBlock(sessionRef, clawchatMessageId, input);
+    if (surfaceMessageId) {
+      const block = await this.options.stateStore.rekeyTranscriptBlock(sessionRef, surfaceMessageId, input);
       if (block) return block;
     }
     for (const alias of activity.aliases ?? []) {
@@ -169,8 +173,8 @@ export class TranscriptProjection {
         (block) =>
           block.type === "message" &&
           block.role === "user" &&
-          block.origin === "client" &&
-          block.runtimeSource === undefined &&
+          (block.origin === "client" || block.origin === "clawchat") &&
+          block.runtimeSource !== "history" &&
           clientPromptMatchesRuntimeHistory(block.plainText, input.plainText),
       );
       if (optimistic) {

@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
-import { verifyWorkBuddyAiEndpoint, type WorkBuddyConnectedSocketIdentity } from "../src/runtime/workbuddy-acp-client";
+import type { RuntimeActivity } from "../src/runtime/types";
+import {
+  openWorkBuddyAiTaskEndpoint,
+  verifyWorkBuddyAiEndpoint,
+  type WorkBuddyConnectedSocketIdentity,
+} from "../src/runtime/workbuddy-acp-client";
 
 const taskId = "00000000-0000-4000-8000-000000000001";
 const workspace = "/private/tmp/workbuddy-acp-client";
@@ -186,6 +191,131 @@ describe("WorkBuddy private ACP client", () => {
       verifyWorkBuddyAiEndpoint({ endpoint, taskId, workspace, acpVersion: 1 }, 30, async () => null),
     ).rejects.toThrow("ACP HTTP response timed out");
   });
+
+  it("streams one synchronized text turn through the verified Task connection without overriding its model", async () => {
+    const serverSockets = new Set<Socket>();
+    let promptParams: Record<string, unknown> | undefined;
+    let deleteRequests = 0;
+    const endpoint = await serve((request, socket) => {
+      serverSockets.add(socket);
+      if (request.path.endsWith("/connect")) {
+        return jsonResponse({ connectionId: "turn-connection", sessionToken: "turn-token" });
+      }
+      if (request.method === "DELETE") {
+        deleteRequests += 1;
+        return emptyResponse();
+      }
+      const rpc = JSON.parse(request.body) as { id: number; method: string; params: Record<string, unknown> };
+      if (rpc.method === "initialize") {
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+      }
+      if (rpc.method === "session/load") {
+        return sseResponse([
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+          update({
+            sessionUpdate: "user_message_chunk",
+            messageId: "prior-user",
+            content: { type: "text", text: "The private answer is cobalt." },
+          }),
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+          {
+            jsonrpc: "2.0",
+            id: rpc.id,
+            result: { models: { currentModelId: "workbuddy-current-model", availableModels: [] } },
+          },
+        ]);
+      }
+      promptParams = rpc.params;
+      writeStreamingSse(socket, [
+        update({
+          sessionUpdate: "agent_thought_chunk",
+          messageId: "turn-agent",
+          content: { type: "text", text: "Using prior context" },
+        }),
+        update({
+          sessionUpdate: "session_info_update",
+          _meta: {
+            "codebuddy.ai/requestId": "native-request",
+            "codebuddy.ai/agentPhase": { phase: "tool_executing", toolName: "read", startedAt: 1 },
+          },
+        }),
+        update({ sessionUpdate: "tool_call", toolCallId: "tool-1", title: "Read native history", status: "running" }),
+        update({
+          sessionUpdate: "agent_message_chunk",
+          messageId: "turn-agent",
+          content: { type: "text", text: "The answer is " },
+        }),
+        update({
+          sessionUpdate: "agent_message_chunk",
+          messageId: "turn-agent",
+          content: { type: "text", text: "cobalt." },
+        }),
+        update({ sessionUpdate: "tool_call_update", toolCallId: "tool-1", status: "completed" }),
+        update({ sessionUpdate: "session_end", stopReason: "end_turn" }),
+        { jsonrpc: "2.0", id: rpc.id, result: { stopReason: "end_turn" } },
+      ]);
+      return null;
+    });
+
+    const attachment = await openWorkBuddyAiTaskEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => ({
+        pid: 120,
+        parentPid: 110,
+        executablePath: `${applicationPath}/Contents/MacOS/Electron`,
+      }),
+    );
+    expect(attachment.verification.replayFingerprint).toBe(fingerprint(["prior-user"]));
+
+    let accepted = 0;
+    const activities: RuntimeActivity[] = [];
+    for await (const activity of attachment.prompt({
+      prompt: "What was the private answer?",
+      turnId: "connect-turn",
+      turnOrigin: "client",
+      onAccepted: async () => {
+        accepted += 1;
+      },
+      workspace: {
+        projectId: null,
+        workingDirectory: workspace,
+        additionalDirectories: [],
+        skipGitRepoCheck: false,
+      },
+    })) {
+      activities.push(activity);
+    }
+
+    expect(promptParams).toEqual({
+      sessionId: taskId,
+      prompt: [{ type: "text", text: "What was the private answer?" }],
+      _meta: {
+        messageId: "clawchat-connect-client-connect-turn",
+        "codebuddy.ai": {
+          userMessageId: "clawchat-connect-client-connect-turn",
+          messageRequestId: "clawchat-connect-client-connect-turn",
+        },
+      },
+    });
+    expect(promptParams).not.toHaveProperty("model");
+    expect(accepted).toBe(1);
+    expect(serverSockets.size).toBe(1);
+    expect(activities.some((activity) => activity.kind === "user" && activity.state === "complete")).toBeTrue();
+    expect(activities.some((activity) => activity.kind === "reasoning")).toBeTrue();
+    expect(activities.some((activity) => activity.kind === "progress")).toBeTrue();
+    expect(activities.some((activity) => activity.kind === "tool")).toBeTrue();
+    const finalAssistant = activities.filter(
+      (activity) => activity.id === "workbuddy:assistant:turn-agent" && activity.state === "complete",
+    );
+    expect(finalAssistant).toHaveLength(1);
+    expect(finalAssistant[0]?.text).toBe("The answer is cobalt.");
+    expect(finalAssistant[0]?.position).toBe("1.5");
+
+    await attachment.close();
+    await attachment.close();
+    expect(deleteRequests).toBe(1);
+  });
 });
 
 interface FakeRequest {
@@ -258,6 +388,19 @@ function writeResponse(socket: Socket, response: FakeResponse): void {
   const midpoint = Math.floor(value.length / 2);
   socket.write(value.slice(0, midpoint));
   setTimeout(() => socket.write(value.slice(midpoint)), 1);
+}
+
+function writeStreamingSse(socket: Socket, values: unknown[]): void {
+  socket.write(
+    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n",
+  );
+  values.forEach((value, index) => {
+    setTimeout(() => {
+      const payload = `data: ${JSON.stringify(value)}\n\n`;
+      socket.write(`${Buffer.byteLength(payload).toString(16)}\r\n${payload}\r\n`);
+      if (index === values.length - 1) socket.write("0\r\n\r\n");
+    }, index * 2);
+  });
 }
 
 function jsonResponse(value: unknown, fragmented = false): FakeResponse {

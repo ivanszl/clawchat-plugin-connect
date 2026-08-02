@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   attachWorkBuddyTask,
+  connectWorkBuddyTask,
   discoverWorkBuddyTask,
   type WorkBuddyDiscoveryObservation,
   type WorkBuddyEndpointVerification,
@@ -29,7 +30,7 @@ function observation(): WorkBuddyDiscoveryObservation {
     sidecarIdentity: { pid: 110, version: 1, registrationTokenMatches: true },
     sidecarProcess: { pid: 110, parentPid: 100, executablePath: `${applicationPath}/Contents/MacOS/Electron` },
     endpointSession: {
-      sessionId: "__workbuddy_cli_host__-2-fixture",
+      sessionId: taskId,
       pid: 120,
       endpoint: "http://127.0.0.1:43129/api/v1/acp",
     },
@@ -90,6 +91,16 @@ describe("WorkBuddy Task discovery contract", () => {
     });
   });
 
+  it("rejects the central CLI host instead of treating it as the selected Task endpoint", async () => {
+    expect(
+      await failureCode(
+        source((value) => {
+          if (value.endpointSession) value.endpointSession.sessionId = "__workbuddy_cli_host__-2-fixture";
+        }),
+      ),
+    ).toBe("task-identity-mismatch");
+  });
+
   it("reports an Attachment ready only with the complete verified authoritative replay", async () => {
     await expect(
       attachWorkBuddyTask(
@@ -123,6 +134,32 @@ describe("WorkBuddy Task discovery contract", () => {
       completeness: "complete",
       limitations: [],
     });
+  });
+
+  it("closes a retained Attachment when replay or Task verification has not completed", async () => {
+    let closes = 0;
+    const discoverySource = source();
+    discoverySource.connectEndpoint = async () => ({
+      verification: {
+        taskId,
+        replayFingerprint: nativeReplayFingerprint,
+        replayStarted: true,
+        replayCompleted: false,
+        activities: [],
+        connectionOwner: observation().endpointOwner,
+      },
+      prompt: async function* () {
+        yield* [];
+      },
+      close: async () => {
+        closes += 1;
+      },
+    });
+
+    await expect(
+      connectWorkBuddyTask({ profile: "workbuddy-ai", taskId, expectedWorkspace: workspace }, discoverySource),
+    ).rejects.toMatchObject({ code: "task-replay-incomplete" });
+    expect(closes).toBe(1);
   });
 
   it("fails closed when an empty Task has no independent native identity record", async () => {

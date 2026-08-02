@@ -5,7 +5,11 @@ import { access, readFile, realpath } from "node:fs/promises";
 import { connect } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { verifyWorkBuddyAiEndpoint, type WorkBuddyConnectedSocketIdentity } from "./workbuddy-acp-client";
+import {
+  openWorkBuddyAiTaskEndpoint,
+  verifyWorkBuddyAiEndpoint,
+  type WorkBuddyConnectedSocketIdentity,
+} from "./workbuddy-acp-client";
 import {
   WORKBUDDY_AI_COMPATIBILITY,
   WorkBuddyDiscoveryError,
@@ -19,7 +23,6 @@ import { readWorkBuddyTaskTranscriptIdentity } from "./workbuddy-task-transcript
 
 const DEFAULT_APPLICATION_PATH = "/Applications/WorkBuddy AI.app";
 const BUNDLE_IDENTIFIER = "com.workbuddy.workbuddy-ai";
-const HOST_SESSION_PREFIX = "__workbuddy_cli_host__-";
 
 export interface WorkBuddyAiMacosDiscoveryOptions {
   applicationPath?: string;
@@ -111,6 +114,10 @@ export function createWorkBuddyAiMacosDiscoverySource(
       await verifyWorkBuddyAiEndpoint(input, requestTimeoutMs, async (identity) =>
         assertConnectedEndpointOwner(await confirmConnectedEndpointOwner(identity, commandTimeoutMs), input),
       ),
+    connectEndpoint: async (input) =>
+      await openWorkBuddyAiTaskEndpoint(input, requestTimeoutMs, async (identity) =>
+        assertConnectedEndpointOwner(await confirmConnectedEndpointOwner(identity, commandTimeoutMs), input),
+      ),
     confirmEndpointOwner: async (endpoint) => await confirmEndpointOwner(endpoint, commandTimeoutMs),
   };
 }
@@ -156,7 +163,7 @@ async function inspectWorkBuddyAi(
     : [];
   const endpointCandidates = sessions.filter(
     (session) =>
-      session.sessionId.startsWith(HOST_SESSION_PREFIX) &&
+      session.sessionId === input.taskId &&
       Number.isSafeInteger(session.pid) &&
       typeof session.acpEndpoint === "string",
   );

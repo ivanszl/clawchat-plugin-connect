@@ -58,6 +58,15 @@ export interface WorkBuddyTaskDiscoverySource {
     expectedEndpointProcessId: number;
     expectedSidecarProcessId: number;
   }): Promise<WorkBuddyEndpointVerification>;
+  connectEndpoint?(input: {
+    endpoint: string;
+    taskId: string;
+    workspace: string;
+    acpVersion: number;
+    applicationPath: string;
+    expectedEndpointProcessId: number;
+    expectedSidecarProcessId: number;
+  }): Promise<import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment>;
   confirmEndpointOwner(endpoint: string): Promise<WorkBuddyProcessIdentity | null>;
 }
 
@@ -128,9 +137,30 @@ export async function attachWorkBuddyTask(
   return { activities: verification.activities, completeness: "complete", limitations: [] };
 }
 
+export async function connectWorkBuddyTask(
+  input: WorkBuddyTaskDiscoveryInput,
+  source: WorkBuddyTaskDiscoverySource,
+): Promise<import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment> {
+  const connectEndpoint = source.connectEndpoint;
+  if (!connectEndpoint) throw new Error("WorkBuddy discovery source cannot retain a Task Attachment");
+  let attachment: import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment | null = null;
+  try {
+    await verifyWorkBuddyTask(input, source, async (endpointInput) => {
+      attachment = await connectEndpoint(endpointInput);
+      return attachment.verification;
+    });
+    if (!attachment) throw new Error("WorkBuddy Task Attachment was not established");
+    return attachment;
+  } catch (error) {
+    await (attachment as import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment | null)?.close();
+    throw error;
+  }
+}
+
 async function verifyWorkBuddyTask(
   input: WorkBuddyTaskDiscoveryInput,
   source: WorkBuddyTaskDiscoverySource,
+  verifyEndpoint = source.verifyEndpoint,
 ): Promise<{ discovered: DiscoveredWorkBuddyTask; verification: WorkBuddyEndpointVerification }> {
   const observation = await source.inspect(input);
   const application = observation.application;
@@ -239,8 +269,14 @@ async function verifyWorkBuddyTask(
   if (!endpointSession) {
     throw failure(
       "endpoint-unavailable",
-      "WorkBuddy AI has no active Task ACP host; keep the application and a Task open.",
+      "WorkBuddy AI has no active ACP endpoint for this Task; open the Task and run one native turn before attaching.",
     );
+  }
+  if (endpointSession.sessionId !== task.id) {
+    throw failure("task-identity-mismatch", "The discovered ACP endpoint belongs to a different WorkBuddy session.", {
+      expectedTaskId: task.id,
+      detectedSessionId: endpointSession.sessionId,
+    });
   }
   assertLoopbackEndpoint(endpointSession.endpoint);
   const endpointOwner = assertExpectedEndpointOwner(
@@ -253,7 +289,7 @@ async function verifyWorkBuddyTask(
 
   let verification: WorkBuddyEndpointVerification;
   try {
-    verification = await source.verifyEndpoint({
+    verification = await verifyEndpoint({
       endpoint: endpointSession.endpoint,
       taskId: task.id,
       workspace: authoritativeWorkspace,
