@@ -25,10 +25,10 @@ const {
 
 const canonicalWorkspace = await realpath(workspace);
 const turnMarker = workBuddyTestEnv("TURN_MARKER") ?? `WB_CONNECT_TURN_${Date.now()}`;
-const uiTaskTitle = workBuddyTestEnv("UI_TASK_TITLE");
-if (workBuddyTestProfile === "workbuddy-cn" && !uiTaskTitle) {
-  throw new Error("Set WORKBUDDY_CN_TEST_UI_TASK_TITLE to automate the native WorkBuddy UI synchronization check");
-}
+const { UI_TASK_TITLE: uiTaskTitle, UI_RESTORE_TASK_TITLE: uiRestoreTaskTitle } = requiredWorkBuddyTestEnv(
+  ["UI_TASK_TITLE", "UI_RESTORE_TASK_TITLE"],
+  "verify native UI synchronization and restore the prior application view",
+);
 const before = await inspectInstalledWorkBuddyTaskTranscript(taskId, "", workBuddyTestProfile);
 const selectedModel = (
   await readWorkBuddyTaskRuntimeSelection(workBuddyProfileCompatibility(workBuddyTestProfile).configDirectory, taskId)
@@ -140,13 +140,12 @@ if (persistedModel !== selectedModel) {
 }
 
 await adapter.close?.();
-if (uiTaskTitle) {
-  await verifyInstalledWorkBuddyNativeUi({
-    compatibility: workBuddyProfileCompatibility(workBuddyTestProfile),
-    taskTitle: uiTaskTitle,
-    marker: turnMarker,
-  });
-}
+await verifyInstalledWorkBuddyNativeUi({
+  compatibility: workBuddyProfileCompatibility(workBuddyTestProfile),
+  taskTitle: uiTaskTitle,
+  marker: turnMarker,
+  restoreTaskTitle: uiRestoreTaskTitle,
+});
 console.log(
   JSON.stringify(
     {
@@ -165,7 +164,8 @@ console.log(
       activityCount: activities.length,
       replayActivityCount: replay.activities.length,
       nativeRecordDelta: after.recordCount - before.recordCount,
-      nativeUiVerified: uiTaskTitle !== undefined,
+      nativeUiVerified: true,
+      priorApplicationViewRestored: uiRestoreTaskTitle,
     },
     null,
     2,

@@ -155,7 +155,7 @@ describe("Agent Binding configuration", () => {
           },
         },
       }),
-    ).toThrow("WorkBuddy endpoint and credentials are discovered at attachment time");
+    ).toThrow("WorkBuddy Agent Binding field is managed by the selected desktop distribution: endpoint");
   });
 
   it("normalizes an explicit mainland WorkBuddy profile without falling back to WorkBuddy AI", () => {
@@ -179,6 +179,25 @@ describe("Agent Binding configuration", () => {
     expect(() =>
       normalizeConfig({ agents: { desktop: { kind: "workbuddy", profile: "workbuddy-mainland" } } }),
     ).toThrow("WorkBuddy profile must be explicitly set to one of: workbuddy-ai, workbuddy-cn");
+  });
+
+  it.each([
+    ["endpoint", "http://127.0.0.1:43129/api/v1/acp"],
+    ["port", 43_129],
+    ["connectionId", "ephemeral-connection"],
+    ["sessionToken", "ephemeral-session"],
+    ["password", "product-password"],
+    ["authorization", "Bearer product-token"],
+    ["env", { CODEBUDDY_CONFIG_DIR: "/tmp/injected-product-config" }],
+    ["applicationVersion", "latest"],
+  ])("rejects the WorkBuddy-managed configuration field %s", (field, value) => {
+    expect(() =>
+      normalizeConfig({
+        agents: {
+          desktop: { kind: "workbuddy", profile: "workbuddy-ai", [field]: value },
+        },
+      }),
+    ).toThrow(`WorkBuddy Agent Binding field is managed by the selected desktop distribution: ${field}`);
   });
 
   it("rejects OpenCode Server controls that Connect owns", () => {

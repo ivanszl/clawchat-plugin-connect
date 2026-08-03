@@ -266,7 +266,26 @@ describe("Connect Client Interface", () => {
     expect(bootstrap.status).toBe(200);
     await expect(bootstrap.json()).resolves.toMatchObject({
       apiVersion: 1,
-      bindings: [{ bindingId: "codex", displayName: "Codex", clawChatUserId: "usr_agent_codex" }],
+      bindings: [
+        {
+          bindingId: "codex",
+          displayName: "Codex",
+          clawChatUserId: "usr_agent_codex",
+          runtimeKind: "codex",
+          runtimeProfile: null,
+        },
+      ],
+      runtimeAdapters: [
+        { kind: "codex", profiles: [] },
+        { kind: "opencode", profiles: [] },
+        {
+          kind: "workbuddy",
+          profiles: [
+            { id: "workbuddy-ai", applicationVersion: "5.2.7" },
+            { id: "workbuddy-cn", applicationVersion: "5.3.8" },
+          ],
+        },
+      ],
       capabilities: { localTurns: true, runtimeInteractions: true },
     });
     const slashSuggestions = await localRequest(

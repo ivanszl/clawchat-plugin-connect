@@ -23,6 +23,7 @@ import { ProjectCatalog } from "../projects";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
+import { releasedRuntimeAdapters } from "../runtime/released-adapters";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { RuntimeSessionOption, RuntimeSlashSelection } from "../runtime/types";
 import { createSessionContinuity, SessionLifecycleError } from "../session-continuity";
@@ -212,6 +213,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               outputVisibility: bindingScope
                 ? bindingOutputVisibility(options.config, bindingScope)
                 : options.config.outputVisibility,
+              runtimeAdapters: releasedRuntimeAdapters().map((adapter) => ({
+                ...adapter,
+                profiles: adapter.profiles.map((profile) => ({ ...profile })),
+              })),
               bindings: await Promise.all(
                 Object.entries(options.config.agents)
                   .filter(([bindingId]) => requestScope.includesBinding(bindingId))
@@ -219,6 +224,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                     bindingId,
                     displayName: binding.displayName || bindingId,
                     clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
+                    runtimeKind: binding.kind,
+                    runtimeProfile: binding.kind === "workbuddy" ? binding.profile : null,
                     outputVisibility: bindingOutputVisibility(options.config, bindingId),
                     model: binding.model ?? null,
                     modelReasoningEffort: binding.modelReasoningEffort ?? null,

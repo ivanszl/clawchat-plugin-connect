@@ -2,30 +2,37 @@ import { realpath } from "node:fs/promises";
 import type { RuntimeActivity } from "../../src/runtime/types";
 import { createWorkBuddyRuntimeAdapter } from "../../src/runtime/workbuddy-adapter";
 import { discoverWorkBuddyTask } from "../../src/runtime/workbuddy-task-discovery";
-import { createWorkBuddyAiMacosDiscoverySource } from "../../src/runtime/workbuddy-task-discovery-macos";
+import { createWorkBuddyMacosDiscoverySource } from "../../src/runtime/workbuddy-task-discovery-macos";
 import type { WorkBuddyAgentBindingConfig } from "../../src/types";
+import {
+  requiredWorkBuddyTestEnv,
+  workBuddyTestBindingId,
+  workBuddyTestCompatibility,
+  workBuddyTestEnv,
+  workBuddyTestProfile,
+} from "./workbuddy-test-profile";
 
-const taskId = process.env.WORKBUDDY_AI_TEST_TASK_ID;
-const workspace = process.env.WORKBUDDY_AI_TEST_TASK_WORKSPACE;
-const priorUserMarker = process.env.WORKBUDDY_AI_TEST_PRIOR_USER_MARKER;
-const priorAssistantMarker = process.env.WORKBUDDY_AI_TEST_PRIOR_ASSISTANT_MARKER;
-if (!taskId || !workspace || !priorUserMarker || !priorAssistantMarker) {
-  throw new Error(
-    "Set WORKBUDDY_AI_TEST_TASK_ID, WORKBUDDY_AI_TEST_TASK_WORKSPACE, WORKBUDDY_AI_TEST_PRIOR_USER_MARKER, and WORKBUDDY_AI_TEST_PRIOR_ASSISTANT_MARKER to a dedicated WorkBuddy AI test Task.",
-  );
-}
+const {
+  TASK_ID: taskId,
+  TASK_WORKSPACE: workspace,
+  PRIOR_USER_MARKER: priorUserMarker,
+  PRIOR_ASSISTANT_MARKER: priorAssistantMarker,
+} = requiredWorkBuddyTestEnv(
+  ["TASK_ID", "TASK_WORKSPACE", "PRIOR_USER_MARKER", "PRIOR_ASSISTANT_MARKER"],
+  "verify application restart and endpoint rotation",
+);
 
 const canonicalWorkspace = await realpath(workspace);
-const runMarker = process.env.WORKBUDDY_AI_TEST_RECOVERY_MARKER ?? `WB_CONNECT_RECOVERY_${Date.now()}`;
+const runMarker = workBuddyTestEnv("RECOVERY_MARKER") ?? `WB_CONNECT_RECOVERY_${Date.now()}`;
 const probeMarker = `${runMarker}_NOT_TRANSMITTED`;
 const turnMarker = `${runMarker}_CONTINUED`;
-const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: "workbuddy-ai" };
-const discoverySource = createWorkBuddyAiMacosDiscoverySource();
-const discoveryInput = { profile: "workbuddy-ai" as const, taskId, expectedWorkspace: canonicalWorkspace };
+const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: workBuddyTestProfile };
+const discoverySource = createWorkBuddyMacosDiscoverySource(workBuddyTestProfile);
+const discoveryInput = { profile: workBuddyTestProfile, taskId, expectedWorkspace: canonicalWorkspace };
 const before = await discoverWorkBuddyTask(discoveryInput, discoverySource);
 const adapter = createWorkBuddyRuntimeAdapter();
 const session = await adapter.start(binding, {
-  agentId: "installed-workbuddy-ai-recovery",
+  agentId: `${workBuddyTestBindingId}-recovery`,
   chatId: "client-installed-recovery",
   sessionId: "client-installed-recovery",
   runtimeSessionId: taskId,
@@ -60,7 +67,9 @@ try {
     }
   }
   if (after.application.processId === before.application.processId || after.endpoint === before.endpoint) {
-    throw new Error("WorkBuddy AI did not restart with rotated process and endpoint data before the recovery deadline");
+    throw new Error(
+      `${workBuddyTestCompatibility.displayName} did not restart with rotated process and endpoint data before the recovery deadline`,
+    );
   }
 
   let probeAccepted = 0;
@@ -124,6 +133,7 @@ try {
     `${JSON.stringify(
       {
         phase: "complete",
+        profile: workBuddyTestProfile,
         runMarker,
         taskId,
         stableTaskIdentity: after.task.id === before.task.id,

@@ -143,6 +143,9 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
   return {
     kind: "workbuddy",
     modes: [],
+    prepare: async (binding) => {
+      await source.listTasks(requireWorkBuddyProfile(binding));
+    },
     modesFor: (_binding, scope) =>
       scope?.runtimeThreadId ? (catalogs.get(scope.runtimeThreadId)?.modes.map((mode) => mode.id) ?? []) : [],
     lifecycleCapabilities: { archive: false, restore: false, delete: false },

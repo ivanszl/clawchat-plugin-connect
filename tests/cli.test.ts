@@ -233,6 +233,29 @@ describe("runConnectCli", () => {
     expect(output.stdout.join("")).toContain("liveware exposure: https://app-1.apps.example");
   });
 
+  it("reports the selected WorkBuddy Adapter tuple and its latest bounded operator diagnostic", async () => {
+    const path = await tempConfig();
+    const config = defaultConfig();
+    config.defaultAgent = "desktop";
+    config.agents = { desktop: { kind: "workbuddy", profile: "workbuddy-ai" } };
+    config.stateDbPath = `${path}.sqlite`;
+    await saveConfig(config, path);
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    await store.setRuntimeConnectionStatus(
+      "desktop",
+      false,
+      "WorkBuddy AI is installed but not running; open it before discovering Tasks.",
+    );
+    await store.close();
+    const output = io();
+
+    await expect(runConnectCli(["status", "--config", path], output.deps)).resolves.toBe(0);
+
+    expect(output.stdout.join("")).toContain("runtime adapter: workbuddy/workbuddy-ai");
+    expect(output.stdout.join("")).toContain("supported tuple: WorkBuddy AI 5.2.7 / CodeBuddy 2.106.4 / ACP v1");
+    expect(output.stdout.join("")).toContain("recent diagnostic: WorkBuddy AI is installed but not running");
+  });
+
   it("checks the bundled Liveware executable when exposure is enabled", async () => {
     const path = await tempConfig();
     const config = defaultConfig();

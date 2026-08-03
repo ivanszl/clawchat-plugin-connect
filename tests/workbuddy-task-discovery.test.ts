@@ -4,6 +4,7 @@ import {
   attachWorkBuddyTask,
   connectWorkBuddyTask,
   discoverWorkBuddyTask,
+  WorkBuddyDiscoveryError,
   type WorkBuddyDiscoveryObservation,
   type WorkBuddyEndpointVerification,
   type WorkBuddyProcessIdentity,
@@ -210,6 +211,20 @@ describe("WorkBuddy Task discovery contract", () => {
     ).toBe("workspace-identity-mismatch");
   });
 
+  it("reports deterministic product-state inspection failures as discovery-failed", async () => {
+    const discoverySource = source();
+    discoverySource.inspect = async () => {
+      throw new Error("native state database could not be read");
+    };
+
+    await expect(
+      discoverWorkBuddyTask({ profile: "workbuddy-ai", taskId, expectedWorkspace: workspace }, discoverySource),
+    ).rejects.toMatchObject({
+      code: "discovery-failed",
+      message: "WorkBuddy AI Task discovery failed before an endpoint was selected.",
+    });
+  });
+
   it.each([
     [
       "application-absent",
@@ -401,6 +416,28 @@ describe("WorkBuddy Task discovery contract", () => {
       expect(diagnostic).not.toContain("dynamic-password");
       expect(diagnostic).toContain("[REDACTED]");
     }
+  });
+
+  it("bounds diagnostics and omits credentials, authorization, product configuration, and native transcript content", () => {
+    const error = new WorkBuddyDiscoveryError(
+      "endpoint-verification-failed",
+      `authorization: Bearer secret-token ${"x".repeat(2_000)}`,
+      {
+        password: "product-password",
+        headers: { authorization: "Bearer other-secret" },
+        injectedProductConfiguration: { CODEBUDDY_CONFIG_DIR: "/private/config" },
+        transcript: "private native transcript content",
+        safe: "operator-safe detail",
+      },
+    );
+
+    const diagnostic = JSON.stringify(error);
+    expect(diagnostic.length).toBeLessThan(2_000);
+    expect(diagnostic).not.toMatch(
+      /secret-token|other-secret|product-password|CODEBUDDY_CONFIG_DIR|native transcript/u,
+    );
+    expect(diagnostic).toContain("operator-safe detail");
+    expect(diagnostic).toContain("[REDACTED]");
   });
 
   it("returns rotated live connection data while preserving the stable Task identifier", async () => {

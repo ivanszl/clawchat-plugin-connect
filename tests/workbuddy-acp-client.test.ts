@@ -203,7 +203,7 @@ describe("WorkBuddy private ACP client", () => {
       await expect(
         verifyWorkBuddyEndpoint({ profile, endpoint, taskId, workspace, acpVersion: 1 }, 1_000, async () => null),
       ).rejects.toMatchObject({
-        code: "incompatible-version",
+        code: "protocol-incompatible",
         details: { selectedProfile: profile, detectedAcpVersion: 2, supportedAcpVersion: 1 },
       });
     },
@@ -1263,7 +1263,16 @@ describe("WorkBuddy private ACP client", () => {
       }),
     );
     await Bun.sleep(5);
-    expect(() => attachment.prompt(promptInput)).toThrow("busy in another UI");
+    try {
+      attachment.prompt(promptInput);
+      throw new Error("expected the busy Task diagnostic");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "task-busy" });
+      expect(error).toHaveProperty(
+        "message",
+        "WorkBuddy Task is busy in another UI; wait for it to become idle and retry",
+      );
+    }
 
     writeSseChunk(
       uiBroadcastSocket,

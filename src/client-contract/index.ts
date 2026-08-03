@@ -303,6 +303,8 @@ export interface BindingPreferenceView {
   bindingId: string;
   displayName: string;
   clawChatUserId: string | null;
+  runtimeKind: string;
+  runtimeProfile: string | null;
   outputVisibility: "minimal" | "normal" | "full";
   model: string | null;
   modelReasoningEffort: string | null;
@@ -310,11 +312,26 @@ export interface BindingPreferenceView {
   modeOptions: string[];
 }
 
+export interface RuntimeAdapterProfileMetadataView {
+  id: string;
+  displayName: string;
+  applicationVersion: string;
+  embeddedRuntime: { name: string; version: string };
+  protocol: { name: string; version: number };
+}
+
+export interface RuntimeAdapterMetadataView {
+  kind: string;
+  displayName: string;
+  profiles: RuntimeAdapterProfileMetadataView[];
+}
+
 export interface BootstrapView {
   apiVersion: 1;
   eventCursor: number;
   outputVisibility: "minimal" | "normal" | "full";
   bindings: BindingPreferenceView[];
+  runtimeAdapters: RuntimeAdapterMetadataView[];
   capabilities: {
     localTurns: boolean;
     cancellation: boolean;

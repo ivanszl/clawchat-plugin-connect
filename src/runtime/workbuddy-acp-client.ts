@@ -66,6 +66,15 @@ export class WorkBuddyPromptTransportError extends Error {
   }
 }
 
+export class WorkBuddyTaskBusyError extends Error {
+  readonly name = "WorkBuddyTaskBusyError";
+  readonly code = "task-busy" as const;
+
+  constructor() {
+    super("WorkBuddy Task is busy in another UI; wait for it to become idle and retry");
+  }
+}
+
 class WorkBuddyRpcRejectionError extends Error {
   readonly name = "WorkBuddyRpcRejectionError";
 }
@@ -144,7 +153,7 @@ export async function openWorkBuddyTaskEndpoint(
       const profile = input.profile ?? "workbuddy-ai";
       const compatibility = workBuddyProfileCompatibility(profile);
       throw new WorkBuddyDiscoveryError(
-        "incompatible-version",
+        "protocol-incompatible",
         `The ${compatibility.displayName} ACP protocol version is unsupported for profile ${profile}.`,
         {
           selectedProfile: profile,
@@ -239,7 +248,7 @@ export async function openWorkBuddyTaskEndpoint(
       prompt: (promptInput) => {
         if (closed) throw new Error("WorkBuddy Task Attachment is closed");
         if (activePrompt) throw new Error("WorkBuddy Task already has an active Connect prompt");
-        if (nativeBusy) throw new Error("WorkBuddy Task is busy in another UI; wait for it to become idle and retry");
+        if (nativeBusy) throw new WorkBuddyTaskBusyError();
         const operation = new WorkBuddyPromptOperation(
           connection,
           headers,

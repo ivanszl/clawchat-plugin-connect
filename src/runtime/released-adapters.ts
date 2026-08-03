@@ -14,12 +14,26 @@ import { createOpenCodeRuntimeAdapter } from "./opencode-adapter";
 import { RuntimeAdapterRegistry } from "./registry";
 import type { ConnectRuntimeAdapter } from "./types";
 import { createWorkBuddyRuntimeAdapter } from "./workbuddy-adapter";
+import {
+  WORKBUDDY_AI_COMPATIBILITY,
+  WORKBUDDY_CN_COMPATIBILITY,
+  type WorkBuddyProfileCompatibility,
+} from "./workbuddy-task-discovery";
 
 export const DEFAULT_CODEX_APPROVAL_POLICY = "on-request" as const;
 
 export interface ReleasedRuntimeAdapterMetadata {
   kind: AgentBindingConfig["kind"];
   displayName: string;
+  profiles: readonly ReleasedRuntimeAdapterProfileMetadata[];
+}
+
+export interface ReleasedRuntimeAdapterProfileMetadata {
+  id: string;
+  displayName: string;
+  applicationVersion: string;
+  embeddedRuntime: { name: string; version: string };
+  protocol: { name: string; version: number };
 }
 
 interface ReleasedRuntimeAdapterDefinition {
@@ -33,21 +47,27 @@ const CODEX_REASONING_EFFORTS = new Set<CodexReasoningEffort>(["minimal", "low",
 const CODEX_APPROVAL_POLICIES = new Set<CodexApprovalPolicy>(["never", "on-request", "untrusted"]);
 const CODEX_WEB_SEARCH_MODES = new Set<CodexWebSearchMode>(["disabled", "cached", "live"]);
 const OUTPUT_VISIBILITIES = new Set<OutputVisibility>(["minimal", "normal", "full"]);
-const WORKBUDDY_PROFILES = new Set<WorkBuddyAgentBindingConfig["profile"]>(["workbuddy-ai", "workbuddy-cn"]);
+const WORKBUDDY_PROFILE_METADATA = [
+  releasedWorkBuddyProfile(WORKBUDDY_AI_COMPATIBILITY),
+  releasedWorkBuddyProfile(WORKBUDDY_CN_COMPATIBILITY),
+] as const;
+const WORKBUDDY_PROFILES = new Set<WorkBuddyAgentBindingConfig["profile"]>(
+  WORKBUDDY_PROFILE_METADATA.map((profile) => profile.id),
+);
 
 const RELEASED_RUNTIME_ADAPTERS: readonly ReleasedRuntimeAdapterDefinition[] = [
   {
-    metadata: { kind: "codex", displayName: "Codex" },
+    metadata: { kind: "codex", displayName: "Codex", profiles: [] },
     normalize: normalizeCodexAgentBinding,
     create: createCodexRuntimeAdapter,
   },
   {
-    metadata: { kind: "opencode", displayName: "OpenCode" },
+    metadata: { kind: "opencode", displayName: "OpenCode", profiles: [] },
     normalize: normalizeOpenCodeAgentBinding,
     create: createOpenCodeRuntimeAdapter,
   },
   {
-    metadata: { kind: "workbuddy", displayName: "WorkBuddy" },
+    metadata: { kind: "workbuddy", displayName: "WorkBuddy", profiles: WORKBUDDY_PROFILE_METADATA },
     normalize: normalizeWorkBuddyAgentBinding,
     create: createWorkBuddyRuntimeAdapter,
   },
@@ -155,18 +175,10 @@ function normalizeOpenCodeAgentBinding(record: Record<string, unknown>): AgentBi
 }
 
 function normalizeWorkBuddyAgentBinding(record: Record<string, unknown>): WorkBuddyAgentBindingConfig {
-  for (const field of [
-    "endpoint",
-    "port",
-    "acpEndpoint",
-    "connectionId",
-    "sessionToken",
-    "bearer",
-    "bearerToken",
-    "password",
-  ]) {
-    if (field in record) {
-      throw new Error("WorkBuddy endpoint and credentials are discovered at attachment time");
+  const allowedFields = new Set(["kind", "profile", "outputVisibility", "displayName"]);
+  for (const field of Object.keys(record)) {
+    if (!allowedFields.has(field)) {
+      throw new Error(`WorkBuddy Agent Binding field is managed by the selected desktop distribution: ${field}`);
     }
   }
   const profile = readString(record.profile) as WorkBuddyAgentBindingConfig["profile"];
@@ -179,6 +191,18 @@ function normalizeWorkBuddyAgentBinding(record: Record<string, unknown>): WorkBu
     profile,
     ...(outputVisibility ? { outputVisibility } : {}),
     ...(readString(record.displayName) ? { displayName: readString(record.displayName) } : {}),
+  };
+}
+
+function releasedWorkBuddyProfile(
+  compatibility: WorkBuddyProfileCompatibility,
+): ReleasedRuntimeAdapterProfileMetadata & { id: WorkBuddyAgentBindingConfig["profile"] } {
+  return {
+    id: compatibility.profile,
+    displayName: compatibility.displayName,
+    applicationVersion: compatibility.applicationVersion,
+    embeddedRuntime: { name: "CodeBuddy", version: compatibility.embeddedCodeBuddyVersion },
+    protocol: { name: "ACP", version: compatibility.acpVersion },
   };
 }
 

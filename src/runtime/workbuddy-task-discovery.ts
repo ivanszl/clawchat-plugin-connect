@@ -136,6 +136,7 @@ export interface DiscoveredWorkBuddyTask {
 export type WorkBuddyDiscoveryFailureCode =
   | "application-absent"
   | "application-stopped"
+  | "discovery-failed"
   | "wrong-distribution"
   | "incompatible-version"
   | "task-not-found"
@@ -148,18 +149,21 @@ export type WorkBuddyDiscoveryFailureCode =
   | "task-identity-mismatch"
   | "task-replay-incomplete"
   | "authentication-failed"
+  | "protocol-incompatible"
   | "endpoint-verification-failed";
 
 export class WorkBuddyDiscoveryError extends Error {
   readonly name = "WorkBuddyDiscoveryError";
+  readonly details: Record<string, unknown>;
 
   constructor(
     readonly code: WorkBuddyDiscoveryFailureCode,
     message: string,
-    readonly details: Record<string, unknown> = {},
+    details: Record<string, unknown> = {},
     options?: ErrorOptions,
   ) {
-    super(message, options);
+    super(sanitizeDiagnosticMessage(message), options);
+    this.details = sanitizeDiagnosticDetails(details);
   }
 
   toJSON(): Record<string, unknown> {
@@ -221,7 +225,18 @@ async function verifyWorkBuddyTask(
 ): Promise<{ discovered: DiscoveredWorkBuddyTask; verification: WorkBuddyEndpointVerification }> {
   const compatibility = workBuddyProfileCompatibility(input.profile);
   const product = compatibility.displayName;
-  const observation = await source.inspect(input);
+  let observation: WorkBuddyDiscoveryObservation;
+  try {
+    observation = await source.inspect(input);
+  } catch (error) {
+    if (error instanceof WorkBuddyDiscoveryError) throw error;
+    throw failure(
+      "discovery-failed",
+      `${product} Task discovery failed before an endpoint was selected.`,
+      {},
+      { cause: error },
+    );
+  }
   const application = observation.application;
   if (!application) {
     throw failure(
@@ -476,8 +491,52 @@ function assertExpectedEndpointOwner(
 
 function redactSecrets(value: string): string {
   return value
-    .replace(/\b(connectionId|sessionToken|bearer|password)\s*[=:]\s*[^\s,;]+/giu, "$1=[REDACTED]")
-    .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]");
+    .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
+    .replace(
+      /\b(connection[-_ ]?id|session[-_ ]?token|authorization|bearer[-_ ]?token|bearer|password|credential|secret)\s*[=:]\s*[^\s,;]+/giu,
+      "$1=[REDACTED]",
+    );
+}
+
+const SENSITIVE_DIAGNOSTIC_KEY =
+  /(?:authorization|bearer|password|credential|secret|token|headers?|product.*config|config.*dir|transcript|prompt|response|payload|body|content)/iu;
+const MAX_DIAGNOSTIC_STRING = 512;
+
+function sanitizeDiagnosticMessage(message: string): string {
+  return truncateDiagnostic(redactSecrets(message));
+}
+
+function sanitizeDiagnosticDetails(details: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(details)
+      .slice(0, 24)
+      .map(([key, value]) => [
+        key,
+        SENSITIVE_DIAGNOSTIC_KEY.test(key) ? "[REDACTED]" : sanitizeDiagnosticValue(value, 0),
+      ]),
+  );
+}
+
+function sanitizeDiagnosticValue(value: unknown, depth: number): unknown {
+  if (typeof value === "string") return truncateDiagnostic(redactSecrets(value));
+  if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
+  if (depth >= 2) return "[TRUNCATED]";
+  if (Array.isArray(value)) return value.slice(0, 16).map((item) => sanitizeDiagnosticValue(item, depth + 1));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .slice(0, 24)
+        .map(([key, item]) => [
+          key,
+          SENSITIVE_DIAGNOSTIC_KEY.test(key) ? "[REDACTED]" : sanitizeDiagnosticValue(item, depth + 1),
+        ]),
+    );
+  }
+  return truncateDiagnostic(String(value));
+}
+
+function truncateDiagnostic(value: string): string {
+  return value.length <= MAX_DIAGNOSTIC_STRING ? value : `${value.slice(0, MAX_DIAGNOSTIC_STRING)}…[TRUNCATED]`;
 }
 
 function failure(

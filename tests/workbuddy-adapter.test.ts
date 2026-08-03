@@ -66,6 +66,23 @@ function source(): WorkBuddyRuntimeSource {
 }
 
 describe("WorkBuddy Runtime Adapter", () => {
+  it("diagnoses the selected pinned distribution before a Binding starts", async () => {
+    const profiles: string[] = [];
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      ...source(),
+      listTasks: async (profile) => {
+        profiles.push(profile);
+        return [];
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+
+    await adapter.prepare?.(binding);
+
+    expect(profiles).toEqual(["workbuddy-ai"]);
+    await adapter.close?.();
+  });
+
   it.each(["workbuddy-ai", "workbuddy-cn"] as const)(
     "exposes only the attached %s Task catalog through runtime-neutral identities",
     async (profile) => {

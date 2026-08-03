@@ -7,7 +7,7 @@
     <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
     <img alt="Platforms: macOS, Linux, and Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
-    <img alt="Runtimes: Codex and OpenCode" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode-f97316?style=flat-square">
+    <img alt="Runtimes: Codex, OpenCode, and WorkBuddy" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode%20%7C%20WorkBuddy-f97316?style=flat-square">
   </p>
   <p>
     <a href="#features">Features</a> ·
@@ -54,8 +54,9 @@ The ClawChat surface is for conversation-scoped work. Local Project registration
 | --- | --- | --- | --- |
 | Codex | `codex app-server` | model, reasoning effort, sandbox mode | discover, resume, cancel, archive, restore, delete |
 | OpenCode | `opencode serve` | agent, provider-qualified model, variant | discover, resume, cancel, delete |
+| WorkBuddy | desktop-owned Task ACP endpoint | Task-owned model, mode, configuration, Commands, Skills | discover, adopt, resume, cancel |
 
-OpenCode compatibility is pinned to OpenCode `1.18.10`. Connect does not install or upgrade either runtime. See [Runtime Adapters](./docs/runtime-adapters.md) for the detailed capability boundary.
+OpenCode compatibility is pinned to OpenCode `1.18.10`. WorkBuddy supports only the two exact desktop tuples documented in [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md). Connect does not install or upgrade any runtime. See [Runtime Adapters](./docs/runtime-adapters.md) for the general capability boundary.
 
 > [!IMPORTANT]
 > ClawChat Connect is alpha software. Review [Local data and security](#local-data-and-security) before enabling trusted-LAN or public Liveware access.

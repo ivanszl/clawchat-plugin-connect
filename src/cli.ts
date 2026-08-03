@@ -835,9 +835,21 @@ function formatStatus(
   status: Awaited<ReturnType<ConnectStateStore["getRuntimeStatus"]>>,
   livewareExposure: Awaited<ReturnType<ConnectStateStore["getLivewareExposure"]>>,
 ): string {
+  const binding = agentId ? config.agents[agentId] : undefined;
+  const adapterMetadata = binding
+    ? releasedRuntimeAdapters().find((adapter) => adapter.kind === binding.kind)
+    : undefined;
+  const profileId = binding?.kind === "workbuddy" ? binding.profile : null;
+  const profileMetadata = profileId ? adapterMetadata?.profiles.find((profile) => profile.id === profileId) : undefined;
   return `${[
     "ClawChat Connect status",
     `agent: ${agentId ?? "not selected"}`,
+    ...(binding ? [`runtime adapter: ${binding.kind}${profileId ? `/${profileId}` : ""}`] : []),
+    ...(profileMetadata
+      ? [
+          `supported tuple: ${profileMetadata.displayName} ${profileMetadata.applicationVersion} / ${profileMetadata.embeddedRuntime.name} ${profileMetadata.embeddedRuntime.version} / ${profileMetadata.protocol.name} v${profileMetadata.protocol.version}`,
+        ]
+      : []),
     `configured agents: ${Object.keys(config.agents).length}`,
     `activated: ${activated ? "yes" : "no"}`,
     `websocket: ${config.websocketUrl}`,
@@ -847,6 +859,7 @@ function formatStatus(
     `runtime: ${status?.websocketConnected === true ? "connected" : status?.websocketConnected === false ? "disconnected" : "unknown"}`,
     `running: ${status?.globalRunning ?? 0}`,
     `queued: ${status?.globalQueued ?? 0}`,
+    ...(status?.recentError ? [`recent diagnostic: ${status.recentError}`] : []),
   ].join("\n")}\n`;
 }
 
