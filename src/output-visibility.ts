@@ -1,4 +1,4 @@
-import type { RuntimeActivity } from "./runtime/types";
+import { isProjectionOnlyRuntimeActivity, type RuntimeActivity } from "./runtime/types";
 import type { ConnectStateStore } from "./state";
 import type { ConnectConfig, OutputVisibility } from "./types";
 
@@ -36,6 +36,7 @@ export function materializeRuntimeOutput(
   activity: RuntimeActivity,
   policy: OutputVisibilityPolicy,
 ): MaterializedRuntimeReply | null {
+  if (isProjectionOnlyRuntimeActivity(activity)) return null;
   const outputKind = runtimeOutputKind(activity);
   if (!policy.includeKinds.has(outputKind)) return null;
   return {

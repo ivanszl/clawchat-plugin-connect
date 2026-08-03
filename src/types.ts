@@ -42,7 +42,22 @@ export interface OpenCodeAgentBindingConfig extends AgentBindingConfigBase {
   networkAccessEnabled?: never;
 }
 
-export type AgentBindingConfig = CodexAgentBindingConfig | OpenCodeAgentBindingConfig;
+export interface WorkBuddyAgentBindingConfig extends AgentBindingConfigBase {
+  kind: "workbuddy";
+  profile: "workbuddy-ai" | "workbuddy-cn";
+  executablePathOverride?: never;
+  sessionOptions?: never;
+  additionalDirectories?: never;
+  codexPathOverride?: never;
+  model?: never;
+  sandboxMode?: never;
+  modelReasoningEffort?: never;
+  approvalPolicy?: never;
+  webSearchMode?: never;
+  networkAccessEnabled?: never;
+}
+
+export type AgentBindingConfig = CodexAgentBindingConfig | OpenCodeAgentBindingConfig | WorkBuddyAgentBindingConfig;
 
 export interface ConnectConfig {
   baseUrl: string;

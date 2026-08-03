@@ -337,8 +337,17 @@ export interface RuntimeActivity {
   state: RuntimeTranscriptEntry["state"] | "pending";
   source: "live" | RuntimeTranscriptSource;
   inputIdentity?: RuntimeInputIdentity;
-  data?: Record<string, unknown>;
+  data?: RuntimeActivityData;
   children?: RuntimeActivity[];
+}
+
+export interface RuntimeActivityData extends Record<string, unknown> {
+  deliveryDisposition?: "projection-only";
+  recoveredWhileDisconnected?: boolean;
+}
+
+export function isProjectionOnlyRuntimeActivity(activity: RuntimeActivity): boolean {
+  return activity.data?.deliveryDisposition === "projection-only";
 }
 
 export function runtimeActivityOrdinal(position: string): { turn: number; item: number } | null {
@@ -371,23 +380,30 @@ export interface ConnectRuntimeAdapter {
   readonly modes: readonly string[];
   readonly lifecycleCapabilities?: RuntimeLifecycleCapabilities;
   prepare?(binding: AgentBindingConfig): Promise<void>;
-  listModels?(binding: AgentBindingConfig): Promise<RuntimeModelOption[]>;
-  listSessionOptions?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeSessionOption[]>;
+  modesFor?(binding: AgentBindingConfig, scope?: RuntimeCatalogScope): readonly string[];
+  listModels?(binding: AgentBindingConfig, scope?: RuntimeCatalogScope): Promise<RuntimeModelOption[]>;
+  listSessionOptions?(
+    binding: AgentBindingConfig,
+    workspace: RuntimeWorkspace,
+    scope?: RuntimeCatalogScope,
+  ): Promise<RuntimeSessionOption[]>;
   listSkills?(
     binding: AgentBindingConfig,
     workspace: RuntimeWorkspace,
-    options?: { forceRefresh?: boolean },
+    options?: { forceRefresh?: boolean; runtimeThreadId?: string },
   ): Promise<RuntimeSkillSummary[]>;
   onSkillsChanged?(listener: () => void): () => void;
   listCommands?(
     binding: AgentBindingConfig,
     workspace: RuntimeWorkspace,
-    options?: { forceRefresh?: boolean },
+    options?: { forceRefresh?: boolean; runtimeThreadId?: string },
   ): Promise<RuntimeCommandSummary[]>;
   onCommandsChanged?(listener: () => void): () => void;
+  onCatalogsChanged?(listener: () => void): () => void;
   discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
+  verifyThreadReady?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;
   readActivity?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeActivitySnapshot>;
   reconcileInput?(
     binding: AgentBindingConfig,
@@ -399,4 +415,9 @@ export interface ConnectRuntimeAdapter {
   deleteThread?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;
   start(binding: AgentBindingConfig, context: ConnectRuntimeStartContext): Promise<ConnectRuntimeSession>;
   close?(): Promise<void>;
+}
+
+export interface RuntimeCatalogScope {
+  runtimeThreadId?: string;
+  workspace?: RuntimeWorkspace;
 }

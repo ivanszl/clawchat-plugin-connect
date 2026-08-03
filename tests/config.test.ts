@@ -125,6 +125,81 @@ describe("Agent Binding configuration", () => {
     });
   });
 
+  it("normalizes an explicit WorkBuddy AI profile without accepting ephemeral endpoint configuration", () => {
+    const config = normalizeConfig({
+      defaultAgent: "desktop-task",
+      agents: {
+        "desktop-task": {
+          kind: "workbuddy",
+          profile: "workbuddy-ai",
+          displayName: "Desktop Task",
+        },
+      },
+    });
+
+    expect(getAgentBinding(config, "desktop-task")).toEqual({
+      kind: "workbuddy",
+      profile: "workbuddy-ai",
+      displayName: "Desktop Task",
+      env: { CLAWCHAT_CONNECT_AGENT_ID: "desktop-task" },
+    });
+    expect(() =>
+      normalizeConfig({
+        agents: {
+          arbitrary: {
+            kind: "workbuddy",
+            profile: "workbuddy-ai",
+            endpoint: "http://127.0.0.1:43129/api/v1/acp",
+            connectionId: "ephemeral-connection",
+            sessionToken: "ephemeral-token",
+          },
+        },
+      }),
+    ).toThrow("WorkBuddy Agent Binding field is managed by the selected desktop distribution: endpoint");
+  });
+
+  it("normalizes an explicit mainland WorkBuddy profile without falling back to WorkBuddy AI", () => {
+    const config = normalizeConfig({
+      defaultAgent: "mainland-desktop",
+      agents: {
+        "mainland-desktop": {
+          kind: "workbuddy",
+          profile: "workbuddy-cn",
+          displayName: "Mainland WorkBuddy",
+        },
+      },
+    });
+
+    expect(getAgentBinding(config, "mainland-desktop")).toEqual({
+      kind: "workbuddy",
+      profile: "workbuddy-cn",
+      displayName: "Mainland WorkBuddy",
+      env: { CLAWCHAT_CONNECT_AGENT_ID: "mainland-desktop" },
+    });
+    expect(() =>
+      normalizeConfig({ agents: { desktop: { kind: "workbuddy", profile: "workbuddy-mainland" } } }),
+    ).toThrow("WorkBuddy profile must be explicitly set to one of: workbuddy-ai, workbuddy-cn");
+  });
+
+  it.each([
+    ["endpoint", "http://127.0.0.1:43129/api/v1/acp"],
+    ["port", 43_129],
+    ["connectionId", "ephemeral-connection"],
+    ["sessionToken", "ephemeral-session"],
+    ["password", "product-password"],
+    ["authorization", "Bearer product-token"],
+    ["env", { CODEBUDDY_CONFIG_DIR: "/tmp/injected-product-config" }],
+    ["applicationVersion", "latest"],
+  ])("rejects the WorkBuddy-managed configuration field %s", (field, value) => {
+    expect(() =>
+      normalizeConfig({
+        agents: {
+          desktop: { kind: "workbuddy", profile: "workbuddy-ai", [field]: value },
+        },
+      }),
+    ).toThrow(`WorkBuddy Agent Binding field is managed by the selected desktop distribution: ${field}`);
+  });
+
   it("rejects OpenCode Server controls that Connect owns", () => {
     expect(() =>
       normalizeConfig({

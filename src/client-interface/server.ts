@@ -23,6 +23,7 @@ import { ProjectCatalog } from "../projects";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
+import { releasedRuntimeAdapters } from "../runtime/released-adapters";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { RuntimeSessionOption, RuntimeSlashSelection } from "../runtime/types";
 import { createSessionContinuity, SessionLifecycleError } from "../session-continuity";
@@ -213,6 +214,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               outputVisibility: bindingScope
                 ? bindingOutputVisibility(options.config, bindingScope)
                 : options.config.outputVisibility,
+              runtimeAdapters: releasedRuntimeAdapters().map((adapter) => ({
+                ...adapter,
+                profiles: adapter.profiles.map((profile) => ({ ...profile })),
+              })),
               bindings: await Promise.all(
                 Object.entries(options.config.agents)
                   .filter(([bindingId]) => requestScope.includesBinding(bindingId))
@@ -220,6 +225,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                     bindingId,
                     displayName: binding.displayName || bindingId,
                     clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
+                    runtimeKind: binding.kind,
+                    runtimeProfile: binding.kind === "workbuddy" ? binding.profile : null,
                     outputVisibility: bindingOutputVisibility(options.config, bindingId),
                     model: binding.model ?? null,
                     modelReasoningEffort: binding.modelReasoningEffort ?? null,
@@ -832,7 +839,11 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 let reasoningEffort: string | null = null;
                 try {
                   if (body.model) {
-                    const models = await options.runtimeAdapters.listModels(binding);
+                    const workspace = await projects.resolveWorkspace(session);
+                    const models = await options.runtimeAdapters.listModels(binding, {
+                      runtimeThreadId: session.runtimeSessionId ?? undefined,
+                      workspace,
+                    });
                     const selectedModel = requireModel(models, body.model);
                     model = selectedModel.id;
                     reasoningEffort = resolveEffort(selectedModel, body.reasoningEffort, true);
@@ -850,6 +861,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                     await projects.resolveWorkspace(session),
                     body.sessionOptions,
                     true,
+                    { runtimeThreadId: session.runtimeSessionId ?? undefined },
                   );
                   if (!validatedOptions.ok) return validatedOptions.error;
                   sessionOptions = validatedOptions.value;
@@ -1380,6 +1392,7 @@ async function sessionSkills(
   return await options.runtimeAdapters.listSkills(getAgentBinding(options.config, entry.bindingId), workspace, {
     forceRefresh,
     existingOnly,
+    runtimeThreadId: (await catalog.runtimeThreadId(sessionRef)) ?? undefined,
   });
 }
 
@@ -1397,6 +1410,7 @@ async function sessionCommands(
   return await options.runtimeAdapters.listCommands(getAgentBinding(options.config, entry.bindingId), workspace, {
     forceRefresh,
     existingOnly,
+    runtimeThreadId: (await catalog.runtimeThreadId(sessionRef)) ?? undefined,
   });
 }
 
@@ -1509,13 +1523,14 @@ async function validatedSessionOptions(
   workspace: RuntimeWorkspace,
   selected: Record<string, string>,
   requireInPlace = false,
+  scope?: import("../runtime/types").RuntimeCatalogScope,
 ): Promise<{ ok: true; value: Record<string, string> } | { ok: false; error: ReturnType<typeof commandError> }> {
   try {
     return {
       ok: true,
       value: validateSessionOptions(
         selected,
-        await runtimeAdapters.listSessionOptions(binding, workspace),
+        await runtimeAdapters.listSessionOptions(binding, workspace, { ...scope, workspace }),
         requireInPlace,
       ),
     };

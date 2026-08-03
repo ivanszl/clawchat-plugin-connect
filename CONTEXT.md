@@ -184,6 +184,18 @@ _Avoid_: Directoryless Session
 The external agent runtime's resumable conversation associated with a Session. Its identity is owned by the runtime and referenced by Connect.
 _Avoid_: Session, Project
 
+**WorkBuddy Task**:
+The WorkBuddy desktop runtime's native resumable conversation, represented in Connect as a Runtime Thread and identified durably by its stable Task ID rather than by any Task process or service endpoint.
+_Avoid_: WorkBuddy Session, Attachment
+
+**WorkBuddy Task Attachment**:
+A verified in-memory connection from one WorkBuddy Runtime Adapter to a stable WorkBuddy Task. Its process, endpoint, credentials, and authorization state are ephemeral and must be rediscovered and reverified after loss or rotation.
+_Avoid_: WorkBuddy Task, Runtime Thread mapping
+
+**Indeterminate Prompt Outcome**:
+A prompt whose native acceptance or completion cannot be proven from the reloaded authoritative Runtime Transcript after Attachment loss. Connect surfaces the uncertainty and never automatically resubmits or reports the prompt as successful.
+_Avoid_: Failed Prompt, Retriable Prompt
+
 **Subagent Thread**:
 A child Runtime Thread spawned by an Agent while working in a parent Runtime Thread. It remains part of the parent's Session tree, is not a standalone Session Catalog entry, and its displayable Runtime Transcript is projected into the parent Client Transcript as a collapsed subagent block.
 _Avoid_: Session, Agent Binding
@@ -236,7 +248,7 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Removing an Agent Binding retires its Liveware Exposure, deletes its credentials, and purges its database records, Client commands/events, staged Turn Submissions, and isolated Non-Project workspaces before its ID may be reused; unrelated Bindings and installation-global Projects remain intact.
 - A Connect installation has one Connect Service; Agent Bindings and Runtime Adapters do not own background services.
 - Agent Binding IDs are arbitrary; Runtime Adapter selection comes only from the Binding's explicit `kind`.
-- The current release registers Codex and OpenCode Runtime Adapters; released kinds remain product scope, not a domain invariant.
+- The current release registers Codex, OpenCode, and WorkBuddy Runtime Adapters; released kinds remain product scope, not a domain invariant. WorkBuddy requires an explicit distribution profile and currently releases `workbuddy-ai` and `workbuddy-cn`; distributions remain strictly isolated.
 - Connect defines Project, Session, and Runtime Thread semantics uniformly across Runtime Adapter kinds. Each Runtime Adapter translates its coding agent's native project, workspace, conversation, session, or thread concepts into that Connect model rather than changing the model for its kind.
 - Successful activation synchronizes the Agent Binding ID to the connected ClawChat Profile nickname.
 - Projects are global and reusable across Agent Bindings.
@@ -245,6 +257,9 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - A Session never changes Agent Binding or Runtime Adapter kind. Choosing a different coding agent creates a new Session that may reuse the same Project; Connect does not transfer Runtime Thread context between coding agents.
 - A Session has zero or one Project.
 - A Runtime Thread is associated with at most one Session for an Agent Binding. Connect Client and ClawChat operate that same Session rather than creating separate Session copies for one native thread.
+- A persisted WorkBuddy Runtime Thread mapping retains only the selected distribution profile, stable WorkBuddy Task ID, and ordinary Session data; process IDs, service endpoints, connections, credentials, tokens, passwords, and authorization values remain Attachment-local and ephemeral.
+- Every new or recovered WorkBuddy Task Attachment rediscovers and reverifies the Task's profile, process, workspace, and authoritative Runtime Transcript. WorkBuddy UI selection changes do not alter an already adopted stable Task identity.
+- WorkBuddy prompts with uncertain native acceptance are never automatically resubmitted. Recovery reconciles the authoritative Runtime Transcript, projects WorkBuddy-native turns committed while disconnected exactly once, and prevents those recovered turns from being republished to ClawChat as new inbound requests.
 - ClawChat control commands create or replace a Session Intent; an ordinary message consumes it. Connect Client may explicitly create an empty Session, and adoption of an existing Runtime Thread also creates a Session.
 - Turns from ClawChat and Connect Client are strictly ordered per Session; different Sessions may run concurrently even when they belong to one ClawChat conversation.
 - Each accepted turn is bound to an immutable Turn Target before entering the Session queue. Later Session selection changes never redirect queued work to another Session, Project, Agent Binding, or Runtime Thread.

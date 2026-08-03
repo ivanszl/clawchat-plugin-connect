@@ -152,15 +152,19 @@ export class SessionCatalog {
     const binding = getAgentBinding(this.options.config, entry.bindingId);
     const runtimeStatus = await this.options.stateStore.getRuntimeStatus(entry.bindingId);
     const activity = (await this.options.sessionActivity?.(entry.bindingId, normalized)) ?? "idle";
-    const advertisedModels = await this.options.runtimeAdapters.listModels(binding);
+    const runtimeThreadId = session?.runtimeSessionId ?? target?.runtimeSessionId ?? undefined;
+    const runtimeWorkspace = session ? await this.projects.resolveWorkspace(session) : undefined;
+    const catalogScope = { runtimeThreadId, workspace: runtimeWorkspace };
+    const advertisedModels = await this.options.runtimeAdapters.listModels(binding, catalogScope);
     const modelOptions = advertisedModels ?? [];
     const selectedSessionOptions = {
       ...(binding.sessionOptions ?? {}),
       ...(session?.sessionOptions ?? {}),
     };
-    const advertisedSessionOptions = session
-      ? await this.options.runtimeAdapters.listSessionOptions(binding, await this.projects.resolveWorkspace(session))
-      : [];
+    const advertisedSessionOptions =
+      session && runtimeWorkspace
+        ? await this.options.runtimeAdapters.listSessionOptions(binding, runtimeWorkspace, catalogScope)
+        : [];
     const sessionOptionDefinitions = advertisedSessionOptions.map((option) => {
       const selected = selectedSessionOptions[option.id];
       return selected && !option.values.some((value) => value.id === selected)
@@ -279,6 +283,13 @@ export class SessionCatalog {
     return true;
   }
 
+  async runtimeThreadId(sessionRef: string): Promise<string | null> {
+    const normalized = sessionRef.toUpperCase();
+    const session = await this.options.stateStore.getRuntimeSessionByRef(normalized);
+    if (session?.runtimeSessionId) return session.runtimeSessionId;
+    return (await this.options.stateStore.getSessionRefTarget(normalized))?.runtimeSessionId ?? null;
+  }
+
   async adopt(sessionRef: string): Promise<RuntimeSessionRecord | null> {
     const normalized = sessionRef.toUpperCase();
     const state = await this.load();
@@ -306,6 +317,10 @@ export class SessionCatalog {
     }
     const target = await this.options.stateStore.getSessionRefTarget(normalized);
     if (!target?.runtimeSessionId || !entry) return null;
+    await this.options.runtimeAdapters.verifyThreadReady(
+      getAgentBinding(this.options.config, target.agentId),
+      target.runtimeSessionId,
+    );
     await this.sessionContinuity.inConversation({ chatId: target.chatId, bindingId: target.agentId }).adopt({
       sessionRef: normalized,
       sessionId: randomUUID(),

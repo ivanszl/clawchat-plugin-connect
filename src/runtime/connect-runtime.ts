@@ -343,12 +343,25 @@ export class ConnectRuntime {
     return sessionRef ? await this.executor.cancel(sessionRef) : false;
   }
 
-  runtimeModesFor(binding: AgentBindingConfig): readonly string[] {
-    return this.runtimeAdapters.modesFor(binding);
+  runtimeModesFor(
+    binding: AgentBindingConfig,
+    selected?: RuntimeSessionRecord | import("../types").SessionIntentRecord | null,
+  ): readonly string[] {
+    return this.runtimeAdapters.modesFor(binding, {
+      runtimeThreadId:
+        selected && "runtimeSessionId" in selected ? (selected.runtimeSessionId ?? undefined) : undefined,
+    });
   }
 
-  async listRuntimeModels(binding: AgentBindingConfig): Promise<RuntimeModelOption[] | null> {
-    return await this.runtimeAdapters.listModels(binding);
+  async listRuntimeModels(
+    binding: AgentBindingConfig,
+    selected?: RuntimeSessionRecord | import("../types").SessionIntentRecord | null,
+  ): Promise<RuntimeModelOption[] | null> {
+    const runtimeSession = selected && "runtimeSessionId" in selected ? selected : null;
+    return await this.runtimeAdapters.listModels(binding, {
+      runtimeThreadId: runtimeSession?.runtimeSessionId ?? undefined,
+      workspace: runtimeSession ? await this.projects.resolveWorkspace(runtimeSession) : undefined,
+    });
   }
 
   async listRuntimeWorkspaces(): Promise<RuntimeWorkspaceChoice[]> {
@@ -441,7 +454,7 @@ export class ConnectRuntime {
   ): Promise<void> {
     const activeAgentId = current.agentId || this.options.agentId;
     const workspace = await this.projects.resolveWorkspace(current);
-    const model = await this.modelFor(current, activeAgentId);
+    const model = await this.modelFor(current, activeAgentId, workspace);
     const target = await this.sessionContinuity.forSession(current.sessionRef).targetForTurn("clawchat");
     const mode = await resolveOutputVisibility({
       config: this.options.config,
@@ -520,7 +533,7 @@ export class ConnectRuntime {
     const current = runtimeSessionFromTurnTarget(target);
     const activeAgentId = target.bindingId || this.options.agentId;
     const workspace = await this.projects.resolveWorkspace(current);
-    const model = await this.modelFor(current, activeAgentId);
+    const model = await this.modelFor(current, activeAgentId, workspace);
     await this.options.transcriptProjection?.appendUserMessage({
       sessionRef: current.sessionRef,
       text: prompt,
@@ -679,10 +692,17 @@ export class ConnectRuntime {
     }
   }
 
-  private async modelFor(current: RuntimeSessionRecord, agentId: string) {
+  private async modelFor(current: RuntimeSessionRecord, agentId: string, workspace: RuntimeWorkspace) {
     const binding = getAgentBinding(this.options.config, agentId);
     if (binding.kind === "opencode") return { model: undefined, reasoningEffort: undefined };
-    return resolveModelSelection(binding, current, await this.runtimeAdapters.listModels(binding));
+    return resolveModelSelection(
+      binding,
+      current,
+      await this.runtimeAdapters.listModels(binding, {
+        runtimeThreadId: current.runtimeSessionId ?? undefined,
+        workspace,
+      }),
+    );
   }
 }
 

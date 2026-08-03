@@ -227,8 +227,28 @@ describe("RuntimeAdapterRegistry", () => {
 
   it("constructs released adapters and operator metadata from one catalog", () => {
     expect(releasedRuntimeAdapters()).toEqual([
-      { kind: "codex", displayName: "Codex" },
-      { kind: "opencode", displayName: "OpenCode" },
+      { kind: "codex", displayName: "Codex", profiles: [] },
+      { kind: "opencode", displayName: "OpenCode", profiles: [] },
+      {
+        kind: "workbuddy",
+        displayName: "WorkBuddy",
+        profiles: [
+          {
+            id: "workbuddy-ai",
+            displayName: "WorkBuddy AI",
+            applicationVersion: "5.2.7",
+            embeddedRuntime: { name: "CodeBuddy", version: "2.106.4" },
+            protocol: { name: "ACP", version: 1 },
+          },
+          {
+            id: "workbuddy-cn",
+            displayName: "WorkBuddy",
+            applicationVersion: "5.3.8",
+            embeddedRuntime: { name: "CodeBuddy", version: "2.115.0" },
+            protocol: { name: "ACP", version: 1 },
+          },
+        ],
+      },
     ]);
     expect(createReleasedRuntimeAdapterRegistry().modesFor({ kind: "codex" })).toEqual([
       "read-only",

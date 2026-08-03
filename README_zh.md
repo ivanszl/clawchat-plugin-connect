@@ -7,7 +7,7 @@
     <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub 版本" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
     <img alt="支持 macOS、Linux 和 Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
-    <img alt="运行时：Codex 与 OpenCode" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode-f97316?style=flat-square">
+    <img alt="运行时：Codex、OpenCode 与 WorkBuddy" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode%20%7C%20WorkBuddy-f97316?style=flat-square">
   </p>
   <p>
     <a href="#功能">功能</a> ·
@@ -50,12 +50,13 @@ ClawChat 入口负责对话范围内的工作；Project 注册、Service 管理�
 
 ### Runtime 支持
 
-| Runtime | Connect 管理的进程 | Session 选项 | 原生 Session 生命周期 |
+| Runtime | Connect 管理的进程 | Session 选项 | 原生 Runtime Thread 生命周期 |
 | --- | --- | --- | --- |
 | Codex | `codex app-server` | 模型、推理强度、sandbox mode | 发现、恢复、取消、归档、还原、删除 |
 | OpenCode | `opencode serve` | agent、带 provider 的模型、variant | 发现、恢复、取消、删除 |
+| WorkBuddy | Desktop 自有 Task ACP endpoint | Task 自有模型、mode、配置、Command、Skill | 发现、采用、恢复、取消 |
 
-OpenCode 兼容性固定为 `1.18.10`。Connect 不会安装或升级任一运行时；详细能力边界见 [Runtime Adapters](./docs/runtime-adapters.md)。
+OpenCode 兼容性固定为 `1.18.10`。WorkBuddy 仅支持 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) 中列出的两个精确 Desktop tuple。Connect 不会安装或升级任一运行时；通用能力边界见 [Runtime Adapters](./docs/runtime-adapters.md)。
 
 > [!IMPORTANT]
 > ClawChat Connect 仍处于 Alpha 阶段。启用可信局域网或公开 Liveware 访问前，请先阅读[本地数据与安全](#本地数据与安全)。
