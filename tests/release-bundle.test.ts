@@ -163,6 +163,12 @@ describe("standalone release bundle", () => {
     expect(workflow).toContain("runs-on: [self-hosted, macOS, workbuddy-release]");
     expect(workflow).toContain("bun run check:release:workbuddy");
     expect(workflow).toContain("needs: [windows-smoke, workbuddy-installed]");
+    const workBuddyJob = workflow.slice(
+      workflow.indexOf("  workbuddy-installed:"),
+      workflow.indexOf("\n  release:", workflow.indexOf("  workbuddy-installed:")),
+    );
+    expect(workBuddyJob).not.toContain("Install Chromium");
+    expect(workBuddyJob).not.toContain("playwright install");
 
     const packageManifest = JSON.parse(await readFile("package.json", "utf8")) as {
       scripts: Record<string, string>;
@@ -176,6 +182,11 @@ describe("standalone release bundle", () => {
     expect(packageManifest.scripts["test:integration:workbuddy-cn"]).toContain(
       "test:integration:workbuddy-cn-ui-concurrency-recovery",
     );
+    expect(packageManifest.scripts["check:release:workbuddy"]).toContain("bun run check:core");
+    expect(packageManifest.scripts["check:release:workbuddy"]).not.toMatch(/&& bun run check$/u);
+    expect(packageManifest.scripts["check:core"]).not.toContain("test:client-web");
+    expect(packageManifest.scripts.check).toContain("bun run check:core");
+    expect(packageManifest.scripts.check).toContain("bun run test:client-web");
   });
 
   it("uses vendored, verified Liveware assets for npm packages and local compiled builds", async () => {

@@ -95,7 +95,7 @@ The release gate must run on one Mac with both exact distributions installed:
 bun run check:release:workbuddy
 ```
 
-The command runs the same discovery, adoption/replay, context/model/native-persistence/UI synchronization, Runtime Interaction/cancellation, application restart, endpoint rotation, and recovery scenarios for both profiles, then runs the complete repository quality gate. WorkBuddy remains ineligible for release if either installed suite or `bun run check` fails.
+The command runs the same discovery, adoption/replay, context/model/native-persistence/UI synchronization, Runtime Interaction/cancellation, application restart, endpoint rotation, and recovery scenarios for both profiles, then runs the repository's non-browser quality gate. WorkBuddy remains ineligible for release if either installed suite or `bun run check:core` fails. This gate does not install Chromium or use the standalone Connect Client as a substitute for WorkBuddy or ClawChat Liveware verification. Browser checks for the loopback Connect Client remain in the generic repository `bun run check` gate; real Liveware verification must open the registered App inside ClawChat.
 
 Use dedicated test Tasks only. For each `WORKBUDDY_AI_TEST_` and `WORKBUDDY_CN_TEST_` prefix, set:
 

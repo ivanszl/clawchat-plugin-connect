@@ -1,6 +1,6 @@
 {
   "name": "@clawling/clawchat-plugin-connect",
-  "version": "0.1.0-alpha.31",
+  "version": "0.1.0-alpha.32",
   "description": "Bun-native bridge from ClawChat Agent Bindings to local coding agent runtimes.",
   "repository": {
     "type": "git",
@@ -61,7 +61,8 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
-    "check": "bun run check:generated && biome check . && bun run typecheck && bun test && bun run test:client-web",
+    "check:core": "bun run check:generated && biome check . && bun run typecheck && bun test",
+    "check": "bun run check:core && bun run test:client-web",
     "test:integration:workbuddy-cn-discovery": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-discovery.ts",
     "test:integration:workbuddy-cn-adoption": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-adoption.ts",
     "test:integration:workbuddy-cn-turn": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-turn.ts",
@@ -69,7 +70,7 @@
     "test:integration:workbuddy-cn-interaction-cancellation": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-interaction-cancellation.ts",
     "test:integration:workbuddy-cn": "bun run test:integration:workbuddy-cn-discovery && bun run test:integration:workbuddy-cn-adoption && bun run test:integration:workbuddy-cn-turn && bun run test:integration:workbuddy-cn-interaction-cancellation && bun run test:integration:workbuddy-cn-ui-concurrency-recovery",
     "test:integration:workbuddy-installation-preflight": "bun tests/integration/workbuddy-installation-preflight.ts",
-    "check:release:workbuddy": "bun run test:integration:workbuddy-installation-preflight && bun run test:integration:workbuddy-ai && bun run test:integration:workbuddy-cn && bun run check"
+    "check:release:workbuddy": "bun run test:integration:workbuddy-installation-preflight && bun run test:integration:workbuddy-ai && bun run test:integration:workbuddy-cn && bun run check:core"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",

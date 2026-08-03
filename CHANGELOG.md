@@ -2,6 +2,12 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.32] - 2026-08-03
+
+### Fixed
+
+- Removed Chromium and standalone Connect Client checks from the installed WorkBuddy release gate; real Liveware UI verification remains inside ClawChat, while loopback Client browser checks stay in the generic quality gate.
+
 ## [0.1.0-alpha.31] - 2026-08-03
 
 ### Added
