@@ -13,7 +13,7 @@ A concrete integration that lets Connect start and operate one kind of coding ag
 _Avoid_: Agent Binding, Codex, when referring to the adapter role
 
 **CodeBuddy Runtime**:
-A user-installed CodeBuddy Code CLI installation whose native Sessions can be operated through an Agent Binding. It is distinct from Tencent WorkBuddy Desktop, and its Sessions are not WorkBuddy Tasks.
+A user-installed CodeBuddy Code CLI installation whose native Sessions can be operated through an Agent Binding. It may expose Agent capabilities also used by WorkBuddy Desktop, but it does not expose WorkBuddy product state; its Sessions and tool-level Tasks are not WorkBuddy Tasks.
 _Avoid_: WorkBuddy Runtime, WorkBuddy Task
 
 **Binding Runtime Instance**:
@@ -184,13 +184,29 @@ _Avoid_: Directoryless Session
 The external agent runtime's resumable conversation associated with a Session. Its identity is owned by the runtime and referenced by Connect.
 _Avoid_: Session, Project
 
+**WorkBuddy Distribution**:
+The mainland China WorkBuddy desktop product. It bundles its own product-configured CodeBuddy Runtime and remains isolated from the separately versioned WorkBuddy AI Distribution.
+_Avoid_: WorkBuddy AI Distribution, CodeBuddy Runtime
+
+**WorkBuddy AI Distribution**:
+The international WorkBuddy AI desktop product. It bundles its own product-configured CodeBuddy Runtime and remains isolated from the separately versioned WorkBuddy Distribution.
+_Avoid_: WorkBuddy Distribution, CodeBuddy Runtime
+
 **WorkBuddy Task**:
-The WorkBuddy desktop runtime's native resumable conversation, represented in Connect as a Runtime Thread and identified durably by its stable Task ID rather than by any Task process or service endpoint.
-_Avoid_: WorkBuddy Session, Attachment
+A top-level WorkBuddy Desktop conversation or work item that owns product transcript projection, artifacts, connector wiring, UI metadata, and desktop lifecycle in addition to an underlying CodeBuddy Session. Connect represents it as a Runtime Thread identified durably by its stable Task ID; it is neither a standalone CodeBuddy Session nor a WorkBuddy Automation.
+_Avoid_: WorkBuddy Session, CodeBuddy Session, WorkBuddy Automation, tool Task
+
+**WorkBuddy Task ACP Endpoint**:
+A private desktop-owned ACP service for one active WorkBuddy Task through which a verified client can replay and continue that Task. It is lifecycle-bound and has no supported public discovery contract; it is not a direct CodeBuddy ACP process owned by Connect.
+_Avoid_: Public WorkBuddy API, direct CodeBuddy ACP
 
 **WorkBuddy Task Attachment**:
-A verified in-memory connection from one WorkBuddy Runtime Adapter to a stable WorkBuddy Task. Its process, endpoint, credentials, and authorization state are ephemeral and must be rediscovered and reverified after loss or rotation.
-_Avoid_: WorkBuddy Task, Runtime Thread mapping
+A verified relationship in which one Agent Binding operates an existing WorkBuddy Task through its WorkBuddy Task ACP Endpoint and shares the Task's conversation and visible outputs with WorkBuddy Desktop. Its connection and authorization state are ephemeral and must be rediscovered and reverified after loss or rotation.
+_Avoid_: WorkBuddy Task, Runtime Thread mapping, CodeBuddy Session, direct ACP session
+
+**WorkBuddy Automation**:
+A WorkBuddy Desktop workflow configured to run from a schedule or another trigger. Its executions and outputs are distinct from an ordinary WorkBuddy Task and from a CodeBuddy Session.
+_Avoid_: WorkBuddy Task, CodeBuddy Session
 
 **Indeterminate Prompt Outcome**:
 A prompt whose native acceptance or completion cannot be proven from the reloaded authoritative Runtime Transcript after Attachment loss. Connect surfaces the uncertainty and never automatically resubmits or reports the prompt as successful.
