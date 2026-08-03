@@ -157,6 +157,27 @@ describe("standalone release bundle", () => {
     expect(workflow).toContain("latest-alpha.txt");
   });
 
+  it("blocks alpha publication on both pinned installed WorkBuddy distributions", async () => {
+    const workflow = await readFile(".github/workflows/release-alpha.yml", "utf8");
+    expect(workflow).toContain("workbuddy-installed:");
+    expect(workflow).toContain("runs-on: [self-hosted, macOS, workbuddy-release]");
+    expect(workflow).toContain("bun run check:release:workbuddy");
+    expect(workflow).toContain("needs: [windows-smoke, workbuddy-installed]");
+
+    const packageManifest = JSON.parse(await readFile("package.json", "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    expect(packageManifest.scripts["check:release:workbuddy"]).toContain(
+      "test:integration:workbuddy-installation-preflight",
+    );
+    expect(packageManifest.scripts["test:integration:workbuddy-ai"]).toContain(
+      "test:integration:workbuddy-ai-ui-concurrency",
+    );
+    expect(packageManifest.scripts["test:integration:workbuddy-cn"]).toContain(
+      "test:integration:workbuddy-cn-ui-concurrency",
+    );
+  });
+
   it("uses vendored, verified Liveware assets for npm packages and local compiled builds", async () => {
     const packageManifest = JSON.parse(await readFile("package.json", "utf8")) as {
       files: string[];

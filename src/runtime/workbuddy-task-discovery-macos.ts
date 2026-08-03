@@ -120,8 +120,9 @@ export async function listWorkBuddyTasks(
       { selectedProfile: profile },
     );
   }
-  const database = new Database(join(configDirectory, "workbuddy.db"), { readonly: true });
+  let database: Database | null = null;
   try {
+    database = new Database(join(configDirectory, "workbuddy.db"), { readonly: true });
     const rows = database
       .query<{ id: string; cwd: string; title: string | null; custom_title: string | null; updated_at: number }, []>(
         "SELECT id, cwd, title, custom_title, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC, id",
@@ -135,8 +136,16 @@ export async function listWorkBuddyTasks(
         updatedAt: row.updated_at,
       })),
     );
+  } catch (error) {
+    if (error instanceof WorkBuddyDiscoveryError) throw error;
+    throw new WorkBuddyDiscoveryError(
+      "discovery-failed",
+      `${compatibility.displayName} Task discovery failed before an endpoint was selected.`,
+      { selectedProfile: profile },
+      { cause: error },
+    );
   } finally {
-    database.close();
+    database?.close();
   }
 }
 

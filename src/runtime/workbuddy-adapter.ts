@@ -18,8 +18,14 @@ import {
   workBuddySubmittedUserHistoryActivityId,
   workBuddySubmittedUserLiveActivityId,
 } from "./workbuddy-activity-identity";
-import type { WorkBuddyEndpointVerification } from "./workbuddy-task-discovery";
-import { attachWorkBuddyTask, connectWorkBuddyTask, type WorkBuddyProfile } from "./workbuddy-task-discovery";
+import {
+  attachWorkBuddyTask,
+  connectWorkBuddyTask,
+  WorkBuddyDiscoveryError,
+  type WorkBuddyEndpointVerification,
+  type WorkBuddyProfile,
+  workBuddyProfileCompatibility,
+} from "./workbuddy-task-discovery";
 import { createWorkBuddyMacosDiscoverySource, listWorkBuddyTasks } from "./workbuddy-task-discovery-macos";
 
 export interface WorkBuddyTaskSummary {
@@ -116,7 +122,7 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
   };
   const discoverAllThreads: NonNullable<ConnectRuntimeAdapter["discoverAllThreads"]> = async (binding) => {
     if (binding.kind !== "workbuddy") throw new Error("WorkBuddy Runtime Adapter requires a WorkBuddy Binding");
-    return (await source.listTasks(binding.profile)).map((task) => ({
+    return (await listTasks(source, binding.profile)).map((task) => ({
       runtimeThreadId: task.id,
       name: task.title,
       updatedAt: task.updatedAt,
@@ -144,7 +150,7 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
     kind: "workbuddy",
     modes: [],
     prepare: async (binding) => {
-      await source.listTasks(requireWorkBuddyProfile(binding));
+      await listTasks(source, requireWorkBuddyProfile(binding));
     },
     modesFor: (_binding, scope) =>
       scope?.runtimeThreadId ? (catalogs.get(scope.runtimeThreadId)?.modes.map((mode) => mode.id) ?? []) : [],
@@ -243,9 +249,31 @@ async function resolveTask(
   profile: WorkBuddyProfile,
   taskId: string,
 ): Promise<WorkBuddyTaskSummary | null> {
-  return source.findTask
-    ? await source.findTask(profile, taskId)
-    : ((await source.listTasks(profile)).find((candidate) => candidate.id === taskId) ?? null);
+  try {
+    return source.findTask
+      ? await source.findTask(profile, taskId)
+      : ((await source.listTasks(profile)).find((candidate) => candidate.id === taskId) ?? null);
+  } catch (error) {
+    throw discoveryFailure(profile, error);
+  }
+}
+
+async function listTasks(source: WorkBuddyRuntimeSource, profile: WorkBuddyProfile): Promise<WorkBuddyTaskSummary[]> {
+  try {
+    return await source.listTasks(profile);
+  } catch (error) {
+    throw discoveryFailure(profile, error);
+  }
+}
+
+function discoveryFailure(profile: WorkBuddyProfile, error: unknown): WorkBuddyDiscoveryError {
+  if (error instanceof WorkBuddyDiscoveryError) return error;
+  return new WorkBuddyDiscoveryError(
+    "discovery-failed",
+    `${workBuddyProfileCompatibility(profile).displayName} Task discovery failed before an endpoint was selected.`,
+    {},
+    { cause: error },
+  );
 }
 
 function requireWorkBuddyProfile(binding: AgentBindingConfig): WorkBuddyProfile {

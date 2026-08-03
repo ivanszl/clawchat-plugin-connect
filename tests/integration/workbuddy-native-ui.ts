@@ -32,6 +32,18 @@ export async function verifyInstalledWorkBuddyNativeUi(input: NativeUiVerificati
   }
 }
 
+export async function selectInstalledWorkBuddyNativeTask(
+  compatibility: WorkBuddyProfileCompatibility,
+  taskTitle: string,
+): Promise<void> {
+  const processId = await waitForApplicationProcess(compatibility.applicationPath, true);
+  await runCommand(
+    "/usr/bin/osascript",
+    ["-e", WORKBUDDY_UI_RESTORE_SCRIPT, "--", String(processId), taskTitle],
+    60_000,
+  );
+}
+
 async function waitForApplicationProcess(applicationPath: string, expectedRunning: boolean): Promise<number> {
   const executable = `${applicationPath}/Contents/MacOS/Electron`;
   const deadline = Date.now() + 30_000;

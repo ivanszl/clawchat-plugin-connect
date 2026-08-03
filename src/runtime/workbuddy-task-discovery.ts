@@ -499,7 +499,7 @@ function redactSecrets(value: string): string {
 }
 
 const SENSITIVE_DIAGNOSTIC_KEY =
-  /(?:authorization|bearer|password|credential|secret|token|headers?|product.*config|config.*dir|transcript|prompt|response|payload|body|content)/iu;
+  /(?:authorization|bearer|password|credential|secret|token|connection.*id|headers?|product.*config|config.*dir|transcript|prompt|response|payload|body|content)/iu;
 const MAX_DIAGNOSTIC_STRING = 512;
 
 function sanitizeDiagnosticMessage(message: string): string {
@@ -507,12 +507,16 @@ function sanitizeDiagnosticMessage(message: string): string {
 }
 
 function sanitizeDiagnosticDetails(details: Record<string, unknown>): Record<string, unknown> {
+  return sanitizeDiagnosticRecord(details, 0);
+}
+
+function sanitizeDiagnosticRecord(record: Record<string, unknown>, depth: number): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(details)
+    Object.entries(record)
       .slice(0, 24)
       .map(([key, value]) => [
         key,
-        SENSITIVE_DIAGNOSTIC_KEY.test(key) ? "[REDACTED]" : sanitizeDiagnosticValue(value, 0),
+        SENSITIVE_DIAGNOSTIC_KEY.test(key) ? "[REDACTED]" : sanitizeDiagnosticValue(value, depth),
       ]),
   );
 }
@@ -523,14 +527,7 @@ function sanitizeDiagnosticValue(value: unknown, depth: number): unknown {
   if (depth >= 2) return "[TRUNCATED]";
   if (Array.isArray(value)) return value.slice(0, 16).map((item) => sanitizeDiagnosticValue(item, depth + 1));
   if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .slice(0, 24)
-        .map(([key, item]) => [
-          key,
-          SENSITIVE_DIAGNOSTIC_KEY.test(key) ? "[REDACTED]" : sanitizeDiagnosticValue(item, depth + 1),
-        ]),
-    );
+    return sanitizeDiagnosticRecord(value as Record<string, unknown>, depth + 1);
   }
   return truncateDiagnostic(String(value));
 }

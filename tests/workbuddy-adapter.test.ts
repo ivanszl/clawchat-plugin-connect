@@ -83,6 +83,23 @@ describe("WorkBuddy Runtime Adapter", () => {
     await adapter.close?.();
   });
 
+  it("normalizes an unexpected startup catalog failure into a bounded discovery diagnostic", async () => {
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      ...source(),
+      listTasks: async () => {
+        throw new Error(`raw native database failure ${"private".repeat(200)}`);
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+
+    await expect(adapter.prepare?.(binding)).rejects.toMatchObject({
+      code: "discovery-failed",
+      message: "WorkBuddy AI Task discovery failed before an endpoint was selected.",
+    });
+
+    await adapter.close?.();
+  });
+
   it.each(["workbuddy-ai", "workbuddy-cn"] as const)(
     "exposes only the attached %s Task catalog through runtime-neutral identities",
     async (profile) => {

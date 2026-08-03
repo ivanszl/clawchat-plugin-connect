@@ -92,13 +92,18 @@ The command runs the same discovery, adoption/replay, context/model/native-persi
 
 Use dedicated test Tasks only. For each `WORKBUDDY_AI_TEST_` and `WORKBUDDY_CN_TEST_` prefix, set:
 
+- `DEDICATED_TASK=1`, after confirming the configured Task is reserved for release verification;
 - `TASK_ID`, `TASK_WORKSPACE`;
 - `USER_MARKER`, `ASSISTANT_MARKER` for a unique UI-seeded turn;
 - `PRIOR_USER_MARKER`, `PRIOR_ASSISTANT_MARKER` for context continuation;
 - `UI_TASK_TITLE`, `UI_RESTORE_TASK_TITLE` so UI verification restores the prior application view even on failure;
+- `UI_BACKGROUND_TASK_TITLE` for a second dedicated Task used to prove the Attachment remains bound while the application displays another Task;
+- `UI_ORIGINATED_USER_MARKER`, `UI_ORIGINATED_ASSISTANT_MARKER` for the native UI turn performed while Connect holds the Attachment;
 - `INTERACTION_PROMPT`, a safe prompt known to request one approval in that dedicated Task;
 - `CANCELLATION_PROMPT`, a harmless long-running prompt that can be cancelled safely.
 
 Optional `TURN_MARKER` and `RECOVERY_MARKER` values make a release run reproducible; otherwise the suite generates unique markers. The scripts use temporary Connect databases and delete them. Native prompt markers intentionally remain in the dedicated WorkBuddy test Tasks as release evidence; the JSON result discloses them. Clean up only those dedicated Tasks through WorkBuddy after recording the result. Never point the suite at an unrelated Task.
 
-The UI step switches to the dedicated Task, verifies the synchronized marker, and restores `UI_RESTORE_TASK_TITLE`. The restart step deliberately asks the operator to restart only the selected distribution and verifies that the stable Task identity survives rotated application, sidecar, endpoint, and credential state.
+The preflight requires both exact applications to be running simultaneously and resolves each configured Task only through its selected profile. The UI step switches to the dedicated Task, verifies the synchronized marker, and restores `UI_RESTORE_TASK_TITLE`. The concurrency/restart step asks the operator to complete one marked native UI turn while Connect holds the Attachment, switches the application to `UI_BACKGROUND_TASK_TITLE`, then deliberately asks the operator to restart only the selected distribution. It verifies projection-only reconciliation, continued use of the original Task, and stable Task identity across rotated application, sidecar, endpoint, and credential state.
+
+Alpha publication depends on the `workbuddy-installed` job in `.github/workflows/release-alpha.yml`. That job must run on a designated `self-hosted`, `macOS`, `workbuddy-release` runner with the corresponding protected environment secrets; missing confirmation, missing Tasks, an incompatible distribution, or any installed scenario failure blocks publication.

@@ -423,6 +423,8 @@ describe("WorkBuddy Task discovery contract", () => {
       "endpoint-verification-failed",
       `authorization: Bearer secret-token ${"x".repeat(2_000)}`,
       {
+        connectionId: "ephemeral-connection-id",
+        session_token: "ephemeral-session-token",
         password: "product-password",
         headers: { authorization: "Bearer other-secret" },
         injectedProductConfiguration: { CODEBUDDY_CONFIG_DIR: "/private/config" },
@@ -434,7 +436,7 @@ describe("WorkBuddy Task discovery contract", () => {
     const diagnostic = JSON.stringify(error);
     expect(diagnostic.length).toBeLessThan(2_000);
     expect(diagnostic).not.toMatch(
-      /secret-token|other-secret|product-password|CODEBUDDY_CONFIG_DIR|native transcript/u,
+      /secret-token|other-secret|product-password|ephemeral-connection-id|ephemeral-session-token|CODEBUDDY_CONFIG_DIR|native transcript/u,
     );
     expect(diagnostic).toContain("operator-safe detail");
     expect(diagnostic).toContain("[REDACTED]");

@@ -50,7 +50,7 @@ ClawChat 入口负责对话范围内的工作；Project 注册、Service 管理�
 
 ### Runtime 支持
 
-| Runtime | Connect 管理的进程 | Session 选项 | 原生 Session 生命周期 |
+| Runtime | Connect 管理的进程 | Session 选项 | 原生 Runtime Thread 生命周期 |
 | --- | --- | --- | --- |
 | Codex | `codex app-server` | 模型、推理强度、sandbox mode | 发现、恢复、取消、归档、还原、删除 |
 | OpenCode | `opencode serve` | agent、带 provider 的模型、variant | 发现、恢复、取消、删除 |

@@ -50,7 +50,7 @@ The ClawChat surface is for conversation-scoped work. Local Project registration
 
 ### Runtime support
 
-| Runtime | Process owned by Connect | Session options | Native Session lifecycle |
+| Runtime | Process owned by Connect | Session options | Native Runtime Thread lifecycle |
 | --- | --- | --- | --- |
 | Codex | `codex app-server` | model, reasoning effort, sandbox mode | discover, resume, cancel, archive, restore, delete |
 | OpenCode | `opencode serve` | agent, provider-qualified model, variant | discover, resume, cancel, delete |
