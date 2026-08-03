@@ -6,7 +6,12 @@ import { SessionCatalog } from "../src/client-interface/session-catalog";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import type { ConnectRuntimePrompt, ConnectRuntimeStartContext, RuntimeActivity } from "../src/runtime/types";
+import type {
+  ConnectRuntimePrompt,
+  ConnectRuntimeSession,
+  ConnectRuntimeStartContext,
+  RuntimeActivity,
+} from "../src/runtime/types";
 import { WorkBuddyPromptTransportError, type WorkBuddyTaskCatalog } from "../src/runtime/workbuddy-acp-client";
 import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
 import { WorkBuddyDiscoveryError, type WorkBuddyDiscoveryFailureCode } from "../src/runtime/workbuddy-task-discovery";
@@ -593,7 +598,29 @@ describe("WorkBuddy Runtime Adapter", () => {
         };
       },
     };
-    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const directStarts: Array<{ profile: string; sessionId: string | null }> = [];
+    const directSession: ConnectRuntimeSession = {
+      async *prompt(): AsyncIterable<RuntimeActivity> {
+        yield {
+          id: "codebuddy:assistant:new-session",
+          position: "0.1",
+          parentId: null,
+          kind: "assistant",
+          text: "answer from desktop-invisible CodeBuddy Session",
+          state: "complete",
+          source: "live",
+        };
+      },
+      close: async () => undefined,
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({
+      createSource: () => runtimeSource,
+      createCodeBuddySession: async (input) => {
+        directStarts.push({ profile: input.profile, sessionId: input.sessionId });
+        await input.onSessionId("codebuddy-thread-new");
+        return directSession;
+      },
+    });
     const baseContext: ConnectRuntimeStartContext = {
       agentId: "desktop",
       chatId: "client",
@@ -604,9 +631,40 @@ describe("WorkBuddy Runtime Adapter", () => {
       onRuntimeSessionId: async () => undefined,
     };
 
-    await expect(adapter.start(binding, baseContext)).rejects.toThrow(
-      "adopt an existing WorkBuddy Task before submitting a turn",
-    );
+    const runtimeSessionIds: string[] = [];
+    const detached = await adapter.start(binding, {
+      ...baseContext,
+      onRuntimeSessionId: async (runtimeSessionId) => {
+        runtimeSessionIds.push(runtimeSessionId);
+      },
+    });
+    expect(
+      (
+        await collect(
+          detached.prompt({
+            prompt: "new",
+            workspace: {
+              projectId: null,
+              workingDirectory: workspace,
+              additionalDirectories: [],
+              skipGitRepoCheck: false,
+            },
+          }),
+        )
+      ).map((item) => item.text),
+    ).toEqual(["answer from desktop-invisible CodeBuddy Session"]);
+    expect(directStarts).toEqual([{ profile: "workbuddy-ai", sessionId: null }]);
+    expect(runtimeSessionIds).toEqual(["codebuddy-session:codebuddy-thread-new"]);
+
+    const resumed = await adapter.start(binding, {
+      ...baseContext,
+      runtimeSessionId: "codebuddy-session:codebuddy-thread-existing",
+    });
+    expect(directStarts).toEqual([
+      { profile: "workbuddy-ai", sessionId: null },
+      { profile: "workbuddy-ai", sessionId: "codebuddy-thread-existing" },
+    ]);
+    await resumed.close();
 
     const session = await adapter.start(binding, { ...baseContext, runtimeSessionId: taskId });
     const activities: RuntimeActivity[] = [];
@@ -628,6 +686,57 @@ describe("WorkBuddy Runtime Adapter", () => {
     await session.close();
     await session.close();
     expect(attachmentCloses).toBe(1);
+  });
+
+  it("keeps CodeBuddy Session support paths separate from WorkBuddy Task attachment", async () => {
+    let taskAccesses = 0;
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      listTasks: async () => {
+        taskAccesses += 1;
+        return [];
+      },
+      findTask: async () => {
+        taskAccesses += 1;
+        return null;
+      },
+      attachTask: async () => {
+        taskAccesses += 1;
+        throw new Error("CodeBuddy Session must not attach a WorkBuddy Task");
+      },
+      startTask: async () => {
+        taskAccesses += 1;
+        throw new Error("CodeBuddy Session must not start a WorkBuddy Task");
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const runtimeSessionId = "codebuddy-session:existing-native-session";
+    const runtimeWorkspace = {
+      projectId: null,
+      workingDirectory: workspace,
+      additionalDirectories: [],
+      skipGitRepoCheck: false,
+    };
+
+    await expect(
+      adapter.listModels?.(binding, { runtimeThreadId: runtimeSessionId, workspace: runtimeWorkspace }),
+    ).resolves.toEqual([]);
+    await expect(adapter.verifyThreadReady?.(binding, runtimeSessionId)).resolves.toBeUndefined();
+    await expect(adapter.readActivity?.(binding, runtimeSessionId)).resolves.toEqual({
+      activities: [],
+      completeness: "live-only",
+      limitations: ["identity", "correlation", "ordering"],
+    });
+    await expect(
+      adapter.reconcileInput?.(binding, runtimeSessionId, {
+        messageId: "message-1",
+        contentDigest: "sha256:message-1",
+      }),
+    ).resolves.toEqual({ outcome: "unknown" });
+    await expect(adapter.verifyThreadReady?.(binding, "codebuddy-session:")).rejects.toThrow(
+      "Invalid CodeBuddy Session target",
+    );
+    expect(taskAccesses).toBe(0);
+    await adapter.close?.();
   });
 
   it("recovers the same Task when its process, port, and credentials rotate before acceptance", async () => {

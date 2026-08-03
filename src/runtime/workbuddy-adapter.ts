@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type { AgentBindingConfig } from "../types";
+import { createCodeBuddyStdioSession } from "./codebuddy-stdio-client";
 import type {
   ConnectRuntimeAdapter,
   ConnectRuntimePrompt,
@@ -21,6 +22,11 @@ import {
   workBuddySubmittedUserHistoryActivityId,
   workBuddySubmittedUserLiveActivityId,
 } from "./workbuddy-activity-identity";
+import {
+  decodeCodeBuddySessionId,
+  encodeCodeBuddySessionId,
+  isCodeBuddySessionRuntimeTarget,
+} from "./workbuddy-runtime-target";
 import {
   attachWorkBuddyTask,
   connectWorkBuddyTask,
@@ -56,6 +62,13 @@ export interface WorkBuddyRuntimeSource {
 
 export interface WorkBuddyRuntimeAdapterOptions {
   createSource?: () => WorkBuddyRuntimeSource;
+  createCodeBuddySession?: (input: WorkBuddyCodeBuddySessionInput) => Promise<ConnectRuntimeSession>;
+}
+
+export interface WorkBuddyCodeBuddySessionInput {
+  profile: WorkBuddyProfile;
+  sessionId: string | null;
+  onSessionId(sessionId: string): Promise<void>;
 }
 
 export type WorkBuddyPromptRecoveryFailureCode =
@@ -77,6 +90,7 @@ export class WorkBuddyPromptRecoveryError extends Error {
 
 export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOptions = {}): ConnectRuntimeAdapter {
   const source = (options.createSource ?? createDefaultSource)();
+  const createCodeBuddySession = options.createCodeBuddySession ?? createCodeBuddyStdioSession;
   const catalogs = new Map<string, WorkBuddyTaskCatalog>();
   const catalogListeners = new Set<() => void>();
   const catalogSubscriptions = new Set<() => void>();
@@ -106,6 +120,10 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
   ): Promise<WorkBuddyTaskCatalog> => {
     const taskId = scope?.runtimeThreadId;
     if (!taskId) return emptyCatalog();
+    if (isCodeBuddySessionRuntimeTarget(taskId)) {
+      requireCodeBuddySessionId(taskId);
+      return emptyCatalog();
+    }
     const cached = catalogs.get(taskId);
     if (cached) return cached;
     const profile = requireWorkBuddyProfile(binding);
@@ -189,9 +207,25 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
     discoverAllThreads,
     discoverThreads: async (binding, workspace) =>
       (await discoverAllThreads(binding)).filter((thread) => thread.workingDirectory === workspace.workingDirectory),
-    verifyThreadReady: async (binding, runtimeThreadId) => void (await attachTask(binding, runtimeThreadId)),
-    readActivity: attachTask,
+    verifyThreadReady: async (binding, runtimeThreadId) => {
+      if (isCodeBuddySessionRuntimeTarget(runtimeThreadId)) {
+        requireCodeBuddySessionId(runtimeThreadId);
+        return;
+      }
+      await attachTask(binding, runtimeThreadId);
+    },
+    readActivity: async (binding, runtimeThreadId) => {
+      if (isCodeBuddySessionRuntimeTarget(runtimeThreadId)) {
+        requireCodeBuddySessionId(runtimeThreadId);
+        return directSessionActivitySnapshot();
+      }
+      return await attachTask(binding, runtimeThreadId);
+    },
     reconcileInput: async (binding, runtimeThreadId, candidate) => {
+      if (isCodeBuddySessionRuntimeTarget(runtimeThreadId)) {
+        requireCodeBuddySessionId(runtimeThreadId);
+        return { outcome: "unknown" };
+      }
       try {
         const receipts = workBuddyInputReceipts(await attachTask(binding, runtimeThreadId));
         const identity = receipts.identities.find((value) => runtimeInputIdentityContains(value, candidate));
@@ -204,10 +238,17 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
     },
     start: async (binding, context) => {
       const profile = requireWorkBuddyProfile(binding);
-      if (!context.runtimeSessionId) {
-        throw new Error(
-          "This conversation is not mapped to a WorkBuddy Task; adopt an existing WorkBuddy Task before submitting a turn.",
-        );
+      if (!context.runtimeSessionId || isCodeBuddySessionRuntimeTarget(context.runtimeSessionId)) {
+        const codeBuddySessionId = context.runtimeSessionId
+          ? requireCodeBuddySessionId(context.runtimeSessionId)
+          : null;
+        return await createCodeBuddySession({
+          profile,
+          sessionId: codeBuddySessionId,
+          onSessionId: async (sessionId) => {
+            await context.onRuntimeSessionId(encodeCodeBuddySessionId(sessionId));
+          },
+        });
       }
       const startTask = source.startTask;
       if (!startTask) throw new Error("WorkBuddy Task turn submission is unavailable for this Attachment source");
@@ -272,6 +313,20 @@ function emptyCatalog(): WorkBuddyTaskCatalog {
     commands: [],
     skills: [],
   };
+}
+
+function directSessionActivitySnapshot(): RuntimeActivitySnapshot {
+  return {
+    activities: [],
+    completeness: "live-only",
+    limitations: ["identity", "correlation", "ordering"],
+  };
+}
+
+function requireCodeBuddySessionId(runtimeSessionId: string): string {
+  const sessionId = decodeCodeBuddySessionId(runtimeSessionId);
+  if (!sessionId) throw new Error("Invalid CodeBuddy Session target: missing native Session ID");
+  return sessionId;
 }
 
 async function resolveTask(

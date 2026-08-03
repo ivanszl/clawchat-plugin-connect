@@ -17,6 +17,7 @@ import { resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { SessionActivity } from "../runtime/session-queue";
 import type { RuntimeLifecycleCapabilities, RuntimeModelOption, RuntimeThreadSummary } from "../runtime/types";
+import { isCodeBuddySessionRuntimeTarget } from "../runtime/workbuddy-runtime-target";
 import { createSessionContinuity, type SessionContinuity } from "../session-continuity";
 import type { ConnectStateStore } from "../state";
 import type { ConnectConfig, ProjectRecord, RuntimeSessionRecord, RuntimeStatus, RuntimeWorkspace } from "../types";
@@ -155,16 +156,30 @@ export class SessionCatalog {
     const runtimeThreadId = session?.runtimeSessionId ?? target?.runtimeSessionId ?? undefined;
     const runtimeWorkspace = session ? await this.projects.resolveWorkspace(session) : undefined;
     const catalogScope = { runtimeThreadId, workspace: runtimeWorkspace };
-    const advertisedModels = await this.options.runtimeAdapters.listModels(binding, catalogScope);
+    let advertisedModels: Awaited<ReturnType<RuntimeAdapterRegistry["listModels"]>>;
+    try {
+      advertisedModels = await this.options.runtimeAdapters.listModels(binding, catalogScope);
+    } catch (error) {
+      if (binding.kind !== "workbuddy") throw error;
+      advertisedModels = null;
+    }
     const modelOptions = advertisedModels ?? [];
     const selectedSessionOptions = {
       ...(binding.sessionOptions ?? {}),
       ...(session?.sessionOptions ?? {}),
     };
-    const advertisedSessionOptions =
-      session && runtimeWorkspace
-        ? await this.options.runtimeAdapters.listSessionOptions(binding, runtimeWorkspace, catalogScope)
-        : [];
+    let advertisedSessionOptions: Awaited<ReturnType<RuntimeAdapterRegistry["listSessionOptions"]>> = [];
+    if (session && runtimeWorkspace) {
+      try {
+        advertisedSessionOptions = await this.options.runtimeAdapters.listSessionOptions(
+          binding,
+          runtimeWorkspace,
+          catalogScope,
+        );
+      } catch (error) {
+        if (binding.kind !== "workbuddy") throw error;
+      }
+    }
     const sessionOptionDefinitions = advertisedSessionOptions.map((option) => {
       const selected = selectedSessionOptions[option.id];
       return selected && !option.values.some((value) => value.id === selected)
@@ -441,7 +456,19 @@ export class SessionCatalog {
       const entries: SessionCatalogEntryView[] = await Promise.all(
         managed.map(async (session) => {
           const project = projectById.get(session.projectId ?? "") ?? null;
-          const runtimeThread = session.runtimeSessionId ? discoveredById.get(session.runtimeSessionId) : undefined;
+          const runtimeSessionId = session.runtimeSessionId;
+          const discoveredRuntimeThread = runtimeSessionId ? discoveredById.get(runtimeSessionId) : undefined;
+          const runtimeThread =
+            discoveredRuntimeThread ??
+            (binding.kind === "workbuddy" && runtimeSessionId && isCodeBuddySessionRuntimeTarget(runtimeSessionId)
+              ? {
+                  runtimeThreadId: runtimeSessionId,
+                  name: session.name,
+                  updatedAt: session.updatedAt,
+                  workingDirectory: project?.rootPath ?? null,
+                  workspaceKind: "persistent" as const,
+                }
+              : undefined);
           if (runtimeThread) {
             runtimeRevisionByRef.set(
               session.sessionRef.toUpperCase(),

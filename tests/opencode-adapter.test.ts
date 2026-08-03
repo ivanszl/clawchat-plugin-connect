@@ -923,6 +923,54 @@ describe("OpenCode Runtime Adapter", () => {
     await adapter.close?.();
   });
 
+  it("generates OpenCode-compatible native message IDs for ordinary prompts", async () => {
+    const test = fixture();
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const session = await adapter.start({ kind: "opencode" }, startContext());
+
+    for await (const _activity of session.prompt({ prompt: "hello", workspace: runtimeWorkspace })) {
+      // Drain the completed native turn.
+    }
+
+    expect(test.prompts).toHaveLength(1);
+    expect(test.prompts[0]?.messageID).toMatch(/^msg[_-]/u);
+    await session.close();
+    await adapter.close?.();
+  });
+
+  it("accepts Session-scoped OpenCode events that omit the optional directory envelope", async () => {
+    const test = fixture();
+    test.client.promptAsync = async (input) => {
+      test.prompts.push(input);
+      test.events.push({
+        payload: {
+          id: "event-part-without-directory",
+          type: "message.part.updated",
+          properties: { sessionID: input.sessionID, part: history()[1]?.parts[2], time: 14 },
+        },
+      } as unknown as GlobalEvent);
+      test.events.push({
+        payload: {
+          id: "event-idle-without-directory",
+          type: "session.idle",
+          properties: { sessionID: input.sessionID },
+        },
+      } as unknown as GlobalEvent);
+    };
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const session = await adapter.start({ kind: "opencode" }, startContext());
+
+    const activities = [];
+    for await (const activity of session.prompt({ prompt: "hello", workspace: runtimeWorkspace })) {
+      activities.push(activity);
+    }
+
+    expect(activities.some((activity) => activity.kind === "error")).toBe(false);
+    expect(activities.some((activity) => activity.kind === "assistant" && activity.text === "done")).toBe(true);
+    await session.close();
+    await adapter.close?.();
+  });
+
   it("keeps an atomically accepted Turn Submission terminal when OpenCode later rejects its MIME", async () => {
     const root = await mkdtemp(join(tmpdir(), "connect-opencode-provider-error-"));
     const config = upsertAgentBinding(defaultConfig(), "open", { kind: "opencode" });

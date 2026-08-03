@@ -462,6 +462,61 @@ describe("OpenCode Server process boundary", () => {
     await expect(result).rejects.not.toThrow("generated-secret");
   });
 
+  it("bounds an individual health request by the Server readiness deadline", async () => {
+    const process = new FakeProcess();
+    const stalledApi = api();
+    stalledApi.health = async () => await new Promise<never>(() => undefined);
+    const result = createOpenCodeServerClient(
+      { kind: "opencode", executablePathOverride: "/opt/opencode" },
+      {
+        readVersion: async () => "1.18.10",
+        allocatePort: async () => 43129,
+        spawnServer: () => process,
+        createApi: () => stalledApi,
+        readinessTimeoutMs: 10,
+      },
+    );
+
+    const outcome = await Promise.race([
+      result.then(
+        () => "ready",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      ),
+      Bun.sleep(50).then(() => "test deadline expired"),
+    ]);
+
+    expect(outcome).toMatch(/did not become ready/);
+    expect(process.exitCode).toBe(0);
+  });
+
+  it("retries health after one request stalls while the Server is starting", async () => {
+    const process = new FakeProcess();
+    const recoveringApi = api();
+    let healthAttempts = 0;
+    recoveringApi.health = async () => {
+      healthAttempts += 1;
+      if (healthAttempts === 1) return await new Promise<never>(() => undefined);
+      return { healthy: true, version: "1.18.10" };
+    };
+    const result = createOpenCodeServerClient(
+      { kind: "opencode", executablePathOverride: "/opt/opencode" },
+      {
+        readVersion: async () => "1.18.10",
+        allocatePort: async () => 43129,
+        spawnServer: () => process,
+        createApi: () => recoveringApi,
+        readinessTimeoutMs: 100,
+        healthRequestTimeoutMs: 10,
+      },
+    );
+
+    const outcome = await Promise.race([result, Bun.sleep(75).then(() => null)]);
+
+    expect(outcome).not.toBeNull();
+    expect(healthAttempts).toBe(2);
+    await outcome?.close();
+  });
+
   it("restarts through the authenticated HTTP boundary while isolating two same-kind Bindings", async () => {
     const ports = await availablePorts(3);
     const passwords = ["first-secret", "second-secret", "replacement-secret"];

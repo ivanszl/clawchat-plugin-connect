@@ -487,10 +487,14 @@ export class ConnectWsClient extends EventEmitter {
   }
 
   private async openTransport(): Promise<void> {
+    const reconnecting = this.reconnectAttempts > 0;
+    this.startHandshakeTimeout();
     try {
       await this.transport.connect(this.options.url, this.transportEvents());
     } catch (error) {
+      this.clearHandshakeTimeout();
       this.failConnect(error instanceof Error ? error : new Error(String(error)));
+      if (reconnecting && !this.reconnectTimer && !this.closing && !this.authFailed) this.scheduleReconnect();
     }
   }
 
@@ -1200,6 +1204,7 @@ export class ConnectWsClient extends EventEmitter {
     this.reconnectAttempts += 1;
     this.transition("reconnecting");
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
       void this.openTransport();
     }, base + jitter);
   }

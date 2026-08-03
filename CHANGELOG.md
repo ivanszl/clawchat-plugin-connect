@@ -2,6 +2,24 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.31] - 2026-08-03
+
+### Added
+
+- Added Connect-owned CodeBuddy Sessions to WorkBuddy Bindings while retaining desktop-synchronized native WorkBuddy Tasks as a separate selectable Runtime target.
+
+### Changed
+
+- Clarified through `/new`, `/sessions`, and `/status` whether a WorkBuddy Binding is using a Connect-only CodeBuddy Session or a desktop-synchronized WorkBuddy Task.
+
+### Fixed
+
+- Kept persisted CodeBuddy Sessions selectable and sendable after Connect restarts, without claiming that they appear in WorkBuddy Desktop.
+- Prevented an unavailable WorkBuddy Task option catalog from closing the entire Connect Client while preserving strict Task replay verification for adoption and turns.
+- Bounded and retried stalled OpenCode health requests, accepted compatible Session events without a directory envelope, and generated native OpenCode message identifiers.
+- Bounded WebSocket dials and continued reconnecting after a reconnect attempt fails before opening.
+- Retried Liveware tunnel binding while a newly created App is still converging in the control plane.
+
 ## [0.1.0-alpha.30] - 2026-08-02
 
 ### Fixed

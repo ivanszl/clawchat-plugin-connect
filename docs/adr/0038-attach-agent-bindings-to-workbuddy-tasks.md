@@ -13,3 +13,5 @@ An Agent Binding persists the stable WorkBuddy Task identifier, not a dynamic lo
 This decision is based on local end-to-end tests of both pinned distributions. In each, the Task endpoint replayed existing user and agent messages, continued with the correct context, persisted the new turn to the same native session log, and updated the WorkBuddy UI. The endpoint also remained reachable when the user switched to another Task while the desktop application stayed running.
 
 This supersedes ADR-0037. Direct stdio ACP remains useful evidence about the embedded runtime but is not the product integration boundary for WorkBuddy-backed Agent Bindings.
+
+ADR-0040 later supersedes only the prohibition on direct stdio ACP and Connect-owned Sessions: an explicit CodeBuddy Session target now coexists with this Task Attachment target. This ADR remains authoritative for every desktop-synchronized WorkBuddy Task.

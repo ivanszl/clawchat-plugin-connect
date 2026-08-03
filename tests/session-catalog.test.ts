@@ -7,6 +7,7 @@ import { TranscriptProjection } from "../src/client-interface/transcript-project
 import { defaultConfig } from "../src/config";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
+import { encodeCodeBuddySessionId } from "../src/runtime/workbuddy-runtime-target";
 import { type ConnectStateStore, createStateStore } from "../src/state";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
@@ -105,6 +106,41 @@ describe("Session Catalog workspace grouping", () => {
     const adopted = await catalog.adopt(entries[0]?.sessionRef ?? "");
     const adoptedProject = adopted?.projectId ? await store.getProject(adopted.projectId) : null;
     expect(adoptedProject?.rootPath).toBe(await realpath(firstWorkspace));
+  });
+
+  it("keeps a discovered Session selectable when its Runtime option catalog is temporarily unavailable", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-options-unavailable-"));
+    const workspace = join(directory, "project");
+    await mkdir(workspace);
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    stores.push(store);
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "workbuddy",
+      modes: [],
+      discoverAllThreads: async () => [
+        { runtimeThreadId: "task-native", name: "Native Task", updatedAt: 2, workingDirectory: workspace },
+      ],
+      listModels: async () => {
+        throw new Error("native Task replay is temporarily unavailable");
+      },
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
+    const config = defaultConfig();
+    config.agents = { desktop: { kind: "workbuddy", displayName: "WorkBuddy", profile: "workbuddy-cn" } };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+
+    const entry = (await catalog.view()).bindings[0]?.entries[0];
+
+    await expect(catalog.sessionView(entry?.sessionRef ?? "")).resolves.toMatchObject({
+      name: "Native Task",
+      modelOptions: [],
+    });
   });
 
   it("does not synchronize a workspace discovered only through archived Runtime Threads", async () => {
@@ -240,6 +276,48 @@ describe("Session Catalog workspace grouping", () => {
     const entry = (await catalog.view()).bindings[0]?.entries[0];
 
     expect(entry).toMatchObject({ projectId: null, workspaceId: null, workspaceName: null });
+  });
+
+  it("keeps a managed CodeBuddy Session sendable when WorkBuddy desktop discovery cannot list it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-codebuddy-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    stores.push(store);
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "desktop",
+      runtimeSessionId: encodeCodeBuddySessionId("native-codebuddy-session"),
+      projectId: null,
+      name: "ClawChat CodeBuddy Session",
+      hasMessages: true,
+      isCurrent: true,
+    });
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "workbuddy",
+      modes: [],
+      discoverAllThreads: async () => [],
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
+    const config = defaultConfig();
+    config.agents = { desktop: { kind: "workbuddy", displayName: "WorkBuddy", profile: "workbuddy-cn" } };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+
+    const entry = (await catalog.view()).bindings[0]?.entries[0];
+
+    expect(entry).toMatchObject({
+      name: "ClawChat CodeBuddy Session",
+      allowedActions: ["open", "send", "cancel"],
+    });
+    await expect(catalog.sessionView(entry?.sessionRef ?? "")).resolves.toMatchObject({
+      runtimeThreadAvailable: true,
+      allowedActions: ["send", "cancel"],
+    });
   });
 
   it("shows activity only on the Session whose turn is active", async () => {

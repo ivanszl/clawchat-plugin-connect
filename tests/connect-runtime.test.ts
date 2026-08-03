@@ -203,7 +203,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     },
   );
 
-  it("returns an actionable mapping error on both turn surfaces without creating a WorkBuddy Task", async () => {
+  it("starts and resumes a CodeBuddy Session on both turn surfaces without creating a WorkBuddy Task", async () => {
     const fixture = await runtimeFixture();
     const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
     if (!current) throw new Error("current Session is missing");
@@ -228,7 +228,20 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         };
       },
     };
-    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const directStarts: Array<string | null> = [];
+    const adapter = createWorkBuddyRuntimeAdapter({
+      createSource: () => runtimeSource,
+      createCodeBuddySession: async (input) => {
+        directStarts.push(input.sessionId);
+        if (!input.sessionId) await input.onSessionId("codebuddy-native-1");
+        return {
+          prompt: async function* () {
+            yield activity("answer from CodeBuddy Session");
+          },
+          close: async () => undefined,
+        };
+      },
+    });
     const runtimeAdapters = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
     const transcriptProjection = new TranscriptProjection({
       stateStore: fixture.store,
@@ -248,14 +261,30 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     const accepted = await runtime.enqueueClientTurn(current.sessionRef, "client without mapping");
     while (runtime.activeClientTurnId(current.sessionRef) === accepted.turnId) await Bun.sleep(0);
     const clientBlocks = await fixture.store.listTranscriptBlocks(current.sessionRef);
-    expect(clientBlocks.some((block) => block.plainText.includes("adopt an existing WorkBuddy Task"))).toBeTrue();
-
-    await runtime.handleInboundMessage({ ...message("clawchat without mapping"), messageId: "unmapped-clawchat" });
-    expect(JSON.stringify(fixture.sendMessageEnvelope.mock.calls)).toContain("adopt an existing WorkBuddy Task");
-    expect(nativeStarts).toBe(0);
-    expect(await fixture.store.getRuntimeSessionByRef(current.sessionRef)).toMatchObject({ runtimeSessionId: null });
-
+    expect(clientBlocks.some((block) => block.plainText.includes("answer from CodeBuddy Session"))).toBeTrue();
     await runtime.dispose();
+
+    const resumedRuntime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters,
+      transcriptProjection,
+    });
+    await resumedRuntime.handleInboundMessage({
+      ...message("clawchat without mapping"),
+      messageId: "unmapped-clawchat",
+    });
+    expect(JSON.stringify(fixture.sendMessageEnvelope.mock.calls)).toContain("answer from CodeBuddy Session");
+    expect(directStarts).toEqual([null, "codebuddy-native-1"]);
+    expect(nativeStarts).toBe(0);
+    expect(await fixture.store.getRuntimeSessionByRef(current.sessionRef)).toMatchObject({
+      runtimeSessionId: "codebuddy-session:codebuddy-native-1",
+    });
+
+    await resumedRuntime.dispose();
     await runtimeAdapters.close();
     await fixture.store.close();
   });

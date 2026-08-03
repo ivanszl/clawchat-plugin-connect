@@ -5,6 +5,7 @@ import type { ProjectCatalog } from "./projects";
 import type { NormalizedInboundMessage } from "./protocol";
 import { requireModel, resolveEffort, resolveModelSelection } from "./runtime/model-selection";
 import type { RuntimeModelOption, SelectableRuntimeThread } from "./runtime/types";
+import { workBuddyRuntimeTargetKind } from "./runtime/workbuddy-runtime-target";
 import { createSessionContinuity } from "./session-continuity";
 import type { ConnectStateStore } from "./state";
 import type {
@@ -203,6 +204,17 @@ async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult>
       `- agent: \`${status?.activeAgent ?? ctx.agentId}\``,
       `- websocket: \`${status?.websocketConnected === true ? "connected" : status?.websocketConnected === false ? "disconnected" : "unknown"}\``,
       `- session: ${selected ? `${"sessionRef" in selected ? `\`${selected.sessionRef}\`` : "next Session (not started)"}${selected.name ? ` · ${selected.name}` : ""}` : "none"}`,
+      ...(binding.kind === "workbuddy"
+        ? [
+            `- runtime target: ${
+              selected &&
+              "runtimeSessionId" in selected &&
+              workBuddyRuntimeTargetKind(selected.runtimeSessionId) === "workbuddy-task"
+                ? "WorkBuddy Task · desktop-synchronized"
+                : "CodeBuddy Session · not shown in WorkBuddy Desktop"
+            }`,
+          ]
+        : []),
       `- project: ${project ? `\`${project.name}\`` : "none (isolated workspace)"}`,
       `- mode: \`${selected?.mode ?? binding.sandboxMode ?? "runtime default"}\``,
       `- model: \`${modelText}\` · effort \`${effortText}\` (${source})`,
@@ -214,6 +226,7 @@ async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult>
 }
 
 async function handleNew(ctx: ChatCommandContext, name: string): Promise<ChatCommandResult> {
+  const binding = getAgentBinding(ctx.config, ctx.agentId);
   const selected = await selectedSessionContext(ctx);
   await closeRuntimeSession(ctx);
   await createSessionContinuity({ stateStore: ctx.stateStore })
@@ -227,16 +240,21 @@ async function handleNew(ctx: ChatCommandContext, name: string): Promise<ChatCom
     });
   return {
     handled: true,
-    text: `The next message will start${name.trim() ? ` Session \`${name.trim()}\`` : " a new Session"}.`,
+    text:
+      binding.kind === "workbuddy"
+        ? `The next message will start${name.trim() ? ` CodeBuddy Session \`${name.trim()}\`` : " a new CodeBuddy Session"}. It will not appear in WorkBuddy Desktop; use \`/sessions\` and \`/switch <session-ref>\` for a desktop-synchronized WorkBuddy Task.`
+        : `The next message will start${name.trim() ? ` Session \`${name.trim()}\`` : " a new Session"}.`,
   };
 }
 
 async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
+  const binding = getAgentBinding(ctx.config, ctx.agentId);
   const intent = await ctx.stateStore.getSessionIntent(ctx.message.chatId, ctx.agentId);
   const discovered = (await ctx.discoverRuntimeThreads?.(ctx.message.chatId)) ?? [];
   const sessions = sessionsInCurrentWorkspace(
     await ctx.stateStore.listRuntimeSessions(ctx.message.chatId, ctx.agentId),
     intent,
+    binding.kind === "workbuddy",
   );
   if (sessions.length === 0 && discovered.length === 0) {
     const current = intent ?? (await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId));
@@ -259,9 +277,18 @@ async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
             ? `Workspace: Project \`${(await ctx.projects.get(sessions[0].projectId))?.name ?? "unknown"}\``
             : "Workspace: Non-Project",
       "",
-      ...sessions.map((session) => formatSession(session, session.projectId ? projects.get(session.projectId) : null)),
+      ...sessions.map((session) =>
+        formatSession(
+          session,
+          session.projectId ? projects.get(session.projectId) : null,
+          binding.kind === "workbuddy",
+        ),
+      ),
       ...discovered.map(
-        (thread) => `- ${runtimeThreadLabel(thread)} · \`${thread.sessionRef}\` (available) — Runtime Thread`,
+        (thread) =>
+          `- ${runtimeThreadLabel(thread)} · \`${thread.sessionRef}\` (available) — ${
+            binding.kind === "workbuddy" ? "WorkBuddy Task · desktop-synchronized" : "Runtime Thread"
+          }`,
       ),
     ].join("\n"),
   };
@@ -509,9 +536,18 @@ async function handleCancel(ctx: ChatCommandContext): Promise<ChatCommandResult>
   };
 }
 
-function formatSession(session: RuntimeSessionRecord, project: ProjectRecord | null | undefined): string {
+function formatSession(
+  session: RuntimeSessionRecord,
+  project: ProjectRecord | null | undefined,
+  describeWorkBuddyTarget = false,
+): string {
   const projectText = project ? `Project ${project.name}` : "Non-Project";
-  return `- ${sessionLabel(session)} · \`${session.sessionRef}\`${session.isCurrent ? " (current)" : ""} — ${projectText}`;
+  const targetText = describeWorkBuddyTarget
+    ? workBuddyRuntimeTargetKind(session.runtimeSessionId) === "workbuddy-task"
+      ? " · WorkBuddy Task · desktop-synchronized"
+      : " · CodeBuddy Session · Connect-only"
+    : "";
+  return `- ${sessionLabel(session)} · \`${session.sessionRef}\`${session.isCurrent ? " (current)" : ""} — ${projectText}${targetText}`;
 }
 
 function sessionLabel(session: RuntimeSessionRecord): string {
@@ -525,15 +561,20 @@ function runtimeThreadLabel(thread: SelectableRuntimeThread): string {
 function sessionsInCurrentWorkspace(
   sessions: RuntimeSessionRecord[],
   intent: SessionIntentRecord | null,
+  includeAllNonProjectSessions = false,
 ): RuntimeSessionRecord[] {
   const materialized = sessions.filter((session) => session.hasMessages);
   if (intent) {
-    if (!intent.projectId) return [];
+    if (!intent.projectId) {
+      return includeAllNonProjectSessions ? materialized.filter((session) => !session.projectId) : [];
+    }
     return materialized.filter((session) => session.projectId === intent.projectId);
   }
   const current = materialized.find((session) => session.isCurrent);
   if (!current) return [];
-  if (!current.projectId) return [current];
+  if (!current.projectId) {
+    return includeAllNonProjectSessions ? materialized.filter((session) => !session.projectId) : [current];
+  }
   return materialized.filter((session) => session.projectId === current.projectId);
 }
 

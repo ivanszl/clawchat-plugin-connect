@@ -24,12 +24,18 @@ export async function verifyInstalledWorkBuddyNativeUi(input: NativeUiVerificati
       120_000,
     );
   } finally {
-    await runCommand(
-      "/usr/bin/osascript",
-      ["-e", WORKBUDDY_UI_RESTORE_SCRIPT, "--", String(processId), input.restoreTaskTitle],
-      60_000,
-    );
+    if (shouldRestoreInstalledWorkBuddyNativeTask(input.taskTitle, input.restoreTaskTitle)) {
+      await runCommand(
+        "/usr/bin/osascript",
+        ["-e", WORKBUDDY_UI_RESTORE_SCRIPT, "--", String(processId), input.restoreTaskTitle],
+        60_000,
+      );
+    }
   }
+}
+
+export function shouldRestoreInstalledWorkBuddyNativeTask(taskTitle: string, restoreTaskTitle: string): boolean {
+  return taskTitle !== restoreTaskTitle;
 }
 
 export async function selectInstalledWorkBuddyNativeTask(

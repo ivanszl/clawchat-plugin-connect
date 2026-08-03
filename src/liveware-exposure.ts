@@ -10,6 +10,8 @@ const LIVEWARE_APP_BINDING_SEPARATOR = " · ";
 export const LIVEWARE_APP_SUBTITLE = "Connect Web";
 export const DEFAULT_LIVEWARE_API_URL = "https://api-liveware.clawling.io";
 export const DEFAULT_LIVEWARE_RELAY_URL = "https://tunnel-liveware.clawling.io";
+const LIVEWARE_APP_CONVERGENCE_RETRY_DELAY_MS = 500;
+const LIVEWARE_APP_CONVERGENCE_ATTEMPTS = 5;
 
 type EnabledLivewareAccessPolicy = Exclude<LivewareAccessPolicy, "off">;
 
@@ -165,13 +167,14 @@ export async function prepareLivewareExposure(
   dependencies: LivewareExposureDependencies,
 ): Promise<LivewareExposureRecord> {
   const control = await dependencies.controlPlane.connect(options.activation.accessToken);
-  return await prepareWithControl(options, dependencies.clawChat, control);
+  return await prepareWithControl(options, dependencies.clawChat, control, dependencies.delay ?? defaultDelay);
 }
 
 async function prepareWithControl(
   options: PrepareLivewareExposureOptions,
   clawChat: ClawChatLivewarePort,
   control: LivewareControlSession,
+  delay: (milliseconds: number) => Promise<void>,
 ): Promise<LivewareExposureRecord> {
   const existing = await options.stateStore.getLivewareExposure(options.activation.localAgentId);
   if (existing && existing.ownerUserId !== options.activation.ownerUserId) {
@@ -188,7 +191,10 @@ async function prepareWithControl(
     (await control.createApp(appName, options.accessPolicy));
 
   await control.setAccessPolicy(app.appId, options.accessPolicy);
-  const publicUrl = normalizeHttpUrl(await control.bindTunnel(app.appId, options.upstream), "Liveware public URL");
+  const publicUrl = normalizeHttpUrl(
+    await bindTunnelAfterAppConverges(control, app.appId, options.upstream, delay),
+    "Liveware public URL",
+  );
   const registration: ClawChatLivewareRegistration = {
     livewareId: app.appId,
     name: app.name,
@@ -225,11 +231,11 @@ export async function startLivewareExposure(
   dependencies: LivewareExposureDependencies,
 ): Promise<LivewareExposureHandle> {
   const control = await dependencies.controlPlane.connect(options.activation.accessToken);
-  const record = await prepareWithControl(options, dependencies.clawChat, control);
+  const delay = dependencies.delay ?? defaultDelay;
+  const record = await prepareWithControl(options, dependencies.clawChat, control, delay);
   let current = await control.startAgent();
   let closed = false;
   const writeError = options.writeError ?? ((message: string) => process.stderr.write(message));
-  const delay = dependencies.delay ?? (async (milliseconds: number) => await Bun.sleep(milliseconds));
   const supervise = (async () => {
     while (!closed) {
       const exitCode = await current.exited;
@@ -259,6 +265,31 @@ export async function startLivewareExposure(
       await supervise;
     },
   };
+}
+
+async function bindTunnelAfterAppConverges(
+  control: LivewareControlSession,
+  appId: string,
+  upstream: string,
+  delay: (milliseconds: number) => Promise<void>,
+): Promise<string> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await control.bindTunnel(appId, upstream);
+    } catch (error) {
+      if (attempt >= LIVEWARE_APP_CONVERGENCE_ATTEMPTS || !isAppNotFoundError(error)) throw error;
+      await delay(LIVEWARE_APP_CONVERGENCE_RETRY_DELAY_MS);
+    }
+  }
+}
+
+function isAppNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\bapp not found\b/iu.test(message);
+}
+
+async function defaultDelay(milliseconds: number): Promise<void> {
+  await Bun.sleep(milliseconds);
 }
 
 export async function retireLivewareExposure(

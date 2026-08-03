@@ -1,5 +1,5 @@
 {
-  "connectVersion": "0.1.0-alpha.30",
+  "connectVersion": "0.1.0-alpha.31",
   "files": {
     "clawchat-core/SKILL.md": "e0784471020e8e132898648b420ac1a582c9192366618962b2f2f087f83aacf8",
     "clawchat-core/agents/openai.yaml": "83cf32458e89607db5c51317fc1dcd5dbdb279a4f6d068a9eaa2e963490aeda7",

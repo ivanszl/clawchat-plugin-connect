@@ -307,6 +307,31 @@ describe("ConnectWsClient", () => {
     expect(client.connectionState).toBe("disconnected");
   });
 
+  it("fails a connection whose WebSocket dial never opens before the handshake deadline", async () => {
+    const transport = new MemoryTransport();
+    transport.connect = mock(async () => await new Promise<void>(() => undefined));
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport,
+      handshakeTimeoutMs: 10,
+      heartbeat: { enabled: false },
+    });
+    client.on("error", () => undefined);
+
+    const result = await Promise.race([
+      client.connect().then(
+        () => "connected",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      ),
+      Bun.sleep(50).then(() => "test deadline expired"),
+    ]);
+
+    expect(result).toMatch(/handshake timed out/);
+    expect(client.connectionState).toBe("disconnected");
+  });
+
   it("fails the handshake when reliable-delivery epoch persistence fails", async () => {
     const transport = new MemoryTransport();
     const store = createStore();
@@ -418,6 +443,41 @@ describe("ConnectWsClient", () => {
     await Bun.sleep(10);
 
     expect(connect).toHaveBeenCalledTimes(2);
+    expect(client.connectionState).toBe("challenging");
+    client.close();
+  });
+
+  it("keeps reconnecting when the first reconnect dial fails before opening", async () => {
+    const transport = new MemoryTransport();
+    let attempts = 0;
+    transport.connect = mock(async (_url: string, handlers: TransportEvents) => {
+      attempts += 1;
+      transport.handlers = handlers;
+      if (attempts === 2) {
+        transport.state = "closed";
+        throw new Error("transient reconnect dial failure");
+      }
+      transport.state = "open";
+      handlers.onOpen();
+    });
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport,
+      traceIdFactory: () => "trace-reconnect-dial",
+      heartbeat: { enabled: false },
+      reconnect: { initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+      reliability: { ackResendMs: 0 },
+    });
+    client.on("error", () => undefined);
+
+    await handshake(client, transport, "trace-reconnect-dial");
+    transport.state = "closed";
+    transport.handlers?.onClose(1006, "network lost");
+    await Bun.sleep(10);
+
+    expect(attempts).toBe(3);
     expect(client.connectionState).toBe("challenging");
     client.close();
   });

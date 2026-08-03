@@ -1,6 +1,11 @@
 # WorkBuddy Runtime Adapter
 
-The WorkBuddy Runtime Adapter attaches Connect to an existing Task owned by one of two exact Tencent WorkBuddy desktop distributions. It uses a pinned private Task ACP interface. This is not a compatibility claim for an official or stable public API.
+The WorkBuddy Runtime Adapter has two explicit Runtime Thread targets backed by the selected Tencent WorkBuddy distribution:
+
+- a **WorkBuddy Task Attachment** adopts an existing desktop Task through its pinned private Task ACP interface and stays synchronized with WorkBuddy Desktop;
+- a **CodeBuddy Session** starts or loads the distribution's embedded CodeBuddy CLI over stdio ACP. It is owned by Connect and does not appear in WorkBuddy Desktop.
+
+The two targets share an Agent Binding and Project catalog, but never silently fall back to one another.
 
 ## Supported distributions
 
@@ -13,9 +18,9 @@ Connect rejects every other application, embedded CodeBuddy, or ACP version. Bot
 
 ## Operator requirements
 
-- macOS must have the selected exact distribution installed and running.
-- Create a dedicated Task in the desktop application before using Connect. The first release adopts an existing Task; it never creates an invisible Task or Session.
-- Open the Task and complete one native turn if the Task has no active private endpoint yet.
+- macOS must have the selected exact distribution installed. Its embedded CodeBuddy CLI and ACP v1 tuple must match the pinned profile.
+- `/new [name]` creates a Connect-owned CodeBuddy Session on the next real message. The response explicitly warns that this Session will not appear in WorkBuddy Desktop.
+- To use desktop history and synchronization, create or select a WorkBuddy Task, open it, and complete one native turn if it has no active private endpoint yet. WorkBuddy Desktop must be running while Connect attaches to that Task.
 - Add the Binding with an explicit profile:
 
   ```bash
@@ -24,7 +29,9 @@ Connect rejects every other application, embedded CodeBuddy, or ACP version. Bot
   clawchat-connect agent add mainland --kind workbuddy --profile workbuddy-cn
   ```
 
-- Discover and adopt the existing Task from Connect Client or the ordinary Session catalog before submitting a turn.
+- Discover and adopt an existing Task from Connect Client or the ordinary Session catalog before submitting a desktop-synchronized turn.
+
+ClawChat `/sessions` lists both target kinds in the current Project (and all materialized WorkBuddy targets in the Non-Project workspace). `/switch <session-ref>` can select either kind. Selecting a Project remains independent of target kind; `/new` inherits the selected Project.
 
 `clawchat-connect status --agent <binding-id>` reports the selected profile, exact supported tuple, and the latest operator diagnostic. Configuration accepts only `kind`, `profile`, `displayName`, and `outputVisibility` for a WorkBuddy Binding. Endpoints, ports, process identifiers, connection identifiers, tokens, passwords, authorization values, product configuration, executable overrides, and version overrides are desktop-owned and rejected.
 
@@ -38,7 +45,7 @@ Every attachment reacquires ephemeral connection data and verifies all of the fo
 - the endpoint, loaded Task, native transcript identity, Task identifier, and canonical workspace agree;
 - replay reaches the pinned start and end boundaries.
 
-ACP connection identifiers, Session tokens, product authorization, and injected product configuration stay in memory for one attachment. Diagnostic messages and details are bounded and redact credentials, authorization headers, product configuration, protocol payloads, and native transcript content. Connect persists the stable Task identifier and its own sanitized Transcript Projection, never an endpoint, port, ACP credential, or raw private payload.
+ACP connection identifiers, Session tokens, product authorization, and injected product configuration stay in memory for one attachment. Diagnostic messages and details are bounded and redact credentials, authorization headers, product configuration, protocol payloads, and native transcript content. For a WorkBuddy Task, Connect persists the stable Task identifier. For a direct CodeBuddy Session, Connect persists a namespaced native Session identifier. It never persists an endpoint, port, ACP credential, or raw private payload.
 
 Closing a Session, Agent Binding, or Connect Service closes only Connect-owned HTTP/SSE sockets, requests, timers, interactions, and caches. It is idempotent and never quits, kills, restarts, upgrades, signs into, or changes WorkBuddy Desktop or a Task process.
 
@@ -52,7 +59,7 @@ Connect rediscovers and fully re-verifies the same Task after application restar
 - `prompt-failed` means native history proves the prompt failed;
 - `prompt-outcome-indeterminate` means acceptance or effects cannot be determined safely.
 
-There is no stdio `codebuddy --acp` fallback, Tencent Agent SDK path, alternative distribution substitution, log parsing, or new hidden Session creation in discovery, compatibility, recovery, or error handling.
+A CodeBuddy Session is recovered only through stdio ACP `session/load` using its namespaced native Session identifier. A WorkBuddy Task is recovered only through Task rediscovery and reattachment. Connect does not reinterpret one identifier as the other, use the Tencent Agent SDK, substitute another distribution, or create a hidden replacement after recovery fails.
 
 ## Diagnostics
 

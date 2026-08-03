@@ -150,6 +150,55 @@ describe("Liveware Exposure", () => {
     await stateStore.close();
   });
 
+  it("retries a freshly created App while the tunnel API is still converging", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-liveware-convergence-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const app = {
+      appId: "app-converging",
+      name: "ClawChat Connect · codex",
+      publicUrl: "https://app-converging.apps.example",
+    };
+    let bindAttempts = 0;
+    const controlPlane: LivewareControlPlanePort = {
+      connect: async () => ({
+        listApps: async () => [],
+        createApp: async () => app,
+        setAccessPolicy: async () => undefined,
+        bindTunnel: async () => {
+          bindAttempts += 1;
+          if (bindAttempts === 1) throw new Error("liveware tunnel bind failed: app not found");
+          return app.publicUrl;
+        },
+        deleteApp: async () => undefined,
+        startAgent: async () => new FakeLivewareAgentProcess(),
+      }),
+    };
+    const clawChat = new FakeClawChatLiveware();
+    const delays: number[] = [];
+
+    const exposure = await prepareLivewareExposure(
+      {
+        activation: activation(),
+        deviceId: "device-1",
+        upstream: "http://127.0.0.1:47823",
+        accessPolicy: "private",
+        stateStore,
+      },
+      {
+        controlPlane,
+        clawChat,
+        delay: async (milliseconds) => {
+          delays.push(milliseconds);
+        },
+      },
+    );
+
+    expect(exposure.appId).toBe(app.appId);
+    expect(bindAttempts).toBe(2);
+    expect(delays).toEqual([500]);
+    await stateStore.close();
+  });
+
   it("restarts an exited Liveware agent and stops supervising when Connect closes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-liveware-agent-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });

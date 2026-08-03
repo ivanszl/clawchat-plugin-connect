@@ -89,6 +89,7 @@ export interface OpenCodeServerClientOptions {
   spawnServer?: (executable: string, args: string[], env: NodeJS.ProcessEnv) => OpenCodeServerProcess;
   createApi?: (baseUrl: string, username: string, password: string) => OpenCodeApiClient;
   readinessTimeoutMs?: number;
+  healthRequestTimeoutMs?: number;
   shutdownTimeoutMs?: number;
 }
 
@@ -147,7 +148,13 @@ export async function createOpenCodeServerClient(
   );
 
   try {
-    const health = await waitForHealth(api, child, stderr, options.readinessTimeoutMs ?? 10_000);
+    const health = await waitForHealth(
+      api,
+      child,
+      stderr,
+      options.readinessTimeoutMs ?? 10_000,
+      options.healthRequestTimeoutMs ?? 1_000,
+    );
     if (health.version !== version) {
       throw compatibilityError(
         "global.health version",
@@ -355,6 +362,7 @@ async function waitForHealth(
   child: OpenCodeServerProcess,
   stderr: () => string,
   timeoutMs: number,
+  requestTimeoutMs: number,
 ): Promise<{ healthy: true; version: string }> {
   const startedAt = Date.now();
   let lastError: unknown;
@@ -363,14 +371,35 @@ async function waitForHealth(
       throw new Error(`OpenCode Server exited before readiness${stderr() ? `: ${stderr()}` : ""}`);
     }
     try {
-      return await api.health();
+      const remainingMs = Math.max(1, timeoutMs - (Date.now() - startedAt));
+      return await withOperationTimeout(
+        api.health(),
+        Math.min(requestTimeoutMs, remainingMs),
+        "health check timed out",
+      );
     } catch (error) {
       lastError = error;
-      await Bun.sleep(50);
+      const remainingMs = timeoutMs - (Date.now() - startedAt);
+      if (remainingMs <= 0) break;
+      await Bun.sleep(Math.min(50, remainingMs));
     }
   }
   const detail = lastError instanceof Error ? lastError.message : String(lastError ?? "health check timed out");
   throw new Error(`OpenCode Server did not become ready: ${detail}${stderr() ? ` (${stderr()})` : ""}`);
+}
+
+async function withOperationTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function stopServer(child: OpenCodeServerProcess, timeoutMs = 2_000): Promise<void> {

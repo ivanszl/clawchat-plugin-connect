@@ -246,7 +246,7 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
         listeners,
         threadDirectories,
         observedUserMessages,
-        messageID: options.messageID ?? randomUUID,
+        messageID: options.messageID ?? openCodeMessageID,
         onDirectory: (directory) => {
           lastDirectory = directory;
         },
@@ -271,6 +271,10 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
       clientPromise = null;
     },
   };
+}
+
+function openCodeMessageID(): string {
+  return `msg_${randomUUID()}`;
 }
 
 interface OpenCodeRuntimeSessionOptions {
@@ -333,7 +337,8 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         queue.close();
         return;
       }
-      if (canonical(event.directory) !== directory) return;
+      const eventDirectory = stringValue((event as { directory?: unknown }).directory);
+      if (eventDirectory && canonical(eventDirectory) !== directory) return;
       const payload = event.payload as { type: string; properties?: Record<string, unknown> };
       if (eventSessionId(payload.properties) !== session.id) return;
       if (payload.type === "session.deleted") {

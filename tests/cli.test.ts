@@ -989,6 +989,56 @@ describe("handleChatCommand", () => {
     await store.close();
   });
 
+  it("plans a desktop-invisible CodeBuddy Session for WorkBuddy /new", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-workbuddy-new-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const projects = new ProjectCatalog(store);
+    const projectRoot = join(directory, "repo");
+    await mkdir(projectRoot);
+    const project = await projects.add(projectRoot);
+    const config = upsertAgentBinding(defaultConfig(), "workbuddy", {
+      kind: "workbuddy",
+      profile: "workbuddy-cn",
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-workbuddy-task",
+      agentId: "workbuddy",
+      runtimeSessionId: "task-native-1",
+      projectId: project.projectId,
+      name: "Existing WorkBuddy Task",
+    });
+
+    const result = await handleChatCommand({
+      message: message("/new Planned work"),
+      agentId: "workbuddy",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      closeRuntimeSession: mock(async () => true),
+    });
+
+    expect(result.text).toContain("CodeBuddy Session `Planned work`");
+    expect(result.text).toContain("will not appear in WorkBuddy Desktop");
+    expect(await store.getCurrentRuntimeSession("chat-1", "workbuddy")).toBeNull();
+    await expect(store.getSessionIntent("chat-1", "workbuddy")).resolves.toMatchObject({
+      name: "Planned work",
+      projectId: project.projectId,
+    });
+    const status = await handleChatCommand({
+      message: message("/status"),
+      agentId: "workbuddy",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+    });
+    expect(status.text).toContain("CodeBuddy Session");
+    expect(status.text).toContain("not shown in WorkBuddy Desktop");
+    await store.close();
+  });
+
   it("selects and clears a validated model without replacing the Runtime Thread", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-model-command-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
@@ -1300,6 +1350,64 @@ describe("handleChatCommand", () => {
     });
     expect(listed.text).toContain("Current isolated work");
     expect(listed.text).not.toContain("Old isolated work");
+    await store.close();
+  });
+
+  it("lists and switches both CodeBuddy Sessions and WorkBuddy Tasks", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-workbuddy-session-list-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const projects = new ProjectCatalog(store);
+    const config = upsertAgentBinding(defaultConfig(), "workbuddy", {
+      kind: "workbuddy",
+      profile: "workbuddy-cn",
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-desktop-task",
+      agentId: "workbuddy",
+      runtimeSessionId: "task-native-1",
+      name: "Desktop task",
+      isCurrent: false,
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-connect-only",
+      agentId: "workbuddy",
+      runtimeSessionId: "codebuddy-session:session-native-1",
+      name: "Connect-only work",
+      isCurrent: true,
+    });
+    const sessions = await store.listRuntimeSessions("chat-1", "workbuddy");
+    const desktopTask = sessions.find((session) => session.sessionId === "session-desktop-task");
+    if (!desktopTask) throw new Error("expected desktop Task Session");
+
+    const listed = await handleChatCommand({
+      message: message("/sessions"),
+      agentId: "workbuddy",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+    });
+    expect(listed.text).toContain("Connect-only work");
+    expect(listed.text).toContain("CodeBuddy Session · Connect-only");
+    expect(listed.text).toContain("Desktop task");
+    expect(listed.text).toContain("WorkBuddy Task · desktop-synchronized");
+
+    const switched = await handleChatCommand({
+      message: message(`/switch ${desktopTask.sessionRef}`),
+      agentId: "workbuddy",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      projects,
+      closeRuntimeSession: mock(async () => true),
+    });
+    expect(switched.text).toContain("Switched to Session `Desktop task`");
+    await expect(store.getCurrentRuntimeSession("chat-1", "workbuddy")).resolves.toMatchObject({
+      sessionId: "session-desktop-task",
+      runtimeSessionId: "task-native-1",
+    });
     await store.close();
   });
 });
