@@ -249,18 +249,20 @@ async function resolveTask(
   profile: WorkBuddyProfile,
   taskId: string,
 ): Promise<WorkBuddyTaskSummary | null> {
-  try {
+  return await normalizeDiscoveryFailure(profile, async () => {
     return source.findTask
       ? await source.findTask(profile, taskId)
       : ((await source.listTasks(profile)).find((candidate) => candidate.id === taskId) ?? null);
-  } catch (error) {
-    throw discoveryFailure(profile, error);
-  }
+  });
 }
 
 async function listTasks(source: WorkBuddyRuntimeSource, profile: WorkBuddyProfile): Promise<WorkBuddyTaskSummary[]> {
+  return await normalizeDiscoveryFailure(profile, async () => await source.listTasks(profile));
+}
+
+async function normalizeDiscoveryFailure<T>(profile: WorkBuddyProfile, operation: () => Promise<T>): Promise<T> {
   try {
-    return await source.listTasks(profile);
+    return await operation();
   } catch (error) {
     throw discoveryFailure(profile, error);
   }

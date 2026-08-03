@@ -171,10 +171,10 @@ describe("standalone release bundle", () => {
       "test:integration:workbuddy-installation-preflight",
     );
     expect(packageManifest.scripts["test:integration:workbuddy-ai"]).toContain(
-      "test:integration:workbuddy-ai-ui-concurrency",
+      "test:integration:workbuddy-ai-ui-concurrency-recovery",
     );
     expect(packageManifest.scripts["test:integration:workbuddy-cn"]).toContain(
-      "test:integration:workbuddy-cn-ui-concurrency",
+      "test:integration:workbuddy-cn-ui-concurrency-recovery",
     );
   });
 

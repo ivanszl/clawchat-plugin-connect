@@ -4,7 +4,18 @@ import { listWorkBuddyTasks } from "../../src/runtime/workbuddy-task-discovery-m
 
 const profiles = ["workbuddy-ai", "workbuddy-cn"] as const;
 
-const results = await Promise.all(profiles.map((profile) => verifyProfile(profile)));
+const inspections = await Promise.all(profiles.map((profile) => verifyProfile(profile)));
+const [aiInspection, cnInspection] = inspections;
+if (aiInspection.taskId === cnInspection.taskId) {
+  throw new Error("The two dedicated installed-distribution Tasks must have distinct identifiers");
+}
+if (
+  aiInspection.catalogTaskIds.includes(cnInspection.taskId) ||
+  cnInspection.catalogTaskIds.includes(aiInspection.taskId)
+) {
+  throw new Error("A selected WorkBuddy profile exposed the other installed distribution's dedicated Task");
+}
+const results = inspections.map(({ catalogTaskIds: _catalogTaskIds, ...result }) => result);
 process.stdout.write(`${JSON.stringify({ simultaneousInstallationVerified: true, profiles: results }, null, 2)}\n`);
 
 async function verifyProfile(profile: WorkBuddyProfile) {
@@ -19,7 +30,7 @@ async function verifyProfile(profile: WorkBuddyProfile) {
   if (!selected || (await realpath(selected.workspace)) !== workspace) {
     throw new Error(`${profile} did not expose its configured dedicated Task from the selected distribution`);
   }
-  return { profile, taskId, workspace, taskCount: tasks.length };
+  return { profile, taskId, workspace, taskCount: tasks.length, catalogTaskIds: tasks.map((task) => task.id) };
 }
 
 function requiredEnv(name: string): string {

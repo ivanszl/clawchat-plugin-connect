@@ -43,6 +43,7 @@ const canonicalWorkspace = await realpath(workspace);
 const runMarker = workBuddyTestEnv("RECOVERY_MARKER") ?? `WB_CONNECT_RECOVERY_${Date.now()}`;
 const uiOriginatedUserMarker = `${uiOriginatedUserMarkerSeed}_${runMarker}`;
 const uiOriginatedAssistantMarker = `${uiOriginatedAssistantMarkerSeed}_${runMarker}`;
+const backgroundAttachmentMarker = `${runMarker}_BACKGROUND_ATTACHMENT`;
 const probeMarker = `${runMarker}_NOT_TRANSMITTED`;
 const turnMarker = `${runMarker}_CONTINUED`;
 const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: workBuddyTestProfile };
@@ -87,6 +88,37 @@ try {
     throw new Error("The UI-originated turn did not complete while Connect held the Task Attachment");
 
   await selectInstalledWorkBuddyNativeTask(workBuddyTestCompatibility, uiBackgroundTaskTitle);
+  let backgroundAccepted = 0;
+  const backgroundActivities = await collect(
+    session.prompt({
+      prompt: `Reply with ${backgroundAttachmentMarker} and nothing else.`,
+      turnId: backgroundAttachmentMarker,
+      turnOrigin: "client",
+      onAccepted: async () => {
+        backgroundAccepted += 1;
+      },
+      workspace: runtimeWorkspace(canonicalWorkspace),
+    }),
+  );
+  if (
+    backgroundAccepted !== 1 ||
+    !backgroundActivities.some(
+      (activity) =>
+        activity.kind === "assistant" &&
+        activity.state === "complete" &&
+        activity.text.includes(backgroundAttachmentMarker),
+    )
+  ) {
+    throw new Error("The original Task Attachment did not remain usable while WorkBuddy displayed another Task");
+  }
+  const backgroundPersistence = await inspectInstalledWorkBuddyTaskTranscript(
+    taskId,
+    backgroundAttachmentMarker,
+    workBuddyTestProfile,
+  );
+  if (!backgroundPersistence.hasCompletedAssistantMarker) {
+    throw new Error("The background-view turn was not persisted to the original attached WorkBuddy Task");
+  }
   process.stdout.write(
     `${JSON.stringify({ phase: "ready-for-restart", runMarker, taskId, applicationProcessId: before.application.processId })}\n`,
   );
@@ -141,7 +173,7 @@ try {
     });
   }
   if (probeAccepted !== 0) throw new Error(`The restart probe was incorrectly accepted ${probeAccepted} time(s)`);
-  const recoveredUiActivities = probeActivities.filter(
+  const recoveredUiActivities = [...backgroundActivities, ...probeActivities].filter(
     (activity) => activity.text.includes(uiOriginatedUserMarker) || activity.text.includes(uiOriginatedAssistantMarker),
   );
   if (
@@ -199,6 +231,8 @@ try {
         uiOriginatedTurnObserved: uiTurnObserved,
         uiOriginatedProjectionCount: recoveredUiActivities.length,
         backgroundTaskSelected: uiBackgroundTaskTitle,
+        backgroundAttachmentAccepted: backgroundAccepted,
+        backgroundAttachmentMarker,
         probeAccepted,
         probeOutcome: "prompt-not-committed",
         continuedAccepted: accepted,
