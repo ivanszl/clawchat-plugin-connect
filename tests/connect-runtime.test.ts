@@ -118,6 +118,17 @@ describe("ConnectRuntime Agent Binding sessions", () => {
               activities: [],
               connectionOwner: null,
             },
+            catalog: {
+              models: [],
+              currentModelId: null,
+              modes: [],
+              currentModeId: null,
+              configOptions: [],
+              currentConfig: {},
+              commands: [],
+              skills: [],
+            },
+            onCatalogChanged: () => () => undefined,
             prompt: async function* (input) {
               const turn = prompts.length;
               prompts.push(input);
@@ -180,7 +191,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       await clawchatTurn;
       while (runtime.activeClientTurnId(current.sessionRef) === accepted.turnId) await Bun.sleep(0);
 
-      expect(starts).toBe(1);
+      expect(starts).toBe(2);
       expect(prompts.map((prompt) => prompt.turnOrigin)).toEqual(["client", "clawchat"]);
       const blocks = await fixture.store.listTranscriptBlocks(current.sessionRef);
       expect(blocks.filter((block) => block.type === "message" && block.role === "user")).toHaveLength(2);

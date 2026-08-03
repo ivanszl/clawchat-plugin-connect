@@ -27,8 +27,14 @@ export interface ChatCommandContext {
   closeRuntimeSession?: (chatId: string) => Promise<boolean>;
   invalidateRuntimeSession?: (chatId: string) => Promise<boolean>;
   cancelRuntimeTurn?: (chatId: string) => Promise<boolean>;
-  runtimeModesFor?: (binding: AgentBindingConfig) => readonly string[];
-  listRuntimeModels?: (binding: AgentBindingConfig) => Promise<RuntimeModelOption[] | null>;
+  runtimeModesFor?: (
+    binding: AgentBindingConfig,
+    selected?: RuntimeSessionRecord | SessionIntentRecord | null,
+  ) => readonly string[];
+  listRuntimeModels?: (
+    binding: AgentBindingConfig,
+    selected?: RuntimeSessionRecord | SessionIntentRecord | null,
+  ) => Promise<RuntimeModelOption[] | null>;
   discoverRuntimeThreads?: (chatId: string) => Promise<SelectableRuntimeThread[]>;
   listRuntimeWorkspaces?: () => Promise<RuntimeWorkspaceChoice[]>;
 }
@@ -174,7 +180,7 @@ async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult>
   const selected = await selectedSessionContext(ctx);
   const project = selected?.projectId ? await ctx.projects.get(selected.projectId) : null;
   const binding = getAgentBinding(ctx.config, selected?.agentId ?? ctx.agentId);
-  const models = (await ctx.listRuntimeModels?.(binding).catch(() => null)) ?? null;
+  const models = (await ctx.listRuntimeModels?.(binding, selected).catch(() => null)) ?? null;
   let modelText = binding.model ?? "runtime default";
   let effortText = binding.modelReasoningEffort ?? "runtime default";
   let source = binding.model ? "binding" : "runtime";
@@ -416,7 +422,7 @@ async function handleMode(ctx: ChatCommandContext, mode: string | undefined): Pr
   const intent = await ctx.stateStore.getSessionIntent(ctx.message.chatId, ctx.agentId);
   const current = await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId);
   const binding = getAgentBinding(ctx.config, current?.agentId || intent?.agentId || ctx.agentId);
-  const modes = ctx.runtimeModesFor?.(binding) ?? [];
+  const modes = ctx.runtimeModesFor?.(binding, current ?? intent) ?? [];
   if (!mode)
     return {
       handled: true,
@@ -453,7 +459,7 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
     return { handled: true, text: "Session model now inherits the Agent Binding or runtime default." };
   }
 
-  const models = (await ctx.listRuntimeModels?.(binding)) ?? null;
+  const models = (await ctx.listRuntimeModels?.(binding, current ?? intent)) ?? null;
   if (!models) return { handled: true, text: `Runtime ${binding.kind} does not support model selection.` };
 
   if (!modelReference) {

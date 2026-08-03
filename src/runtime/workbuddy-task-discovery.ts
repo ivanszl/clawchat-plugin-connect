@@ -91,6 +91,7 @@ export interface WorkBuddyEndpointVerification {
   replayCompleted: boolean;
   activities: import("./types").RuntimeActivity[];
   connectionOwner: WorkBuddyProcessIdentity | null;
+  catalog?: import("./workbuddy-acp-client").WorkBuddyTaskCatalog;
 }
 
 export interface WorkBuddyEndpointInput {
@@ -178,7 +179,12 @@ export async function attachWorkBuddyTask(
   source: WorkBuddyTaskDiscoverySource,
 ): Promise<import("./types").RuntimeActivitySnapshot> {
   const { verification } = await verifyWorkBuddyTask(input, source);
-  return { activities: verification.activities, completeness: "complete", limitations: [] };
+  return {
+    activities: verification.activities,
+    completeness: "complete",
+    limitations: [],
+    ...(verification.catalog ? { catalog: verification.catalog } : {}),
+  };
 }
 
 export async function connectWorkBuddyTask(

@@ -7,7 +7,7 @@ import { TranscriptProjection } from "../src/client-interface/transcript-project
 import { defaultConfig } from "../src/config";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimePrompt, ConnectRuntimeStartContext, RuntimeActivity } from "../src/runtime/types";
-import { WorkBuddyPromptTransportError } from "../src/runtime/workbuddy-acp-client";
+import { WorkBuddyPromptTransportError, type WorkBuddyTaskCatalog } from "../src/runtime/workbuddy-acp-client";
 import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
 import { WorkBuddyDiscoveryError, type WorkBuddyDiscoveryFailureCode } from "../src/runtime/workbuddy-task-discovery";
 import { createStateStore } from "../src/state";
@@ -66,6 +66,120 @@ function source(): WorkBuddyRuntimeSource {
 }
 
 describe("WorkBuddy Runtime Adapter", () => {
+  it.each(["workbuddy-ai", "workbuddy-cn"] as const)(
+    "exposes only the attached %s Task catalog through runtime-neutral identities",
+    async (profile) => {
+      const catalog = taskCatalog(profile === "workbuddy-ai" ? "workbuddy-fast" : "hy3-product-model");
+      let closes = 0;
+      const runtimeSource: WorkBuddyRuntimeSource = {
+        ...source(),
+        startTask: async () => ({
+          verification: verifiedHistory(),
+          catalog,
+          onCatalogChanged: () => () => undefined,
+          prompt: async function* () {},
+          close: async () => {
+            closes += 1;
+          },
+        }),
+      };
+      const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+      const profileBinding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile };
+      const runtimeWorkspace = {
+        projectId: null,
+        workingDirectory: workspace,
+        additionalDirectories: [],
+        skipGitRepoCheck: false,
+      };
+      const scope = { runtimeThreadId: taskId, workspace: runtimeWorkspace };
+
+      await expect(adapter.listModels?.(profileBinding, scope)).resolves.toEqual(catalog.models);
+      await expect(adapter.listSessionOptions?.(profileBinding, runtimeWorkspace, scope)).resolves.toEqual(
+        catalog.configOptions,
+      );
+      await expect(
+        adapter.listCommands?.(profileBinding, runtimeWorkspace, { runtimeThreadId: taskId }),
+      ).resolves.toEqual([{ id: "workbuddy-command:review", name: "review", description: "Review changes" }]);
+      await expect(
+        adapter.listSkills?.(profileBinding, runtimeWorkspace, { runtimeThreadId: taskId }),
+      ).resolves.toEqual([
+        { id: "workbuddy-skill:product-research", name: "product-research", description: "Product research" },
+      ]);
+      expect(adapter.modesFor?.(profileBinding, scope)).toEqual(["plan"]);
+      expect(closes).toBe(1);
+      await adapter.close?.();
+    },
+  );
+
+  it("invalidates every cached Task catalog when the active Attachment reports a native update", async () => {
+    let catalog = taskCatalog("workbuddy-fast");
+    const listeners = new Set<() => void>();
+    const attachment = {
+      verification: verifiedHistory(),
+      get catalog() {
+        return catalog;
+      },
+      onCatalogChanged(listener: () => void) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      prompt: async function* () {},
+      close: async () => undefined,
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({
+      createSource: () => ({ ...source(), startTask: async () => attachment }),
+    });
+    const registry = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const scopedBinding = {
+      ...binding,
+      env: { CLAWCHAT_CONNECT_AGENT_ID: "desktop-catalog-refresh" },
+    } satisfies WorkBuddyAgentBindingConfig;
+    const runtimeWorkspace = {
+      projectId: null,
+      workingDirectory: workspace,
+      additionalDirectories: [],
+      skipGitRepoCheck: false,
+    };
+    const session = await registry.start(scopedBinding, {
+      agentId: "desktop-catalog-refresh",
+      chatId: "client",
+      sessionId: "connect-session",
+      runtimeSessionId: taskId,
+      configPath: "/private/tmp/connect.json",
+      stateDbPath: "/private/tmp/connect.sqlite",
+      onRuntimeSessionId: async () => undefined,
+    });
+
+    await expect(
+      registry.listModels(scopedBinding, { runtimeThreadId: taskId, workspace: runtimeWorkspace }),
+    ).resolves.toMatchObject([{ id: "workbuddy-fast" }]);
+    await expect(
+      registry.listSkills(scopedBinding, runtimeWorkspace, { runtimeThreadId: taskId }),
+    ).resolves.toMatchObject([{ id: "workbuddy-skill:product-research" }]);
+
+    catalog = {
+      ...taskCatalog("workbuddy-deep"),
+      skills: [
+        {
+          id: "workbuddy-skill:updated-research",
+          kind: "skill",
+          name: "updated-research",
+          nativeName: "updated-research",
+        },
+      ],
+    };
+    for (const listener of listeners) listener();
+
+    await expect(
+      registry.listModels(scopedBinding, { runtimeThreadId: taskId, workspace: runtimeWorkspace }),
+    ).resolves.toMatchObject([{ id: "workbuddy-deep" }]);
+    await expect(registry.listSkills(scopedBinding, runtimeWorkspace, { runtimeThreadId: taskId })).resolves.toEqual([
+      { id: "workbuddy-skill:updated-research", name: "updated-research" },
+    ]);
+    await session.close();
+    await registry.close();
+  });
+
   it("discovers WorkBuddy AI Tasks through the Runtime Thread catalog", async () => {
     const adapter = createWorkBuddyRuntimeAdapter({ createSource: source });
 
@@ -227,6 +341,53 @@ describe("WorkBuddy Runtime Adapter", () => {
 
       expect(adopted?.runtimeSessionId).toBe(taskId);
       expect(JSON.stringify({ config, adopted })).not.toMatch(/43129|connection-secret|session-secret/u);
+    } finally {
+      await registry.close();
+      await store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("projects the adopted Task model and text-only input capability through the Client Session view", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "workbuddy-adapter-client-capabilities-"));
+    const taskWorkspace = join(directory, "workspace");
+    await mkdir(taskWorkspace);
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const nativeCatalog = taskCatalog("workbuddy-fast");
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      listTasks: async () => [
+        { id: taskId, title: "Task-owned capabilities", workspace: taskWorkspace, updatedAt: 1_786_000_000_000 },
+      ],
+      attachTask: async () => ({ ...history, catalog: nativeCatalog }),
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const registry = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const config = defaultConfig();
+    config.defaultAgent = "desktop";
+    config.agents = { desktop: binding };
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+    });
+    try {
+      const entry = (await catalog.view()).bindings[0]?.entries[0];
+      const adopted = await catalog.adopt(entry?.sessionRef ?? "");
+      const view = await catalog.sessionView(adopted?.sessionRef ?? "");
+
+      expect(view).toMatchObject({
+        effectiveModel: "workbuddy-fast",
+        modelSource: "runtime",
+        modelAvailable: true,
+        modelOptions: [{ id: "workbuddy-fast", displayName: "WorkBuddy AI Fast", isDefault: true }],
+        turnSubmissionCapability: {
+          prompt: { allowed: true, required: true, maxCharacters: 64_000 },
+          attachments: { allowedKinds: [], allowedMediaTypes: [], maxCount: 0 },
+        },
+      });
+      expect(view?.sessionOptionDefinitions).toEqual(nativeCatalog.configOptions);
     } finally {
       await registry.close();
       await store.close();
@@ -893,6 +1054,58 @@ describe("WorkBuddy Runtime Adapter", () => {
     expect(attachmentGeneration).toBe(2);
   });
 });
+
+function taskCatalog(currentModelId: string): WorkBuddyTaskCatalog {
+  return {
+    currentModelId,
+    models: [
+      {
+        id: currentModelId,
+        displayName: currentModelId === "workbuddy-fast" ? "WorkBuddy AI Fast" : "Hy3 Product Model",
+        description: "Product-provided model",
+        isDefault: true,
+        defaultReasoningEffort: "default",
+        supportedReasoningEfforts: ["default"],
+        inputModalities: ["text"],
+        turnSubmissionCapability: {
+          prompt: { allowed: true, required: true, maxCharacters: 64_000 },
+          attachments: { allowedKinds: [], allowedMediaTypes: [], maxCount: 0 },
+        },
+      },
+    ],
+    currentModeId: "plan",
+    modes: [{ id: "plan", name: "Plan" }],
+    currentConfig: { thought_level: "high" },
+    configOptions: [
+      {
+        id: "thought_level",
+        displayName: "Deep Thinking",
+        description: "Product thinking control",
+        category: "execution",
+        changePolicy: "in-place",
+        values: [{ id: "high", displayName: "High" }],
+      },
+    ],
+    commands: [
+      {
+        id: "workbuddy-command:review",
+        kind: "command",
+        name: "review",
+        nativeName: "review",
+        description: "Review changes",
+      },
+    ],
+    skills: [
+      {
+        id: "workbuddy-skill:product-research",
+        kind: "skill",
+        name: "product-research",
+        nativeName: "product-research",
+        description: "Product research",
+      },
+    ],
+  };
+}
 
 async function collect(activities: AsyncIterable<RuntimeActivity>): Promise<RuntimeActivity[]> {
   const result: RuntimeActivity[] = [];

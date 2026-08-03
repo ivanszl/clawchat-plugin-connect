@@ -518,8 +518,8 @@ async function dispatchInboundMessage(
       closeRuntimeSession: (chatId) => params.runtime.closeSession(chatId),
       invalidateRuntimeSession: (chatId) => params.runtime.invalidateSession(chatId),
       cancelRuntimeTurn: (chatId) => params.runtime.cancelTurn(chatId),
-      runtimeModesFor: (binding) => params.runtime.runtimeModesFor(binding),
-      listRuntimeModels: (binding) => params.runtime.listRuntimeModels(binding),
+      runtimeModesFor: (binding, selected) => params.runtime.runtimeModesFor(binding, selected),
+      listRuntimeModels: (binding, selected) => params.runtime.listRuntimeModels(binding, selected),
       discoverRuntimeThreads: (chatId) => params.runtime.discoverRuntimeThreads(chatId),
       listRuntimeWorkspaces: () => params.runtime.listRuntimeWorkspaces(),
     });

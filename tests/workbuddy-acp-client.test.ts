@@ -147,6 +147,16 @@ describe("WorkBuddy private ACP client", () => {
           source: "history",
         },
       ],
+      catalog: {
+        models: [],
+        currentModelId: null,
+        modes: [],
+        currentModeId: null,
+        configOptions: [],
+        currentConfig: {},
+        commands: [],
+        skills: [],
+      },
       connectionOwner: {
         pid: 120,
         parentPid: 110,
@@ -386,6 +396,241 @@ describe("WorkBuddy private ACP client", () => {
     await attachment.close();
     await attachment.close();
     expect(deleteRequests).toBe(1);
+  });
+
+  it("derives Task capabilities from load updates and applies only an explicit supported model selection", async () => {
+    const rpcMethods: string[] = [];
+    const promptParams: Record<string, unknown>[] = [];
+    const endpoint = await serve((request) => {
+      if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "catalog-connection" });
+      if (request.method === "DELETE") return emptyResponse();
+      const rpc = JSON.parse(request.body) as { id: number; method: string; params: Record<string, unknown> };
+      rpcMethods.push(rpc.method);
+      if (rpc.method === "initialize") {
+        return sseResponse([
+          {
+            jsonrpc: "2.0",
+            id: rpc.id,
+            result: {
+              protocolVersion: 1,
+              agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true } },
+            },
+          },
+        ]);
+      }
+      if (rpc.method === "session/load") {
+        return sseResponse([
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+          update({
+            sessionUpdate: "available_commands_update",
+            availableCommands: [
+              { name: "review", description: "Review the current changes" },
+              { name: "product-research", description: "Use WorkBuddy research", _meta: { type: "skill" } },
+            ],
+          }),
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+          {
+            jsonrpc: "2.0",
+            id: rpc.id,
+            result: {
+              models: {
+                currentModelId: "workbuddy-fast",
+                availableModels: [
+                  { modelId: "workbuddy-fast", name: "WorkBuddy AI Fast", description: "Product alias" },
+                  { modelId: "workbuddy-deep", name: "WorkBuddy AI Deep" },
+                ],
+              },
+              modes: {
+                currentModeId: "plan",
+                availableModes: [
+                  { id: "plan", name: "Plan", description: "Read-only planning" },
+                  { id: "work", name: "Work", description: "Product work mode" },
+                ],
+              },
+              configOptions: [
+                {
+                  type: "select",
+                  id: "thought_level",
+                  name: "Deep Thinking",
+                  category: "thought_level",
+                  currentValue: "high",
+                  options: [
+                    { value: "low", name: "Low" },
+                    { value: "high", name: "High" },
+                  ],
+                },
+              ],
+            },
+          },
+        ]);
+      }
+      if (rpc.method === "session/set_model") {
+        expect(rpc.params).toEqual({ sessionId: taskId, modelId: "workbuddy-deep" });
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { modelId: "workbuddy-deep" } }]);
+      }
+      if (rpc.method === "session/set_mode") {
+        expect(rpc.params).toEqual({ sessionId: taskId, modeId: "work" });
+        return sseResponse([
+          update({ sessionUpdate: "current_mode_update", currentModeId: "work" }),
+          { jsonrpc: "2.0", id: rpc.id, result: {} },
+        ]);
+      }
+      if (rpc.method === "session/set_config_option") {
+        expect(rpc.params).toEqual({ sessionId: taskId, configId: "thought_level", value: "low" });
+        return sseResponse([
+          {
+            jsonrpc: "2.0",
+            id: rpc.id,
+            result: {
+              configOptions: [
+                {
+                  type: "select",
+                  id: "thought_level",
+                  name: "Deep Thinking",
+                  category: "thought_level",
+                  currentValue: "low",
+                  options: [
+                    { value: "low", name: "Low" },
+                    { value: "high", name: "High" },
+                  ],
+                },
+              ],
+            },
+          },
+        ]);
+      }
+      promptParams.push(rpc.params);
+      return sseResponse([
+        update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/agentPhase": { phase: "idle" } } }),
+        { jsonrpc: "2.0", id: rpc.id, result: { stopReason: "end_turn" } },
+      ]);
+    });
+
+    const attachment = await openWorkBuddyAiTaskEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => ({
+        pid: 120,
+        parentPid: 110,
+        executablePath: `${applicationPath}/Contents/MacOS/Electron`,
+      }),
+    );
+
+    expect(attachment.catalog?.currentModelId).toBe("workbuddy-fast");
+    expect(attachment.catalog?.models).toEqual([
+      {
+        id: "workbuddy-fast",
+        displayName: "WorkBuddy AI Fast",
+        description: "Product alias",
+        isDefault: true,
+        defaultReasoningEffort: "default",
+        supportedReasoningEfforts: ["default"],
+        inputModalities: ["text"],
+        turnSubmissionCapability: {
+          prompt: { allowed: true, required: true, maxCharacters: 64_000 },
+          attachments: { allowedKinds: [], allowedMediaTypes: [], maxCount: 0 },
+        },
+      },
+      expect.objectContaining({ id: "workbuddy-deep", isDefault: false, inputModalities: ["text"] }),
+    ]);
+    expect(attachment.catalog?.modes).toEqual([
+      { id: "plan", name: "Plan", description: "Read-only planning" },
+      { id: "work", name: "Work", description: "Product work mode" },
+    ]);
+    expect(attachment.catalog?.currentModeId).toBe("plan");
+    expect(attachment.catalog?.configOptions).toHaveLength(1);
+    expect(attachment.catalog?.commands).toEqual([
+      expect.objectContaining({ name: "review", nativeName: "review", kind: "command" }),
+    ]);
+    expect(attachment.catalog?.skills).toEqual([
+      expect.objectContaining({ name: "product-research", nativeName: "product-research", kind: "skill" }),
+    ]);
+
+    await collect(
+      attachment.prompt({
+        prompt: "use the selected model",
+        model: "workbuddy-deep",
+        workspace: {
+          projectId: null,
+          workingDirectory: workspace,
+          additionalDirectories: [],
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+    expect(rpcMethods).toEqual(["initialize", "session/load", "session/set_model", "session/prompt"]);
+    expect(attachment.catalog?.currentModelId).toBe("workbuddy-deep");
+
+    const skillActivities = await collect(
+      attachment.prompt({
+        prompt: "/product-research compare sources",
+        skill: { id: "workbuddy-skill:product-research", name: "product-research" },
+        workspace: {
+          projectId: null,
+          workingDirectory: workspace,
+          additionalDirectories: [],
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+    expect(promptParams.at(-1)?.prompt).toEqual([{ type: "text", text: "/product-research compare sources" }]);
+    expect(skillActivities.find((activity) => activity.kind === "user")?.data).toMatchObject({
+      runtimeSlashSelection: {
+        kind: "skill",
+        id: "workbuddy-skill:product-research",
+        name: "product-research",
+      },
+    });
+
+    await collect(
+      attachment.prompt({
+        prompt: "apply native Task configuration",
+        mode: "work",
+        sessionOptions: { thought_level: "low" },
+        workspace: {
+          projectId: null,
+          workingDirectory: workspace,
+          additionalDirectories: [],
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+    expect(attachment.catalog).toMatchObject({
+      currentModeId: "work",
+      currentConfig: { thought_level: "low" },
+    });
+
+    const acceptedBeforeRejection = rpcMethods.length;
+    await expect(
+      collect(
+        attachment.prompt({
+          prompt: "/removed-skill run",
+          skill: { id: "workbuddy-skill:removed-skill", name: "removed-skill" },
+          workspace: {
+            projectId: null,
+            workingDirectory: workspace,
+            additionalDirectories: [],
+            skipGitRepoCheck: false,
+          },
+        }),
+      ),
+    ).rejects.toThrow("WorkBuddy Skill is no longer available: removed-skill");
+    await expect(
+      collect(
+        attachment.prompt({
+          prompt: "inspect image",
+          media: [{ kind: "image", url: "file:///private/tmp/unsupported.png", size: 1 }],
+          workspace: {
+            projectId: null,
+            workingDirectory: workspace,
+            additionalDirectories: [],
+            skipGitRepoCheck: false,
+          },
+        }),
+      ),
+    ).rejects.toThrow("support text turns only");
+    expect(rpcMethods).toHaveLength(acceptedBeforeRejection);
+    await attachment.close();
   });
 
   it("marks a disconnect after prompt transmission as uncertain without recording native acceptance", async () => {

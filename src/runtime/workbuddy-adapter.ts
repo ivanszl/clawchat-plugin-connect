@@ -6,9 +6,14 @@ import type {
   ConnectRuntimeSession,
   RuntimeActivity,
   RuntimeActivitySnapshot,
+  RuntimeCatalogScope,
   RuntimeInteractionPort,
 } from "./types";
-import { type WorkBuddyAcpTaskAttachment, WorkBuddyPromptTransportError } from "./workbuddy-acp-client";
+import {
+  type WorkBuddyAcpTaskAttachment,
+  WorkBuddyPromptTransportError,
+  type WorkBuddyTaskCatalog,
+} from "./workbuddy-acp-client";
 import {
   workBuddySubmittedUserHistoryActivityId,
   workBuddySubmittedUserLiveActivityId,
@@ -27,7 +32,11 @@ export interface WorkBuddyTaskSummary {
 export interface WorkBuddyRuntimeSource {
   listTasks(profile: WorkBuddyProfile): Promise<WorkBuddyTaskSummary[]>;
   findTask?(profile: WorkBuddyProfile, taskId: string): Promise<WorkBuddyTaskSummary | null>;
-  attachTask(input: { profile: WorkBuddyProfile; taskId: string; workspace: string }): Promise<RuntimeActivitySnapshot>;
+  attachTask(input: {
+    profile: WorkBuddyProfile;
+    taskId: string;
+    workspace: string;
+  }): Promise<RuntimeActivitySnapshot & { catalog?: WorkBuddyTaskCatalog }>;
   startTask?(input: {
     profile: WorkBuddyProfile;
     taskId: string;
@@ -59,6 +68,52 @@ export class WorkBuddyPromptRecoveryError extends Error {
 
 export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOptions = {}): ConnectRuntimeAdapter {
   const source = (options.createSource ?? createDefaultSource)();
+  const catalogs = new Map<string, WorkBuddyTaskCatalog>();
+  const catalogListeners = new Set<() => void>();
+  const catalogSubscriptions = new Set<() => void>();
+  const publishCatalog = (taskId: string, attachment: WorkBuddyAcpTaskAttachment): (() => void) => {
+    const initialCatalog = attachment.catalog;
+    const onCatalogChanged = attachment.onCatalogChanged;
+    if (!initialCatalog) return () => undefined;
+    const update = () => {
+      const current = attachment.catalog;
+      if (!current) return;
+      catalogs.set(taskId, current);
+      for (const listener of catalogListeners) listener();
+    };
+    update();
+    if (!onCatalogChanged) return () => undefined;
+    const unsubscribe = onCatalogChanged(update);
+    const release = () => {
+      unsubscribe();
+      catalogSubscriptions.delete(release);
+    };
+    catalogSubscriptions.add(release);
+    return release;
+  };
+  const catalogFor = async (
+    binding: AgentBindingConfig,
+    scope?: RuntimeCatalogScope,
+  ): Promise<WorkBuddyTaskCatalog> => {
+    const taskId = scope?.runtimeThreadId;
+    if (!taskId) return emptyCatalog();
+    const cached = catalogs.get(taskId);
+    if (cached) return cached;
+    const profile = requireWorkBuddyProfile(binding);
+    const task = await resolveTask(source, profile, taskId);
+    if (!task) throw new Error(`WorkBuddy Task was not found: ${taskId}`);
+    if (!source.startTask)
+      throw new Error("WorkBuddy Task capability discovery is unavailable for this Attachment source");
+    const attachment = await source.startTask({ profile, taskId, workspace: task.workspace });
+    try {
+      const catalog = attachment.catalog;
+      if (!catalog) throw new Error("WorkBuddy Task capability discovery returned no Task catalog");
+      catalogs.set(taskId, catalog);
+      return catalog;
+    } finally {
+      await attachment.close();
+    }
+  };
   const discoverAllThreads: NonNullable<ConnectRuntimeAdapter["discoverAllThreads"]> = async (binding) => {
     if (binding.kind !== "workbuddy") throw new Error("WorkBuddy Runtime Adapter requires a WorkBuddy Binding");
     return (await source.listTasks(binding.profile)).map((task) => ({
@@ -74,16 +129,51 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
     const profile = requireWorkBuddyProfile(binding);
     const task = await resolveTask(source, profile, runtimeThreadId);
     if (!task) throw new Error(`WorkBuddy Task was not found: ${runtimeThreadId}`);
-    return await source.attachTask({
+    const loaded = await source.attachTask({
       profile,
       taskId: task.id,
       workspace: task.workspace,
     });
+    if (loaded.catalog) {
+      catalogs.set(task.id, loaded.catalog);
+      for (const listener of catalogListeners) listener();
+    }
+    return loaded;
   };
   return {
     kind: "workbuddy",
     modes: [],
+    modesFor: (_binding, scope) =>
+      scope?.runtimeThreadId ? (catalogs.get(scope.runtimeThreadId)?.modes.map((mode) => mode.id) ?? []) : [],
     lifecycleCapabilities: { archive: false, restore: false, delete: false },
+    listModels: async (binding, scope) => (await catalogFor(binding, scope)).models,
+    listSessionOptions: async (binding, _workspace, scope) => (await catalogFor(binding, scope)).configOptions,
+    listSkills: async (binding, workspace, listOptions) =>
+      (
+        await catalogFor(binding, {
+          runtimeThreadId: listOptions?.runtimeThreadId,
+          workspace,
+        })
+      ).skills.map(({ id, name, description }) => ({ id, name, ...(description ? { description } : {}) })),
+    onSkillsChanged: (listener) => {
+      catalogListeners.add(listener);
+      return () => catalogListeners.delete(listener);
+    },
+    listCommands: async (binding, workspace, listOptions) =>
+      (
+        await catalogFor(binding, {
+          runtimeThreadId: listOptions?.runtimeThreadId,
+          workspace,
+        })
+      ).commands.map(({ id, name, description }) => ({ id, name, ...(description ? { description } : {}) })),
+    onCommandsChanged: (listener) => {
+      catalogListeners.add(listener);
+      return () => catalogListeners.delete(listener);
+    },
+    onCatalogsChanged: (listener) => {
+      catalogListeners.add(listener);
+      return () => catalogListeners.delete(listener);
+    },
     discoverAllThreads,
     discoverThreads: async (binding, workspace) =>
       (await discoverAllThreads(binding)).filter((thread) => thread.workingDirectory === workspace.workingDirectory),
@@ -104,6 +194,7 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
           `This conversation's adopted WorkBuddy Task is unavailable: ${context.runtimeSessionId}; reopen it in WorkBuddy and retry.`,
         );
       }
+      let releaseCatalog: () => void = () => undefined;
       const reconnect = async (): Promise<WorkBuddyAcpTaskAttachment> => {
         const rediscovered = await resolveTask(source, profile, task.id);
         if (!rediscovered) {
@@ -111,15 +202,36 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
             `This conversation's adopted WorkBuddy Task is unavailable: ${task.id}; reopen it in WorkBuddy and retry.`,
           );
         }
-        return await startTask({
+        const attachment = await startTask({
           profile,
           taskId: rediscovered.id,
           workspace: rediscovered.workspace,
         });
+        releaseCatalog();
+        releaseCatalog = publishCatalog(task.id, attachment);
+        return attachment;
       };
-      return recoverableSession(await reconnect(), reconnect);
+      return recoverableSession(await reconnect(), reconnect, () => releaseCatalog());
     },
-    close: async () => await source.close?.(),
+    close: async () => {
+      for (const unsubscribe of [...catalogSubscriptions]) unsubscribe();
+      catalogListeners.clear();
+      catalogs.clear();
+      await source.close?.();
+    },
+  };
+}
+
+function emptyCatalog(): WorkBuddyTaskCatalog {
+  return {
+    models: [],
+    currentModelId: null,
+    modes: [],
+    currentModeId: null,
+    configOptions: [],
+    currentConfig: {},
+    commands: [],
+    skills: [],
   };
 }
 
@@ -141,6 +253,7 @@ function requireWorkBuddyProfile(binding: AgentBindingConfig): WorkBuddyProfile 
 function recoverableSession(
   initialSession: WorkBuddyAcpTaskAttachment,
   reconnect: () => Promise<WorkBuddyAcpTaskAttachment>,
+  releaseCatalog: () => void = () => undefined,
 ): ConnectRuntimeSession {
   let session: WorkBuddyAcpTaskAttachment | null = initialSession;
   let closed = false;
@@ -238,7 +351,11 @@ function recoverableSession(
       activeTurnAbort = null;
       const active = session;
       session = null;
-      await active?.close();
+      try {
+        await active?.close();
+      } finally {
+        releaseCatalog();
+      }
     },
   };
 }

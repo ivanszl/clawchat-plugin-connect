@@ -4,6 +4,7 @@ import type {
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
   RuntimeActivitySnapshot,
+  RuntimeCatalogScope,
   RuntimeCommandSummary,
   RuntimeLifecycleCapabilities,
   RuntimeModelOption,
@@ -43,6 +44,7 @@ export class RuntimeAdapterRegistry {
     { expiresAt: number; value?: RuntimeCommandSummary[]; loading?: Promise<RuntimeCommandSummary[]> }
   >();
   private readonly commandChangeSubscriptions = new Map<string, () => void>();
+  private readonly catalogChangeSubscriptions = new Map<string, () => void>();
 
   constructor(definitions: readonly RuntimeAdapterDefinition[]) {
     for (const definition of definitions) {
@@ -61,8 +63,9 @@ export class RuntimeAdapterRegistry {
     await this.require(binding).prepare?.(binding);
   }
 
-  modesFor(binding: AgentBindingConfig): readonly string[] {
-    return this.require(binding).modes;
+  modesFor(binding: AgentBindingConfig, scope?: RuntimeCatalogScope): readonly string[] {
+    const adapter = this.require(binding);
+    return adapter.modesFor?.(binding, scope) ?? adapter.modes;
   }
 
   lifecycleCapabilities(binding: AgentBindingConfig): RuntimeLifecycleCapabilities {
@@ -76,22 +79,26 @@ export class RuntimeAdapterRegistry {
     );
   }
 
-  async listModels(binding: AgentBindingConfig): Promise<RuntimeModelOption[] | null> {
+  async listModels(binding: AgentBindingConfig, scope?: RuntimeCatalogScope): Promise<RuntimeModelOption[] | null> {
     const operation = this.require(binding).listModels;
     return await this.listCachedRuntimeCatalog(
-      this.bindingId(binding),
+      this.catalogKey(this.bindingId(binding), scope),
       this.modelLists,
-      operation ? async () => await operation(binding) : undefined,
+      operation ? async () => await operation(binding, scope) : undefined,
     );
   }
 
-  async listSessionOptions(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeSessionOption[]> {
+  async listSessionOptions(
+    binding: AgentBindingConfig,
+    workspace: RuntimeWorkspace,
+    scope?: RuntimeCatalogScope,
+  ): Promise<RuntimeSessionOption[]> {
     const operation = this.require(binding).listSessionOptions;
     return (
       (await this.listCachedRuntimeCatalog(
-        `${this.bindingId(binding)}\0${workspace.workingDirectory}`,
+        this.catalogKey(`${this.bindingId(binding)}\0${workspace.workingDirectory}`, scope),
         this.sessionOptionLists,
-        operation ? async () => await operation(binding, workspace) : undefined,
+        operation ? async () => await operation(binding, workspace, scope) : undefined,
       )) ?? []
     );
   }
@@ -99,7 +106,7 @@ export class RuntimeAdapterRegistry {
   async listSkills(
     binding: AgentBindingConfig,
     workspace: RuntimeWorkspace,
-    options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number } = {},
+    options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number; runtimeThreadId?: string } = {},
   ): Promise<RuntimeSkillSummary[] | null> {
     const adapter = this.require(binding);
     return await this.listRuntimeCatalog(
@@ -107,7 +114,11 @@ export class RuntimeAdapterRegistry {
       workspace,
       this.skillLists,
       adapter.listSkills
-        ? async () => await adapter.listSkills?.(binding, workspace, { forceRefresh: options.forceRefresh })
+        ? async () =>
+            await adapter.listSkills?.(binding, workspace, {
+              forceRefresh: options.forceRefresh,
+              runtimeThreadId: options.runtimeThreadId,
+            })
         : undefined,
       options,
     );
@@ -116,7 +127,7 @@ export class RuntimeAdapterRegistry {
   async listCommands(
     binding: AgentBindingConfig,
     workspace: RuntimeWorkspace,
-    options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number } = {},
+    options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number; runtimeThreadId?: string } = {},
   ): Promise<RuntimeCommandSummary[] | null> {
     const adapter = this.require(binding);
     return await this.listRuntimeCatalog(
@@ -124,7 +135,11 @@ export class RuntimeAdapterRegistry {
       workspace,
       this.commandLists,
       adapter.listCommands
-        ? async () => await adapter.listCommands?.(binding, workspace, { forceRefresh: options.forceRefresh })
+        ? async () =>
+            await adapter.listCommands?.(binding, workspace, {
+              forceRefresh: options.forceRefresh,
+              runtimeThreadId: options.runtimeThreadId,
+            })
         : undefined,
       options,
     );
@@ -223,8 +238,10 @@ export class RuntimeAdapterRegistry {
     this.adaptersByBinding.clear();
     for (const unsubscribe of this.skillChangeSubscriptions.values()) unsubscribe();
     for (const unsubscribe of this.commandChangeSubscriptions.values()) unsubscribe();
+    for (const unsubscribe of this.catalogChangeSubscriptions.values()) unsubscribe();
     this.skillChangeSubscriptions.clear();
     this.commandChangeSubscriptions.clear();
+    this.catalogChangeSubscriptions.clear();
     this.modelLists.clear();
     this.sessionOptionLists.clear();
     this.skillLists.clear();
@@ -263,6 +280,12 @@ export class RuntimeAdapterRegistry {
         }),
       );
     }
+    if (adapter.onCatalogsChanged) {
+      this.catalogChangeSubscriptions.set(
+        bindingId,
+        adapter.onCatalogsChanged(() => this.invalidateBindingCatalogs(bindingId)),
+      );
+    }
     return adapter;
   }
 
@@ -271,9 +294,9 @@ export class RuntimeAdapterRegistry {
     workspace: RuntimeWorkspace,
     cache: Map<string, { expiresAt: number; value?: T[]; loading?: Promise<T[]> }>,
     load: (() => Promise<T[] | undefined>) | undefined,
-    options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number },
+    options: { forceRefresh?: boolean; existingOnly?: boolean; waitMs?: number; runtimeThreadId?: string },
   ): Promise<T[] | null> {
-    const key = `${this.bindingId(binding)}\0${workspace.workingDirectory}`;
+    const key = `${this.bindingId(binding)}\0${workspace.workingDirectory}\0${options.runtimeThreadId ?? ""}`;
     return await this.listCachedRuntimeCatalog(key, cache, load, options);
   }
 
@@ -314,6 +337,16 @@ export class RuntimeAdapterRegistry {
     this.nextAnonymousBindingId += 1;
     this.anonymousBindingIds.set(binding, created);
     return created;
+  }
+
+  private catalogKey(prefix: string, scope?: RuntimeCatalogScope): string {
+    return `${prefix}\0${scope?.runtimeThreadId ?? ""}\0${scope?.workspace?.workingDirectory ?? ""}`;
+  }
+
+  private invalidateBindingCatalogs(bindingId: string): void {
+    for (const cache of [this.modelLists, this.sessionOptionLists, this.skillLists, this.commandLists]) {
+      for (const key of cache.keys()) if (key.startsWith(`${bindingId}\0`)) cache.delete(key);
+    }
   }
 }
 

@@ -46,6 +46,26 @@ const session = await adapter.start(binding, {
   stateDbPath: "/private/tmp/clawchat-connect-workbuddy-verification.sqlite",
   onRuntimeSessionId: async () => undefined,
 });
+const runtimeWorkspace = {
+  projectId: null,
+  workingDirectory: canonicalWorkspace,
+  additionalDirectories: [],
+  skipGitRepoCheck: false,
+};
+const catalogScope = { runtimeThreadId: taskId, workspace: runtimeWorkspace };
+const models = (await adapter.listModels?.(binding, catalogScope)) ?? [];
+const currentTaskModel = models.find((model) => model.isDefault);
+if (currentTaskModel?.id !== selectedModel) {
+  throw new Error(
+    `The Task ACP catalog did not report the product-selected model as default: ${selectedModel} -> ${currentTaskModel?.id ?? "missing"}`,
+  );
+}
+if (workBuddyTestProfile === "workbuddy-ai" && !/fast/iu.test(currentTaskModel.displayName)) {
+  throw new Error(`The dedicated WorkBuddy AI Task must use a Fast product model, got ${currentTaskModel.displayName}`);
+}
+const sessionOptions = (await adapter.listSessionOptions?.(binding, runtimeWorkspace, catalogScope)) ?? [];
+const commands = (await adapter.listCommands?.(binding, runtimeWorkspace, { runtimeThreadId: taskId })) ?? [];
+const skills = (await adapter.listSkills?.(binding, runtimeWorkspace, { runtimeThreadId: taskId })) ?? [];
 
 const activities: RuntimeActivity[] = [];
 let accepted = 0;
@@ -59,12 +79,7 @@ try {
     onAccepted: async () => {
       accepted += 1;
     },
-    workspace: {
-      projectId: null,
-      workingDirectory: canonicalWorkspace,
-      additionalDirectories: [],
-      skipGitRepoCheck: false,
-    },
+    workspace: runtimeWorkspace,
   })) {
     activities.push(activity);
   }
@@ -141,6 +156,11 @@ console.log(
       turnMarker,
       priorAssistantMarker,
       model: persistedModel,
+      modelDisplayName: currentTaskModel.displayName,
+      modeOptions: adapter.modesFor?.(binding, catalogScope) ?? [],
+      sessionOptionCount: sessionOptions.length,
+      runtimeCommandCount: commands.length,
+      runtimeSkillCount: skills.length,
       activityKinds: [...new Set(activities.map((activity) => activity.kind))],
       activityCount: activities.length,
       replayActivityCount: replay.activities.length,

@@ -1,5 +1,11 @@
 import { connect, type Socket } from "node:net";
-import type { ConnectRuntimePrompt, ConnectRuntimeSession, RuntimeActivity } from "./types";
+import type {
+  ConnectRuntimePrompt,
+  ConnectRuntimeSession,
+  RuntimeActivity,
+  RuntimeModelOption,
+  RuntimeSessionOption,
+} from "./types";
 import { workBuddySubmittedUserLiveNativeId, workBuddySubmittedUserMessageId } from "./workbuddy-activity-identity";
 import {
   WorkBuddyDiscoveryError,
@@ -20,6 +26,33 @@ export interface WorkBuddyConnectedSocketIdentity {
 
 export interface WorkBuddyAcpTaskAttachment extends ConnectRuntimeSession {
   readonly verification: WorkBuddyEndpointVerification;
+  readonly catalog?: WorkBuddyTaskCatalog;
+  onCatalogChanged?(listener: () => void): () => void;
+}
+
+export interface WorkBuddySlashCatalogEntry {
+  id: string;
+  kind: "command" | "skill";
+  name: string;
+  description?: string;
+  nativeName: string;
+}
+
+export interface WorkBuddyModeOption {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface WorkBuddyTaskCatalog {
+  models: RuntimeModelOption[];
+  currentModelId: string | null;
+  modes: WorkBuddyModeOption[];
+  currentModeId: string | null;
+  configOptions: RuntimeSessionOption[];
+  currentConfig: Record<string, string>;
+  commands: WorkBuddySlashCatalogEntry[];
+  skills: WorkBuddySlashCatalogEntry[];
 }
 
 export class WorkBuddyPromptTransportError extends Error {
@@ -42,7 +75,7 @@ export async function verifyWorkBuddyEndpoint(
 ): Promise<WorkBuddyEndpointVerification> {
   const attachment = await openWorkBuddyTaskEndpoint(input, timeoutMs, readConnectedOwner);
   try {
-    return attachment.verification;
+    return { ...attachment.verification, ...(attachment.catalog ? { catalog: attachment.catalog } : {}) };
   } finally {
     await attachment.close();
   }
@@ -90,11 +123,20 @@ export async function openWorkBuddyTaskEndpoint(
     // This is the exact established TCP socket reused by initialize and load, not a listener snapshot.
     const connectionOwner = await readConnectedOwner(connection.identity());
     const headers = acpHeaders(connectionId, sessionToken);
-    const initialized = await postRpc(connection, headers, 1, "initialize", {
-      protocolVersion: input.acpVersion,
-      clientInfo: { name: "clawchat-connect-discovery", version: "1" },
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-    });
+    const catalogState = new WorkBuddyTaskCatalogState();
+    const initialized = await postRpc(
+      connection,
+      headers,
+      1,
+      "initialize",
+      {
+        protocolVersion: input.acpVersion,
+        clientInfo: { name: "clawchat-connect-discovery", version: "1" },
+        clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      },
+      undefined,
+      catalogState,
+    );
     const initializedProtocol = (initialized.result as { protocolVersion?: unknown } | undefined)?.protocolVersion;
     if (initializedProtocol !== input.acpVersion) {
       const profile = input.profile ?? "workbuddy-ai";
@@ -109,11 +151,19 @@ export async function openWorkBuddyTaskEndpoint(
         },
       );
     }
-    const loaded = await postRpc(connection, headers, 2, "session/load", {
-      sessionId: input.taskId,
-      cwd: input.workspace,
-      mcpServers: [],
-    });
+    const loaded = await postRpc(
+      connection,
+      headers,
+      2,
+      "session/load",
+      {
+        sessionId: input.taskId,
+        cwd: input.workspace,
+        mcpServers: [],
+      },
+      undefined,
+      catalogState,
+    );
     const observedTaskId = loaded.taskIds.find((candidate) => candidate !== input.taskId) ?? loaded.taskIds[0];
     if (!observedTaskId) throw new Error("ACP replay emitted no Task identity");
     const verification = {
@@ -133,6 +183,10 @@ export async function openWorkBuddyTaskEndpoint(
     };
     return {
       verification,
+      get catalog() {
+        return catalogState.snapshot();
+      },
+      onCatalogChanged: (listener) => catalogState.onChanged(listener),
       prompt: (promptInput) => {
         if (closed) throw new Error("WorkBuddy Task Attachment is closed");
         return streamPrompt(
@@ -141,6 +195,7 @@ export async function openWorkBuddyTaskEndpoint(
           input.taskId,
           nextLiveTurnOrdinal++,
           promptInput,
+          catalogState,
         );
       },
       close,
@@ -186,9 +241,11 @@ async function postRpc(
   method: string,
   params: unknown,
   onPayload?: (payload: unknown) => void,
+  catalog?: WorkBuddyTaskCatalogState,
 ): Promise<RpcObservation> {
   const decoder = new SseDecoder((payload) => {
     observeRpcPayload(payload, id, observation);
+    catalog?.observe(payload);
     onPayload?.(payload);
   });
   const observation: RpcObservation = {
@@ -221,10 +278,216 @@ async function postRpc(
   } else {
     const payload = parseJson(response.body.toString("utf8"), `${method} response`);
     observeRpcPayload(payload, id, observation);
+    catalog?.observe(payload);
     onPayload?.(payload);
   }
   if (observation.result === undefined) throw new Error(`ACP ${method} returned no JSON-RPC result`);
   return observation;
+}
+
+class WorkBuddyTaskCatalogState {
+  private value: WorkBuddyTaskCatalog = emptyWorkBuddyTaskCatalog();
+  private readonly listeners = new Set<() => void>();
+
+  snapshot(): WorkBuddyTaskCatalog {
+    return structuredClone(this.value);
+  }
+
+  onChanged(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  observe(payload: unknown): void {
+    const message = record(payload);
+    if (!message) return;
+    const before = JSON.stringify(this.value);
+    const result = record(message.result);
+    if (result) this.observeResult(result);
+    if (message.method === "session/update") {
+      const update = record(record(message.params)?.update);
+      if (update) this.observeUpdate(update);
+    }
+    if (JSON.stringify(this.value) !== before) for (const listener of this.listeners) listener();
+  }
+
+  private observeResult(result: Record<string, unknown>): void {
+    const models = record(result.models);
+    if (models) this.replaceModels(models);
+    const modes = record(result.modes);
+    if (modes) this.replaceModes(modes);
+    if (Array.isArray(result.configOptions)) this.replaceConfigOptions(result.configOptions);
+    if (typeof result.modelId === "string" && result.modelId.trim()) {
+      this.value.currentModelId = result.modelId.trim();
+      this.markCurrentModelDefault();
+    }
+  }
+
+  private observeUpdate(update: Record<string, unknown>): void {
+    const kind = update.sessionUpdate;
+    if (kind === "available_commands_update" && Array.isArray(update.availableCommands)) {
+      const entries = update.availableCommands.flatMap(workBuddySlashEntry);
+      this.value.commands = entries.filter((entry) => entry.kind === "command");
+      this.value.skills = entries.filter((entry) => entry.kind === "skill");
+      return;
+    }
+    if (kind === "current_mode_update" && typeof update.currentModeId === "string") {
+      this.value.currentModeId = update.currentModeId;
+      return;
+    }
+    if (kind === "mode_update") {
+      this.replaceModes(update);
+      return;
+    }
+    if ((kind === "config_option_update" || kind === "config_options_update") && Array.isArray(update.configOptions)) {
+      this.replaceConfigOptions(update.configOptions);
+    }
+  }
+
+  private replaceModels(models: Record<string, unknown>): void {
+    const currentModelId = stringValue(models.currentModelId);
+    const parsed = Array.isArray(models.availableModels)
+      ? models.availableModels.flatMap((candidate): RuntimeModelOption[] => {
+          const native = record(candidate);
+          const id = native ? stringValue(native.modelId) : null;
+          if (!native || !id) return [];
+          return [workBuddyModelOption(native, id, id === currentModelId)];
+        })
+      : [];
+    if (currentModelId && !parsed.some((model) => model.id === currentModelId)) {
+      parsed.unshift(workBuddyModelOption({ name: currentModelId }, currentModelId, true));
+    }
+    this.value.models = parsed;
+    this.value.currentModelId = currentModelId;
+    this.markCurrentModelDefault();
+  }
+
+  private replaceModes(modes: Record<string, unknown>): void {
+    if (Array.isArray(modes.availableModes)) {
+      this.value.modes = modes.availableModes.flatMap((candidate): WorkBuddyModeOption[] => {
+        const native = record(candidate);
+        const id = native ? stringValue(native.id) : null;
+        if (!native || !id) return [];
+        return [{ id, name: stringValue(native.name) ?? id, ...optionalDescription(native.description) }];
+      });
+    }
+    const currentModeId = stringValue(modes.currentModeId);
+    if (currentModeId) this.value.currentModeId = currentModeId;
+  }
+
+  private replaceConfigOptions(options: unknown[]): void {
+    const parsed = options.flatMap(workBuddySessionOption);
+    this.value.configOptions = parsed.map((entry) => entry.option);
+    this.value.currentConfig = Object.fromEntries(
+      parsed.flatMap((entry) => (entry.currentValue ? [[entry.option.id, entry.currentValue] as const] : [])),
+    );
+    const model = this.value.currentConfig.model;
+    if (model) {
+      this.value.currentModelId = model;
+      this.markCurrentModelDefault();
+    }
+    const mode = this.value.currentConfig.mode;
+    if (mode) this.value.currentModeId = mode;
+  }
+
+  private markCurrentModelDefault(): void {
+    const current = this.value.currentModelId;
+    if (!current) return;
+    if (!this.value.models.some((model) => model.id === current)) {
+      this.value.models.unshift(workBuddyModelOption({ name: current }, current, true));
+    }
+    this.value.models = this.value.models.map((model) => ({ ...model, isDefault: model.id === current }));
+  }
+}
+
+function emptyWorkBuddyTaskCatalog(): WorkBuddyTaskCatalog {
+  return {
+    models: [],
+    currentModelId: null,
+    modes: [],
+    currentModeId: null,
+    configOptions: [],
+    currentConfig: {},
+    commands: [],
+    skills: [],
+  };
+}
+
+function workBuddyModelOption(native: Record<string, unknown>, id: string, isDefault: boolean): RuntimeModelOption {
+  return {
+    id,
+    displayName: stringValue(native.name) ?? id,
+    description: stringValue(native.description) ?? "WorkBuddy Task model",
+    isDefault,
+    defaultReasoningEffort: "default",
+    supportedReasoningEfforts: ["default"],
+    inputModalities: ["text"],
+    turnSubmissionCapability: {
+      prompt: { allowed: true, required: true, maxCharacters: 64_000 },
+      attachments: { allowedKinds: [], allowedMediaTypes: [], maxCount: 0 },
+    },
+  };
+}
+
+function workBuddySlashEntry(candidate: unknown): WorkBuddySlashCatalogEntry[] {
+  const native = record(candidate);
+  const nativeName = native ? stringValue(native.name)?.replace(/^\/+/, "") : null;
+  if (!native || !nativeName) return [];
+  const meta = record(native._meta);
+  const kind = meta?.type === "skill" ? "skill" : "command";
+  return [
+    {
+      id: `workbuddy-${kind}:${nativeName}`,
+      kind,
+      name: nativeName,
+      nativeName,
+      ...optionalDescription(native.description),
+    },
+  ];
+}
+
+function workBuddySessionOption(
+  candidate: unknown,
+): Array<{ option: RuntimeSessionOption; currentValue: string | null }> {
+  const native = record(candidate);
+  const id = native ? stringValue(native.id) : null;
+  if (!native || !id || id === "model") return [];
+  const values = Array.isArray(native.options)
+    ? native.options.flatMap((candidate): RuntimeSessionOption["values"] => {
+        const value = record(candidate);
+        const valueId = value ? stringValue(value.value) : null;
+        if (!value || !valueId) return [];
+        return [
+          { id: valueId, displayName: stringValue(value.name) ?? valueId, ...optionalDescription(value.description) },
+        ];
+      })
+    : [];
+  return [
+    {
+      option: {
+        id,
+        displayName: stringValue(native.name) ?? id,
+        description: stringValue(native.description) ?? "WorkBuddy Task configuration",
+        category: id === "mode" || id === "sandbox" || id === "thought_level" ? "execution" : "other",
+        changePolicy: "in-place",
+        values,
+      },
+      currentValue: stringValue(native.currentValue),
+    },
+  ];
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function optionalDescription(value: unknown): { description?: string } {
+  const description = stringValue(value);
+  return description ? { description } : {};
 }
 
 class SseDecoder {
@@ -326,6 +589,7 @@ const NON_TRANSCRIPT_UPDATES = new Set([
   "session_info_update",
   "available_commands_update",
   "current_mode_update",
+  "config_option_update",
   "config_options_update",
 ]);
 
@@ -402,19 +666,114 @@ function replayActivities(messages: ReplayMessage[]): import("./types").RuntimeA
   });
 }
 
-function streamPrompt(
+async function* streamPrompt(
   connection: PersistentHttpConnection,
   headers: Record<string, string>,
   taskId: string,
   turnOrdinal: number,
   input: ConnectRuntimePrompt,
+  catalog: WorkBuddyTaskCatalogState,
 ): AsyncIterable<RuntimeActivity> {
   const prompt = input.prompt.trim();
   if (!prompt) throw new Error("WorkBuddy text prompt is required");
+  if (prompt.length > 64_000) throw new Error("WorkBuddy text prompt exceeds the 64000-character limit");
   if (input.media?.length) throw new Error("WorkBuddy Task Attachments currently support text turns only");
+  const before = catalog.snapshot();
+  const selectedSlash = resolveWorkBuddySlashSelection(before, input);
+  const selectedMode = input.mode ? before.modes.find((mode) => mode.id === input.mode) : undefined;
+  if (input.mode && !selectedMode) throw new Error(`WorkBuddy mode is no longer available: ${input.mode}`);
+  const selectedConfig = validateWorkBuddyConfig(before, input);
+  if (input.model) {
+    const selected = before.models.find((model) => model.id.toLowerCase() === input.model?.trim().toLowerCase());
+    if (!selected) throw new Error(`WorkBuddy model is no longer available: ${input.model}`);
+    if (selected.id !== before.currentModelId) {
+      await postRpc(
+        connection,
+        headers,
+        nextAcpRequestId(),
+        "session/set_model",
+        { sessionId: taskId, modelId: selected.id },
+        undefined,
+        catalog,
+      );
+    }
+  }
+  if (selectedMode && selectedMode.id !== before.currentModeId) {
+    await postRpc(
+      connection,
+      headers,
+      nextAcpRequestId(),
+      "session/set_mode",
+      { sessionId: taskId, modeId: selectedMode.id },
+      undefined,
+      catalog,
+    );
+  }
+  for (const [configId, value] of selectedConfig) {
+    if (before.currentConfig[configId] === value) continue;
+    await postRpc(
+      connection,
+      headers,
+      nextAcpRequestId(),
+      "session/set_config_option",
+      { sessionId: taskId, configId, value },
+      undefined,
+      catalog,
+    );
+  }
+  const nativeInput = selectedSlash ? { ...input, prompt: nativeSlashPrompt(prompt, selectedSlash.nativeName) } : input;
+  yield* streamPromptRequest(connection, headers, taskId, turnOrdinal, nativeInput, catalog);
+}
+
+function resolveWorkBuddySlashSelection(
+  catalog: WorkBuddyTaskCatalog,
+  input: ConnectRuntimePrompt,
+): WorkBuddySlashCatalogEntry | null {
+  const selected = input.command ?? input.skill;
+  if (!selected) return null;
+  const kind = input.command ? "command" : "skill";
+  const entries = kind === "command" ? catalog.commands : catalog.skills;
+  const native = entries.find((entry) => entry.id === selected.id && entry.name === selected.name);
+  if (!native) {
+    const label = kind === "command" ? "Command" : "Skill";
+    throw new Error(`WorkBuddy ${label} is no longer available: ${selected.name}`);
+  }
+  return native;
+}
+
+function validateWorkBuddyConfig(catalog: WorkBuddyTaskCatalog, input: ConnectRuntimePrompt): Array<[string, string]> {
+  const selected = { ...(input.sessionOptions ?? {}) };
+  if (input.reasoningEffort && input.reasoningEffort !== "default" && !selected.thought_level) {
+    selected.thought_level = input.reasoningEffort;
+  }
+  const definitions = new Map(catalog.configOptions.map((option) => [option.id, option]));
+  for (const [id, value] of Object.entries(selected)) {
+    const definition = definitions.get(id);
+    if (!definition) throw new Error(`WorkBuddy configuration is no longer available: ${id}`);
+    if (!definition.values.some((candidate) => candidate.id === value)) {
+      throw new Error(`WorkBuddy configuration value is no longer available: ${id}=${value}`);
+    }
+  }
+  return Object.entries(selected);
+}
+
+function nativeSlashPrompt(prompt: string, nativeName: string): string {
+  const match = /^\/?\S+\s*([\s\S]*)$/u.exec(prompt);
+  const argumentsText = match?.[1]?.trim() ?? "";
+  return `/${nativeName}${argumentsText ? ` ${argumentsText}` : ""}`;
+}
+
+function streamPromptRequest(
+  connection: PersistentHttpConnection,
+  headers: Record<string, string>,
+  taskId: string,
+  turnOrdinal: number,
+  input: ConnectRuntimePrompt,
+  catalog: WorkBuddyTaskCatalogState,
+): AsyncIterable<RuntimeActivity> {
   const queue = new AsyncActivityQueue();
   const projector = new LiveTurnProjector(turnOrdinal, input);
-  const requestId = Date.now();
+  const requestId = nextAcpRequestId();
   const userMessageId = workBuddySubmittedUserMessageId(input, requestId);
   let accepted: Promise<void> | null = null;
   void postRpc(
@@ -441,6 +800,7 @@ function streamPrompt(
       }
       for (const activity of projector.observe(payload)) queue.push(activity);
     },
+    catalog,
   )
     .then(async (observation) => {
       await accepted;
@@ -457,6 +817,13 @@ function streamPrompt(
       ),
     );
   return queue;
+}
+
+let acpRequestId = Date.now();
+
+function nextAcpRequestId(): number {
+  acpRequestId += 1;
+  return acpRequestId;
 }
 
 function isTaskUpdate(payload: unknown, taskId: string): boolean {
@@ -620,10 +987,17 @@ class LiveTurnProjector {
   }
 
   private userData(): Record<string, unknown> | undefined {
-    if (!this.input.turnId) return undefined;
-    return this.input.turnOrigin === "clawchat"
-      ? { clawchatMessageId: this.input.turnId }
-      : { clientMessageId: `turn_${this.input.turnId}_user` };
+    const selection = this.input.command
+      ? { kind: "command", id: this.input.command.id, name: this.input.command.name }
+      : this.input.skill
+        ? { kind: "skill", id: this.input.skill.id, name: this.input.skill.name }
+        : null;
+    const turn = this.input.turnId
+      ? this.input.turnOrigin === "clawchat"
+        ? { clawchatMessageId: this.input.turnId }
+        : { clientMessageId: `turn_${this.input.turnId}_user` }
+      : {};
+    return selection ? { ...turn, runtimeSlashSelection: selection } : Object.keys(turn).length > 0 ? turn : undefined;
   }
 }
 

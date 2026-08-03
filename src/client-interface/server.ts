@@ -831,7 +831,11 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 let reasoningEffort: string | null = null;
                 try {
                   if (body.model) {
-                    const models = await options.runtimeAdapters.listModels(binding);
+                    const workspace = await projects.resolveWorkspace(session);
+                    const models = await options.runtimeAdapters.listModels(binding, {
+                      runtimeThreadId: session.runtimeSessionId ?? undefined,
+                      workspace,
+                    });
                     const selectedModel = requireModel(models, body.model);
                     model = selectedModel.id;
                     reasoningEffort = resolveEffort(selectedModel, body.reasoningEffort, true);
@@ -849,6 +853,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                     await projects.resolveWorkspace(session),
                     body.sessionOptions,
                     true,
+                    { runtimeThreadId: session.runtimeSessionId ?? undefined },
                   );
                   if (!validatedOptions.ok) return validatedOptions.error;
                   sessionOptions = validatedOptions.value;
@@ -1366,6 +1371,7 @@ async function sessionSkills(
   return await options.runtimeAdapters.listSkills(getAgentBinding(options.config, entry.bindingId), workspace, {
     forceRefresh,
     existingOnly,
+    runtimeThreadId: (await catalog.runtimeThreadId(sessionRef)) ?? undefined,
   });
 }
 
@@ -1383,6 +1389,7 @@ async function sessionCommands(
   return await options.runtimeAdapters.listCommands(getAgentBinding(options.config, entry.bindingId), workspace, {
     forceRefresh,
     existingOnly,
+    runtimeThreadId: (await catalog.runtimeThreadId(sessionRef)) ?? undefined,
   });
 }
 
@@ -1495,13 +1502,14 @@ async function validatedSessionOptions(
   workspace: RuntimeWorkspace,
   selected: Record<string, string>,
   requireInPlace = false,
+  scope?: import("../runtime/types").RuntimeCatalogScope,
 ): Promise<{ ok: true; value: Record<string, string> } | { ok: false; error: ReturnType<typeof commandError> }> {
   try {
     return {
       ok: true,
       value: validateSessionOptions(
         selected,
-        await runtimeAdapters.listSessionOptions(binding, workspace),
+        await runtimeAdapters.listSessionOptions(binding, workspace, { ...scope, workspace }),
         requireInPlace,
       ),
     };
