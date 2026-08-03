@@ -388,6 +388,769 @@ describe("WorkBuddy private ACP client", () => {
     expect(deleteRequests).toBe(1);
   });
 
+  it("routes a native approval through the Turn Surface and confirms the response back to WorkBuddy", async () => {
+    let promptSocket: Socket | undefined;
+    let promptRequestId: number | undefined;
+    let resolveParams: Record<string, unknown> | undefined;
+    let observeInteraction: (value: unknown) => void = () => undefined;
+    const interactionObserved = new Promise<unknown>((resolve) => {
+      observeInteraction = resolve;
+    });
+    const endpoint = await serve((request, socket) => {
+      if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "interaction-connection" });
+      if (request.method === "DELETE") return emptyResponse();
+      const rpc = JSON.parse(request.body) as { id?: number; method: string; params: Record<string, unknown> };
+      if (rpc.method === "initialize") {
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+      }
+      if (rpc.method === "session/load") {
+        return sseResponse([
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+          { jsonrpc: "2.0", id: rpc.id, result: {} },
+        ]);
+      }
+      if (rpc.method === "_codebuddy.ai/resolveInterruption") {
+        resolveParams = rpc.params;
+        setTimeout(() => {
+          if (!promptSocket) return;
+          writeSseChunk(
+            promptSocket,
+            update({
+              sessionUpdate: "session_info_update",
+              _meta: {
+                "codebuddy.ai/permissionResolved": true,
+                "codebuddy.ai/toolCallId": "tool-approval",
+                "codebuddy.ai/decision": "allowAll",
+              },
+            }),
+          );
+          writeSseChunk(
+            promptSocket,
+            { jsonrpc: "2.0", id: promptRequestId, result: { stopReason: "end_turn" } },
+            true,
+          );
+        });
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: {} }]);
+      }
+      promptRequestId = rpc.id;
+      promptSocket = socket;
+      startStreamingSse(socket);
+      writeSseChunk(
+        socket,
+        update({
+          sessionUpdate: "session_info_update",
+          _meta: {
+            "codebuddy.ai/interruptionRequest": {
+              interruptionId: "ir-tool-approval",
+              toolCallId: "tool-approval",
+              toolName: "Bash",
+              toolTitle: "Run tests",
+              toolInput: { command: "bun test", cwd: workspace },
+              options: ["allow", "allowAll", "deny"],
+            },
+          },
+        }),
+      );
+      return null;
+    });
+    const attachment = await openWorkBuddyAiTaskEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => ({ pid: 120, parentPid: 110, executablePath: `${applicationPath}/Contents/MacOS/Electron` }),
+    );
+    let deliveryConfirmed = false;
+    const result = collect(
+      attachment.prompt({
+        prompt: "Run the tests",
+        turnId: "approval-turn",
+        turnOrigin: "client",
+        metadata: { sessionRef: "approval-session" },
+        interactionPort: {
+          request: async (request, context) => {
+            observeInteraction(request);
+            void context.deliveryConfirmation.then(() => {
+              deliveryConfirmed = true;
+            });
+            expect(deliveryConfirmed).toBeFalse();
+            return { kind: "approval", optionId: "approve-session" };
+          },
+        },
+        workspace: {
+          projectId: null,
+          workingDirectory: workspace,
+          additionalDirectories: [],
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+
+    await expect(
+      Promise.race([interactionObserved, rejectAfter(100, "native approval was not routed")]),
+    ).resolves.toEqual({
+      kind: "approval",
+      action: "command",
+      title: "Run tests",
+      description: "WorkBuddy requests permission to run Bash.",
+      command: "bun test",
+      cwd: workspace,
+      options: [
+        { id: "approve-once", label: "Allow" },
+        { id: "approve-session", label: "Always allow" },
+        { id: "deny", label: "Deny" },
+      ],
+    });
+    await expect(result).resolves.toBeArray();
+    expect(resolveParams).toEqual({
+      sessionId: taskId,
+      toolCallId: "tool-approval",
+      decision: "allowAll",
+    });
+    expect(deliveryConfirmed).toBeTrue();
+    await attachment.close();
+  });
+
+  it.each(["workbuddy-ai", "workbuddy-cn"] as WorkBuddyProfile[])(
+    "preserves native question details and Turn Surface scope for %s",
+    async (profile) => {
+      let promptSocket: Socket | undefined;
+      let promptRequestId: number | undefined;
+      let resolveParams: Record<string, unknown> | undefined;
+      const endpoint = await serve((request, socket) => {
+        if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "question-connection" });
+        if (request.method === "DELETE") return emptyResponse();
+        const rpc = JSON.parse(request.body) as { id?: number; method: string; params: Record<string, unknown> };
+        if (rpc.method === "initialize") {
+          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        }
+        if (rpc.method === "session/load") {
+          return sseResponse([
+            update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+            update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+            { jsonrpc: "2.0", id: rpc.id, result: {} },
+          ]);
+        }
+        if (rpc.method === "_codebuddy.ai/resolveInterruption") {
+          resolveParams = rpc.params;
+          setTimeout(() => {
+            if (!promptSocket) return;
+            writeSseChunk(
+              promptSocket,
+              update({
+                sessionUpdate: "session_info_update",
+                _meta: {
+                  "codebuddy.ai/permissionResolved": true,
+                  "codebuddy.ai/toolCallId": "tool-question",
+                },
+              }),
+            );
+            writeSseChunk(
+              promptSocket,
+              { jsonrpc: "2.0", id: promptRequestId, result: { stopReason: "end_turn" } },
+              true,
+            );
+          });
+          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: {} }]);
+        }
+        promptSocket = socket;
+        promptRequestId = rpc.id;
+        startStreamingSse(socket);
+        writeSseChunk(
+          socket,
+          update({
+            sessionUpdate: "session_info_update",
+            _meta: {
+              "codebuddy.ai/interruptionRequest": {
+                toolCallId: "tool-question",
+                toolName: "AskUserQuestion",
+                toolTitle: "Choose deployment settings",
+                toolInput: {
+                  questions: [
+                    {
+                      id: "environment",
+                      header: "Environment",
+                      question: "Where should this deploy?",
+                      options: [
+                        { id: "staging", label: "Staging", description: "Internal validation" },
+                        { id: "production", label: "Production" },
+                      ],
+                      allowOther: false,
+                    },
+                    {
+                      id: "token",
+                      header: "Secret",
+                      question: "Enter the deployment token",
+                      isSecret: true,
+                    },
+                  ],
+                },
+              },
+            },
+          }),
+        );
+        return null;
+      });
+      const attachment = await openWorkBuddyAiTaskEndpoint(
+        { profile, endpoint, taskId, workspace, acpVersion: 1 },
+        1_000,
+        async () => ({ pid: 120, parentPid: 110, executablePath: `${applicationPath}/Contents/MacOS/Electron` }),
+      );
+      let observedRequest: unknown;
+      let observedContext: unknown;
+      const result = collect(
+        attachment.prompt({
+          prompt: "Deploy",
+          turnId: "question-turn",
+          turnOrigin: "clawchat",
+          metadata: { sessionRef: "session-ref" },
+          interactionPort: {
+            request: async (request, context) => {
+              observedRequest = request;
+              observedContext = { sessionRef: context.sessionRef, turnId: context.turnId, origin: context.origin };
+              return {
+                kind: "user-input",
+                answers: { environment: ["staging"], token: ["top-secret"] },
+              };
+            },
+          },
+          workspace: {
+            projectId: null,
+            workingDirectory: workspace,
+            additionalDirectories: [],
+            skipGitRepoCheck: false,
+          },
+        }),
+      );
+
+      await expect(result).resolves.toBeArray();
+      expect(observedContext).toEqual({ sessionRef: "session-ref", turnId: "question-turn", origin: "clawchat" });
+      expect(observedRequest).toEqual({
+        kind: "user-input",
+        title: "Choose deployment settings",
+        description: "WorkBuddy has 2 questions.",
+        questions: [
+          {
+            id: "environment",
+            header: "Environment",
+            prompt: "Where should this deploy?",
+            secret: false,
+            allowOther: false,
+            options: [
+              { id: "staging", label: "Staging", description: "Internal validation" },
+              { id: "production", label: "Production" },
+            ],
+          },
+          {
+            id: "token",
+            header: "Secret",
+            prompt: "Enter the deployment token",
+            secret: true,
+            allowOther: true,
+            options: null,
+          },
+        ],
+        autoResolutionMs: null,
+      });
+      expect(resolveParams).toEqual({
+        sessionId: taskId,
+        toolCallId: "tool-question",
+        decision: "allow",
+        answers: { environment: ["staging"], token: ["top-secret"] },
+      });
+      await attachment.close();
+    },
+  );
+
+  it("lets a WorkBuddy UI response expire the Connect interaction and rejects its late answer", async () => {
+    let promptSocket: Socket | undefined;
+    let promptRequestId: number | undefined;
+    let resolveCalls = 0;
+    let releaseResponse!: () => void;
+    let interactionSignal: AbortSignal | undefined;
+    let interactionStarted!: () => void;
+    let interactionAborted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      interactionStarted = resolve;
+    });
+    const aborted = new Promise<void>((resolve) => {
+      interactionAborted = resolve;
+    });
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    const endpoint = await serve((request, socket) => {
+      if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "ui-resolution-connection" });
+      if (request.method === "DELETE") return emptyResponse();
+      const rpc = JSON.parse(request.body) as { id?: number; method: string };
+      if (rpc.method === "initialize") {
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+      }
+      if (rpc.method === "session/load") {
+        return sseResponse([
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+          { jsonrpc: "2.0", id: rpc.id, result: {} },
+        ]);
+      }
+      if (rpc.method === "_codebuddy.ai/resolveInterruption") {
+        resolveCalls += 1;
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: {} }]);
+      }
+      promptSocket = socket;
+      promptRequestId = rpc.id;
+      startStreamingSse(socket);
+      writeSseChunk(
+        socket,
+        update({
+          sessionUpdate: "session_info_update",
+          _meta: {
+            "codebuddy.ai/interruptionRequest": {
+              toolCallId: "ui-wins",
+              toolName: "Bash",
+              toolInput: { command: "bun test" },
+              options: ["allow", "deny"],
+            },
+          },
+        }),
+      );
+      return null;
+    });
+    const attachment = await openWorkBuddyAiTaskEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => ({ pid: 120, parentPid: 110, executablePath: `${applicationPath}/Contents/MacOS/Electron` }),
+    );
+    const result = collect(
+      attachment.prompt({
+        prompt: "Wait for approval",
+        turnId: "ui-wins-turn",
+        turnOrigin: "client",
+        metadata: { sessionRef: "ui-wins-session" },
+        interactionPort: {
+          request: async (_request, context) => {
+            interactionSignal = context.signal;
+            context.signal?.addEventListener("abort", interactionAborted, { once: true });
+            void context.deliveryConfirmation.catch(() => undefined);
+            interactionStarted();
+            await responseGate;
+            return { kind: "approval", optionId: "approve-once" };
+          },
+        },
+        workspace: {
+          projectId: null,
+          workingDirectory: workspace,
+          additionalDirectories: [],
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+    await started;
+    const activePromptSocket = requireSocket(promptSocket, "UI-resolution prompt");
+    writeSseChunk(
+      activePromptSocket,
+      update({
+        sessionUpdate: "session_info_update",
+        _meta: {
+          "codebuddy.ai/permissionResolved": true,
+          "codebuddy.ai/toolCallId": "ui-wins",
+          "codebuddy.ai/decision": "deny",
+        },
+      }),
+    );
+    await expect(
+      Promise.race([aborted.then(() => undefined), rejectAfter(100, "UI resolution did not expire the interaction")]),
+    ).resolves.toBeUndefined();
+    expect(interactionSignal?.aborted).toBeTrue();
+    releaseResponse();
+    writeSseChunk(
+      activePromptSocket,
+      { jsonrpc: "2.0", id: promptRequestId, result: { stopReason: "end_turn" } },
+      true,
+    );
+
+    await expect(result).resolves.toBeArray();
+    expect(resolveCalls).toBe(0);
+    await attachment.close();
+  });
+
+  it("cancels the native prompt and pending interaction exactly once", async () => {
+    let promptSocket: Socket | undefined;
+    let promptRequestId: number | undefined;
+    let cancelCalls = 0;
+    let interactionSignal: AbortSignal | undefined;
+    let interactionStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      interactionStarted = resolve;
+    });
+    const endpoint = await serve((request, socket) => {
+      if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "cancel-connection" });
+      if (request.method === "DELETE") return emptyResponse();
+      const rpc = JSON.parse(request.body) as { id?: number; method: string };
+      if (rpc.method === "initialize") {
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+      }
+      if (rpc.method === "session/load") {
+        return sseResponse([
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+          { jsonrpc: "2.0", id: rpc.id, result: {} },
+        ]);
+      }
+      if (rpc.method === "session/cancel") {
+        cancelCalls += 1;
+        setTimeout(() => {
+          if (!promptSocket) return;
+          writeSseChunk(promptSocket, update({ sessionUpdate: "session_end", stopReason: "cancelled" }));
+          writeSseChunk(
+            promptSocket,
+            { jsonrpc: "2.0", id: promptRequestId, result: { stopReason: "cancelled" } },
+            true,
+          );
+        });
+        return emptyResponse();
+      }
+      promptSocket = socket;
+      promptRequestId = rpc.id;
+      startStreamingSse(socket);
+      writeSseChunk(
+        socket,
+        update({
+          sessionUpdate: "agent_message_chunk",
+          messageId: "cancelled-assistant",
+          content: { type: "text", text: "working" },
+        }),
+      );
+      writeSseChunk(
+        socket,
+        update({
+          sessionUpdate: "session_info_update",
+          _meta: {
+            "codebuddy.ai/interruptionRequest": {
+              toolCallId: "cancelled-interaction",
+              toolName: "Bash",
+              toolInput: { command: "sleep 10" },
+              options: ["allow", "deny"],
+            },
+          },
+        }),
+      );
+      return null;
+    });
+    const attachment = await openWorkBuddyAiTaskEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => ({ pid: 120, parentPid: 110, executablePath: `${applicationPath}/Contents/MacOS/Electron` }),
+    );
+    const result = collect(
+      attachment.prompt({
+        prompt: "Long task",
+        turnId: "cancel-turn",
+        turnOrigin: "client",
+        metadata: { sessionRef: "cancel-session" },
+        interactionPort: {
+          request: async (_request, context) => {
+            interactionSignal = context.signal;
+            void context.deliveryConfirmation.catch(() => undefined);
+            interactionStarted();
+            await new Promise<void>((_resolve, reject) => {
+              context.signal?.addEventListener("abort", () => reject(context.signal?.reason), { once: true });
+            });
+            return { kind: "approval", optionId: "approve-once" };
+          },
+        },
+        workspace: {
+          projectId: null,
+          workingDirectory: workspace,
+          additionalDirectories: [],
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+    await started;
+
+    await expect(attachment.cancel?.()).resolves.toBeTrue();
+    await expect(attachment.cancel?.()).resolves.toBeFalse();
+    expect(interactionSignal?.aborted).toBeTrue();
+    const activities = await result;
+    expect(cancelCalls).toBe(1);
+    expect(activities.some((activity) => activity.state === "cancelled")).toBeTrue();
+    await expect(attachment.cancel?.()).resolves.toBeFalse();
+    await attachment.close();
+  });
+
+  it("cancels before native acceptance without accepting or retrying the prompt", async () => {
+    let promptSocket: Socket | undefined;
+    let promptRequestId: number | undefined;
+    let promptStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      promptStarted = resolve;
+    });
+    let cancelCalls = 0;
+    const endpoint = await serve((request, socket) => {
+      if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "pre-accept-cancel" });
+      if (request.method === "DELETE") return emptyResponse();
+      const rpc = JSON.parse(request.body) as { id?: number; method: string };
+      if (rpc.method === "initialize") {
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+      }
+      if (rpc.method === "session/load") {
+        return sseResponse([
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+          { jsonrpc: "2.0", id: rpc.id, result: {} },
+        ]);
+      }
+      if (rpc.method === "session/cancel") {
+        cancelCalls += 1;
+        setTimeout(() => {
+          if (!promptSocket) return;
+          writeSseChunk(
+            promptSocket,
+            { jsonrpc: "2.0", id: promptRequestId, result: { stopReason: "cancelled" } },
+            true,
+          );
+        });
+        return emptyResponse();
+      }
+      promptSocket = socket;
+      promptRequestId = rpc.id;
+      startStreamingSse(socket);
+      promptStarted();
+      return null;
+    });
+    const attachment = await openWorkBuddyAiTaskEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => ({ pid: 120, parentPid: 110, executablePath: `${applicationPath}/Contents/MacOS/Electron` }),
+    );
+    let accepted = 0;
+    const result = collect(
+      attachment.prompt({
+        prompt: "Cancel before acceptance",
+        turnId: "pre-accept-cancel-turn",
+        onAccepted: async () => {
+          accepted += 1;
+        },
+        workspace: {
+          projectId: null,
+          workingDirectory: workspace,
+          additionalDirectories: [],
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+    await started;
+
+    await expect(attachment.cancel?.()).resolves.toBeTrue();
+    await expect(result).resolves.toEqual([]);
+    expect(accepted).toBe(0);
+    expect(cancelCalls).toBe(1);
+    await expect(attachment.cancel?.()).resolves.toBeFalse();
+    await attachment.close();
+  });
+
+  it("reconciles an idle WorkBuddy UI turn and rejects Connect prompts while native state is busy", async () => {
+    let broadcastSocket: Socket | undefined;
+    let broadcastReady!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      broadcastReady = resolve;
+    });
+    const endpoint = await serve(
+      (request, socket) => {
+        if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "broadcast-connection" });
+        if (request.method === "DELETE") return emptyResponse();
+        const rpc = JSON.parse(request.body) as { id: number; method: string };
+        if (rpc.method === "initialize") {
+          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        }
+        if (rpc.method === "session/load") {
+          return sseResponse([
+            update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+            update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+            { jsonrpc: "2.0", id: rpc.id, result: {} },
+          ]);
+        }
+        writeStreamingSse(socket, [
+          update({
+            sessionUpdate: "user_message_chunk",
+            messageId: "connect-after-ui",
+            content: { type: "text", text: "Continue" },
+          }),
+          update({
+            sessionUpdate: "agent_message_chunk",
+            messageId: "connect-after-ui-answer",
+            content: { type: "text", text: "Continued" },
+          }),
+          { jsonrpc: "2.0", id: rpc.id, result: { stopReason: "end_turn" } },
+        ]);
+        return null;
+      },
+      (_request, socket) => {
+        broadcastSocket = socket;
+        startStreamingSse(socket);
+        broadcastReady();
+        return null;
+      },
+    );
+    const attachment = await openWorkBuddyAiTaskEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => ({ pid: 120, parentPid: 110, executablePath: `${applicationPath}/Contents/MacOS/Electron` }),
+    );
+    await ready;
+    const uiBroadcastSocket = requireSocket(broadcastSocket, "WorkBuddy broadcast");
+    const promptInput = {
+      prompt: "Continue after UI",
+      turnId: "after-ui",
+      workspace: {
+        projectId: null,
+        workingDirectory: workspace,
+        additionalDirectories: [],
+        skipGitRepoCheck: false,
+      },
+    };
+
+    writeSseChunk(
+      uiBroadcastSocket,
+      update({
+        sessionUpdate: "session_info_update",
+        _meta: { "codebuddy.ai/agentPhase": { phase: "thinking" } },
+      }),
+    );
+    await Bun.sleep(5);
+    expect(() => attachment.prompt(promptInput)).toThrow("busy in another UI");
+
+    writeSseChunk(
+      uiBroadcastSocket,
+      update({
+        sessionUpdate: "user_message_chunk",
+        messageId: "ui-user",
+        content: { type: "text", text: "UI-only question" },
+      }),
+    );
+    writeSseChunk(
+      uiBroadcastSocket,
+      update({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "ui-assistant",
+        content: { type: "text", text: "UI-only answer" },
+      }),
+    );
+    writeSseChunk(uiBroadcastSocket, update({ sessionUpdate: "session_end", stopReason: "end_turn" }));
+    writeSseChunk(
+      uiBroadcastSocket,
+      update({
+        sessionUpdate: "session_info_update",
+        _meta: { "codebuddy.ai/agentPhase": { phase: "idle" } },
+      }),
+    );
+    await Bun.sleep(5);
+
+    const activities = await collect(attachment.prompt(promptInput));
+    expect(activities.find((activity) => activity.id === "workbuddy:user:ui-user")).toMatchObject({
+      text: "UI-only question",
+      state: "complete",
+      data: { deliveryDisposition: "projection-only" },
+    });
+    expect(activities.filter((activity) => activity.id === "workbuddy:assistant:ui-assistant").at(-1)).toMatchObject({
+      text: "UI-only answer",
+      state: "complete",
+      data: { deliveryDisposition: "projection-only" },
+    });
+    await attachment.close();
+  });
+
+  it("keeps active prompt state independent across distinct Task Attachments", async () => {
+    const secondTaskId = "00000000-0000-4000-8000-000000000002";
+    const heldEndpoint = async (nativeTaskId: string) => {
+      let promptSocket: Socket | undefined;
+      let promptRequestId: number | undefined;
+      let promptStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        promptStarted = resolve;
+      });
+      const endpoint = await serve((request, socket) => {
+        if (request.path.endsWith("/connect")) {
+          return jsonResponse({ connectionId: `connection-${nativeTaskId}` });
+        }
+        if (request.method === "DELETE") return emptyResponse();
+        const rpc = JSON.parse(request.body) as { id: number; method: string };
+        if (rpc.method === "initialize") {
+          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        }
+        if (rpc.method === "session/load") {
+          return sseResponse([
+            updateFor(nativeTaskId, {
+              sessionUpdate: "session_info_update",
+              _meta: { "codebuddy.ai/historyReplay": "start" },
+            }),
+            updateFor(nativeTaskId, {
+              sessionUpdate: "session_info_update",
+              _meta: { "codebuddy.ai/historyReplay": "end" },
+            }),
+            { jsonrpc: "2.0", id: rpc.id, result: {} },
+          ]);
+        }
+        promptSocket = socket;
+        promptRequestId = rpc.id;
+        promptStarted();
+        startStreamingSse(socket);
+        writeSseChunk(
+          socket,
+          updateFor(nativeTaskId, {
+            sessionUpdate: "agent_message_chunk",
+            messageId: `assistant-${nativeTaskId}`,
+            content: { type: "text", text: `running-${nativeTaskId}` },
+          }),
+        );
+        return null;
+      });
+      return {
+        endpoint,
+        started,
+        finish: () => {
+          const socket = requireSocket(promptSocket, `prompt ${nativeTaskId}`);
+          writeSseChunk(socket, { jsonrpc: "2.0", id: promptRequestId, result: { stopReason: "end_turn" } }, true);
+        },
+      };
+    };
+    const firstFixture = await heldEndpoint(taskId);
+    const secondFixture = await heldEndpoint(secondTaskId);
+    const [first, second] = await Promise.all([
+      openWorkBuddyAiTaskEndpoint(
+        { endpoint: firstFixture.endpoint, taskId, workspace, acpVersion: 1 },
+        1_000,
+        async () => ({ pid: 120, parentPid: 110, executablePath: `${applicationPath}/Contents/MacOS/Electron` }),
+      ),
+      openWorkBuddyAiTaskEndpoint(
+        { endpoint: secondFixture.endpoint, taskId: secondTaskId, workspace, acpVersion: 1 },
+        1_000,
+        async () => ({ pid: 121, parentPid: 110, executablePath: `${applicationPath}/Contents/MacOS/Electron` }),
+      ),
+    ]);
+    const promptInput = (suffix: string) => ({
+      prompt: `Prompt ${suffix}`,
+      turnId: `turn-${suffix}`,
+      workspace: {
+        projectId: null,
+        workingDirectory: workspace,
+        additionalDirectories: [],
+        skipGitRepoCheck: false,
+      },
+    });
+
+    const firstResult = collect(first.prompt(promptInput("first")));
+    const secondResult = collect(second.prompt(promptInput("second")));
+    await Promise.all([firstFixture.started, secondFixture.started]);
+    expect(() => first.prompt(promptInput("first-overlap"))).toThrow("already has an active Connect prompt");
+    secondFixture.finish();
+    await expect(secondResult).resolves.toBeArray();
+    expect(() => first.prompt(promptInput("still-first"))).toThrow("already has an active Connect prompt");
+    firstFixture.finish();
+    await expect(firstResult).resolves.toBeArray();
+    await Promise.all([first.close(), second.close()]);
+  });
+
   it("marks a disconnect after prompt transmission as uncertain without recording native acceptance", async () => {
     const endpoint = await serve((request, socket) => {
       if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "uncertain-connection" });
@@ -435,6 +1198,7 @@ describe("WorkBuddy private ACP client", () => {
 
     await expect(result).rejects.toMatchObject({ nativeAcceptance: "uncertain" });
     expect(accepted).toBe(0);
+    await expect(attachment.cancel?.()).resolves.toBeFalse();
     await attachment.close();
   });
 
@@ -498,7 +1262,10 @@ type FakeResponse =
   | { raw: string }
   | { body: string; contentType: string; chunked?: boolean; fragmented?: boolean; statusCode?: number };
 
-async function serve(respond: (request: FakeRequest, socket: Socket) => FakeResponse | null): Promise<string> {
+async function serve(
+  respond: (request: FakeRequest, socket: Socket) => FakeResponse | null,
+  broadcast?: (request: FakeRequest, socket: Socket) => FakeResponse | null,
+): Promise<string> {
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -510,7 +1277,10 @@ async function serve(respond: (request: FakeRequest, socket: Socket) => FakeResp
         const parsed = parseRequest(buffer);
         if (!parsed) break;
         buffer = buffer.subarray(parsed.consumedBytes);
-        const response = respond(parsed.request, socket);
+        const response =
+          parsed.request.method === "GET"
+            ? (broadcast?.(parsed.request, socket) ?? null)
+            : respond(parsed.request, socket);
         if (response) writeResponse(socket, response);
       }
     });
@@ -564,16 +1334,24 @@ function writeResponse(socket: Socket, response: FakeResponse): void {
 }
 
 function writeStreamingSse(socket: Socket, values: unknown[]): void {
+  startStreamingSse(socket);
+  values.forEach((value, index) => {
+    setTimeout(() => {
+      writeSseChunk(socket, value, index === values.length - 1);
+    }, index * 2);
+  });
+}
+
+function startStreamingSse(socket: Socket): void {
   socket.write(
     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n",
   );
-  values.forEach((value, index) => {
-    setTimeout(() => {
-      const payload = `data: ${JSON.stringify(value)}\n\n`;
-      socket.write(`${Buffer.byteLength(payload).toString(16)}\r\n${payload}\r\n`);
-      if (index === values.length - 1) socket.write("0\r\n\r\n");
-    }, index * 2);
-  });
+}
+
+function writeSseChunk(socket: Socket, value: unknown, end = false): void {
+  const payload = `data: ${JSON.stringify(value)}\n\n`;
+  socket.write(`${Buffer.byteLength(payload).toString(16)}\r\n${payload}\r\n`);
+  if (end) socket.write("0\r\n\r\n");
 }
 
 function writeHeartbeatSse(socket: Socket, requestId: number): void {
@@ -619,7 +1397,16 @@ function chunk(value: string): string {
 }
 
 function update(value: Record<string, unknown>): Record<string, unknown> {
-  return { jsonrpc: "2.0", method: "session/update", params: { sessionId: taskId, update: value } };
+  return updateFor(taskId, value);
+}
+
+function updateFor(sessionId: string, value: Record<string, unknown>): Record<string, unknown> {
+  return { jsonrpc: "2.0", method: "session/update", params: { sessionId, update: value } };
+}
+
+function requireSocket(socket: Socket | undefined, label: string): Socket {
+  if (!socket) throw new Error(`${label} socket was not established`);
+  return socket;
 }
 
 function fingerprint(messageIds: string[]): string {
@@ -634,4 +1421,9 @@ async function collect(activities: AsyncIterable<RuntimeActivity>): Promise<Runt
   const result: RuntimeActivity[] = [];
   for await (const activity of activities) result.push(activity);
   return result;
+}
+
+async function rejectAfter(timeoutMs: number, message: string): Promise<never> {
+  await Bun.sleep(timeoutMs);
+  throw new Error(message);
 }
