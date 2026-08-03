@@ -2,6 +2,16 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-alpha.33] - 2026-08-03
+
+### Changed
+
+- Limited the tag-triggered GitHub workflow to deterministic code checks and cross-platform packaging; installed WorkBuddy, ClawChat, Liveware UI, and real Runtime qualification remain local pre-release checks.
+
+### Fixed
+
+- Stabilized the group command routing regression test on slower hosted runners by waiting for its asynchronous replies within a bounded two-second deadline.
+
 ## [0.1.0-alpha.32] - 2026-08-03
 
 ### Fixed

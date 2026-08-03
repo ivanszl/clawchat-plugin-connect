@@ -2008,7 +2008,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     });
 
     let reply = transport.sent.find((event) => event.event === EVENT.MESSAGE_REPLY && event.chat_id === "chat-group");
-    for (let attempt = 0; attempt < 50 && !reply; attempt += 1) {
+    for (let attempt = 0; attempt < 1_000 && !reply; attempt += 1) {
       await Bun.sleep(2);
       reply = transport.sent.find((event) => event.event === EVENT.MESSAGE_REPLY && event.chat_id === "chat-group");
     }
@@ -2069,7 +2069,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
         (event) =>
           event.event === EVENT.MESSAGE_REPLY && event.chat_id === "chat-group" && event.trace_id !== reply?.trace_id,
       );
-      for (let attempt = 0; attempt < 50 && !invalidReply; attempt += 1) {
+      for (let attempt = 0; attempt < 1_000 && !invalidReply; attempt += 1) {
         await Bun.sleep(2);
         invalidReply = transport.sent.find(
           (event) =>
@@ -2126,7 +2126,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
           event.trace_id !== reply?.trace_id &&
           event.trace_id !== invalidReply?.trace_id,
       );
-      for (let attempt = 0; attempt < 50 && !emptyReply; attempt += 1) {
+      for (let attempt = 0; attempt < 1_000 && !emptyReply; attempt += 1) {
         await Bun.sleep(2);
         emptyReply = transport.sent.find(
           (event) =>
@@ -2222,14 +2222,14 @@ describe("Binding Runtime Protocol v2 assembly", () => {
           },
         },
       });
-      for (let attempt = 0; attempt < 50 && prompts.length === 0; attempt += 1) await Bun.sleep(2);
+      for (let attempt = 0; attempt < 1_000 && prompts.length === 0; attempt += 1) await Bun.sleep(2);
       expect(prompts).toHaveLength(1);
       expect(prompts[0]?.prompt).toEndWith("\n\ninspect this");
 
       let ordinaryReply = transport.sent
         .slice(sentBeforeOrdinaryTurn)
         .find((event) => event.event === EVENT.MESSAGE_REPLY && event.chat_id === "chat-group");
-      for (let attempt = 0; attempt < 50 && !ordinaryReply; attempt += 1) {
+      for (let attempt = 0; attempt < 1_000 && !ordinaryReply; attempt += 1) {
         await Bun.sleep(2);
         ordinaryReply = transport.sent
           .slice(sentBeforeOrdinaryTurn)
