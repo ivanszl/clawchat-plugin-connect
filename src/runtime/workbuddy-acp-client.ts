@@ -3,6 +3,8 @@ import type {
   ConnectRuntimePrompt,
   ConnectRuntimeSession,
   RuntimeActivity,
+  RuntimeInteractionRequest,
+  RuntimeInteractionResponse,
   RuntimeModelOption,
   RuntimeSessionOption,
 } from "./types";
@@ -175,10 +177,57 @@ export async function openWorkBuddyTaskEndpoint(
       connectionOwner,
     };
     let nextLiveTurnOrdinal = nextTurnOrdinal(verification.activities);
+    let nextRequestId = 3;
     let closed = false;
+    let activePrompt: WorkBuddyPromptOperation | null = null;
+    let nativeBusy = false;
+    let externalProjector: OutOfBandTurnProjector | null = null;
+    const bufferedExternalActivities: RuntimeActivity[] = [];
+    const broadcastAbort = new AbortController();
+    const broadcastTask = consumeWorkBuddyBroadcast(input.endpoint, headers, broadcastAbort.signal, (payload) => {
+      if (!isTaskUpdate(payload, input.taskId)) return;
+      catalogState.observe(payload);
+      if (activePrompt) {
+        activePrompt.observeBroadcast(payload);
+        return;
+      }
+      const update = taskUpdate(payload);
+      const phase = nativeAgentPhase(update);
+      if (phase && phase !== "idle") nativeBusy = true;
+      if (update && isTranscriptUpdate(update)) {
+        nativeBusy = true;
+        if (!externalProjector) externalProjector = new OutOfBandTurnProjector(nextLiveTurnOrdinal++);
+        bufferedExternalActivities.push(...externalProjector.observe(update));
+      }
+      if (update?.sessionUpdate === "session_end" || phase === "idle") {
+        if (externalProjector) bufferedExternalActivities.push(...externalProjector.complete(update?.stopReason));
+        externalProjector = null;
+        nativeBusy = false;
+      }
+    }).catch(() => undefined);
+    const postSidebandRpc = async (method: string, params: unknown): Promise<RpcObservation> => {
+      const sideband = await PersistentHttpConnection.open(input.endpoint, timeoutMs);
+      try {
+        return await postRpc(sideband, headers, nextRequestId++, method, params, undefined, catalogState);
+      } finally {
+        sideband.close();
+      }
+    };
+    const postSidebandEnvelope = async (envelope: Record<string, unknown>): Promise<void> => {
+      const sideband = await PersistentHttpConnection.open(input.endpoint, timeoutMs);
+      try {
+        await postRpcEnvelope(sideband, headers, envelope);
+      } finally {
+        sideband.close();
+      }
+    };
     const close = async (): Promise<void> => {
       if (closed) return;
       closed = true;
+      broadcastAbort.abort();
+      activePrompt?.expire("WorkBuddy Task Attachment was closed");
+      activePrompt = null;
+      await broadcastTask;
       await teardown();
     };
     return {
@@ -189,15 +238,29 @@ export async function openWorkBuddyTaskEndpoint(
       onCatalogChanged: (listener) => catalogState.onChanged(listener),
       prompt: (promptInput) => {
         if (closed) throw new Error("WorkBuddy Task Attachment is closed");
-        return streamPrompt(
+        if (activePrompt) throw new Error("WorkBuddy Task already has an active Connect prompt");
+        if (nativeBusy) throw new Error("WorkBuddy Task is busy in another UI; wait for it to become idle and retry");
+        const operation = new WorkBuddyPromptOperation(
           connection,
-          acpHeaders(connectionId, sessionToken),
+          headers,
           input.taskId,
           nextLiveTurnOrdinal++,
           promptInput,
           catalogState,
+          nextRequestId++,
+          timeoutMs,
+          postSidebandRpc,
+          postSidebandEnvelope,
+          bufferedExternalActivities.splice(0),
+          () => {
+            if (activePrompt === operation) activePrompt = null;
+          },
         );
+        activePrompt = operation;
+        operation.start();
+        return operation;
       },
+      cancel: async () => (await activePrompt?.cancel()) ?? false,
       close,
     };
   } catch (error) {
@@ -490,6 +553,30 @@ function optionalDescription(value: unknown): { description?: string } {
   return description ? { description } : {};
 }
 
+async function postRpcEnvelope(
+  connection: PersistentHttpConnection,
+  headers: Record<string, string>,
+  envelope: Record<string, unknown>,
+): Promise<void> {
+  const response = await connection.request(
+    "POST",
+    connection.pathname,
+    headers,
+    Buffer.from(JSON.stringify(envelope)),
+  );
+  if (response.statusCode === 401 || response.statusCode === 403) {
+    throw new WorkBuddyDiscoveryError(
+      "authentication-failed",
+      "WorkBuddy AI rejected the reacquired ACP authorization for this Task Attachment.",
+    );
+  }
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new WorkBuddyRpcRejectionError(
+      `ACP ${String(envelope.method ?? "response")} failed with HTTP ${response.statusCode}`,
+    );
+  }
+}
+
 class SseDecoder {
   private buffer = "";
 
@@ -666,65 +753,6 @@ function replayActivities(messages: ReplayMessage[]): import("./types").RuntimeA
   });
 }
 
-async function* streamPrompt(
-  connection: PersistentHttpConnection,
-  headers: Record<string, string>,
-  taskId: string,
-  turnOrdinal: number,
-  input: ConnectRuntimePrompt,
-  catalog: WorkBuddyTaskCatalogState,
-): AsyncIterable<RuntimeActivity> {
-  const prompt = input.prompt.trim();
-  if (!prompt) throw new Error("WorkBuddy text prompt is required");
-  if (prompt.length > 64_000) throw new Error("WorkBuddy text prompt exceeds the 64000-character limit");
-  if (input.media?.length) throw new Error("WorkBuddy Task Attachments currently support text turns only");
-  const before = catalog.snapshot();
-  const selectedSlash = resolveWorkBuddySlashSelection(before, input);
-  const selectedMode = input.mode ? before.modes.find((mode) => mode.id === input.mode) : undefined;
-  if (input.mode && !selectedMode) throw new Error(`WorkBuddy mode is no longer available: ${input.mode}`);
-  const selectedConfig = validateWorkBuddyConfig(before, input);
-  if (input.model) {
-    const selected = before.models.find((model) => model.id.toLowerCase() === input.model?.trim().toLowerCase());
-    if (!selected) throw new Error(`WorkBuddy model is no longer available: ${input.model}`);
-    if (selected.id !== before.currentModelId) {
-      await postRpc(
-        connection,
-        headers,
-        nextAcpRequestId(),
-        "session/set_model",
-        { sessionId: taskId, modelId: selected.id },
-        undefined,
-        catalog,
-      );
-    }
-  }
-  if (selectedMode && selectedMode.id !== before.currentModeId) {
-    await postRpc(
-      connection,
-      headers,
-      nextAcpRequestId(),
-      "session/set_mode",
-      { sessionId: taskId, modeId: selectedMode.id },
-      undefined,
-      catalog,
-    );
-  }
-  for (const [configId, value] of selectedConfig) {
-    if (before.currentConfig[configId] === value) continue;
-    await postRpc(
-      connection,
-      headers,
-      nextAcpRequestId(),
-      "session/set_config_option",
-      { sessionId: taskId, configId, value },
-      undefined,
-      catalog,
-    );
-  }
-  const nativeInput = selectedSlash ? { ...input, prompt: nativeSlashPrompt(prompt, selectedSlash.nativeName) } : input;
-  yield* streamPromptRequest(connection, headers, taskId, turnOrdinal, nativeInput, catalog);
-}
-
 function resolveWorkBuddySlashSelection(
   catalog: WorkBuddyTaskCatalog,
   input: ConnectRuntimePrompt,
@@ -763,67 +791,634 @@ function nativeSlashPrompt(prompt: string, nativeName: string): string {
   return `/${nativeName}${argumentsText ? ` ${argumentsText}` : ""}`;
 }
 
-function streamPromptRequest(
-  connection: PersistentHttpConnection,
-  headers: Record<string, string>,
-  taskId: string,
-  turnOrdinal: number,
-  input: ConnectRuntimePrompt,
-  catalog: WorkBuddyTaskCatalogState,
-): AsyncIterable<RuntimeActivity> {
-  const queue = new AsyncActivityQueue();
-  const projector = new LiveTurnProjector(turnOrdinal, input);
-  const requestId = nextAcpRequestId();
-  const userMessageId = workBuddySubmittedUserMessageId(input, requestId);
-  let accepted: Promise<void> | null = null;
-  void postRpc(
-    connection,
-    headers,
-    requestId,
-    "session/prompt",
-    {
-      sessionId: taskId,
-      prompt: [{ type: "text", text: input.prompt }],
-      _meta: {
-        messageId: userMessageId,
-        "codebuddy.ai": {
-          userMessageId,
-          messageRequestId: userMessageId,
-        },
-      },
-    },
-    (payload) => {
-      if (!isTaskUpdate(payload, taskId)) return;
-      if (!accepted) {
-        accepted = input.onAccepted?.() ?? Promise.resolve();
-        for (const activity of projector.accepted()) queue.push(activity);
-      }
-      for (const activity of projector.observe(payload)) queue.push(activity);
-    },
-    catalog,
-  )
-    .then(async (observation) => {
-      await accepted;
-      for (const activity of projector.complete(observation.result)) queue.push(activity);
-      queue.end();
-    })
-    .catch((error) =>
-      queue.fail(
-        error instanceof WorkBuddyRpcRejectionError || error instanceof WorkBuddyDiscoveryError
-          ? error
-          : new WorkBuddyPromptTransportError({
-              cause: error instanceof Error ? error : new Error(String(error)),
-            }),
-      ),
-    );
-  return queue;
+interface WorkBuddyPromptSelection {
+  input: ConnectRuntimePrompt;
+  previous: WorkBuddyTaskCatalog;
+  modelId: string | null;
+  modeId: string | null;
+  config: Array<[string, string]>;
 }
 
-let acpRequestId = Date.now();
+function selectWorkBuddyPrompt(
+  catalog: WorkBuddyTaskCatalogState,
+  input: ConnectRuntimePrompt,
+): WorkBuddyPromptSelection {
+  const prompt = input.prompt.trim();
+  if (!prompt) throw new Error("WorkBuddy text prompt is required");
+  if (prompt.length > 64_000) throw new Error("WorkBuddy text prompt exceeds the 64000-character limit");
+  if (input.media?.length) throw new Error("WorkBuddy Task Attachments currently support text turns only");
+  const previous = catalog.snapshot();
+  const selectedSlash = resolveWorkBuddySlashSelection(previous, input);
+  const selectedMode = input.mode ? previous.modes.find((mode) => mode.id === input.mode) : undefined;
+  if (input.mode && !selectedMode) throw new Error(`WorkBuddy mode is no longer available: ${input.mode}`);
+  const selectedModel = input.model
+    ? previous.models.find((model) => model.id.toLowerCase() === input.model?.trim().toLowerCase())
+    : undefined;
+  if (input.model && !selectedModel) throw new Error(`WorkBuddy model is no longer available: ${input.model}`);
+  return {
+    input: selectedSlash ? { ...input, prompt: nativeSlashPrompt(prompt, selectedSlash.nativeName) } : input,
+    previous,
+    modelId: selectedModel?.id ?? null,
+    modeId: selectedMode?.id ?? null,
+    config: validateWorkBuddyConfig(previous, input),
+  };
+}
 
-function nextAcpRequestId(): number {
-  acpRequestId += 1;
-  return acpRequestId;
+async function applyWorkBuddyPromptSelection(
+  taskId: string,
+  selection: WorkBuddyPromptSelection,
+  postRpc: (method: string, params: unknown) => Promise<RpcObservation>,
+): Promise<void> {
+  if (selection.modelId && selection.modelId !== selection.previous.currentModelId) {
+    await postRpc("session/set_model", { sessionId: taskId, modelId: selection.modelId });
+  }
+  if (selection.modeId && selection.modeId !== selection.previous.currentModeId) {
+    await postRpc("session/set_mode", { sessionId: taskId, modeId: selection.modeId });
+  }
+  for (const [configId, value] of selection.config) {
+    if (selection.previous.currentConfig[configId] === value) continue;
+    await postRpc("session/set_config_option", { sessionId: taskId, configId, value });
+  }
+}
+
+async function consumeWorkBuddyBroadcast(
+  endpoint: string,
+  headers: Record<string, string>,
+  signal: AbortSignal,
+  onPayload: (payload: unknown) => void,
+): Promise<void> {
+  const response = await fetch(endpoint, {
+    method: "GET",
+    headers: {
+      Accept: "text/event-stream",
+      "acp-connection-id": headers["acp-connection-id"] ?? "",
+      ...(headers["acp-session-token"] ? { "acp-session-token": headers["acp-session-token"] } : {}),
+    },
+    signal,
+  });
+  if (response.status === 401 || response.status === 403) {
+    throw new WorkBuddyDiscoveryError(
+      "authentication-failed",
+      "WorkBuddy AI rejected the reacquired ACP authorization for this Task Attachment.",
+    );
+  }
+  if (!response.ok || !response.headers.get("content-type")?.includes("text/event-stream")) return;
+  const reader = response.body?.getReader();
+  if (!reader) return;
+  const decoder = new TextDecoder();
+  const sse = new SseDecoder(onPayload);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sse.push(decoder.decode(value, { stream: true }));
+    }
+    sse.push(decoder.decode());
+    sse.finish();
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function nativeAgentPhase(update: Record<string, unknown> | null): string | null {
+  if (update?.sessionUpdate !== "session_info_update") return null;
+  const meta = update._meta as Record<string, unknown> | undefined;
+  const phase = meta?.["codebuddy.ai/agentPhase"];
+  return phase && typeof phase === "object" ? stringField(phase as Record<string, unknown>, "phase") : null;
+}
+
+function isTranscriptUpdate(update: Record<string, unknown> | null): boolean {
+  return (
+    update?.sessionUpdate === "user_message_chunk" ||
+    update?.sessionUpdate === "agent_message_chunk" ||
+    update?.sessionUpdate === "agent_thought_chunk" ||
+    update?.sessionUpdate === "tool_call" ||
+    update?.sessionUpdate === "tool_call_update" ||
+    update?.sessionUpdate === "plan"
+  );
+}
+
+class OutOfBandTurnProjector {
+  private readonly activities = new Map<string, RuntimeActivity>();
+  private nextItem = 1;
+  private terminal = false;
+
+  constructor(private readonly turn: number) {}
+
+  observe(update: Record<string, unknown>): RuntimeActivity[] {
+    if (this.terminal) return [];
+    const updateKind = stringField(update, "sessionUpdate") ?? "";
+    const messageKind = replayMessageKind(updateKind);
+    if (messageKind) {
+      const nativeId = stringField(update, "messageId");
+      const text = visibleText(update.content);
+      if (!nativeId || !text) return [];
+      return [
+        this.upsert(
+          `${messageKind}:${nativeId}`,
+          messageKind,
+          nativeId,
+          text,
+          messageKind === "user" ? "complete" : "streaming",
+          true,
+        ),
+      ];
+    }
+    if (updateKind === "tool_call" || updateKind === "tool_call_update") {
+      const nativeId = stringField(update, "toolCallId", "callId", "id");
+      if (!nativeId) return [];
+      const status = stringField(update, "status") ?? "running";
+      const text = visibleText(update.content) || stringField(update, "title", "name") || "WorkBuddy tool activity";
+      return [this.upsert(`tool:${nativeId}`, "tool", nativeId, text, toolState(status), false)];
+    }
+    if (updateKind === "plan") {
+      const nativeId = stringField(update, "planId", "id") ?? "current";
+      return [this.upsert(`plan:${nativeId}`, "plan", nativeId, planText(update.entries), "streaming", false)];
+    }
+    return [];
+  }
+
+  complete(stopReason: unknown): RuntimeActivity[] {
+    if (this.terminal) return [];
+    this.terminal = true;
+    const state = terminalState(stopReason);
+    const updates: RuntimeActivity[] = [];
+    for (const [key, activity] of this.activities) {
+      if (activity.state === "complete" || activity.state === "error" || activity.state === "cancelled") continue;
+      const completed = { ...activity, state };
+      this.activities.set(key, completed);
+      updates.push(completed);
+    }
+    return updates;
+  }
+
+  private upsert(
+    key: string,
+    kind: RuntimeActivity["kind"],
+    nativeId: string,
+    text: string,
+    state: RuntimeActivity["state"],
+    append: boolean,
+  ): RuntimeActivity {
+    const existing = this.activities.get(key);
+    const activity: RuntimeActivity = {
+      id: existing?.id ?? `workbuddy:${kind}:${nativeId}`,
+      position: existing?.position ?? `${this.turn}.${this.nextItem++}`,
+      parentId: null,
+      kind,
+      text: append ? (existing?.text ?? "") + text : text || existing?.text || "",
+      state,
+      source: "live",
+      data: { ...existing?.data, deliveryDisposition: "projection-only" },
+    };
+    this.activities.set(key, activity);
+    return activity;
+  }
+}
+
+class WorkBuddyPromptOperation implements AsyncIterable<RuntimeActivity> {
+  private readonly queue = new AsyncActivityQueue();
+  private projector: LiveTurnProjector;
+  private input: ConnectRuntimePrompt;
+  private readonly interactions = new Map<string, NativeInteraction>();
+  private readonly interactionTasks = new Set<Promise<void>>();
+  private accepted: Promise<void> | null = null;
+  private settled = false;
+  private cancelled = false;
+
+  constructor(
+    private readonly connection: PersistentHttpConnection,
+    private readonly headers: Record<string, string>,
+    private readonly taskId: string,
+    private readonly turnOrdinal: number,
+    input: ConnectRuntimePrompt,
+    private readonly catalog: WorkBuddyTaskCatalogState,
+    private readonly requestId: number,
+    private readonly timeoutMs: number,
+    private readonly postSidebandRpc: (method: string, params: unknown) => Promise<RpcObservation>,
+    private readonly postSidebandEnvelope: (envelope: Record<string, unknown>) => Promise<void>,
+    private readonly preface: RuntimeActivity[],
+    private readonly onSettled: () => void,
+  ) {
+    this.input = input;
+    this.projector = new LiveTurnProjector(turnOrdinal, input);
+  }
+
+  start(): void {
+    for (const activity of this.preface) this.queue.push(activity);
+    void this.run();
+  }
+
+  private async run(): Promise<void> {
+    try {
+      const selection = selectWorkBuddyPrompt(this.catalog, this.input);
+      this.input = selection.input;
+      this.projector = new LiveTurnProjector(this.turnOrdinal, this.input);
+      await applyWorkBuddyPromptSelection(this.taskId, selection, this.postSidebandRpc);
+    } catch (error) {
+      this.failBeforePrompt(error);
+      return;
+    }
+    if (this.settled) return;
+    try {
+      const userMessageId = workBuddySubmittedUserMessageId(this.input, this.requestId);
+      const observation = await postRpc(
+        this.connection,
+        this.headers,
+        this.requestId,
+        "session/prompt",
+        {
+          sessionId: this.taskId,
+          prompt: [{ type: "text", text: this.input.prompt }],
+          _meta: {
+            messageId: userMessageId,
+            "codebuddy.ai": { userMessageId, messageRequestId: userMessageId },
+          },
+        },
+        (payload) => this.observe(payload),
+        this.catalog,
+      );
+      await this.accepted;
+      await Promise.allSettled([...this.interactionTasks]);
+      if (this.settled) return;
+      for (const activity of this.projector.complete(observation.result)) this.queue.push(activity);
+      this.finish();
+    } catch (error) {
+      this.fail(error);
+    }
+  }
+
+  private failBeforePrompt(error: unknown): void {
+    if (this.settled) return;
+    this.expireInteractions("WorkBuddy prompt validation or configuration failed");
+    this.settled = true;
+    this.onSettled();
+    this.queue.fail(error instanceof Error ? error : new Error(String(error)));
+  }
+
+  async cancel(): Promise<boolean> {
+    if (this.settled || this.cancelled) return false;
+    this.cancelled = true;
+    this.expireInteractions("WorkBuddy prompt was cancelled");
+    await this.postSidebandEnvelope({
+      jsonrpc: "2.0",
+      method: "session/cancel",
+      params: { sessionId: this.taskId },
+    });
+    return true;
+  }
+
+  expire(reason: string): void {
+    if (this.settled) return;
+    this.expireInteractions(reason);
+    this.settled = true;
+    this.onSettled();
+    this.queue.fail(new Error(reason));
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<RuntimeActivity> {
+    return this.queue[Symbol.asyncIterator]();
+  }
+
+  observeBroadcast(payload: unknown): void {
+    if (!isTaskUpdate(payload, this.taskId) || this.settled) return;
+    this.observeNativeInteraction(payload);
+  }
+
+  private observe(payload: unknown): void {
+    if (!isTaskUpdate(payload, this.taskId) || this.settled) return;
+    if (!this.accepted) {
+      this.accepted = this.input.onAccepted?.() ?? Promise.resolve();
+      for (const activity of this.projector.accepted()) this.queue.push(activity);
+    }
+    this.observeNativeInteraction(payload);
+    for (const activity of this.projector.observe(payload)) this.queue.push(activity);
+  }
+
+  private observeNativeInteraction(payload: unknown): void {
+    const update = taskUpdate(payload);
+    const meta = update?._meta as Record<string, unknown> | undefined;
+    const interruption = meta?.["codebuddy.ai/interruptionRequest"];
+    if (interruption && typeof interruption === "object") {
+      this.routeInterruption(interruption as Record<string, unknown>);
+    }
+    const resolvedValue = meta?.["codebuddy.ai/permissionResolved"];
+    if (!resolvedValue) return;
+    const resolved = typeof resolvedValue === "object" ? (resolvedValue as Record<string, unknown>) : meta;
+    const toolCallId = stringField(resolved ?? {}, "toolCallId", "codebuddy.ai/toolCallId", "interruptionId");
+    const decision = stringField(resolved ?? {}, "decision", "codebuddy.ai/decision");
+    if (toolCallId) this.resolveFromNativeUi(toolCallId, decision);
+  }
+
+  private routeInterruption(interruption: Record<string, unknown>): void {
+    const toolCallId = stringField(interruption, "toolCallId", "interruptionId");
+    if (!toolCallId || this.interactions.has(toolCallId)) return;
+    const mapped = mapInterruption(interruption, this.input.workspace.workingDirectory);
+    if (!mapped) return;
+    const delivery = deferred<void>();
+    void delivery.promise.catch(() => undefined);
+    const interaction: NativeInteraction = {
+      toolCallId,
+      request: mapped,
+      controller: new AbortController(),
+      delivery,
+      confirmation: deferred<void>(),
+      expectedDecision: null,
+      responseClaimed: false,
+      settled: false,
+    };
+    void interaction.confirmation.promise.catch(() => undefined);
+    this.interactions.set(toolCallId, interaction);
+    const task = this.deliverInteraction(interaction).finally(() => this.interactionTasks.delete(task));
+    this.interactionTasks.add(task);
+  }
+
+  private async deliverInteraction(interaction: NativeInteraction): Promise<void> {
+    try {
+      let response: RuntimeInteractionResponse;
+      try {
+        const sessionRef = this.input.metadata?.sessionRef;
+        response =
+          this.input.interactionPort && sessionRef && this.input.turnId && this.input.turnOrigin
+            ? await this.input.interactionPort.request(interaction.request, {
+                sessionRef,
+                turnId: this.input.turnId,
+                origin: this.input.turnOrigin,
+                deliveryConfirmation: interaction.delivery.promise,
+                signal: interaction.controller.signal,
+              })
+            : safeInteractionResponse(interaction.request);
+      } catch {
+        if (interaction.settled) return;
+        response = safeInteractionResponse(interaction.request);
+      }
+      if (interaction.settled) return;
+      interaction.responseClaimed = true;
+      const resolution = interruptionResolution(this.taskId, interaction.toolCallId, interaction.request, response);
+      interaction.expectedDecision = stringField(resolution, "decision");
+      await this.postSidebandRpc("_codebuddy.ai/resolveInterruption", resolution);
+      await withTimeout(
+        interaction.confirmation.promise,
+        this.timeoutMs,
+        "WorkBuddy did not confirm the interaction response",
+      );
+      if (interaction.settled) return;
+      interaction.settled = true;
+      interaction.delivery.resolve();
+      this.interactions.delete(interaction.toolCallId);
+    } catch (error) {
+      if (interaction.settled) return;
+      interaction.settled = true;
+      interaction.controller.abort(error);
+      interaction.delivery.reject(error instanceof Error ? error : new Error(String(error)));
+      interaction.confirmation.reject(error instanceof Error ? error : new Error(String(error)));
+      this.interactions.delete(interaction.toolCallId);
+    }
+  }
+
+  private resolveFromNativeUi(toolCallId: string, decision: string | null): void {
+    const interaction = this.interactions.get(toolCallId);
+    if (!interaction || interaction.settled) return;
+    if (interaction.responseClaimed) {
+      if (interaction.expectedDecision && decision && interaction.expectedDecision !== decision) {
+        const error = new Error("WorkBuddy confirmed a different interaction response");
+        interaction.settled = true;
+        interaction.controller.abort(error);
+        interaction.delivery.reject(error);
+        interaction.confirmation.reject(error);
+        this.interactions.delete(toolCallId);
+        return;
+      }
+      interaction.confirmation.resolve();
+      return;
+    }
+    const error = new Error("WorkBuddy interaction was resolved in another UI");
+    interaction.settled = true;
+    interaction.controller.abort(error);
+    interaction.delivery.reject(error);
+    interaction.confirmation.reject(error);
+    this.interactions.delete(toolCallId);
+  }
+
+  private expireInteractions(reason: string): void {
+    const error = new Error(reason);
+    for (const interaction of this.interactions.values()) {
+      if (interaction.settled) continue;
+      interaction.settled = true;
+      interaction.controller.abort(error);
+      interaction.delivery.reject(error);
+      interaction.confirmation.reject(error);
+    }
+    this.interactions.clear();
+  }
+
+  private finish(): void {
+    if (this.settled) return;
+    this.expireInteractions("WorkBuddy prompt completed");
+    this.settled = true;
+    this.onSettled();
+    this.queue.end();
+  }
+
+  private fail(error: unknown): void {
+    if (this.settled) return;
+    this.expireInteractions("WorkBuddy prompt transport settled before the interaction was confirmed");
+    this.settled = true;
+    this.onSettled();
+    this.queue.fail(
+      error instanceof WorkBuddyRpcRejectionError || error instanceof WorkBuddyDiscoveryError
+        ? error
+        : new WorkBuddyPromptTransportError({ cause: error instanceof Error ? error : new Error(String(error)) }),
+    );
+  }
+}
+
+interface NativeInteraction {
+  toolCallId: string;
+  request: RuntimeInteractionRequest;
+  controller: AbortController;
+  delivery: Deferred<void>;
+  confirmation: Deferred<void>;
+  expectedDecision: string | null;
+  responseClaimed: boolean;
+  settled: boolean;
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+  reject(reason?: unknown): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: Deferred<T>["resolve"];
+  let reject!: Deferred<T>["reject"];
+  const promise = new Promise<T>((accept, decline) => {
+    resolve = accept;
+    reject = decline;
+  });
+  return { promise, resolve, reject };
+}
+
+function taskUpdate(payload: unknown): Record<string, unknown> | null {
+  if (!payload || typeof payload !== "object") return null;
+  const params = (payload as Record<string, unknown>).params;
+  if (!params || typeof params !== "object") return null;
+  const update = (params as Record<string, unknown>).update;
+  return update && typeof update === "object" ? (update as Record<string, unknown>) : null;
+}
+
+function mapInterruption(
+  interruption: Record<string, unknown>,
+  workingDirectory: string,
+): RuntimeInteractionRequest | null {
+  const toolName = stringField(interruption, "toolName", "name") ?? "a WorkBuddy tool";
+  const title = stringField(interruption, "toolTitle", "title") ?? `Allow WorkBuddy to use ${toolName}?`;
+  const input =
+    interruption.toolInput && typeof interruption.toolInput === "object"
+      ? (interruption.toolInput as Record<string, unknown>)
+      : {};
+  if (toolName === "AskUserQuestion") return mapQuestionInterruption(title, input);
+  const options = Array.isArray(interruption.options) ? interruption.options : [];
+  const mappedOptions: Extract<RuntimeInteractionRequest, { kind: "approval" }>["options"] = [];
+  if (options.includes("allow")) mappedOptions.push({ id: "approve-once", label: "Allow" });
+  if (options.includes("allowAll")) mappedOptions.push({ id: "approve-session", label: "Always allow" });
+  if (options.includes("deny") || mappedOptions.length === 0) mappedOptions.push({ id: "deny", label: "Deny" });
+  const command = stringField(input, "command");
+  const cwd = stringField(input, "cwd") ?? workingDirectory;
+  const action = isFileChangeTool(toolName) ? "file-change" : "command";
+  const files = action === "file-change" ? fileChangeDetails(input) : [];
+  return {
+    kind: "approval",
+    action,
+    title,
+    description:
+      stringField(interruption, "description", "reason", "intention") ??
+      `WorkBuddy requests permission to run ${toolName}.`,
+    ...(action === "command" && command ? { command } : {}),
+    ...(action === "command" && cwd ? { cwd } : {}),
+    ...(action === "file-change" && files.length ? { files } : {}),
+    options: mappedOptions,
+  };
+}
+
+function mapQuestionInterruption(
+  title: string,
+  input: Record<string, unknown>,
+): Extract<RuntimeInteractionRequest, { kind: "user-input" }> {
+  const rawQuestions = Array.isArray(input.questions) ? input.questions : [];
+  const questions = rawQuestions.flatMap((value, index) => {
+    if (!value || typeof value !== "object") return [];
+    const question = value as Record<string, unknown>;
+    const prompt = stringField(question, "question", "prompt");
+    if (!prompt) return [];
+    const rawOptions = Array.isArray(question.options) ? question.options : [];
+    const options = rawOptions.flatMap((option) => {
+      if (!option || typeof option !== "object") return [];
+      const record = option as Record<string, unknown>;
+      const label = stringField(record, "label");
+      if (!label) return [];
+      const description = stringField(record, "description");
+      return [
+        {
+          id: stringField(record, "id", "value") ?? label,
+          label,
+          ...(description ? { description } : {}),
+        },
+      ];
+    });
+    return [
+      {
+        id: stringField(question, "id") ?? `q_${index}`,
+        header: stringField(question, "header") ?? `Question ${index + 1}`,
+        prompt,
+        secret: question.secret === true || question.isSecret === true || question.sensitive === true,
+        allowOther: question.allowOther !== false && question.custom !== false,
+        options: options.length ? options : null,
+      },
+    ];
+  });
+  return {
+    kind: "user-input",
+    title: title || "WorkBuddy needs your input",
+    description: questions.length === 1 ? (questions[0]?.prompt ?? "") : `WorkBuddy has ${questions.length} questions.`,
+    questions,
+    autoResolutionMs: null,
+  };
+}
+
+function isFileChangeTool(toolName: string): boolean {
+  return /(?:edit|write|patch|delete|move|rename|file)/iu.test(toolName);
+}
+
+function fileChangeDetails(input: Record<string, unknown>): Array<{ path: string; diff?: string }> {
+  const result = new Map<string, { path: string; diff?: string }>();
+  const add = (path: string | null, diff?: string | null) => {
+    if (!path) return;
+    result.set(path, { path, ...(diff ? { diff } : {}) });
+  };
+  const directDiff = stringField(input, "diff", "patch");
+  add(stringField(input, "file_path", "filePath", "path", "target"), directDiff ?? editDiff(input));
+  const files = input.files;
+  if (Array.isArray(files)) {
+    for (const value of files) {
+      if (typeof value === "string") {
+        add(value);
+        continue;
+      }
+      if (!value || typeof value !== "object") continue;
+      const file = value as Record<string, unknown>;
+      add(stringField(file, "path", "file_path", "filePath"), stringField(file, "diff", "patch"));
+    }
+  }
+  return [...result.values()];
+}
+
+function editDiff(input: Record<string, unknown>): string | null {
+  const before = stringField(input, "old_string", "oldString", "before");
+  const after = stringField(input, "new_string", "newString", "after");
+  if (!before && !after) return null;
+  return `${before ? `-${before}` : ""}${before && after ? "\n" : ""}${after ? `+${after}` : ""}`;
+}
+
+function safeInteractionResponse(request: RuntimeInteractionRequest): RuntimeInteractionResponse {
+  return request.kind === "approval" ? { kind: "approval", optionId: "deny" } : { kind: "user-input", answers: {} };
+}
+
+function interruptionResolution(
+  taskId: string,
+  toolCallId: string,
+  request: RuntimeInteractionRequest,
+  response: RuntimeInteractionResponse,
+): Record<string, unknown> {
+  if (request.kind === "approval") {
+    const optionId = response.kind === "approval" ? response.optionId : "deny";
+    return {
+      sessionId: taskId,
+      toolCallId,
+      decision: optionId === "approve-session" ? "allowAll" : optionId === "approve-once" ? "allow" : "deny",
+    };
+  }
+  return {
+    sessionId: taskId,
+    toolCallId,
+    decision: response.kind === "user-input" ? "allow" : "deny",
+    ...(response.kind === "user-input" ? { answers: response.answers } : {}),
+  };
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function isTaskUpdate(payload: unknown, taskId: string): boolean {
