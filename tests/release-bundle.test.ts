@@ -157,18 +157,26 @@ describe("standalone release bundle", () => {
     expect(workflow).toContain("latest-alpha.txt");
   });
 
-  it("blocks alpha publication on both pinned installed WorkBuddy distributions", async () => {
+  it("keeps installed WorkBuddy qualification local and the alpha workflow deterministic", async () => {
     const workflow = await readFile(".github/workflows/release-alpha.yml", "utf8");
-    expect(workflow).toContain("workbuddy-installed:");
-    expect(workflow).toContain("runs-on: [self-hosted, macOS, workbuddy-release]");
-    expect(workflow).toContain("bun run check:release:workbuddy");
-    expect(workflow).toContain("needs: [windows-smoke, workbuddy-installed]");
-    const workBuddyJob = workflow.slice(
-      workflow.indexOf("  workbuddy-installed:"),
-      workflow.indexOf("\n  release:", workflow.indexOf("  workbuddy-installed:")),
-    );
-    expect(workBuddyJob).not.toContain("Install Chromium");
-    expect(workBuddyJob).not.toContain("playwright install");
+    expect(workflow).not.toContain("workbuddy-installed:");
+    expect(workflow).not.toContain("workbuddy-release");
+    expect(workflow).not.toContain("WORKBUDDY_AI_TEST_");
+    expect(workflow).not.toContain("WORKBUDDY_CN_TEST_");
+    expect(workflow).not.toContain("bun run check:release:workbuddy");
+    expect(workflow).not.toContain("playwright install");
+    expect(workflow).not.toContain("test:client-web");
+    expect(workflow).not.toContain("test:integration:codex");
+    expect(workflow).not.toContain("@openai/codex");
+    expect(workflow).not.toContain("${{ secrets.");
+    expect(workflow).toContain("needs: [windows-smoke]");
+    expect(workflow).toContain("run: bun run check:core");
+
+    const ciWorkflow = await readFile(".github/workflows/ci.yml", "utf8");
+    expect(ciWorkflow).toContain("Install Chromium for loopback Connect Client QA");
+    expect(ciWorkflow).toContain("bunx playwright install --with-deps chromium");
+    expect(ciWorkflow).toContain("run: bun run check");
+    expect(ciWorkflow).toContain("run: bun run clean && bun run build");
 
     const packageManifest = JSON.parse(await readFile("package.json", "utf8")) as {
       scripts: Record<string, string>;
@@ -183,7 +191,6 @@ describe("standalone release bundle", () => {
       "test:integration:workbuddy-cn-ui-concurrency-recovery",
     );
     expect(packageManifest.scripts["check:release:workbuddy"]).toContain("bun run check:core");
-    expect(packageManifest.scripts["check:release:workbuddy"]).not.toMatch(/&& bun run check$/u);
     expect(packageManifest.scripts["check:core"]).not.toContain("test:client-web");
     expect(packageManifest.scripts.check).toContain("bun run check:core");
     expect(packageManifest.scripts.check).toContain("bun run test:client-web");

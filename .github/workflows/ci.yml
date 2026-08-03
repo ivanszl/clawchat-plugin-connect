@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Install Chromium
+      - name: Install Chromium for loopback Connect Client QA
         run: bunx playwright install --with-deps chromium
 
       - name: Check

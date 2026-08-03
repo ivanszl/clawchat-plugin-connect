@@ -89,13 +89,13 @@ A CodeBuddy Session is recovered only through stdio ACP `session/load` using its
 
 ## Installed release verification
 
-The release gate must run on one Mac with both exact distributions installed:
+Before creating a release tag, qualify both exact distributions on one designated Mac:
 
 ```bash
 bun run check:release:workbuddy
 ```
 
-The command runs the same discovery, adoption/replay, context/model/native-persistence/UI synchronization, Runtime Interaction/cancellation, application restart, endpoint rotation, and recovery scenarios for both profiles, then runs the repository's non-browser quality gate. WorkBuddy remains ineligible for release if either installed suite or `bun run check:core` fails. This gate does not install Chromium or use the standalone Connect Client as a substitute for WorkBuddy or ClawChat Liveware verification. Browser checks for the loopback Connect Client remain in the generic repository `bun run check` gate; real Liveware verification must open the registered App inside ClawChat.
+Run this command locally as a pre-release qualification on the designated Mac. It exercises discovery, adoption/replay, context/model/native-persistence/UI synchronization, Runtime Interaction/cancellation, application restart, endpoint rotation, and recovery for both profiles, then runs the repository's non-browser quality gate. WorkBuddy remains unqualified if either installed suite or `bun run check:core` fails. It does not install Chromium or use the standalone Connect Client as a substitute for WorkBuddy or ClawChat Liveware verification. Browser checks for the loopback Connect Client remain in the ordinary repository `bun run check` gate; real Liveware verification must open the registered App inside ClawChat.
 
 Use dedicated test Tasks only. For each `WORKBUDDY_AI_TEST_` and `WORKBUDDY_CN_TEST_` prefix, set:
 
@@ -113,4 +113,4 @@ Optional `TURN_MARKER` and `RECOVERY_MARKER` values make a release run reproduci
 
 The preflight requires both exact applications to be running simultaneously and resolves each configured Task only through its selected profile. The UI step switches to the dedicated Task, verifies the synchronized marker, and restores `UI_RESTORE_TASK_TITLE`. The concurrency/restart step asks the operator to complete one marked native UI turn while Connect holds the Attachment, switches the application to `UI_BACKGROUND_TASK_TITLE`, then deliberately asks the operator to restart only the selected distribution. It verifies projection-only reconciliation, continued use of the original Task, and stable Task identity across rotated application, sidecar, endpoint, and credential state.
 
-Alpha publication depends on the `workbuddy-installed` job in `.github/workflows/release-alpha.yml`. That job must run on a designated `self-hosted`, `macOS`, `workbuddy-release` runner with the corresponding protected environment secrets; missing confirmation, missing Tasks, an incompatible distribution, or any installed scenario failure blocks publication.
+The tag-triggered GitHub release workflow intentionally does not run installed WorkBuddy, ClawChat, or Liveware UI qualification. It runs only deterministic code checks and packaging on clean GitHub-hosted runners; no WorkBuddy Task metadata or credentials belong in GitHub Actions. Record the local qualification result before creating the release tag.
