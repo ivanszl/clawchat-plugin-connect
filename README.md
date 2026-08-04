@@ -585,7 +585,7 @@ Run the OpenCode capability and native Session lifecycle integration with:
 OPENCODE_EXECUTABLE=/absolute/path/to/opencode bun run test:integration:opencode
 ```
 
-Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it beside the Connect executable under `dist/`. Windows builds use `.exe` names. Preview the browser client with `bun run preview:web`.
+Create a lighter, unpackaged standalone build with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it beside the Connect executable under `dist/`. Windows builds use `.exe` names. Preview the browser client with `bun run preview:web`.
 
 Create a distributable release for the current host with `bun run build:release`. It writes the archive, installers, `CHANGELOG.md`, and SHA-256 checksums under `build/release/`.
 
