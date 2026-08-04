@@ -114,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/ma
 
 Standalone releases include the pinned, unmodified Liveware companion for the selected platform. Connect installs it beside `clawchat-connect`; no separate Liveware repository checkout, build, login, or installation is required.
 
-The installer resolves the latest published GitHub release at runtime, including prereleases. Pass a version explicitly only when you need to pin an installation.
+The installer resolves the current beta-channel GitHub release at runtime through `release-channel/latest-beta.txt`. Pass a version explicitly only when you need to pin an installation.
 
 The default executable location is `~/.local/bin`. If it is not already on `PATH`:
 
@@ -153,7 +153,7 @@ Developers may install the Bun package instead:
 bun add --global @clawling/clawchat-plugin-connect
 ```
 
-Update an existing installation to the latest published release:
+Update an existing installation to the current beta-channel release:
 
 ```bash
 clawchat-connect update

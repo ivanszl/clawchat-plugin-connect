@@ -30,6 +30,7 @@ jobs:
         run: |
           bun test tests/background-service.test.ts
           bun test tests/build-release.test.ts tests/release-channel.test.ts
+          bun test tests/release-bundle.test.ts --test-name-pattern "native Windows packager creates the exact archive-root payload"
           bun scripts/verify-liveware-bundle.ts
 
       - name: Validate PowerShell installer syntax
@@ -159,40 +160,11 @@ jobs:
             printing { print }
           ' CHANGELOG.md > build/release-notes.md
           test -s build/release-notes.md
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" build/release/* --clobber
-            gh release edit "${GITHUB_REF_NAME}" --prerelease --notes-file build/release-notes.md
-          else
-            gh release create "${GITHUB_REF_NAME}" build/release/* \
-              --verify-tag \
-              --prerelease \
-              --title "ClawChat Connect ${GITHUB_REF_NAME}" \
-              --notes-file build/release-notes.md
-          fi
+          bun scripts/release-beta.ts publish build/release-notes.md build/release/*
 
       - name: Advance beta release channel
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          set -euo pipefail
-          channel_branch="release-channel"
-          channel_path="latest-beta.txt"
-          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${channel_branch}" >/dev/null 2>&1; then
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/heads/${channel_branch}" \
-              -f sha="${GITHUB_SHA}" >/dev/null
-          fi
-          existing_sha="$(
-            gh api "repos/${GITHUB_REPOSITORY}/contents/${channel_path}?ref=${channel_branch}" \
-              --jq .sha 2>/dev/null || true
-          )"
-          channel_content="$(printf '%s\n' "${GITHUB_REF_NAME}" | base64 -w 0)"
-          arguments=(
-            -f message="chore: advance beta channel to ${GITHUB_REF_NAME}"
-            -f content="${channel_content}"
-            -f branch="${channel_branch}"
-          )
-          if [ -n "${existing_sha}" ]; then arguments+=(-f sha="${existing_sha}"); fi
-          gh api --method PUT "repos/${GITHUB_REPOSITORY}/contents/${channel_path}" \
-            "${arguments[@]}" >/dev/null
+          bun scripts/release-beta.ts advance-channel

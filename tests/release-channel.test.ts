@@ -2,8 +2,240 @@ import { expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import {
+  advanceBetaChannel,
+  advanceBetaChannelWithGh,
+  compareBetaTags,
+  publishBetaReleaseWithGh,
+  publishImmutableBetaRelease,
+} from "../scripts/release-beta";
 
 const read = (path: string) => readFile(path, "utf8");
+
+test("beta tag comparison uses semantic version order", () => {
+  expect(compareBetaTags("v0.1.0-beta.10", "v0.1.0-beta.2")).toBeGreaterThan(0);
+  expect(compareBetaTags("v0.2.0-beta.1", "v0.1.99-beta.99")).toBeGreaterThan(0);
+  expect(compareBetaTags("v1.0.0-beta.1", "v0.99.99-beta.99")).toBeGreaterThan(0);
+  expect(compareBetaTags("v0.1.0-beta.2", "v0.1.0-beta.2")).toBe(0);
+  expect(compareBetaTags("v0.1.0-beta.1", "v0.1.0-beta.2")).toBeLessThan(0);
+});
+
+test("beta tag comparison rejects non-beta channel values", () => {
+  expect(() => compareBetaTags("v0.1.0", "v0.1.0-beta.1")).toThrow("beta release tag");
+  expect(() => compareBetaTags("v0.1.0-beta.0", "v0.1.0-beta.1")).toThrow("beta release tag");
+});
+
+test("an existing tagged release aborts before publishing any assets", async () => {
+  let createCalls = 0;
+  await expect(
+    publishImmutableBetaRelease(
+      {
+        tag: "v0.1.0-beta.1",
+        notesFile: "build/release-notes.md",
+        assets: ["build/release/checksums.txt", "build/release/install.sh"],
+      },
+      {
+        releaseExists: async () => true,
+        createRelease: async () => {
+          createCalls += 1;
+        },
+      },
+    ),
+  ).rejects.toThrow("already exists");
+  expect(createCalls).toBe(0);
+});
+
+test("the GitHub publication boundary stops after viewing an existing release", async () => {
+  const commands: string[][] = [];
+  await expect(
+    publishBetaReleaseWithGh(
+      {
+        repository: "owner/repository",
+        tag: "v0.1.0-beta.1",
+        notesFile: "build/release-notes.md",
+        assets: ["build/release/checksums.txt", "build/release/install.sh"],
+      },
+      async (arguments_) => {
+        commands.push([...arguments_]);
+        return { exitCode: 0, stdout: "existing release", stderr: "" };
+      },
+    ),
+  ).rejects.toThrow("already exists");
+  expect(commands).toEqual([["release", "view", "v0.1.0-beta.1", "--repo", "owner/repository"]]);
+});
+
+test("a new tag creates one immutable prerelease with the prepared assets", async () => {
+  const commands: string[][] = [];
+  await publishBetaReleaseWithGh(
+    {
+      repository: "owner/repository",
+      tag: "v0.1.0-beta.2",
+      notesFile: "build/release-notes.md",
+      assets: ["build/release/checksums.txt", "build/release/install.sh"],
+    },
+    async (arguments_) => {
+      commands.push([...arguments_]);
+      if (arguments_[1] === "view") return { exitCode: 1, stdout: "", stderr: "release not found" };
+      return { exitCode: 0, stdout: "created", stderr: "" };
+    },
+  );
+  expect(commands).toEqual([
+    ["release", "view", "v0.1.0-beta.2", "--repo", "owner/repository"],
+    [
+      "release",
+      "create",
+      "v0.1.0-beta.2",
+      "build/release/checksums.txt",
+      "build/release/install.sh",
+      "--repo",
+      "owner/repository",
+      "--verify-tag",
+      "--prerelease",
+      "--title",
+      "ClawChat Connect v0.1.0-beta.2",
+      "--notes-file",
+      "build/release-notes.md",
+    ],
+  ]);
+});
+
+test.each([
+  ["older", "v0.1.0-beta.2", "v0.1.0-beta.3"],
+  ["equal", "v0.1.0-beta.3", "v0.1.0-beta.3"],
+])("an %s beta never replaces the current channel pointer", async (_case, candidateTag, currentTag) => {
+  let writes = 0;
+  const result = await advanceBetaChannel(
+    { candidateTag },
+    {
+      ensureChannelBranch: async () => undefined,
+      readChannelPointer: async () => ({ tag: currentTag, sha: "current-sha" }),
+      updateChannelPointer: async () => {
+        writes += 1;
+        return "updated";
+      },
+    },
+  );
+  expect(result).toEqual({ status: "unchanged", tag: currentTag, attempts: 1 });
+  expect(writes).toBe(0);
+});
+
+test("a newer beta advances the channel with the observed blob SHA", async () => {
+  const updates: Array<{ tag: string; expectedSha?: string }> = [];
+  const result = await advanceBetaChannel(
+    { candidateTag: "v0.1.0-beta.3" },
+    {
+      ensureChannelBranch: async () => undefined,
+      readChannelPointer: async () => ({ tag: "v0.1.0-beta.2", sha: "beta-2-sha" }),
+      updateChannelPointer: async (input) => {
+        updates.push(input);
+        return "updated";
+      },
+    },
+  );
+  expect(result).toEqual({ status: "advanced", tag: "v0.1.0-beta.3", attempts: 1 });
+  expect(updates).toEqual([{ tag: "v0.1.0-beta.3", expectedSha: "beta-2-sha" }]);
+});
+
+test("a conflicting channel update refetches and cannot overwrite a concurrent newer beta", async () => {
+  const pointers = [
+    { tag: "v0.1.0-beta.2", sha: "beta-2-sha" },
+    { tag: "v0.1.0-beta.4", sha: "beta-4-sha" },
+  ];
+  const updates: Array<{ tag: string; expectedSha?: string }> = [];
+  let reads = 0;
+  const result = await advanceBetaChannel(
+    { candidateTag: "v0.1.0-beta.3" },
+    {
+      ensureChannelBranch: async () => undefined,
+      readChannelPointer: async () => pointers[reads++] ?? { tag: "v0.1.0-beta.4", sha: "beta-4-sha" },
+      updateChannelPointer: async (input) => {
+        updates.push(input);
+        return "conflict";
+      },
+    },
+  );
+  expect(result).toEqual({ status: "unchanged", tag: "v0.1.0-beta.4", attempts: 2 });
+  expect(reads).toBe(2);
+  expect(updates).toEqual([{ tag: "v0.1.0-beta.3", expectedSha: "beta-2-sha" }]);
+});
+
+test("channel advancement retries with the freshly observed SHA and stops at its bound", async () => {
+  let reads = 0;
+  const updates: Array<{ tag: string; expectedSha?: string }> = [];
+  await expect(
+    advanceBetaChannel(
+      { candidateTag: "v0.1.0-beta.4", maxAttempts: 3 },
+      {
+        ensureChannelBranch: async () => undefined,
+        readChannelPointer: async () => ({ tag: "v0.1.0-beta.1", sha: `observed-sha-${++reads}` }),
+        updateChannelPointer: async (input) => {
+          updates.push(input);
+          return "conflict";
+        },
+      },
+    ),
+  ).rejects.toThrow("conflicted 3 times");
+  expect(reads).toBe(3);
+  expect(updates).toEqual([
+    { tag: "v0.1.0-beta.4", expectedSha: "observed-sha-1" },
+    { tag: "v0.1.0-beta.4", expectedSha: "observed-sha-2" },
+    { tag: "v0.1.0-beta.4", expectedSha: "observed-sha-3" },
+  ]);
+});
+
+test("the GitHub channel boundary retries a conflicted SHA update against fresh pointer state", async () => {
+  const commands: string[][] = [];
+  const currentPointers = [
+    { sha: "beta-2-sha", content: Buffer.from("v0.1.0-beta.2\n").toString("base64") },
+    { sha: "beta-4-sha", content: Buffer.from("v0.1.0-beta.4\n").toString("base64") },
+  ];
+  let pointerReads = 0;
+  const result = await advanceBetaChannelWithGh(
+    {
+      repository: "owner/repository",
+      candidateTag: "v0.1.0-beta.3",
+      sourceSha: "release-commit-sha",
+    },
+    async (arguments_) => {
+      commands.push([...arguments_]);
+      const endpoint = arguments_.find((argument) => argument.startsWith("repos/")) ?? "";
+      if (endpoint.includes("git/ref/heads/release-channel")) {
+        return { exitCode: 0, stdout: '{"ref":"refs/heads/release-channel"}', stderr: "" };
+      }
+      if (arguments_.includes("PUT")) {
+        return { exitCode: 1, stdout: "", stderr: "gh: conflict (HTTP 409)" };
+      }
+      return { exitCode: 0, stdout: JSON.stringify(currentPointers[pointerReads++]), stderr: "" };
+    },
+  );
+  expect(result).toEqual({ status: "unchanged", tag: "v0.1.0-beta.4", attempts: 2 });
+  expect(pointerReads).toBe(2);
+  const update = commands.find((arguments_) => arguments_.includes("PUT"));
+  expect(update).toContain("sha=beta-2-sha");
+  expect(update).toContain("repos/owner/repository/contents/latest-beta.txt");
+  expect(commands.flat().filter((argument) => argument.startsWith("repos/owner/repository/contents/"))).toEqual([
+    "repos/owner/repository/contents/latest-beta.txt?ref=release-channel",
+    "repos/owner/repository/contents/latest-beta.txt",
+    "repos/owner/repository/contents/latest-beta.txt?ref=release-channel",
+  ]);
+  expect(commands.filter((arguments_) => arguments_.includes("PUT"))).toHaveLength(1);
+});
+
+test("beta workflow invokes the immutable release and monotonic channel behavior", async () => {
+  const workflow = Bun.YAML.parse(await read(".github/workflows/release-beta.yml")) as {
+    jobs: { release: { steps: Array<{ name?: string; run?: string }> } };
+  };
+  const steps = workflow.jobs.release.steps;
+  const publication = steps.find(({ name }) => name === "Publish GitHub prerelease");
+  const advancement = steps.find(({ name }) => name === "Advance beta release channel");
+  expect(publication?.run?.split("\n").map((line) => line.trim())).toContain(
+    "bun scripts/release-beta.ts publish build/release-notes.md build/release/*",
+  );
+  expect(advancement?.run?.trim()).toBe("bun scripts/release-beta.ts advance-channel");
+  expect(publication?.run).not.toContain("--clobber");
+  expect(publication?.run).not.toContain("gh release upload");
+  expect(publication?.run).not.toContain("gh release edit");
+});
 
 test("version metadata is synchronized at beta.1", async () => {
   const pkg = await Bun.file("package.json").json();
@@ -95,16 +327,29 @@ test("PowerShell installer bypasses the beta channel for an explicit historical 
   expect(requests).not.toContain("release-channel/latest-beta.txt");
 });
 
-test("beta workflow publishes six archives before advancing the channel", async () => {
-  const workflow = await read(".github/workflows/release-beta.yml");
-  expect(workflow).toContain("v*-beta.*");
-  expect(workflow).toContain("latest-beta.txt");
-  const commands = workflow.split("\n").map((line) => line.trim());
-  const createIndex = commands.indexOf(`gh release create "\${GITHUB_REF_NAME}" build/release/* \\`);
-  expect(createIndex).toBeGreaterThan(-1);
-  expect(commands.slice(createIndex + 1, createIndex + 5)).toContain("--prerelease \\");
-  expect(commands).toContain(`gh release edit "\${GITHUB_REF_NAME}" --prerelease --notes-file build/release-notes.md`);
-  for (const target of ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "windows-arm64", "windows-x64"])
-    expect(workflow).toContain(target);
-  expect(workflow.indexOf("gh release")).toBeLessThan(workflow.lastIndexOf("latest-beta.txt"));
+test("beta workflow builds six archives before publishing and advancing the channel", async () => {
+  const workflow = Bun.YAML.parse(await read(".github/workflows/release-beta.yml")) as {
+    on: { push: { tags: string[] } };
+    jobs: { release: { steps: Array<{ name?: string; run?: string }> } };
+  };
+  expect(workflow.on.push.tags).toEqual(["v*-beta.*"]);
+  const steps = workflow.jobs.release.steps;
+  const build = steps.find(({ name }) => name === "Build standalone binaries");
+  expect(
+    build?.run
+      ?.split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith("bun-")),
+  ).toEqual([
+    "bun-darwin-arm64 darwin arm64",
+    "bun-darwin-x64 darwin x64",
+    "bun-linux-arm64 linux arm64",
+    "bun-linux-x64-baseline linux x64",
+    "bun-windows-arm64 windows arm64",
+    "bun-windows-x64 windows x64",
+  ]);
+  const publicationIndex = steps.findIndex(({ name }) => name === "Publish GitHub prerelease");
+  const advancementIndex = steps.findIndex(({ name }) => name === "Advance beta release channel");
+  expect(publicationIndex).toBeGreaterThan(-1);
+  expect(advancementIndex).toBeGreaterThan(publicationIndex);
 });

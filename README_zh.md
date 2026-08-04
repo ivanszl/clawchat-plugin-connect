@@ -100,7 +100,7 @@ macOS 或 Linux 的独立安装包不需要 Bun 或 Node.js：
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
 ```
 
-独立发行包包含对应平台的 Liveware companion，并会与 `clawchat-connect` 一起安装。安装器会在运行时解析 GitHub 上最新发布的版本，包括 prerelease；只有需要固定版本时才应显式传入版本号。
+独立发行包包含对应平台的 Liveware companion，并会与 `clawchat-connect` 一起安装。安装器会在运行时通过 `release-channel/latest-beta.txt` 解析当前 beta 通道版本；只有需要固定版本时才应显式传入版本号。
 
 默认安装目录为 `~/.local/bin`。如果该目录不在 `PATH` 中：
 
@@ -133,7 +133,7 @@ Windows 安装器会校验发行包的 SHA-256，安装 `clawchat-connect.exe`�
 bun add --global @clawling/clawchat-plugin-connect
 ```
 
-将已有安装更新到最新发布版本：
+将已有安装更新到当前 beta 通道版本：
 
 ```bash
 clawchat-connect update

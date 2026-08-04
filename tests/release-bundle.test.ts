@@ -7,6 +7,18 @@ import { livewareAssetName } from "../src/liveware-exposure";
 import { CONNECT_VERSION } from "../src/version";
 
 describe("standalone release bundle", () => {
+  it("runs the native Windows packaging test in the Windows smoke job", async () => {
+    const workflow = Bun.YAML.parse(await readFile(".github/workflows/release-beta.yml", "utf8")) as {
+      jobs: { "windows-smoke": { steps: Array<{ name?: string; run?: string }> } };
+    };
+    const verification = workflow.jobs["windows-smoke"].steps.find(
+      ({ name }) => name === "Verify Windows service behavior and bundled assets",
+    );
+    expect(verification?.run?.split("\n").map((line) => line.trim())).toContain(
+      'bun test tests/release-bundle.test.ts --test-name-pattern "native Windows packager creates the exact archive-root payload"',
+    );
+  });
+
   it("keeps POSIX and native Windows package payloads in parity", async () => {
     const logicalPayload = [
       "clawchat-connect",
@@ -23,7 +35,9 @@ describe("standalone release bundle", () => {
       expect(posixPackager.toLowerCase()).toContain(entry.toLowerCase());
       expect(windowsPackager.toLowerCase()).toContain(entry.toLowerCase());
     }
+  });
 
+  it("native Windows packager creates the exact archive-root payload", async () => {
     if (process.platform !== "win32") return;
 
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-native-windows-release-"));
@@ -31,7 +45,8 @@ describe("standalone release bundle", () => {
     const livewareBinary = join(directory, "liveware-source.exe");
     const clientDirectory = join(directory, "client");
     const archive = join(directory, "clawchat-connect-windows-x64.zip");
-    await mkdir(clientDirectory);
+    const extractedDirectory = join(directory, "extracted");
+    await mkdir(clientDirectory, { recursive: true });
     await writeFile(connectBinary, "connect executable");
     await writeFile(livewareBinary, "liveware executable");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
@@ -60,20 +75,68 @@ describe("standalone release bundle", () => {
         "-NoProfile",
         "-Command",
         "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
-          "[System.IO.Compression.ZipFile]::OpenRead($args[0]).Entries.FullName",
+          "$archive = [System.IO.Compression.ZipFile]::OpenRead($args[0]); " +
+          "try { $archive.Entries | Where-Object { $_.Name.Length -gt 0 } | " +
+          "ForEach-Object { $_.FullName.Replace('\\', '/') } } finally { $archive.Dispose() }",
         archive,
       ],
       { stdout: "pipe", stderr: "pipe" },
     );
     const [listingExitCode, stdout] = await Promise.all([listing.exited, new Response(listing.stdout).text()]);
     expect(listingExitCode).toBe(0);
-    expect(stdout).toContain("clawchat-connect.exe");
-    expect(stdout).toContain("liveware.exe");
-    expect(stdout).toContain("clawchat-connect-client/index.html");
-    expect(stdout).toContain("skills/manifest.json");
-    expect(stdout).toContain("CHANGELOG.md");
-    expect(stdout).toContain("LICENSE");
-    expect(stdout).toContain("THIRD_PARTY_NOTICES.md");
+    expect(stdout.trim().split(/\r?\n/u).sort()).toEqual(
+      [
+        "CHANGELOG.md",
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
+        "clawchat-connect-client/index.html",
+        "clawchat-connect.exe",
+        "liveware.exe",
+        "skills/clawchat-core/SKILL.md",
+        "skills/clawchat-core/agents/openai.yaml",
+        "skills/clawchat-core/references/tools.md",
+        "skills/clawchat-liveware/SKILL.md",
+        "skills/clawchat-liveware/agents/openai.yaml",
+        "skills/clawchat-liveware/references/commands.md",
+        "skills/manifest.json",
+      ].sort(),
+    );
+
+    const extraction = Bun.spawn(
+      [
+        "powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1]",
+        archive,
+        extractedDirectory,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [extractionExitCode, extractionStderr] = await Promise.all([
+      extraction.exited,
+      new Response(extraction.stderr).text(),
+    ]);
+    expect(extractionExitCode, extractionStderr).toBe(0);
+
+    const payloadSources = new Map<string, string>([
+      ["clawchat-connect.exe", connectBinary],
+      ["liveware.exe", livewareBinary],
+      ["clawchat-connect-client/index.html", join(clientDirectory, "index.html")],
+      ["CHANGELOG.md", "CHANGELOG.md"],
+      ["LICENSE", "LICENSE"],
+      ["THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"],
+      ["skills/clawchat-core/SKILL.md", "skills/clawchat-core/SKILL.md"],
+      ["skills/clawchat-core/agents/openai.yaml", "skills/clawchat-core/agents/openai.yaml"],
+      ["skills/clawchat-core/references/tools.md", "skills/clawchat-core/references/tools.md"],
+      ["skills/clawchat-liveware/SKILL.md", "skills/clawchat-liveware/SKILL.md"],
+      ["skills/clawchat-liveware/agents/openai.yaml", "skills/clawchat-liveware/agents/openai.yaml"],
+      ["skills/clawchat-liveware/references/commands.md", "skills/clawchat-liveware/references/commands.md"],
+      ["skills/manifest.json", "skills/manifest.json"],
+    ]);
+    for (const [entry, source] of payloadSources) {
+      expect(await readFile(join(extractedDirectory, ...entry.split("/")))).toEqual(await readFile(source));
+    }
   });
 
   it("packages the Connect executable, Client assets, and pinned Liveware executable together", async () => {
@@ -221,14 +284,9 @@ describe("standalone release bundle", () => {
     expect(workflow).toContain("bun-linux-x64-baseline linux x64");
     expect(workflow).not.toMatch(/^\s*bun-linux-x64 linux x64$/mu);
     expect(workflow).toContain("install.ps1");
-    expect(workflow).toContain("--notes-file build/release-notes.md");
-    const commands = workflow.split("\n").map((line) => line.trim());
-    const createIndex = commands.indexOf(`gh release create "\${GITHUB_REF_NAME}" build/release/* \\`);
-    expect(createIndex).toBeGreaterThan(-1);
-    expect(commands.slice(createIndex + 1, createIndex + 5)).toContain("--prerelease \\");
-    expect(commands).toContain(
-      `gh release edit "\${GITHUB_REF_NAME}" --prerelease --notes-file build/release-notes.md`,
-    );
+    expect(workflow).toContain("sh scripts/package-windows-release.sh");
+    expect(workflow).toContain("bun scripts/release-beta.ts publish build/release-notes.md build/release/*");
+    expect(workflow).not.toContain("--clobber");
     expect(workflow).toContain("release-channel");
     expect(workflow).toContain("latest-beta.txt");
   });
