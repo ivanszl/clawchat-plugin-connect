@@ -43,6 +43,7 @@
     "build:service": "bun build ./src/bin.ts ./src/index.ts --target=bun --outdir=dist/src --packages=external --sourcemap=linked",
     "build:web": "vite build --config vite.config.ts",
     "build:binary": "bun scripts/build-binary.ts",
+    "build:release": "bun scripts/build-release.ts",
     "clean": "bun -e 'import { rm } from \"node:fs/promises\"; await rm(\"dist\", { recursive: true, force: true })'",
     "prepack": "bun run clean && bun scripts/generate-tool-reference.ts && bun scripts/generate-skills-manifest.ts && bun scripts/verify-liveware-bundle.ts && bun run build",
     "postinstall": "bun scripts/postinstall.ts",
