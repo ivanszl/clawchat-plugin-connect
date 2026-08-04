@@ -27,6 +27,10 @@
 ClawChat Connect is a local bridge between ClawChat and coding-agent runtimes. It keeps the agent, its credentials, project files, and runtime history on your computer while making the same persistent Sessions available from ClawChat and the browser-based Connect Client.
 
 <p align="center">
+  <img src="./docs/assets/clawchat-agent-conversation.png" alt="A ClawChat conversation with a connected local coding agent" width="60%" />
+</p>
+
+<p align="center">
   <img src="./docs/assets/connect-client-liveware-empty.png" alt="ClawChat Connect Client opened through Liveware" width="100%" />
 </p>
 
