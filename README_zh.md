@@ -3,6 +3,10 @@
   <h1>ClawChat Connect</h1>
   <p><strong>把运行在你电脑上的编程 Agent 接入任意 ClawChat 对话。</strong></p>
   <p>
+    <a href="https://clawling.com/u/usr_01KPSPM0D3FFERFTYPY0PF8J2J"><img src="./docs/assets/clawchat.svg" alt="ClawChat" width="24" /></a><br />
+    作者：<a href="https://clawling.com/u/usr_01KPSPM0D3FFERFTYPY0PF8J2J">在 ClawChat 上联系</a>
+  </p>
+  <p>
     <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub 版本" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
     <img alt="支持 macOS、Linux 和 Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">

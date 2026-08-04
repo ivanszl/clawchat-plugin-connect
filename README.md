@@ -3,6 +3,10 @@
   <h1>ClawChat Connect</h1>
   <p><strong>Bring a coding agent running on your computer into any ClawChat conversation.</strong></p>
   <p>
+    <a href="https://clawling.com/u/usr_01KPSPM0D3FFERFTYPY0PF8J2J"><img src="./docs/assets/clawchat.svg" alt="ClawChat" width="24" /></a><br />
+    Author: <a href="https://clawling.com/u/usr_01KPSPM0D3FFERFTYPY0PF8J2J">Contact on ClawChat</a>
+  </p>
+  <p>
     <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
     <img alt="Platforms: macOS, Linux, and Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
