@@ -1,5 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { releasePayload, requireBetaVersion, resolveReleaseTarget } from "../scripts/build-release";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  releasePayload,
+  releasePhases,
+  requireBetaVersion,
+  resolveReleaseTarget,
+  runReleaseBuild,
+  writeChecksums,
+} from "../scripts/build-release";
 
 describe("requireBetaVersion", () => {
   test.each(["0.1.0-beta.1", "12.34.56-beta.9"])("accepts %s", (version) => {
@@ -60,4 +70,48 @@ test("release payload is complete", () => {
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
   ]);
+});
+
+test("release phases validate before mutating output and package last", () => {
+  const phases = releasePhases(resolveReleaseTarget("darwin", "arm64"));
+  expect(phases.map(({ name }) => name)).toEqual([
+    "validate version",
+    "prepare output",
+    "core checks",
+    "verify Liveware bundle",
+    "clean distributable",
+    "build standalone executable",
+    "package release archive",
+    "copy release support files",
+    "write checksums",
+  ]);
+});
+
+test("checksums cover the archive and copied support files", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "connect-release-"));
+  const files = ["artifact.tar.gz", "install.sh", "install.ps1", "CHANGELOG.md"];
+  for (const filename of files) await writeFile(join(directory, filename), filename);
+  await writeChecksums(directory, files);
+  const manifest = await readFile(join(directory, "checksums.txt"), "utf8");
+  for (const filename of files) expect(manifest).toContain(`  ${filename}\n`);
+  expect(manifest.trim().split("\n")).toEqual([
+    expect.stringMatching(/^[a-f0-9]{64} {2}CHANGELOG\.md$/u),
+    expect.stringMatching(/^[a-f0-9]{64} {2}artifact\.tar\.gz$/u),
+    expect.stringMatching(/^[a-f0-9]{64} {2}install\.ps1$/u),
+    expect.stringMatching(/^[a-f0-9]{64} {2}install\.sh$/u),
+  ]);
+  expect(manifest).not.toContain("checksums.txt");
+});
+
+test("a failed phase keeps its name and exit status", async () => {
+  const failure = Object.assign(new Error("child failed"), { exitCode: 17 });
+  await expect(
+    runReleaseBuild({
+      version: "0.1.0-beta.1",
+      target: resolveReleaseTarget("darwin", "arm64"),
+      runPhase: async (phase) => {
+        if (phase.name === "core checks") throw failure;
+      },
+    }),
+  ).rejects.toMatchObject({ message: expect.stringContaining("core checks"), exitCode: 17 });
 });

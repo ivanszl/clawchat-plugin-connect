@@ -7,6 +7,75 @@ import { livewareAssetName } from "../src/liveware-exposure";
 import { CONNECT_VERSION } from "../src/version";
 
 describe("standalone release bundle", () => {
+  it("keeps POSIX and native Windows package payloads in parity", async () => {
+    const logicalPayload = [
+      "clawchat-connect",
+      "liveware",
+      "clawchat-connect-client",
+      "skills",
+      "CHANGELOG.md",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+    ];
+    const posixPackager = await readFile("scripts/package-release-archive.sh", "utf8");
+    const windowsPackager = await readFile("scripts/package-windows-release.ps1", "utf8");
+    for (const entry of logicalPayload) {
+      expect(posixPackager.toLowerCase()).toContain(entry.toLowerCase());
+      expect(windowsPackager.toLowerCase()).toContain(entry.toLowerCase());
+    }
+
+    if (process.platform !== "win32") return;
+
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-native-windows-release-"));
+    const connectBinary = join(directory, "clawchat-connect.exe");
+    const livewareBinary = join(directory, "liveware-source.exe");
+    const clientDirectory = join(directory, "client");
+    const archive = join(directory, "clawchat-connect-windows-x64.zip");
+    await mkdir(clientDirectory);
+    await writeFile(connectBinary, "connect executable");
+    await writeFile(livewareBinary, "liveware executable");
+    await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
+
+    const child = Bun.spawn(
+      [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/package-windows-release.ps1",
+        connectBinary,
+        clientDirectory,
+        livewareBinary,
+        archive,
+      ],
+      { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
+    );
+    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect(exitCode, stderr).toBe(0);
+
+    const listing = Bun.spawn(
+      [
+        "powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+          "[System.IO.Compression.ZipFile]::OpenRead($args[0]).Entries.FullName",
+        archive,
+      ],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const [listingExitCode, stdout] = await Promise.all([listing.exited, new Response(listing.stdout).text()]);
+    expect(listingExitCode).toBe(0);
+    expect(stdout).toContain("clawchat-connect.exe");
+    expect(stdout).toContain("liveware.exe");
+    expect(stdout).toContain("clawchat-connect-client/index.html");
+    expect(stdout).toContain("skills/manifest.json");
+    expect(stdout).toContain("CHANGELOG.md");
+    expect(stdout).toContain("LICENSE");
+    expect(stdout).toContain("THIRD_PARTY_NOTICES.md");
+  });
+
   it("packages the Connect executable, Client assets, and pinned Liveware executable together", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-release-"));
     const connectBinary = join(directory, "connect");
