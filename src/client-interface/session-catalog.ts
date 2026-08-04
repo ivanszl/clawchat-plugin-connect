@@ -52,6 +52,7 @@ interface CatalogState {
 
 export class SessionCatalog {
   private state: CatalogState | null = null;
+  private runtimeWorkspaceLocationCache: Array<{ name: string; path: string }> = [];
   private readonly projects: ProjectCatalog;
   private readonly sessionContinuity: SessionContinuity;
 
@@ -121,14 +122,17 @@ export class SessionCatalog {
   }
 
   async runtimeWorkspaceLocations(): Promise<Array<{ name: string; path: string }>> {
-    const state = await this.load();
+    return this.runtimeWorkspaceLocationCache.map((location) => ({ ...location }));
+  }
+
+  private rememberRuntimeWorkspaceLocations(state: CatalogState): void {
     const locations = new Map<string, { name: string; path: string }>();
     for (const [sessionRef, path] of state.workingDirectoryByRef) {
       if (this.projects.isIsolatedWorkspace(path)) continue;
       const entry = state.entriesByRef.get(sessionRef);
       locations.set(resolve(path), { name: entry?.workspaceName || entry?.projectName || resolve(path), path });
     }
-    return [...locations.values()];
+    this.runtimeWorkspaceLocationCache = [...locations.values()];
   }
 
   async workspace(sessionRef: string): Promise<RuntimeWorkspace | null> {
@@ -563,6 +567,7 @@ export class SessionCatalog {
       runtimeRevisionByRef,
       expiresAt: Date.now() + 2_000,
     };
+    this.rememberRuntimeWorkspaceLocations(this.state);
     return this.state;
   }
 }

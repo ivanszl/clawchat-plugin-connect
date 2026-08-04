@@ -18,6 +18,46 @@ afterEach(async () => {
 });
 
 describe("Session Catalog workspace grouping", () => {
+  it("returns remembered Runtime Workspace locations without refreshing Runtime discovery", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-location-cache-"));
+    const workspace = join(directory, "project");
+    await mkdir(workspace);
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    stores.push(store);
+    let discoveryCalls = 0;
+    let discoveryBlocked = false;
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      discoverAllThreads: async () => {
+        discoveryCalls += 1;
+        if (discoveryBlocked) return await new Promise<never>(() => undefined);
+        return [{ runtimeThreadId: "thread-project", name: "Project task", updatedAt: 1, workingDirectory: workspace }];
+      },
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
+    const config = defaultConfig();
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+    await catalog.view();
+    catalog.invalidate();
+    discoveryBlocked = true;
+
+    const locations = await Promise.race([
+      catalog.runtimeWorkspaceLocations(),
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 50)),
+    ]);
+
+    expect(locations).toEqual([{ name: "project", path: workspace }]);
+    expect(discoveryCalls).toBe(1);
+  });
+
   it("does not expose a child Runtime Thread as a standalone Session", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-child-thread-"));
     const workspace = join(directory, "project");
