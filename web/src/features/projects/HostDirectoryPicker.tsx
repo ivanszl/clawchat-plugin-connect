@@ -153,6 +153,15 @@ export function projectDirectoryLabel(directory: ProjectDirectoryRequest, separa
   return `${parent}${pathSeparator}${directory.name}`;
 }
 
+export function projectDirectoryName(directory: ProjectDirectoryRequest): string {
+  if (directory.kind === "new-directory") return directory.name;
+  const rootWithoutTrailingSeparators = directory.rootPath.replace(/[\\/]+$/u, "");
+  if (!rootWithoutTrailingSeparators || /^[A-Za-z]:$/u.test(rootWithoutTrailingSeparators)) {
+    return directory.rootPath;
+  }
+  return rootWithoutTrailingSeparators.split(/[\\/]/u).at(-1) ?? directory.rootPath;
+}
+
 function locationIcon(location: HostDirectoryLocationView) {
   if (location.kind === "home") return House;
   if (location.kind === "filesystem-root" || location.kind === "mounted-volume") return HardDrive;

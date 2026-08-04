@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { access, mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { type Browser, chromium, expect, type Locator, type Page } from "@playwright/test";
 
 const port = await availablePort();
@@ -23,7 +23,10 @@ try {
   const executablePath = await localChromiumPath();
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   try {
-    if (process.argv.includes("--astryx-regressions")) {
+    if (process.argv.includes("--project-selector")) {
+      await verifyProjectSelector(browser, origin);
+      process.stdout.write("Verified Project SelectorOption hierarchy and popup alignment.\n");
+    } else if (process.argv.includes("--astryx-regressions")) {
       await verifyRuntimeApproval(browser, origin);
       await verifyQueuedTurnControls(browser, origin);
       await verifyTextOnlySubmissionCopy(browser, origin);
@@ -78,18 +81,17 @@ try {
       await dialog.getByRole("textbox", { name: /^名称/u }).fill("Browser-created Session");
       await expect(dialog.getByRole("textbox", { name: "首个任务" })).toHaveCount(0);
       await dialog.getByRole("combobox", { name: "Project" }).click();
-      await expect(
-        page.getByRole("option", {
-          name: `discovered-workspace · ${discoveredProject.rootPath}`,
-          exact: true,
-        }),
-      ).toHaveCount(1);
+      const discoveredProjectOption = page.getByRole("option").filter({ hasText: discoveredProject.rootPath });
+      await expect(discoveredProjectOption.getByText("discovered-workspace", { exact: true })).toBeVisible();
+      await expect(discoveredProjectOption.getByText(discoveredProject.rootPath, { exact: true })).toBeVisible();
       await expect(page.getByText("已发现工作区", { exact: false })).toHaveCount(0);
-      const connectProjectOption = `clawchat-plugin-connect · ${connectProject.rootPath}`;
-      await expect(page.getByRole("option", { name: connectProjectOption, exact: true })).toBeVisible();
+      const connectProjectOption = page.getByRole("option").filter({ hasText: connectProject.rootPath });
+      await expect(connectProjectOption.getByText("clawchat-plugin-connect", { exact: true })).toBeVisible();
+      await expect(connectProjectOption.getByText(connectProject.rootPath, { exact: true })).toBeVisible();
       await expect(page.getByRole("option", { name: "connect-qa", exact: true })).toHaveCount(0);
       await page.keyboard.press("Escape");
-      await choose(page, dialog.getByRole("combobox", { name: "Project" }), connectProjectOption);
+      await dialog.getByRole("combobox", { name: "Project" }).click();
+      await page.getByRole("option").filter({ hasText: connectProject.rootPath }).click();
       await choose(page, dialog.getByRole("combobox", { name: "模式" }), "read-only");
       await choose(page, dialog.getByRole("combobox", { name: "模型" }), "Deep model (gpt-deep)");
 
@@ -129,13 +131,23 @@ try {
       await inlineDialog.getByRole("textbox", { name: /^名称/u }).fill("Inline Project Session");
       await choose(page, inlineDialog.getByRole("combobox", { name: "模式" }), "默认模式");
       await choose(page, inlineDialog.getByRole("combobox", { name: "模型" }), "继承 Agent Binding / Runtime 默认值");
-      await choose(page, inlineDialog.getByRole("combobox", { name: "Project" }), "创建新 Project…");
+      await inlineDialog.getByRole("combobox", { name: "Project" }).click();
+      await expect(page.getByRole("option", { name: "创建新 Project…" })).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      await inlineDialog.getByRole("button", { name: "添加 Project" }).click();
+      await expect(inlineDialog.getByRole("heading", { name: "选择 Project 目录" })).toBeVisible();
+      await inlineDialog.getByRole("button", { name: "Close" }).click();
+      await expect(inlineDialog.getByRole("heading", { name: "新建 Session" })).toBeVisible();
+      await expect(inlineDialog.getByRole("textbox", { name: /^名称/u })).toHaveValue("Inline Project Session");
+      await inlineDialog.getByRole("button", { name: "添加 Project" }).click();
       await expect(inlineDialog.getByRole("heading", { name: "选择 Project 目录" })).toBeVisible();
       await inlineDialog.getByRole("textbox", { name: "主机绝对路径" }).fill(inlineProjectRoot);
       await inlineDialog.getByRole("button", { name: "打开", exact: true }).click();
       await expect(inlineDialog.getByText(canonicalInlineProjectRoot, { exact: true })).toBeVisible();
       await inlineDialog.getByRole("button", { name: "选择此目录" }).click();
-      await expect(inlineDialog.getByRole("combobox", { name: "Project" })).toContainText(canonicalInlineProjectRoot);
+      await expect(inlineDialog.getByRole("combobox", { name: "Project" })).toContainText(
+        basename(canonicalInlineProjectRoot),
+      );
       await inlineDialog.getByRole("button", { name: "创建 Session" }).click();
       await expect(page.getByRole("heading", { name: "Inline Project Session" })).toBeVisible();
       assert.equal(createRequests.length, 2, "inline Project Session UI must submit one semantic request");
@@ -184,6 +196,58 @@ try {
   server.kill("SIGTERM");
   await server.exited;
   await rm(inlineProjectRoot, { recursive: true, force: true });
+}
+
+async function verifyProjectSelector(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
+  const page = await browser.newPage({ viewport: { width: 1336, height: 888 } });
+  try {
+    await page.goto(previewOrigin);
+    const projects = (await page.evaluate(async () => await (await fetch("/client/v1/projects")).json())) as Array<{
+      name: string;
+      rootPath: string;
+    }>;
+    const connectProject = projects.find((project) => project.name === "clawchat-plugin-connect");
+    assert(connectProject, "preview Project must be available");
+    await page.getByRole("button", { name: "新建 Session" }).click();
+    const dialog = page.getByRole("dialog");
+    const projectSelector = dialog.getByRole("combobox", { name: "Project" });
+    await projectSelector.click();
+    await page.waitForTimeout(500);
+    const listbox = page.getByRole("listbox").last();
+    const popup = page.locator("[popover]").filter({ has: listbox });
+    const [selectorBox, popupBox] = await Promise.all([
+      projectSelector.locator("..").boundingBox(),
+      popup.boundingBox(),
+    ]);
+    assert(selectorBox && popupBox, "Project Selector and popup must have measurable bounds");
+    assert(
+      Math.abs(popupBox.x - selectorBox.x) <= 2 && Math.abs(popupBox.width - selectorBox.width) <= 2,
+      `Project popup must align to the Selector instead of expanding for absolute paths: ${JSON.stringify({ selectorBox, popupBox })}`,
+    );
+    const option = listbox.getByRole("option").filter({ hasText: connectProject.rootPath });
+    await expect(option.getByText(connectProject.name, { exact: true })).toBeVisible();
+    const path = option.getByText(connectProject.rootPath, { exact: true });
+    await expect(path).toBeVisible();
+    const pathLayout = await path.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        overflow: style.overflow,
+        textOverflow: style.textOverflow,
+        whiteSpace: style.whiteSpace,
+      };
+    });
+    assert(
+      pathLayout.scrollWidth > pathLayout.clientWidth &&
+        pathLayout.overflow === "hidden" &&
+        pathLayout.textOverflow === "ellipsis" &&
+        pathLayout.whiteSpace === "nowrap",
+      `Project path must stay on a truncated supporting line: ${JSON.stringify(pathLayout)}`,
+    );
+  } finally {
+    await page.close();
+  }
 }
 
 async function verifyTranscriptCompletenessIsSilent(

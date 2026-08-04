@@ -1,8 +1,9 @@
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { IconButton } from "@astryxdesign/core/IconButton";
 import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
-import { Selector } from "@astryxdesign/core/Selector";
+import { Selector, SelectorOption } from "@astryxdesign/core/Selector";
 import { SideNav, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { HStack, StackItem, VStack } from "@astryxdesign/core/Stack";
@@ -23,7 +24,7 @@ import type {
 import { catalogQueryOptions, createSession } from "../../client-interface/query-options";
 import { AddIcon, FolderIcon, ThreadIcon } from "../../components/icons";
 import { type ClientTranslator, useClientTranslator } from "../../i18n/client-i18n";
-import { HostDirectoryPicker, projectDirectoryLabel } from "../projects/HostDirectoryPicker";
+import { HostDirectoryPicker, projectDirectoryLabel, projectDirectoryName } from "../projects/HostDirectoryPicker";
 
 export function SessionNavigation({ onNewSession }: { onNewSession: () => void }) {
   const t = useClientTranslator();
@@ -158,6 +159,10 @@ export function NewSessionDialog({
   }, [isOpen]);
   const binding = bindings.find((candidate) => candidate.bindingId === bindingId) ?? bindings[0];
   const workspaceOptions = newSessionWorkspaceOptions(catalogBindings, bindingId, projects);
+  const projectOptionDescriptions = new Map(
+    workspaceOptions.flatMap((option) => (option.description ? [[option.value, option.description]] : [])),
+  );
+  if (pendingProject) projectOptionDescriptions.set("pending-project", projectDirectoryLabel(pendingProject));
   const selectedModel = binding?.modelOptions.find((candidate) => candidate.id === model);
   const create = useMutation({
     mutationFn: async () =>
@@ -202,7 +207,7 @@ export function NewSessionDialog({
             <DialogHeader
               title="选择 Project 目录"
               subtitle="浏览运行 Connect Service 的主机。"
-              onOpenChange={onOpenChange}
+              onOpenChange={() => setIsPickingProject(false)}
             />
           }
           content={
@@ -237,27 +242,48 @@ export function NewSessionDialog({
                   onChange={changeBinding}
                   width="100%"
                 />
-                <Selector
-                  label="Project"
-                  options={[
-                    { value: "none", label: "Non-Project（隔离工作区）" },
-                    ...workspaceOptions,
-                    ...(pendingProject
-                      ? [{ value: "pending-project", label: `新 Project · ${projectDirectoryLabel(pendingProject)}` }]
-                      : []),
-                    { value: "create-project", label: "创建新 Project…" },
-                  ]}
-                  value={workspaceSelection}
-                  onChange={(value) => {
-                    if (value === "create-project") {
-                      setIsPickingProject(true);
-                      return;
-                    }
-                    setWorkspaceSelection(value);
-                    if (value !== "pending-project") setPendingProject(null);
-                  }}
-                  width="100%"
-                />
+                <VStack className="project-selector-field" gap={1}>
+                  <HStack align="center" justify="between">
+                    <Text type="label">Project</Text>
+                    <IconButton
+                      label="添加 Project"
+                      tooltip="添加 Project"
+                      icon={<AddIcon />}
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setIsPickingProject(true)}
+                    />
+                  </HStack>
+                  <Selector
+                    label="Project"
+                    isLabelHidden
+                    options={[
+                      { value: "none", label: "Non-Project（隔离工作区）" },
+                      ...workspaceOptions.map(({ value, label }) => ({ value, label })),
+                      ...(pendingProject
+                        ? [
+                            {
+                              value: "pending-project",
+                              label: projectDirectoryName(pendingProject),
+                            },
+                          ]
+                        : []),
+                    ]}
+                    renderOption={(option) => (
+                      <SelectorOption
+                        className="project-selector-option"
+                        label={option.label ?? option.value}
+                        description={projectOptionDescriptions.get(option.value)}
+                      />
+                    )}
+                    value={workspaceSelection}
+                    onChange={(value) => {
+                      setWorkspaceSelection(value);
+                      if (value !== "pending-project") setPendingProject(null);
+                    }}
+                    width="100%"
+                  />
+                </VStack>
                 <Selector
                   label="模式"
                   options={[
@@ -324,8 +350,8 @@ function newSessionWorkspaceOptions(
   bindings: SessionCatalogBindingView[],
   bindingId: string,
   projects: ProjectView[],
-): { value: string; label: string }[] {
-  const options = new Map<string, { value: string; label: string }>();
+): { value: string; label: string; description?: string }[] {
+  const options = new Map<string, { value: string; label: string; description?: string }>();
   for (const entry of bindings.find((binding) => binding.bindingId === bindingId)?.entries ?? []) {
     if (entry.isArchived || !entry.workspaceId || !entry.workspaceName) continue;
     options.set(entry.workspaceId, {
@@ -336,7 +362,8 @@ function newSessionWorkspaceOptions(
   for (const project of projects) {
     options.set(project.workspaceId, {
       value: project.workspaceId,
-      label: `${project.name} · ${project.rootPath}`,
+      label: project.name,
+      description: project.rootPath,
     });
   }
   return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
