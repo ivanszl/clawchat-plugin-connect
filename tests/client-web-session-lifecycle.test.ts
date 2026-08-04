@@ -21,7 +21,7 @@ describe("Connect Client Session lifecycle", () => {
 
     expect(source).toContain("const archived = visible.filter((entry) => entry.isArchived)");
     expect(source).toContain("id: `archived:" + "$" + "{binding.bindingId}`");
-    expect(source).toContain('label: "已归档"');
+    expect(source).toContain('label: t("@connect.navigation.archived")');
   });
 
   it("keeps Session Refs out of navigation rows and shows status dots only for active work", async () => {
@@ -37,7 +37,9 @@ describe("Connect Client Session lifecycle", () => {
     expect(source).toContain(
       'if (entry.isArchived || entry.status === "idle" || entry.status === "offline") return null',
     );
-    expect(source).toContain('running: { variant: "success", label: "运行中", isPulsing: true }');
-    expect(source).toContain('queued: { variant: "warning", label: "排队中" }');
+    expect(source).toContain(
+      'running: { variant: "success", label: t("@connect.navigation.status.running"), isPulsing: true }',
+    );
+    expect(source).toContain('queued: { variant: "warning", label: t("@connect.navigation.status.queued") }');
   });
 });
