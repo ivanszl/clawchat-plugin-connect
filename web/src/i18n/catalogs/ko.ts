@@ -132,6 +132,7 @@ export const ko = {
   "@connect.session.archived.description": {
     defaultMessage: "기록은 계속 읽을 수 있습니다. 메시지를 보내기 전에 Session을 복원하세요.",
   },
+  "@connect.session.archived.success": { defaultMessage: "Session이 보관됨" },
   "@connect.session.actions.label": { defaultMessage: "Session 작업" },
   "@connect.session.actions.restore": { defaultMessage: "Session 복원" },
   "@connect.session.actions.archive": { defaultMessage: "Session 보관" },
@@ -171,6 +172,7 @@ export const ko = {
   "@connect.hostDirectory.newFolder.use": { defaultMessage: "새 폴더 사용" },
   "@connect.hostDirectory.cancel": { defaultMessage: "취소" },
   "@connect.hostDirectory.select": { defaultMessage: "이 디렉터리 선택" },
+  "@connect.error.clientWarmingUp": { defaultMessage: "Connect Client가 아직 초기화 중입니다." },
   "@connect.error.bindingNotFound": { defaultMessage: "선택한 Agent Binding을 더 이상 사용할 수 없습니다." },
   "@connect.error.invalidWorkspace": { defaultMessage: "선택한 Project를 더 이상 사용할 수 없습니다." },
   "@connect.error.invalidName": { defaultMessage: "Session 이름이 올바르지 않습니다." },
@@ -416,6 +418,7 @@ export const ko = {
   "@connect.composer.turnCompleted": { defaultMessage: "Turn이 완료되었습니다." },
   "@connect.composer.model.runtimeNativeDefault": { defaultMessage: "Runtime 기본 원생 값" },
   "@connect.composer.model.runtimeDefaultModel": { defaultMessage: "Runtime 기본 모델" },
+  "@connect.composer.model.runtimeDefaultReasoning": { defaultMessage: "Runtime 기본값" },
   "@connect.composer.model.inheritDefault": { defaultMessage: "Agent Binding / Runtime 기본값 상속" },
   "@connect.composer.model.unavailableValue": { defaultMessage: "{value}(사용 불가)" },
   "@connect.composer.model.popoverLabel": { defaultMessage: "Session 모델 설정" },

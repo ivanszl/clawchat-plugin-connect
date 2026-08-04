@@ -131,6 +131,7 @@ export const ja = {
   "@connect.session.archived.description": {
     defaultMessage: "履歴は引き続き閲覧できます。メッセージを送信する前に Session を復元してください。",
   },
+  "@connect.session.archived.success": { defaultMessage: "Session をアーカイブしました" },
   "@connect.session.actions.label": { defaultMessage: "Session の操作" },
   "@connect.session.actions.restore": { defaultMessage: "Session を復元" },
   "@connect.session.actions.archive": { defaultMessage: "Session をアーカイブ" },
@@ -170,6 +171,7 @@ export const ja = {
   "@connect.hostDirectory.newFolder.use": { defaultMessage: "新しいフォルダを使用" },
   "@connect.hostDirectory.cancel": { defaultMessage: "キャンセル" },
   "@connect.hostDirectory.select": { defaultMessage: "このディレクトリを選択" },
+  "@connect.error.clientWarmingUp": { defaultMessage: "Connect Client はまだ初期化中です。" },
   "@connect.error.bindingNotFound": { defaultMessage: "選択した Agent Binding は利用できなくなりました。" },
   "@connect.error.invalidWorkspace": { defaultMessage: "選択した Project は利用できなくなりました。" },
   "@connect.error.invalidName": { defaultMessage: "Session 名が無効です。" },
@@ -419,6 +421,7 @@ export const ja = {
   "@connect.composer.turnCompleted": { defaultMessage: "Turn が完了しました。" },
   "@connect.composer.model.runtimeNativeDefault": { defaultMessage: "Runtime のネイティブ既定値" },
   "@connect.composer.model.runtimeDefaultModel": { defaultMessage: "Runtime 既定モデル" },
+  "@connect.composer.model.runtimeDefaultReasoning": { defaultMessage: "Runtime の既定値" },
   "@connect.composer.model.inheritDefault": { defaultMessage: "Agent Binding / Runtime の既定値を継承" },
   "@connect.composer.model.unavailableValue": { defaultMessage: "{value}（利用不可）" },
   "@connect.composer.model.popoverLabel": { defaultMessage: "Session モデル設定" },

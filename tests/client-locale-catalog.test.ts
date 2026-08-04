@@ -1,9 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { isStructurallySame, parse } from "@formatjs/icu-messageformat-parser";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import { clientMessages } from "../web/src/i18n/catalogs";
 import type { ClientMessageKey } from "../web/src/i18n/catalogs/en";
-import { clientLocales } from "../web/src/i18n/client-locale";
+// @ts-expect-error The service tsconfig intentionally has no JSX; Bun loads the production locale provider for this seam.
+import { ClientInternationalizationProvider, useClientTranslator } from "../web/src/i18n/client-i18n";
+import { type ClientLocale, clientLocales } from "../web/src/i18n/client-locale";
 
 describe("Connect Client locale catalogs", () => {
   it("keeps every locale aligned with the English source catalog and its ICU arguments", () => {
@@ -55,7 +59,23 @@ describe("Connect Client locale catalogs", () => {
     }
     expect(unlocalized).toEqual([]);
   });
+
+  it("formats plural quantities and time units with the selected locale", () => {
+    expect(renderFormattingProbe("en")).toContain("12,345 seconds remaining");
+    expect(renderFormattingProbe("es")).toContain("Quedan 12.345 segundos");
+  });
 });
+
+function FormattingProbe() {
+  const t = useClientTranslator();
+  return createElement("p", null, t("@connect.interaction.remainingSeconds", { count: 12_345 }));
+}
+
+function renderFormattingProbe(locale: ClientLocale): string {
+  return renderToStaticMarkup(
+    createElement(ClientInternationalizationProvider, { locale }, createElement(FormattingProbe)),
+  );
+}
 
 const visibleAttributeNames = new Set([
   "actionLabel",

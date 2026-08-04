@@ -35,6 +35,7 @@ export function useClientLocale(): ClientLocale {
 }
 
 const knownClientErrorKeys = {
+  "client-warming-up": "@connect.error.clientWarmingUp",
   "binding-not-found": "@connect.error.bindingNotFound",
   "invalid-workspace": "@connect.error.invalidWorkspace",
   "invalid-name": "@connect.error.invalidName",
@@ -61,11 +62,30 @@ const knownClientErrorKeys = {
   "internal-error": "@connect.error.internal",
 } as const satisfies Record<string, ClientMessageKey>;
 
-export function localizedClientError(t: ClientTranslator, error: unknown): string {
+export const settingsClientErrorKeys = {
+  "binding-not-found": "@connect.settings.error.bindingNotFound",
+  "invalid-model": "@connect.settings.error.invalidModel",
+  "invalid-reasoning-effort": "@connect.settings.error.invalidReasoningEffort",
+  "project-in-use": "@connect.settings.error.projectInUse",
+  "project-not-found": "@connect.settings.error.projectNotFound",
+  "project-conflict": "@connect.settings.error.projectConflict",
+  "directory-not-found": "@connect.settings.error.directoryNotFound",
+  "directory-unavailable": "@connect.settings.error.directoryUnavailable",
+  "directory-already-exists": "@connect.settings.error.directoryAlreadyExists",
+  "invalid-directory-name": "@connect.settings.error.invalidDirectoryName",
+} as const satisfies Record<string, ClientMessageKey>;
+
+type ClientErrorMessageKeys = Readonly<Partial<Record<string, ClientMessageKey>>>;
+
+export function localizedClientError(
+  t: ClientTranslator,
+  error: unknown,
+  featureKeys: ClientErrorMessageKeys = {},
+): string {
   const raw = error instanceof Error ? error.message : String(error);
   if (!(error instanceof ClientInterfaceError)) return raw;
-  const key = knownClientErrorKeys[error.code as keyof typeof knownClientErrorKeys];
-  const message = key ? t(key) : raw;
+  const key = featureKeys[error.code] ?? knownClientErrorKeys[error.code as keyof typeof knownClientErrorKeys];
+  const message = key ? t(key, { detail: raw }) : raw;
   return error.diagnosticRef
     ? t("@connect.error.withDiagnostic", { message, diagnosticRef: error.diagnosticRef })
     : message;

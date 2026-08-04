@@ -823,7 +823,7 @@ async function verifyTranscriptPresentation(
     await expect(toolsToggle).toHaveAttribute("aria-expanded", "false");
     await toolsToggle.click();
     await expect(toolsToggle).toHaveAttribute("aria-expanded", "true");
-    await expect(tools.getByText("Command", { exact: true })).toBeVisible();
+    await expect(tools.getByText("命令", { exact: true })).toBeVisible();
     await expect(tools.getByText("web/src/main.tsx", { exact: true })).toBeVisible();
     const unknown = group.locator('[data-block-type="unknown"]');
     await expect(unknown.getByRole("button")).toHaveAttribute("aria-expanded", "false");
@@ -1021,7 +1021,7 @@ async function verifyArtifactWorkspaceAtViewport(
       await expect(page.locator(".artifact-tab-strip")).toBeHidden();
       await expect(page.locator(".artifact-mobile-controls")).toBeVisible();
       await expect(page.getByRole("button", { name: "← 对话" })).toBeVisible();
-      await page.getByRole("button", { name: "已打开 (2)" }).click();
+      await page.getByRole("button", { name: "已打开（2）" }).click();
       const sheet = page.getByRole("dialog").filter({ hasText: "已打开文件" });
       await expect(sheet).toBeVisible();
       await expect(sheet.getByText("artifact-preview.md", { exact: true })).toBeVisible();

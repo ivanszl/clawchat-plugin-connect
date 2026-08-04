@@ -24,7 +24,7 @@ import type {
 } from "../../../../src/client-contract";
 import { normalizeWorkspaceArtifactHref, workspaceArtifactUrl } from "../../../../src/workspace-artifact";
 import { respondToRuntimeInteraction } from "../../client-interface/query-options";
-import { localizedClientError, type ClientTranslator, useClientTranslator } from "../../i18n/client-i18n";
+import { type ClientTranslator, localizedClientError, useClientTranslator } from "../../i18n/client-i18n";
 import { leadingSlashSuggestion, slashSuggestionToken } from "../slash-suggestions";
 
 export function TranscriptBlockView({

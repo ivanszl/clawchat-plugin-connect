@@ -7,7 +7,7 @@ import { useEffect } from "react";
 import { connectClientEvents } from "../client-interface/client-events";
 import { bootstrapQueryOptions } from "../client-interface/query-options";
 import { ConnectAppShell } from "../features/app-shell/ConnectAppShell";
-import { useClientTranslator } from "../i18n/client-i18n";
+import { localizedClientError, useClientTranslator } from "../i18n/client-i18n";
 import { canonicalClientLocale } from "../i18n/client-locale";
 
 export const Route = createRootRoute({
@@ -48,7 +48,11 @@ function ClientRoot() {
   if (bootstrap.isError) {
     return (
       <main className="boot-state">
-        <Banner status="error" title={t("@connect.startup.failure.title")} description={bootstrap.error.message} />
+        <Banner
+          status="error"
+          title={t("@connect.startup.failure.title")}
+          description={localizedClientError(t, bootstrap.error)}
+        />
       </main>
     );
   }

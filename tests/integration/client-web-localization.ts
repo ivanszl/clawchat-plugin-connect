@@ -74,9 +74,9 @@ try {
     await verifyLocaleResolution(browser, origin);
     await verifyLocalizedEntryStates(browser, origin);
     await verifyLocalizedTurnSubmission(browser, origin);
+    await verifyLocalizedTranscriptInteractionsAndArtifacts(browser, origin);
     await verifyLocalizedSettingsAndProjects(browser, origin);
     await verifyLocalizedSessionLifecycle(browser, origin);
-    await verifyLocalizedTranscriptInteractionsAndArtifacts(browser, origin);
     process.stdout.write("Verified Connect Client locale resolution, shell copy, states, and SPA retention.\n");
   } finally {
     await browser.close();
@@ -94,6 +94,11 @@ async function verifyLocalizedTranscriptInteractionsAndArtifacts(browser: Browse
     if (/\/client\/v1\/runtime-interactions\/[^/]+\/respond$/u.test(new URL(request.url()).pathname)) {
       interactionRequests.push(request.postDataJSON());
     }
+  });
+  await page.route(/\/client\/v1\/sessions\/ABCDEFGH(?:\?refresh=1)?$/u, async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as Record<string, unknown>;
+    await route.fulfill({ response, json: { ...body, effectiveReasoningEffort: null } });
   });
   await page.route("**/client/v1/sessions/ABCDEFGH/transcript?*", async (route) => {
     const response = await route.fetch();
@@ -113,12 +118,12 @@ async function verifyLocalizedTranscriptInteractionsAndArtifacts(browser: Browse
 
   await page.goto(`${previewOrigin}/sessions/ABCDEFGH?lang=en-US`);
   await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
-  await expect(page.getByText("ClawChat direct message from Colin:", { exact: false })).toBeVisible();
   await expect(page.getByText("实现 app-server 后再构建 Web。", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Execution plan" })).toBeVisible();
   await expect(page.getByText("迁移 app-server", { exact: false })).toBeVisible();
   await expect(page.getByText("bun test", { exact: true })).toBeVisible();
   await expect(page.locator(".transcript-group-divider").first()).toContainText("Aug 4, 2026, 12:34 PM");
+  await expect(page.getByText("Default model · Runtime default", { exact: true })).toBeVisible();
 
   const approval = page.locator(".runtime-interaction-card").filter({ hasText: "允许 Codex 更新本地 Connect？" });
   await expect(approval).toContainText("Working directory:");
@@ -135,10 +140,33 @@ async function verifyLocalizedTranscriptInteractionsAndArtifacts(browser: Browse
   await expect(page.getByRole("link", { name: "Download" })).toBeVisible();
   await page.getByRole("link", { name: "Open TypeScript" }).click();
   await expect(page.getByText('export const mobileArtifact = "ready";', { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Copy code" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "artifact-preview.ts" }).getByRole("button", { name: "Copy code" }),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "Close artifact-preview.ts" })).toBeVisible();
   assert.equal(page.url(), `${previewOrigin}/sessions/ABCDEFGH?lang=en-US`);
   await context.close();
+
+  const spanishContext = await browser.newContext({ locale: "es-ES", timezoneId: "UTC" });
+  const spanishPage = await spanishContext.newPage();
+  await spanishPage.route("**/client/v1/sessions/ABCDEFGH/transcript?*", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as { blocks?: Array<Record<string, unknown>> };
+    await route.fulfill({
+      response,
+      json: {
+        ...body,
+        blocks: body.blocks?.map((block) => ({
+          ...block,
+          createdAt: "2026-08-04T12:34:00.000Z",
+          updatedAt: "2026-08-04T12:34:00.000Z",
+        })),
+      },
+    });
+  });
+  await spanishPage.goto(`${previewOrigin}/sessions/ABCDEFGH?lang=es-ES`);
+  await expect(spanishPage.locator(".transcript-group-divider").first()).toContainText("4 ago 2026, 12:34");
+  await spanishContext.close();
 }
 
 async function verifyLocalizedSessionLifecycle(browser: Browser, previewOrigin: string) {
@@ -236,10 +264,20 @@ async function verifyLocalizedSessionLifecycle(browser: Browser, previewOrigin: 
   await lifecyclePage.getByRole("button", { name: "Session 작업" }).click();
   await lifecyclePage.getByRole("menuitem", { name: "Session 보관" }).click();
   await expect(lifecyclePage.getByText("이 Session은 보관됨", { exact: true })).toBeVisible();
-  await lifecyclePage.getByRole("button", { name: "Session 작업" }).click();
+  await expect(lifecyclePage.getByRole("status").filter({ hasText: "Session이 보관됨" })).toBeVisible();
+  await lifecyclePage.reload();
+  await expect(lifecyclePage.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+  assert.equal(lifecyclePage.url(), `${previewOrigin}/sessions/ABCDEFGH?lang=ko-KR`);
+  const lifecycleActions = lifecyclePage.getByRole("button", { name: "Session 작업" });
+  await expect(lifecycleActions).toBeEnabled();
+  await lifecycleActions.click();
   await lifecyclePage.getByRole("menuitem", { name: "Session 복원" }).click();
   await expect(lifecyclePage.getByRole("status").filter({ hasText: "Session이 복원됨" })).toBeVisible();
-  await lifecyclePage.getByRole("button", { name: "Session 작업" }).click();
+  await lifecyclePage.reload();
+  await expect(lifecyclePage.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
+  assert.equal(lifecyclePage.url(), `${previewOrigin}/sessions/ABCDEFGH?lang=ko-KR`);
+  await expect(lifecycleActions).toBeEnabled();
+  await lifecycleActions.click();
   await lifecyclePage.getByRole("menuitem", { name: "Session 보관" }).click();
   const conflict = lifecyclePage.getByRole("alert").filter({ hasText: "Session 작업 실패" });
   await expect(conflict).toContainText("작업이 끝나기 전에 Session이 변경되었습니다");
@@ -361,7 +399,13 @@ async function chooseLocalizedOption(page: Page, label: string, option: string) 
 async function verifyLocaleResolution(browser: Browser, previewOrigin: string) {
   const cases = [
     { query: "zh", browserLocale: "en-US", locale: "zh-Hans", title: "选择一个 Session" },
+    { query: "zh-CN", browserLocale: "en-US", locale: "zh-Hans", title: "选择一个 Session" },
+    { query: "zh_SG", browserLocale: "en-US", locale: "zh-Hans", title: "选择一个 Session" },
+    { query: "ZH_hAnS", browserLocale: "en-US", locale: "zh-Hans", title: "选择一个 Session" },
+    { query: "zh-TW", browserLocale: "en-US", locale: "zh-Hant", title: "選擇一個 Session" },
     { query: "ZH_hK", browserLocale: "en-US", locale: "zh-Hant", title: "選擇一個 Session" },
+    { query: "zh-MO", browserLocale: "en-US", locale: "zh-Hant", title: "選擇一個 Session" },
+    { query: "zh_Hant", browserLocale: "en-US", locale: "zh-Hant", title: "選擇一個 Session" },
     { query: "en-GB", browserLocale: "zh-CN", locale: "en", title: "Select a Session" },
     { query: "ja-JP", browserLocale: "en-US", locale: "ja", title: "セッションを選択" },
     { query: "es_419", browserLocale: "en-US", locale: "es", title: "Selecciona una Session" },
@@ -381,6 +425,12 @@ async function verifyLocaleResolution(browser: Browser, previewOrigin: string) {
     await page.goto(url);
     await expect(page.getByRole("heading", { name: testCase.title })).toBeVisible();
     assert.equal(await page.locator("html").getAttribute("lang"), testCase.locale);
+    if (testCase.query === "ZH_hK") {
+      await page.reload();
+      await expect(page.getByRole("heading", { name: testCase.title })).toBeVisible();
+      assert.equal(page.url(), `${previewOrigin}/?lang=ZH_hK`);
+      assert.equal(await page.locator("html").getAttribute("lang"), testCase.locale);
+    }
     await context.close();
   }
 

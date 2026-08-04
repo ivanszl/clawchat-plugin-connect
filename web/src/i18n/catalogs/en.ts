@@ -130,6 +130,7 @@ export const en = {
   "@connect.session.archived.description": {
     defaultMessage: "You can still read its history. Restore the Session before sending another message.",
   },
+  "@connect.session.archived.success": { defaultMessage: "Session archived" },
   "@connect.session.actions.label": { defaultMessage: "Session actions" },
   "@connect.session.actions.restore": { defaultMessage: "Restore Session" },
   "@connect.session.actions.archive": { defaultMessage: "Archive Session" },
@@ -169,6 +170,7 @@ export const en = {
   "@connect.hostDirectory.newFolder.use": { defaultMessage: "Use new folder" },
   "@connect.hostDirectory.cancel": { defaultMessage: "Cancel" },
   "@connect.hostDirectory.select": { defaultMessage: "Select this directory" },
+  "@connect.error.clientWarmingUp": { defaultMessage: "Connect Client is still initializing." },
   "@connect.error.bindingNotFound": { defaultMessage: "The selected Agent Binding is no longer available." },
   "@connect.error.invalidWorkspace": { defaultMessage: "The selected Project is no longer available." },
   "@connect.error.invalidName": { defaultMessage: "The Session name is invalid." },
@@ -427,6 +429,7 @@ export const en = {
   "@connect.composer.turnCompleted": { defaultMessage: "Turn completed." },
   "@connect.composer.model.runtimeNativeDefault": { defaultMessage: "Runtime native default" },
   "@connect.composer.model.runtimeDefaultModel": { defaultMessage: "Runtime default model" },
+  "@connect.composer.model.runtimeDefaultReasoning": { defaultMessage: "Runtime default" },
   "@connect.composer.model.inheritDefault": { defaultMessage: "Inherit Agent Binding / Runtime default" },
   "@connect.composer.model.unavailableValue": { defaultMessage: "{value} (unavailable)" },
   "@connect.composer.model.popoverLabel": { defaultMessage: "Session model settings" },

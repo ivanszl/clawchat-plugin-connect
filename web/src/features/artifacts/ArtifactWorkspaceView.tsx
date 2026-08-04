@@ -4,6 +4,7 @@ import { Dialog } from "@astryxdesign/core/Dialog";
 import { Lightbox } from "@astryxdesign/core/Lightbox";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { HStack, VStack } from "@astryxdesign/core/Stack";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import {
   classifyWorkspaceArtifact,
@@ -62,9 +63,9 @@ export function useArtifactWorkspace(sessionRef: string): ArtifactWorkspaceContr
 export function ArtifactTabStrip({ workspace }: { workspace: ArtifactWorkspaceController }) {
   const t = useClientTranslator();
   return (
-    <div className="artifact-tab-strip" role="tablist" aria-label={t("@connect.artifact.openFiles")}>
+    <HStack gap={0} className="artifact-tab-strip" role="tablist" aria-label={t("@connect.artifact.openFiles")}>
       {workspace.tabs.map((tab) => (
-        <div className="artifact-tab-group" key={tab.id} role="presentation">
+        <HStack gap={0} className="artifact-tab-group" key={tab.id} role="presentation">
           <button
             className="artifact-tab"
             type="button"
@@ -83,9 +84,9 @@ export function ArtifactTabStrip({ workspace }: { workspace: ArtifactWorkspaceCo
           >
             ×
           </button>
-        </div>
+        </HStack>
       ))}
-    </div>
+    </HStack>
   );
 }
 
@@ -102,7 +103,7 @@ export function ArtifactMobileControls({ workspace }: { workspace: ArtifactWorks
   };
   return (
     <>
-      <div className="artifact-mobile-controls">
+      <HStack gap={0} className="artifact-mobile-controls">
         {workspace.activeTab ? (
           <button className="artifact-mobile-back" type="button" onClick={workspace.showConversation}>
             ← {t("@connect.artifact.conversation")}
@@ -114,7 +115,7 @@ export function ArtifactMobileControls({ workspace }: { workspace: ArtifactWorks
             {t("@connect.artifact.openCount", { count: workspace.tabs.length })}
           </button>
         ) : null}
-      </div>
+      </HStack>
       <Dialog
         className="artifact-mobile-sheet"
         isOpen={mobileOpen}
@@ -125,7 +126,7 @@ export function ArtifactMobileControls({ workspace }: { workspace: ArtifactWorks
         padding={0}
         style={{ maxWidth: "calc(100vw - 16px)" }}
       >
-        <div className="artifact-mobile-sheet-content">
+        <VStack gap={0} className="artifact-mobile-sheet-content">
           <header>
             <strong>{t("@connect.artifact.openFiles")}</strong>
             <button
@@ -146,7 +147,7 @@ export function ArtifactMobileControls({ workspace }: { workspace: ArtifactWorks
               onClose={() => close(tab.id)}
             />
           ))}
-        </div>
+        </VStack>
       </Dialog>
     </>
   );
@@ -188,7 +189,7 @@ function ArtifactSheetRow({
 }) {
   const t = useClientTranslator();
   return (
-    <div className="artifact-sheet-row" data-active={isActive || undefined}>
+    <HStack gap={0} className="artifact-sheet-row" data-active={isActive || undefined}>
       <button type="button" onClick={onSelect}>
         <strong>{title}</strong>
         {subtitle ? <small>{subtitle}</small> : null}
@@ -198,7 +199,7 @@ function ArtifactSheetRow({
           ×
         </button>
       ) : null}
-    </div>
+    </HStack>
   );
 }
 

@@ -8,7 +8,7 @@ import { Selector } from "@astryxdesign/core/Selector";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SessionView } from "../../../src/client-contract";
 import {
   archiveSession,
@@ -45,6 +45,7 @@ function SessionPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const [lifecycleOutcome, setLifecycleOutcome] = useState<"archive" | "unarchive" | null>(null);
   const artifactWorkspace = useArtifactWorkspace(sessionRef);
   const lifecycle = useMutation({
@@ -69,6 +70,46 @@ function SessionPage() {
       setLifecycleOutcome(action);
     },
   });
+  const lifecycleMenuItems = useMemo(() => {
+    const view = session.data;
+    if (!view) return [];
+    return [
+      ...(view.allowedActions.includes(view.isArchived ? "unarchive" : "archive")
+        ? [
+            view.isArchived
+              ? {
+                  label: t("@connect.session.actions.restore"),
+                  isDisabled: lifecycle.isPending,
+                  onClick: () => {
+                    setActionsOpen(false);
+                    lifecycle.mutate("unarchive");
+                  },
+                }
+              : {
+                  label: t("@connect.session.actions.archive"),
+                  isDisabled: lifecycle.isPending,
+                  onClick: () => {
+                    setActionsOpen(false);
+                    lifecycle.mutate("archive");
+                  },
+                },
+          ]
+        : []),
+      ...(view.allowedActions.includes("delete")
+        ? [
+            { type: "divider" as const },
+            {
+              label: t("@connect.session.actions.delete"),
+              isDisabled: lifecycle.isPending,
+              onClick: () => {
+                setActionsOpen(false);
+                setDeleteOpen(true);
+              },
+            },
+          ]
+        : []),
+    ];
+  }, [lifecycle.isPending, lifecycle.mutate, session.data, t]);
 
   if (session.isPending || transcript.isPending) {
     return (
@@ -113,6 +154,8 @@ function SessionPage() {
             }
           />
           <DropdownMenu
+            isMenuOpen={actionsOpen}
+            onOpenChange={setActionsOpen}
             button={{
               label: t("@connect.session.actions.label"),
               isIconOnly: true,
@@ -123,33 +166,7 @@ function SessionPage() {
             }}
             hasChevron={false}
             placement="below"
-            items={[
-              ...(view.allowedActions.includes(view.isArchived ? "unarchive" : "archive")
-                ? [
-                    view.isArchived
-                      ? {
-                          label: t("@connect.session.actions.restore"),
-                          isDisabled: lifecycle.isPending,
-                          onClick: () => lifecycle.mutate("unarchive"),
-                        }
-                      : {
-                          label: t("@connect.session.actions.archive"),
-                          isDisabled: lifecycle.isPending,
-                          onClick: () => lifecycle.mutate("archive"),
-                        },
-                  ]
-                : []),
-              ...(view.allowedActions.includes("delete")
-                ? [
-                    { type: "divider" as const },
-                    {
-                      label: t("@connect.session.actions.delete"),
-                      isDisabled: lifecycle.isPending,
-                      onClick: () => setDeleteOpen(true),
-                    },
-                  ]
-                : []),
-            ]}
+            items={lifecycleMenuItems}
           />
         </div>
       </header>
@@ -172,10 +189,12 @@ function SessionPage() {
                 container="section"
               />
             ) : null}
-            {lifecycleOutcome === "unarchive" ? (
+            {lifecycleOutcome ? (
               <Banner
                 status="success"
-                title={t("@connect.session.restored")}
+                title={t(
+                  lifecycleOutcome === "archive" ? "@connect.session.archived.success" : "@connect.session.restored",
+                )}
                 container="section"
                 isDismissable
                 onDismiss={() => setLifecycleOutcome(null)}
@@ -259,7 +278,7 @@ function SessionModelControls({ view }: { view: SessionView }) {
     ? [sessionOptions.agent, sessionOptions.model, sessionOptions.variant].filter(Boolean).join(" · ") ||
       t("@connect.composer.model.runtimeNativeDefault")
     : `${effectiveModelOption?.displayName ?? view.effectiveModel ?? t("@connect.composer.model.runtimeDefaultModel")} · ${
-        view.effectiveReasoningEffort ?? "default"
+        view.effectiveReasoningEffort ?? t("@connect.composer.model.runtimeDefaultReasoning")
       }`;
   const modelOptions = [
     { value: "default", label: t("@connect.composer.model.inheritDefault") },

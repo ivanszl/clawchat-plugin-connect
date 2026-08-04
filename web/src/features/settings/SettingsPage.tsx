@@ -15,7 +15,6 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
 import type { BindingPreferenceView, BootstrapView, ProjectDirectoryRequest } from "../../../../src/client-contract";
-import { ClientInterfaceError } from "../../client-interface/http";
 import {
   addProject,
   bootstrapQueryOptions,
@@ -25,7 +24,7 @@ import {
   removeProject,
   updateBindingPreferences,
 } from "../../client-interface/query-options";
-import { type ClientTranslator, useClientTranslator } from "../../i18n/client-i18n";
+import { localizedClientError, settingsClientErrorKeys, useClientTranslator } from "../../i18n/client-i18n";
 import { HostDirectoryPicker, projectDirectoryLabel } from "../projects/HostDirectoryPicker";
 
 type ProjectListItem = { workspaceId: string; name: string; rootPath: string };
@@ -124,7 +123,7 @@ function BindingSettings({ binding }: { binding: BindingPreferenceView }) {
           <Banner
             status="error"
             title={t("@connect.settings.binding.saveFailed")}
-            description={localizedClientError(save.error, t)}
+            description={localizedClientError(t, save.error, settingsClientErrorKeys)}
             container="section"
           />
         ) : null}
@@ -269,7 +268,7 @@ function ProjectSettings({
             <Banner
               status="error"
               title={t("@connect.settings.projects.addFailed")}
-              description={localizedClientError(add.error, t)}
+              description={localizedClientError(t, add.error, settingsClientErrorKeys)}
             />
           ) : null}
           {lastRemovedProject && remove.isSuccess ? (
@@ -285,14 +284,14 @@ function ProjectSettings({
             <Banner
               status="error"
               title={t("@connect.settings.projects.removeFailed")}
-              description={localizedClientError(remove.error, t)}
+              description={localizedClientError(t, remove.error, settingsClientErrorKeys)}
             />
           ) : null}
           {loadError ? (
             <Banner
               status="error"
               title={t("@connect.settings.projects.loadFailed")}
-              description={localizedClientError(loadError, t)}
+              description={localizedClientError(t, loadError, settingsClientErrorKeys)}
             />
           ) : null}
           <List
@@ -393,37 +392,4 @@ function SettingsField({ children, description }: { children: ReactNode; descrip
       {description ? <Text type="supporting">{description}</Text> : null}
     </VStack>
   );
-}
-
-function localizedClientError(error: Error, t: ClientTranslator): string {
-  if (!(error instanceof ClientInterfaceError)) return error.message;
-  const description = (() => {
-    switch (error.code) {
-      case "binding-not-found":
-        return t("@connect.settings.error.bindingNotFound", { detail: error.message });
-      case "invalid-model":
-        return t("@connect.settings.error.invalidModel", { detail: error.message });
-      case "invalid-reasoning-effort":
-        return t("@connect.settings.error.invalidReasoningEffort", { detail: error.message });
-      case "project-in-use":
-        return t("@connect.settings.error.projectInUse", { detail: error.message });
-      case "project-not-found":
-        return t("@connect.settings.error.projectNotFound", { detail: error.message });
-      case "project-conflict":
-        return t("@connect.settings.error.projectConflict", { detail: error.message });
-      case "directory-not-found":
-        return t("@connect.settings.error.directoryNotFound", { detail: error.message });
-      case "directory-unavailable":
-        return t("@connect.settings.error.directoryUnavailable", { detail: error.message });
-      case "directory-already-exists":
-        return t("@connect.settings.error.directoryAlreadyExists", { detail: error.message });
-      case "invalid-directory-name":
-        return t("@connect.settings.error.invalidDirectoryName", { detail: error.message });
-      default:
-        return error.message;
-    }
-  })();
-  return error.diagnosticRef
-    ? `${description} ${t("@connect.settings.error.diagnosticRef", { reference: error.diagnosticRef })}`
-    : description;
 }
