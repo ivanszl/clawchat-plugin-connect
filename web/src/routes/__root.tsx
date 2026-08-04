@@ -1,22 +1,36 @@
 import { Banner } from "@astryxdesign/core/Banner";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { VStack } from "@astryxdesign/core/Stack";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createRootRoute, Outlet } from "@tanstack/react-router";
+import { createRootRoute, Outlet, retainSearchParams } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { connectClientEvents } from "../client-interface/client-events";
 import { bootstrapQueryOptions } from "../client-interface/query-options";
 import { ConnectAppShell } from "../features/app-shell/ConnectAppShell";
+import { useClientTranslator } from "../i18n/client-i18n";
+import { canonicalClientLocale } from "../i18n/client-locale";
 
 export const Route = createRootRoute({
+  validateSearch: (search: Record<string, unknown>): { lang?: string } => {
+    const lang = search.lang;
+    return canonicalClientLocale(lang) ? { lang: lang as string } : {};
+  },
+  search: { middlewares: [retainSearchParams(["lang"])] },
   component: ClientRoot,
-  notFoundComponent: () => (
-    <div className="centered-state">
-      <Banner status="warning" title="页面不存在" description="请从左侧选择一个 Session。" />
-    </div>
-  ),
+  notFoundComponent: ClientNotFound,
 });
 
+function ClientNotFound() {
+  const t = useClientTranslator();
+  return (
+    <VStack className="centered-state" align="center" justify="center">
+      <Banner status="warning" title={t("@connect.notFound.title")} description={t("@connect.notFound.description")} />
+    </VStack>
+  );
+}
+
 function ClientRoot() {
+  const t = useClientTranslator();
   const bootstrap = useQuery(bootstrapQueryOptions);
   const queryClient = useQueryClient();
   useEffect(() => {
@@ -27,14 +41,14 @@ function ClientRoot() {
   if (bootstrap.isPending) {
     return (
       <main className="boot-state">
-        <Spinner label="正在连接 Connect Service" />
+        <Spinner label={t("@connect.startup.loading")} />
       </main>
     );
   }
   if (bootstrap.isError) {
     return (
       <main className="boot-state">
-        <Banner status="error" title="无法连接 Connect Service" description={bootstrap.error.message} />
+        <Banner status="error" title={t("@connect.startup.failure.title")} description={bootstrap.error.message} />
       </main>
     );
   }

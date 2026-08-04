@@ -2,7 +2,6 @@ import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
-import { LinkProvider } from "@astryxdesign/core/Link";
 import { Selector } from "@astryxdesign/core/Selector";
 import { SideNav, SideNavSection } from "@astryxdesign/core/SideNav";
 import { Spinner } from "@astryxdesign/core/Spinner";
@@ -12,7 +11,7 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { TreeList, type TreeListItemData } from "@astryxdesign/core/TreeList";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import type {
   BindingPreferenceView,
@@ -23,9 +22,11 @@ import type {
 } from "../../../../src/client-contract";
 import { catalogQueryOptions, createSession } from "../../client-interface/query-options";
 import { AddIcon, FolderIcon, ThreadIcon } from "../../components/icons";
+import { type ClientTranslator, useClientTranslator } from "../../i18n/client-i18n";
 import { HostDirectoryPicker, projectDirectoryLabel } from "../projects/HostDirectoryPicker";
 
 export function SessionNavigation({ onNewSession }: { onNewSession: () => void }) {
+  const t = useClientTranslator();
   const catalog = useQuery(catalogQueryOptions);
   const navigate = useNavigate();
   const [navigationCollapsed, setNavigationCollapsed] = useState(false);
@@ -37,91 +38,88 @@ export function SessionNavigation({ onNewSession }: { onNewSession: () => void }
     () =>
       (catalog.data?.bindings ?? []).map((binding) => ({
         binding,
-        items: navigationItems(binding, search, selectedRef, (sessionRef) => {
+        items: navigationItems(binding, search, selectedRef, t, (sessionRef) => {
           void navigate({ to: "/sessions/$sessionRef", params: { sessionRef } });
         }),
       })),
-    [catalog.data, navigate, search, selectedRef],
+    [catalog.data, navigate, search, selectedRef, t],
   );
 
   return (
-    <LinkProvider component={Link}>
-      <SideNav
-        className="session-nav"
-        data-mode={navigationCollapsed ? "collapsed" : "expanded"}
-        collapsible={{
-          isCollapsed: navigationCollapsed,
-          onCollapsedChange: setNavigationCollapsed,
-          buttonLabel: "折叠 Session 导航",
-        }}
-        resizable={{ defaultWidth: 304, minWidth: 248, maxWidth: 440, autoSaveId: "connect-client-session-nav" }}
-        topContent={
-          <HStack gap={2} padding={2} align="end" justify={navigationCollapsed ? "center" : "start"}>
-            {navigationCollapsed ? null : (
-              <StackItem size="fill">
-                <TextInput
-                  label="搜索 Session"
-                  isLabelHidden
-                  value={search}
-                  onChange={setSearch}
-                  placeholder="搜索 session 或 project"
-                  hasClear
-                  width="100%"
-                />
-              </StackItem>
+    <SideNav
+      className="session-nav"
+      data-mode={navigationCollapsed ? "collapsed" : "expanded"}
+      collapsible={{
+        isCollapsed: navigationCollapsed,
+        onCollapsedChange: setNavigationCollapsed,
+      }}
+      resizable={{ defaultWidth: 304, minWidth: 248, maxWidth: 440, autoSaveId: "connect-client-session-nav" }}
+      topContent={
+        <HStack gap={2} padding={2} align="end" justify={navigationCollapsed ? "center" : "start"}>
+          {navigationCollapsed ? null : (
+            <StackItem size="fill">
+              <TextInput
+                label={t("@connect.navigation.search.label")}
+                isLabelHidden
+                value={search}
+                onChange={setSearch}
+                placeholder={t("@connect.navigation.search.placeholder")}
+                hasClear
+                width="100%"
+              />
+            </StackItem>
+          )}
+          <Button
+            label={t("@connect.navigation.newSession")}
+            isIconOnly
+            icon={<AddIcon />}
+            size="sm"
+            variant="primary"
+            onClick={onNewSession}
+          />
+        </HStack>
+      }
+    >
+      {navigationCollapsed ? null : catalog.isPending ? (
+        <VStack padding={4} align="center">
+          <Spinner label={t("@connect.navigation.loading")} />
+        </VStack>
+      ) : catalog.isError ? (
+        <Text color="secondary" display="block" justify="center">
+          {t("@connect.navigation.loadFailure")}
+        </Text>
+      ) : (
+        sections.map(({ binding, items }) => (
+          <SideNavSection
+            key={binding.bindingId}
+            title={binding.displayName}
+            endContent={
+              <StatusDot
+                variant={
+                  binding.status === "connected" ? "success" : binding.status === "disconnected" ? "error" : "neutral"
+                }
+                label={
+                  binding.status === "connected"
+                    ? t("@connect.navigation.connected")
+                    : binding.status === "disconnected"
+                      ? t("@connect.navigation.disconnected")
+                      : t("@connect.navigation.unknownStatus")
+                }
+                isPulsing={binding.status === "connected"}
+              />
+            }
+          >
+            {items.length > 0 ? (
+              <TreeList items={items} density="compact" />
+            ) : (
+              <Text color="secondary" display="block" justify="center">
+                {t("@connect.navigation.noMatches")}
+              </Text>
             )}
-            <Button
-              label="新建 Session"
-              isIconOnly
-              icon={<AddIcon />}
-              size="sm"
-              variant="primary"
-              onClick={onNewSession}
-            />
-          </HStack>
-        }
-      >
-        {navigationCollapsed ? null : catalog.isPending ? (
-          <VStack padding={4} align="center">
-            <Spinner label="正在加载 Session" />
-          </VStack>
-        ) : catalog.isError ? (
-          <Text color="secondary" display="block" justify="center">
-            无法加载 Session。Connect Service 可能尚未就绪。
-          </Text>
-        ) : (
-          sections.map(({ binding, items }) => (
-            <SideNavSection
-              key={binding.bindingId}
-              title={binding.displayName}
-              endContent={
-                <StatusDot
-                  variant={
-                    binding.status === "connected" ? "success" : binding.status === "disconnected" ? "error" : "neutral"
-                  }
-                  label={
-                    binding.status === "connected"
-                      ? "已连接"
-                      : binding.status === "disconnected"
-                        ? "已断开"
-                        : "状态未知"
-                  }
-                  isPulsing={binding.status === "connected"}
-                />
-              }
-            >
-              {items.length > 0 ? (
-                <TreeList items={items} density="compact" />
-              ) : (
-                <Text color="secondary" display="block" justify="center">
-                  没有匹配的 Session
-                </Text>
-              )}
-            </SideNavSection>
-          ))
-        )}
-      </SideNav>
-    </LinkProvider>
+          </SideNavSection>
+        ))
+      )}
+    </SideNav>
   );
 }
 
@@ -348,6 +346,7 @@ function navigationItems(
   binding: SessionCatalogBindingView,
   search: string,
   selectedRef: string | null,
+  t: ClientTranslator,
   open: (sessionRef: string) => void,
 ): TreeListItemData[] {
   const needle = search.trim().toLocaleLowerCase();
@@ -359,14 +358,14 @@ function navigationItems(
   });
   const active = visible.filter((entry) => !entry.isArchived);
   const archived = visible.filter((entry) => entry.isArchived);
-  const items = groupedItems(active, "active", selectedRef, needle, open);
+  const items = groupedItems(active, "active", selectedRef, needle, t, open);
   if (archived.length > 0) {
     items.push({
       id: `archived:${binding.bindingId}`,
-      label: "已归档",
+      label: t("@connect.navigation.archived"),
       startContent: <FolderIcon />,
       isExpanded: archived.some((entry) => entry.sessionRef === selectedRef) || Boolean(needle),
-      children: groupedItems(archived, "archived", selectedRef, needle, open),
+      children: groupedItems(archived, "archived", selectedRef, needle, t, open),
     });
   }
   return items;
@@ -377,6 +376,7 @@ function groupedItems(
   prefix: string,
   selectedRef: string | null,
   search: string,
+  t: ClientTranslator,
   open: (sessionRef: string) => void,
 ): TreeListItemData[] {
   const workspaces = new Map<string, SessionCatalogEntryView[]>();
@@ -392,20 +392,21 @@ function groupedItems(
   }
   const workspaceItems: TreeListItemData[] = [...workspaces.entries()].map(([workspaceId, entries]) => ({
     id: `${prefix}:workspace:${workspaceId}`,
-    label: entries[0]?.workspaceName || "Unnamed workspace",
+    label: entries[0]?.workspaceName || t("@connect.navigation.unnamedWorkspace"),
     startContent: <FolderIcon />,
     isExpanded: entries.some((entry) => entry.sessionRef === selectedRef) || Boolean(search),
-    children: entries.map((entry) => sessionItem(entry, selectedRef, open)),
+    children: entries.map((entry) => sessionItem(entry, selectedRef, t, open)),
   }));
-  return [...workspaceItems, ...nonProject.map((entry) => sessionItem(entry, selectedRef, open))];
+  return [...workspaceItems, ...nonProject.map((entry) => sessionItem(entry, selectedRef, t, open))];
 }
 
 function sessionItem(
   entry: SessionCatalogEntryView,
   selectedRef: string | null,
+  t: ClientTranslator,
   open: (sessionRef: string) => void,
 ): TreeListItemData {
-  const status = sessionStatus(entry);
+  const status = sessionStatus(entry, t);
   return {
     id: entry.sessionRef,
     label: entry.name,
@@ -428,12 +429,12 @@ type SessionStatusView = {
   isPulsing?: boolean;
 };
 
-function sessionStatus(entry: SessionCatalogEntryView): SessionStatusView | null {
+function sessionStatus(entry: SessionCatalogEntryView, t: ClientTranslator): SessionStatusView | null {
   if (entry.isArchived || entry.status === "idle" || entry.status === "offline") return null;
   const statuses: Partial<Record<SessionCatalogEntryView["status"], SessionStatusView>> = {
-    running: { variant: "success", label: "运行中", isPulsing: true },
-    queued: { variant: "warning", label: "排队中" },
-    error: { variant: "error", label: "错误" },
+    running: { variant: "success", label: t("@connect.navigation.status.running"), isPulsing: true },
+    queued: { variant: "warning", label: t("@connect.navigation.status.queued") },
+    error: { variant: "error", label: t("@connect.navigation.status.error") },
   };
   return statuses[entry.status] ?? null;
 }

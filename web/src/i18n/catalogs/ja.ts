@@ -1,0 +1,63 @@
+import type { ClientCatalog } from "./en";
+
+export const ja = {
+  "@astryx.appShell.mobileNavigation": { defaultMessage: "モバイルナビゲーション" },
+  "@astryx.appShell.skipToContent": { defaultMessage: "本文へスキップ" },
+  "@astryx.mobileNav.toggle.open": { defaultMessage: "ナビゲーションを開く" },
+  "@astryx.mobileNav.navigation": { defaultMessage: "ナビゲーション" },
+  "@astryx.mobileNav.closeNavigation": { defaultMessage: "ナビゲーションを閉じる" },
+  "@astryx.sideNav.label": { defaultMessage: "サイドナビゲーション" },
+  "@astryx.sideNav.resizeSidebar": { defaultMessage: "サイドバーのサイズを変更" },
+  "@astryx.sideNav.heading.openMenu": { defaultMessage: "メニューを開く" },
+  "@astryx.sideNav.heading.dialogLabel": { defaultMessage: "ナビゲーションメニュー" },
+  "@astryx.sideNavCollapseButton.expandSidebar": { defaultMessage: "サイドバーを展開" },
+  "@astryx.sideNavCollapseButton.collapseSidebar": { defaultMessage: "サイドバーを折りたたむ" },
+  "@astryx.treeList.toggleChildren": { defaultMessage: "子項目を切り替え" },
+  "@astryx.topNav.heading.openMenu": { defaultMessage: "メニューを開く" },
+  "@astryx.topNav.heading.dialogLabel": { defaultMessage: "ナビゲーションメニュー" },
+  "@astryx.topNav.landmarkLabel": { defaultMessage: "上部ナビゲーション" },
+  "@astryx.textInput.clearLabel": { defaultMessage: "{label}をクリア" },
+  "@astryx.toast.viewport": { defaultMessage: "通知" },
+  "@connect.startup.loading": { defaultMessage: "Connect Service に接続しています" },
+  "@connect.startup.failure.title": { defaultMessage: "Connect Service に接続できません" },
+  "@connect.notFound.title": { defaultMessage: "ページが見つかりません" },
+  "@connect.notFound.description": { defaultMessage: "左側から Session を選択してください。" },
+  "@connect.unsupported.sse": { defaultMessage: "このブラウザは Server-Sent Events に対応していません。" },
+  "@connect.unsupported.resizeObserver": {
+    defaultMessage: "このブラウザはメッセージの動的な計測に対応していません。",
+  },
+  "@connect.unsupported.randomUuid": {
+    defaultMessage: "このブラウザでは安全なリクエスト識別子を作成できません。",
+  },
+  "@connect.unsupported.title": { defaultMessage: "Connect Client を実行できません" },
+  "@connect.unsupported.description": {
+    defaultMessage: "{reason} Chrome、Edge、Firefox、Safari の最新バージョンに更新してください。",
+  },
+  "@connect.shell.refresh": { defaultMessage: "すべての Session を更新" },
+  "@connect.shell.settings": { defaultMessage: "設定" },
+  "@connect.shell.backToSessions": { defaultMessage: "Session に戻る" },
+  "@connect.home.title": { defaultMessage: "セッションを選択" },
+  "@connect.home.description": {
+    defaultMessage:
+      "左側には、この Connect バインディングで検出できるすべての Project と Non-Project Session が表示されます。",
+  },
+  "@connect.home.note": {
+    defaultMessage: "Web メッセージは Connect バインディングの Agent にのみ送信され、ClawChat には同期されません。",
+  },
+  "@connect.navigation.search.label": { defaultMessage: "Session を検索" },
+  "@connect.navigation.search.placeholder": { defaultMessage: "Session または Project を検索" },
+  "@connect.navigation.newSession": { defaultMessage: "新しい Session" },
+  "@connect.navigation.loading": { defaultMessage: "Session を読み込んでいます" },
+  "@connect.navigation.loadFailure": {
+    defaultMessage: "Session を読み込めません。Connect Service の準備ができていない可能性があります。",
+  },
+  "@connect.navigation.connected": { defaultMessage: "接続済み" },
+  "@connect.navigation.disconnected": { defaultMessage: "切断済み" },
+  "@connect.navigation.unknownStatus": { defaultMessage: "状態不明" },
+  "@connect.navigation.noMatches": { defaultMessage: "一致する Session はありません" },
+  "@connect.navigation.archived": { defaultMessage: "アーカイブ済み" },
+  "@connect.navigation.unnamedWorkspace": { defaultMessage: "名前のないワークスペース" },
+  "@connect.navigation.status.running": { defaultMessage: "実行中" },
+  "@connect.navigation.status.queued": { defaultMessage: "待機中" },
+  "@connect.navigation.status.error": { defaultMessage: "エラー" },
+} satisfies ClientCatalog;

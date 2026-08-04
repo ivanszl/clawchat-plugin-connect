@@ -4,7 +4,7 @@ import { access, mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, expect, type Locator, type Page } from "@playwright/test";
+import { chromium, expect, type Browser, type Locator, type Page } from "@playwright/test";
 
 const port = await availablePort();
 const origin = `http://127.0.0.1:${port}`;
@@ -49,7 +49,7 @@ try {
       await verifyTextOnlySubmissionCopy(browser, origin);
       await verifySkillPicker(browser, origin);
       await verifyCollapsedSessionNavigation(browser, origin);
-      const page = await browser.newPage();
+      const page = await newSimplifiedChinesePage(browser);
       const createRequests: unknown[] = [];
       page.on("request", (request) => {
         if (request.method() !== "POST" || new URL(request.url()).pathname !== "/client/v1/sessions") return;
@@ -218,7 +218,7 @@ async function verifySessionNavigationStaysInSpa(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   previewOrigin: string,
 ) {
-  const page = await browser.newPage();
+  const page = await newSimplifiedChinesePage(browser);
   try {
     await page.addInitScript(() => {
       const key = "connect-document-load-count";
@@ -241,7 +241,7 @@ async function verifySessionNavigationStaysInSpa(
 }
 
 async function verifyRuntimeApproval(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
-  const page = await browser.newPage();
+  const page = await newSimplifiedChinesePage(browser);
   try {
     const responses: unknown[] = [];
     page.on("request", (request) => {
@@ -271,7 +271,7 @@ async function verifyImeConfirmationDoesNotSubmit(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   previewOrigin: string,
 ) {
-  const page = await browser.newPage();
+  const page = await newSimplifiedChinesePage(browser);
   try {
     let submittedTurns = 0;
     page.on("request", (request) => {
@@ -316,7 +316,7 @@ async function verifyImeConfirmationDoesNotSubmit(
 }
 
 async function verifySkillPicker(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
-  const page = await browser.newPage();
+  const page = await newSimplifiedChinesePage(browser);
   try {
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     const input = page.locator(".session-composer [contenteditable='true']");
@@ -358,7 +358,7 @@ async function verifyCollapsedSessionNavigation(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   previewOrigin: string,
 ) {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 320 } });
+  const page = await newSimplifiedChinesePage(browser, { viewport: { width: 1440, height: 320 } });
   try {
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     const navigation = page.locator(".session-nav");
@@ -413,7 +413,7 @@ async function verifyTextOnlySubmissionCopy(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   previewOrigin: string,
 ) {
-  const page = await browser.newPage();
+  const page = await newSimplifiedChinesePage(browser);
   try {
     await page.route(/\/client\/v1\/sessions\/ABCDEFGH\/turn-submissions\//u, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 350));
@@ -437,7 +437,7 @@ async function verifyTextOnlySubmissionCopy(
 }
 
 async function verifyQueuedTurnControls(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
-  const page = await browser.newPage();
+  const page = await newSimplifiedChinesePage(browser);
   const queuedTurns: Array<Record<string, unknown>> = [];
   try {
     await page.route(/\/client\/v1\/events/u, async (route) => await route.abort("blockedbyclient"));
@@ -489,7 +489,7 @@ async function verifyQueuedTurnControls(browser: Awaited<ReturnType<typeof chrom
 }
 
 async function verifyComposerWorkingState(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
-  const page = await browser.newPage({ viewport: { width: 320, height: 704 } });
+  const page = await newSimplifiedChinesePage(browser, { viewport: { width: 320, height: 704 } });
   try {
     await page.route(/\/client\/v1\/events/u, async (route) => await route.abort("blockedbyclient"));
     await page.route(/\/client\/v1\/sessions\/ABCDEFGH(?:\?refresh=1)?$/u, async (route) => {
@@ -530,7 +530,7 @@ async function verifyComposerReturnsIdleAfterTurn(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   previewOrigin: string,
 ) {
-  const page = await browser.newPage();
+  const page = await newSimplifiedChinesePage(browser);
   try {
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     const input = page.locator(".session-composer [contenteditable='true']");
@@ -548,7 +548,7 @@ async function verifyComposerDoesNotStickAfterUnobservedFastTurn(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   previewOrigin: string,
 ) {
-  const page = await browser.newPage();
+  const page = await newSimplifiedChinesePage(browser);
   try {
     await page.route(/\/client\/v1\/events/u, async (route) => await route.abort("blockedbyclient"));
     await page.route(/\/client\/v1\/sessions\/ABCDEFGH(?:\?refresh=1)?$/u, async (route) => {
@@ -577,7 +577,7 @@ async function verifyComposerDoesNotStickAfterUnobservedFastTurn(
 }
 
 async function verifyContinueInClawChat(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
-  const page = await browser.newPage({
+  const page = await newSimplifiedChinesePage(browser, {
     viewport: { width: 320, height: 704 },
     userAgent: "Mozilla/5.0 ConnectClientTest clawchat",
   });
@@ -660,7 +660,7 @@ async function verifyTranscriptAlwaysFollowsLatest(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   previewOrigin: string,
 ) {
-  const page = await browser.newPage({ viewport: { width: 900, height: 420 } });
+  const page = await newSimplifiedChinesePage(browser, { viewport: { width: 900, height: 420 } });
   try {
     await page.goto(previewOrigin);
     const navigation = page.locator(".session-nav");
@@ -709,7 +709,7 @@ async function verifyTranscriptAlwaysFollowsLatest(
 }
 
 async function verifyExternalTuiRefresh(browser: Awaited<ReturnType<typeof chromium.launch>>, previewOrigin: string) {
-  const page = await browser.newPage();
+  const page = await newSimplifiedChinesePage(browser);
   try {
     const initialEventBatch = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/client/v1/events/batch",
@@ -730,7 +730,7 @@ async function verifyTranscriptPresentation(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   previewOrigin: string,
 ) {
-  const page = await browser.newPage();
+  const page = await newSimplifiedChinesePage(browser);
   try {
     await page.goto(previewOrigin);
     const navigation = page.locator(".session-nav");
@@ -797,7 +797,7 @@ async function verifyEmbeddedMobileNavigationDoesNotOverflow(
   browser: Awaited<ReturnType<typeof chromium.launch>>,
   previewOrigin: string,
 ) {
-  const page = await browser.newPage({ viewport: { width: 442, height: 704 } });
+  const page = await newSimplifiedChinesePage(browser, { viewport: { width: 442, height: 704 } });
   try {
     await page.goto(previewOrigin);
     await page.getByTestId("mobile-nav-toggle").click();
@@ -823,7 +823,7 @@ async function verifyEmbeddedMobileNavigationDoesNotOverflow(
 
 async function verifySmallWindowNavigation(browser: Awaited<ReturnType<typeof chromium.launch>>, origin: string) {
   const viewport = { width: 442, height: 704 };
-  const page = await browser.newPage({ viewport });
+  const page = await newSimplifiedChinesePage(browser, { viewport });
   try {
     await page.goto(origin);
     await expect(page).toHaveTitle("ClawChat Connect");
@@ -939,7 +939,7 @@ async function verifyArtifactWorkspaceAtViewport(
   previewOrigin: string,
   viewport: { width: number; height: number },
 ) {
-  const page = await browser.newPage({ viewport });
+  const page = await newSimplifiedChinesePage(browser, { viewport });
   try {
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     await page.getByRole("link", { name: "打开 Artifact 移动端测试" }).click();
@@ -1068,6 +1068,13 @@ async function verifyLongSessionNameDoesNotOverflow(page: Page) {
   assert.equal(layout.titleOverflow, "hidden");
   assert.equal(layout.titleTextOverflow, "ellipsis");
   assert.equal(layout.titleWhiteSpace, "nowrap");
+}
+
+function newSimplifiedChinesePage(
+  browser: Browser,
+  options: Parameters<Browser["newPage"]>[0] = {},
+): ReturnType<Browser["newPage"]> {
+  return browser.newPage({ ...options, locale: "zh-CN" });
 }
 
 async function choose(page: Page, combobox: Locator, optionName: string): Promise<void> {

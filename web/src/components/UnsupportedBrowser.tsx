@@ -1,19 +1,23 @@
 import { Banner } from "@astryxdesign/core/Banner";
+import { useClientTranslator } from "../i18n/client-i18n";
 
-export function unsupportedBrowserReason(): string | null {
-  if (!("EventSource" in window)) return "当前浏览器不支持 Server-Sent Events。";
-  if (!("ResizeObserver" in window)) return "当前浏览器不支持动态消息测量。";
-  if (!("randomUUID" in crypto)) return "当前浏览器缺少安全的请求标识支持。";
+export type UnsupportedBrowserReason = "sse" | "resizeObserver" | "randomUuid";
+
+export function unsupportedBrowserReason(): UnsupportedBrowserReason | null {
+  if (!("EventSource" in window)) return "sse";
+  if (!("ResizeObserver" in window)) return "resizeObserver";
+  if (!("randomUUID" in crypto)) return "randomUuid";
   return null;
 }
 
-export function UnsupportedBrowser({ reason }: { reason: string }) {
+export function UnsupportedBrowser({ reason }: { reason: UnsupportedBrowserReason }) {
+  const t = useClientTranslator();
   return (
     <main className="unsupported-page">
       <Banner
         status="error"
-        title="无法运行 Connect Client"
-        description={`${reason} 请升级到最新版本的 Chrome、Edge、Firefox 或 Safari。`}
+        title={t("@connect.unsupported.title")}
+        description={t("@connect.unsupported.description", { reason: t(`@connect.unsupported.${reason}`) })}
       />
     </main>
   );

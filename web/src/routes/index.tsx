@@ -1,20 +1,26 @@
 import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { VStack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
 import { createFileRoute } from "@tanstack/react-router";
 import { ThreadIcon } from "../components/icons";
+import { useClientTranslator } from "../i18n/client-i18n";
 
 export const Route = createFileRoute("/")({ component: ConnectHome });
 
 function ConnectHome() {
+  const t = useClientTranslator();
   return (
-    <section className="home-page">
-      <div className="home-grid" aria-hidden="true" />
+    <VStack as="section" className="home-page" align="center" justify="center">
+      <VStack className="home-grid" aria-hidden="true" />
       <EmptyState
         headingLevel={1}
         icon={<ThreadIcon className="empty-icon" />}
-        title="选择一个 Session"
-        description="左侧会列出该 Connect 绑定可发现的所有 Project 和 Non-Project Session。"
+        title={t("@connect.home.title")}
+        description={t("@connect.home.description")}
       />
-      <p className="home-note">网页消息只进入 Connect 绑定的 Agent，不会同步回 ClawChat。</p>
-    </section>
+      <Text as="p" className="home-note">
+        {t("@connect.home.note")}
+      </Text>
+    </VStack>
   );
 }

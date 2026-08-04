@@ -1,10 +1,10 @@
-import { AppShell } from "@astryxdesign/core/AppShell";
 import { Button } from "@astryxdesign/core/Button";
 import { Icon } from "@astryxdesign/core/Icon";
+import { LinkProvider } from "@astryxdesign/core/Link";
 import { HStack } from "@astryxdesign/core/Stack";
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Settings } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import {
@@ -14,9 +14,12 @@ import {
   refreshSessionCatalog,
 } from "../../client-interface/query-options";
 import { RefreshIcon } from "../../components/icons";
+import { LocalizedAppShell } from "../../components/LocalizedAppShell";
+import { useClientTranslator } from "../../i18n/client-i18n";
 import { NewSessionDialog, SessionNavigation } from "../session-catalog/SessionNavigation";
 
 export function ConnectAppShell({ children }: { children: ReactNode }) {
+  const t = useClientTranslator();
   const catalog = useQuery(catalogQueryOptions);
   const bootstrap = useQuery(bootstrapQueryOptions);
   const projects = useQuery(projectsQueryOptions);
@@ -32,44 +35,48 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
   const isMobileNavOpen = mobileNav.openedAtPath === pathname && mobileNav.isOpen;
   return (
     <>
-      <AppShell
+      <LocalizedAppShell
         variant="elevated"
         height="fill"
         contentPadding={0}
         topNav={
-          <TopNav
-            label="ClawChat Connect"
-            heading={<TopNavHeading heading="ClawChat Connect" headingHref="/" />}
-            endContent={
-              <HStack gap={1} align="center">
-                <Button
-                  label="刷新全部 Session"
-                  isIconOnly
-                  icon={<RefreshIcon />}
-                  variant="ghost"
-                  size="sm"
-                  isLoading={catalog.isFetching || refresh.isPending}
-                  onClick={() => refresh.mutate()}
-                />
-                <Button
-                  label={isSettings ? "返回 Session" : "设置"}
-                  isIconOnly
-                  icon={<Icon icon={Settings} size="sm" />}
-                  variant={isSettings ? "secondary" : "ghost"}
-                  size="sm"
-                  onClick={() => void navigate({ to: isSettings ? "/" : "/settings" })}
-                />
-              </HStack>
-            }
-          />
+          <LinkProvider component={Link}>
+            <TopNav
+              label="ClawChat Connect"
+              heading={<TopNavHeading heading="ClawChat Connect" headingHref="/" />}
+              endContent={
+                <HStack gap={1} align="center">
+                  <Button
+                    label={t("@connect.shell.refresh")}
+                    isIconOnly
+                    icon={<RefreshIcon />}
+                    variant="ghost"
+                    size="sm"
+                    isLoading={catalog.isFetching || refresh.isPending}
+                    onClick={() => refresh.mutate()}
+                  />
+                  <Button
+                    label={isSettings ? t("@connect.shell.backToSessions") : t("@connect.shell.settings")}
+                    isIconOnly
+                    icon={<Icon icon={Settings} size="sm" />}
+                    variant={isSettings ? "secondary" : "ghost"}
+                    size="sm"
+                    onClick={() => void navigate({ to: isSettings ? "/" : "/settings" })}
+                  />
+                </HStack>
+              }
+            />
+          </LinkProvider>
         }
         sideNav={
-          <SessionNavigation
-            onNewSession={() => {
-              setMobileNav({ isOpen: false, openedAtPath: pathname });
-              setNewSessionOpen(true);
-            }}
-          />
+          <LinkProvider component={Link}>
+            <SessionNavigation
+              onNewSession={() => {
+                setMobileNav({ isOpen: false, openedAtPath: pathname });
+                setNewSessionOpen(true);
+              }}
+            />
+          </LinkProvider>
         }
         mobileNav={{
           breakpoint: "md",
@@ -78,7 +85,7 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
         }}
       >
         {children}
-      </AppShell>
+      </LocalizedAppShell>
       <NewSessionDialog
         isOpen={newSessionOpen}
         bindings={bootstrap.data?.bindings ?? []}
