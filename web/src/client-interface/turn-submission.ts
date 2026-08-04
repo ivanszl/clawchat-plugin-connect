@@ -96,16 +96,28 @@ export function submitTurn(
       const error = value as {
         error?: { code?: string; message?: string; retryable?: boolean; diagnosticRef?: string };
       } | null;
-      finish(() =>
-        reject(
-          new ClientInterfaceError(
-            request.status,
-            error?.error?.code ?? `http-${request.status}`,
-            error?.error?.message ?? `Connect Client 请求失败（HTTP ${request.status}）`,
-            error?.error?.retryable ?? request.status >= 500,
-            error?.error?.diagnosticRef,
-          ),
-        ),
+      const failure = new ClientInterfaceError(
+        request.status,
+        error?.error?.code ?? `http-${request.status}`,
+        error?.error?.message ?? `Connect Client 请求失败（HTTP ${request.status}）`,
+        error?.error?.retryable ?? request.status >= 500,
+        error?.error?.diagnosticRef,
+      );
+      if (error?.error?.code) {
+        finish(() => reject(failure));
+        return;
+      }
+      void requestOutcome(draft.sessionRef, draft.submissionId, "GET").then(
+        (outcome) =>
+          finish(() => {
+            if ("accepted" in outcome) resolve(outcome);
+            else if ("cancelled" in outcome) reject(new TurnSubmissionCancelledError());
+            else
+              reject(
+                new ClientInterfaceError(0, "submission-outcome-unknown", "无法确认提交结果，请使用相同提交重试", true),
+              );
+          }),
+        () => finish(() => reject(failure)),
       );
     });
     request.addEventListener("abort", () => {

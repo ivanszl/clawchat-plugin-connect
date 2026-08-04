@@ -132,4 +132,42 @@ describe("Client Turn Submission ownership", () => {
       globalThis.XMLHttpRequest = originalXhr;
     }
   });
+
+  test("reconciles a non-Connect HTTP failure with an accepted submission outcome", async () => {
+    const originalFetch = globalThis.fetch;
+    const originalXhr = globalThis.XMLHttpRequest;
+    class FakeXMLHttpRequest extends EventTarget {
+      readonly upload = new EventTarget();
+      status = 400;
+      responseText = "upstream response was interrupted";
+      open(): void {}
+      setRequestHeader(): void {}
+      send(): void {
+        queueMicrotask(() => this.dispatchEvent(new Event("load")));
+      }
+      abort(): void {}
+    }
+    globalThis.XMLHttpRequest = FakeXMLHttpRequest as unknown as typeof XMLHttpRequest;
+    globalThis.fetch = mock(async (input, init) => {
+      expect(String(input)).toBe("/client/v1/sessions/NKEP79B8/turn-submissions/submission-1");
+      expect(init?.method).toBe("GET");
+      return new Response(JSON.stringify({ accepted: true, turnId: "turn-1", sessionRef: "NKEP79B8" }), {
+        status: 202,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    try {
+      await expect(
+        submitTurn({
+          submissionId: "submission-1",
+          sessionRef: "NKEP79B8",
+          prompt: "hello",
+          attachments: [],
+        }),
+      ).resolves.toEqual({ accepted: true, turnId: "turn-1", sessionRef: "NKEP79B8" });
+    } finally {
+      globalThis.fetch = originalFetch;
+      globalThis.XMLHttpRequest = originalXhr;
+    }
+  });
 });
