@@ -112,6 +112,10 @@ _Avoid_: Stream Replay, Exactly-Once Streaming
 An optional publication of one Agent Binding's Connect Client view inside its Binding Owner's ClawChat account through a dedicated Liveware App. It adds a Binding-scoped ClawChat interaction surface without replacing Connect Service, Connect Client, or Client Interface ownership.
 _Avoid_: Connect deployment, Liveware Client, when referring to the publication boundary
 
+**Connect Client Locale**:
+The language used for Connect Client interface copy across local, trusted-LAN, and Liveware Exposure entrypoints. It is one of Simplified Chinese, Traditional Chinese, English, Japanese, Spanish, or Korean and does not translate user-authored or Runtime-authored content.
+_Avoid_: Content language, Runtime language, translation mode
+
 **Binding-Scoped Client Gateway**:
 The loopback HTTP boundary dedicated to one Agent Binding's Liveware Exposure. It supplies a trusted non-user-selectable Binding scope to Client Interface reads, mutations, transcripts, and event streams while leaving Projects installation-global.
 _Avoid_: Shared Client port, user-selected Binding filter
