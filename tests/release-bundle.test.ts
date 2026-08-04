@@ -222,6 +222,13 @@ describe("standalone release bundle", () => {
     expect(workflow).not.toMatch(/^\s*bun-linux-x64 linux x64$/mu);
     expect(workflow).toContain("install.ps1");
     expect(workflow).toContain("--notes-file build/release-notes.md");
+    const commands = workflow.split("\n").map((line) => line.trim());
+    const createIndex = commands.indexOf(`gh release create "\${GITHUB_REF_NAME}" build/release/* \\`);
+    expect(createIndex).toBeGreaterThan(-1);
+    expect(commands.slice(createIndex + 1, createIndex + 5)).toContain("--prerelease \\");
+    expect(commands).toContain(
+      `gh release edit "\${GITHUB_REF_NAME}" --prerelease --notes-file build/release-notes.md`,
+    );
     expect(workflow).toContain("release-channel");
     expect(workflow).toContain("latest-beta.txt");
   });
@@ -263,6 +270,12 @@ describe("standalone release bundle", () => {
     expect(packageManifest.scripts["check:core"]).not.toContain("test:client-web");
     expect(packageManifest.scripts.check).toContain("bun run check:core");
     expect(packageManifest.scripts.check).toContain("bun run test:client-web");
+  });
+
+  it("documents the beta workflow as the current release channel", async () => {
+    const readme = await readFile("README.md", "utf8");
+    expect(readme).toContain("Version tags such as `v0.1.0-beta.1` run the beta release workflow");
+    expect(readme).toContain("`release-channel/latest-beta.txt` pointer used by default installs and updates");
   });
 
   it("uses vendored, verified Liveware assets for npm packages and local compiled builds", async () => {

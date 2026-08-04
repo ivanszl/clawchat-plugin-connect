@@ -152,7 +152,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # prerelease: true (enforced in both create and edit paths)
           package_version="${GITHUB_REF_NAME#v}"
           awk -v heading="## [${package_version}]" '
             index($0, heading) == 1 { printing = 1 }
