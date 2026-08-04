@@ -26,6 +26,8 @@ coverage/
 .tmp/
 tmp/
 .scratch/
+.worktrees/
+.superpowers/
 
 # OS and editor metadata
 .DS_Store
