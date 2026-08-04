@@ -1,6 +1,6 @@
 # Contributing
 
-ClawChat Connect is currently alpha software. Before opening a pull request:
+ClawChat Connect is currently beta software. Before opening a pull request:
 
 1. Install the pinned Bun version from `package.json` and run `bun install --frozen-lockfile`.
 2. Read `CONTEXT.md` and the relevant records under `docs/adr/` before changing domain or runtime behavior.

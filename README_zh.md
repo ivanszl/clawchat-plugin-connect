@@ -62,7 +62,7 @@ ClawChat 入口负责对话范围内的工作；Project 注册、Service 管理�
 OpenCode 兼容性固定为 `1.18.10`。WorkBuddy 仅支持 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) 中列出的两个精确 Desktop tuple。Connect 不会安装或升级任一运行时；通用能力边界见 [Runtime Adapters](./docs/runtime-adapters.md)。
 
 > [!IMPORTANT]
-> ClawChat Connect 仍处于 Alpha 阶段。启用可信局域网或公开 Liveware 访问前，请先阅读[本地数据与安全](#本地数据与安全)。
+> ClawChat Connect 仍处于 Beta 阶段，尚未稳定。启用可信局域网或公开 Liveware 访问前，请先阅读[本地数据与安全](#本地数据与安全)。
 
 ## 环境要求
 
@@ -112,7 +112,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.33
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-beta.1
 ```
 
 Windows PowerShell 用户应先下载安装脚本并检查其内容：
@@ -139,7 +139,7 @@ bun add --global @clawling/clawchat-plugin-connect
 clawchat-connect update
 ```
 
-使用 `clawchat-connect update --version v0.1.0-alpha.33` 可安装指定版本。更新命令会保留现有配置并刷新系统原生的 Connect Service。
+使用 `clawchat-connect update --version v0.1.0-beta.1` 可安装指定版本。更新命令会保留现有配置并刷新系统原生的 Connect Service；明确指定时，历史版本仍可安装。
 
 ### 2. 创建 Agent Binding
 
@@ -476,10 +476,16 @@ OpenCode 能力与原生 Session 生命周期集成测试：
 OPENCODE_EXECUTABLE=/absolute/path/to/opencode bun run test:integration:opencode
 ```
 
+`bun run build:binary` 会生成较轻量的未打包独立构建，并将 Connect 可执行文件及已校验 SHA-256 的当前平台 Liveware 资源写入 `dist/`；Windows 构建使用 `.exe` 名称。
+
+`bun run build:release` 会生成当前主机的可分发发行包，并将归档文件、安装器、`CHANGELOG.md` 和 SHA-256 校验和写入 `build/release/`。
+
+匹配 `v*-beta.*` 的标签会运行 [`.github/workflows/release-beta.yml`](./.github/workflows/release-beta.yml)。该工作流校验标签与 `package.json`、运行确定性代码检查、验证全部六个内置 Liveware 资源，并构建 macOS、Linux 和 Windows 的 arm64/x64 二进制。所有资源发布后，工作流会更新供默认安装和更新使用的 [`release-channel/latest-beta.txt`](https://github.com/XMethues/clawchat-plugin-connect/blob/release-channel/latest-beta.txt) 指针。
+
 贡献代码前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)、[CONTEXT.md](./CONTEXT.md) 和相关 [ADR](./docs/adr/)。
 
 ## 许可证
 
 ClawChat Connect 使用 [MIT License](./LICENSE)。内置依赖的许可证声明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
-> 英文 README 是完整的规范参考。中文文档聚焦安装和日常使用；高级配置、发布流程和所有边界行为请查阅[英文版本](./README.md)。
+> 英文 README 是完整的规范参考。中文文档聚焦安装和日常使用；高级配置和所有边界行为请查阅[英文版本](./README.md)。

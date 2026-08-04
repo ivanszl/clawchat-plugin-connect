@@ -2,6 +2,17 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-beta.1] - 2026-08-04
+
+### Added
+
+- Added Connect Client internationalization and localization validation, plus ClawChat and Connect Client showcase screenshots.
+- Added `bun run build:release` for current-platform release packaging with checksums.
+
+### Changed
+
+- Promoted the default installers and release automation to the beta channel.
+
 ## [0.1.0-alpha.33] - 2026-08-03
 
 ### Changed

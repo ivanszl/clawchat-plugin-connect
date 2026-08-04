@@ -31,11 +31,11 @@ ClawChat Connect is a local bridge between ClawChat and coding-agent runtimes. I
 </p>
 
 <p align="center">
-  <img src="./docs/assets/connect-client-liveware-empty.png" alt="ClawChat Connect Client opened through Liveware" width="100%" />
+  <img src="./docs/assets/connect-client-liveware-empty.png" alt="ClawChat Connect Client Liveware empty state" width="100%" />
 </p>
 
 <p align="center">
-  <img src="./docs/assets/connect-client-liveware-session.png" alt="A Codex Session running in ClawChat Connect Client through Liveware" width="100%" />
+  <img src="./docs/assets/connect-client-liveware-session.png" alt="ClawChat Connect Client Liveware active Codex Session" width="100%" />
 </p>
 
 ## Features
@@ -74,7 +74,7 @@ The ClawChat surface is for conversation-scoped work. Local Project registration
 OpenCode compatibility is pinned to OpenCode `1.18.10`. WorkBuddy supports only the two exact desktop tuples documented in [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md). Connect does not install or upgrade any runtime. See [Runtime Adapters](./docs/runtime-adapters.md) for the general capability boundary.
 
 > [!IMPORTANT]
-> ClawChat Connect is alpha software. Review [Local data and security](#local-data-and-security) before enabling trusted-LAN or public Liveware access.
+> ClawChat Connect is beta software. Review [Local data and security](#local-data-and-security) before enabling trusted-LAN or public Liveware access.
 
 ## Requirements
 
@@ -126,7 +126,7 @@ To install a specific release or choose another directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-alpha.33
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-beta.1
 ```
 
 On Windows PowerShell, download and inspect the installer before running it:
@@ -143,7 +143,7 @@ The Windows installer verifies the Release ZIP checksum, installs `clawchat-conn
 
 ```powershell
 .\install.ps1 `
-  -Version v0.1.0-alpha.33 `
+  -Version v0.1.0-beta.1 `
   -InstallDirectory "D:\Tools\ClawChatConnect"
 ```
 
@@ -159,7 +159,7 @@ Update an existing installation to the latest published release:
 clawchat-connect update
 ```
 
-Use `clawchat-connect update --version v0.1.0-alpha.33` to install a specific release. The update command preserves the existing configuration and refreshes the native Connect Service.
+Use `clawchat-connect update --version v0.1.0-beta.1` to install a specific release. The update command preserves the existing configuration and refreshes the native Connect Service. Historical versions remain installable when explicitly specified.
 
 ### 2. Create the first Agent Binding
 
@@ -587,7 +587,9 @@ OPENCODE_EXECUTABLE=/absolute/path/to/opencode bun run test:integration:opencode
 
 Create a local standalone bundle with `bun run build:binary`; it verifies the vendored host-platform Liveware asset's SHA-256 and places it beside the Connect executable under `dist/`. Windows builds use `.exe` names. Preview the browser client with `bun run preview:web`.
 
-Version tags such as `v0.1.0-beta.1` run the beta release workflow, which checks the tag against `package.json`, runs deterministic code checks, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. Installed WorkBuddy, ClawChat, and Liveware UI qualification runs locally before tagging and never sends native Task configuration to GitHub Actions. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. After all assets are published, the workflow advances the API-independent `release-channel/latest-beta.txt` pointer used by default installs and updates. npm packages include all six assets so a global Bun install remains portable.
+Create a distributable release for the current host with `bun run build:release`. It writes the archive, installers, `CHANGELOG.md`, and SHA-256 checksums under `build/release/`.
+
+Tags matching `v*-beta.*` run [`.github/workflows/release-beta.yml`](./.github/workflows/release-beta.yml), which checks the tag against `package.json`, runs deterministic code checks, verifies all six vendored Liveware assets, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. Installed WorkBuddy, ClawChat, and Liveware UI qualification runs locally before tagging and never sends native Task configuration to GitHub Actions. macOS/Linux are published as `.tar.gz`; Windows is published as `.zip` with `install.ps1`. After all assets are published, the workflow advances the API-independent [`release-channel/latest-beta.txt`](https://github.com/XMethues/clawchat-plugin-connect/blob/release-channel/latest-beta.txt) pointer used by default installs and updates. npm packages include all six assets so a global Bun install remains portable.
 
 ## License
 
