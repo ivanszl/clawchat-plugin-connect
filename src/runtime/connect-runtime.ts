@@ -743,7 +743,7 @@ async function resolveLocalReplyMedia(
   workspace: RuntimeWorkspace,
 ): Promise<{ text: string; files: LocalReplyMediaFile[] }> {
   const roots = await Promise.all(
-    [join(dirname(stateDbPath), "media-cache"), workspace.workingDirectory, ...workspace.additionalDirectories].map(
+    [join(dirname(stateDbPath), "media-cache"), workspace.workingDirectory].map(
       async (root) => await realpath(root).catch(() => null),
     ),
   );

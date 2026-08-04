@@ -1,6 +1,5 @@
 <div align="center">
   <p><a href="./README.md">English</a> | <strong>中文</strong></p>
-  <a href="https://clawling.com/chat/"><img src="./docs/assets/clawchat.svg" alt="ClawChat 标志" width="152" /></a>
   <h1>ClawChat Connect</h1>
   <p><strong>把运行在你电脑上的编程 Agent 接入任意 ClawChat 对话。</strong></p>
   <p>
@@ -215,7 +214,9 @@ clawchat-connect project add /absolute/path/to/clawchat-plugin-connect
 clawchat-connect project list
 ```
 
-需要额外可信写入目录时，可重复使用 `--additional-directory /absolute/path`。随后在 ClawChat 中选择 Project 和 Session 选项：
+Connect Client 可以浏览 Connect Service 主机上的目录、新建文件夹并注册 Project。新建 Session 对话框也支持暂存同一操作，只有确认创建 Session 时才会创建文件夹、Project 和 Session。随后在 ClawChat 中选择 Project 和 Session 选项：
+
+目录选择器会向所有能打开 Client 的用户展示主机目录名称和结构，但不会展示文件内容；这也包括 public Liveware Exposure 或可信局域网所允许的用户。
 
 ```text
 /project connect
@@ -232,7 +233,7 @@ clawchat-connect project list
 
 | 命令 | 用途 |
 | --- | --- |
-| `clawchat-connect project add <absolute-path> [--additional-directory <path>]` | 以根目录名称注册 Project，并添加可选的额外可信目录。 |
+| `clawchat-connect project add <absolute-path>` | 以根目录名称注册 Project。 |
 | `clawchat-connect project list` | 列出 Project 及其本地路径。 |
 | `clawchat-connect project remove <workspace-id>` | 移除未使用的 Project 定义；不会删除文件或 Runtime Thread。 |
 
@@ -324,7 +325,7 @@ clawchat-connect service restart
 然后打开 `http://<电脑局域网-IP>:47823/`。
 
 > [!WARNING]
-> 局域网模式没有身份验证或 TLS。任何能访问该端口的人都可以读取 Session、管理 Project 路径与运行时偏好，并提交本地编程 Agent 任务。绝对不要暴露到互联网。
+> 局域网模式没有身份验证或 TLS。任何能访问该端口的人都可以枚举主机目录名称与结构、读取 Session、管理 Project 路径与运行时偏好，并提交本地编程 Agent 任务。绝对不要暴露到互联网。
 
 恢复仅本机访问：
 
@@ -342,7 +343,7 @@ ClawChat 传入的媒体会保留结构化信息：
 - 单个下载上限为 100 MiB；
 - 缓存上限为 512 MiB，文件连续 15 天未访问后过期。
 
-运行时返回本地 Markdown 图片时，只有位于 Project 工作区、允许的额外目录或 Connect 媒体缓存内，且扩展名与文件签名确认为 PNG、JPEG、GIF 或 WebP，Connect 才会上传到 ClawChat。其他本地路径只作为文本返回。
+运行时返回本地 Markdown 图片时，只有位于 Project 工作区或 Connect 媒体缓存内，且扩展名与文件签名确认为 PNG、JPEG、GIF 或 WebP，Connect 才会上传到 ClawChat。其他本地路径只作为文本返回。
 
 ## 配置
 

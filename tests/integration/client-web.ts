@@ -1,11 +1,15 @@
 import { strict as assert } from "node:assert";
 import { constants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { chromium, expect, type Locator, type Page } from "@playwright/test";
 
 const port = await availablePort();
 const origin = `http://127.0.0.1:${port}`;
+const inlineProjectRoot = await mkdtemp(join(tmpdir(), "clawchat-connect-inline-project-"));
+const canonicalInlineProjectRoot = await realpath(inlineProjectRoot);
 const server = Bun.spawn({
   cmd: [process.execPath, "tests/fixtures/client-preview-server.ts"],
   cwd: process.cwd(),
@@ -53,9 +57,12 @@ try {
       });
       await page.goto(origin);
       const projectViews = await page.evaluate(async () => await (await fetch("/client/v1/projects")).json());
-      const connectWorkspaceId = (projectViews as Array<{ workspaceId: string; name: string }>).find(
-        (project) => project.name === "clawchat-plugin-connect",
-      )?.workspaceId;
+      const typedProjects = projectViews as Array<{ workspaceId: string; name: string; rootPath: string }>;
+      const connectProject = typedProjects.find((project) => project.name === "clawchat-plugin-connect");
+      const discoveredProject = typedProjects.find((project) => project.name === "discovered-workspace");
+      assert(connectProject, "preview Project must be available");
+      assert(discoveredProject, "discovered Project must be available");
+      const connectWorkspaceId = connectProject?.workspaceId;
       assert(connectWorkspaceId, "preview Project must expose its Workspace ID");
       await expect(page.getByRole("heading", { name: "选择一个 Session" })).toBeVisible();
       const navigation = page.locator(".session-nav");
@@ -71,12 +78,18 @@ try {
       await dialog.getByRole("textbox", { name: /^名称/u }).fill("Browser-created Session");
       await expect(dialog.getByRole("textbox", { name: "首个任务" })).toHaveCount(0);
       await dialog.getByRole("combobox", { name: "Project" }).click();
-      await expect(page.getByRole("option", { name: "discovered-workspace", exact: true })).toHaveCount(1);
+      await expect(
+        page.getByRole("option", {
+          name: `discovered-workspace · ${discoveredProject.rootPath}`,
+          exact: true,
+        }),
+      ).toHaveCount(1);
       await expect(page.getByText("已发现工作区", { exact: false })).toHaveCount(0);
-      await expect(page.getByRole("option", { name: "clawchat-plugin-connect", exact: true })).toBeVisible();
+      const connectProjectOption = `clawchat-plugin-connect · ${connectProject.rootPath}`;
+      await expect(page.getByRole("option", { name: connectProjectOption, exact: true })).toBeVisible();
       await expect(page.getByRole("option", { name: "connect-qa", exact: true })).toHaveCount(0);
       await page.keyboard.press("Escape");
-      await choose(page, dialog.getByRole("combobox", { name: "Project" }), "clawchat-plugin-connect");
+      await choose(page, dialog.getByRole("combobox", { name: "Project" }), connectProjectOption);
       await choose(page, dialog.getByRole("combobox", { name: "模式" }), "read-only");
       await choose(page, dialog.getByRole("combobox", { name: "模型" }), "Deep model (gpt-deep)");
 
@@ -104,11 +117,38 @@ try {
       assert.equal(createRequests.length, 1, "new Session UI must submit one semantic request");
       assert.deepEqual(withoutRequestId(createRequests[0]), {
         bindingId: "codex",
-        workspaceId: connectWorkspaceId,
+        workspace: { kind: "existing", workspaceId: connectWorkspaceId },
         name: "Browser-created Session",
         mode: "read-only",
         model: "gpt-deep",
         reasoningEffort: "xhigh",
+      });
+
+      await page.getByRole("button", { name: "新建 Session" }).click();
+      const inlineDialog = page.getByRole("dialog");
+      await inlineDialog.getByRole("textbox", { name: /^名称/u }).fill("Inline Project Session");
+      await choose(page, inlineDialog.getByRole("combobox", { name: "模式" }), "默认模式");
+      await choose(page, inlineDialog.getByRole("combobox", { name: "模型" }), "继承 Agent Binding / Runtime 默认值");
+      await choose(page, inlineDialog.getByRole("combobox", { name: "Project" }), "创建新 Project…");
+      await expect(inlineDialog.getByRole("heading", { name: "选择 Project 目录" })).toBeVisible();
+      await inlineDialog.getByRole("textbox", { name: "主机绝对路径" }).fill(inlineProjectRoot);
+      await inlineDialog.getByRole("button", { name: "打开", exact: true }).click();
+      await expect(inlineDialog.getByText(canonicalInlineProjectRoot, { exact: true })).toBeVisible();
+      await inlineDialog.getByRole("button", { name: "选择此目录" }).click();
+      await expect(inlineDialog.getByRole("combobox", { name: "Project" })).toContainText(canonicalInlineProjectRoot);
+      await inlineDialog.getByRole("button", { name: "创建 Session" }).click();
+      await expect(page.getByRole("heading", { name: "Inline Project Session" })).toBeVisible();
+      assert.equal(createRequests.length, 2, "inline Project Session UI must submit one semantic request");
+      assert.deepEqual(withoutRequestId(createRequests[1]), {
+        bindingId: "codex",
+        workspace: {
+          kind: "new-project",
+          directory: { kind: "existing-directory", rootPath: canonicalInlineProjectRoot },
+        },
+        name: "Inline Project Session",
+        mode: null,
+        model: null,
+        reasoningEffort: null,
       });
 
       await page.getByText("Non-Project scratch", { exact: true }).click();
@@ -125,7 +165,7 @@ try {
       await page.getByRole("button", { name: "设置", exact: true }).click();
       await expect(page.getByRole("heading", { name: "安全偏好设置" })).toBeVisible();
       await page
-        .locator(".project-settings-row")
+        .getByRole("listitem")
         .filter({ hasText: "clawchat-plugin-connect" })
         .getByRole("button", { name: "移除", exact: true })
         .click();
@@ -143,6 +183,7 @@ try {
 } finally {
   server.kill("SIGTERM");
   await server.exited;
+  await rm(inlineProjectRoot, { recursive: true, force: true });
 }
 
 async function verifyTranscriptCompletenessIsSilent(
@@ -969,7 +1010,7 @@ async function verifyLongSessionNameDoesNotOverflow(page: Page) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         bindingId: "codex",
-        workspaceId,
+        workspace: { kind: "existing", workspaceId },
         name,
         mode: null,
         model: null,

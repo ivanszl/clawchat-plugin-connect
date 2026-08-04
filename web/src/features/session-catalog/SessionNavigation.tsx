@@ -16,12 +16,14 @@ import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import type {
   BindingPreferenceView,
+  ProjectDirectoryRequest,
   ProjectView,
   SessionCatalogBindingView,
   SessionCatalogEntryView,
 } from "../../../../src/client-contract";
 import { catalogQueryOptions, createSession } from "../../client-interface/query-options";
 import { AddIcon, FolderIcon, ThreadIcon } from "../../components/icons";
+import { HostDirectoryPicker, projectDirectoryLabel } from "../projects/HostDirectoryPicker";
 
 export function SessionNavigation({ onNewSession }: { onNewSession: () => void }) {
   const catalog = useQuery(catalogQueryOptions);
@@ -141,6 +143,8 @@ export function NewSessionDialog({
   const queryClient = useQueryClient();
   const [bindingId, setBindingId] = useState(bindings[0]?.bindingId ?? "");
   const [workspaceSelection, setWorkspaceSelection] = useState("none");
+  const [pendingProject, setPendingProject] = useState<ProjectDirectoryRequest | null>(null);
+  const [isPickingProject, setIsPickingProject] = useState(false);
   const [name, setName] = useState("");
   const [mode, setMode] = useState("default");
   const [model, setModel] = useState("default");
@@ -148,6 +152,12 @@ export function NewSessionDialog({
   useEffect(() => {
     if (!bindings.some((binding) => binding.bindingId === bindingId)) setBindingId(bindings[0]?.bindingId ?? "");
   }, [bindingId, bindings]);
+  useEffect(() => {
+    if (isOpen) return;
+    setIsPickingProject(false);
+    setPendingProject(null);
+    setWorkspaceSelection("none");
+  }, [isOpen]);
   const binding = bindings.find((candidate) => candidate.bindingId === bindingId) ?? bindings[0];
   const workspaceOptions = newSessionWorkspaceOptions(catalogBindings, bindingId, projects);
   const selectedModel = binding?.modelOptions.find((candidate) => candidate.id === model);
@@ -155,7 +165,11 @@ export function NewSessionDialog({
     mutationFn: async () =>
       await createSession({
         bindingId,
-        workspaceId: workspaceSelection === "none" ? null : workspaceSelection,
+        workspace: pendingProject
+          ? { kind: "new-project", directory: pendingProject }
+          : workspaceSelection === "none"
+            ? { kind: "none" }
+            : { kind: "existing", workspaceId: workspaceSelection },
         name: name.trim() || null,
         mode: mode === "default" ? null : mode,
         model: model === "default" ? null : model,
@@ -172,6 +186,8 @@ export function NewSessionDialog({
     setModel("default");
     setReasoningEffort("default");
     setWorkspaceSelection("none");
+    setPendingProject(null);
+    setIsPickingProject(false);
   };
   return (
     <Dialog
@@ -182,86 +198,126 @@ export function NewSessionDialog({
       width={520}
       maxHeight="calc(100dvh - var(--spacing-6))"
     >
-      <Layout
-        header={<DialogHeader title="新建 Session" subtitle="一次选择工作区和运行选项。" onOpenChange={onOpenChange} />}
-        content={
-          <LayoutContent className="new-session-dialog-content">
-            <VStack gap={4}>
-              <TextInput label="名称" value={name} onChange={setName} isOptional width="100%" />
-              <Selector
-                label="Agent Binding"
-                options={bindings.map((candidate) => ({
-                  value: candidate.bindingId,
-                  label: `${candidate.displayName} (${candidate.bindingId})`,
-                }))}
-                value={bindingId}
-                onChange={changeBinding}
-                width="100%"
-              />
-              <Selector
-                label="Project"
-                options={[{ value: "none", label: "Non-Project（隔离工作区）" }, ...workspaceOptions]}
-                value={workspaceSelection}
-                onChange={setWorkspaceSelection}
-                width="100%"
-              />
-              <Selector
-                label="模式"
-                options={[
-                  { value: "default", label: "默认模式" },
-                  ...(binding?.modeOptions.map((value) => ({ value, label: value })) ?? []),
-                ]}
-                value={mode}
-                onChange={setMode}
-                width="100%"
-              />
-              <Selector
-                label="模型"
-                options={[
-                  { value: "default", label: "继承 Agent Binding / Runtime 默认值" },
-                  ...(binding?.modelOptions.map((option) => ({
-                    value: option.id,
-                    label: `${option.displayName} (${option.id})`,
-                  })) ?? []),
-                ]}
-                value={model}
-                onChange={(value) => {
-                  const option = binding?.modelOptions.find((candidate) => candidate.id === value);
-                  setModel(value);
-                  setReasoningEffort(option?.defaultReasoningEffort ?? "default");
+      {isPickingProject ? (
+        <Layout
+          header={
+            <DialogHeader
+              title="选择 Project 目录"
+              subtitle="浏览运行 Connect Service 的主机。"
+              onOpenChange={onOpenChange}
+            />
+          }
+          content={
+            <LayoutContent className="new-session-dialog-content">
+              <HostDirectoryPicker
+                onCancel={() => setIsPickingProject(false)}
+                onSelect={(directory) => {
+                  setPendingProject(directory);
+                  setWorkspaceSelection("pending-project");
+                  setIsPickingProject(false);
                 }}
-                isDisabled={!binding || binding.modelOptions.length === 0}
-                disabledMessage="Runtime Adapter 不支持模型选择。"
-                width="100%"
               />
-              <Selector
-                label="推理强度"
-                options={selectedModel?.supportedReasoningEfforts ?? ["default"]}
-                value={reasoningEffort}
-                onChange={setReasoningEffort}
-                isDisabled={!selectedModel}
-                disabledMessage="先选择一个 Session 模型。"
-                width="100%"
-              />
-              {create.isError ? <Banner status="error" title="创建失败" description={create.error.message} /> : null}
-            </VStack>
-          </LayoutContent>
-        }
-        footer={
-          <LayoutFooter hasDivider>
-            <HStack gap={2} justify="end">
-              <Button label="取消" onClick={() => onOpenChange(false)} />
-              <Button
-                label="创建 Session"
-                variant="primary"
-                isLoading={create.isPending}
-                isDisabled={!bindingId}
-                onClick={() => create.mutate()}
-              />
-            </HStack>
-          </LayoutFooter>
-        }
-      />
+            </LayoutContent>
+          }
+        />
+      ) : (
+        <Layout
+          header={
+            <DialogHeader title="新建 Session" subtitle="一次选择工作区和运行选项。" onOpenChange={onOpenChange} />
+          }
+          content={
+            <LayoutContent className="new-session-dialog-content">
+              <VStack gap={4}>
+                <TextInput label="名称" value={name} onChange={setName} isOptional width="100%" />
+                <Selector
+                  label="Agent Binding"
+                  options={bindings.map((candidate) => ({
+                    value: candidate.bindingId,
+                    label: `${candidate.displayName} (${candidate.bindingId})`,
+                  }))}
+                  value={bindingId}
+                  onChange={changeBinding}
+                  width="100%"
+                />
+                <Selector
+                  label="Project"
+                  options={[
+                    { value: "none", label: "Non-Project（隔离工作区）" },
+                    ...workspaceOptions,
+                    ...(pendingProject
+                      ? [{ value: "pending-project", label: `新 Project · ${projectDirectoryLabel(pendingProject)}` }]
+                      : []),
+                    { value: "create-project", label: "创建新 Project…" },
+                  ]}
+                  value={workspaceSelection}
+                  onChange={(value) => {
+                    if (value === "create-project") {
+                      setIsPickingProject(true);
+                      return;
+                    }
+                    setWorkspaceSelection(value);
+                    if (value !== "pending-project") setPendingProject(null);
+                  }}
+                  width="100%"
+                />
+                <Selector
+                  label="模式"
+                  options={[
+                    { value: "default", label: "默认模式" },
+                    ...(binding?.modeOptions.map((value) => ({ value, label: value })) ?? []),
+                  ]}
+                  value={mode}
+                  onChange={setMode}
+                  width="100%"
+                />
+                <Selector
+                  label="模型"
+                  options={[
+                    { value: "default", label: "继承 Agent Binding / Runtime 默认值" },
+                    ...(binding?.modelOptions.map((option) => ({
+                      value: option.id,
+                      label: `${option.displayName} (${option.id})`,
+                    })) ?? []),
+                  ]}
+                  value={model}
+                  onChange={(value) => {
+                    const option = binding?.modelOptions.find((candidate) => candidate.id === value);
+                    setModel(value);
+                    setReasoningEffort(option?.defaultReasoningEffort ?? "default");
+                  }}
+                  isDisabled={!binding || binding.modelOptions.length === 0}
+                  disabledMessage="Runtime Adapter 不支持模型选择。"
+                  width="100%"
+                />
+                <Selector
+                  label="推理强度"
+                  options={selectedModel?.supportedReasoningEfforts ?? ["default"]}
+                  value={reasoningEffort}
+                  onChange={setReasoningEffort}
+                  isDisabled={!selectedModel}
+                  disabledMessage="先选择一个 Session 模型。"
+                  width="100%"
+                />
+                {create.isError ? <Banner status="error" title="创建失败" description={create.error.message} /> : null}
+              </VStack>
+            </LayoutContent>
+          }
+          footer={
+            <LayoutFooter hasDivider>
+              <HStack gap={2} justify="end">
+                <Button label="取消" onClick={() => onOpenChange(false)} />
+                <Button
+                  label="创建 Session"
+                  variant="primary"
+                  isLoading={create.isPending}
+                  isDisabled={!bindingId}
+                  onClick={() => create.mutate()}
+                />
+              </HStack>
+            </LayoutFooter>
+          }
+        />
+      )}
     </Dialog>
   );
 }
@@ -280,8 +336,10 @@ function newSessionWorkspaceOptions(
     });
   }
   for (const project of projects) {
-    if (options.has(project.workspaceId)) continue;
-    options.set(project.workspaceId, { value: project.workspaceId, label: project.name });
+    options.set(project.workspaceId, {
+      value: project.workspaceId,
+      label: `${project.name} · ${project.rootPath}`,
+    });
   }
   return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
 }

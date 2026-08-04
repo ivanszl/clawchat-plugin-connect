@@ -296,7 +296,32 @@ export interface ProjectView {
   workspaceId: string;
   name: string;
   rootPath: string;
-  additionalDirectories: string[];
+}
+
+export type ProjectDirectoryRequest =
+  | { kind: "existing-directory"; rootPath: string }
+  | { kind: "new-directory"; parentPath: string; name: string };
+
+export interface HostDirectoryLocationView {
+  id: string;
+  kind: "home" | "filesystem-root" | "mounted-volume" | "project" | "runtime-workspace";
+  name: string;
+  path: string;
+}
+
+export interface HostDirectoryEntryView {
+  name: string;
+  path: string;
+  canonicalPath: string;
+  isSymbolicLink: boolean;
+}
+
+export interface HostDirectoryListingView {
+  currentPath: string | null;
+  parentPath: string | null;
+  separator: string;
+  locations: HostDirectoryLocationView[];
+  entries: HostDirectoryEntryView[];
 }
 
 export interface BindingPreferenceView {
@@ -412,7 +437,10 @@ export interface ClientMediaAttachment {
 export interface CreateSessionRequest {
   requestId: string;
   bindingId: string;
-  workspaceId: string | null;
+  workspace:
+    | { kind: "none" }
+    | { kind: "existing"; workspaceId: string }
+    | { kind: "new-project"; directory: ProjectDirectoryRequest };
   name: string | null;
   mode: string | null;
   model: string | null;
@@ -448,8 +476,7 @@ export interface UpdateSessionPreferencesRequest {
 
 export interface AddProjectRequest {
   requestId: string;
-  rootPath: string;
-  additionalDirectories: string[];
+  directory: ProjectDirectoryRequest;
 }
 
 export interface SessionArchiveResponse {

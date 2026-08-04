@@ -96,7 +96,6 @@ export interface ProjectRecord {
   projectId: string;
   name: string;
   rootPath: string;
-  additionalDirectories: string[];
   createdAt: number;
   updatedAt: number;
 }
@@ -104,7 +103,6 @@ export interface ProjectRecord {
 export interface RuntimeWorkspace {
   projectId: string | null;
   workingDirectory: string;
-  additionalDirectories: string[];
   skipGitRepoCheck: boolean;
 }
 

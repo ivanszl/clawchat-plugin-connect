@@ -4,6 +4,8 @@ import type {
   BootstrapView,
   CancelTurnResponse,
   CreateSessionRequest,
+  HostDirectoryListingView,
+  ProjectDirectoryRequest,
   ProjectView,
   RespondToRuntimeInteractionRequest,
   RuntimeInteractionBlock,
@@ -26,6 +28,8 @@ export const clientKeys = {
   transcript: (sessionRef: string) => ["client", "transcript", sessionRef] as const,
   slashSuggestions: (sessionRef: string) => ["client", "slash-suggestions", sessionRef] as const,
   projects: ["client", "projects"] as const,
+  hostDirectories: (path: string | null, showHidden: boolean) =>
+    ["client", "host-directories", path, showHidden] as const,
 };
 
 export const bootstrapQueryOptions = queryOptions({
@@ -171,10 +175,19 @@ export async function updateSessionPreferences(
   });
 }
 
-export async function addProject(rootPath: string, additionalDirectories: string[]): Promise<ProjectView> {
+export async function hostDirectories(path: string | null, showHidden: boolean): Promise<HostDirectoryListingView> {
+  const search = new URLSearchParams();
+  if (path) search.set("path", path);
+  if (showHidden) search.set("showHidden", "1");
+  return await clientFetch<HostDirectoryListingView>(
+    `${CLIENT_API_PREFIX}/host-directories${search.size > 0 ? `?${search.toString()}` : ""}`,
+  );
+}
+
+export async function addProject(directory: ProjectDirectoryRequest): Promise<ProjectView> {
   return await clientFetch<ProjectView>(`${CLIENT_API_PREFIX}/projects`, {
     method: "POST",
-    body: JSON.stringify({ requestId: requestId(), rootPath, additionalDirectories }),
+    body: JSON.stringify({ requestId: requestId(), directory }),
   });
 }
 

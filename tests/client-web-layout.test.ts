@@ -37,7 +37,7 @@ describe("Connect Client session layout", () => {
     expect(controls.every((control) => !control.includes("description="))).toBe(true);
     expect(source).toContain('<SettingsField description="默认值会跟随 Runtime Adapter');
     expect(source).toContain('<SettingsField description="Web 始终尽可能展示完整');
-    expect(source).toContain('<SettingsField description="可选；用逗号分隔');
+    expect(source).not.toContain('label="附加目录"');
     expect(cssRule(stylesheet, ".settings-field")).toContain("align-content: start");
     expect(cssRule(stylesheet, ".settings-field-description")).toContain("margin: 0");
   });

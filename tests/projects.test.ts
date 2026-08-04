@@ -41,7 +41,6 @@ describe("ProjectCatalog", () => {
       projectId: "project-legacy",
       name: "connect-qa",
       rootPath: await realpath(root),
-      additionalDirectories: [],
     });
 
     await expect(projects.list()).resolves.toEqual([
@@ -153,21 +152,38 @@ describe("ProjectCatalog", () => {
   it("registers a global Project and resolves its runtime workspace", async () => {
     const { directory, store, projects } = await fixture();
     const root = await mkdtemp(join(directory, "root-"));
-    const additional = await mkdtemp(join(directory, "shared-"));
 
-    const project = await projects.add(root, [additional]);
+    const project = await projects.add(root);
     const workspace = await projects.resolveWorkspace(session({ projectId: project.projectId }));
 
     expect(project).toMatchObject({
       name: basename(await realpath(root)),
       rootPath: await realpath(root),
-      additionalDirectories: [await realpath(additional)],
     });
     expect(workspace).toEqual({
       projectId: project.projectId,
       workingDirectory: await realpath(root),
-      additionalDirectories: [await realpath(additional)],
       skipGitRepoCheck: true,
+    });
+    await store.close();
+  });
+
+  it("reuses the same canonical root but permits an explicitly registered nested Project", async () => {
+    const { directory, store, projects } = await fixture();
+    const root = await mkdtemp(join(directory, "root-"));
+    const nested = join(root, "nested");
+    await mkdir(nested);
+
+    const first = await projects.ensureRegistered(root);
+    const repeated = await projects.ensureRegistered(root);
+    const nestedProject = await projects.ensureRegistered(nested);
+
+    expect(first.created).toBe(true);
+    expect(repeated).toEqual({ project: first.project, created: false });
+    expect(nestedProject.created).toBe(true);
+    expect(nestedProject.project.projectId).not.toBe(first.project.projectId);
+    await expect(projects.findForWorkspace(nested)).resolves.toMatchObject({
+      projectId: nestedProject.project.projectId,
     });
     await store.close();
   });
@@ -198,7 +214,6 @@ describe("ProjectCatalog", () => {
     await expect(projects.resolveProjectWorkspace(project.projectId)).resolves.toEqual({
       projectId: project.projectId,
       workingDirectory: project.rootPath,
-      additionalDirectories: [],
       skipGitRepoCheck: true,
     });
     await store.close();

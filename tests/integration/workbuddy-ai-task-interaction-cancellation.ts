@@ -28,7 +28,6 @@ const session = await adapter.start(binding, {
 const runtimeWorkspace = {
   projectId: null,
   workingDirectory: canonicalWorkspace,
-  additionalDirectories: [],
   skipGitRepoCheck: false,
 };
 

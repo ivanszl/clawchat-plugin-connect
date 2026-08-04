@@ -1,11 +1,18 @@
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
 import { Card } from "@astryxdesign/core/Card";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { Heading } from "@astryxdesign/core/Heading";
+import { Layout, LayoutContent } from "@astryxdesign/core/Layout";
+import { List, ListItem } from "@astryxdesign/core/List";
+import { Section } from "@astryxdesign/core/Section";
 import { Selector } from "@astryxdesign/core/Selector";
+import { HStack, VStack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
-import type { BindingPreferenceView, BootstrapView } from "../../../../src/client-contract";
+import type { BindingPreferenceView, BootstrapView, ProjectDirectoryRequest } from "../../../../src/client-contract";
 import {
   addProject,
   bootstrapQueryOptions,
@@ -15,6 +22,7 @@ import {
   removeProject,
   updateBindingPreferences,
 } from "../../client-interface/query-options";
+import { HostDirectoryPicker, projectDirectoryLabel } from "../projects/HostDirectoryPicker";
 
 export function SettingsPage() {
   const bootstrap = useQuery(bootstrapQueryOptions);
@@ -132,20 +140,15 @@ function BindingSettings({ binding }: { binding: BindingPreferenceView }) {
 
 function ProjectSettings({ projects }: { projects: Array<{ workspaceId: string; name: string; rootPath: string }> }) {
   const queryClient = useQueryClient();
-  const [rootPath, setRootPath] = useState("");
-  const [additionalDirectories, setAdditionalDirectories] = useState("");
+  const [directory, setDirectory] = useState<ProjectDirectoryRequest | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const add = useMutation({
-    mutationFn: async () =>
-      await addProject(
-        rootPath,
-        additionalDirectories
-          .split(/[\n,]/u)
-          .map((path) => path.trim())
-          .filter(Boolean),
-      ),
+    mutationFn: async () => {
+      if (!directory) throw new Error("请先选择 Project 目录");
+      return await addProject(directory);
+    },
     onSuccess: () => {
-      setRootPath("");
-      setAdditionalDirectories("");
+      setDirectory(null);
       void queryClient.invalidateQueries({ queryKey: clientKeys.projects });
       void queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
     },
@@ -158,58 +161,84 @@ function ProjectSettings({ projects }: { projects: Array<{ workspaceId: string; 
     },
   });
   return (
-    <Card className="settings-card project-settings-card">
-      <div className="settings-card-heading">
-        <div>
-          <h2>Projects</h2>
-          <p>Project 路径只在本机管理，不会发送到 ClawChat。</p>
-        </div>
-        <Button
-          label="添加 Project"
-          variant="primary"
-          isLoading={add.isPending}
-          isDisabled={!rootPath.trim()}
-          onClick={() => add.mutate()}
-        />
-      </div>
-      {add.isError ? (
-        <Banner status="error" title="添加失败" description={add.error.message} container="section" />
-      ) : null}
-      {remove.isError ? (
-        <Banner status="error" title="移除失败" description={remove.error.message} container="section" />
-      ) : null}
-      <div className="settings-fields">
-        <SettingsField>
-          <TextInput label="根目录绝对路径" value={rootPath} onChange={setRootPath} width="100%" />
-        </SettingsField>
-        <SettingsField description="可选；用逗号分隔多个绝对路径。">
-          <TextInput
-            label="附加目录"
-            value={additionalDirectories}
-            onChange={setAdditionalDirectories}
-            isOptional
-            width="100%"
-          />
-        </SettingsField>
-      </div>
-      <div className="project-settings-list">
-        {projects.length === 0 ? <p>尚未注册 Project。</p> : null}
-        {projects.map((project) => (
-          <div className="project-settings-row" key={project.workspaceId}>
-            <div>
-              <strong>{project.name}</strong>
-              <code>{project.rootPath}</code>
-            </div>
-            <Button
-              label="移除"
-              size="sm"
-              isLoading={remove.isPending && remove.variables === project.workspaceId}
-              onClick={() => remove.mutate(project.workspaceId)}
+    <>
+      <Section>
+        <VStack gap={4}>
+          <HStack gap={4} hAlign="between" align="start">
+            <VStack gap={1}>
+              <Heading level={2}>Projects</Heading>
+              <Text type="supporting">Project 路径位于 Connect 主机，不会发送到 ClawChat 消息。</Text>
+            </VStack>
+            <HStack gap={2}>
+              <Button label="选择目录" variant="secondary" onClick={() => setPickerOpen(true)} />
+              <Button
+                label="添加 Project"
+                variant="primary"
+                isLoading={add.isPending}
+                isDisabled={!directory}
+                onClick={() => add.mutate()}
+              />
+            </HStack>
+          </HStack>
+          {directory ? (
+            <Section variant="muted">
+              <Text type="label">待添加目录</Text>
+              <Text type="code" display="block" wordBreak="break-all">
+                {projectDirectoryLabel(directory)}
+              </Text>
+            </Section>
+          ) : null}
+          {add.isError ? <Banner status="error" title="添加失败" description={add.error.message} /> : null}
+          {remove.isError ? <Banner status="error" title="移除失败" description={remove.error.message} /> : null}
+          <List density="compact" hasDividers header={<Text type="label">已注册 Project</Text>}>
+            {projects.length === 0 ? <ListItem label="尚未注册 Project" isDisabled /> : null}
+            {projects.map((project) => (
+              <ListItem
+                key={project.workspaceId}
+                label={project.name}
+                description={project.rootPath}
+                endContent={
+                  <Button
+                    label="移除"
+                    size="sm"
+                    isLoading={remove.isPending && remove.variables === project.workspaceId}
+                    onClick={() => remove.mutate(project.workspaceId)}
+                  />
+                }
+              />
+            ))}
+          </List>
+        </VStack>
+      </Section>
+      <Dialog
+        isOpen={pickerOpen}
+        onOpenChange={setPickerOpen}
+        purpose="form"
+        width={640}
+        maxHeight="calc(100dvh - var(--spacing-6))"
+      >
+        <Layout
+          header={
+            <DialogHeader
+              title="选择 Project 目录"
+              subtitle="浏览运行 Connect Service 的主机。"
+              onOpenChange={setPickerOpen}
             />
-          </div>
-        ))}
-      </div>
-    </Card>
+          }
+          content={
+            <LayoutContent>
+              <HostDirectoryPicker
+                onCancel={() => setPickerOpen(false)}
+                onSelect={(selection) => {
+                  setDirectory(selection);
+                  setPickerOpen(false);
+                }}
+              />
+            </LayoutContent>
+          }
+        />
+      </Dialog>
+    </>
   );
 }
 

@@ -137,7 +137,7 @@ The Connect-owned normalized event record persisted in SQLite for Client renderi
 _Avoid_: Runtime Transcript, Agent Memory, Message Backup
 
 **Project**:
-A reusable local code workspace that a Session may use. A Project has a canonical root location and a display name derived from that root; it has no independently customizable alias, but it is not merely a directory path.
+A reusable code workspace on the Connect Service host that a Session may use. A Project has a canonical root location on that host and a display name derived from that root; it has no independently customizable alias, but it is not merely a directory path.
 _Avoid_: Directory, cwd, repository, custom Project name
 
 **Workspace Group**:

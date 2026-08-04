@@ -11,6 +11,7 @@ import {
   type ClientViewEvent,
   type CreateSessionRequest,
   normalizeSessionRef,
+  type ProjectDirectoryRequest,
   type SessionCatalogView,
   type SessionMutationRequest,
   type SessionView,
@@ -18,6 +19,12 @@ import {
   type UpdateSessionPreferencesRequest,
 } from "../client-contract";
 import { getAgentBinding, saveConfig } from "../config";
+import {
+  HostDirectoryError,
+  listHostDirectories,
+  type MaterializedProjectDirectory,
+  materializeProjectDirectory,
+} from "../host-directories";
 import { bindingOutputVisibility } from "../output-visibility";
 import { ProjectCatalog } from "../projects";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
@@ -251,6 +258,31 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               watermark,
             );
           }
+          if (url.pathname === `${CLIENT_API_PREFIX}/host-directories` && request.method === "GET") {
+            const path = url.searchParams.get("path");
+            const showHidden = url.searchParams.get("showHidden") === "1";
+            try {
+              const projectShortcuts = (await projects.list()).map((project) => ({
+                kind: "project" as const,
+                name: project.name,
+                path: project.rootPath,
+              }));
+              const runtimeShortcuts = (await catalog.runtimeWorkspaceLocations()).map((workspace) => ({
+                kind: "runtime-workspace" as const,
+                name: workspace.name,
+                path: workspace.path,
+              }));
+              return jsonResponse(
+                await listHostDirectories({
+                  path,
+                  showHidden,
+                  shortcuts: [...projectShortcuts, ...runtimeShortcuts],
+                }),
+              );
+            } catch (error) {
+              return hostDirectoryErrorResponse(error);
+            }
+          }
           if (url.pathname === `${CLIENT_API_PREFIX}/projects` && request.method === "GET") {
             return jsonResponse(
               (await projects.list()).map((project) => ({
@@ -263,29 +295,29 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             const body = await readJsonBody<AddProjectRequest>(request);
             if (!validRequestId(body.requestId))
               return errorResponse(400, "invalid-request-id", "requestId is required");
-            if ("name" in body) return errorResponse(400, "invalid-project", "Project names are derived from rootPath");
-            if (typeof body.rootPath !== "string")
-              return errorResponse(400, "invalid-project", "Project rootPath is required");
-            if (
-              !Array.isArray(body.additionalDirectories) ||
-              !body.additionalDirectories.every((path) => typeof path === "string")
-            )
-              return errorResponse(400, "invalid-project", "additionalDirectories must be an array of paths");
+            if ("name" in body) return errorResponse(400, "invalid-project", "Project names are derived from its root");
+            if ("additionalDirectories" in body)
+              return errorResponse(400, "invalid-project", "Project additional directories are not supported");
+            if (!isProjectDirectoryRequest(body.directory))
+              return errorResponse(400, "invalid-project", "A valid Project directory is required");
             return await idempotentCommand(
               options.stateStore,
               body.requestId,
               "project.add",
-              body.rootPath,
+              JSON.stringify(body.directory),
               async () => {
+                let materialized: MaterializedProjectDirectory | null = null;
                 try {
-                  const project = await projects.add(body.rootPath, body.additionalDirectories);
+                  materialized = await materializeProjectDirectory(body.directory);
+                  const registered = await projects.ensureRegistered(materialized.rootPath);
                   catalog.invalidate();
                   return {
-                    status: 201,
-                    body: { ...project, workspaceId: projects.workspaceId(project) },
+                    status: registered.created ? 201 : 200,
+                    body: { ...registered.project, workspaceId: projects.workspaceId(registered.project) },
                   };
                 } catch (error) {
-                  return commandError(409, "project-conflict", error instanceof Error ? error.message : String(error));
+                  await materialized?.rollback();
+                  return hostDirectoryCommandError(error, "project-conflict");
                 }
               },
             );
@@ -298,8 +330,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-binding", "bindingId is required");
             if (!requestScope.includesBinding(body.bindingId))
               return errorResponse(404, "binding-not-found", "Agent Binding was not found");
-            if (body.workspaceId !== null && typeof body.workspaceId !== "string")
-              return errorResponse(400, "invalid-workspace", "workspaceId must be a string or null");
+            if (!isSessionWorkspaceRequest(body.workspace))
+              return errorResponse(400, "invalid-workspace", "A valid Session workspace is required");
             if (body.name !== null && typeof body.name !== "string")
               return errorResponse(400, "invalid-name", "name must be a string or null");
             if (body.mode !== null && typeof body.mode !== "string")
@@ -319,8 +351,9 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 if (!options.config.agents[body.bindingId])
                   return commandError(404, "binding-not-found", "Agent Binding was not found");
                 const binding = getAgentBinding(options.config, body.bindingId);
-                const workspaceProject = body.workspaceId ? await projects.get(body.workspaceId) : null;
-                if (body.workspaceId && !workspaceProject)
+                let workspaceProject =
+                  body.workspace.kind === "existing" ? await projects.get(body.workspace.workspaceId) : null;
+                if (body.workspace.kind === "existing" && !workspaceProject)
                   return commandError(400, "invalid-workspace", "Project Workspace ID was not found");
                 const name = body.name?.trim() || null;
                 if (name && name.length > 200)
@@ -341,50 +374,74 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 } catch (error) {
                   return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
                 }
-                const workspace = workspaceProject
-                  ? await projects.resolveProjectWorkspace(workspaceProject.projectId)
-                  : {
-                      projectId: null,
-                      workingDirectory: projects.workspaceRoot,
-                      additionalDirectories: [],
-                      skipGitRepoCheck: true,
-                    };
-                const validatedOptions = await validatedSessionOptions(
-                  options.runtimeAdapters,
-                  binding,
-                  workspace,
-                  body.sessionOptions ?? {},
-                );
-                if (!validatedOptions.ok) return validatedOptions.error;
-                const chatId = `__connect_client_session__:${randomUUID()}`;
-                const session = await sessionContinuity.inConversation({ chatId, bindingId: body.bindingId }).create({
-                  projectId: workspaceProject?.projectId ?? null,
-                  name,
-                  mode: body.mode,
-                  model,
-                  reasoningEffort,
-                  sessionOptions: validatedOptions.value,
-                });
-                catalog.invalidate();
-                let view: SessionView | null;
+                let materialized: MaterializedProjectDirectory | null = null;
+                let createdProjectId: string | null = null;
+                let preserveMaterializedDirectory = false;
                 try {
-                  view = await catalog.sessionView(session.sessionRef);
-                } catch (error) {
-                  await sessionContinuity.forSession(session.sessionRef).discardEmpty();
-                  catalog.invalidate();
-                  throw new ClientRequestError(
-                    503,
-                    "session-view-unavailable",
-                    error instanceof Error ? error.message : "Session view is unavailable",
-                    true,
+                  if (body.workspace.kind === "new-project") {
+                    materialized = await materializeProjectDirectory(body.workspace.directory);
+                    const registered = await projects.ensureRegistered(materialized.rootPath);
+                    workspaceProject = registered.project;
+                    if (registered.created) createdProjectId = registered.project.projectId;
+                    else preserveMaterializedDirectory = true;
+                  }
+                  const workspace = workspaceProject
+                    ? await projects.resolveProjectWorkspace(workspaceProject.projectId)
+                    : {
+                        projectId: null,
+                        workingDirectory: projects.workspaceRoot,
+                        skipGitRepoCheck: true,
+                      };
+                  const validatedOptions = await validatedSessionOptions(
+                    options.runtimeAdapters,
+                    binding,
+                    workspace,
+                    body.sessionOptions ?? {},
                   );
-                }
-                if (!view) {
-                  await sessionContinuity.forSession(session.sessionRef).discardEmpty();
+                  if (!validatedOptions.ok) {
+                    await rollbackInlineProject(
+                      projects,
+                      createdProjectId,
+                      materialized,
+                      preserveMaterializedDirectory,
+                    );
+                    return validatedOptions.error;
+                  }
+                  const chatId = `__connect_client_session__:${randomUUID()}`;
+                  const session = await sessionContinuity.inConversation({ chatId, bindingId: body.bindingId }).create({
+                    projectId: workspaceProject?.projectId ?? null,
+                    name,
+                    mode: body.mode,
+                    model,
+                    reasoningEffort,
+                    sessionOptions: validatedOptions.value,
+                  });
                   catalog.invalidate();
-                  throw new ClientRequestError(503, "session-create-failed", "Session could not be created", true);
+                  let view: SessionView | null;
+                  try {
+                    view = await catalog.sessionView(session.sessionRef);
+                  } catch (error) {
+                    await sessionContinuity.forSession(session.sessionRef).discardEmpty();
+                    catalog.invalidate();
+                    throw new ClientRequestError(
+                      503,
+                      "session-view-unavailable",
+                      error instanceof Error ? error.message : "Session view is unavailable",
+                      true,
+                    );
+                  }
+                  if (!view) {
+                    await sessionContinuity.forSession(session.sessionRef).discardEmpty();
+                    catalog.invalidate();
+                    throw new ClientRequestError(503, "session-create-failed", "Session could not be created", true);
+                  }
+                  return { status: 201, body: view };
+                } catch (error) {
+                  await rollbackInlineProject(projects, createdProjectId, materialized, preserveMaterializedDirectory);
+                  catalog.invalidate();
+                  if (error instanceof HostDirectoryError) return hostDirectoryCommandError(error, "project-conflict");
+                  throw error;
                 }
-                return { status: 201, body: view };
               },
             );
           }
@@ -507,11 +564,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             }
             const canonicalPath = await realpath(requestedPath).catch(() => null);
             if (!canonicalPath) return errorResponse(404, "workspace-file-not-found", "Workspace file was not found");
-            const roots = await Promise.all(
-              [workspace.workingDirectory, ...workspace.additionalDirectories].map(
-                async (root) => await realpath(root).catch(() => null),
-              ),
-            );
+            const roots = [await realpath(workspace.workingDirectory).catch(() => null)];
             if (!roots.some((root) => root && isPathWithin(root, canonicalPath))) {
               return errorResponse(403, "workspace-file-forbidden", "Workspace file is outside this Session");
             }
@@ -1353,6 +1406,59 @@ async function idempotentCommand(
 
 function commandError(status: number, code: string, message: string, retryable = false) {
   return { status, body: clientErrorView(code, message, retryable) };
+}
+
+function isProjectDirectoryRequest(value: unknown): value is ProjectDirectoryRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    (record.kind === "existing-directory" && typeof record.rootPath === "string") ||
+    (record.kind === "new-directory" && typeof record.parentPath === "string" && typeof record.name === "string")
+  );
+}
+
+function isSessionWorkspaceRequest(value: unknown): value is CreateSessionRequest["workspace"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.kind === "none" ||
+    (record.kind === "existing" && typeof record.workspaceId === "string" && Boolean(record.workspaceId.trim())) ||
+    (record.kind === "new-project" && isProjectDirectoryRequest(record.directory))
+  );
+}
+
+function hostDirectoryErrorResponse(error: unknown): Response {
+  const result = hostDirectoryCommandError(error, "host-directory-unavailable");
+  return errorResponse(result.status, result.body.error.code, result.body.error.message, result.body.error.retryable);
+}
+
+function hostDirectoryCommandError(error: unknown, fallbackCode: string) {
+  if (!(error instanceof HostDirectoryError))
+    return commandError(409, fallbackCode, error instanceof Error ? error.message : String(error));
+  const status =
+    error.code === "directory-not-found"
+      ? 404
+      : error.code === "directory-already-exists"
+        ? 409
+        : error.code === "directory-unavailable"
+          ? 403
+          : 400;
+  return commandError(status, error.code, error.message);
+}
+
+async function rollbackInlineProject(
+  projects: ProjectCatalog,
+  createdProjectId: string | null,
+  materialized: MaterializedProjectDirectory | null,
+  preserveMaterializedDirectory: boolean,
+): Promise<void> {
+  if (!materialized || preserveMaterializedDirectory) return;
+  if (!createdProjectId) {
+    await materialized.rollback();
+    return;
+  }
+  const removed = await projects.remove(createdProjectId).catch(() => null);
+  if (removed?.removed) await materialized.rollback();
 }
 
 async function turnSubmissionDigest(draft: TurnSubmissionDraft): Promise<string> {

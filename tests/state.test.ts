@@ -450,7 +450,6 @@ describe("state store", () => {
       projectId: "project-1",
       name: "work",
       rootPath: "/repo",
-      additionalDirectories: ["/shared"],
     });
     await store.upsertRuntimeSession({
       chatId: "chat-1",
@@ -468,10 +467,41 @@ describe("state store", () => {
     await expect(store.getProject("work")).resolves.toMatchObject({
       projectId: "project-1",
       rootPath: "/repo",
-      additionalDirectories: ["/shared"],
     });
     await expect(store.countRuntimeSessionsForProject("project-1")).resolves.toBe(1);
     await store.close();
+  });
+  it("removes persisted Project additional directories from an earlier database", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const legacy = new Database(dbPath, { create: true });
+    legacy.exec(`
+      CREATE TABLE projects(
+        project_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        root_path TEXT NOT NULL UNIQUE,
+        additional_directories_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO projects VALUES ('project-legacy', 'legacy', '/repo', '["/shared"]', 1, 1);
+    `);
+    legacy.close();
+
+    const store = createStateStore({ dbPath });
+    await expect(store.getProject("project-legacy")).resolves.toEqual({
+      projectId: "project-legacy",
+      name: "legacy",
+      rootPath: "/repo",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await store.close();
+
+    const migrated = new Database(dbPath);
+    const columns = migrated.query<{ name: string }, []>("PRAGMA table_info(projects)").all();
+    expect(columns.map((column) => column.name)).not.toContain("additional_directories_json");
+    migrated.close();
   });
   it("scopes current Sessions by Agent Binding while keeping Projects global", async () => {
     const dir = await tempDir();

@@ -773,9 +773,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     model?: string,
     reasoningEffort?: string,
   ): Promise<string> {
-    const additionalDirectories = [
-      ...new Set([...(this.binding.additionalDirectories ?? []), ...workspace.additionalDirectories]),
-    ];
+    const additionalDirectories = [...new Set(this.binding.additionalDirectories ?? [])];
     const workspaceKey = JSON.stringify({
       workingDirectory: workspace.workingDirectory,
       additionalDirectories,
@@ -1251,9 +1249,7 @@ function sandboxPolicy(
   if (mode === "read-only") return { type: "readOnly", networkAccess };
   return {
     type: "workspaceWrite",
-    writableRoots: [
-      ...new Set([workspace.workingDirectory, ...bindingDirectories, ...(workspace.additionalDirectories ?? [])]),
-    ],
+    writableRoots: [...new Set([workspace.workingDirectory, ...bindingDirectories])],
     networkAccess,
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,

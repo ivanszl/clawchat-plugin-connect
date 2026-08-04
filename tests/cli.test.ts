@@ -299,17 +299,13 @@ describe("runConnectCli", () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-project-cli-"));
     const configPath = join(directory, "config.json");
     const root = join(directory, "repo");
-    const shared = join(directory, "shared");
     await mkdir(root);
-    await mkdir(shared);
     const config = defaultConfig();
     config.stateDbPath = join(directory, "state.sqlite");
     await saveConfig(config, configPath);
     const output = io();
 
-    await expect(
-      runConnectCli(["project", "add", root, "--additional-directory", shared, "--config", configPath], output.deps),
-    ).resolves.toBe(0);
+    await expect(runConnectCli(["project", "add", root, "--config", configPath], output.deps)).resolves.toBe(0);
     output.stdout.length = 0;
     await expect(runConnectCli(["project", "list", "--config", configPath], output.deps)).resolves.toBe(0);
     expect(output.stdout.join("")).toContain("repo");

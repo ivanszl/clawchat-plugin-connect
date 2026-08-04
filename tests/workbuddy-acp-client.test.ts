@@ -340,7 +340,6 @@ describe("WorkBuddy private ACP client", () => {
       workspace: {
         projectId: null,
         workingDirectory: workspace,
-        additionalDirectories: [],
         skipGitRepoCheck: false,
       },
     })) {
@@ -380,7 +379,6 @@ describe("WorkBuddy private ACP client", () => {
       workspace: {
         projectId: null,
         workingDirectory: workspace,
-        additionalDirectories: [],
         skipGitRepoCheck: false,
       },
     })) {
@@ -553,7 +551,6 @@ describe("WorkBuddy private ACP client", () => {
         workspace: {
           projectId: null,
           workingDirectory: workspace,
-          additionalDirectories: [],
           skipGitRepoCheck: false,
         },
       }),
@@ -568,7 +565,6 @@ describe("WorkBuddy private ACP client", () => {
         workspace: {
           projectId: null,
           workingDirectory: workspace,
-          additionalDirectories: [],
           skipGitRepoCheck: false,
         },
       }),
@@ -590,7 +586,6 @@ describe("WorkBuddy private ACP client", () => {
         workspace: {
           projectId: null,
           workingDirectory: workspace,
-          additionalDirectories: [],
           skipGitRepoCheck: false,
         },
       }),
@@ -609,7 +604,6 @@ describe("WorkBuddy private ACP client", () => {
           workspace: {
             projectId: null,
             workingDirectory: workspace,
-            additionalDirectories: [],
             skipGitRepoCheck: false,
           },
         }),
@@ -623,7 +617,6 @@ describe("WorkBuddy private ACP client", () => {
           workspace: {
             projectId: null,
             workingDirectory: workspace,
-            additionalDirectories: [],
             skipGitRepoCheck: false,
           },
         }),
@@ -724,7 +717,6 @@ describe("WorkBuddy private ACP client", () => {
         workspace: {
           projectId: null,
           workingDirectory: workspace,
-          additionalDirectories: [],
           skipGitRepoCheck: false,
         },
       }),
@@ -861,7 +853,6 @@ describe("WorkBuddy private ACP client", () => {
           workspace: {
             projectId: null,
             workingDirectory: workspace,
-            additionalDirectories: [],
             skipGitRepoCheck: false,
           },
         }),
@@ -984,7 +975,6 @@ describe("WorkBuddy private ACP client", () => {
         workspace: {
           projectId: null,
           workingDirectory: workspace,
-          additionalDirectories: [],
           skipGitRepoCheck: false,
         },
       }),
@@ -1106,7 +1096,6 @@ describe("WorkBuddy private ACP client", () => {
         workspace: {
           projectId: null,
           workingDirectory: workspace,
-          additionalDirectories: [],
           skipGitRepoCheck: false,
         },
       }),
@@ -1179,7 +1168,6 @@ describe("WorkBuddy private ACP client", () => {
         workspace: {
           projectId: null,
           workingDirectory: workspace,
-          additionalDirectories: [],
           skipGitRepoCheck: false,
         },
       }),
@@ -1250,7 +1238,6 @@ describe("WorkBuddy private ACP client", () => {
       workspace: {
         projectId: null,
         workingDirectory: workspace,
-        additionalDirectories: [],
         skipGitRepoCheck: false,
       },
     };
@@ -1388,7 +1375,6 @@ describe("WorkBuddy private ACP client", () => {
       workspace: {
         projectId: null,
         workingDirectory: workspace,
-        additionalDirectories: [],
         skipGitRepoCheck: false,
       },
     });
@@ -1444,7 +1430,6 @@ describe("WorkBuddy private ACP client", () => {
         workspace: {
           projectId: null,
           workingDirectory: workspace,
-          additionalDirectories: [],
           skipGitRepoCheck: false,
         },
       }),
@@ -1494,7 +1479,6 @@ describe("WorkBuddy private ACP client", () => {
         workspace: {
           projectId: null,
           workingDirectory: workspace,
-          additionalDirectories: [],
           skipGitRepoCheck: false,
         },
       }),

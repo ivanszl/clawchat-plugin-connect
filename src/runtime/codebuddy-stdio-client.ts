@@ -125,7 +125,6 @@ class CodeBuddyStdioSession implements ConnectRuntimeSession {
       }
       const sessionRequest = {
         cwd: prompt.workspace.workingDirectory,
-        additionalDirectories: prompt.workspace.additionalDirectories,
         mcpServers: [],
       };
       const sessionId = this.input.sessionId;

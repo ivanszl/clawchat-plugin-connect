@@ -37,7 +37,6 @@ try {
     workspace: {
       projectId: null,
       workingDirectory: process.cwd(),
-      additionalDirectories: [],
       skipGitRepoCheck: true,
     },
     mode: "read-only",

@@ -71,7 +71,6 @@ describe("RuntimeAdapterRegistry", () => {
       registry.discoverThreads(binding, {
         projectId: "project-1",
         workingDirectory: "/repo",
-        additionalDirectories: [],
         skipGitRepoCheck: true,
       }),
     ).resolves.toEqual([{ runtimeThreadId: "thread-1", name: "Existing thread", updatedAt: 1 }]);
@@ -96,7 +95,6 @@ describe("RuntimeAdapterRegistry", () => {
     const workspace: RuntimeWorkspace = {
       projectId: "project-1",
       workingDirectory: "/repo",
-      additionalDirectories: [],
       skipGitRepoCheck: true,
     };
 
@@ -131,7 +129,6 @@ describe("RuntimeAdapterRegistry", () => {
     const workspace: RuntimeWorkspace = {
       projectId: "project-1",
       workingDirectory: "/repo",
-      additionalDirectories: [],
       skipGitRepoCheck: true,
     };
 
@@ -170,7 +167,6 @@ describe("RuntimeAdapterRegistry", () => {
     const workspace: RuntimeWorkspace = {
       projectId: "project-1",
       workingDirectory: "/repo",
-      additionalDirectories: [],
       skipGitRepoCheck: true,
     };
 
@@ -196,7 +192,6 @@ describe("RuntimeAdapterRegistry", () => {
     const workspace: RuntimeWorkspace = {
       projectId: "project-1",
       workingDirectory: "/repo",
-      additionalDirectories: [],
       skipGitRepoCheck: true,
     };
 

@@ -28,11 +28,8 @@ export class ProjectCatalog {
     if (!isAbsolute(this.workspaceRoot)) throw new Error("workspace root must be an absolute path");
   }
 
-  async add(rootPath: string, additionalDirectories: string[] = []): Promise<ProjectRecord> {
+  async add(rootPath: string): Promise<ProjectRecord> {
     const canonicalRoot = await existingDirectory(rootPath, "project root");
-    const canonicalAdditional = await Promise.all(
-      additionalDirectories.map((path) => existingDirectory(path, "additional project directory")),
-    );
     return await this.serializeProjectWrite(async () => {
       const duplicate = (await this.stateStore.listProjects()).find((project) => project.rootPath === canonicalRoot);
       if (duplicate) throw new Error(`project root is already registered by ${projectView(duplicate).name}`);
@@ -41,9 +38,26 @@ export class ProjectCatalog {
           projectId: randomUUID(),
           name: requireWorkspaceView(canonicalRoot).id,
           rootPath: canonicalRoot,
-          additionalDirectories: [...new Set(canonicalAdditional)].filter((path) => path !== canonicalRoot),
         }),
       );
+    });
+  }
+
+  async ensureRegistered(rootPath: string): Promise<{ project: ProjectRecord; created: boolean }> {
+    const canonicalRoot = await existingDirectory(rootPath, "project root");
+    return await this.serializeProjectWrite(async () => {
+      const existing = (await this.stateStore.listProjects()).find((project) => project.rootPath === canonicalRoot);
+      if (existing) return { project: projectView(existing), created: false };
+      return {
+        project: projectView(
+          await this.stateStore.insertProject({
+            projectId: randomUUID(),
+            name: requireWorkspaceView(canonicalRoot).id,
+            rootPath: canonicalRoot,
+          }),
+        ),
+        created: true,
+      };
     });
   }
 
@@ -89,7 +103,6 @@ export class ProjectCatalog {
           projectId: randomUUID(),
           name: requireWorkspaceView(canonicalRoot).id,
           rootPath: canonicalRoot,
-          additionalDirectories: [],
         }),
       );
     });
@@ -133,7 +146,6 @@ export class ProjectCatalog {
     return {
       projectId: null,
       workingDirectory,
-      additionalDirectories: [],
       skipGitRepoCheck: true,
     };
   }
@@ -144,7 +156,6 @@ export class ProjectCatalog {
     return {
       projectId: project.projectId,
       workingDirectory: project.rootPath,
-      additionalDirectories: project.additionalDirectories,
       skipGitRepoCheck: true,
     };
   }

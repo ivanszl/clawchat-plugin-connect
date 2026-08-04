@@ -902,35 +902,6 @@ textarea {
   font-size: var(--font-size-sm);
 }
 
-.project-settings-list {
-  display: grid;
-  gap: var(--spacing-2);
-  margin-top: var(--spacing-4);
-}
-
-.project-settings-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-3);
-  padding: var(--spacing-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--border-radius-md);
-}
-
-.project-settings-row > div {
-  display: grid;
-  gap: var(--spacing-1);
-  min-width: 0;
-}
-
-.project-settings-row code {
-  overflow: hidden;
-  color: var(--color-text-secondary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .sr-only {
   position: absolute;
   width: 1px;

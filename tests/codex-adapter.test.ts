@@ -22,7 +22,6 @@ import type { CodexAgentBindingConfig, RuntimeWorkspace } from "../src/types";
 const workspace: RuntimeWorkspace = {
   projectId: "project-1",
   workingDirectory: "/repo",
-  additionalDirectories: ["/project-shared"],
   skipGitRepoCheck: false,
 };
 
@@ -1088,7 +1087,7 @@ describe("Codex app-server runtime adapter", () => {
         web_search: "live",
         sandbox_workspace_write: {
           network_access: true,
-          writable_roots: ["/shared", "/project-shared"],
+          writable_roots: ["/shared"],
         },
       },
     });
@@ -1100,7 +1099,7 @@ describe("Codex app-server runtime adapter", () => {
         effort: "high",
         sandboxPolicy: {
           type: "workspaceWrite",
-          writableRoots: ["/repo", "/shared", "/project-shared"],
+          writableRoots: ["/repo", "/shared"],
           networkAccess: true,
           excludeTmpdirEnvVar: false,
           excludeSlashTmp: false,

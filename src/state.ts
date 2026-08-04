@@ -184,7 +184,6 @@ export interface InsertProjectInput {
   projectId: string;
   name: string;
   rootPath: string;
-  additionalDirectories?: string[];
 }
 export interface UpsertRuntimeSessionInput {
   chatId: string;
@@ -784,11 +783,10 @@ export class ConnectStateStore {
     const now = Date.now();
     const db = await this.requireDb();
     await db.run(
-      `INSERT INTO projects(project_id, name, root_path, additional_directories_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO projects(project_id, name, root_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
       input.projectId,
       input.name,
       input.rootPath,
-      JSON.stringify(input.additionalDirectories ?? []),
       now,
       now,
     );
@@ -2482,7 +2480,6 @@ export class ConnectStateStore {
         project_id TEXT PRIMARY KEY,
         name TEXT NOT NULL UNIQUE COLLATE NOCASE,
         root_path TEXT NOT NULL UNIQUE,
-        additional_directories_json TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -2716,6 +2713,15 @@ export class ConnectStateStore {
 
   private async migrateSchema(): Promise<void> {
     const db = await this.requireDb();
+    const projectColumns = await db.all<{ name: string }[]>("PRAGMA table_info(projects)");
+    if (projectColumns.some((column) => column.name === "additional_directories_json")) {
+      const affected = await db.get<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM projects WHERE additional_directories_json <> '[]'",
+      );
+      await db.exec("ALTER TABLE projects DROP COLUMN additional_directories_json");
+      if ((affected?.count ?? 0) > 0)
+        console.warn(`Removed Project additional directories from ${affected?.count ?? 0} Project(s).`);
+    }
     const legacyLivewareTable = await db.get<{ name: string }>(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'liveware_exposure'",
     );
@@ -3038,18 +3044,9 @@ function projectFromRow(row: Record<string, unknown>): ProjectRecord {
     projectId: stringValue(row.project_id),
     name: stringValue(row.name),
     rootPath: stringValue(row.root_path),
-    additionalDirectories: stringArrayFromJson(row.additional_directories_json),
     createdAt: numberValue(row.created_at),
     updatedAt: numberValue(row.updated_at),
   };
-}
-function stringArrayFromJson(value: unknown): string[] {
-  try {
-    const parsed = JSON.parse(stringValue(value)) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
 }
 function stringRecordFromJson(value: unknown): Record<string, string> {
   try {

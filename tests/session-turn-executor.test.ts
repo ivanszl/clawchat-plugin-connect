@@ -62,7 +62,6 @@ it("owns one native handle per Session and reports a new Runtime Thread through 
         workspace: {
           projectId: null,
           workingDirectory: "/tmp",
-          additionalDirectories: [],
           skipGitRepoCheck: true,
         },
       }),
@@ -85,7 +84,6 @@ it("owns one native handle per Session and reports a new Runtime Thread through 
       workspace: {
         projectId: null,
         workingDirectory: "/tmp",
-        additionalDirectories: [],
         skipGitRepoCheck: true,
       },
     }),

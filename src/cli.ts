@@ -84,7 +84,7 @@ const HELP_TEXT = `${[
   "  agent add <id> --kind <kind> [--profile <profile>] [--runtime-path <path>] [--config <path>]",
   "  agent list [--config <path>]",
   "  agent remove <id> --yes [--config <path>]",
-  "  project add <absolute-path> [--additional-directory <absolute-path>] [--config <path>]",
+  "  project add <absolute-path> [--config <path>]",
   "  project list [--config <path>]",
   "  project remove <workspace-id> [--config <path>]",
   "  activate <agentId> <code> [--config <path>]",
@@ -518,14 +518,13 @@ async function maybeRunNestedProjectCommand(argv: string[], io: CliIo): Promise<
     if (action === "add") {
       const rootPath = argv[2];
       if (!rootPath || rootPath.startsWith("--")) throw new Error("project add requires an absolute path");
-      const project = await projects.add(rootPath, optionValues(argv, "--additional-directory"));
+      const project = await projects.add(rootPath);
       io.writeStdout(`Registered Project ${project.name} at ${project.rootPath}.\n`);
       return 0;
     }
     if (action === "list") {
       const rows = (await projects.list()).map(
-        (project) =>
-          `- ${project.name} (${projects.workspaceId(project)}): ${project.rootPath}${project.additionalDirectories.length > 0 ? `; additional: ${project.additionalDirectories.join(", ")}` : ""}`,
+        (project) => `- ${project.name} (${projects.workspaceId(project)}): ${project.rootPath}`,
       );
       io.writeStdout(rows.length > 0 ? `${rows.join("\n")}\n` : "No Projects registered.\n");
       return 0;
@@ -808,16 +807,6 @@ function formatAgentListRow(id: string, binding: AgentBindingConfig, isDefault: 
 function optionValue(argv: string[], name: string): string | undefined {
   const index = argv.indexOf(name);
   return index >= 0 ? argv[index + 1] : undefined;
-}
-
-function optionValues(argv: string[], name: string): string[] {
-  const values: string[] = [];
-  for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] !== name) continue;
-    const value = argv[index + 1];
-    if (value !== undefined && !value.startsWith("--")) values.push(value);
-  }
-  return values;
 }
 
 function formatActivation(result: ActivateConnectResult): string {

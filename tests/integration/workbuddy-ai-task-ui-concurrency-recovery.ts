@@ -256,7 +256,6 @@ function runtimeWorkspace(workingDirectory: string) {
   return {
     projectId: null,
     workingDirectory,
-    additionalDirectories: [],
     skipGitRepoCheck: false,
   };
 }

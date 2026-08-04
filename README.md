@@ -1,6 +1,5 @@
 <div align="center">
   <p><strong>English</strong> | <a href="./README_zh.md">中文</a></p>
-  <a href="https://clawling.com/chat/"><img src="./docs/assets/clawchat.svg" alt="ClawChat logo" width="152" /></a>
   <h1>ClawChat Connect</h1>
   <p><strong>Bring a coding agent running on your computer into any ClawChat conversation.</strong></p>
   <p>
@@ -230,7 +229,9 @@ clawchat-connect project add /absolute/path/to/clawchat-plugin-connect
 clawchat-connect project list
 ```
 
-Use `--additional-directory /absolute/path` more than once when a Project needs other trusted writable roots. Then select the Project and Session options in ClawChat:
+Connect Client can browse directories on the Connect Service host, create a folder, and register it as a Project. The new-Session dialog can stage the same operation and creates the folder, Project, and Session only when you confirm the Session. Then select the Project and Session options in ClawChat:
+
+The directory picker exposes host directory names and structure, but not file contents, to anyone who can open the Client. This includes users admitted by a public Liveware Exposure or trusted-LAN access.
 
 ```text
 /project connect
@@ -247,7 +248,7 @@ Local Project administration:
 
 | Command | Purpose |
 | --- | --- |
-| `clawchat-connect project add <absolute-path> [--additional-directory <path>]` | Register a root-named Project and optional trusted additional directories. |
+| `clawchat-connect project add <absolute-path>` | Register a root-named Project. |
 | `clawchat-connect project list` | List Projects with their local paths. |
 | `clawchat-connect project remove <workspace-id>` | Remove an unused Project definition; files and Runtime Threads are never deleted. |
 
@@ -354,7 +355,7 @@ clawchat-connect service restart
 
 Then open `http://<computer-LAN-IP>:47823/`.
 
-LAN mode has no authentication or TLS. Anyone who can reach the port can read Sessions, manage Project paths and runtime preferences, and submit local coding-agent turns. Never expose it to the internet. Return to loopback mode with:
+LAN mode has no authentication or TLS. Anyone who can reach the port can enumerate host directory names and structure, read Sessions, manage Project paths and runtime preferences, and submit local coding-agent turns. Never expose it to the internet. Return to loopback mode with:
 
 ```bash
 clawchat-connect config set clientHost 127.0.0.1
@@ -374,7 +375,7 @@ Incoming ClawChat media remains structured:
 
 When a runtime returns a local Markdown image, Connect uploads it to ClawChat if:
 
-- it is inside the resolved Project workspace, an allowed additional directory, or the Connect media cache; and
+- it is inside the resolved Project workspace or the Connect media cache; and
 - its extension and file signature identify PNG, JPEG, GIF, or WebP content.
 
 Other local paths remain text and are not uploaded.

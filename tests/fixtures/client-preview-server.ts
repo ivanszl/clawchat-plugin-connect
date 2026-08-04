@@ -22,7 +22,7 @@ const projectRoot = await realpath(projectDirectory);
 const artifactSpecPath = join(projectRoot, "artifact-preview.md");
 await Bun.write(artifactSpecPath, "# Mobile Artifact preview\n\n[Open TypeScript](./artifact-preview.ts)\n");
 await Bun.write(join(projectRoot, "artifact-preview.ts"), 'export const mobileArtifact = "ready";\n');
-const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ", "23456789", "BCDEFGHJ", "CDEFGHJK", "DEFGHJKM"];
+const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ", "23456789", "BCDEFGHJ", "CDEFGHJK", "DEFGHJKM", "EFGHJKMN"];
 const stateStore = createStateStore({
   dbPath: join(directory, "state.sqlite"),
   sessionRefFactory: () => {

@@ -127,7 +127,6 @@ describe("WorkBuddy Runtime Adapter", () => {
       const runtimeWorkspace = {
         projectId: null,
         workingDirectory: workspace,
-        additionalDirectories: [],
         skipGitRepoCheck: false,
       };
       const scope = { runtimeThreadId: taskId, workspace: runtimeWorkspace };
@@ -176,7 +175,6 @@ describe("WorkBuddy Runtime Adapter", () => {
     const runtimeWorkspace = {
       projectId: null,
       workingDirectory: workspace,
-      additionalDirectories: [],
       skipGitRepoCheck: false,
     };
     const session = await registry.start(scopedBinding, {
@@ -236,7 +234,6 @@ describe("WorkBuddy Runtime Adapter", () => {
       adapter.discoverThreads?.(binding, {
         projectId: null,
         workingDirectory: workspace,
-        additionalDirectories: [],
         skipGitRepoCheck: false,
       }),
     ).resolves.toHaveLength(1);
@@ -646,7 +643,6 @@ describe("WorkBuddy Runtime Adapter", () => {
             workspace: {
               projectId: null,
               workingDirectory: workspace,
-              additionalDirectories: [],
               skipGitRepoCheck: false,
             },
           }),
@@ -673,7 +669,6 @@ describe("WorkBuddy Runtime Adapter", () => {
       workspace: {
         projectId: null,
         workingDirectory: workspace,
-        additionalDirectories: [],
         skipGitRepoCheck: false,
       },
     })) {
@@ -713,7 +708,6 @@ describe("WorkBuddy Runtime Adapter", () => {
     const runtimeWorkspace = {
       projectId: null,
       workingDirectory: workspace,
-      additionalDirectories: [],
       skipGitRepoCheck: false,
     };
 
@@ -831,7 +825,6 @@ describe("WorkBuddy Runtime Adapter", () => {
       workspace: {
         projectId: null,
         workingDirectory: workspace,
-        additionalDirectories: [],
         skipGitRepoCheck: false,
       },
     };
@@ -952,7 +945,6 @@ describe("WorkBuddy Runtime Adapter", () => {
         workspace: {
           projectId: null,
           workingDirectory: workspace,
-          additionalDirectories: [],
           skipGitRepoCheck: false,
         },
       }),
@@ -1060,7 +1052,6 @@ describe("WorkBuddy Runtime Adapter", () => {
           workspace: {
             projectId: null,
             workingDirectory: workspace,
-            additionalDirectories: [],
             skipGitRepoCheck: false,
           },
         }),
@@ -1144,7 +1135,6 @@ describe("WorkBuddy Runtime Adapter", () => {
           workspace: {
             projectId: null,
             workingDirectory: workspace,
-            additionalDirectories: [],
             skipGitRepoCheck: false,
           },
         }),
@@ -1238,7 +1228,6 @@ describe("WorkBuddy Runtime Adapter", () => {
           workspace: {
             projectId: null,
             workingDirectory: workspace,
-            additionalDirectories: [],
             skipGitRepoCheck: false,
           },
         }),

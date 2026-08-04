@@ -173,7 +173,7 @@ describe.each(profiles)("WorkBuddy profile parity: %s", (profile) => {
       const live: RuntimeActivity[] = [];
       for await (const next of session.prompt({
         prompt: "continue from prior context",
-        workspace: { projectId: null, workingDirectory: workspace, additionalDirectories: [], skipGitRepoCheck: false },
+        workspace: { projectId: null, workingDirectory: workspace, skipGitRepoCheck: false },
       })) {
         live.push(next);
       }

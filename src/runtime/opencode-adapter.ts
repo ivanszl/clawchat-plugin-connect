@@ -373,7 +373,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
       queue,
       listener,
       pendingNativeRequests,
-      trustedRoots: [directory, ...input.workspace.additionalDirectories.map(canonical)],
+      trustedRoots: [directory],
       interactionControllers: new Set(),
     };
     this.options.listeners.add(listener);

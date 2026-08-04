@@ -157,7 +157,6 @@ function runtimeAdapterConformance(name: string, createHarness: () => AdapterHar
         await registry.discoverThreads(binding, {
           projectId: null,
           workingDirectory: "/tmp",
-          additionalDirectories: [],
           skipGitRepoCheck: true,
         }),
       ).toEqual([]);

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { mkdir, mkdtemp, readdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BindingRuntimeHandle } from "../src/binding-runtime";
@@ -666,8 +666,7 @@ describe("Connect Client Interface", () => {
       body: JSON.stringify({
         requestId: "project_custom_name_request",
         name: "connect-qa",
-        rootPath: projectRoot,
-        additionalDirectories: [],
+        directory: { kind: "existing-directory", rootPath: projectRoot },
       }),
     });
     expect(customNamedProject.status).toBe(400);
@@ -676,12 +675,44 @@ describe("Connect Client Interface", () => {
       headers: { origin: handle.origin, "content-type": "application/json" },
       body: JSON.stringify({
         requestId: "project_add_request",
-        rootPath: projectRoot,
-        additionalDirectories: [],
+        directory: { kind: "existing-directory", rootPath: projectRoot },
       }),
     });
     expect(registeredProject.status).toBe(201);
     const registeredProjectView = (await registeredProject.json()) as { projectId: string; workspaceId: string };
+    const reusedProject = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", {
+      method: "POST",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "project_reuse_request",
+        directory: { kind: "existing-directory", rootPath: projectRoot },
+      }),
+    });
+    expect(reusedProject.status).toBe(200);
+    await expect(reusedProject.json()).resolves.toMatchObject({ projectId: registeredProjectView.projectId });
+    await mkdir(join(projectRoot, "visible-directory"));
+    await mkdir(join(projectRoot, ".hidden-directory"));
+    const directoryListing = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/host-directories?path=${encodeURIComponent(projectRoot)}`,
+    );
+    expect(directoryListing.status).toBe(200);
+    await expect(directoryListing.json()).resolves.toMatchObject({
+      currentPath: await realpath(projectRoot),
+      entries: [expect.objectContaining({ name: "visible-directory" })],
+    });
+    const hiddenDirectoryListing = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/host-directories?path=${encodeURIComponent(projectRoot)}&showHidden=1`,
+    );
+    expect(hiddenDirectoryListing.status).toBe(200);
+    expect(
+      ((await hiddenDirectoryListing.json()) as { entries: Array<{ name: string }> }).entries.map(
+        (entry) => entry.name,
+      ),
+    ).toContain(".hidden-directory");
     const projects = await localRequest(fetchHandler, handle.origin, "/client/v1/projects");
     const projectViews = (await projects.json()) as Array<{
       projectId: string;
@@ -720,8 +751,7 @@ describe("Connect Client Interface", () => {
       headers: { origin: handle.origin, "content-type": "application/json" },
       body: JSON.stringify({
         requestId: "session_project_add_request",
-        rootPath: sessionProjectRoot,
-        additionalDirectories: [],
+        directory: { kind: "existing-directory", rootPath: sessionProjectRoot },
       }),
     });
     const sessionProject = (await sessionProjectResponse.json()) as { projectId: string; workspaceId: string };
@@ -733,7 +763,7 @@ describe("Connect Client Interface", () => {
         requestId: "session_invalid_create_request",
         prompt: "This must not run",
         bindingId: "codex",
-        workspaceId: sessionProject.workspaceId,
+        workspace: { kind: "existing", workspaceId: sessionProject.workspaceId },
         name: "Invalid model",
         mode: "workspace-write",
         model: "missing-model",
@@ -748,7 +778,7 @@ describe("Connect Client Interface", () => {
       body: JSON.stringify({
         requestId: "session_create_request",
         bindingId: "codex",
-        workspaceId: sessionProject.workspaceId,
+        workspace: { kind: "existing", workspaceId: sessionProject.workspaceId },
         name: "Planned from Client",
         mode: "workspace-write",
         model: "gpt-deep",
@@ -823,7 +853,7 @@ describe("Connect Client Interface", () => {
       body: JSON.stringify({
         requestId: "workspace_session_create_request",
         bindingId: "codex",
-        workspaceId: discoveredWorkspace?.workspaceId,
+        workspace: { kind: "existing", workspaceId: discoveredWorkspace.workspaceId },
         name: "Created in discovered workspace",
         mode: "workspace-write",
         model: null,
@@ -1377,10 +1407,14 @@ describe("Connect Client Interface", () => {
     });
     openHandles.push(handle);
     if (!fetchHandler) throw new Error("test Client Interface did not expose a request handler");
+    const inlineProjectRoot = join(directory, "inline-project");
     const request = {
       requestId: "session_retry_request",
       bindingId: "codex",
-      workspaceId: null,
+      workspace: {
+        kind: "new-project",
+        directory: { kind: "new-directory", parentPath: directory, name: "inline-project" },
+      },
       name: "Retry safely",
       mode: "workspace-write",
       model: null,
@@ -1395,6 +1429,8 @@ describe("Connect Client Interface", () => {
     expect(failed.status).toBe(503);
     expect(enqueueClientTurn).not.toHaveBeenCalled();
     await expect(store.listAllRuntimeSessions()).resolves.toHaveLength(0);
+    await expect(stat(inlineProjectRoot).catch(() => null)).resolves.toBeNull();
+    await expect(store.listProjects()).resolves.toHaveLength(0);
 
     catalogUnavailable = false;
     const retried = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
@@ -1405,6 +1441,8 @@ describe("Connect Client Interface", () => {
     expect(retried.status).toBe(201);
     expect(enqueueClientTurn).not.toHaveBeenCalled();
     await expect(store.listAllRuntimeSessions()).resolves.toHaveLength(1);
+    expect((await stat(inlineProjectRoot)).isDirectory()).toBe(true);
+    await expect(store.listProjects()).resolves.toHaveLength(1);
   });
 
   it("serves documents directly and rejects invalid Host headers", async () => {
@@ -1695,7 +1733,7 @@ describe("Connect Client Interface", () => {
       body: JSON.stringify({
         requestId: "scoped-work-session",
         bindingId: "work",
-        workspaceId: null,
+        workspace: { kind: "none" },
         name: "Forbidden",
         mode: null,
         model: null,

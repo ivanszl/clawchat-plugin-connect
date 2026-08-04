@@ -120,6 +120,17 @@ export class SessionCatalog {
     return (await this.load(force)).entriesByRef.get(sessionRef.toUpperCase()) ?? null;
   }
 
+  async runtimeWorkspaceLocations(): Promise<Array<{ name: string; path: string }>> {
+    const state = await this.load();
+    const locations = new Map<string, { name: string; path: string }>();
+    for (const [sessionRef, path] of state.workingDirectoryByRef) {
+      if (this.projects.isIsolatedWorkspace(path)) continue;
+      const entry = state.entriesByRef.get(sessionRef);
+      locations.set(resolve(path), { name: entry?.workspaceName || entry?.projectName || resolve(path), path });
+    }
+    return [...locations.values()];
+  }
+
   async workspace(sessionRef: string): Promise<RuntimeWorkspace | null> {
     const normalized = sessionRef.toUpperCase();
     const state = await this.load();
@@ -135,7 +146,6 @@ export class SessionCatalog {
     return {
       projectId: null,
       workingDirectory: resolve(workingDirectory),
-      additionalDirectories: [],
       skipGitRepoCheck: true,
     };
   }

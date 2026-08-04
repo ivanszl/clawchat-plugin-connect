@@ -25,7 +25,6 @@ const directory = "/repo";
 const runtimeWorkspace = {
   projectId: "p",
   workingDirectory: directory,
-  additionalDirectories: [],
   skipGitRepoCheck: true,
 } satisfies RuntimeWorkspace;
 
@@ -596,7 +595,6 @@ describe("OpenCode Runtime Adapter", () => {
     const options = await adapter.listSessionOptions?.(binding, {
       projectId: "p",
       workingDirectory: directory,
-      additionalDirectories: [],
       skipGitRepoCheck: true,
     });
     expect(options?.map((option) => option.id)).toEqual(["agent", "model", "variant"]);
