@@ -1,9 +1,9 @@
-name: Release alpha
+name: Release beta
 
 on:
   push:
     tags:
-      - "v*-alpha.*"
+      - "v*-beta.*"
 
 permissions:
   contents: write
@@ -29,21 +29,24 @@ jobs:
         shell: pwsh
         run: |
           bun test tests/background-service.test.ts
+          bun test tests/build-release.test.ts tests/release-channel.test.ts
           bun scripts/verify-liveware-bundle.ts
 
       - name: Validate PowerShell installer syntax
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path install.ps1),
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error $_.Message }
-            exit 1
+          foreach ($script in @("install.ps1", "scripts/package-windows-release.ps1")) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
           }
 
       - name: Build and run Windows x64 smoke checks
@@ -72,16 +75,16 @@ jobs:
         with:
           bun-version: 1.3.10
 
-      - name: Verify alpha version
+      - name: Verify beta version
         shell: bash
         run: |
           set -euo pipefail
           package_version="$(bun -e 'console.log(require("./package.json").version)')"
           test "${GITHUB_REF_NAME}" = "v${package_version}"
-          case "${package_version}" in
-            *-alpha.*) ;;
-            *) echo "Only alpha versions may be released" >&2; exit 1 ;;
-          esac
+          if [[ ! "${package_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*$ ]]; then
+            echo "Only beta versions may be released" >&2
+            exit 1
+          fi
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -137,8 +140,8 @@ jobs:
           bun-windows-x64 windows x64
           TARGETS
           cp install.sh install.ps1 build/release/
-          grep -F "raw.githubusercontent.com/\${repository}/release-channel/latest-alpha.txt" build/release/install.sh
-          grep -F 'raw.githubusercontent.com/$repository/release-channel/latest-alpha.txt' build/release/install.ps1
+          grep -F "raw.githubusercontent.com/\${repository}/release-channel/latest-beta.txt" build/release/install.sh
+          grep -F 'raw.githubusercontent.com/$repository/release-channel/latest-beta.txt' build/release/install.ps1
           cp CHANGELOG.md build/release/
           cd build/release
           sha256sum clawchat-connect-*.tar.gz clawchat-connect-*.zip install.sh install.ps1 CHANGELOG.md > checksums.txt
@@ -149,6 +152,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # prerelease: true (enforced in both create and edit paths)
           package_version="${GITHUB_REF_NAME#v}"
           awk -v heading="## [${package_version}]" '
             index($0, heading) == 1 { printing = 1 }
@@ -158,7 +162,7 @@ jobs:
           test -s build/release-notes.md
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release upload "${GITHUB_REF_NAME}" build/release/* --clobber
-            gh release edit "${GITHUB_REF_NAME}" --notes-file build/release-notes.md
+            gh release edit "${GITHUB_REF_NAME}" --prerelease --notes-file build/release-notes.md
           else
             gh release create "${GITHUB_REF_NAME}" build/release/* \
               --verify-tag \
@@ -167,14 +171,14 @@ jobs:
               --notes-file build/release-notes.md
           fi
 
-      - name: Advance alpha release channel
+      - name: Advance beta release channel
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           channel_branch="release-channel"
-          channel_path="latest-alpha.txt"
+          channel_path="latest-beta.txt"
           if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${channel_branch}" >/dev/null 2>&1; then
             gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
               -f ref="refs/heads/${channel_branch}" \
@@ -186,7 +190,7 @@ jobs:
           )"
           channel_content="$(printf '%s\n' "${GITHUB_REF_NAME}" | base64 -w 0)"
           arguments=(
-            -f message="chore: advance alpha channel to ${GITHUB_REF_NAME}"
+            -f message="chore: advance beta channel to ${GITHUB_REF_NAME}"
             -f content="${channel_content}"
             -f branch="${channel_branch}"
           )

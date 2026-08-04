@@ -205,7 +205,7 @@ describe("standalone release bundle", () => {
 
   it("ships a checksum-verifying PowerShell installer and Windows release targets", async () => {
     const installer = await readFile("install.ps1", "utf8");
-    expect(installer).toContain("raw.githubusercontent.com/$repository/release-channel/latest-alpha.txt");
+    expect(installer).toContain("raw.githubusercontent.com/$repository/release-channel/latest-beta.txt");
     expect(installer).not.toContain("api.github.com");
     expect(installer).toContain("Get-FileHash");
     expect(installer).toContain("Expand-Archive");
@@ -215,7 +215,7 @@ describe("standalone release bundle", () => {
     expect(installer).toContain('service", "stop');
     expect(installer).toContain("$transactionStarted");
     expect(installer).toContain("if ($transactionStarted -and -not $transactionCommitted)");
-    const workflow = await readFile(".github/workflows/release-alpha.yml", "utf8");
+    const workflow = await readFile(".github/workflows/release-beta.yml", "utf8");
     expect(workflow).toContain("bun-windows-x64 windows x64");
     expect(workflow).toContain("bun-windows-arm64 windows arm64");
     expect(workflow).toContain("bun-linux-x64-baseline linux x64");
@@ -223,11 +223,11 @@ describe("standalone release bundle", () => {
     expect(workflow).toContain("install.ps1");
     expect(workflow).toContain("--notes-file build/release-notes.md");
     expect(workflow).toContain("release-channel");
-    expect(workflow).toContain("latest-alpha.txt");
+    expect(workflow).toContain("latest-beta.txt");
   });
 
-  it("keeps installed WorkBuddy qualification local and the alpha workflow deterministic", async () => {
-    const workflow = await readFile(".github/workflows/release-alpha.yml", "utf8");
+  it("keeps installed WorkBuddy qualification local and the beta workflow deterministic", async () => {
+    const workflow = await readFile(".github/workflows/release-beta.yml", "utf8");
     expect(workflow).not.toContain("workbuddy-installed:");
     expect(workflow).not.toContain("workbuddy-release");
     expect(workflow).not.toContain("WORKBUDDY_AI_TEST_");
@@ -317,7 +317,7 @@ describe("standalone release bundle", () => {
     const checksum = (await new Response(checksumProcess.stdout).text()).split(/\s+/u)[0];
     expect(await checksumProcess.exited).toBe(0);
     await writeFile(join(fixtureDirectory, "checksums.txt"), `${checksum}  ${asset}\n`);
-    await writeFile(join(fixtureDirectory, "latest-alpha.txt"), "v0.1.0-alpha.12\n");
+    await writeFile(join(fixtureDirectory, "latest-beta.txt"), "v0.1.0-beta.12\n");
     const curlPath = join(commandDirectory, "curl");
     await writeFile(
       curlPath,
@@ -333,11 +333,11 @@ describe("standalone release bundle", () => {
         "  esac",
         "done",
         'case "$url" in',
-        "  *release-channel/latest-alpha.txt)",
+        "  *release-channel/latest-beta.txt)",
         '    if [ -n "$output" ]; then',
-        '      cp "$CONNECT_INSTALL_FIXTURES/latest-alpha.txt" "$output"',
+        '      cp "$CONNECT_INSTALL_FIXTURES/latest-beta.txt" "$output"',
         "    else",
-        '      cat "$CONNECT_INSTALL_FIXTURES/latest-alpha.txt"',
+        '      cat "$CONNECT_INSTALL_FIXTURES/latest-beta.txt"',
         "    fi",
         "    ;;",
         '  *) cp "$CONNECT_INSTALL_FIXTURES/$' + '{url##*/}" "$output" ;;',
@@ -376,10 +376,10 @@ describe("standalone release bundle", () => {
       "# Changelog",
     );
     await expect(readFile(requestsPath, "utf8")).resolves.toContain(
-      "/releases/download/v0.1.0-alpha.12/clawchat-connect-",
+      "/releases/download/v0.1.0-beta.12/clawchat-connect-",
     );
     const requests = await readFile(requestsPath, "utf8");
-    expect(requests).toContain("/release-channel/latest-alpha.txt");
+    expect(requests).toContain("/release-channel/latest-beta.txt");
     expect(requests).not.toContain("api.github.com");
 
     const installedConnectBeforeFailure = await readFile(join(installDirectory, "clawchat-connect"), "utf8");

@@ -37,10 +37,10 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
   $Version = $env:CLAWCHAT_CONNECT_VERSION
 }
 if ([string]::IsNullOrWhiteSpace($Version)) {
-  $releaseChannelUrl = "https://raw.githubusercontent.com/$repository/release-channel/latest-alpha.txt"
+  $releaseChannelUrl = "https://raw.githubusercontent.com/$repository/release-channel/latest-beta.txt"
   $Version = (Invoke-WebRequest -UseBasicParsing -Uri $releaseChannelUrl).Content.Trim()
   if ([string]::IsNullOrWhiteSpace($Version)) {
-    throw "Alpha release channel was empty for $repository"
+    throw "Beta release channel was empty for $repository"
   }
 }
 if (-not $Version.StartsWith("v")) {

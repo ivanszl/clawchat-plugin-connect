@@ -16,12 +16,12 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 
 if [ -z "$version" ]; then
-  release_channel_url="https://raw.githubusercontent.com/${repository}/release-channel/latest-alpha.txt"
+  release_channel_url="https://raw.githubusercontent.com/${repository}/release-channel/latest-beta.txt"
   version="$(
     curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --retry 3 "$release_channel_url" |
       awk 'NF { print $1; exit }'
   )"
-  [ -n "$version" ] || fail "alpha release channel was empty for ${repository}"
+  [ -n "$version" ] || fail "beta release channel was empty for ${repository}"
 fi
 
 case "$version" in
