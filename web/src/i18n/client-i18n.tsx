@@ -1,5 +1,11 @@
-import { InternationalizationProvider, type TranslatorFn, useTranslator } from "@astryxdesign/core/i18n";
-import type { ReactNode } from "react";
+import {
+  InternationalizationContext,
+  InternationalizationProvider,
+  type TranslatorFn,
+  useTranslator,
+} from "@astryxdesign/core/i18n";
+import { type ReactNode, use } from "react";
+import { ClientInterfaceError } from "../client-interface/http";
 import { clientMessages } from "./catalogs";
 import type { ClientMessageKey } from "./catalogs/en";
 import type { ClientLocale } from "./client-locale";
@@ -22,4 +28,45 @@ export function ClientInternationalizationProvider({
 
 export function useClientTranslator(): ClientTranslator {
   return useTranslator() as ClientTranslator;
+}
+
+export function useClientLocale(): ClientLocale {
+  return use(InternationalizationContext).locale as ClientLocale;
+}
+
+const knownClientErrorKeys = {
+  "binding-not-found": "@connect.error.bindingNotFound",
+  "invalid-workspace": "@connect.error.invalidWorkspace",
+  "invalid-name": "@connect.error.invalidName",
+  "invalid-mode": "@connect.error.invalidMode",
+  "invalid-model": "@connect.error.invalidModel",
+  "invalid-reasoning-effort": "@connect.error.invalidReasoningEffort",
+  "invalid-session-options": "@connect.error.invalidSessionOptions",
+  "session-view-unavailable": "@connect.error.sessionViewUnavailable",
+  "session-create-failed": "@connect.error.sessionCreateFailed",
+  "session-not-found": "@connect.error.sessionNotFound",
+  "session-state-conflict": "@connect.error.sessionStateConflict",
+  "session-action-unsupported": "@connect.error.sessionActionUnsupported",
+  "interaction-not-found": "@connect.error.interactionNotFound",
+  "interaction-expired": "@connect.error.interactionExpired",
+  "interaction-not-pending": "@connect.error.interactionNotPending",
+  "invalid-interaction-response": "@connect.error.invalidInteractionResponse",
+  "directory-not-found": "@connect.error.directoryNotFound",
+  "directory-unavailable": "@connect.error.directoryUnavailable",
+  "host-directory-unavailable": "@connect.error.directoryUnavailable",
+  "directory-already-exists": "@connect.error.directoryAlreadyExists",
+  "invalid-directory": "@connect.error.invalidDirectory",
+  "invalid-directory-name": "@connect.error.invalidDirectoryName",
+  "project-conflict": "@connect.error.projectConflict",
+  "internal-error": "@connect.error.internal",
+} as const satisfies Record<string, ClientMessageKey>;
+
+export function localizedClientError(t: ClientTranslator, error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof ClientInterfaceError)) return raw;
+  const key = knownClientErrorKeys[error.code as keyof typeof knownClientErrorKeys];
+  const message = key ? t(key) : raw;
+  return error.diagnosticRef
+    ? t("@connect.error.withDiagnostic", { message, diagnosticRef: error.diagnosticRef })
+    : message;
 }

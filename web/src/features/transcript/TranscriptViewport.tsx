@@ -6,6 +6,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SlashSuggestionView, TranscriptBlock, TranscriptPageView } from "../../../../src/client-contract";
 import { ThreadIcon } from "../../components/icons";
+import { useClientLocale, useClientTranslator } from "../../i18n/client-i18n";
 import { TranscriptBlockView, TranscriptToolCallsView } from "./TranscriptBlockView";
 import { groupBlocksForRendering, groupTranscriptBlocks, type TranscriptGroup } from "./transcript-render-groups";
 
@@ -28,6 +29,8 @@ export function TranscriptViewport({
   loadOlder,
   onOpenArtifact,
 }: TranscriptViewportProps) {
+  const locale = useClientLocale();
+  const t = useClientTranslator();
   const scrollRef = useRef<HTMLDivElement>(null);
   const columnRef = useRef<HTMLDivElement>(null);
   const loadingOlderRef = useRef(false);
@@ -111,8 +114,8 @@ export function TranscriptViewport({
       <div className="transcript-empty">
         <EmptyState
           icon={<ThreadIcon className="empty-icon" />}
-          title="这个 Session 还没有消息"
-          description="在下方输入消息，Connect 会把它直接发送给绑定的 Agent。"
+          title={t("@connect.transcript.empty.title")}
+          description={t("@connect.transcript.empty.description")}
           isCompact
         />
       </div>
@@ -125,7 +128,7 @@ export function TranscriptViewport({
         <div className="transcript-column" ref={columnRef}>
           {isLoadingOlder ? (
             <div className="older-loading">
-              <Spinner size="sm" label="正在载入更早的消息" />
+              <Spinner size="sm" label={t("@connect.transcript.loadingOlder")} />
             </div>
           ) : null}
           <VirtualSpacer height={paddingBefore} />
@@ -140,7 +143,7 @@ export function TranscriptViewport({
                 key={group.id}
                 ref={virtualizer.measureElement}
               >
-                <Divider className="transcript-group-divider" label={formatTranscriptDate(group.createdAt)} />
+                <Divider className="transcript-group-divider" label={formatTranscriptDate(group.createdAt, locale)} />
                 <div className="transcript-group-blocks">
                   {groupBlocksForRendering(group.blocks).map((entry) =>
                     entry.kind === "tools" ? (
@@ -168,7 +171,7 @@ export function TranscriptViewport({
       <ChatLayoutScrollButton
         className="jump-latest"
         isVisible={showJump}
-        label="跳到最新消息"
+        label={t("@connect.transcript.jumpToLatest")}
         onClick={() => {
           followLatestRef.current = true;
           setShowJump(false);
@@ -195,10 +198,10 @@ export function mergePages(pages: TranscriptPageView[]): TranscriptBlock[] {
   return [...byId.values()].sort((left, right) => left.sequence - right.sequence);
 }
 
-function formatTranscriptDate(value: string): string {
+function formatTranscriptDate(value: string, locale: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale, {
     year: "numeric",
     month: "short",
     day: "numeric",

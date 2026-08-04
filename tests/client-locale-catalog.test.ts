@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { isStructurallySame, parse } from "@formatjs/icu-messageformat-parser";
+import ts from "typescript";
 import { clientMessages } from "../web/src/i18n/catalogs";
 import type { ClientMessageKey } from "../web/src/i18n/catalogs/en";
 import { clientLocales } from "../web/src/i18n/client-locale";
@@ -17,10 +19,92 @@ describe("Connect Client locale catalogs", () => {
         expect(messageArguments(catalog[key].defaultMessage)).toEqual(
           messageArguments(clientMessages.en[key].defaultMessage),
         );
+        const structuralMatch = isStructurallySame(
+          parse(clientMessages.en[key].defaultMessage),
+          parse(catalog[key].defaultMessage),
+        );
+        expect(structuralMatch.success).toBe(true);
       }
     }
   });
+
+  it("keeps Connect-owned visible JSX literals behind the locale catalog", async () => {
+    const reviewedLiteralAllowlist = new Set([
+      "web/src/features/app-shell/ConnectAppShell.tsx::ClawChat Connect",
+      "web/src/features/session-catalog/SessionNavigation.tsx::Project",
+      "web/src/features/settings/SettingsPage.tsx::CONNECT CLIENT",
+      "web/src/features/transcript/TranscriptBlockView.tsx::ClawChat",
+    ]);
+    const unlocalized: string[] = [];
+    const glob = new Bun.Glob("web/src/**/*.tsx");
+    for await (const path of glob.scan({ cwd: process.cwd(), onlyFiles: true })) {
+      if (path.endsWith("routeTree.gen.tsx")) continue;
+      const source = ts.createSourceFile(
+        path,
+        await Bun.file(path).text(),
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TSX,
+      );
+      for (const literal of visibleJsxLiterals(source)) {
+        const allowlistKey = `${path}::${literal.value}`;
+        if (reviewedLiteralAllowlist.has(allowlistKey)) continue;
+        const position = source.getLineAndCharacterOfPosition(literal.position);
+        unlocalized.push(`${path}:${position.line + 1} ${JSON.stringify(literal.value)}`);
+      }
+    }
+    expect(unlocalized).toEqual([]);
+  });
 });
+
+const visibleAttributeNames = new Set([
+  "actionLabel",
+  "alt",
+  "aria-label",
+  "cancelLabel",
+  "description",
+  "disabledMessage",
+  "label",
+  "placeholder",
+  "title",
+]);
+
+function visibleJsxLiterals(source: ts.SourceFile): Array<{ value: string; position: number }> {
+  const literals: Array<{ value: string; position: number }> = [];
+  const record = (value: string, position: number) => {
+    const normalized = value.trim().replace(/\s+/gu, " ");
+    if (/[\p{L}\p{N}]/u.test(normalized)) literals.push({ value: normalized, position });
+  };
+  const recordExpression = (expression: ts.Expression): void => {
+    if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) {
+      record(expression.text, expression.getStart(source));
+    } else if (ts.isTemplateExpression(expression)) {
+      record(expression.head.text, expression.head.getStart(source));
+      for (const span of expression.templateSpans) record(span.literal.text, span.literal.getStart(source));
+    } else if (ts.isConditionalExpression(expression)) {
+      recordExpression(expression.whenTrue);
+      recordExpression(expression.whenFalse);
+    } else if (ts.isBinaryExpression(expression)) {
+      recordExpression(expression.left);
+      recordExpression(expression.right);
+    } else if (ts.isParenthesizedExpression(expression)) {
+      recordExpression(expression.expression);
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isJsxText(node)) record(node.text, node.getStart(source));
+    if (ts.isJsxAttribute(node) && visibleAttributeNames.has(node.name.getText(source))) {
+      if (node.initializer && ts.isStringLiteral(node.initializer)) {
+        record(node.initializer.text, node.initializer.getStart(source));
+      } else if (node.initializer && ts.isJsxExpression(node.initializer) && node.initializer.expression) {
+        recordExpression(node.initializer.expression);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return literals;
+}
 
 function messageArguments(message: string): string[] {
   return [...message.matchAll(/\{\s*([a-z][a-z0-9_]*)\s*(?:,|\})/giu)].map((match) => match[1] ?? "").sort();

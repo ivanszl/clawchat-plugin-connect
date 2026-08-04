@@ -2,12 +2,45 @@ import { describe, expect, mock, test } from "bun:test";
 import { ClientInterfaceError } from "../web/src/client-interface/http";
 import {
   cancelTurnSubmission,
+  formatTurnSubmissionError,
   submitTurn,
   TurnSubmissionCancelledError,
 } from "../web/src/client-interface/turn-submission";
 import { TurnSubmissionIdentity } from "../web/src/features/composer/useTurnSubmission";
 
 describe("Client Turn Submission ownership", () => {
+  test("localizes known submission failures by stable code and preserves diagnostic references", () => {
+    const error = new ClientInterfaceError(
+      400,
+      "attachment-too-large",
+      "runtime wording that must not select the translation",
+      false,
+      "diag-λ-2048",
+    );
+
+    expect(
+      formatTurnSubmissionError(error, (key, values) => {
+        if (key === "@connect.composer.error.attachmentTooLarge") return "The attachment is too large.";
+        if (key === "@connect.composer.error.withDiagnostic") {
+          return `${String(values?.message)} Diagnostic reference: ${String(values?.reference)}`;
+        }
+        return key;
+      }),
+    ).toBe("The attachment is too large. Diagnostic reference: diag-λ-2048");
+  });
+
+  test("keeps unknown server messages and diagnostic references unchanged", () => {
+    const error = new ClientInterfaceError(502, "new-runtime-failure", "Runtime says: α/β failed", true, "raw-ref-908");
+
+    expect(
+      formatTurnSubmissionError(error, (key, values) =>
+        key === "@connect.composer.error.withDiagnostic"
+          ? `${String(values?.message)} [${String(values?.reference)}]`
+          : key,
+      ),
+    ).toBe("Runtime says: α/β failed [raw-ref-908]");
+  });
+
   test("retries an unknown outcome with the same identity", () => {
     const identity = new TurnSubmissionIdentity();
     expect(identity.begin(() => "submission-1")).toBe("submission-1");

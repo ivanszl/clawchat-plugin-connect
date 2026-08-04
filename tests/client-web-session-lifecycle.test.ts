@@ -12,8 +12,22 @@ describe("Connect Client Session lifecycle", () => {
     expect(source).toContain('lifecycle.mutate("archive")');
     expect(source).toContain('lifecycle.mutate("unarchive")');
     expect(source).toContain('lifecycle.mutate("delete"');
-    expect(source).toContain("子 Thread 不会被 Connect 额外级联删除");
+    expect(source).toContain('t("@connect.session.delete.description")');
+    expect(source).toContain("localizedClientError(t, lifecycle.error)");
     expect(source).not.toContain("window.confirm");
+  });
+
+  it("localizes the complete new-Session dialog without changing technical choices", async () => {
+    const source = await Bun.file(navigationUrl).text();
+
+    expect(source).toContain('t("@connect.newSession.title")');
+    expect(source).toContain('t("@connect.newSession.project.nonProject")');
+    expect(source).toContain('t("@connect.newSession.mode.default")');
+    expect(source).toContain('t("@connect.newSession.model.default")');
+    expect(source).toContain('t("@connect.newSession.reasoning.label")');
+    expect(source).toContain("localizedClientError(t, create.error)");
+    expect(source).toContain("label: value");
+    expect(source).toContain(["label: `", "$", "{option.displayName} (", "$", "{option.id})`"].join(""));
   });
 
   it("keeps archived Sessions in their own collapsed navigation group", async () => {
@@ -21,7 +35,7 @@ describe("Connect Client Session lifecycle", () => {
 
     expect(source).toContain("const archived = visible.filter((entry) => entry.isArchived)");
     expect(source).toContain("id: `archived:" + "$" + "{binding.bindingId}`");
-    expect(source).toContain('label: t("@connect.navigation.archived")');
+    expect(source).toContain('label: t("@connect.navigation.archived", { count: archived.length })');
   });
 
   it("keeps Session Refs out of navigation rows and shows status dots only for active work", async () => {

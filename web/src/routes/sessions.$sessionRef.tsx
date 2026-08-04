@@ -30,11 +30,13 @@ import {
 } from "../features/artifacts/ArtifactWorkspaceView";
 import { SessionComposer } from "../features/composer/SessionComposer";
 import { TranscriptViewport } from "../features/transcript/TranscriptViewport";
+import { type ClientTranslator, localizedClientError, useClientTranslator } from "../i18n/client-i18n";
 import { continueInClawChatHref, isClawChatLivewareContext } from "../liveware/clawchat-deep-link";
 
 export const Route = createFileRoute("/sessions/$sessionRef")({ component: SessionPage });
 
 function SessionPage() {
+  const t = useClientTranslator();
   const { sessionRef } = Route.useParams();
   const session = useQuery(sessionQueryOptions(sessionRef));
   const slashSuggestions = useQuery(slashSuggestionsQueryOptions(sessionRef));
@@ -43,6 +45,7 @@ function SessionPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [lifecycleOutcome, setLifecycleOutcome] = useState<"archive" | "unarchive" | null>(null);
   const artifactWorkspace = useArtifactWorkspace(sessionRef);
   const lifecycle = useMutation({
     mutationFn: async (action: "archive" | "unarchive" | "delete") => {
@@ -50,6 +53,7 @@ function SessionPage() {
       if (action === "unarchive") return await unarchiveSession(sessionRef);
       return await deleteSession(sessionRef);
     },
+    onMutate: () => setLifecycleOutcome(null),
     onSuccess: async (_response, action) => {
       await queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
       if (action === "delete") {
@@ -62,13 +66,14 @@ function SessionPage() {
         queryClient.invalidateQueries({ queryKey: clientKeys.session(sessionRef) }),
         queryClient.invalidateQueries({ queryKey: clientKeys.transcript(sessionRef) }),
       ]);
+      setLifecycleOutcome(action);
     },
   });
 
   if (session.isPending || transcript.isPending) {
     return (
       <div className="centered-state">
-        <Spinner label="正在打开 Session" />
+        <Spinner label={t("@connect.session.loading")} />
       </div>
     );
   }
@@ -76,7 +81,7 @@ function SessionPage() {
     const error = session.error ?? transcript.error;
     return (
       <div className="centered-state">
-        <Banner status="error" title="无法打开 Session" description={error?.message} />
+        <Banner status="error" title={t("@connect.session.loadFailure")} description={localizedClientError(t, error)} />
       </div>
     );
   }
@@ -94,9 +99,9 @@ function SessionPage() {
         <ArtifactMobileControls workspace={artifactWorkspace} />
         <div className="session-meta">
           <Badge label={view.bindingKind} variant="neutral" />
-          {view.isArchived ? <Badge label="已归档" variant="neutral" /> : null}
+          {view.isArchived ? <Badge label={t("@connect.session.archived.badge")} variant="neutral" /> : null}
           <Badge
-            label={statusLabel(view.status)}
+            label={statusLabel(view.status, t)}
             variant={
               view.status === "error"
                 ? "error"
@@ -109,7 +114,7 @@ function SessionPage() {
           />
           <DropdownMenu
             button={{
-              label: "Session 操作",
+              label: t("@connect.session.actions.label"),
               isIconOnly: true,
               icon: <MoreIcon />,
               size: "sm",
@@ -123,12 +128,12 @@ function SessionPage() {
                 ? [
                     view.isArchived
                       ? {
-                          label: "恢复 Session",
+                          label: t("@connect.session.actions.restore"),
                           isDisabled: lifecycle.isPending,
                           onClick: () => lifecycle.mutate("unarchive"),
                         }
                       : {
-                          label: "归档 Session",
+                          label: t("@connect.session.actions.archive"),
                           isDisabled: lifecycle.isPending,
                           onClick: () => lifecycle.mutate("archive"),
                         },
@@ -138,7 +143,7 @@ function SessionPage() {
                 ? [
                     { type: "divider" as const },
                     {
-                      label: "永久删除 Session",
+                      label: t("@connect.session.actions.delete"),
                       isDisabled: lifecycle.isPending,
                       onClick: () => setDeleteOpen(true),
                     },
@@ -151,19 +156,36 @@ function SessionPage() {
       <div className="session-work-area" data-artifact-open={artifactWorkspace.activeTab ? true : undefined}>
         <div className="session-conversation">
           <div className="session-notices">
+            {!view.runtimeThreadAvailable && !view.allowedActions.includes("send") ? (
+              <Banner
+                status="warning"
+                title={t("@connect.session.unavailable.title")}
+                description={t("@connect.session.unavailable.description")}
+                container="section"
+              />
+            ) : null}
             {view.isArchived ? (
               <Banner
                 status="info"
-                title="此 Session 已归档"
-                description="历史消息仍可查看；恢复后才能继续发送消息。"
+                title={t("@connect.session.archived.title")}
+                description={t("@connect.session.archived.description")}
                 container="section"
+              />
+            ) : null}
+            {lifecycleOutcome === "unarchive" ? (
+              <Banner
+                status="success"
+                title={t("@connect.session.restored")}
+                container="section"
+                isDismissable
+                onDismiss={() => setLifecycleOutcome(null)}
               />
             ) : null}
             {lifecycle.isError ? (
               <Banner
                 status="error"
-                title="Session 操作失败"
-                description={lifecycle.error.message}
+                title={t("@connect.session.lifecycleFailure")}
+                description={localizedClientError(t, lifecycle.error)}
                 container="section"
                 isDismissable
                 onDismiss={() => lifecycle.reset()}
@@ -185,7 +207,7 @@ function SessionPage() {
           <div className="session-composer-surface">
             <SessionComposer
               sessionRef={sessionRef}
-              contextLabel={`${view.workspaceName || view.projectName || "Non-Project"} / ${view.sessionRef}`}
+              contextLabel={`${view.workspaceName || view.projectName || t("@connect.session.context.nonProject")} / ${view.sessionRef}`}
               continueInClawChatHref={clawChatHref}
               canSend={view.allowedActions.includes("send") && view.status !== "offline"}
               isRuntimeActive={view.status === "running" || view.status === "queued"}
@@ -203,10 +225,10 @@ function SessionPage() {
       <AlertDialog
         isOpen={deleteOpen}
         onOpenChange={setDeleteOpen}
-        title="永久删除这个 Session？"
-        description="这会删除原生 Runtime Thread 以及 Connect 保存的本地消息投影，且无法恢复。子 Thread 不会被 Connect 额外级联删除。"
-        cancelLabel="取消"
-        actionLabel="永久删除"
+        title={t("@connect.session.delete.title")}
+        description={t("@connect.session.delete.description")}
+        cancelLabel={t("@connect.session.delete.cancel")}
+        actionLabel={t("@connect.session.delete.action")}
         isActionLoading={lifecycle.isPending}
         onAction={() => lifecycle.mutate("delete", { onSuccess: () => setDeleteOpen(false) })}
       />
@@ -215,6 +237,7 @@ function SessionPage() {
 }
 
 function SessionModelControls({ view }: { view: SessionView }) {
+  const t = useClientTranslator();
   const queryClient = useQueryClient();
   const [isOpen, setIsOpen] = useState(false);
   const [model, setModel] = useState(view.model ?? "default");
@@ -234,13 +257,15 @@ function SessionModelControls({ view }: { view: SessionView }) {
   );
   const compactLabel = usesGenericModelOptions
     ? [sessionOptions.agent, sessionOptions.model, sessionOptions.variant].filter(Boolean).join(" · ") ||
-      "Runtime 原生默认值"
-    : `${effectiveModelOption?.displayName ?? view.effectiveModel ?? "Runtime 默认模型"} · ${
+      t("@connect.composer.model.runtimeNativeDefault")
+    : `${effectiveModelOption?.displayName ?? view.effectiveModel ?? t("@connect.composer.model.runtimeDefaultModel")} · ${
         view.effectiveReasoningEffort ?? "default"
       }`;
   const modelOptions = [
-    { value: "default", label: "继承 Agent Binding / Runtime 默认值" },
-    ...(unavailableModel ? [{ value: unavailableModel, label: `${unavailableModel}（不可用）` }] : []),
+    { value: "default", label: t("@connect.composer.model.inheritDefault") },
+    ...(unavailableModel
+      ? [{ value: unavailableModel, label: t("@connect.composer.model.unavailableValue", { value: unavailableModel }) }]
+      : []),
     ...view.modelOptions.map((option) => ({
       value: option.id,
       label: `${option.displayName} (${option.id})`,
@@ -261,7 +286,7 @@ function SessionModelControls({ view }: { view: SessionView }) {
   });
   return (
     <Popover
-      label="Session 模型设置"
+      label={t("@connect.composer.model.popoverLabel")}
       placement="above"
       alignment="end"
       width="min(340px, calc(100vw - 24px))"
@@ -271,17 +296,27 @@ function SessionModelControls({ view }: { view: SessionView }) {
         <div className="session-model-popover">
           <div className="session-model-popover-heading">
             <div>
-              <strong>{usesGenericModelOptions ? "Runtime Session 选项" : "模型与推理强度"}</strong>
+              <strong>
+                {usesGenericModelOptions
+                  ? t("@connect.composer.model.runtimeOptions")
+                  : t("@connect.composer.model.heading")}
+              </strong>
               <p>
-                当前生效：{compactLabel}（
-                {{ session: "Session", binding: "Agent Binding", runtime: "Runtime" }[view.modelSource]}）
+                {t("@connect.composer.model.effective", {
+                  value: compactLabel,
+                  source: {
+                    session: t("@connect.composer.model.source.session"),
+                    binding: t("@connect.composer.model.source.binding"),
+                    runtime: t("@connect.composer.model.source.runtime"),
+                  }[view.modelSource],
+                })}
               </p>
             </div>
-            {!view.modelAvailable ? <Badge label="模型不可用" variant="error" /> : null}
+            {!view.modelAvailable ? <Badge label={t("@connect.composer.model.unavailable")} variant="error" /> : null}
           </div>
           {!usesGenericModelOptions ? (
             <Selector
-              label="Session 模型"
+              label={t("@connect.composer.model.selectorLabel")}
               options={modelOptions}
               value={model}
               onChange={(value) => {
@@ -290,14 +325,14 @@ function SessionModelControls({ view }: { view: SessionView }) {
                 setEffort(option?.defaultReasoningEffort ?? view.effectiveReasoningEffort ?? "default");
               }}
               isDisabled={view.modelOptions.length === 0 && !unavailableModel}
-              disabledMessage="Runtime Adapter 不支持模型选择。"
+              disabledMessage={t("@connect.composer.model.unsupported")}
               width="100%"
             />
           ) : null}
           {view.sessionOptionDefinitions.map((definition) => {
             const selected = sessionOptions[definition.id] ?? "default";
             const values = [
-              { value: "default", label: "使用 Runtime 默认值" },
+              { value: "default", label: t("@connect.composer.model.useRuntimeDefault") },
               ...definition.values
                 .filter(
                   (value) =>
@@ -308,7 +343,9 @@ function SessionModelControls({ view }: { view: SessionView }) {
                 )
                 .map((value) => ({
                   value: value.id,
-                  label: `${value.displayName}${value.unavailable ? "（不可用）" : ""}`,
+                  label: value.unavailable
+                    ? t("@connect.composer.model.unavailableValue", { value: value.displayName })
+                    : value.displayName,
                 })),
             ];
             return (
@@ -335,14 +372,14 @@ function SessionModelControls({ view }: { view: SessionView }) {
                   })
                 }
                 isDisabled={definition.changePolicy !== "in-place"}
-                disabledMessage="更改此选项需要创建新的 Runtime Session。"
+                disabledMessage={t("@connect.composer.model.requiresNewRuntimeSession")}
                 width="100%"
               />
             );
           })}
           {!usesGenericModelOptions ? (
             <Selector
-              label="推理强度"
+              label={t("@connect.composer.model.reasoningLabel")}
               options={selectedModel?.supportedReasoningEfforts ?? [effort]}
               value={effort}
               onChange={setEffort}
@@ -350,10 +387,10 @@ function SessionModelControls({ view }: { view: SessionView }) {
               width="100%"
             />
           ) : null}
-          {save.isError ? <span className="form-error">{save.error.message}</span> : null}
+          {save.isError ? <span className="form-error">{localizedClientError(t, save.error)}</span> : null}
           <div className="session-model-popover-actions">
             <Button
-              label="应用模型设置"
+              label={t("@connect.composer.model.apply")}
               variant="primary"
               size="sm"
               isLoading={save.isPending}
@@ -365,7 +402,7 @@ function SessionModelControls({ view }: { view: SessionView }) {
     >
       <Button
         className="composer-model-trigger"
-        label={`模型设置：${compactLabel}`}
+        label={t("@connect.composer.model.trigger", { value: compactLabel })}
         variant="ghost"
         size="md"
         isLoading={save.isPending}
@@ -376,6 +413,12 @@ function SessionModelControls({ view }: { view: SessionView }) {
   );
 }
 
-function statusLabel(status: "idle" | "running" | "queued" | "offline" | "error"): string {
-  return { idle: "空闲", running: "运行中", queued: "排队中", offline: "离线", error: "错误" }[status];
+function statusLabel(status: "idle" | "running" | "queued" | "offline" | "error", t: ClientTranslator): string {
+  return {
+    idle: t("@connect.session.status.idle"),
+    running: t("@connect.session.status.running"),
+    queued: t("@connect.session.status.queued"),
+    offline: t("@connect.session.status.offline"),
+    error: t("@connect.session.status.error"),
+  }[status];
 }

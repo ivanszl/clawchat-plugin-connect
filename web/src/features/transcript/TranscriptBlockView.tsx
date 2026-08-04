@@ -24,6 +24,7 @@ import type {
 } from "../../../../src/client-contract";
 import { normalizeWorkspaceArtifactHref, workspaceArtifactUrl } from "../../../../src/workspace-artifact";
 import { respondToRuntimeInteraction } from "../../client-interface/query-options";
+import { localizedClientError, type ClientTranslator, useClientTranslator } from "../../i18n/client-i18n";
 import { leadingSlashSuggestion, slashSuggestionToken } from "../slash-suggestions";
 
 export function TranscriptBlockView({
@@ -37,6 +38,7 @@ export function TranscriptBlockView({
   onOpenArtifact?: (path: string) => void;
   slashSuggestions?: SlashSuggestionView[];
 }) {
+  const t = useClientTranslator();
   if (block.type === "message") {
     const sender = block.role === "user" ? "user" : "assistant";
     const markdown = visibleMessageMarkdown(block);
@@ -48,7 +50,7 @@ export function TranscriptBlockView({
           name={messageAuthorLabel(block)}
           metadata={
             <ChatMessageMetadata
-              footer={originLabel(block.origin)}
+              footer={originLabel(block.origin, t)}
               status={block.state === "error" ? "error" : block.state === "pending" ? "sending" : undefined}
             />
           }
@@ -59,7 +61,7 @@ export function TranscriptBlockView({
                 <img
                   className="clawchat-message-image"
                   src={media.url}
-                  alt={media.name || "ClawChat 图片"}
+                  alt={media.name || t("@connect.transcript.clawChatImage")}
                   width={media.width ?? undefined}
                   height={media.height ?? undefined}
                   loading="lazy"
@@ -92,11 +94,14 @@ export function TranscriptBlockView({
   if (block.type === "subagent") {
     return (
       <div className="runtime-block subagent-block">
-        <Collapsible trigger={`子 Agent · ${block.title} · ${block.blocks.length} 项`} defaultIsOpen={false}>
+        <Collapsible
+          trigger={t("@connect.transcript.subagent.trigger", { title: block.title, count: block.blocks.length })}
+          defaultIsOpen={false}
+        >
           <div className="subagent-meta">
             {block.role ? <Badge variant="purple" label={block.role} /> : null}
-            <Badge variant={block.state === "error" ? "error" : "neutral"} label={subagentStateLabel(block.state)} />
-            <Text type="supporting">{subagentActivityLabel(block.activityKind)}</Text>
+            <Badge variant={block.state === "error" ? "error" : "neutral"} label={subagentStateLabel(block.state, t)} />
+            <Text type="supporting">{subagentActivityLabel(block.activityKind, t)}</Text>
           </div>
           <div className="subagent-transcript">
             {block.blocks.length > 0 ? (
@@ -111,7 +116,7 @@ export function TranscriptBlockView({
                 </article>
               ))
             ) : (
-              <Text type="supporting">这个子 Agent 没有可显示的历史。</Text>
+              <Text type="supporting">{t("@connect.transcript.subagent.empty")}</Text>
             )}
           </div>
         </Collapsible>
@@ -122,7 +127,7 @@ export function TranscriptBlockView({
     return (
       <div className="runtime-block reasoning-block">
         <Collapsible
-          trigger={block.type === "plan" ? "执行计划" : "推理摘要"}
+          trigger={block.type === "plan" ? t("@connect.transcript.plan") : t("@connect.transcript.reasoningSummary")}
           defaultIsOpen={block.type === "plan" || block.state === "streaming"}
         >
           <SafeMarkdown
@@ -157,7 +162,9 @@ export function TranscriptBlockView({
   if (block.type === "usage") {
     return (
       <ChatSystemMessage>
-        tokens: {block.inputTokens ?? "–"} in / {block.outputTokens ?? "–"} out
+        {block.inputTokens == null || block.outputTokens == null
+          ? t("@connect.transcript.usageUnknown")
+          : t("@connect.transcript.usage", { input: block.inputTokens, output: block.outputTokens })}
       </ChatSystemMessage>
     );
   }
@@ -169,7 +176,7 @@ export function TranscriptBlockView({
         calls={[
           {
             key: block.id,
-            name: block.label || "Runtime activity",
+            name: block.label || t("@connect.transcript.runtimeActivity"),
             status: toolStatus(block.state, block.state),
             resultDetail: block.detail ? (
               <CodeBlock code={block.detail} isWrapped hasCopyButton width="100%" size="sm" />
@@ -187,7 +194,8 @@ export type ToolTranscriptBlock = Extract<
 >;
 
 export function TranscriptToolCallsView({ blocks }: { blocks: ToolTranscriptBlock[] }) {
-  const calls = blocks.flatMap(toolCallsForBlock);
+  const t = useClientTranslator();
+  const calls = blocks.flatMap((block) => toolCallsForBlock(block, t));
   return (
     <div className="runtime-block runtime-tool-calls">
       <ChatToolCalls calls={calls} defaultIsExpanded={false} />
@@ -195,12 +203,12 @@ export function TranscriptToolCallsView({ blocks }: { blocks: ToolTranscriptBloc
   );
 }
 
-function toolCallsForBlock(block: ToolTranscriptBlock): ChatToolCallItem[] {
+function toolCallsForBlock(block: ToolTranscriptBlock, t: ClientTranslator): ChatToolCallItem[] {
   if (block.type === "tool-call") {
     return [
       {
         key: block.id,
-        name: block.title || "Tool call",
+        name: block.title || t("@connect.transcript.toolCall"),
         status: toolStatus(block.status, block.state),
         resultDetail: block.detail ? (
           <CodeBlock code={block.detail} isWrapped hasCopyButton width="100%" size="sm" />
@@ -212,12 +220,15 @@ function toolCallsForBlock(block: ToolTranscriptBlock): ChatToolCallItem[] {
     return [
       {
         key: block.id,
-        name: "Command",
+        name: t("@connect.transcript.command"),
         target: block.command,
         status: toolStatus(block.status, block.state),
         stats:
           block.exitCode == null ? undefined : (
-            <Badge variant={block.exitCode === 0 ? "success" : "error"} label={`exit ${block.exitCode}`} />
+            <Badge
+              variant={block.exitCode === 0 ? "success" : "error"}
+              label={t("@connect.transcript.exitCode", { code: block.exitCode })}
+            />
           ),
         resultDetail: (
           <CodeBlock
@@ -237,7 +248,7 @@ function toolCallsForBlock(block: ToolTranscriptBlock): ChatToolCallItem[] {
     const changes = diffStats(file.diff);
     return {
       key: `${block.id}:${file.path}`,
-      name: file.kind || "File change",
+      name: file.kind || t("@connect.transcript.fileChange"),
       target: file.path,
       status: toolStatus(block.status, block.state),
       additions: changes.additions || undefined,
@@ -260,6 +271,7 @@ function diffStats(diff: string): { additions: number; deletions: number } {
 }
 
 function RuntimeInteractionForm({ block }: { block: RuntimeInteractionBlock }) {
+  const t = useClientTranslator();
   const queryClient = useQueryClient();
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [remainingMs, setRemainingMs] = useState(() => deadlineRemaining(block.autoResolutionAt));
@@ -294,9 +306,15 @@ function RuntimeInteractionForm({ block }: { block: RuntimeInteractionBlock }) {
         defaultIsExpanded={pending}
       >
         {block.command ? <CodeBlock code={block.command} language="shell" isWrapped width="100%" /> : null}
-        {block.cwd ? <Text type="supporting">工作目录：{block.cwd}</Text> : null}
+        {block.cwd ? (
+          <Text type="supporting">{t("@connect.interaction.workingDirectory", { path: block.cwd })}</Text>
+        ) : null}
         {pending && remainingMs !== null ? (
-          <Text type="supporting">剩余 {Math.max(0, Math.ceil(remainingMs / 1_000))} 秒</Text>
+          <Text type="supporting">
+            {t("@connect.interaction.remainingSeconds", {
+              count: Math.max(0, Math.ceil(remainingMs / 1_000)),
+            })}
+          </Text>
         ) : null}
         {block.files.map((file) => (
           <div key={file.path}>
@@ -353,9 +371,9 @@ function RuntimeInteractionForm({ block }: { block: RuntimeInteractionBlock }) {
                           checked={answers[question.id]?.startsWith("__other__:") === true}
                           onChange={() => setAnswers((current) => ({ ...current, [question.id]: "__other__:" }))}
                         />
-                        <span>其他</span>
+                        <span>{t("@connect.interaction.other")}</span>
                         <input
-                          aria-label={`${question.header}的其他回答`}
+                          aria-label={t("@connect.interaction.otherAnswer", { header: question.header })}
                           type={question.secret ? "password" : "text"}
                           disabled={!answers[question.id]?.startsWith("__other__:")}
                           required={answers[question.id]?.startsWith("__other__:")}
@@ -383,17 +401,21 @@ function RuntimeInteractionForm({ block }: { block: RuntimeInteractionBlock }) {
               </fieldset>
             ))}
             <button className="interaction-button" type="submit" disabled={submit.isPending}>
-              提交回答
+              {t("@connect.interaction.submit")}
             </button>
           </form>
         ) : null}
         {!pending ? (
           <Text type="supporting">
-            {block.responseState === "resolved" ? "已处理" : "此请求已过期"}
-            {block.resolvedBy ? ` · ${block.resolvedBy === "client" ? "Web" : block.resolvedBy}` : ""}
+            {block.responseState === "resolved"
+              ? t("@connect.interaction.resolved")
+              : t("@connect.interaction.expired")}
+            {block.resolvedBy
+              ? ` · ${block.resolvedBy === "client" ? t("@connect.interaction.resolvedByClient") : block.resolvedBy}`
+              : ""}
           </Text>
         ) : null}
-        {submit.isError ? <Text type="supporting">{submit.error.message}</Text> : null}
+        {submit.isError ? <Text type="supporting">{localizedClientError(t, submit.error)}</Text> : null}
       </Banner>
     </div>
   );
@@ -418,6 +440,7 @@ function SafeMarkdown({
   onOpenArtifact?: (path: string) => void;
   preserveLineBreaks?: boolean;
 }) {
+  const t = useClientTranslator();
   return (
     <Markdown
       className={preserveLineBreaks ? "transcript-message-markdown" : undefined}
@@ -426,7 +449,13 @@ function SafeMarkdown({
       autolink="gfm"
       contentWidth="72ch"
       components={{
-        image: ({ alt }) => <span className="blocked-image">[图片已阻止：{alt || "无描述"}]</span>,
+        image: ({ alt }) => (
+          <span className="blocked-image">
+            {t("@connect.transcript.blockedImage", {
+              description: alt || t("@connect.transcript.noImageDescription"),
+            })}
+          </span>
+        ),
         link: ({ href, children }) => (
           <SafeMarkdownLink href={href} sessionRef={sessionRef} onOpenArtifact={onOpenArtifact}>
             {children}
@@ -530,9 +559,9 @@ function isSafeExternalLink(href: string): boolean {
   }
 }
 
-function originLabel(origin: TranscriptBlock["origin"]): ReactNode {
+function originLabel(origin: TranscriptBlock["origin"], t: ClientTranslator): ReactNode {
   if (origin === "clawchat") return <Badge label="ClawChat" variant="teal" />;
-  if (origin === "client") return <Badge label="Web" variant="blue" />;
+  if (origin === "client") return <Badge label={t("@connect.transcript.origin.client")} variant="blue" />;
   return undefined;
 }
 
@@ -549,21 +578,24 @@ function toolStatus(status: string, state: TranscriptBlock["state"]): ChatToolCa
   return "complete";
 }
 
-function subagentStateLabel(state: TranscriptBlock["state"]): string {
+function subagentStateLabel(state: TranscriptBlock["state"], t: ClientTranslator): string {
   return {
-    pending: "等待中",
-    streaming: "运行中",
-    complete: "已完成",
-    error: "失败",
-    cancelled: "已中止",
+    pending: t("@connect.transcript.state.pending"),
+    streaming: t("@connect.transcript.state.streaming"),
+    complete: t("@connect.transcript.state.complete"),
+    error: t("@connect.transcript.state.error"),
+    cancelled: t("@connect.transcript.state.cancelled"),
   }[state];
 }
 
-function subagentActivityLabel(activity: "started" | "interacted" | "interrupted" | "unknown"): string {
+function subagentActivityLabel(
+  activity: "started" | "interacted" | "interrupted" | "unknown",
+  t: ClientTranslator,
+): string {
   return {
-    started: "由主 Agent 启动",
-    interacted: "与主 Agent 协作",
-    interrupted: "被主 Agent 中止",
-    unknown: "子 Agent 活动",
+    started: t("@connect.transcript.subagent.started"),
+    interacted: t("@connect.transcript.subagent.interacted"),
+    interrupted: t("@connect.transcript.subagent.interrupted"),
+    unknown: t("@connect.transcript.subagent.unknown"),
   }[activity];
 }

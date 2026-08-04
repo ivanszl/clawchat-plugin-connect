@@ -23,7 +23,7 @@ import type {
 } from "../../../../src/client-contract";
 import { catalogQueryOptions, createSession } from "../../client-interface/query-options";
 import { AddIcon, FolderIcon, ThreadIcon } from "../../components/icons";
-import { type ClientTranslator, useClientTranslator } from "../../i18n/client-i18n";
+import { type ClientTranslator, localizedClientError, useClientTranslator } from "../../i18n/client-i18n";
 import { HostDirectoryPicker, projectDirectoryLabel, projectDirectoryName } from "../projects/HostDirectoryPicker";
 
 export function SessionNavigation({ onNewSession }: { onNewSession: () => void }) {
@@ -139,6 +139,7 @@ export function NewSessionDialog({
   onOpenChange: (open: boolean) => void;
   onCreated: (sessionRef: string) => void;
 }) {
+  const t = useClientTranslator();
   const queryClient = useQueryClient();
   const [bindingId, setBindingId] = useState(bindings[0]?.bindingId ?? "");
   const [workspaceSelection, setWorkspaceSelection] = useState("none");
@@ -164,6 +165,7 @@ export function NewSessionDialog({
   );
   if (pendingProject) projectOptionDescriptions.set("pending-project", projectDirectoryLabel(pendingProject));
   const selectedModel = binding?.modelOptions.find((candidate) => candidate.id === model);
+  const nameTooLong = name.trim().length > 200;
   const create = useMutation({
     mutationFn: async () =>
       await createSession({
@@ -205,8 +207,8 @@ export function NewSessionDialog({
         <Layout
           header={
             <DialogHeader
-              title="选择 Project 目录"
-              subtitle="浏览运行 Connect Service 的主机。"
+              title={t("@connect.newSession.directory.title")}
+              subtitle={t("@connect.newSession.directory.description")}
               onOpenChange={() => setIsPickingProject(false)}
             />
           }
@@ -226,14 +228,25 @@ export function NewSessionDialog({
       ) : (
         <Layout
           header={
-            <DialogHeader title="新建 Session" subtitle="一次选择工作区和运行选项。" onOpenChange={onOpenChange} />
+            <DialogHeader
+              title={t("@connect.newSession.title")}
+              subtitle={t("@connect.newSession.description")}
+              onOpenChange={onOpenChange}
+            />
           }
           content={
             <LayoutContent className="new-session-dialog-content">
               <VStack gap={4}>
-                <TextInput label="名称" value={name} onChange={setName} isOptional width="100%" />
+                <TextInput
+                  label={t("@connect.newSession.name.label")}
+                  description={t("@connect.newSession.name.description")}
+                  value={name}
+                  onChange={setName}
+                  status={nameTooLong ? { type: "error", message: t("@connect.newSession.name.tooLong") } : undefined}
+                  width="100%"
+                />
                 <Selector
-                  label="Agent Binding"
+                  label={t("@connect.newSession.binding.label")}
                   options={bindings.map((candidate) => ({
                     value: candidate.bindingId,
                     label: `${candidate.displayName} (${candidate.bindingId})`,
@@ -246,8 +259,8 @@ export function NewSessionDialog({
                   <HStack align="center" justify="between">
                     <Text type="label">Project</Text>
                     <IconButton
-                      label="添加 Project"
-                      tooltip="添加 Project"
+                      label={t("@connect.newSession.project.add")}
+                      tooltip={t("@connect.newSession.project.add")}
                       icon={<AddIcon />}
                       size="sm"
                       variant="ghost"
@@ -258,7 +271,7 @@ export function NewSessionDialog({
                     label="Project"
                     isLabelHidden
                     options={[
-                      { value: "none", label: "Non-Project（隔离工作区）" },
+                      { value: "none", label: t("@connect.newSession.project.nonProject") },
                       ...workspaceOptions.map(({ value, label }) => ({ value, label })),
                       ...(pendingProject
                         ? [
@@ -285,9 +298,9 @@ export function NewSessionDialog({
                   />
                 </VStack>
                 <Selector
-                  label="模式"
+                  label={t("@connect.newSession.mode.label")}
                   options={[
-                    { value: "default", label: "默认模式" },
+                    { value: "default", label: t("@connect.newSession.mode.default") },
                     ...(binding?.modeOptions.map((value) => ({ value, label: value })) ?? []),
                   ]}
                   value={mode}
@@ -295,9 +308,9 @@ export function NewSessionDialog({
                   width="100%"
                 />
                 <Selector
-                  label="模型"
+                  label={t("@connect.newSession.model.label")}
                   options={[
-                    { value: "default", label: "继承 Agent Binding / Runtime 默认值" },
+                    { value: "default", label: t("@connect.newSession.model.default") },
                     ...(binding?.modelOptions.map((option) => ({
                       value: option.id,
                       label: `${option.displayName} (${option.id})`,
@@ -310,31 +323,37 @@ export function NewSessionDialog({
                     setReasoningEffort(option?.defaultReasoningEffort ?? "default");
                   }}
                   isDisabled={!binding || binding.modelOptions.length === 0}
-                  disabledMessage="Runtime Adapter 不支持模型选择。"
+                  disabledMessage={t("@connect.newSession.model.unsupported")}
                   width="100%"
                 />
                 <Selector
-                  label="推理强度"
+                  label={t("@connect.newSession.reasoning.label")}
                   options={selectedModel?.supportedReasoningEfforts ?? ["default"]}
                   value={reasoningEffort}
                   onChange={setReasoningEffort}
                   isDisabled={!selectedModel}
-                  disabledMessage="先选择一个 Session 模型。"
+                  disabledMessage={t("@connect.newSession.reasoning.selectModel")}
                   width="100%"
                 />
-                {create.isError ? <Banner status="error" title="创建失败" description={create.error.message} /> : null}
+                {create.isError ? (
+                  <Banner
+                    status="error"
+                    title={t("@connect.newSession.failure")}
+                    description={localizedClientError(t, create.error)}
+                  />
+                ) : null}
               </VStack>
             </LayoutContent>
           }
           footer={
             <LayoutFooter hasDivider>
               <HStack gap={2} justify="end">
-                <Button label="取消" onClick={() => onOpenChange(false)} />
+                <Button label={t("@connect.newSession.cancel")} onClick={() => onOpenChange(false)} />
                 <Button
-                  label="创建 Session"
+                  label={t("@connect.newSession.create")}
                   variant="primary"
                   isLoading={create.isPending}
-                  isDisabled={!bindingId}
+                  isDisabled={!bindingId || nameTooLong}
                   onClick={() => create.mutate()}
                 />
               </HStack>
@@ -389,7 +408,7 @@ function navigationItems(
   if (archived.length > 0) {
     items.push({
       id: `archived:${binding.bindingId}`,
-      label: t("@connect.navigation.archived"),
+      label: t("@connect.navigation.archived", { count: archived.length }),
       startContent: <FolderIcon />,
       isExpanded: archived.some((entry) => entry.sessionRef === selectedRef) || Boolean(needle),
       children: groupedItems(archived, "archived", selectedRef, needle, t, open),

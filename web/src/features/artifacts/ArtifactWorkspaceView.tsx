@@ -10,6 +10,7 @@ import {
   normalizeWorkspaceArtifactHref,
   workspaceArtifactUrl,
 } from "../../../../src/workspace-artifact";
+import { useClientTranslator } from "../../i18n/client-i18n";
 import {
   type ArtifactTab,
   type ArtifactWorkspaceState,
@@ -59,8 +60,9 @@ export function useArtifactWorkspace(sessionRef: string): ArtifactWorkspaceContr
 }
 
 export function ArtifactTabStrip({ workspace }: { workspace: ArtifactWorkspaceController }) {
+  const t = useClientTranslator();
   return (
-    <div className="artifact-tab-strip" role="tablist" aria-label="已打开文件">
+    <div className="artifact-tab-strip" role="tablist" aria-label={t("@connect.artifact.openFiles")}>
       {workspace.tabs.map((tab) => (
         <div className="artifact-tab-group" key={tab.id} role="presentation">
           <button
@@ -76,7 +78,7 @@ export function ArtifactTabStrip({ workspace }: { workspace: ArtifactWorkspaceCo
           <button
             className="artifact-tab-close"
             type="button"
-            aria-label={`关闭 ${tab.title}`}
+            aria-label={t("@connect.artifact.closeFile", { title: tab.title })}
             onClick={() => workspace.close(tab.id)}
           >
             ×
@@ -88,6 +90,7 @@ export function ArtifactTabStrip({ workspace }: { workspace: ArtifactWorkspaceCo
 }
 
 export function ArtifactMobileControls({ workspace }: { workspace: ArtifactWorkspaceController }) {
+  const t = useClientTranslator();
   const [mobileOpen, setMobileOpen] = useState(false);
   const select = (id: string) => {
     workspace.activate(id);
@@ -102,13 +105,13 @@ export function ArtifactMobileControls({ workspace }: { workspace: ArtifactWorks
       <div className="artifact-mobile-controls">
         {workspace.activeTab ? (
           <button className="artifact-mobile-back" type="button" onClick={workspace.showConversation}>
-            ← 对话
+            ← {t("@connect.artifact.conversation")}
           </button>
         ) : null}
         {workspace.activeTab ? <h1 title={workspace.activeTab.title}>{workspace.activeTab.title}</h1> : null}
         {workspace.tabs.length > 0 ? (
           <button className="artifact-mobile-open" type="button" onClick={() => setMobileOpen(true)}>
-            已打开 ({workspace.tabs.length})
+            {t("@connect.artifact.openCount", { count: workspace.tabs.length })}
           </button>
         ) : null}
       </div>
@@ -124,8 +127,12 @@ export function ArtifactMobileControls({ workspace }: { workspace: ArtifactWorks
       >
         <div className="artifact-mobile-sheet-content">
           <header>
-            <strong>已打开文件</strong>
-            <button type="button" onClick={() => setMobileOpen(false)} aria-label="关闭已打开文件">
+            <strong>{t("@connect.artifact.openFiles")}</strong>
+            <button
+              type="button"
+              onClick={() => setMobileOpen(false)}
+              aria-label={t("@connect.artifact.closeOpenFiles")}
+            >
               ×
             </button>
           </header>
@@ -179,6 +186,7 @@ function ArtifactSheetRow({
   onSelect(): void;
   onClose?: () => void;
 }) {
+  const t = useClientTranslator();
   return (
     <div className="artifact-sheet-row" data-active={isActive || undefined}>
       <button type="button" onClick={onSelect}>
@@ -186,7 +194,7 @@ function ArtifactSheetRow({
         {subtitle ? <small>{subtitle}</small> : null}
       </button>
       {onClose ? (
-        <button type="button" aria-label={`关闭 ${title}`} onClick={onClose}>
+        <button type="button" aria-label={t("@connect.artifact.closeFile", { title })} onClick={onClose}>
           ×
         </button>
       ) : null}
@@ -203,12 +211,14 @@ export function ArtifactViewer({
   tab: ArtifactTab;
   openArtifact(path: string): void;
 }) {
+  const t = useClientTranslator();
   const isText = ["markdown", "text", "code", "diff", "table", "html"].includes(tab.kind);
   const text = useArtifactText(tab.contentUrl, isText);
   let content: ReactNode;
-  if (isText && text.state === "loading") content = <Spinner label={`正在打开 ${tab.title}`} />;
-  else if (isText && text.state === "error") {
-    content = <Banner status="error" title="无法打开文件" description={text.message} />;
+  if (isText && text.state === "loading") {
+    content = <Spinner label={t("@connect.artifact.opening", { title: tab.title })} />;
+  } else if (isText && text.state === "error") {
+    content = <Banner status="error" title={t("@connect.artifact.openFailure")} description={text.message} />;
   } else if (tab.kind === "markdown") {
     content = (
       <ArtifactMarkdown
@@ -238,7 +248,7 @@ export function ArtifactViewer({
     content = <ArtifactImage tab={tab} />;
   } else if (tab.kind === "pdf") {
     content = <iframe className="artifact-pdf" src={tab.contentUrl} title={tab.title} />;
-  } else content = <Banner status="warning" title="不支持的文件" description={tab.path} />;
+  } else content = <Banner status="warning" title={t("@connect.artifact.unsupportedFile")} description={tab.path} />;
   return (
     <section className="artifact-viewer" aria-label={tab.title}>
       <header className="artifact-viewer-header">
@@ -247,7 +257,7 @@ export function ArtifactViewer({
           <small title={tab.path}>{tab.path}</small>
         </div>
         <a href={tab.contentUrl} download={tab.title}>
-          下载
+          {t("@connect.artifact.download")}
         </a>
       </header>
       <div className={`artifact-content artifact-content-${tab.kind}`}>{content}</div>
@@ -266,6 +276,7 @@ function ArtifactMarkdown({
   basePath: string;
   openArtifact(path: string): void;
 }) {
+  const t = useClientTranslator();
   return (
     <Markdown
       className="artifact-markdown"
@@ -285,7 +296,13 @@ function ArtifactMarkdown({
           const path = normalizeWorkspaceArtifactHref(src, basePath);
           const type = path ? classifyWorkspaceArtifact(path) : null;
           if (!path || (type?.kind !== "image" && type?.kind !== "svg")) {
-            return <span className="blocked-image">[图片已阻止：{alt || "无描述"}]</span>;
+            return (
+              <span className="blocked-image">
+                {t("@connect.transcript.blockedImage", {
+                  description: alt || t("@connect.transcript.noImageDescription"),
+                })}
+              </span>
+            );
           }
           return <img className="artifact-markdown-image" src={workspaceArtifactUrl(sessionRef, path)} alt={alt} />;
         },
@@ -350,18 +367,21 @@ function ArtifactImage({ tab }: { tab: ArtifactTab }) {
 }
 
 function ArtifactTable({ source, delimiter }: { source: string; delimiter: "," | "\t" }) {
+  const t = useClientTranslator();
   const parsed = useMemo(() => parseDelimitedText(source, delimiter), [delimiter, source]);
   const [header = [], ...rows] = parsed.rows;
-  if (header.length === 0) return <Banner status="info" title="表格为空" />;
+  if (header.length === 0) return <Banner status="info" title={t("@connect.artifact.emptyTable")} />;
   const headerCells = header.map((cell, columnIndex) => ({
     id: `column-${columnIndex}-${cell}`,
-    label: cell || `列 ${columnIndex + 1}`,
+    label: cell || t("@connect.artifact.column", { number: columnIndex + 1 }),
     columnIndex,
   }));
   const tableRows = rows.map((cells, rowIndex) => ({ id: `row-${rowIndex}-${cells.join("\u241f")}`, cells }));
   return (
     <div className="artifact-table-frame">
-      {parsed.truncated ? <p className="artifact-table-notice">预览已限制为 2,000 行、100 列。</p> : null}
+      {parsed.truncated ? (
+        <p className="artifact-table-notice">{t("@connect.artifact.tableTruncated", { rows: 2_000, columns: 100 })}</p>
+      ) : null}
       <table>
         <thead>
           <tr>
@@ -385,15 +405,16 @@ function ArtifactTable({ source, delimiter }: { source: string; delimiter: "," |
 }
 
 function ArtifactHtml({ source, title }: { source: string; title: string }) {
+  const t = useClientTranslator();
   const [preview, setPreview] = useState(false);
   return (
     <div className="artifact-html">
-      <fieldset className="artifact-html-mode" aria-label="HTML 查看方式">
+      <fieldset className="artifact-html-mode" aria-label={t("@connect.artifact.htmlViewMode")}>
         <button type="button" aria-pressed={!preview} onClick={() => setPreview(false)}>
-          源码
+          {t("@connect.artifact.source")}
         </button>
         <button type="button" aria-pressed={preview} onClick={() => setPreview(true)}>
-          安全预览
+          {t("@connect.artifact.safePreview")}
         </button>
       </fieldset>
       {preview ? (
@@ -401,7 +422,7 @@ function ArtifactHtml({ source, title }: { source: string; title: string }) {
           className="artifact-html-preview"
           sandbox=""
           srcDoc={sandboxedHtml(source)}
-          title={`${title} 安全预览`}
+          title={t("@connect.artifact.safePreviewTitle", { title })}
         />
       ) : (
         <CodeBlock code={source} language="html" title={title} hasCopyButton hasLineNumbers width="100%" />

@@ -23,23 +23,28 @@ describe("Connect Client session layout", () => {
     expect(cssRule(stylesheet, ".session-work-area")).toContain("display: grid");
     expect(cssRule(stylesheet, ".session-conversation")).toContain("grid-template-rows");
     expect(cssRule(stylesheet, ".artifact-dock")).toContain("grid-template-rows");
-    expect(artifactWorkspace).toContain('aria-label="已打开文件"');
+    expect(artifactWorkspace).toContain('aria-label={t("@connect.artifact.openFiles")}');
     expect(artifactWorkspace).not.toContain("SESSION_ARTIFACT_ID");
     expect(artifactWorkspace).not.toContain("sessionTitle");
   });
 
-  it("keeps two-column Settings controls aligned by placing descriptions below the controls", async () => {
-    const [source, stylesheet] = await Promise.all([Bun.file(settingsPageUrl).text(), Bun.file(stylesheetUrl).text()]);
+  it("keeps localized Settings controls in Astryx layout primitives without changing protocol values", async () => {
+    const source = await Bun.file(settingsPageUrl).text();
     const controls = [...source.matchAll(/<(?:Selector|TextInput)\b[\s\S]*?\/>/gu)].map(([control]) => control);
 
     expect(source).toContain("function SettingsField({ children, description }");
-    expect(source).toContain('<p className="settings-field-description">{description}</p>');
+    expect(source).toContain("const t = useClientTranslator();");
+    expect(source).toContain("<Grid columns={{ minWidth: 280, max: 2 }} gap={4}>");
+    expect(source).toContain("<AlertDialog");
+    expect(source).toContain('actionVariant="destructive"');
     expect(controls.every((control) => !control.includes("description="))).toBe(true);
-    expect(source).toContain('<SettingsField description="默认值会跟随 Runtime Adapter');
-    expect(source).toContain('<SettingsField description="Web 始终尽可能展示完整');
+    expect(source).toContain('description={t("@connect.settings.binding.model.description")}');
+    expect(source).toContain('description={t("@connect.settings.binding.visibility.description")}');
+    expect(source).toContain('{ value: "minimal", label: t("@connect.settings.binding.visibility.minimal") }');
+    expect(source).toContain('{ value: "normal", label: t("@connect.settings.binding.visibility.normal") }');
+    expect(source).toContain('{ value: "full", label: t("@connect.settings.binding.visibility.full") }');
     expect(source).not.toContain('label="附加目录"');
-    expect(cssRule(stylesheet, ".settings-field")).toContain("align-content: start");
-    expect(cssRule(stylesheet, ".settings-field-description")).toContain("margin: 0");
+    expect(source).not.toMatch(/<(?:div|span)\b/u);
   });
 
   it("keeps model settings out of the Session header and inside the composer", async () => {
@@ -48,7 +53,7 @@ describe("Connect Client session layout", () => {
 
     expect(header).not.toContain("<SessionModelControls");
     expect(source).toContain("modelControl={<SessionModelControls view={view} />}");
-    expect(source).toContain('label="Session 模型设置"');
+    expect(source).toContain('label={t("@connect.composer.model.popoverLabel")}');
     expect(source).toContain('placement="above"');
   });
 
@@ -72,8 +77,9 @@ describe("Connect Client session layout", () => {
   it("describes submission acknowledgement without claiming that the Session queue is blocking", async () => {
     const composer = await Bun.file(sessionComposerUrl).text();
 
-    expect(composer).toContain("附件传输完成，正在确认提交");
-    expect(composer).toContain('label={send.progress?.phase === "accepting" ? "正在确认" : "取消提交"}');
+    expect(composer).toContain('t("@connect.composer.progress.attachmentsAccepting")');
+    expect(composer).toContain('t("@connect.composer.action.accepting")');
+    expect(composer).toContain('t("@connect.composer.action.cancelSubmission")');
     expect(composer).not.toContain("等待 Session 队列接收");
   });
 
@@ -116,7 +122,7 @@ describe("Connect Client session layout", () => {
     expect(composer).toContain("contextLabel: string;");
     expect(composer).toContain("continueInClawChatHref: string | null;");
     expect(composer).toContain('className="composer-note" title={contextLabel}');
-    expect(composer).toContain('label="继续在 ClawChat 聊天"');
+    expect(composer).toContain('label={t("@connect.composer.continueInClawChat")}');
     expect(composer).toContain("href={continueInClawChatHref}");
     expect(composer).not.toContain("仅发送到 Connect");
     expect(cssRule(stylesheet, ".composer-context-actions")).toContain("display: flex");

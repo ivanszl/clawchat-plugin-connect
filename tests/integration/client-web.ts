@@ -136,7 +136,7 @@ try {
       await page.keyboard.press("Escape");
       await inlineDialog.getByRole("button", { name: "添加 Project" }).click();
       await expect(inlineDialog.getByRole("heading", { name: "选择 Project 目录" })).toBeVisible();
-      await inlineDialog.getByRole("button", { name: "Close" }).click();
+      await inlineDialog.getByRole("button", { name: "关闭" }).click();
       await expect(inlineDialog.getByRole("heading", { name: "新建 Session" })).toBeVisible();
       await expect(inlineDialog.getByRole("textbox", { name: /^名称/u })).toHaveValue("Inline Project Session");
       await inlineDialog.getByRole("button", { name: "添加 Project" }).click();
@@ -179,11 +179,15 @@ try {
       await page
         .getByRole("listitem")
         .filter({ hasText: "clawchat-plugin-connect" })
-        .getByRole("button", { name: "移除", exact: true })
+        .getByRole("button", { name: "移除 clawchat-plugin-connect", exact: true })
         .click();
-      await expect(page.getByRole("alert").filter({ hasText: "移除失败" })).toContainText(
-        "still reference this Project",
-      );
+      const removeProjectDialog = page.getByRole("alertdialog");
+      await expect(removeProjectDialog.getByRole("heading", { name: "移除 clawchat-plugin-connect？" })).toBeVisible();
+      await expect(removeProjectDialog).toContainText(connectProject.rootPath);
+      await removeProjectDialog.getByRole("button", { name: "移除 Project" }).click();
+      const removeFailure = page.getByRole("alert").filter({ hasText: "无法移除 Project" });
+      await expect(removeFailure).toContainText("此 Project 仍在使用中");
+      await expect(removeFailure).toContainText("still reference this Project");
 
       process.stdout.write(
         "Verified accessible Connect Client Session creation, model choices, unavailable state, and Project conflicts.\n",
@@ -322,7 +326,7 @@ async function verifyRuntimeApproval(browser: Awaited<ReturnType<typeof chromium
     await expect(approval).toBeVisible();
     await expect(approval).toContainText("install dist/clawchat-connect ~/.local/bin/clawchat-connect");
     await approval.getByRole("button", { name: "仅此次允许", exact: true }).click();
-    await expect(approval.getByText("已处理 · Web", { exact: true })).toBeVisible();
+    await expect(approval.getByText("已处理 · Connect Client", { exact: true })).toBeVisible();
     await expect(approval.getByRole("button", { name: "仅此次允许", exact: true })).toHaveCount(0);
     assert.equal(responses.length, 1, "approval UI must submit one response");
     assert.deepEqual(withoutRequestId(responses[0]), { optionId: "approve-once" });
@@ -348,7 +352,7 @@ async function verifyImeConfirmationDoesNotSubmit(
     });
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
-    const input = page.getByRole("combobox", { name: "Message input" });
+    const input = page.getByRole("combobox", { name: "消息输入框" });
     await input.fill("中文");
     await input.dispatchEvent("compositionstart");
     await input.dispatchEvent("keydown", {
@@ -411,7 +415,7 @@ async function verifySkillPicker(browser: Awaited<ReturnType<typeof chromium.lau
     await input.fill("/gr");
     await picker.getByRole("option", { name: /grill-with-docs/u }).click();
     await input.fill("/grill-with-docs 评审 Skill discovery 方案");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "发送" }).click();
     await expect(page.getByText("/grill-with-docs 评审 Skill discovery 方案", { exact: true })).toBeVisible();
   } finally {
     await page.close();
@@ -491,7 +495,7 @@ async function verifyTextOnlySubmissionCopy(
     await expect(page.getByRole("heading", { name: "App Server 与 Web Client" })).toBeVisible();
     const input = page.locator(".session-composer [contenteditable='true']");
     await input.fill("纯文本提交状态文案");
-    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.getByRole("button", { name: "发送", exact: true }).click();
     const progress = page.locator(".composer-submission-progress");
     await expect(progress).toBeVisible();
     await expect(progress).not.toContainText("附件");
@@ -535,9 +539,9 @@ async function verifyQueuedTurnControls(browser: Awaited<ReturnType<typeof chrom
       });
     });
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
-    const input = page.getByRole("combobox", { name: "Message input" });
+    const input = page.getByRole("combobox", { name: "消息输入框" });
     await input.fill("撤回后继续编辑这条消息");
-    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.getByRole("button", { name: "发送", exact: true }).click();
     const queue = page.locator(".composer-queue");
     await expect(input).toHaveText("", { timeout: 250 });
     await expect(queue).toContainText("撤回后继续编辑这条消息", { timeout: 250 });
@@ -579,7 +583,7 @@ async function verifyComposerWorkingState(browser: Awaited<ReturnType<typeof chr
 
     const input = page.locator(".session-composer [contenteditable='true']");
     await input.fill("运行中加入队列");
-    const send = page.getByRole("button", { name: "Send", exact: true });
+    const send = page.getByRole("button", { name: "发送", exact: true });
     await expect(send).toBeVisible();
     await expect(stop).toHaveCount(0);
     await send.click();
@@ -630,10 +634,10 @@ async function verifyComposerDoesNotStickAfterUnobservedFastTurn(
     await page.goto(`${previewOrigin}/sessions/ABCDEFGH`);
     const input = page.locator(".session-composer [contenteditable='true']");
     await input.fill("极快完成的任务");
-    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.getByRole("button", { name: "发送", exact: true }).click();
     await expect(input).toHaveText("");
     await expect(page.getByTestId("agent-working-spinner")).toHaveCount(0, { timeout: 1_000 });
-    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "发送", exact: true })).toBeVisible();
   } finally {
     await page.unrouteAll({ behavior: "ignoreErrors" });
     await page.close();

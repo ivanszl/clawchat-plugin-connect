@@ -25,6 +25,55 @@ export class TurnSubmissionCancelledError extends Error {
   }
 }
 
+const KNOWN_TURN_SUBMISSION_ERROR_KEYS = {
+  "empty-submission": "@connect.composer.error.emptySubmission",
+  "prompt-unsupported": "@connect.composer.error.promptUnsupported",
+  "prompt-required": "@connect.composer.error.promptRequired",
+  "prompt-too-long": "@connect.composer.error.promptTooLong",
+  "too-many-attachments": "@connect.composer.error.tooManyAttachments",
+  "attachment-too-large": "@connect.composer.error.attachmentTooLarge",
+  "attachments-too-large": "@connect.composer.error.attachmentsTooLarge",
+  "attachment-unsupported": "@connect.composer.error.attachmentUnsupported",
+  "attachment-size-mismatch": "@connect.composer.error.attachmentSizeMismatch",
+  "invalid-attachment": "@connect.composer.error.invalidAttachment",
+  "invalid-selection": "@connect.composer.error.invalidSelection",
+  "selection-prompt-mismatch": "@connect.composer.error.selectionPromptMismatch",
+  "submission-cancelled": "@connect.composer.error.submissionCancelled",
+  "submission-outcome-unknown": "@connect.composer.error.submissionOutcomeUnknown",
+  "submission-too-large": "@connect.composer.error.submissionTooLarge",
+  "submission-failed": "@connect.composer.error.submissionFailed",
+  "command-in-progress": "@connect.composer.error.commandInProgress",
+  "session-not-found": "@connect.composer.error.sessionNotFound",
+  "session-state-conflict": "@connect.composer.error.sessionStateConflict",
+  "request-id-conflict": "@connect.composer.error.requestIdConflict",
+  "submission-id-conflict": "@connect.composer.error.submissionIdConflict",
+} as const satisfies Readonly<Record<string, string>>;
+
+type TurnSubmissionErrorKey =
+  | (typeof KNOWN_TURN_SUBMISSION_ERROR_KEYS)[keyof typeof KNOWN_TURN_SUBMISSION_ERROR_KEYS]
+  | "@connect.composer.error.unknown"
+  | "@connect.composer.error.withDiagnostic";
+type TurnSubmissionErrorTranslator = (key: TurnSubmissionErrorKey, values?: Record<string, unknown>) => string;
+
+export function formatTurnSubmissionError(error: unknown, translate: TurnSubmissionErrorTranslator): string {
+  let message: string;
+  if (error instanceof TurnSubmissionCancelledError) {
+    message = translate("@connect.composer.error.submissionCancelled");
+  } else if (error instanceof ClientInterfaceError) {
+    const key = KNOWN_TURN_SUBMISSION_ERROR_KEYS[error.code as keyof typeof KNOWN_TURN_SUBMISSION_ERROR_KEYS];
+    message = key ? translate(key) : error.message;
+  } else if (error instanceof Error) {
+    message = error.message;
+  } else {
+    message = translate("@connect.composer.error.unknown");
+  }
+  if (!(error instanceof ClientInterfaceError) || !error.diagnosticRef) return message;
+  return translate("@connect.composer.error.withDiagnostic", {
+    message,
+    reference: error.diagnosticRef,
+  });
+}
+
 type SubmissionOutcome =
   | StartTurnResponse
   | { pending: true; submissionId: string; sessionRef: string }

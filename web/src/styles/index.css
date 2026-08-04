@@ -132,15 +132,6 @@ textarea {
   white-space: nowrap;
 }
 
-.settings-eyebrow {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-}
-
 .session-meta {
   display: flex;
   align-items: center;
@@ -837,76 +828,6 @@ textarea {
   max-width: min(280px, 42vw);
 }
 
-.settings-page {
-  height: 100%;
-  overflow: auto;
-  padding: clamp(24px, 5vw, 64px);
-}
-
-.settings-header,
-.settings-list {
-  width: min(100%, 860px);
-  margin-inline: auto;
-}
-
-.settings-header h1 {
-  margin: var(--spacing-1) 0;
-  font-size: clamp(26px, 4vw, 40px);
-  letter-spacing: -0.025em;
-}
-
-.settings-header > p:last-child {
-  max-width: 66ch;
-  color: var(--color-text-secondary);
-}
-
-.settings-list {
-  display: grid;
-  gap: var(--spacing-4);
-  margin-top: var(--spacing-6);
-}
-
-.settings-card {
-  padding: clamp(18px, 3vw, 28px);
-}
-
-.settings-card-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-3);
-  margin-bottom: var(--spacing-4);
-}
-
-.settings-card-heading h2 {
-  margin: 0;
-}
-
-.settings-card-heading code {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-}
-
-.settings-fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--spacing-4);
-  margin-top: var(--spacing-4);
-}
-
-.settings-field {
-  display: grid;
-  align-content: start;
-  gap: var(--spacing-1);
-  min-width: 0;
-}
-
-.settings-field-description {
-  margin: 0;
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-}
-
 .sr-only {
   position: absolute;
   width: 1px;
@@ -1018,10 +939,6 @@ textarea {
 
   .session-meta {
     display: none;
-  }
-
-  .settings-fields {
-    grid-template-columns: 1fr;
   }
 
   .composer-region {

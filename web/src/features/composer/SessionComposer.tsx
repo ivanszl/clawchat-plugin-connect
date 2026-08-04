@@ -21,6 +21,8 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { QueuedTurnView, SlashSuggestionView, TurnSubmissionCapability } from "../../../../src/client-contract";
 import { attachmentKind, mediaTypeAllowed } from "../../../../src/client-interface/turn-submission";
 import { cancelTurn, clientKeys, withdrawQueuedTurn } from "../../client-interface/query-options";
+import { formatTurnSubmissionError } from "../../client-interface/turn-submission";
+import { type ClientTranslator, useClientTranslator } from "../../i18n/client-i18n";
 import {
   keepsSlashSelection,
   slashSuggestionFromItem,
@@ -67,6 +69,7 @@ export function SessionComposer({
   hasPendingInteraction = false,
   modelControl,
 }: SessionComposerProps) {
+  const t = useClientTranslator();
   const queryClient = useQueryClient();
   const storageKey = `connect-client:draft:${sessionRef}`;
   const [value, setValue] = useState(() => sessionStorage.getItem(storageKey) ?? "");
@@ -77,9 +80,11 @@ export function SessionComposer({
   const [activeSubmission, setActiveSubmission] = useState<ActiveSubmissionDraft | null>(null);
   const [optimisticQueuedTurns, setOptimisticQueuedTurns] = useState<OptimisticQueuedTurn[]>([]);
   const [hiddenQueuedTurnIds, setHiddenQueuedTurnIds] = useState<string[]>([]);
+  const [completionAnnouncement, setCompletionAnnouncement] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerInputRef = useRef<HTMLDivElement>(null);
   const optimisticSequenceRef = useRef(0);
+  const wasAgentWorkingRef = useRef(false);
   useEffect(() => {
     const next = sessionStorage.getItem(storageKey) ?? "";
     setValue(next);
@@ -90,6 +95,8 @@ export function SessionComposer({
     setActiveSubmission(null);
     setOptimisticQueuedTurns([]);
     setHiddenQueuedTurnIds([]);
+    setCompletionAnnouncement("");
+    wasAgentWorkingRef.current = false;
   }, [storageKey]);
   useEffect(() => {
     if (!value) sessionStorage.removeItem(storageKey);
@@ -98,6 +105,12 @@ export function SessionComposer({
   useEffect(() => {
     if (acceptedTurnId && !isRuntimeActive) setAcceptedTurnId(null);
   }, [acceptedTurnId, isRuntimeActive]);
+  useEffect(() => {
+    const isWorking = Boolean(acceptedTurnId) || isRuntimeActive;
+    if (wasAgentWorkingRef.current && !isWorking) setCompletionAnnouncement(t("@connect.composer.turnCompleted"));
+    else if (isWorking) setCompletionAnnouncement("");
+    wasAgentWorkingRef.current = isWorking;
+  }, [acceptedTurnId, isRuntimeActive, t]);
   useEffect(() => {
     setOptimisticQueuedTurns((current) =>
       current.filter(
@@ -148,7 +161,12 @@ export function SessionComposer({
     setAttachmentError(null);
     const oversized = files.find((file) => file.size > capability.attachments.maxBytesEach);
     if (oversized) {
-      setAttachmentError(`${oversized.name} 超过单个附件限制，无法上传`);
+      setAttachmentError(
+        t("@connect.composer.attachment.tooLarge", {
+          name: oversized.name,
+          size: formatBytes(capability.attachments.maxBytesEach, t),
+        }),
+      );
       return;
     }
     const unsupported = files.find(
@@ -157,17 +175,21 @@ export function SessionComposer({
         !mediaTypeAllowed(file.type, capability.attachments.allowedMediaTypes),
     );
     if (unsupported) {
-      setAttachmentError(`${unsupported.name} 不受当前 Turn Submission 支持`);
+      setAttachmentError(t("@connect.composer.attachment.unsupported", { name: unsupported.name }));
       return;
     }
     setAttachments((current) => {
       const next = [...current, ...files];
       if (next.length > capability.attachments.maxCount) {
-        setAttachmentError(`每条消息最多上传 ${capability.attachments.maxCount} 个文件`);
+        setAttachmentError(t("@connect.composer.attachment.tooMany", { count: capability.attachments.maxCount }));
         return current;
       }
       if (next.reduce((total, file) => total + file.size, 0) > capability.attachments.maxBytesTotal) {
-        setAttachmentError("附件总大小超过当前提交限制");
+        setAttachmentError(
+          t("@connect.composer.attachment.totalTooLarge", {
+            size: formatBytes(capability.attachments.maxBytesTotal, t),
+          }),
+        );
         return current;
       }
       return next;
@@ -190,7 +212,9 @@ export function SessionComposer({
           <TypeaheadItem
             item={item}
             description={suggestion?.description}
-            group={suggestion?.kind === "skill" ? "Skills" : "Commands"}
+            group={
+              suggestion?.kind === "skill" ? t("@connect.composer.slash.skills") : t("@connect.composer.slash.commands")
+            }
           />
         );
       },
@@ -204,11 +228,13 @@ export function SessionComposer({
         const suggestion = slashSuggestions.find((entry) => `/${entry.name}` === serialized);
         return suggestion ? slashSuggestionToken(suggestion) : null;
       },
-      emptySearchResultsText: slashSuggestionsError ? "命令和 Skills 加载失败，请稍后重试" : "没有匹配的命令或 Skill",
-      loadingText: "正在载入命令和 Skills…",
-      menuLabel: "命令和 Skills",
+      emptySearchResultsText: slashSuggestionsError
+        ? t("@connect.composer.slash.loadFailure")
+        : t("@connect.composer.slash.noMatches"),
+      loadingText: t("@connect.composer.slash.loading"),
+      menuLabel: t("@connect.composer.slash.menu"),
     };
-  }, [slashSuggestions, slashSuggestionsError]);
+  }, [slashSuggestions, slashSuggestionsError, t]);
   const submit = (prompt: string) => {
     if (!send.isPending && (prompt.trim() || attachments.length > 0)) {
       const draft = { prompt, files: [...attachments], selection: selectedSelection };
@@ -268,7 +294,9 @@ export function SessionComposer({
     if (restore) {
       setValue(turn.prompt);
       setSelectedSelection(turn.selection);
-      if (turn.attachments.length > 0) setAttachmentError("队列附件已移除，请重新选择后再发送");
+      if (turn.attachments.length > 0) {
+        setAttachmentError(t("@connect.composer.attachment.queueRemoved"));
+      }
     }
     withdraw.mutate(
       { turn, restore },
@@ -282,38 +310,50 @@ export function SessionComposer({
     (turn) => !turn.acceptedTurnId || !visibleQueuedTurns.some((queued) => queued.turnId === turn.acceptedTurnId),
   );
   const queueCount = visibleOptimisticTurns.length + visibleQueuedTurns.length;
-  const error = attachmentError ?? send.error?.message ?? stop.error?.message ?? withdraw.error?.message;
-  const composerDisabled = !canSend || hasPendingInteraction || send.isPending;
+  const error =
+    attachmentError ??
+    (send.error ? formatTurnSubmissionError(send.error, t) : null) ??
+    stop.error?.message ??
+    withdraw.error?.message;
+  const composerDisabled = !canSend || hasPendingInteraction;
+  const composerInputDisabled = composerDisabled || send.isPending;
   const isAgentWorking = Boolean(acceptedTurnId) || isRuntimeActive;
   const hasSubmissionDraft = Boolean(value.trim() || attachments.length > 0);
   const hasSubmissionAttachments = send.isPending ? (activeSubmission?.files.length ?? 0) > 0 : attachments.length > 0;
   const attachmentLimitLabel =
     capability.attachments.maxCount === 0
-      ? "当前 Turn Submission 不支持附件"
-      : `最多 ${capability.attachments.maxCount} 个附件，单个 ${formatBytes(
-          capability.attachments.maxBytesEach,
-        )}，合计 ${formatBytes(capability.attachments.maxBytesTotal)}`;
+      ? t("@connect.composer.attachment.notSupported")
+      : t("@connect.composer.attachment.limits", {
+          count: capability.attachments.maxCount,
+          eachSize: formatBytes(capability.attachments.maxBytesEach, t),
+          totalSize: formatBytes(capability.attachments.maxBytesTotal, t),
+        });
   return (
     <div className="composer-region">
       {queueCount > 0 ? (
-        <List className="composer-queue" density="compact" hasDividers header={`待发送队列 · ${queueCount}`}>
+        <List
+          className="composer-queue"
+          density="compact"
+          hasDividers
+          header={t("@connect.composer.queue.header", { count: queueCount })}
+        >
           {visibleOptimisticTurns.map((turn) => (
             <ListItem
               key={turn.optimisticId}
-              label={turn.prompt || "仅附件消息"}
-              description="正在提交"
+              label={turn.prompt || t("@connect.composer.queue.attachmentOnly")}
+              description={t("@connect.composer.queue.submitting")}
               endContent={<Spinner size="sm" />}
             />
           ))}
           {visibleQueuedTurns.map((turn) => (
             <ListItem
               key={turn.turnId}
-              label={turn.prompt || "仅附件消息"}
-              description={queuedTurnDescription(turn)}
+              label={turn.prompt || t("@connect.composer.queue.attachmentOnly")}
+              description={queuedTurnDescription(turn, t)}
               endContent={
-                <ButtonGroup label="队列消息操作" size="sm">
+                <ButtonGroup label={t("@connect.composer.queue.actions")} size="sm">
                   <Button
-                    label="撤回并编辑"
+                    label={t("@connect.composer.queue.withdraw")}
                     icon={<Icon icon={RotateCcw} size="sm" />}
                     size="sm"
                     variant="secondary"
@@ -321,7 +361,7 @@ export function SessionComposer({
                     onClick={() => withdrawTurn(turn, true)}
                   />
                   <Button
-                    label="删除"
+                    label={t("@connect.composer.queue.delete")}
                     icon={<Icon icon={Trash2} size="sm" />}
                     size="sm"
                     variant="secondary"
@@ -340,16 +380,21 @@ export function SessionComposer({
           label={
             hasSubmissionAttachments
               ? send.progress.phase === "accepting"
-                ? "附件传输完成，正在确认提交"
-                : "正在传输附件"
+                ? t("@connect.composer.progress.attachmentsAccepting")
+                : t("@connect.composer.progress.attachmentsTransferring")
               : send.progress.phase === "accepting"
-                ? "正在确认提交"
-                : "正在提交消息"
+                ? t("@connect.composer.progress.accepting")
+                : t("@connect.composer.progress.submitting")
           }
           value={send.progress.transferredBytes}
           max={Math.max(1, send.progress.totalBytes)}
           hasValueLabel={send.progress.phase === "transferring" && send.progress.totalBytes > 0}
-          formatValueLabel={(transferred, total) => `${formatBytes(transferred)} / ${formatBytes(total)}`}
+          formatValueLabel={(transferred, total) =>
+            t("@connect.composer.progress.bytes", {
+              transferred: formatBytes(transferred, t),
+              total: formatBytes(total, t),
+            })
+          }
           isIndeterminate={send.progress.phase === "accepting" || send.progress.totalBytes === 0}
         />
       ) : null}
@@ -365,10 +410,10 @@ export function SessionComposer({
         isDisabled={composerDisabled}
         placeholder={
           hasPendingInteraction
-            ? "请先完成上方审批或回答"
+            ? t("@connect.composer.placeholder.interaction")
             : canSend
-              ? "给 Agent 发送消息…"
-              : "当前 Session 不可发送消息"
+              ? t("@connect.composer.placeholder.ready")
+              : t("@connect.composer.placeholder.unavailable")
         }
         status={error ? { type: "error", message: error } : undefined}
         density="balanced"
@@ -382,23 +427,27 @@ export function SessionComposer({
             debounceMs={0}
             placeholder={
               hasPendingInteraction
-                ? "请先完成上方审批或回答"
+                ? t("@connect.composer.placeholder.interaction")
                 : canSend
-                  ? "给 Agent 发送消息…"
-                  : "当前 Session 不可发送消息"
+                  ? t("@connect.composer.placeholder.ready")
+                  : t("@connect.composer.placeholder.unavailable")
             }
-            isDisabled={composerDisabled}
+            label={t("@connect.composer.inputLabel")}
+            isDisabled={composerInputDisabled}
           />
         }
         drawer={
           attachments.length > 0 ? (
-            <ChatComposerDrawer count={attachments.length} label="附件">
+            <ChatComposerDrawer count={attachments.length} label={t("@connect.composer.attachment.drawerLabel")}>
               <Stack direction="horizontal" gap={1} width="100%" wrap="wrap">
                 {attachments.map((file, index) => (
                   <Token
                     key={`${file.name}-${file.size}-${file.lastModified}`}
                     label={file.name}
-                    description={`${file.name}，${formatBytes(file.size)}`}
+                    description={t("@connect.composer.attachment.description", {
+                      name: file.name,
+                      size: formatBytes(file.size, t),
+                    })}
                     size="sm"
                     onRemove={() => setAttachments((current) => current.filter((_, item) => item !== index))}
                   />
@@ -421,13 +470,13 @@ export function SessionComposer({
               }}
             />
             <Button
-              label="上传媒体文件"
+              label={t("@connect.composer.attachment.upload")}
               tooltip={attachmentLimitLabel}
               icon={<Icon icon={Paperclip} size="sm" />}
               isIconOnly
               size="sm"
               variant="ghost"
-              isDisabled={composerDisabled || capability.attachments.maxCount === 0}
+              isDisabled={composerInputDisabled || capability.attachments.maxCount === 0}
               onClick={() => fileInputRef.current?.click()}
             />
           </>
@@ -440,12 +489,17 @@ export function SessionComposer({
             {continueInClawChatHref ? (
               <>
                 <span className="continue-clawchat-desktop">
-                  <Button label="继续在 ClawChat 聊天" href={continueInClawChatHref} size="sm" variant="ghost" />
+                  <Button
+                    label={t("@connect.composer.continueInClawChat")}
+                    href={continueInClawChatHref}
+                    size="sm"
+                    variant="ghost"
+                  />
                 </span>
                 <span className="continue-clawchat-mobile">
                   <Button
-                    label="继续在 ClawChat 聊天"
-                    tooltip="继续在 ClawChat 聊天"
+                    label={t("@connect.composer.continueInClawChat")}
+                    tooltip={t("@connect.composer.continueInClawChat")}
                     href={continueInClawChatHref}
                     icon={<Icon icon={MessageCircle} size="sm" />}
                     isIconOnly
@@ -461,7 +515,11 @@ export function SessionComposer({
         sendButton={
           send.isPending ? (
             <Button
-              label={send.progress?.phase === "accepting" ? "正在确认" : "取消提交"}
+              label={
+                send.progress?.phase === "accepting"
+                  ? t("@connect.composer.action.accepting")
+                  : t("@connect.composer.action.cancelSubmission")
+              }
               isLoading={send.progress?.phase === "accepting"}
               size="md"
               variant="secondary"
@@ -469,8 +527,8 @@ export function SessionComposer({
             />
           ) : isAgentWorking && !hasSubmissionDraft ? (
             <Button
-              label="停止"
-              tooltip="停止当前任务"
+              label={t("@connect.composer.action.stop")}
+              tooltip={t("@connect.composer.action.stopTooltip")}
               icon={
                 stop.isPending ? (
                   <Icon icon={Square} size="sm" />
@@ -495,27 +553,32 @@ export function SessionComposer({
         {send.isPending
           ? hasSubmissionAttachments
             ? send.progress?.phase === "accepting"
-              ? "附件传输完成，正在确认提交"
-              : `正在传输 ${send.progress?.transferredBytes ?? 0} / ${send.progress?.totalBytes ?? 0} 字节`
+              ? t("@connect.composer.progress.attachmentsAccepting")
+              : t("@connect.composer.progress.announcement", {
+                  transferred: formatBytes(send.progress?.transferredBytes ?? 0, t),
+                  total: formatBytes(send.progress?.totalBytes ?? 0, t),
+                })
             : send.progress?.phase === "accepting"
-              ? "正在确认提交"
-              : "正在提交消息"
+              ? t("@connect.composer.progress.accepting")
+              : t("@connect.composer.progress.submitting")
           : isAgentWorking
-            ? "Agent 正在工作，可以点击停止"
-            : ""}
+            ? t("@connect.composer.agentWorking")
+            : error || completionAnnouncement}
       </VisuallyHidden>
     </div>
   );
 }
 
-function queuedTurnDescription(turn: QueuedTurnView): string {
+function queuedTurnDescription(turn: QueuedTurnView, t: ClientTranslator): string {
   const parts = [turn.selection ? `/${turn.selection.name}` : null];
-  if (turn.attachments.length > 0) parts.push(`${turn.attachments.length} 个附件`);
-  return parts.filter(Boolean).join(" · ") || "等待当前任务完成后发送";
+  if (turn.attachments.length > 0) {
+    parts.push(t("@connect.composer.queue.attachmentCount", { count: turn.attachments.length }));
+  }
+  return parts.filter(Boolean).join(" · ") || t("@connect.composer.queue.waiting");
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+function formatBytes(bytes: number, t: ClientTranslator): string {
+  if (bytes < 1024) return t("@connect.composer.size.bytes", { value: bytes });
+  if (bytes < 1024 * 1024) return t("@connect.composer.size.kibibytes", { value: bytes / 1024 });
+  return t("@connect.composer.size.mebibytes", { value: bytes / (1024 * 1024) });
 }
