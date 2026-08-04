@@ -26,14 +26,15 @@ try {
     await expect(page.getByRole("heading", { name: "セッションを選択" })).toBeVisible();
     await expect(
       page.getByText(
-        "左側には、この Connect バインディングで検出できるすべての Project と Non-Project Session が表示されます。",
+        "左側には、この Agent Binding で検出できるすべての Project と Non-Project Session が表示されます。",
         { exact: true },
       ),
     ).toBeVisible();
     await expect(
-      page.getByText("Web メッセージは Connect バインディングの Agent にのみ送信され、ClawChat には同期されません。", {
-        exact: true,
-      }),
+      page.getByText(
+        "Connect Client からのメッセージはこの Agent Binding にのみ送信され、ClawChat には同期されません。",
+        { exact: true },
+      ),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "すべての Session を更新" })).toBeVisible();
     await expect(page.getByRole("button", { name: "設定" })).toBeVisible();
@@ -90,6 +91,9 @@ async function verifyLocaleResolution(browser: Browser, previewOrigin: string) {
     { query: "es_419", browserLocale: "en-US", locale: "es", title: "Selecciona una Session" },
     { query: "ko-KR", browserLocale: "en-US", locale: "ko", title: "Session 선택" },
     { query: "not-a-locale", browserLocale: "es-MX", locale: "es", title: "Selecciona una Session" },
+    { query: "en-12", browserLocale: "zh-CN", locale: "zh-Hans", title: "选择一个 Session" },
+    { query: "ja-00", browserLocale: "ko-KR", locale: "ko", title: "Session 선택" },
+    { query: "ko-abc", browserLocale: "es-MX", locale: "es", title: "Selecciona una Session" },
     { query: null, browserLocale: "ko-KR", locale: "ko", title: "Session 선택" },
     { query: null, browserLocale: "fr-FR", locale: "en", title: "Select a Session" },
   ] as const;

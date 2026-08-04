@@ -14,13 +14,15 @@ export function resolveClientLocale(rawLanguage: unknown, browserLanguages: read
 }
 
 export function canonicalClientLocale(rawLanguage: unknown): ClientLocale | null {
-  if (typeof rawLanguage !== "string" || !isLanguageTagShape(rawLanguage)) return null;
-  const [language, ...subtags] = rawLanguage.replaceAll("_", "-").toLowerCase().split("-");
+  if (typeof rawLanguage !== "string") return null;
+  const subtags = parseLanguageTag(rawLanguage);
+  if (!subtags) return null;
+  const [language, ...rest] = subtags;
   if (language === "zh") {
-    if (subtags.includes("hant") || subtags.some((subtag) => ["tw", "hk", "mo"].includes(subtag))) {
+    if (rest.includes("hant") || rest.some((subtag) => ["tw", "hk", "mo"].includes(subtag))) {
       return "zh-Hant";
     }
-    if (subtags.length === 0 || subtags.includes("hans") || subtags.some((subtag) => ["cn", "sg"].includes(subtag))) {
+    if (rest.length === 0 || rest.includes("hans") || rest.some((subtag) => ["cn", "sg"].includes(subtag))) {
       return "zh-Hans";
     }
     return null;
@@ -29,6 +31,11 @@ export function canonicalClientLocale(rawLanguage: unknown): ClientLocale | null
   return null;
 }
 
-function isLanguageTagShape(value: string): boolean {
-  return /^[a-z]{2,3}(?:[-_][a-z0-9]{2,8})*$/iu.test(value);
+function parseLanguageTag(value: string): string[] | null {
+  try {
+    const [canonical] = Intl.getCanonicalLocales(value.replaceAll("_", "-"));
+    return canonical?.toLowerCase().split("-") ?? null;
+  } catch {
+    return null;
+  }
 }

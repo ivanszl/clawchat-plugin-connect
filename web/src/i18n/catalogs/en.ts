@@ -36,10 +36,11 @@ export const en = {
   "@connect.shell.backToSessions": { defaultMessage: "Back to Sessions" },
   "@connect.home.title": { defaultMessage: "Select a Session" },
   "@connect.home.description": {
-    defaultMessage: "The left side lists every Project and Non-Project Session discoverable by this Connect binding.",
+    defaultMessage: "The left side lists every Project and Non-Project Session discoverable by this Agent Binding.",
   },
   "@connect.home.note": {
-    defaultMessage: "Web messages only go to the Agent in this Connect binding and are not synced back to ClawChat.",
+    defaultMessage:
+      "Messages originating in Connect Client go only to this Agent Binding and are not synced to ClawChat.",
   },
   "@connect.navigation.search.label": { defaultMessage: "Search Sessions" },
   "@connect.navigation.search.placeholder": { defaultMessage: "Search Sessions or Projects" },

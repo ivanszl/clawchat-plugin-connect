@@ -38,11 +38,10 @@ export const ja = {
   "@connect.shell.backToSessions": { defaultMessage: "Session に戻る" },
   "@connect.home.title": { defaultMessage: "セッションを選択" },
   "@connect.home.description": {
-    defaultMessage:
-      "左側には、この Connect バインディングで検出できるすべての Project と Non-Project Session が表示されます。",
+    defaultMessage: "左側には、この Agent Binding で検出できるすべての Project と Non-Project Session が表示されます。",
   },
   "@connect.home.note": {
-    defaultMessage: "Web メッセージは Connect バインディングの Agent にのみ送信され、ClawChat には同期されません。",
+    defaultMessage: "Connect Client からのメッセージはこの Agent Binding にのみ送信され、ClawChat には同期されません。",
   },
   "@connect.navigation.search.label": { defaultMessage: "Session を検索" },
   "@connect.navigation.search.placeholder": { defaultMessage: "Session または Project を検索" },

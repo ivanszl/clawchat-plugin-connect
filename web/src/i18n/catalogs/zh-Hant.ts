@@ -34,9 +34,9 @@ export const zhHant = {
   "@connect.shell.backToSessions": { defaultMessage: "返回 Session" },
   "@connect.home.title": { defaultMessage: "選擇一個 Session" },
   "@connect.home.description": {
-    defaultMessage: "左側會列出此 Connect 綁定可探索到的所有 Project 與 Non-Project Session。",
+    defaultMessage: "左側會列出此 Agent Binding 可探索到的所有 Project 與 Non-Project Session。",
   },
-  "@connect.home.note": { defaultMessage: "網頁訊息只會傳送給 Connect 綁定的 Agent，不會同步回 ClawChat。" },
+  "@connect.home.note": { defaultMessage: "來自 Connect Client 的訊息只會進入此 Agent Binding，不會同步回 ClawChat。" },
   "@connect.navigation.search.label": { defaultMessage: "搜尋 Session" },
   "@connect.navigation.search.placeholder": { defaultMessage: "搜尋 Session 或 Project" },
   "@connect.navigation.newSession": { defaultMessage: "新增 Session" },

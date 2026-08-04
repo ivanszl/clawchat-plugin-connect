@@ -8,6 +8,7 @@ export function LocalizedAppShell(props: AppShellProps) {
 
   useLayoutEffect(() => {
     // Astryx 0.2.0 hard-codes this one accessible string instead of reading its provider.
+    // Its swizzled source requires the StyleX compiler that this app intentionally does not use.
     const skipLink = document.querySelector<HTMLElement>('[data-testid="skip-to-content"]');
     if (skipLink) skipLink.textContent = skipToContent;
   }, [skipToContent]);

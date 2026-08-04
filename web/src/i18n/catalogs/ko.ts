@@ -38,10 +38,11 @@ export const ko = {
   "@connect.shell.backToSessions": { defaultMessage: "Session으로 돌아가기" },
   "@connect.home.title": { defaultMessage: "Session 선택" },
   "@connect.home.description": {
-    defaultMessage: "왼쪽에는 이 Connect 바인딩에서 검색할 수 있는 모든 Project와 Non-Project Session이 표시됩니다.",
+    defaultMessage: "왼쪽에는 이 Agent Binding에서 검색할 수 있는 모든 Project와 Non-Project Session이 표시됩니다.",
   },
   "@connect.home.note": {
-    defaultMessage: "웹 메시지는 이 Connect 바인딩의 Agent에게만 전달되며 ClawChat으로 다시 동기화되지 않습니다.",
+    defaultMessage:
+      "Connect Client에서 시작된 메시지는 이 Agent Binding에만 전달되며 ClawChat으로 다시 동기화되지 않습니다.",
   },
   "@connect.navigation.search.label": { defaultMessage: "Session 검색" },
   "@connect.navigation.search.placeholder": { defaultMessage: "Session 또는 Project 검색" },

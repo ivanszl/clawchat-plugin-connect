@@ -39,11 +39,11 @@ export const es = {
   "@connect.home.title": { defaultMessage: "Selecciona una Session" },
   "@connect.home.description": {
     defaultMessage:
-      "A la izquierda aparecen todos los Projects y las Non-Project Sessions que puede detectar este vínculo de Connect.",
+      "A la izquierda aparecen todos los Projects y las Non-Project Sessions que puede detectar este Agent Binding.",
   },
   "@connect.home.note": {
     defaultMessage:
-      "Los mensajes web solo se envían al Agent de este vínculo de Connect y no se sincronizan con ClawChat.",
+      "Los mensajes procedentes de Connect Client solo se envían a este Agent Binding y no se sincronizan con ClawChat.",
   },
   "@connect.navigation.search.label": { defaultMessage: "Buscar Sessions" },
   "@connect.navigation.search.placeholder": { defaultMessage: "Buscar Sessions o Projects" },
