@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { createServer } from "node:net";
-import { chromium, expect, type Browser } from "@playwright/test";
+import { type Browser, chromium, expect } from "@playwright/test";
 
 const port = await availablePort();
 const origin = `http://127.0.0.1:${port}`;

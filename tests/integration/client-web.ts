@@ -4,7 +4,7 @@ import { access, mkdtemp, realpath, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, expect, type Browser, type Locator, type Page } from "@playwright/test";
+import { type Browser, chromium, expect, type Locator, type Page } from "@playwright/test";
 
 const port = await availablePort();
 const origin = `http://127.0.0.1:${port}`;

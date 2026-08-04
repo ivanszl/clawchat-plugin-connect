@@ -1,8 +1,8 @@
 import { InternationalizationProvider, type TranslatorFn, useTranslator } from "@astryxdesign/core/i18n";
 import type { ReactNode } from "react";
-import type { ClientLocale } from "./client-locale";
-import type { ClientMessageKey } from "./catalogs/en";
 import { clientMessages } from "./catalogs";
+import type { ClientMessageKey } from "./catalogs/en";
+import type { ClientLocale } from "./client-locale";
 
 export type ClientTranslator = (key: ClientMessageKey, values?: Parameters<TranslatorFn>[1]) => string;
 
