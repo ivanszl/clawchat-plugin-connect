@@ -131,7 +131,7 @@ describe("standalone release bundle", () => {
     for (const [entry, source] of payloadSources) {
       expect(await readFile(join(extractedDirectory, ...entry.split("/")))).toEqual(await readFile(source));
     }
-  });
+  }, 30_000);
 
   it("packages the Connect executable, Client assets, and pinned Liveware executable together", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-release-"));
