@@ -1,6 +1,6 @@
 {
   "name": "@clawling/clawchat-plugin-connect",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Bun-native bridge from ClawChat Agent Bindings to local coding agent runtimes.",
   "repository": {
     "type": "git",

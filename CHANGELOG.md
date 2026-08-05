@@ -2,6 +2,12 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-beta.3] - 2026-08-05
+
+### Fixed
+
+- Kept the POSIX installer execution test on POSIX runners while retaining cross-platform source-contract coverage in the Windows release smoke job.
+
 ## [0.1.0-beta.2] - 2026-08-05
 
 ### Changed

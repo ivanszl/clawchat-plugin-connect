@@ -455,13 +455,13 @@ test("every PowerShell beta workflow command block fails fast on native command 
   }
 });
 
-test("version metadata is synchronized at beta.2", async () => {
+test("version metadata is synchronized at beta.3", async () => {
   const pkg = await Bun.file("package.json").json();
   const source = await read("src/version.ts");
   const manifest = await Bun.file("skills/manifest.json").json();
-  expect(pkg.version).toBe("0.1.0-beta.2");
-  expect(source).toContain('CONNECT_VERSION = "0.1.0-beta.2"');
-  expect(manifest.connectVersion).toBe("0.1.0-beta.2");
+  expect(pkg.version).toBe("0.1.0-beta.3");
+  expect(source).toContain('CONNECT_VERSION = "0.1.0-beta.3"');
+  expect(manifest.connectVersion).toBe("0.1.0-beta.3");
 });
 
 test("unversioned installers follow beta", async () => {
@@ -474,6 +474,12 @@ test("unversioned installers follow beta", async () => {
 });
 
 test("shell installer bypasses the beta channel for an explicit historical version", async () => {
+  const installer = await read("install.sh");
+  expect(installer).toContain('version="$' + "{1:-$" + '{CLAWCHAT_CONNECT_VERSION:-}}"');
+  expect(installer).toContain('if [ -z "$version" ]; then');
+  expect(installer).toContain('base_url="https://github.com/$' + "{repository}/releases/download/$" + '{version}"');
+  if (globalThis.process.platform === "win32") return;
+
   const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-explicit-shell-"));
   const commandDirectory = join(directory, "commands");
   const requestsPath = join(directory, "requests.log");
