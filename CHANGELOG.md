@@ -2,6 +2,13 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-beta.6] - 2026-08-05
+
+### Changed
+
+- Removed standalone Playwright browser QA from local and GitHub Actions checks because the Connect Client is operated through its Liveware surface.
+- Kept deterministic generation, formatting, type, unit, release-bundle, and build checks in the default validation path.
+
 ## [0.1.0-beta.5] - 2026-08-05
 
 ### Changed
