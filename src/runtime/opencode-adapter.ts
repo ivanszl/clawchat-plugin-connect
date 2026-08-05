@@ -207,7 +207,17 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
       );
     },
     async discoverAllThreads(binding) {
-      return summarizeSessions(await (await clientFor(binding)).listSessions(), threadDirectories);
+      const client = await clientFor(binding);
+      const projects = await client.listProjects();
+      const directories = [
+        ...new Set(projects.flatMap((project) => [project.worktree, ...project.sandboxes]).map(canonical)),
+      ];
+      const sessionGroups = await Promise.all([
+        client.listSessions(),
+        ...directories.map(async (directory) => await client.listSessions(directory)),
+      ]);
+      const sessions = [...new Map(sessionGroups.flat().map((session) => [session.id, session])).values()];
+      return summarizeSessions(sessions, threadDirectories);
     },
     async readActivity(binding, runtimeThreadId) {
       const { client, session } = await locateSession(binding, runtimeThreadId);

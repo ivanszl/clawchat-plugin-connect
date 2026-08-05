@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
 import { PassThrough } from "node:stream";
-import type { Agent, GlobalEvent, Provider, Session } from "@opencode-ai/sdk/v2/types";
+import type { Agent, GlobalEvent, Project, Provider, Session } from "@opencode-ai/sdk/v2/types";
 import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
 import {
   createOpenCodeServerClient,
@@ -110,6 +110,7 @@ interface OpenCodeCompatibilityFixture {
   version: string;
   directory: string;
   health: { healthy: true; version: string };
+  projects?: Project[];
   agents: Agent[];
   providers: { all: Provider[]; connected: string[]; default: Record<string, string> };
   session: Session;
@@ -139,6 +140,17 @@ class CompatibilityHttpProcess extends EventEmitter implements OpenCodeServerPro
         if (request.headers.get("authorization") !== expectedAuthorization)
           return new Response("Unauthorized", { status: 401 });
         if (url.pathname === "/global/health") return Response.json(this.fixture.health);
+        if (url.pathname === "/project")
+          return Response.json(
+            this.fixture.projects ?? [
+              {
+                id: this.fixture.session.projectID,
+                worktree: this.fixture.directory,
+                time: { created: 1, updated: 1 },
+                sandboxes: [],
+              },
+            ],
+          );
         if (url.pathname === "/agent") return Response.json(this.fixture.agents);
         if (url.pathname === "/provider") return Response.json(this.fixture.providers);
         if (url.pathname === "/session" && request.method === "GET") return Response.json([this.fixture.session]);
@@ -186,6 +198,7 @@ class CompatibilityHttpProcess extends EventEmitter implements OpenCodeServerPro
 function api(version = "1.18.10"): OpenCodeApiClient {
   return {
     health: async () => ({ healthy: true, version }),
+    listProjects: async () => [],
     listAgents: async () => [],
     listCommands: async () => [],
     listProviders: async () => ({ all: [], connected: [], default: {} }),
@@ -252,6 +265,14 @@ describe("OpenCode Server process boundary", () => {
       );
 
       expect(await client.listAgents(fixture.directory)).toEqual(fixture.agents);
+      expect(await client.listProjects()).toEqual([
+        {
+          id: fixture.session.projectID,
+          worktree: fixture.directory,
+          time: { created: 1, updated: 1 },
+          sandboxes: [],
+        },
+      ]);
       expect(await client.listProviders(fixture.directory)).toEqual(fixture.providers);
       expect(await client.listSessions(fixture.directory)).toEqual([fixture.session]);
       expect(await client.getSession(fixture.session.id, fixture.directory)).toEqual(fixture.session);

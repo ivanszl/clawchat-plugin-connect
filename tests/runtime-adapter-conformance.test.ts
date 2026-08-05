@@ -538,6 +538,7 @@ runtimeAdapterConformance(
     const client: OpenCodeServerClient = {
       version: "1.18.10",
       health: async () => ({ healthy: true, version: "1.18.10" }),
+      listProjects: async () => [],
       listAgents: async () =>
         pendingReject
           ? await new Promise((_, reject) => {

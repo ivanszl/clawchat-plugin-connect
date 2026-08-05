@@ -2,7 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Agent, Command, GlobalEvent, Provider, Session } from "@opencode-ai/sdk/v2/types";
+import type { Agent, Command, GlobalEvent, Project, Provider, Session } from "@opencode-ai/sdk/v2/types";
 import type { ConnectWsClient } from "../src/clawchat/ws-client";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { TurnSubmission, type TurnSubmissionCapability } from "../src/client-interface/turn-submission";
@@ -270,6 +270,8 @@ function fixture() {
   const client: OpenCodeServerClient = {
     version: "1.18.10",
     health: async () => ({ healthy: true, version: "1.18.10" }),
+    listProjects: async () =>
+      [{ id: "project-1", worktree: directory, time: { created: 1, updated: 1 }, sandboxes: [] }] satisfies Project[],
     listAgents: async () => agents,
     listCommands: async () =>
       [
@@ -668,6 +670,22 @@ describe("OpenCode Runtime Adapter", () => {
       workspaceKind: "transient",
       workspaceIdentity: { kind: "transient" },
     });
+    await adapter.close?.();
+  });
+
+  it("discovers Project Runtime Threads when OpenCode scopes Session listing by directory", async () => {
+    const test = fixture();
+    test.client.listSessions = async (sessionDirectory, rootsOnly = true) =>
+      sessionDirectory === directory
+        ? rootsOnly
+          ? test.sessions.filter((session) => !session.parentID)
+          : test.sessions
+        : [];
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+
+    const threads = await adapter.discoverAllThreads?.({ kind: "opencode" });
+
+    expect(threads).toEqual([expect.objectContaining({ runtimeThreadId: "session-1", workingDirectory: directory })]);
     await adapter.close?.();
   });
 

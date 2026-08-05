@@ -10,6 +10,7 @@ import type {
   GlobalEvent,
   Message,
   Part,
+  Project,
   Provider,
   QuestionAnswer,
   Session,
@@ -51,6 +52,7 @@ export interface OpenCodeCommandInput {
 
 export interface OpenCodeApiClient {
   health(): Promise<{ healthy: true; version: string }>;
+  listProjects(): Promise<Project[]>;
   listAgents(directory: string): Promise<Agent[]>;
   listCommands(directory: string): Promise<Command[]>;
   listProviders(directory: string): Promise<{ all: Provider[]; connected: string[]; default: Record<string, string> }>;
@@ -212,6 +214,7 @@ function withCompatibilityDiagnostics(api: OpenCodeApiClient, version: string): 
     };
   return {
     health: operation("global.health", api.health.bind(api)),
+    listProjects: operation("project.list", api.listProjects.bind(api)),
     listAgents: operation("app.agents", api.listAgents.bind(api)),
     listCommands: operation("command.list", api.listCommands.bind(api)),
     listProviders: operation("provider.list", api.listProviders.bind(api)),
@@ -253,6 +256,7 @@ function createOfficialApi(baseUrl: string, username: string, password: string):
   });
   return {
     health: async () => unwrap(await client.global.health({ throwOnError: true })),
+    listProjects: async () => unwrap(await client.project.list({}, { throwOnError: true })),
     listAgents: async (directory) => unwrap(await client.app.agents({ directory }, { throwOnError: true })),
     listCommands: async (directory) => unwrap(await client.command.list({ directory }, { throwOnError: true })),
     listProviders: async (directory) => unwrap(await client.provider.list({ directory }, { throwOnError: true })),
