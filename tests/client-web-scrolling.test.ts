@@ -10,10 +10,11 @@ const viewportUrl = new URL("../web/src/features/transcript/TranscriptViewport.t
 describe("Connect Client transcript scrolling", () => {
   it("jumps directly to the latest transcript block", async () => {
     const source = await Bun.file(viewportUrl).text();
-    const jumpButton = source.slice(source.indexOf('label={t("@connect.transcript.jumpToLatest")}'));
+    const jumpButton = source.slice(source.indexOf("<ChatLayoutScrollButton"));
 
     expect(source).toContain('import { ChatLayoutScrollButton } from "@astryxdesign/core/Chat"');
     expect(source).toContain("<ChatLayoutScrollButton");
+    expect(jumpButton).not.toContain('label={t("@connect.transcript.jumpToLatest")}');
     expect(jumpButton).toContain('scrollToEnd({ behavior: "auto" })');
     expect(jumpButton).not.toContain('scrollToEnd({ behavior: "smooth" })');
   });

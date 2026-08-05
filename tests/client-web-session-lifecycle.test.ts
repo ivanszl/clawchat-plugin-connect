@@ -23,7 +23,9 @@ describe("Connect Client Session lifecycle", () => {
     expect(source).toContain('t("@connect.newSession.title")');
     expect(source).toContain('t("@connect.newSession.project.nonProject")');
     expect(source).toContain('t("@connect.newSession.mode.default")');
-    expect(source).toContain('t("@connect.newSession.model.default")');
+    expect(source).not.toContain('t("@connect.newSession.model.default")');
+    expect(source).toContain("const defaultModel =");
+    expect(source).toContain('value={model === "default" ? (defaultModel?.id ?? "") : model}');
     expect(source).toContain('t("@connect.newSession.reasoning.label")');
     expect(source).toContain("localizedClientError(t, create.error)");
     expect(source).toContain("label: value");

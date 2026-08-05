@@ -51,7 +51,13 @@ describe("Connect Service", () => {
     config.agents["codex-review"] = { kind: "codex" };
     config.stateDbPath = stateStore.dbPath;
     const closed: string[] = [];
+    let activeStarts = 0;
+    let maxConcurrentStarts = 0;
     const startBindingRuntime = mock(async (options): Promise<BindingRuntimeHandle> => {
+      activeStarts += 1;
+      maxConcurrentStarts = Math.max(maxConcurrentStarts, activeStarts);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      activeStarts -= 1;
       await options.runtimeAdapters.prepare(getAgentBinding(options.config, options.agentId));
       return {
         agentId: options.agentId,
@@ -101,6 +107,7 @@ describe("Connect Service", () => {
     expect(result.startedAgentIds).toEqual(["codex-work", "codex-review"]);
     expect(startBindingRuntime).toHaveBeenCalledTimes(2);
     expect(startBindingRuntime.mock.calls.map(([options]) => options.agentId)).toEqual(["codex-work", "codex-review"]);
+    expect(maxConcurrentStarts).toBe(1);
     expect(
       startBindingRuntime.mock.calls.every(([options]) => options.protocolEventHandlers?.notify === notifyHandler),
     ).toBe(true);

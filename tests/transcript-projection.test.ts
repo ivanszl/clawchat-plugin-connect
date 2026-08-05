@@ -134,6 +134,57 @@ describe("Connect Transcript Projection", () => {
     }
   });
 
+  it("keeps a Liveware user message single while its Runtime activity is live", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-live-client-user-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-live-client-user",
+        sessionId: "session-live-client-user",
+        agentId: "open",
+        runtimeSessionId: "thread-live-client-user",
+        name: "Live Client user reconciliation",
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-live-client-user", "open");
+      if (!session) throw new Error("test Session was not created");
+      const projection = new TranscriptProjection({
+        stateStore: store,
+        config: defaultConfig(),
+        runtimeAdapters: new RuntimeAdapterRegistry([]),
+      });
+
+      await projection.appendUserMessage({
+        sessionRef: session.sessionRef,
+        text: "which model are you",
+        origin: "client",
+        author: "You",
+        id: "turn_live_user",
+      });
+      await projection.upsertRuntimeActivity(session.sessionRef, {
+        id: "runtime-live-user",
+        position: "0.1",
+        parentId: null,
+        kind: "user",
+        text: "which model are you",
+        state: "complete",
+        source: "live",
+      });
+
+      await expect(store.listTranscriptBlocks(session.sessionRef)).resolves.toMatchObject([
+        {
+          id: expect.stringMatching(/^b_/u),
+          origin: "client",
+          runtimeSource: "live",
+          plainText: "which model are you",
+        },
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("reconciles a selected Web Skill with Codex history that serializes the prefix as a dollar command", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-transcript-web-skill-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
@@ -263,6 +314,74 @@ describe("Connect Transcript Projection", () => {
           origin: "client",
           runtimeSource: "history",
           media: [{ kind: "image", url: "/client/v1/media/submission-1/0", name: "image.png" }],
+        },
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("repairs stored ClawChat and Runtime history duplicates during reconciliation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-stored-clawchat-user-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-stored-clawchat-user",
+        sessionId: "session-stored-clawchat-user",
+        agentId: "open",
+        runtimeSessionId: "thread-stored-clawchat-user",
+        name: "Stored ClawChat user reconciliation",
+        hasMessages: true,
+        isCurrent: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-stored-clawchat-user", "open");
+      if (!session) throw new Error("test Session was not created");
+      await store.upsertTranscriptBlock(session.sessionRef, {
+        id: "clawchat-message-1",
+        type: "message",
+        origin: "clawchat",
+        state: "complete",
+        plainText: "hello from ClawChat",
+        role: "user",
+        author: "Colin",
+        sender: { id: "user-1", displayName: "Colin" },
+        markdown: "hello from ClawChat",
+      });
+      await store.upsertTranscriptBlock(session.sessionRef, {
+        id: "b_runtime_user",
+        type: "message",
+        origin: "runtime",
+        runtimeSource: "history",
+        state: "complete",
+        plainText: "hello from ClawChat",
+        role: "user",
+        author: "You",
+        markdown: "hello from ClawChat",
+      });
+      const config = defaultConfig();
+      config.agents = { open: { kind: "opencode" } };
+      const projection = new TranscriptProjection({
+        stateStore: store,
+        config,
+        runtimeAdapters: new RuntimeAdapterRegistry([
+          fixedRuntimeAdapter({
+            kind: "opencode",
+            modes: [],
+            readActivity: async () => ({ activities: [], completeness: "complete", limitations: [] }),
+            start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+          }),
+        ]),
+      });
+
+      await projection.reconcile(session);
+
+      await expect(store.listTranscriptBlocks(session.sessionRef)).resolves.toMatchObject([
+        {
+          id: "b_runtime_user",
+          origin: "clawchat",
+          runtimeSource: "history",
+          author: "Colin",
+          sender: { id: "user-1", displayName: "Colin" },
         },
       ]);
     } finally {

@@ -171,7 +171,6 @@ export function TranscriptViewport({
       <ChatLayoutScrollButton
         className="jump-latest"
         isVisible={showJump}
-        label={t("@connect.transcript.jumpToLatest")}
         onClick={() => {
           followLatestRef.current = true;
           setShowJump(false);

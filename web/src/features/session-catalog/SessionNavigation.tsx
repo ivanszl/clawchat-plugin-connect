@@ -164,7 +164,17 @@ export function NewSessionDialog({
     workspaceOptions.flatMap((option) => (option.description ? [[option.value, option.description]] : [])),
   );
   if (pendingProject) projectOptionDescriptions.set("pending-project", projectDirectoryLabel(pendingProject));
-  const selectedModel = binding?.modelOptions.find((candidate) => candidate.id === model);
+  const defaultModel =
+    binding?.modelOptions.find((candidate) => candidate.id === binding.model) ??
+    binding?.modelOptions.find((candidate) => candidate.isDefault) ??
+    binding?.modelOptions[0];
+  const selectedModel = binding?.modelOptions.find(
+    (candidate) => candidate.id === (model === "default" ? defaultModel?.id : model),
+  );
+  const selectedReasoningEffort =
+    model === "default"
+      ? (binding?.modelReasoningEffort ?? selectedModel?.defaultReasoningEffort ?? "default")
+      : reasoningEffort;
   const nameTooLong = name.trim().length > 200;
   const create = useMutation({
     mutationFn: async () =>
@@ -309,18 +319,18 @@ export function NewSessionDialog({
                 />
                 <Selector
                   label={t("@connect.newSession.model.label")}
-                  options={[
-                    { value: "default", label: t("@connect.newSession.model.default") },
-                    ...(binding?.modelOptions.map((option) => ({
+                  options={
+                    binding?.modelOptions.map((option) => ({
                       value: option.id,
                       label: `${option.displayName} (${option.id})`,
-                    })) ?? []),
-                  ]}
-                  value={model}
+                    })) ?? []
+                  }
+                  value={model === "default" ? (defaultModel?.id ?? "") : model}
                   onChange={(value) => {
                     const option = binding?.modelOptions.find((candidate) => candidate.id === value);
-                    setModel(value);
-                    setReasoningEffort(option?.defaultReasoningEffort ?? "default");
+                    const usesDefault = value === defaultModel?.id;
+                    setModel(usesDefault ? "default" : value);
+                    setReasoningEffort(usesDefault ? "default" : (option?.defaultReasoningEffort ?? "default"));
                   }}
                   isDisabled={!binding || binding.modelOptions.length === 0}
                   disabledMessage={t("@connect.newSession.model.unsupported")}
@@ -329,8 +339,11 @@ export function NewSessionDialog({
                 <Selector
                   label={t("@connect.newSession.reasoning.label")}
                   options={selectedModel?.supportedReasoningEfforts ?? ["default"]}
-                  value={reasoningEffort}
-                  onChange={setReasoningEffort}
+                  value={selectedReasoningEffort}
+                  onChange={(value) => {
+                    if (model === "default" && selectedModel) setModel(selectedModel.id);
+                    setReasoningEffort(value);
+                  }}
                   isDisabled={!selectedModel}
                   disabledMessage={t("@connect.newSession.reasoning.selectModel")}
                   width="100%"

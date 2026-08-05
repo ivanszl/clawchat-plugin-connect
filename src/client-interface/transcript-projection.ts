@@ -58,7 +58,7 @@ export class TranscriptProjection {
   }
 
   private async reconcileFromRuntime(session: RuntimeSessionRecord): Promise<void> {
-    await this.reconcileStoredClientUserMessages(session.sessionRef);
+    await this.reconcileStoredSurfaceUserMessages(session.sessionRef);
     if (!session.runtimeSessionId) {
       this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), "live-only");
       return;
@@ -81,7 +81,7 @@ export class TranscriptProjection {
     }
   }
 
-  private async reconcileStoredClientUserMessages(sessionRef: string): Promise<void> {
+  private async reconcileStoredSurfaceUserMessages(sessionRef: string): Promise<void> {
     const blocks: TranscriptBlock[] = [];
     let beforeSequence: number | null = null;
     while (true) {
@@ -95,7 +95,7 @@ export class TranscriptProjection {
       (block) =>
         block.type === "message" &&
         block.role === "user" &&
-        block.origin === "client" &&
+        (block.origin === "client" || block.origin === "clawchat") &&
         block.runtimeSource === undefined,
     );
     const history = blocks.filter(
@@ -178,7 +178,7 @@ export class TranscriptProjection {
       );
       if (block) return block;
     }
-    if (activity.kind === "user" && activity.source === "history") {
+    if (activity.kind === "user") {
       const optimistic = (await this.options.stateStore.listTranscriptBlocks(sessionRef)).find(
         (block) =>
           block.type === "message" &&

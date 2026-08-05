@@ -101,25 +101,31 @@ export async function startConnectService(
     const interactionCoordinator = new RuntimeInteractionCoordinator(transcriptProjection);
     runtimeInteractions = interactionCoordinator;
     const startRuntime = dependencies.startBindingRuntime ?? startBindingRuntime;
-    const attempts = await Promise.allSettled(
-      activatedBindings.map(async ({ agentId, activation }) => {
+    const attempts: PromiseSettledResult<BindingRuntimeHandle>[] = [];
+    for (const { agentId, activation } of activatedBindings) {
+      try {
         if (!activation) throw new Error(`Agent Binding ${agentId} activation disappeared`);
-        return await startRuntime({
-          agentId,
-          activation,
-          config,
-          configPath,
-          deviceId,
-          stateStore: store,
-          projects,
-          runtimeAdapters,
-          transcriptProjection,
-          runtimeInteractions: interactionCoordinator,
-          protocolEventHandlers: options.protocolEventHandlers,
-          writeError,
+        attempts.push({
+          status: "fulfilled",
+          value: await startRuntime({
+            agentId,
+            activation,
+            config,
+            configPath,
+            deviceId,
+            stateStore: store,
+            projects,
+            runtimeAdapters,
+            transcriptProjection,
+            runtimeInteractions: interactionCoordinator,
+            protocolEventHandlers: options.protocolEventHandlers,
+            writeError,
+          }),
         });
-      }),
-    );
+      } catch (reason) {
+        attempts.push({ status: "rejected", reason });
+      }
+    }
     const failures: string[] = [];
     for (let index = 0; index < attempts.length; index += 1) {
       const attempt = attempts[index];
