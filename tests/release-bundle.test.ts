@@ -84,11 +84,17 @@ describe("standalone release bundle", () => {
         "powershell.exe",
         "-NoProfile",
         "-Command",
-        "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1]",
-        archive,
-        extractedDirectory,
+        "Expand-Archive -LiteralPath $env:CONNECT_RELEASE_ARCHIVE -DestinationPath $env:CONNECT_RELEASE_EXTRACTED",
       ],
-      { stdout: "pipe", stderr: "pipe" },
+      {
+        env: {
+          ...process.env,
+          CONNECT_RELEASE_ARCHIVE: archive,
+          CONNECT_RELEASE_EXTRACTED: extractedDirectory,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
     );
     const [extractionExitCode, extractionStderr] = await Promise.all([
       extraction.exited,
