@@ -93,7 +93,9 @@ describe("background service manager", () => {
     const installed = await manageBackgroundService({ action: "install", ...base }, dependencies);
     expect(installed).toMatchObject({ running: true, message: expect.stringContaining("systemd") });
     const unit = await readFile(join(homeDirectory, ".config", "systemd", "user", "clawchat-connect.service"), "utf8");
-    expect(unit).toContain(`ExecStart="/opt/Claw Chat/clawchat-connect" "service" "exec" "--config" "${configPath}"`);
+    expect(unit).toContain(
+      `ExecStart="/opt/Claw Chat/clawchat-connect" "service" "exec" "--config" ${JSON.stringify(configPath)}`,
+    );
     expect(unit).not.toContain("--agent");
     expect(unit).toContain('Environment="PATH=/opt/codex/bin:/usr/bin"');
     expect(unit).toContain("Restart=on-failure");
@@ -192,9 +194,8 @@ describe("background service manager", () => {
   });
 
   it("relaunches a Bun-compiled executable without passing its virtual entrypoint", () => {
-    expect(connectCommandForProcess("/opt/clawchat-connect", "/$bunfs/root/clawchat-connect")).toEqual([
-      "/opt/clawchat-connect",
-    ]);
+    const executablePath = resolve("/opt/clawchat-connect");
+    expect(connectCommandForProcess(executablePath, "/$bunfs/root/clawchat-connect")).toEqual([executablePath]);
     expect(
       connectCommandForProcess("C:\\Connect\\clawchat-connect.exe", "B:\\$bunfs\\root\\clawchat-connect.exe"),
     ).toEqual([resolve("C:\\Connect\\clawchat-connect.exe")]);
