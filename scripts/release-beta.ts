@@ -1,3 +1,5 @@
+import { basename } from "node:path";
+
 interface BetaTagVersion {
   major: bigint;
   minor: bigint;
@@ -31,8 +33,14 @@ export interface ReleaseBetaEnvironment {
 }
 
 export interface BetaReleasePublisher {
-  releaseExists(tag: string): Promise<boolean>;
+  readRelease(tag: string): Promise<PublishedBetaRelease | null>;
   createRelease(input: PublishBetaReleaseInput): Promise<void>;
+}
+
+export interface PublishedBetaRelease {
+  tag: string;
+  prerelease: boolean;
+  assetNames: readonly string[];
 }
 
 export interface BetaChannelPointer {
@@ -64,6 +72,19 @@ export interface AdvanceBetaChannelResult {
   attempts: number;
 }
 
+const requiredBetaReleaseAssetNames = [
+  "CHANGELOG.md",
+  "checksums.txt",
+  "clawchat-connect-darwin-arm64.tar.gz",
+  "clawchat-connect-darwin-x64.tar.gz",
+  "clawchat-connect-linux-arm64.tar.gz",
+  "clawchat-connect-linux-x64.tar.gz",
+  "clawchat-connect-windows-arm64.zip",
+  "clawchat-connect-windows-x64.zip",
+  "install.ps1",
+  "install.sh",
+] as const;
+
 function parseBetaTag(tag: string): BetaTagVersion {
   const match = /^v(\d+)\.(\d+)\.(\d+)-beta\.([1-9]\d*)$/u.exec(tag);
   if (!match) throw new Error(`Expected a beta release tag, received ${tag}`);
@@ -90,8 +111,20 @@ export async function publishImmutableBetaRelease(
   publisher: BetaReleasePublisher,
 ): Promise<void> {
   parseBetaTag(input.tag);
-  if (await publisher.releaseExists(input.tag)) {
-    throw new Error(`Release ${input.tag} already exists; publish a new beta sequence instead`);
+  const expectedAssetNames = sortedAssetNames(input.assets.map((asset) => basename(asset)));
+  if (!sameAssetNames(expectedAssetNames, requiredBetaReleaseAssetNames)) {
+    throw new Error("Prepared beta release assets do not match the required release inventory");
+  }
+  const existing = await publisher.readRelease(input.tag);
+  if (existing) {
+    if (
+      existing.tag === input.tag &&
+      existing.prerelease &&
+      sameAssetNames(existing.assetNames, expectedAssetNames)
+    ) {
+      return;
+    }
+    throw new Error(`Release ${input.tag} does not match the complete immutable prerelease`);
   }
   await publisher.createRelease(input);
 }
@@ -101,10 +134,18 @@ export async function publishBetaReleaseWithGh(
   runGh: GhCommandRunner,
 ): Promise<void> {
   await publishImmutableBetaRelease(input, {
-    releaseExists: async (tag) => {
-      const result = await runGh(["release", "view", tag, "--repo", input.repository]);
-      if (result.exitCode === 0) return true;
-      if (isNotFound(result.stderr)) return false;
+    readRelease: async (tag) => {
+      const result = await runGh([
+        "release",
+        "view",
+        tag,
+        "--repo",
+        input.repository,
+        "--json",
+        "tagName,isPrerelease,assets",
+      ]);
+      if (result.exitCode === 0) return parsePublishedBetaRelease(result.stdout);
+      if (isNotFound(result.stderr)) return null;
       throw ghCommandError("view release", result);
     },
     createRelease: async (release) => {
@@ -125,6 +166,36 @@ export async function publishBetaReleaseWithGh(
       if (result.exitCode !== 0) throw ghCommandError("create release", result);
     },
   });
+}
+
+function parsePublishedBetaRelease(stdout: string): PublishedBetaRelease {
+  const value = JSON.parse(stdout) as { tagName?: unknown; isPrerelease?: unknown; assets?: unknown };
+  if (
+    typeof value.tagName !== "string" ||
+    typeof value.isPrerelease !== "boolean" ||
+    !Array.isArray(value.assets) ||
+    !value.assets.every(
+      (asset): asset is { name: string } =>
+        typeof asset === "object" && asset !== null && "name" in asset && typeof asset.name === "string",
+    )
+  ) {
+    throw new Error("GitHub release response omitted tagName, isPrerelease, or asset names");
+  }
+  return {
+    tag: value.tagName,
+    prerelease: value.isPrerelease,
+    assetNames: value.assets.map(({ name }) => name),
+  };
+}
+
+function sortedAssetNames(assetNames: readonly string[]): string[] {
+  return [...assetNames].sort();
+}
+
+function sameAssetNames(left: readonly string[], right: readonly string[]): boolean {
+  const sortedLeft = sortedAssetNames(left);
+  const sortedRight = sortedAssetNames(right);
+  return sortedLeft.length === sortedRight.length && sortedLeft.every((name, index) => name === sortedRight[index]);
 }
 
 export async function advanceBetaChannel(

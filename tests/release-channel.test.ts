@@ -11,6 +11,19 @@ import {
 } from "../scripts/release-beta";
 
 const read = (path: string) => readFile(path, "utf8");
+const betaReleaseAssetNames = [
+  "CHANGELOG.md",
+  "checksums.txt",
+  "clawchat-connect-darwin-arm64.tar.gz",
+  "clawchat-connect-darwin-x64.tar.gz",
+  "clawchat-connect-linux-arm64.tar.gz",
+  "clawchat-connect-linux-x64.tar.gz",
+  "clawchat-connect-windows-arm64.zip",
+  "clawchat-connect-windows-x64.zip",
+  "install.ps1",
+  "install.sh",
+];
+const betaReleaseAssets = betaReleaseAssetNames.map((name) => `build/release/${name}`);
 
 test("beta tag comparison uses semantic version order", () => {
   expect(compareBetaTags("v0.1.0-beta.10", "v0.1.0-beta.2")).toBeGreaterThan(0);
@@ -25,27 +38,129 @@ test("beta tag comparison rejects non-beta channel values", () => {
   expect(() => compareBetaTags("v0.1.0-beta.0", "v0.1.0-beta.1")).toThrow("beta release tag");
 });
 
-test("an existing tagged release aborts before publishing any assets", async () => {
+test("publication requires the exact ten-file beta release inventory", async () => {
+  let reads = 0;
+  let creates = 0;
+  await expect(
+    publishImmutableBetaRelease(
+      {
+        tag: "v0.1.0-beta.1",
+        notesFile: "build/release-notes.md",
+        assets: betaReleaseAssets.slice(0, -1),
+      },
+      {
+        readRelease: async () => {
+          reads += 1;
+          return null;
+        },
+        createRelease: async () => {
+          creates += 1;
+        },
+      },
+    ),
+  ).rejects.toThrow("required release inventory");
+  expect(reads).toBe(0);
+  expect(creates).toBe(0);
+});
+
+test("a complete existing prerelease resumes publication without mutating it", async () => {
+  let createCalls = 0;
+  await publishImmutableBetaRelease(
+    {
+      tag: "v0.1.0-beta.1",
+      notesFile: "build/release-notes.md",
+      assets: betaReleaseAssets,
+    },
+    {
+      readRelease: async () => ({
+        tag: "v0.1.0-beta.1",
+        prerelease: true,
+        assetNames: betaReleaseAssetNames,
+      }),
+      createRelease: async () => {
+        createCalls += 1;
+      },
+    },
+  );
+  expect(createCalls).toBe(0);
+});
+
+test.each([
+  ["non-prerelease state", { tag: "v0.1.0-beta.1", prerelease: false, assetNames: betaReleaseAssetNames }],
+  ["a wrong tag", { tag: "v0.1.0-beta.2", prerelease: true, assetNames: betaReleaseAssetNames }],
+  [
+    "an incomplete asset set",
+    { tag: "v0.1.0-beta.1", prerelease: true, assetNames: betaReleaseAssetNames.slice(0, -1) },
+  ],
+  [
+    "an unexpected asset",
+    { tag: "v0.1.0-beta.1", prerelease: true, assetNames: [...betaReleaseAssetNames, "unexpected.txt"] },
+  ],
+])("an existing release with %s fails closed without mutation", async (_case, existingRelease) => {
   let createCalls = 0;
   await expect(
     publishImmutableBetaRelease(
       {
         tag: "v0.1.0-beta.1",
         notesFile: "build/release-notes.md",
-        assets: ["build/release/checksums.txt", "build/release/install.sh"],
+        assets: betaReleaseAssets,
       },
       {
-        releaseExists: async () => true,
+        readRelease: async () => existingRelease,
         createRelease: async () => {
           createCalls += 1;
         },
       },
     ),
-  ).rejects.toThrow("already exists");
+  ).rejects.toThrow("does not match the complete immutable prerelease");
   expect(createCalls).toBe(0);
 });
 
-test("the GitHub publication boundary stops after viewing an existing release", async () => {
+test("the GitHub publication boundary accepts a complete existing prerelease without mutation", async () => {
+  const commands: string[][] = [];
+  await publishBetaReleaseWithGh(
+    {
+      repository: "owner/repository",
+      tag: "v0.1.0-beta.1",
+      notesFile: "build/release-notes.md",
+      assets: betaReleaseAssets,
+    },
+    async (arguments_) => {
+      commands.push([...arguments_]);
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          tagName: "v0.1.0-beta.1",
+          isPrerelease: true,
+          assets: betaReleaseAssetNames.map((name) => ({ name })),
+        }),
+        stderr: "",
+      };
+    },
+  );
+  expect(commands).toEqual([
+    ["release", "view", "v0.1.0-beta.1", "--repo", "owner/repository", "--json", "tagName,isPrerelease,assets"],
+  ]);
+});
+
+test.each([
+  [
+    "non-prerelease state",
+    { tagName: "v0.1.0-beta.1", isPrerelease: false, assets: betaReleaseAssetNames.map((name) => ({ name })) },
+  ],
+  [
+    "a wrong tag",
+    { tagName: "v0.1.0-beta.2", isPrerelease: true, assets: betaReleaseAssetNames.map((name) => ({ name })) },
+  ],
+  [
+    "an incomplete asset set",
+    {
+      tagName: "v0.1.0-beta.1",
+      isPrerelease: true,
+      assets: betaReleaseAssetNames.slice(0, -1).map((name) => ({ name })),
+    },
+  ],
+])("the GitHub publication boundary rejects an existing release with %s", async (_case, release) => {
   const commands: string[][] = [];
   await expect(
     publishBetaReleaseWithGh(
@@ -53,15 +168,15 @@ test("the GitHub publication boundary stops after viewing an existing release", 
         repository: "owner/repository",
         tag: "v0.1.0-beta.1",
         notesFile: "build/release-notes.md",
-        assets: ["build/release/checksums.txt", "build/release/install.sh"],
+        assets: betaReleaseAssets,
       },
       async (arguments_) => {
         commands.push([...arguments_]);
-        return { exitCode: 0, stdout: "existing release", stderr: "" };
+        return { exitCode: 0, stdout: JSON.stringify(release), stderr: "" };
       },
     ),
-  ).rejects.toThrow("already exists");
-  expect(commands).toEqual([["release", "view", "v0.1.0-beta.1", "--repo", "owner/repository"]]);
+  ).rejects.toThrow("does not match the complete immutable prerelease");
+  expect(commands).toHaveLength(1);
 });
 
 test("a new tag creates one immutable prerelease with the prepared assets", async () => {
@@ -71,7 +186,7 @@ test("a new tag creates one immutable prerelease with the prepared assets", asyn
       repository: "owner/repository",
       tag: "v0.1.0-beta.2",
       notesFile: "build/release-notes.md",
-      assets: ["build/release/checksums.txt", "build/release/install.sh"],
+      assets: betaReleaseAssets,
     },
     async (arguments_) => {
       commands.push([...arguments_]);
@@ -80,13 +195,12 @@ test("a new tag creates one immutable prerelease with the prepared assets", asyn
     },
   );
   expect(commands).toEqual([
-    ["release", "view", "v0.1.0-beta.2", "--repo", "owner/repository"],
+    ["release", "view", "v0.1.0-beta.2", "--repo", "owner/repository", "--json", "tagName,isPrerelease,assets"],
     [
       "release",
       "create",
       "v0.1.0-beta.2",
-      "build/release/checksums.txt",
-      "build/release/install.sh",
+      ...betaReleaseAssets,
       "--repo",
       "owner/repository",
       "--verify-tag",
