@@ -59,7 +59,7 @@ ClawChat 入口负责对话范围内的工作；Project 注册、Service 管理�
 | OpenCode | `opencode serve` | agent、带 provider 的模型、variant | 发现、恢复、取消、删除 |
 | WorkBuddy | Desktop 自有 Task ACP endpoint | Task 自有模型、mode、配置、Command、Skill | 发现、采用、恢复、取消 |
 
-OpenCode 兼容性固定为 `1.18.10`。WorkBuddy 仅支持 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) 中列出的两个精确 Desktop tuple。Connect 不会安装或升级任一运行时；通用能力边界见 [Runtime Adapters](./docs/runtime-adapters.md)。
+OpenCode 兼容性已针对 `1.18.10` 与 `1.18.13` 验证，并使用 `@opencode-ai/sdk` `1.18.13`。WorkBuddy 仅支持 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) 中列出的两个精确 Desktop tuple。Connect 不会安装或升级任一运行时；通用能力边界见 [Runtime Adapters](./docs/runtime-adapters.md)。
 
 > [!IMPORTANT]
 > ClawChat Connect 仍处于 Beta 阶段，尚未稳定。启用可信局域网或公开 Liveware 访问前，请先阅读[本地数据与安全](#本地数据与安全)。
@@ -80,7 +80,7 @@ codex --version
 opencode --version
 ```
 
-Connect 使用运行时现有的登录状态、配置、模型供应商、插件、MCP Server 与原生 Session 存储。Codex 需要提供 Connect 所需的 app-server 接口；OpenCode 必须为 `1.18.10`。Connect 不会安装、登录或重新配置它们。
+Connect 使用运行时现有的登录状态、配置、模型供应商、插件、MCP Server 与原生 Session 存储。Codex 需要提供 Connect 所需的 app-server 接口；OpenCode 必须为 `1.18.10` 或 `1.18.13`。Connect 不会安装、登录或重新配置它们。
 
 ## 快速开始
 
@@ -149,7 +149,7 @@ clawchat-connect update
 # Codex
 clawchat-connect init --agent work --kind codex
 
-# OpenCode 1.18.10
+# OpenCode 1.18.13
 clawchat-connect init --agent work --kind opencode
 ```
 
@@ -426,7 +426,7 @@ clawchat-connect service logs --lines 250
 
 - **运行时无法启动：** 运行 `codex --version` 或 `opencode --version`，确认已登录并检查初始化错误。需要使用其他可执行文件时，通过 `agents.<id>.executablePathOverride` 指定。
 - **运行时在终端正常，但 Connect 无法启动：** 重新安装服务以捕获当前 `PATH`。
-- **OpenCode 版本不匹配：** 安装受支持的 OpenCode `1.18.10`；Connect 会拒绝未经验证的版本。
+- **OpenCode 版本不匹配：** 安装受支持的 OpenCode（推荐 `1.18.13`，并保留 `1.18.10` 兼容）；Connect 会拒绝未经验证的版本。
 - **修改配置后未生效：** 重启服务。
 - **浏览器 Client 无法打开：** 确认服务正在运行，再用 `clawchat-connect web --no-open` 获取地址。
 - **ClawChat 中没有 `ClawChat Connect`：** 检查 `status`，重启服务并查看 Liveware 日志。

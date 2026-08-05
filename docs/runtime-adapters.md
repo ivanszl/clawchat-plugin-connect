@@ -11,7 +11,7 @@ configuration remain owned by that runtime.
 | Codex | `codex app-server` | sandbox, model, reasoning | yes | yes | yes | yes |
 | OpenCode | `opencode serve` | agent, provider-qualified model, variant | yes | yes | yes | disabled |
 
-OpenCode compatibility is deliberately pinned to OpenCode `1.18.10` with `@opencode-ai/sdk` `1.18.10`.
+OpenCode compatibility is deliberately limited to tested OpenCode versions `1.18.10` and `1.18.13`, with `@opencode-ai/sdk` `1.18.13`.
 Supporting another version requires updating the compatibility fixtures and installed-runtime integration test;
 Connect does not automatically install or upgrade OpenCode.
 

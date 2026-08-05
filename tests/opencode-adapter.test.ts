@@ -163,6 +163,41 @@ function history(): OpenCodeMessage[] {
   ];
 }
 
+function currentAssistantMessage(
+  sessionID: string,
+  parentID: string,
+  id = "message-current-assistant",
+  text = "current answer",
+): OpenCodeMessage {
+  return {
+    info: {
+      id,
+      sessionID,
+      role: "assistant",
+      parentID,
+      time: { created: 16, completed: 17 },
+      agent: "build",
+      mode: "build",
+      modelID: "claude-sonnet",
+      providerID: "anthropic",
+      path: { cwd: directory, root: directory },
+      cost: 0,
+      tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+      finish: "stop",
+    },
+    parts: [
+      {
+        id: `part-${id}`,
+        sessionID,
+        messageID: id,
+        type: "text",
+        text,
+        time: { start: 16, end: 17 },
+      },
+    ],
+  };
+}
+
 class EventQueue {
   private readonly values: GlobalEvent[] = [];
   private readonly waiters: Array<{
@@ -841,10 +876,7 @@ describe("OpenCode Runtime Adapter", () => {
 
   it("submits structured file parts and converges live output with authoritative history", async () => {
     const test = fixture();
-    const adapter = createOpenCodeRuntimeAdapter({
-      createServer: async () => test.client,
-      messageID: () => "connect-message",
-    });
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
     let attached: string | null = null;
     const session = await adapter.start(
       { kind: "opencode" },
@@ -901,7 +933,6 @@ describe("OpenCode Runtime Adapter", () => {
       {
         sessionID: "created-1",
         directory,
-        messageID: "connect-message",
         agent: "build",
         model: { providerID: "anthropic", modelID: "claude-sonnet" },
         variant: "high",
@@ -921,7 +952,7 @@ describe("OpenCode Runtime Adapter", () => {
     await adapter.close?.();
   });
 
-  it("generates OpenCode-compatible native message IDs for ordinary prompts", async () => {
+  it("lets OpenCode generate ordered native message IDs for ordinary prompts", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
     const session = await adapter.start({ kind: "opencode" }, startContext());
@@ -931,20 +962,24 @@ describe("OpenCode Runtime Adapter", () => {
     }
 
     expect(test.prompts).toHaveLength(1);
-    expect(test.prompts[0]?.messageID).toMatch(/^msg[_-]/u);
+    expect(test.prompts[0]?.messageID).toBeUndefined();
     await session.close();
     await adapter.close?.();
   });
 
   it("accepts Session-scoped OpenCode events that omit the optional directory envelope", async () => {
     const test = fixture();
+    const nativeHistory = history();
+    test.client.messages = async () => nativeHistory;
     test.client.promptAsync = async (input) => {
       test.prompts.push(input);
+      const current = currentAssistantMessage(input.sessionID, "message-native-user", "message-envelope-free", "done");
+      nativeHistory.push(current);
       test.events.push({
         payload: {
           id: "event-part-without-directory",
           type: "message.part.updated",
-          properties: { sessionID: input.sessionID, part: history()[1]?.parts[2], time: 14 },
+          properties: { sessionID: input.sessionID, part: current.parts[0], time: 17 },
         },
       } as unknown as GlobalEvent);
       test.events.push({
@@ -965,6 +1000,71 @@ describe("OpenCode Runtime Adapter", () => {
 
     expect(activities.some((activity) => activity.kind === "error")).toBe(false);
     expect(activities.some((activity) => activity.kind === "assistant" && activity.text === "done")).toBe(true);
+    await session.close();
+    await adapter.close?.();
+  });
+
+  it("does not replay earlier assistant content into a resumed Turn stream", async () => {
+    const test = fixture();
+    const nativeHistory = history();
+    test.client.messages = async () => nativeHistory;
+    test.client.promptAsync = async (input) => {
+      test.prompts.push(input);
+      const nativeUserMessageID = "message-native-current-user";
+      nativeHistory.push({
+        info: {
+          id: nativeUserMessageID,
+          sessionID: input.sessionID,
+          role: "user",
+          time: { created: 15 },
+          agent: "build",
+          model: { providerID: "anthropic", modelID: "claude-sonnet" },
+        },
+        parts: [
+          {
+            id: "part-current-user",
+            sessionID: input.sessionID,
+            messageID: nativeUserMessageID,
+            type: "text",
+            text: "which model are you",
+          },
+        ],
+      });
+      nativeHistory.push(currentAssistantMessage(input.sessionID, nativeUserMessageID));
+      test.events.push({
+        directory,
+        payload: {
+          id: "event-current-part",
+          type: "message.part.updated",
+          properties: {
+            sessionID: input.sessionID,
+            part: nativeHistory.at(-1)?.parts[0],
+            time: 17,
+          },
+        },
+      } as GlobalEvent);
+      test.events.push({
+        directory,
+        payload: {
+          id: "event-current-idle",
+          type: "session.idle",
+          properties: { sessionID: input.sessionID },
+        },
+      } as GlobalEvent);
+    };
+    const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
+    const session = await adapter.start({ kind: "opencode" }, startContext());
+
+    const activities = [];
+    for await (const activity of session.prompt({ prompt: "which model are you", workspace: runtimeWorkspace })) {
+      activities.push(activity);
+    }
+
+    expect(activities).toContainEqual(
+      expect.objectContaining({ id: "message-current-assistant:part-message-current-assistant" }),
+    );
+    expect(activities.some((activity) => activity.id === "message-assistant:part-answer")).toBe(false);
+    expect(activities.some((activity) => activity.id === "external:message-native-current-user")).toBe(false);
     await session.close();
     await adapter.close?.();
   });
@@ -1795,11 +1895,14 @@ describe("OpenCode Runtime Adapter", () => {
 
   it("reconnects the global event stream and reconciles active Session history", async () => {
     const test = fixture();
+    const nativeHistory = history();
+    test.client.messages = async () => nativeHistory;
     let settlePromptStarted!: () => void;
     const promptStarted = new Promise<void>((resolve) => {
       settlePromptStarted = resolve;
     });
-    test.client.promptAsync = async () => {
+    test.client.promptAsync = async (input) => {
+      nativeHistory.push(currentAssistantMessage(input.sessionID, "message-native-user", "message-reconnected"));
       settlePromptStarted();
     };
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
@@ -1815,7 +1918,7 @@ describe("OpenCode Runtime Adapter", () => {
     test.events.disconnect();
     await expect(next).resolves.toMatchObject({
       done: false,
-      value: { id: "message-user:part-user", source: "history" },
+      value: { id: "message-reconnected:part-message-reconnected", source: "history" },
     });
     await session.cancel?.();
     await adapter.close?.();

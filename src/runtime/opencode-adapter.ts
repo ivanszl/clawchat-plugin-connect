@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
@@ -40,7 +40,6 @@ export interface OpenCodeRuntimeAdapterOptions {
   createServer?: (binding: OpenCodeAgentBindingConfig) => Promise<OpenCodeServerClient>;
   serverClientOptions?: OpenCodeServerClientOptions;
   eventReconnectDelays?: readonly number[];
-  messageID?: () => string;
 }
 
 class OpenCodeReconnect {}
@@ -246,7 +245,6 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
         listeners,
         threadDirectories,
         observedUserMessages,
-        messageID: options.messageID ?? openCodeMessageID,
         onDirectory: (directory) => {
           lastDirectory = directory;
         },
@@ -273,17 +271,12 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
   };
 }
 
-function openCodeMessageID(): string {
-  return `msg_${randomUUID()}`;
-}
-
 interface OpenCodeRuntimeSessionOptions {
   clientFor(): Promise<OpenCodeServerClient>;
   context: ConnectRuntimeStartContext;
   listeners: Set<EventListener>;
   threadDirectories: Map<string, string>;
   observedUserMessages: Map<string, Set<string>>;
-  messageID: () => string;
   onDirectory(directory: string): void;
   nativeSkills: ReadonlyMap<string, ReadonlyMap<string, string>>;
   invalidateSkillWorkspace(workspace: RuntimeWorkspace): void;
@@ -312,6 +305,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     if (this.closed) throw new Error("OpenCode Runtime Session is closed");
     if (this.active) throw new Error("OpenCode Runtime Session already has an active turn");
     const client = await this.options.clientFor();
+    const resumedExistingThread = this.runtimeThreadId !== null;
     const directory = canonical(input.workspace.workingDirectory);
     this.options.onDirectory(directory);
     const session = await this.ensureThread(client, directory);
@@ -321,13 +315,37 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     }
     await validatePromptSelection(client, input, directory);
 
+    const beforePrompt = await client.messages(session.id, directory);
+    const externalActivities = externalModificationActivities(
+      session.id,
+      beforePrompt,
+      this.options.observedUserMessages,
+    );
+    const priorActivityIds = resumedExistingThread
+      ? new Set(
+          (await reconcileSessionActivity(client, session, this.options.observedUserMessages)).activities.map(
+            (activity) => activity.id,
+          ),
+        )
+      : null;
     const queue = new ActivityQueue();
+    // OpenCode owns its ordered message IDs. The first new native user message
+    // after this idle boundary is the one created by the submission below.
+    const ownedUserMessages = { remaining: 1 };
     const pendingNativeRequests = new Map<string, "permission" | "question">();
     const listener: EventListener = async (event) => {
       if (event instanceof OpenCodeReconnect) {
         const statuses = await client.sessionStatus(directory);
-        const snapshot = await reconcileSessionActivity(client, session, this.options.observedUserMessages);
-        for (const activity of snapshot.activities) queue.push({ ...activity, source: "history" });
+        const snapshot = await reconcileSessionActivity(
+          client,
+          session,
+          this.options.observedUserMessages,
+          new Set(),
+          ownedUserMessages,
+        );
+        for (const activity of currentTurnActivities(snapshot.activities, priorActivityIds)) {
+          queue.push({ ...activity, source: "history" });
+        }
         if (statuses[session.id]?.type === "idle") queue.close();
         return;
       }
@@ -362,8 +380,16 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         return;
       }
       if (payload.type === "message.part.updated" || payload.type === "session.idle") {
-        const snapshot = await reconcileSessionActivity(client, session, this.options.observedUserMessages);
-        for (const activity of snapshot.activities) queue.push({ ...activity, source: "live" });
+        const snapshot = await reconcileSessionActivity(
+          client,
+          session,
+          this.options.observedUserMessages,
+          new Set(),
+          ownedUserMessages,
+        );
+        for (const activity of currentTurnActivities(snapshot.activities, priorActivityIds)) {
+          queue.push({ ...activity, source: "live" });
+        }
       }
       if (payload.type === "session.idle") queue.close();
     };
@@ -378,15 +404,7 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
     };
     this.options.listeners.add(listener);
     try {
-      const beforePrompt = await client.messages(session.id, directory);
-      for (const activity of externalModificationActivities(
-        session.id,
-        beforePrompt,
-        this.options.observedUserMessages,
-      ))
-        queue.push(activity);
-      const messageID = this.options.messageID();
-      this.options.observedUserMessages.get(session.id)?.add(messageID);
+      for (const activity of externalActivities) queue.push(activity);
       if (input.skill || input.command) {
         const selection = input.command ?? input.skill;
         if (!selection) throw new Error("OpenCode slash selection is missing");
@@ -400,7 +418,6 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         await client.runCommand({
           sessionID: session.id,
           directory,
-          messageID,
           ...commandSelection(input),
           command,
           arguments: leadingSkillArguments(input.prompt),
@@ -410,7 +427,6 @@ class OpenCodeRuntimeSession implements ConnectRuntimeSession {
         await client.promptAsync({
           sessionID: session.id,
           directory,
-          messageID,
           ...promptSelection(input),
           parts: promptParts(input),
         });
@@ -801,6 +817,13 @@ function activitySnapshot(messages: OpenCodeMessage[]): RuntimeActivitySnapshot 
   };
 }
 
+function currentTurnActivities(
+  activities: RuntimeActivity[],
+  priorActivityIds: ReadonlySet<string> | null,
+): RuntimeActivity[] {
+  return priorActivityIds ? activities.filter((activity) => !priorActivityIds.has(activity.id)) : activities;
+}
+
 function openCodeInputIdentities(messages: OpenCodeMessage[]) {
   const identities: RuntimeInputIdentity[] = [];
   let complete = true;
@@ -819,13 +842,14 @@ async function reconcileSessionActivity(
   session: Session,
   observedUserMessages: Map<string, Set<string>>,
   ancestors: ReadonlySet<string> = new Set(),
+  ownedUserMessages?: { remaining: number },
 ): Promise<RuntimeActivitySnapshot> {
   const messages = await client.messages(session.id, session.directory);
   const snapshot = activitySnapshot(messages);
   const limitations = new Set(snapshot.limitations);
   const activities = [
     ...snapshot.activities,
-    ...externalModificationActivities(session.id, messages, observedUserMessages),
+    ...externalModificationActivities(session.id, messages, observedUserMessages, ownedUserMessages),
   ];
   const lineage = new Set(ancestors).add(session.id);
   const children = (await client.listSessions(session.directory, false))
@@ -887,27 +911,30 @@ function externalModificationActivities(
   sessionID: string,
   messages: OpenCodeMessage[],
   observedBySession: Map<string, Set<string>>,
+  ownedUserMessages?: { remaining: number },
 ): RuntimeActivity[] {
   const previous = observedBySession.get(sessionID);
   if (!previous) {
     observeUserMessages(sessionID, messages, observedBySession);
     return [];
   }
-  const external = messages.flatMap((message, index) =>
-    message.info.role === "user" && !previous.has(message.info.id)
-      ? [
-          {
-            id: `external:${message.info.id}`,
-            position: `${index}.999999`,
-            parentId: null,
-            kind: "progress" as const,
-            text: "OpenCode Session was modified by another client.",
-            state: "complete" as const,
-            source: "history" as const,
-          },
-        ]
-      : [],
-  );
+  const external: RuntimeActivity[] = [];
+  for (const [index, message] of messages.entries()) {
+    if (message.info.role !== "user" || previous.has(message.info.id)) continue;
+    if (ownedUserMessages && ownedUserMessages.remaining > 0) {
+      ownedUserMessages.remaining -= 1;
+      continue;
+    }
+    external.push({
+      id: `external:${message.info.id}`,
+      position: `${index}.999999`,
+      parentId: null,
+      kind: "progress",
+      text: "OpenCode Session was modified by another client.",
+      state: "complete",
+      source: "history",
+    });
+  }
   observeUserMessages(sessionID, messages, observedBySession);
   return external;
 }

@@ -19,8 +19,8 @@ import type {
 import { CONNECT_VERSION } from "../service/version";
 import type { OpenCodeAgentBindingConfig } from "../types";
 
-export const OPENCODE_SDK_VERSION = "1.18.10" as const;
-export const SUPPORTED_OPENCODE_VERSIONS = [OPENCODE_SDK_VERSION] as const;
+export const OPENCODE_SDK_VERSION = "1.18.13" as const;
+export const SUPPORTED_OPENCODE_VERSIONS = ["1.18.10", OPENCODE_SDK_VERSION] as const;
 
 export interface OpenCodeMessage {
   info: Message;
@@ -30,7 +30,7 @@ export interface OpenCodeMessage {
 export interface OpenCodePromptInput {
   sessionID: string;
   directory: string;
-  messageID: string;
+  messageID?: string;
   agent?: string;
   model?: { providerID: string; modelID: string };
   variant?: string;
@@ -40,7 +40,7 @@ export interface OpenCodePromptInput {
 export interface OpenCodeCommandInput {
   sessionID: string;
   directory: string;
-  messageID: string;
+  messageID?: string;
   agent?: string;
   model?: string;
   variant?: string;

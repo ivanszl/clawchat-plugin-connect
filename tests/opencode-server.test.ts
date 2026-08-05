@@ -213,62 +213,81 @@ function api(version = "1.18.10"): OpenCodeApiClient {
 }
 
 describe("OpenCode Server process boundary", () => {
-  it("accepts the generated OpenCode 1.18.10 SDK compatibility fixture through the official client", async () => {
-    const fixture = (await Bun.file(
-      new URL("./fixtures/opencode/1.18.10/compatibility.json", import.meta.url),
-    ).json()) as OpenCodeCompatibilityFixture;
-    const [port] = await availablePorts(1);
-    if (!port) throw new Error("missing compatibility fixture port");
-    let compatibilityProcess!: CompatibilityHttpProcess;
+  it("accepts the currently supported OpenCode 1.18.13 executable", async () => {
+    const process = new FakeProcess();
     const client = await createOpenCodeServerClient(
       { kind: "opencode", executablePathOverride: "/opt/opencode" },
       {
-        readVersion: async () => fixture.version,
-        allocatePort: async () => port,
-        password: () => "fixture-secret",
-        spawnServer: (_executable, _args, env) => {
-          compatibilityProcess = new CompatibilityHttpProcess(port, env.OPENCODE_SERVER_PASSWORD ?? "", fixture);
-          return compatibilityProcess;
-        },
+        readVersion: async () => "1.18.13",
+        allocatePort: async () => 43129,
+        spawnServer: () => process,
+        createApi: () => api("1.18.13"),
       },
     );
 
-    expect(await client.listAgents(fixture.directory)).toEqual(fixture.agents);
-    expect(await client.listProviders(fixture.directory)).toEqual(fixture.providers);
-    expect(await client.listSessions(fixture.directory)).toEqual([fixture.session]);
-    expect(await client.getSession(fixture.session.id, fixture.directory)).toEqual(fixture.session);
-    expect(await client.createSession(fixture.directory, fixture.session.title)).toEqual(fixture.session);
-    expect(await client.messages(fixture.session.id, fixture.directory)).toEqual(fixture.messages);
-    await expect(
-      client.promptAsync({
-        sessionID: fixture.session.id,
-        directory: fixture.directory,
-        messageID: "msg_prompt",
-        agent: "build",
-        model: { providerID: "fixture", modelID: "fixture-model" },
-        variant: "high",
-        parts: [{ type: "text", text: "fixture" }],
-      }),
-    ).resolves.toBeUndefined();
-    expect(await client.abortSession(fixture.session.id, fixture.directory)).toBe(true);
-    expect(await client.replyPermission("permission_compatibility", fixture.directory, "once")).toBe(true);
-    expect(await client.replyQuestion("question_compatibility", fixture.directory, [["Yes"]])).toBe(true);
-    expect(await client.rejectQuestion("question_compatibility", fixture.directory)).toBe(true);
-    const eventTypes: string[] = [];
-    for await (const event of client.events(new AbortController().signal)) eventTypes.push(event.payload.type);
-    expect(eventTypes).toEqual(["session.created", "message.part.updated", "permission.asked", "question.asked"]);
-    expect(await client.deleteSession(fixture.session.id, fixture.directory)).toBe(true);
-
+    expect(client.version).toBe("1.18.13");
     await client.close();
-    expect(compatibilityProcess.requests).toEqual(
-      expect.arrayContaining([
-        { method: "GET", path: "/agent" },
-        { method: "GET", path: "/provider" },
-        { method: "GET", path: `/session/${fixture.session.id}` },
-        { method: "GET", path: "/global/event" },
-      ]),
-    );
   });
+
+  it.each(["1.18.10", "1.18.13"])(
+    "accepts the generated OpenCode %s SDK compatibility fixture through the official client",
+    async (version) => {
+      const fixture = (await Bun.file(
+        new URL(`./fixtures/opencode/${version}/compatibility.json`, import.meta.url),
+      ).json()) as OpenCodeCompatibilityFixture;
+      const [port] = await availablePorts(1);
+      if (!port) throw new Error("missing compatibility fixture port");
+      let compatibilityProcess!: CompatibilityHttpProcess;
+      const client = await createOpenCodeServerClient(
+        { kind: "opencode", executablePathOverride: "/opt/opencode" },
+        {
+          readVersion: async () => fixture.version,
+          allocatePort: async () => port,
+          password: () => "fixture-secret",
+          spawnServer: (_executable, _args, env) => {
+            compatibilityProcess = new CompatibilityHttpProcess(port, env.OPENCODE_SERVER_PASSWORD ?? "", fixture);
+            return compatibilityProcess;
+          },
+        },
+      );
+
+      expect(await client.listAgents(fixture.directory)).toEqual(fixture.agents);
+      expect(await client.listProviders(fixture.directory)).toEqual(fixture.providers);
+      expect(await client.listSessions(fixture.directory)).toEqual([fixture.session]);
+      expect(await client.getSession(fixture.session.id, fixture.directory)).toEqual(fixture.session);
+      expect(await client.createSession(fixture.directory, fixture.session.title)).toEqual(fixture.session);
+      expect(await client.messages(fixture.session.id, fixture.directory)).toEqual(fixture.messages);
+      await expect(
+        client.promptAsync({
+          sessionID: fixture.session.id,
+          directory: fixture.directory,
+          messageID: "msg_prompt",
+          agent: "build",
+          model: { providerID: "fixture", modelID: "fixture-model" },
+          variant: "high",
+          parts: [{ type: "text", text: "fixture" }],
+        }),
+      ).resolves.toBeUndefined();
+      expect(await client.abortSession(fixture.session.id, fixture.directory)).toBe(true);
+      expect(await client.replyPermission("permission_compatibility", fixture.directory, "once")).toBe(true);
+      expect(await client.replyQuestion("question_compatibility", fixture.directory, [["Yes"]])).toBe(true);
+      expect(await client.rejectQuestion("question_compatibility", fixture.directory)).toBe(true);
+      const eventTypes: string[] = [];
+      for await (const event of client.events(new AbortController().signal)) eventTypes.push(event.payload.type);
+      expect(eventTypes).toEqual(["session.created", "message.part.updated", "permission.asked", "question.asked"]);
+      expect(await client.deleteSession(fixture.session.id, fixture.directory)).toBe(true);
+
+      await client.close();
+      expect(compatibilityProcess.requests).toEqual(
+        expect.arrayContaining([
+          { method: "GET", path: "/agent" },
+          { method: "GET", path: "/provider" },
+          { method: "GET", path: `/session/${fixture.session.id}` },
+          { method: "GET", path: "/global/event" },
+        ]),
+      );
+    },
+  );
 
   it("starts the installed compatible executable as an authenticated loopback Server", async () => {
     const process = new FakeProcess();
@@ -375,7 +394,7 @@ describe("OpenCode Server process boundary", () => {
         },
       ),
     ).rejects.toThrow(
-      `OpenCode compatibility failure for executable version: Connect ${CONNECT_VERSION}, @opencode-ai/sdk 1.18.10, OpenCode 1.19.0`,
+      `OpenCode compatibility failure for executable version: Connect ${CONNECT_VERSION}, @opencode-ai/sdk 1.18.13, OpenCode 1.19.0`,
     );
     expect(spawnServer).not.toHaveBeenCalled();
   });
@@ -409,7 +428,7 @@ describe("OpenCode Server process boundary", () => {
         },
       ),
     ).rejects.toThrow(
-      `OpenCode compatibility failure for global.health version: Connect ${CONNECT_VERSION}, @opencode-ai/sdk 1.18.10, OpenCode 1.18.10; executable version 1.18.10 does not match Server version 1.18.9`,
+      `OpenCode compatibility failure for global.health version: Connect ${CONNECT_VERSION}, @opencode-ai/sdk 1.18.13, OpenCode 1.18.10; executable version 1.18.10 does not match Server version 1.18.9`,
     );
     expect(process.exitCode).toBe(0);
   });
@@ -431,7 +450,7 @@ describe("OpenCode Server process boundary", () => {
     );
 
     await expect(client.listAgents("/project")).rejects.toThrow(
-      `OpenCode compatibility failure for app.agents: Connect ${CONNECT_VERSION}, @opencode-ai/sdk 1.18.10, OpenCode 1.18.10; response shape mismatch: expected an agent array`,
+      `OpenCode compatibility failure for app.agents: Connect ${CONNECT_VERSION}, @opencode-ai/sdk 1.18.13, OpenCode 1.18.10; response shape mismatch: expected an agent array`,
     );
     await client.close();
   });

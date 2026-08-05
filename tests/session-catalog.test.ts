@@ -485,6 +485,12 @@ describe("Session Catalog workspace grouping", () => {
           workingDirectory: directory,
         },
       ],
+      readActivity: async (_binding, runtimeThreadId) => {
+        if (runtimeThreadId === "thread-deleted-externally") {
+          throw new Error(`OpenCode Session was not found: ${runtimeThreadId}`);
+        }
+        return { activities: [], completeness: "complete", limitations: [] };
+      },
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
@@ -512,6 +518,7 @@ describe("Session Catalog workspace grouping", () => {
       runtimeThreadAvailable: false,
       allowedActions: [],
     });
+    await expect(catalog.ensureProjection("STUVWXYZ", true)).resolves.toBe(true);
     await expect(catalog.archive("JKLMNPQR")).rejects.toMatchObject({ code: "session-action-unsupported" });
   });
 

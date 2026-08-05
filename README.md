@@ -71,7 +71,7 @@ The ClawChat surface is for conversation-scoped work. Local Project registration
 | OpenCode | `opencode serve` | agent, provider-qualified model, variant | discover, resume, cancel, delete |
 | WorkBuddy | desktop-owned Task ACP endpoint | Task-owned model, mode, configuration, Commands, Skills | discover, adopt, resume, cancel |
 
-OpenCode compatibility is pinned to OpenCode `1.18.10`. WorkBuddy supports only the two exact desktop tuples documented in [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md). Connect does not install or upgrade any runtime. See [Runtime Adapters](./docs/runtime-adapters.md) for the general capability boundary.
+OpenCode compatibility is tested against OpenCode `1.18.10` and `1.18.13`, using `@opencode-ai/sdk` `1.18.13`. WorkBuddy supports only the two exact desktop tuples documented in [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md). Connect does not install or upgrade any runtime. See [Runtime Adapters](./docs/runtime-adapters.md) for the general capability boundary.
 
 > [!IMPORTANT]
 > ClawChat Connect is beta software. Review [Local data and security](#local-data-and-security) before enabling trusted-LAN or public Liveware access.
@@ -92,7 +92,7 @@ codex --version
 opencode --version
 ```
 
-Connect uses the runtime's existing login, configuration, providers, plugins, MCP servers, and native Session storage. Codex must expose the required app-server interface; OpenCode must be version `1.18.10`. Connect does not install, authenticate, or reconfigure either runtime.
+Connect uses the runtime's existing login, configuration, providers, plugins, MCP servers, and native Session storage. Codex must expose the required app-server interface; OpenCode must be version `1.18.10` or `1.18.13`. Connect does not install, authenticate, or reconfigure either runtime.
 
 ## Quick start
 
@@ -169,7 +169,7 @@ Use `clawchat-connect update --version v0.1.0-beta.4` to install a specific rele
 # Codex
 clawchat-connect init --agent work --kind codex
 
-# OpenCode 1.18.10
+# OpenCode 1.18.13
 clawchat-connect init --agent work --kind opencode
 ```
 
@@ -536,7 +536,7 @@ Common causes:
 
 - **A runtime cannot start:** run `codex --version` or `opencode --version`, confirm the runtime is authenticated, and inspect the initialization error. Use `agents.<id>.executablePathOverride` when Connect should launch a different executable.
 - **A runtime works in a terminal but not in Connect:** reinstall the service so it captures the current `PATH`.
-- **OpenCode reports a version mismatch:** install the supported OpenCode `1.18.10`; Connect deliberately refuses unverified versions.
+- **OpenCode reports a version mismatch:** install a supported OpenCode version (`1.18.13` recommended; `1.18.10` retained for compatibility); Connect deliberately refuses unverified versions.
 - **Windows service does not start:** run `clawchat-connect service install` again from a terminal where the configured runtime works, then inspect `clawchat-connect service logs`.
 - **Configuration changed but behavior did not:** restart the service.
 - **Browser client does not open:** confirm the service is running, then use `clawchat-connect web --no-open` and open the printed URL.

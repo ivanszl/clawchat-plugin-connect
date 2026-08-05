@@ -283,9 +283,11 @@ export class SessionCatalog {
     const state = await this.load(refreshRuntime);
     const entry = state.entriesByRef.get(normalized) ?? null;
     if (!entry) return false;
-    const sourceRevision = state.runtimeRevisionByRef.get(normalized) ?? entry.updatedAt;
+    const runtimeRevision = state.runtimeRevisionByRef.get(normalized);
+    const sourceRevision = runtimeRevision ?? entry.updatedAt;
     const session = await this.options.stateStore.getRuntimeSessionByRef(normalized);
     if (session) {
+      if (session.runtimeSessionId && !runtimeRevision) return true;
       await this.options.transcriptProjection.reconcile(session, sourceRevision);
       return true;
     }
