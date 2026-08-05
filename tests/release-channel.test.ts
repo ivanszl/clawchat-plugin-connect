@@ -463,9 +463,9 @@ test("version metadata is synchronized at beta.3", async () => {
   const pkg = await Bun.file("package.json").json();
   const source = await read("src/service/version.ts");
   const manifest = await Bun.file("skills/manifest.json").json();
-  expect(pkg.version).toBe("0.1.0-beta.3");
-  expect(source).toContain('CONNECT_VERSION = "0.1.0-beta.3"');
-  expect(manifest.connectVersion).toBe("0.1.0-beta.3");
+  expect(pkg.version).toBe("0.1.0-beta.4");
+  expect(source).toContain('CONNECT_VERSION = "0.1.0-beta.4"');
+  expect(manifest.connectVersion).toBe("0.1.0-beta.4");
 });
 
 test("unversioned installers follow beta", async () => {

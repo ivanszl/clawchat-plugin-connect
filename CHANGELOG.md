@@ -2,6 +2,18 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-beta.4] - 2026-08-05
+
+### Changed
+
+- Reorganized source modules into account, Agent, ClawChat, persistence, Project, Runtime, and Service boundaries while preserving the public package interface.
+- Split WebSocket and WorkBuddy transports, persistence schema and codecs, and Connect Client HTTP and asset handling out of their former large modules.
+- Removed stale design QA and beta-build scratch documents together with unused development dependencies.
+
+### Removed
+
+- Removed the standalone security policy and bundled third-party notice files from the repository, npm package, installers, and release archives.
+
 ## [0.1.0-beta.3] - 2026-08-05
 
 ### Fixed
