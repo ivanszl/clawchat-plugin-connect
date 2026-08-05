@@ -75,6 +75,7 @@ test("a complete existing prerelease resumes publication without mutating it", a
       readRelease: async () => ({
         tag: "v0.1.0-beta.1",
         prerelease: true,
+        draft: false,
         assetNames: betaReleaseAssetNames,
       }),
       createRelease: async () => {
@@ -86,15 +87,24 @@ test("a complete existing prerelease resumes publication without mutating it", a
 });
 
 test.each([
-  ["non-prerelease state", { tag: "v0.1.0-beta.1", prerelease: false, assetNames: betaReleaseAssetNames }],
-  ["a wrong tag", { tag: "v0.1.0-beta.2", prerelease: true, assetNames: betaReleaseAssetNames }],
+  [
+    "non-prerelease state",
+    { tag: "v0.1.0-beta.1", prerelease: false, draft: false, assetNames: betaReleaseAssetNames },
+  ],
+  ["draft state", { tag: "v0.1.0-beta.1", prerelease: true, draft: true, assetNames: betaReleaseAssetNames }],
+  ["a wrong tag", { tag: "v0.1.0-beta.2", prerelease: true, draft: false, assetNames: betaReleaseAssetNames }],
   [
     "an incomplete asset set",
-    { tag: "v0.1.0-beta.1", prerelease: true, assetNames: betaReleaseAssetNames.slice(0, -1) },
+    { tag: "v0.1.0-beta.1", prerelease: true, draft: false, assetNames: betaReleaseAssetNames.slice(0, -1) },
   ],
   [
     "an unexpected asset",
-    { tag: "v0.1.0-beta.1", prerelease: true, assetNames: [...betaReleaseAssetNames, "unexpected.txt"] },
+    {
+      tag: "v0.1.0-beta.1",
+      prerelease: true,
+      draft: false,
+      assetNames: [...betaReleaseAssetNames, "unexpected.txt"],
+    },
   ],
 ])("an existing release with %s fails closed without mutation", async (_case, existingRelease) => {
   let createCalls = 0;
@@ -132,6 +142,7 @@ test("the GitHub publication boundary accepts a complete existing prerelease wit
         stdout: JSON.stringify({
           tagName: "v0.1.0-beta.1",
           isPrerelease: true,
+          isDraft: false,
           assets: betaReleaseAssetNames.map((name) => ({ name })),
         }),
         stderr: "",
@@ -139,24 +150,65 @@ test("the GitHub publication boundary accepts a complete existing prerelease wit
     },
   );
   expect(commands).toEqual([
-    ["release", "view", "v0.1.0-beta.1", "--repo", "owner/repository", "--json", "tagName,isPrerelease,assets"],
+    ["release", "view", "v0.1.0-beta.1", "--repo", "owner/repository", "--json", "tagName,isPrerelease,isDraft,assets"],
+  ]);
+});
+
+test("the GitHub publication boundary rejects a draft prerelease without mutation", async () => {
+  const commands: string[][] = [];
+  await expect(
+    publishBetaReleaseWithGh(
+      {
+        repository: "owner/repository",
+        tag: "v0.1.0-beta.1",
+        notesFile: "build/release-notes.md",
+        assets: betaReleaseAssets,
+      },
+      async (arguments_) => {
+        commands.push([...arguments_]);
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            tagName: "v0.1.0-beta.1",
+            isPrerelease: true,
+            isDraft: true,
+            assets: betaReleaseAssetNames.map((name) => ({ name })),
+          }),
+          stderr: "",
+        };
+      },
+    ),
+  ).rejects.toThrow("does not match the complete immutable prerelease");
+  expect(commands).toEqual([
+    ["release", "view", "v0.1.0-beta.1", "--repo", "owner/repository", "--json", "tagName,isPrerelease,isDraft,assets"],
   ]);
 });
 
 test.each([
   [
     "non-prerelease state",
-    { tagName: "v0.1.0-beta.1", isPrerelease: false, assets: betaReleaseAssetNames.map((name) => ({ name })) },
+    {
+      tagName: "v0.1.0-beta.1",
+      isPrerelease: false,
+      isDraft: false,
+      assets: betaReleaseAssetNames.map((name) => ({ name })),
+    },
   ],
   [
     "a wrong tag",
-    { tagName: "v0.1.0-beta.2", isPrerelease: true, assets: betaReleaseAssetNames.map((name) => ({ name })) },
+    {
+      tagName: "v0.1.0-beta.2",
+      isPrerelease: true,
+      isDraft: false,
+      assets: betaReleaseAssetNames.map((name) => ({ name })),
+    },
   ],
   [
     "an incomplete asset set",
     {
       tagName: "v0.1.0-beta.1",
       isPrerelease: true,
+      isDraft: false,
       assets: betaReleaseAssetNames.slice(0, -1).map((name) => ({ name })),
     },
   ],
@@ -195,7 +247,7 @@ test("a new tag creates one immutable prerelease with the prepared assets", asyn
     },
   );
   expect(commands).toEqual([
-    ["release", "view", "v0.1.0-beta.2", "--repo", "owner/repository", "--json", "tagName,isPrerelease,assets"],
+    ["release", "view", "v0.1.0-beta.2", "--repo", "owner/repository", "--json", "tagName,isPrerelease,isDraft,assets"],
     [
       "release",
       "create",
@@ -349,6 +401,58 @@ test("beta workflow invokes the immutable release and monotonic channel behavior
   expect(publication?.run).not.toContain("--clobber");
   expect(publication?.run).not.toContain("gh release upload");
   expect(publication?.run).not.toContain("gh release edit");
+});
+
+test("beta workflow validates the exact tag and beta version before Windows compilation", async () => {
+  const workflow = Bun.YAML.parse(await read(".github/workflows/release-beta.yml")) as {
+    jobs: {
+      validate: { steps: Array<{ name?: string; run?: string }> };
+      "windows-smoke": { needs?: string | string[]; steps: Array<{ name?: string; run?: string }> };
+      release: { needs?: string | string[]; steps: Array<{ name?: string }> };
+    };
+  };
+  const validation = workflow.jobs.validate.steps.find(({ name }) => name === "Verify beta version");
+  const dollar = "$";
+  expect(
+    validation?.run
+      ?.trim()
+      .split("\n")
+      .map((line) => line.trim()),
+  ).toEqual([
+    "set -euo pipefail",
+    `package_version="$(bun -e 'console.log(require("./package.json").version)')"`,
+    `test "${dollar}{GITHUB_REF_NAME}" = "v${dollar}{package_version}"`,
+    `if [[ ! "${dollar}{package_version}" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+-beta\\.[1-9][0-9]*$ ]]; then`,
+    'echo "Only beta versions may be released" >&2',
+    "exit 1",
+    "fi",
+  ]);
+  expect(workflow.jobs["windows-smoke"].needs).toBe("validate");
+  expect(workflow.jobs.release.needs).toEqual(["validate", "windows-smoke"]);
+  expect(workflow.jobs.release.steps.some(({ name }) => name === "Verify beta version")).toBe(false);
+  expect(
+    workflow.jobs["windows-smoke"].steps.some(({ name }) => name === "Build and run Windows x64 smoke checks"),
+  ).toBe(true);
+});
+
+test("every PowerShell beta workflow command block fails fast on native command errors", async () => {
+  const workflow = Bun.YAML.parse(await read(".github/workflows/release-beta.yml")) as {
+    jobs: { "windows-smoke": { steps: Array<{ name?: string; shell?: string; run?: string }> } };
+  };
+  const commandSteps = workflow.jobs["windows-smoke"].steps.filter(({ run }) => run !== undefined);
+  expect(commandSteps.map(({ name }) => name)).toEqual([
+    "Install dependencies",
+    "Verify Windows service behavior and bundled assets",
+    "Validate PowerShell installer syntax",
+    "Build and run Windows x64 smoke checks",
+  ]);
+  for (const step of commandSteps) {
+    expect(step.shell).toBe("pwsh");
+    expect(step.run?.split("\n").slice(0, 2)).toEqual([
+      '$ErrorActionPreference = "Stop"',
+      "$PSNativeCommandUseErrorActionPreference = $true",
+    ]);
+  }
 });
 
 test("version metadata is synchronized at beta.1", async () => {

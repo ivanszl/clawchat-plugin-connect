@@ -101,7 +101,7 @@ Connect uses the runtime's existing login, configuration, providers, plugins, MC
 Copy and send this prompt to your coding Agent:
 
 ```text
-Install the latest ClawChat Connect release on this computer. Read and follow https://github.com/XMethues/clawchat-plugin-connect/blob/main/install.md before taking action. Reuse an existing configuration when present; do not overwrite it. Install and start the native Connect Service and its managed Liveware, then verify doctor, service status, runtime connection, and Liveware exposure. Ask me for an Agent invite code only if activation is required, and never print, store, or commit the invite code. Continue until every success criterion in install.md passes, then report the installed version and final status.
+Install the current beta-channel ClawChat Connect release on this computer. Read and follow https://github.com/XMethues/clawchat-plugin-connect/blob/main/install.md before taking action. Reuse an existing configuration when present; do not overwrite it. Install and start the native Connect Service and its managed Liveware, then verify doctor, service status, runtime connection, and Liveware exposure. Ask me for an Agent invite code only if activation is required, and never print, store, or commit the invite code. Continue until every success criterion in install.md passes, then report the installed version and final status.
 ```
 
 ### 1. Install Connect

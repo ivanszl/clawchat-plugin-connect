@@ -89,7 +89,7 @@ Connect 使用运行时现有的登录状态、配置、模型供应商、插件
 复制以下提示词并发送给你的编程 Agent：
 
 ```text
-在这台电脑上安装最新版本的 ClawChat Connect。开始操作前，先阅读并严格执行 https://github.com/XMethues/clawchat-plugin-connect/blob/main/install.md。若已存在配置，应复用现有配置，不要覆盖；安装并启动系统原生的 Connect Service 及其托管的 Liveware，然后验证 doctor、后台服务状态、Runtime 连接和 Liveware Exposure。仅在需要激活时向我索取 Agent 邀请码，并且不得打印、保存或提交邀请码。持续处理直到 install.md 中的所有成功条件均通过，最后报告安装版本和完整运行状态。
+在这台电脑上安装 ClawChat Connect 当前 beta 通道版本。开始操作前，先阅读并严格执行 https://github.com/XMethues/clawchat-plugin-connect/blob/main/install.md。若已存在配置，应复用现有配置，不要覆盖；安装并启动系统原生的 Connect Service 及其托管的 Liveware，然后验证 doctor、后台服务状态、Runtime 连接和 Liveware Exposure。仅在需要激活时向我索取 Agent 邀请码，并且不得打印、保存或提交邀请码。持续处理直到 install.md 中的所有成功条件均通过，最后报告安装版本和完整运行状态。
 ```
 
 ### 1. 安装 Connect

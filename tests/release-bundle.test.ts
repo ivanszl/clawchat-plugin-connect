@@ -303,7 +303,7 @@ describe("standalone release bundle", () => {
     expect(workflow).not.toContain("test:integration:codex");
     expect(workflow).not.toContain("@openai/codex");
     expect(workflow).not.toContain("${{ secrets.");
-    expect(workflow).toContain("needs: [windows-smoke]");
+    expect(workflow).toContain("needs: [validate, windows-smoke]");
     expect(workflow).toContain("run: bun run check:core");
 
     const ciWorkflow = await readFile(".github/workflows/ci.yml", "utf8");
@@ -336,6 +336,10 @@ describe("standalone release bundle", () => {
     expect(readme).toContain("`v*-beta.*`");
     expect(readme).toContain("[`.github/workflows/release-beta.yml`](.github/workflows/release-beta.yml)");
     expect(readme).toContain("`release-channel/latest-beta.txt` pointer used by default installs and updates");
+    expect(readme).toContain("Install the current beta-channel ClawChat Connect release on this computer.");
+
+    const readmeZh = await readFile("README_zh.md", "utf8");
+    expect(readmeZh).toContain("在这台电脑上安装 ClawChat Connect 当前 beta 通道版本。");
   });
 
   it("uses vendored, verified Liveware assets for npm packages and local compiled builds", async () => {

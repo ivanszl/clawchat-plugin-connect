@@ -40,6 +40,7 @@ export interface BetaReleasePublisher {
 export interface PublishedBetaRelease {
   tag: string;
   prerelease: boolean;
+  draft: boolean;
   assetNames: readonly string[];
 }
 
@@ -120,6 +121,7 @@ export async function publishImmutableBetaRelease(
     if (
       existing.tag === input.tag &&
       existing.prerelease &&
+      !existing.draft &&
       sameAssetNames(existing.assetNames, expectedAssetNames)
     ) {
       return;
@@ -142,7 +144,7 @@ export async function publishBetaReleaseWithGh(
         "--repo",
         input.repository,
         "--json",
-        "tagName,isPrerelease,assets",
+        "tagName,isPrerelease,isDraft,assets",
       ]);
       if (result.exitCode === 0) return parsePublishedBetaRelease(result.stdout);
       if (isNotFound(result.stderr)) return null;
@@ -169,21 +171,28 @@ export async function publishBetaReleaseWithGh(
 }
 
 function parsePublishedBetaRelease(stdout: string): PublishedBetaRelease {
-  const value = JSON.parse(stdout) as { tagName?: unknown; isPrerelease?: unknown; assets?: unknown };
+  const value = JSON.parse(stdout) as {
+    tagName?: unknown;
+    isPrerelease?: unknown;
+    isDraft?: unknown;
+    assets?: unknown;
+  };
   if (
     typeof value.tagName !== "string" ||
     typeof value.isPrerelease !== "boolean" ||
+    typeof value.isDraft !== "boolean" ||
     !Array.isArray(value.assets) ||
     !value.assets.every(
       (asset): asset is { name: string } =>
         typeof asset === "object" && asset !== null && "name" in asset && typeof asset.name === "string",
     )
   ) {
-    throw new Error("GitHub release response omitted tagName, isPrerelease, or asset names");
+    throw new Error("GitHub release response omitted tagName, isPrerelease, isDraft, or asset names");
   }
   return {
     tag: value.tagName,
     prerelease: value.isPrerelease,
+    draft: value.isDraft,
     assetNames: value.assets.map(({ name }) => name),
   };
 }
