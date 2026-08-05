@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*-beta.*"
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -27,10 +28,12 @@ jobs:
         run: |
           set -euo pipefail
           package_version="$(bun -e 'console.log(require("./package.json").version)')"
-          test "${GITHUB_REF_NAME}" = "v${package_version}"
           if [[ ! "${package_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*$ ]]; then
             echo "Only beta versions may be released" >&2
             exit 1
+          fi
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            test "${GITHUB_REF_NAME}" = "v${package_version}"
           fi
 
   windows-smoke:
@@ -168,6 +171,7 @@ jobs:
           sha256sum clawchat-connect-*.tar.gz clawchat-connect-*.zip install.sh install.ps1 CHANGELOG.md > checksums.txt
 
       - name: Publish GitHub prerelease
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -183,6 +187,7 @@ jobs:
           bun scripts/release-beta.ts publish build/release-notes.md build/release/*
 
       - name: Advance beta release channel
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

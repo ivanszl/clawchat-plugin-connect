@@ -389,7 +389,7 @@ test("the GitHub channel boundary retries a conflicted SHA update against fresh 
 
 test("beta workflow invokes the immutable release and monotonic channel behavior", async () => {
   const workflow = Bun.YAML.parse(await read(".github/workflows/release-beta.yml")) as {
-    jobs: { release: { steps: Array<{ name?: string; run?: string }> } };
+    jobs: { release: { steps: Array<{ name?: string; run?: string; if?: string }> } };
   };
   const steps = workflow.jobs.release.steps;
   const publication = steps.find(({ name }) => name === "Publish GitHub prerelease");
@@ -401,6 +401,8 @@ test("beta workflow invokes the immutable release and monotonic channel behavior
   expect(publication?.run).not.toContain("--clobber");
   expect(publication?.run).not.toContain("gh release upload");
   expect(publication?.run).not.toContain("gh release edit");
+  expect(publication?.if).toBe("github.event_name == 'push'");
+  expect(advancement?.if).toBe("github.event_name == 'push'");
 });
 
 test("beta workflow validates the exact tag and beta version before Windows compilation", async () => {
@@ -421,10 +423,12 @@ test("beta workflow validates the exact tag and beta version before Windows comp
   ).toEqual([
     "set -euo pipefail",
     `package_version="$(bun -e 'console.log(require("./package.json").version)')"`,
-    `test "${dollar}{GITHUB_REF_NAME}" = "v${dollar}{package_version}"`,
     `if [[ ! "${dollar}{package_version}" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+-beta\\.[1-9][0-9]*$ ]]; then`,
     'echo "Only beta versions may be released" >&2',
     "exit 1",
+    "fi",
+    `if [ "${dollar}{GITHUB_EVENT_NAME}" = "push" ]; then`,
+    `test "${dollar}{GITHUB_REF_NAME}" = "v${dollar}{package_version}"`,
     "fi",
   ]);
   expect(workflow.jobs["windows-smoke"].needs).toBe("validate");
@@ -553,10 +557,11 @@ test("PowerShell installer bypasses the beta channel for an explicit historical 
 
 test("beta workflow builds six archives before publishing and advancing the channel", async () => {
   const workflow = Bun.YAML.parse(await read(".github/workflows/release-beta.yml")) as {
-    on: { push: { tags: string[] } };
+    on: { push: { tags: string[] }; workflow_dispatch: Record<string, never> };
     jobs: { release: { steps: Array<{ name?: string; run?: string }> } };
   };
   expect(workflow.on.push.tags).toEqual(["v*-beta.*"]);
+  expect(workflow.on.workflow_dispatch).toEqual({});
   const steps = workflow.jobs.release.steps;
   const build = steps.find(({ name }) => name === "Build standalone binaries");
   expect(

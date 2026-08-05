@@ -1,10 +1,20 @@
 import { describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installManagedSkillsFromPackage } from "../scripts/postinstall";
 import { livewareAssetName } from "../src/liveware-exposure";
 import { CONNECT_VERSION } from "../src/version";
+
+async function listFiles(directory: string, prefix = ""): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) files.push(...(await listFiles(join(directory, entry.name), relativePath)));
+    else if (entry.isFile()) files.push(relativePath);
+  }
+  return files.sort();
+}
 
 describe("standalone release bundle", () => {
   it("runs the native Windows packaging test in the Windows smoke job", async () => {
@@ -69,39 +79,6 @@ describe("standalone release bundle", () => {
     const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     expect(exitCode, stderr).toBe(0);
 
-    const listing = Bun.spawn(
-      [
-        "powershell.exe",
-        "-NoProfile",
-        "-Command",
-        "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
-          "$archive = [System.IO.Compression.ZipFile]::OpenRead($args[0]); " +
-          "try { $archive.Entries | Where-Object { $_.Name.Length -gt 0 } | " +
-          "ForEach-Object { $_.FullName.Replace('\\', '/') } } finally { $archive.Dispose() }",
-        archive,
-      ],
-      { stdout: "pipe", stderr: "pipe" },
-    );
-    const [listingExitCode, stdout] = await Promise.all([listing.exited, new Response(listing.stdout).text()]);
-    expect(listingExitCode).toBe(0);
-    expect(stdout.trim().split(/\r?\n/u).sort()).toEqual(
-      [
-        "CHANGELOG.md",
-        "LICENSE",
-        "THIRD_PARTY_NOTICES.md",
-        "clawchat-connect-client/index.html",
-        "clawchat-connect.exe",
-        "liveware.exe",
-        "skills/clawchat-core/SKILL.md",
-        "skills/clawchat-core/agents/openai.yaml",
-        "skills/clawchat-core/references/tools.md",
-        "skills/clawchat-liveware/SKILL.md",
-        "skills/clawchat-liveware/agents/openai.yaml",
-        "skills/clawchat-liveware/references/commands.md",
-        "skills/manifest.json",
-      ].sort(),
-    );
-
     const extraction = Bun.spawn(
       [
         "powershell.exe",
@@ -118,6 +95,23 @@ describe("standalone release bundle", () => {
       new Response(extraction.stderr).text(),
     ]);
     expect(extractionExitCode, extractionStderr).toBe(0);
+    expect(await listFiles(extractedDirectory)).toEqual(
+      [
+        "CHANGELOG.md",
+        "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
+        "clawchat-connect-client/index.html",
+        "clawchat-connect.exe",
+        "liveware.exe",
+        "skills/clawchat-core/SKILL.md",
+        "skills/clawchat-core/agents/openai.yaml",
+        "skills/clawchat-core/references/tools.md",
+        "skills/clawchat-liveware/SKILL.md",
+        "skills/clawchat-liveware/agents/openai.yaml",
+        "skills/clawchat-liveware/references/commands.md",
+        "skills/manifest.json",
+      ].sort(),
+    );
 
     const payloadSources = new Map<string, string>([
       ["clawchat-connect.exe", connectBinary],
