@@ -87,15 +87,15 @@ A CodeBuddy Session is recovered only through stdio ACP `session/load` using its
 | `prompt-failed` | Recovery found a terminal native failure for the prompt. |
 | `prompt-outcome-indeterminate` | Recovery cannot prove whether the prompt or its effects completed. Do not retry automatically. |
 
-## Installed release verification
+## Optional installed-release diagnostics
 
-Before creating a release tag, qualify both exact distributions on one designated Mac:
+When a maintainer needs to investigate or manually exercise both exact distributions on a designated Mac, run:
 
 ```bash
 bun run check:release:workbuddy
 ```
 
-Run this command locally as a pre-release qualification on the designated Mac. It exercises discovery, adoption/replay, context/model/native-persistence/UI synchronization, Runtime Interaction/cancellation, application restart, endpoint rotation, and recovery for both profiles, then runs the repository's non-browser quality gate. WorkBuddy remains unqualified if either installed suite or `bun run check:core` fails. It does not install Chromium or use the standalone Connect Client as a substitute for WorkBuddy or ClawChat Liveware verification. Browser checks for the loopback Connect Client remain in the ordinary repository `bun run check` gate; real Liveware verification must open the registered App inside ClawChat.
+This optional diagnostic command exercises discovery, adoption/replay, context/model/native-persistence/UI synchronization, Runtime Interaction/cancellation, application restart, endpoint rotation, and recovery for both profiles, then runs the repository's non-browser quality gate. Its result is useful task evidence, but it does not block creating or publishing a release tag. It does not install Chromium or use the standalone Connect Client as a substitute for WorkBuddy or ClawChat Liveware verification. Browser checks for the loopback Connect Client remain in the ordinary repository `bun run check` gate; any manual Liveware verification must open the registered App inside ClawChat.
 
 Use dedicated test Tasks only. For each `WORKBUDDY_AI_TEST_` and `WORKBUDDY_CN_TEST_` prefix, set:
 
@@ -109,8 +109,8 @@ Use dedicated test Tasks only. For each `WORKBUDDY_AI_TEST_` and `WORKBUDDY_CN_T
 - `INTERACTION_PROMPT`, a safe prompt known to request one approval in that dedicated Task;
 - `CANCELLATION_PROMPT`, a harmless long-running prompt that can be cancelled safely.
 
-Optional `TURN_MARKER` and `RECOVERY_MARKER` values make a release run reproducible; otherwise the suite generates unique markers. The scripts use temporary Connect databases and delete them. Native prompt markers intentionally remain in the dedicated WorkBuddy test Tasks as release evidence; the JSON result discloses them. Clean up only those dedicated Tasks through WorkBuddy after recording the result. Never point the suite at an unrelated Task.
+Optional `TURN_MARKER` and `RECOVERY_MARKER` values make a diagnostic run reproducible; otherwise the suite generates unique markers. The scripts use temporary Connect databases and delete them. Native prompt markers intentionally remain in the dedicated WorkBuddy test Tasks as diagnostic evidence; the JSON result discloses them. Clean up only those dedicated Tasks through WorkBuddy after recording the result. Never point the suite at an unrelated Task.
 
 The preflight requires both exact applications to be running simultaneously and resolves each configured Task only through its selected profile. The UI step switches to the dedicated Task, verifies the synchronized marker, and restores `UI_RESTORE_TASK_TITLE`. The concurrency/restart step asks the operator to complete one marked native UI turn while Connect holds the Attachment, switches the application to `UI_BACKGROUND_TASK_TITLE`, then deliberately asks the operator to restart only the selected distribution. It verifies projection-only reconciliation, continued use of the original Task, and stable Task identity across rotated application, sidecar, endpoint, and credential state.
 
-The tag-triggered GitHub release workflow intentionally does not run installed WorkBuddy, ClawChat, or Liveware UI qualification. It runs only deterministic code checks and packaging on clean GitHub-hosted runners; no WorkBuddy Task metadata or credentials belong in GitHub Actions. Record the local qualification result before creating the release tag.
+The tag-triggered GitHub release workflow intentionally does not run installed WorkBuddy, ClawChat, or Liveware UI qualification. It runs deterministic code checks and packaging on clean GitHub-hosted runners; no WorkBuddy Task metadata or credentials belong in GitHub Actions. Maintainers may perform manual testing during the task, but no separate local qualification run or recorded local result is required before creating the release tag.

@@ -112,7 +112,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-beta.1
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-beta.2
 ```
 
 Windows PowerShell 用户应先下载安装脚本并检查其内容：
@@ -139,7 +139,7 @@ bun add --global @clawling/clawchat-plugin-connect
 clawchat-connect update
 ```
 
-使用 `clawchat-connect update --version v0.1.0-beta.1` 可安装指定版本。更新命令会保留现有配置并刷新系统原生的 Connect Service；明确指定时，历史版本仍可安装。
+使用 `clawchat-connect update --version v0.1.0-beta.2` 可安装指定版本。更新命令会保留现有配置并刷新系统原生的 Connect Service；明确指定时，历史版本仍可安装。
 
 ### 2. 创建 Agent Binding
 
@@ -480,7 +480,7 @@ OPENCODE_EXECUTABLE=/absolute/path/to/opencode bun run test:integration:opencode
 
 `bun run build:release` 会生成当前主机的可分发发行包，并将归档文件、安装器、`CHANGELOG.md` 和 SHA-256 校验和写入 `build/release/`。
 
-匹配 `v*-beta.*` 的标签会运行 [`.github/workflows/release-beta.yml`](./.github/workflows/release-beta.yml)。该工作流校验标签与 `package.json`、运行确定性代码检查、验证全部六个内置 Liveware 资源，并构建 macOS、Linux 和 Windows 的 arm64/x64 二进制。所有资源发布后，工作流会更新供默认安装和更新使用的 [`release-channel/latest-beta.txt`](https://github.com/XMethues/clawchat-plugin-connect/blob/release-channel/latest-beta.txt) 指针。
+匹配 `v*-beta.*` 的标签会运行 [`.github/workflows/release-beta.yml`](./.github/workflows/release-beta.yml)。该工作流校验标签与 `package.json`、运行确定性代码检查、验证全部六个内置 Liveware 资源，并构建 macOS、Linux 和 Windows 的 arm64/x64 二进制。本机已安装产品验收属于可选的任务内测试，不会阻止创建发布标签。所有资源发布后，工作流会更新供默认安装和更新使用的 [`release-channel/latest-beta.txt`](https://github.com/XMethues/clawchat-plugin-connect/blob/release-channel/latest-beta.txt) 指针。
 
 贡献代码前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)、[CONTEXT.md](./CONTEXT.md) 和相关 [ADR](./docs/adr/)。
 

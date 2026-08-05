@@ -291,7 +291,7 @@ describe("standalone release bundle", () => {
     expect(workflow).toContain("latest-beta.txt");
   });
 
-  it("keeps installed WorkBuddy qualification local and the beta workflow deterministic", async () => {
+  it("keeps installed WorkBuddy qualification optional and the beta workflow deterministic", async () => {
     const workflow = await readFile(".github/workflows/release-beta.yml", "utf8");
     expect(workflow).not.toContain("workbuddy-installed:");
     expect(workflow).not.toContain("workbuddy-release");
@@ -328,15 +328,21 @@ describe("standalone release bundle", () => {
     expect(packageManifest.scripts["check:core"]).not.toContain("test:client-web");
     expect(packageManifest.scripts.check).toContain("bun run check:core");
     expect(packageManifest.scripts.check).toContain("bun run test:client-web");
+
+    const workbuddyDocs = await readFile("docs/workbuddy-adapter.md", "utf8");
+    expect(workbuddyDocs).toContain("Optional installed-release diagnostics");
+    expect(workbuddyDocs).toContain("does not block creating or publishing a release tag");
+    expect(workbuddyDocs).not.toContain("Record the local qualification result before creating the release tag");
   });
 
   it("documents the beta workflow as the current release channel", async () => {
     const readme = await readFile("README.md", "utf8");
-    expect(readme).toContain("Version tags such as `v0.1.0-beta.1` run the beta release workflow");
+    expect(readme).toContain("Version tags such as `v0.1.0-beta.2` run the beta release workflow");
     expect(readme).toContain("`v*-beta.*`");
     expect(readme).toContain("[`.github/workflows/release-beta.yml`](.github/workflows/release-beta.yml)");
     expect(readme).toContain("`release-channel/latest-beta.txt` pointer used by default installs and updates");
     expect(readme).toContain("Install the current beta-channel ClawChat Connect release on this computer.");
+    expect(readme).toContain("Local installed-product qualification is optional and does not block tagging");
 
     const readmeZh = await readFile("README_zh.md", "utf8");
     expect(readmeZh).toContain("在这台电脑上安装 ClawChat Connect 当前 beta 通道版本。");

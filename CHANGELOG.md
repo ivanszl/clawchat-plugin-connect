@@ -2,6 +2,16 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-beta.2] - 2026-08-05
+
+### Changed
+
+- Made installed WorkBuddy, ClawChat, and Liveware UI qualification optional task-level verification instead of a prerequisite for creating a release tag.
+
+### Fixed
+
+- Made the background-service release smoke assertions portable so the Windows release runner accepts correctly escaped paths and native path resolution.
+
 ## [0.1.0-beta.1] - 2026-08-04
 
 ### Added

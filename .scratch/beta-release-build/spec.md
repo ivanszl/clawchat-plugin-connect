@@ -61,10 +61,8 @@ The pending README hero update that adds the ClawChat conversation screenshot be
 
 - Add focused tests for release-version validation, current platform/architecture naming, payload selection, archive naming, and failure propagation at the script boundary.
 - Update release workflow and installer source assertions from alpha to beta.
-- Run `bun run check` to cover generated files, formatting/linting, both TypeScript projects, unit tests, localization validation, and built Client browser integration.
-- Run `bun run clean && bun run build` to prove the publishable package build.
-- Run `bun run build:release` and inspect the archive file list and checksum coverage for the host platform.
-- Run shell syntax validation for `install.sh` and PowerShell parser validation for `install.ps1` where the required shell is available; CI remains authoritative for Windows execution.
+- Treat local `bun run check`, package builds, release builds, installed WorkBuddy checks, and ClawChat/Liveware UI exercises as optional task-level verification. They are not prerequisites for creating or publishing a release tag and do not require a separate recorded qualification result.
+- Keep the tag-triggered GitHub Actions workflow authoritative for deterministic code checks, Windows smoke coverage, cross-platform builds, installer syntax, packaging, and publication.
 - Confirm the working tree is clean, commit and push the implementation, create and push `v0.1.0-beta.1`, then monitor the beta release workflow until every job succeeds.
 - Verify the GitHub prerelease contains all six archives, both installers, changelog, and checksums, and verify `release-channel/latest-beta.txt` contains `v0.1.0-beta.1`.
 
