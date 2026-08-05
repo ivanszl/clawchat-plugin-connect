@@ -571,8 +571,6 @@ bun run check
 bun run clean && bun run build
 ```
 
-`bun run check` includes a headless Connect Client interaction test. It automatically uses Brave or Chrome when installed; set `BRAVE_PATH` or `CHROMIUM_PATH` for a nonstandard executable location. CI installs Playwright Chromium.
-
 Run the real Codex model-catalog and same-Runtime-Thread model-switch test with:
 
 ```bash

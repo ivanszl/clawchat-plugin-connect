@@ -302,13 +302,14 @@ describe("standalone release bundle", () => {
     expect(workflow).toContain("run: bun run check:core");
 
     const ciWorkflow = await readFile(".github/workflows/ci.yml", "utf8");
-    expect(ciWorkflow).toContain("Install Chromium for loopback Connect Client QA");
-    expect(ciWorkflow).toContain("bunx playwright install --with-deps chromium");
-    expect(ciWorkflow).toContain("run: bun run check");
+    expect(ciWorkflow).not.toContain("playwright install");
+    expect(ciWorkflow).not.toContain("test:client-web");
+    expect(ciWorkflow).toContain("run: bun run check:core");
     expect(ciWorkflow).toContain("run: bun run clean && bun run build");
 
     const packageManifest = JSON.parse(await readFile("package.json", "utf8")) as {
       scripts: Record<string, string>;
+      devDependencies: Record<string, string>;
     };
     expect(packageManifest.scripts["check:release:workbuddy"]).toContain(
       "test:integration:workbuddy-installation-preflight",
@@ -321,8 +322,9 @@ describe("standalone release bundle", () => {
     );
     expect(packageManifest.scripts["check:release:workbuddy"]).toContain("bun run check:core");
     expect(packageManifest.scripts["check:core"]).not.toContain("test:client-web");
-    expect(packageManifest.scripts.check).toContain("bun run check:core");
-    expect(packageManifest.scripts.check).toContain("bun run test:client-web");
+    expect(packageManifest.scripts.check).toBe("bun run check:core");
+    expect(packageManifest.scripts["test:client-web"]).toBeUndefined();
+    expect(packageManifest.devDependencies["@playwright/test"]).toBeUndefined();
 
     const workbuddyDocs = await readFile("docs/workbuddy-adapter.md", "utf8");
     expect(workbuddyDocs).toContain("Optional installed-release diagnostics");
