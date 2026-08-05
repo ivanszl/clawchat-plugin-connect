@@ -559,7 +559,7 @@ On Windows, Connect data uses `%USERPROFILE%\.clawchat-connect\`, while the stan
 
 Invite codes are not persisted. Connect does not expose its ClawChat tools to the coding-agent runtime, run an MCP server, or inject MCP configuration. MCP servers already configured in the selected runtime remain under that runtime's ownership.
 
-See [SECURITY.md](SECURITY.md) for vulnerability reporting and LAN/media security guidance. See [docs/architecture.md](docs/architecture.md) for protocol, reliability, and module design details.
+See [docs/architecture.md](docs/architecture.md) for protocol, reliability, and module design details.
 
 ## Development
 
@@ -593,4 +593,4 @@ Version tags such as `v0.1.0-beta.3` run the beta release workflow. Tags matchin
 
 ## License
 
-ClawChat Connect is available under the [MIT License](LICENSE). Bundled dependency notices are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+ClawChat Connect is available under the [MIT License](LICENSE).

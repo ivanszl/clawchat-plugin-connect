@@ -446,7 +446,7 @@ Windows 上，Connect 数据位于 `%USERPROFILE%\.clawchat-connect\`，独立�
 
 邀请码不会被持久化。Connect 不会把自身的 ClawChat 工具暴露给编程 Agent 运行时、运行 MCP Server 或注入 MCP 配置；运行时中已有的 MCP Server 仍由该运行时管理。
 
-安全问题报告和局域网/媒体安全说明请参阅 [SECURITY.md](./SECURITY.md)，协议与模块设计请参阅 [docs/architecture.md](./docs/architecture.md)。
+协议与模块设计请参阅 [docs/architecture.md](./docs/architecture.md)。
 
 ## 开发
 
@@ -486,6 +486,6 @@ OPENCODE_EXECUTABLE=/absolute/path/to/opencode bun run test:integration:opencode
 
 ## 许可证
 
-ClawChat Connect 使用 [MIT License](./LICENSE)。内置依赖的许可证声明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
+ClawChat Connect 使用 [MIT License](./LICENSE)。
 
 > 英文 README 是完整的规范参考。中文文档聚焦安装和日常使用；高级配置和所有边界行为请查阅[英文版本](./README.md)。

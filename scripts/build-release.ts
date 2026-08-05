@@ -114,7 +114,6 @@ export function releasePayload(_target: ReleaseTarget): ReleasePayload {
       "skills",
       "CHANGELOG.md",
       "LICENSE",
-      "THIRD_PARTY_NOTICES.md",
     ],
   };
 }

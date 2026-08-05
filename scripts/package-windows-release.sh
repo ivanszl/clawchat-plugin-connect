@@ -17,7 +17,6 @@ test -f "$connect_binary"
 test -f "$client_directory/index.html"
 test -f "$liveware_binary"
 test -f "$repository_root/LICENSE"
-test -f "$repository_root/THIRD_PARTY_NOTICES.md"
 test -f "$repository_root/CHANGELOG.md"
 test -f "$repository_root/skills/manifest.json"
 test ! -e "$archive"
@@ -30,7 +29,7 @@ cp "$connect_binary" "$staging_directory/clawchat-connect.exe"
 cp "$liveware_binary" "$staging_directory/liveware.exe"
 cp -R "$client_directory" "$staging_directory/clawchat-connect-client"
 cp -R "$repository_root/skills" "$staging_directory/skills"
-cp "$repository_root/LICENSE" "$repository_root/THIRD_PARTY_NOTICES.md" "$repository_root/CHANGELOG.md" "$staging_directory/"
+cp "$repository_root/LICENSE" "$repository_root/CHANGELOG.md" "$staging_directory/"
 
 (
   cd "$staging_directory"
@@ -40,6 +39,5 @@ cp "$repository_root/LICENSE" "$repository_root/THIRD_PARTY_NOTICES.md" "$reposi
     liveware.exe \
     skills \
     CHANGELOG.md \
-    LICENSE \
-    THIRD_PARTY_NOTICES.md
+    LICENSE
 )

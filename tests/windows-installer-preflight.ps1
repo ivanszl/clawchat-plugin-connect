@@ -21,7 +21,6 @@ try {
   Set-Content -LiteralPath (Join-Path $payloadDirectory "skills\manifest.json") -Value "{}"
   Set-Content -LiteralPath (Join-Path $payloadDirectory "CHANGELOG.md") -Value "# Changelog"
   Set-Content -LiteralPath (Join-Path $payloadDirectory "LICENSE") -Value "license"
-  Set-Content -LiteralPath (Join-Path $payloadDirectory "THIRD_PARTY_NOTICES.md") -Value "notices"
 
   $installedBinary = Join-Path $installDirectory "clawchat-connect.exe"
   Copy-Item -LiteralPath (Join-Path $payloadDirectory "clawchat-connect.exe") -Destination $installedBinary

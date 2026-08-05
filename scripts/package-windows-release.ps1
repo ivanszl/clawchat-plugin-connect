@@ -11,7 +11,6 @@ $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $SkillsDirectory = Join-Path $RepositoryRoot "skills"
 $Changelog = Join-Path $RepositoryRoot "CHANGELOG.md"
 $License = Join-Path $RepositoryRoot "LICENSE"
-$ThirdPartyNotices = Join-Path $RepositoryRoot "THIRD_PARTY_NOTICES.md"
 $ClientEntry = Join-Path $ClientDirectory "index.html"
 $OutputArchivePath = [System.IO.Path]::GetFullPath($OutputArchive)
 $OutputDirectory = Split-Path -Parent $OutputArchivePath
@@ -35,7 +34,7 @@ if (-not (Test-Path -LiteralPath $LivewareExecutable -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $SkillsDirectory -PathType Container)) {
   throw "Skills directory does not exist: $SkillsDirectory"
 }
-foreach ($SupportFile in @($Changelog, $License, $ThirdPartyNotices)) {
+foreach ($SupportFile in @($Changelog, $License)) {
   if (-not (Test-Path -LiteralPath $SupportFile -PathType Leaf)) {
     throw "Release support file does not exist: $SupportFile"
   }
@@ -54,7 +53,6 @@ try {
   Copy-Item -LiteralPath $SkillsDirectory -Destination (Join-Path $PayloadRoot "skills") -Recurse
   Copy-Item -LiteralPath $Changelog -Destination $PayloadRoot
   Copy-Item -LiteralPath $License -Destination $PayloadRoot
-  Copy-Item -LiteralPath $ThirdPartyNotices -Destination $PayloadRoot
 
   Compress-Archive -Path (Join-Path $PayloadRoot "*") -DestinationPath $OutputArchivePath
 } finally {

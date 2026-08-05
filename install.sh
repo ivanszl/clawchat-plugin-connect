@@ -93,14 +93,13 @@ fi
 [ "$actual_checksum" = "$expected_checksum" ] || fail "checksum verification failed for $asset"
 
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" \
-  clawchat-connect clawchat-connect-client liveware skills CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md
+  clawchat-connect clawchat-connect-client liveware skills CHANGELOG.md LICENSE
 [ -f "$tmp_dir/clawchat-connect" ] || fail "release archive does not contain clawchat-connect"
 [ -f "$tmp_dir/clawchat-connect-client/index.html" ] || fail "release archive does not contain Connect Client"
 [ -f "$tmp_dir/liveware" ] || fail "release archive does not contain Liveware"
 [ -f "$tmp_dir/skills/manifest.json" ] || fail "release archive does not contain Agent skills"
 [ -f "$tmp_dir/CHANGELOG.md" ] || fail "release archive does not contain the Changelog"
 [ -f "$tmp_dir/LICENSE" ] || fail "release archive does not contain LICENSE"
-[ -f "$tmp_dir/THIRD_PARTY_NOTICES.md" ] || fail "release archive does not contain third-party notices"
 
 "$tmp_dir/clawchat-connect" --help >/dev/null
 "$tmp_dir/liveware" --help >/dev/null
@@ -118,7 +117,7 @@ chmod 755 "$connect_staging" "$liveware_staging"
 cp -R "$tmp_dir/clawchat-connect-client" "$client_staging"
 cp -R "$tmp_dir/skills" "$skills_staging"
 mkdir -p "$licenses_staging"
-cp "$tmp_dir/CHANGELOG.md" "$tmp_dir/LICENSE" "$tmp_dir/THIRD_PARTY_NOTICES.md" "$licenses_staging/"
+cp "$tmp_dir/CHANGELOG.md" "$tmp_dir/LICENSE" "$licenses_staging/"
 
 connect_existed=0
 liveware_existed=0

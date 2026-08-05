@@ -102,8 +102,7 @@ try {
     (Join-Path $clientSource "index.html"),
     (Join-Path $skillsSource "manifest.json"),
     (Join-Path $extractedDirectory "CHANGELOG.md"),
-    (Join-Path $extractedDirectory "LICENSE"),
-    (Join-Path $extractedDirectory "THIRD_PARTY_NOTICES.md")
+    (Join-Path $extractedDirectory "LICENSE")
   )) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
       throw "Release archive is missing $requiredPath"
@@ -151,7 +150,6 @@ try {
   New-Item -ItemType Directory -Path $licenseStaging | Out-Null
   Copy-Item -LiteralPath (Join-Path $extractedDirectory "CHANGELOG.md") -Destination $licenseStaging
   Copy-Item -LiteralPath (Join-Path $extractedDirectory "LICENSE") -Destination $licenseStaging
-  Copy-Item -LiteralPath (Join-Path $extractedDirectory "THIRD_PARTY_NOTICES.md") -Destination $licenseStaging
 
   New-Item -ItemType Directory -Path $backupDirectory | Out-Null
   $targets = @(

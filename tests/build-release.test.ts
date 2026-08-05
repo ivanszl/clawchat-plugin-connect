@@ -68,7 +68,6 @@ test("release payload is complete", () => {
     "skills",
     "CHANGELOG.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md",
   ]);
 });
 

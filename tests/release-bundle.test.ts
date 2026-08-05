@@ -37,7 +37,6 @@ describe("standalone release bundle", () => {
       "skills",
       "CHANGELOG.md",
       "LICENSE",
-      "THIRD_PARTY_NOTICES.md",
     ];
     const posixPackager = await readFile("scripts/package-release-archive.sh", "utf8");
     const windowsPackager = await readFile("scripts/package-windows-release.ps1", "utf8");
@@ -105,7 +104,6 @@ describe("standalone release bundle", () => {
       [
         "CHANGELOG.md",
         "LICENSE",
-        "THIRD_PARTY_NOTICES.md",
         "clawchat-connect-client/index.html",
         "clawchat-connect.exe",
         "liveware.exe",
@@ -125,7 +123,6 @@ describe("standalone release bundle", () => {
       ["clawchat-connect-client/index.html", join(clientDirectory, "index.html")],
       ["CHANGELOG.md", "CHANGELOG.md"],
       ["LICENSE", "LICENSE"],
-      ["THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"],
       ["skills/clawchat-core/SKILL.md", "skills/clawchat-core/SKILL.md"],
       ["skills/clawchat-core/agents/openai.yaml", "skills/clawchat-core/agents/openai.yaml"],
       ["skills/clawchat-core/references/tools.md", "skills/clawchat-core/references/tools.md"],
@@ -165,7 +162,6 @@ describe("standalone release bundle", () => {
       [
         "CHANGELOG.md",
         "LICENSE",
-        "THIRD_PARTY_NOTICES.md",
         "clawchat-connect",
         "clawchat-connect-client/",
         "clawchat-connect-client/index.html",
@@ -243,7 +239,6 @@ describe("standalone release bundle", () => {
       [
         "CHANGELOG.md",
         "LICENSE",
-        "THIRD_PARTY_NOTICES.md",
         "clawchat-connect-client/",
         "clawchat-connect-client/index.html",
         "clawchat-connect.exe",
