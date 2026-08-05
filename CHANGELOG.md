@@ -2,6 +2,19 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-beta.5] - 2026-08-05
+
+### Changed
+
+- Upgraded OpenCode compatibility to 1.18.13 and restored native Project and Session discovery across Project-scoped Runtime Threads.
+- Started activated Agent Bindings sequentially so one installation can establish multiple Runtime connections more reliably.
+- Made the new-Session model selector show the effective default model directly and reduced the jump-to-latest control to its arrow icon.
+
+### Fixed
+
+- Preserved OpenCode Session continuity when switching Projects and Sessions instead of replaying the wrong Runtime Thread.
+- Reconciled ClawChat and Liveware user messages with Runtime history without rendering duplicate transcript entries.
+
 ## [0.1.0-beta.4] - 2026-08-05
 
 ### Changed
