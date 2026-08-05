@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { SessionCatalog } from "../src/client-interface/session-catalog";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
+import { createStateStore } from "../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type {
   ConnectRuntimePrompt,
@@ -15,7 +16,6 @@ import type {
 import { WorkBuddyPromptTransportError, type WorkBuddyTaskCatalog } from "../src/runtime/workbuddy-acp-client";
 import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
 import { WorkBuddyDiscoveryError, type WorkBuddyDiscoveryFailureCode } from "../src/runtime/workbuddy-task-discovery";
-import { createStateStore } from "../src/state";
 import type { WorkBuddyAgentBindingConfig } from "../src/types";
 
 const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: "workbuddy-ai" };

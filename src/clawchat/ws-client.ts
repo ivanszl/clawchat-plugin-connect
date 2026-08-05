@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import type { ConnectStateStore } from "../persistence/state";
 import { type MediaUploadFetch, type MediaUploadInput, uploadClawChatMedia } from "./media-api-client";
 import { buildTextMessagePayload, normalizeInboundMessage } from "./message-mapper";
 import {
@@ -17,11 +18,9 @@ import {
   type HistoryTransitPayload,
   isChallengePayload,
   isChatMetadataInvalidatedPayload,
-  isEmptyPayload,
   isHelloFailPayload,
   isHelloOkPayload,
   isHistoryTransitPayload,
-  isMaterializedMessagePayload,
   isMessageAckPayload,
   isMessageAddPayload,
   isMessageCreatedPayload,
@@ -33,8 +32,6 @@ import {
   isPermissionRequestPayload,
   isPermissionResolvedPayload,
   isPresencePayload,
-  isSyncMarkPayload,
-  isSystemPermissionResultEnvelope,
   isTypingUpdatePayload,
   type MessageAckPayload,
   type MessageAddPayload,
@@ -51,92 +48,21 @@ import {
   type Transport,
   TransportError,
   type TransportEvents,
-  type TransportState,
 } from "./protocol";
-import type { ConnectStateStore } from "./state";
+import { createWebSocketTransport } from "./websocket-transport";
+import {
+  assertClientMessageId,
+  assertPresenceUserId,
+  dseqPayloadError,
+  findForbiddenUplinkMessageField,
+  isV2AckableDownlink,
+  messageIdForAudit,
+  recoverDseqPoisonEnvelope,
+  streamDeltaError,
+  terminalSequence,
+} from "./ws-protocol-validation";
 
-export interface WebSocketLike {
-  onopen: (() => void) | null;
-  onmessage: ((event: { data: unknown }) => void) | null;
-  onclose: ((event: { code: number; reason: string }) => void) | null;
-  onerror: ((event: { error?: unknown; message?: string }) => void) | null;
-  send(data: string): void;
-  close(code?: number, reason?: string): void;
-}
-
-export type WebSocketConstructor = new (url: string) => WebSocketLike;
-
-export function createWebSocketTransport(
-  WebSocketCtor: WebSocketConstructor = globalThis.WebSocket as unknown as WebSocketConstructor,
-): Transport {
-  let state: TransportState = "closed";
-  let socket: WebSocketLike | null = null;
-  return {
-    get state() {
-      return state;
-    },
-    async connect(url, handlers) {
-      state = "connecting";
-      const activeSocket = new WebSocketCtor(url);
-      socket = activeSocket;
-      const isCurrent = () => socket === activeSocket;
-      await new Promise<void>((resolve, reject) => {
-        let opened = false;
-        let settled = false;
-        const rejectBeforeOpen = (error: Error) => {
-          if (opened || settled) return;
-          settled = true;
-          reject(error);
-        };
-        activeSocket.onopen = () => {
-          if (!isCurrent()) return;
-          opened = true;
-          settled = true;
-          state = "open";
-          handlers.onOpen();
-          resolve();
-        };
-        activeSocket.onmessage = (event) => {
-          if (!isCurrent()) return;
-          void normalizeWebSocketData(event.data).then(handlers.onMessage).catch(handlers.onError);
-        };
-        activeSocket.onclose = (event) => {
-          if (!isCurrent()) return;
-          state = "closed";
-          socket = null;
-          const reason = event.reason || "closed";
-          handlers.onClose(event.code, reason);
-          rejectBeforeOpen(new TransportError(reason));
-        };
-        activeSocket.onerror = (event) => {
-          if (!isCurrent()) return;
-          const error =
-            event.error instanceof Error
-              ? event.error
-              : new TransportError(event.message || "websocket transport error");
-          handlers.onError(error);
-          rejectBeforeOpen(error);
-        };
-      });
-    },
-    send(data) {
-      if (state !== "open" || !socket) throw new StateError(`cannot send while transport=${state}`);
-      socket.send(data);
-    },
-    close(code = 1000, reason = "client close") {
-      if (state === "closed") return;
-      socket?.close(code, reason);
-    },
-  };
-}
-
-async function normalizeWebSocketData(data: unknown): Promise<string | Buffer> {
-  if (typeof data === "string" || Buffer.isBuffer(data)) return data;
-  if (data instanceof ArrayBuffer) return Buffer.from(data);
-  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-  if (data instanceof Blob) return Buffer.from(await data.arrayBuffer());
-  throw new TransportError(`unsupported websocket message type: ${typeof data}`);
-}
+export { createWebSocketTransport, type WebSocketConstructor, type WebSocketLike } from "./websocket-transport";
 
 export type ConnectProtocolEventType =
   | "stream"
@@ -1280,129 +1206,4 @@ export class ConnectWsClient extends EventEmitter {
     this.connectReject = undefined;
     this.expectedConnectTraceId = null;
   }
-}
-
-function messageIdForAudit(envelope: Envelope): string | null {
-  if (envelope.event === EVENT.MESSAGE_ACK)
-    return isMessageAckPayload(envelope.payload) ? envelope.payload.message_id : envelope.trace_id;
-  if (envelope.event === EVENT.MESSAGE_ERROR) return envelope.trace_id;
-  const payload = envelope.payload as { message_id?: unknown };
-  return typeof payload.message_id === "string" ? payload.message_id : null;
-}
-
-const CLIENT_MESSAGE_ID_PATTERN = /^msg-[0-9A-HJ-NP-Z]{26}$/u;
-
-function assertClientMessageId(messageId: string): void {
-  if (!CLIENT_MESSAGE_ID_PATTERN.test(messageId)) {
-    throw new ProtocolError("client message_id must match ^msg-[0-9A-HJ-NP-Z]{26}$");
-  }
-}
-
-function findForbiddenUplinkMessageField(
-  value: unknown,
-  seen = new WeakSet<object>(),
-): { kind: "routing" | "timestamp"; field: string } | null {
-  if (!value || typeof value !== "object") return null;
-  if (seen.has(value)) return null;
-  seen.add(value);
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const nested = findForbiddenUplinkMessageField(item, seen);
-      if (nested) return nested;
-    }
-    return null;
-  }
-  for (const [field, nestedValue] of Object.entries(value as Record<string, unknown>)) {
-    if (field === "chat" || field === "sender" || field === "to") return { kind: "routing", field };
-    if (field === "timestamp" || field.endsWith("_at") || field.endsWith("At")) {
-      return { kind: "timestamp", field };
-    }
-    const nested = findForbiddenUplinkMessageField(nestedValue, seen);
-    if (nested) return nested;
-  }
-  return null;
-}
-
-function dseqPayloadError(envelope: Envelope): string | null {
-  if (envelope.event === EVENT.MESSAGE_SEND || envelope.event === EVENT.MESSAGE_REPLY) {
-    const payload = envelope.payload as { message_id?: unknown };
-    if (
-      !envelope.chat_id ||
-      !envelope.chat_type ||
-      !envelope.sender ||
-      (!isMaterializedMessagePayload(envelope.payload) && !isSystemPermissionResultEnvelope(envelope)) ||
-      typeof payload.message_id !== "string" ||
-      !payload.message_id
-    )
-      return `invalid ${envelope.event} payload`;
-  }
-  if (envelope.event === EVENT.NOTIFY_SIGNAL && !isNotifySignalPayload(envelope.payload))
-    return "invalid notify.signal payload";
-  if (
-    envelope.event === EVENT.HISTORY_TRANSIT &&
-    (!envelope.target_device_id ||
-      !envelope.sender ||
-      !envelope.origin_device_id ||
-      !isHistoryTransitPayload(envelope.payload))
-  )
-    return "invalid history.transit frame";
-  if (envelope.event === EVENT.SYNC_MARK && !isSyncMarkPayload(envelope.payload)) return "invalid sync.mark payload";
-  if (envelope.event === EVENT.REPLAY_DONE && !isEmptyPayload(envelope.payload)) return "invalid replay.done payload";
-  return null;
-}
-
-function isV2AckableDownlink(event: string): boolean {
-  return (
-    event === EVENT.MESSAGE_SEND ||
-    event === EVENT.MESSAGE_REPLY ||
-    event === EVENT.HISTORY_TRANSIT ||
-    event === EVENT.NOTIFY_SIGNAL ||
-    event === EVENT.SYNC_MARK ||
-    event === EVENT.REPLAY_DONE
-  );
-}
-
-function streamDeltaError(previousFragments: Fragment[], nextFragments: Fragment[]): string | null {
-  for (const [index, fragment] of nextFragments.entries()) {
-    if (fragment.kind !== "text") continue;
-    const previous = previousFragments[index];
-    const previousText = previous?.kind === "text" ? previous.text : "";
-    if (typeof fragment.delta !== "string" || previousText + fragment.delta !== fragment.text)
-      return "message.add text delta invariant failed";
-  }
-  return null;
-}
-
-function recoverDseqPoisonEnvelope(data: string | Buffer): Envelope | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(Buffer.isBuffer(data) ? data.toString("utf8") : data);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const record = parsed as Record<string, unknown>;
-  if (!Number.isSafeInteger(record.dseq) || Number(record.dseq) <= 0) return null;
-  const dseq = Number(record.dseq);
-  return {
-    ...record,
-    version: "2",
-    event: typeof record.event === "string" && record.event ? record.event : "invalid",
-    trace_id: typeof record.trace_id === "string" && record.trace_id ? record.trace_id : `invalid-dseq-${dseq}`,
-    emitted_at:
-      typeof record.emitted_at === "number" && Number.isFinite(record.emitted_at) ? record.emitted_at : Date.now(),
-    dseq,
-    payload:
-      record.payload && typeof record.payload === "object" && !Array.isArray(record.payload) ? record.payload : {},
-  } as Envelope;
-}
-
-function terminalSequence(lastAddSequence: number): number {
-  return lastAddSequence < 0 ? 0 : lastAddSequence;
-}
-
-function assertPresenceUserId(userId: string): string {
-  const normalized = userId.trim();
-  if (!/^(?:usr_|agt_).+/u.test(normalized)) throw new StateError("presence userId must start with usr_ or agt_");
-  return normalized;
 }

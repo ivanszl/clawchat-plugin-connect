@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { SessionCatalog } from "../../src/client-interface/session-catalog";
 import { TranscriptProjection } from "../../src/client-interface/transcript-projection";
 import { defaultConfig } from "../../src/config";
+import { createStateStore } from "../../src/persistence/state";
 import { createReleasedRuntimeAdapterRegistry } from "../../src/runtime/released-adapters";
-import { createStateStore } from "../../src/state";
 import type { WorkBuddyAgentBindingConfig } from "../../src/types";
 import {
   requiredWorkBuddyTestEnv,

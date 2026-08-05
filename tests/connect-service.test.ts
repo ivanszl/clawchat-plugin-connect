@@ -2,17 +2,17 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { BindingRuntimeHandle } from "../src/binding-runtime";
 import { defaultConfig, getAgentBinding } from "../src/config";
-import { startConnectService } from "../src/connect-service";
+import { createStateStore } from "../src/persistence/state";
+import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import type { BindingRuntimeHandle } from "../src/service/binding-runtime";
+import { startConnectService } from "../src/service/connect-service";
 import type {
   ClawChatLivewarePort,
   LivewareControlPlanePort,
   LivewareControlSession,
   startLivewareExposure as startLivewareExposureDefault,
-} from "../src/liveware-exposure";
-import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import { createStateStore } from "../src/state";
+} from "../src/service/liveware-exposure";
 import type { ActivationCredentials, AgentBindingConfig, ConnectConfig } from "../src/types";
 
 function activation(agentId: string, ownerUserId = "owner-1"): ActivationCredentials {

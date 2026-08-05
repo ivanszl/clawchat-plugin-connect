@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
+import { createStateStore } from "../src/persistence/state";
 import { createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
 import type { OpenCodeMessage, OpenCodeServerClient } from "../src/runtime/opencode-server";
@@ -16,7 +17,6 @@ import {
   runtimeInputIdentity,
 } from "../src/runtime/types";
 import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
-import { createStateStore } from "../src/state";
 import type { AgentBindingConfig } from "../src/types";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 

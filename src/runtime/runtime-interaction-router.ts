@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { addressInboundMessage, commandAddressPrefix } from "../message-mapper";
-import type { Envelope, Fragment, NormalizedInboundMessage, Sender } from "../protocol";
+import { addressInboundMessage, commandAddressPrefix } from "../clawchat/message-mapper";
+import type { Envelope, Fragment, NormalizedInboundMessage, Sender } from "../clawchat/protocol";
 import { RuntimeInteractionSettlement } from "./runtime-interaction-settlement";
 import type {
   ClawChatInteractionRoute,

@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { materializeRuntimeOutput, policyForOutputVisibility } from "../src/output-visibility";
+import { materializeRuntimeOutput, policyForOutputVisibility } from "../src/clawchat/output-visibility";
 import { ClawChatTurnSurface, ClientTurnSurface } from "../src/runtime/turn-surface";
 import type { RuntimeActivity } from "../src/runtime/types";
 import type { OutputVisibility } from "../src/types";

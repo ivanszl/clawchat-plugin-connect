@@ -1,5 +1,5 @@
-import type { GroupSettingsRecord } from "./state";
-import { type ActivationCredentials, AGENT_TYPE, PLATFORM_ID } from "./types";
+import type { GroupSettingsRecord } from "../persistence/state";
+import { type ActivationCredentials, AGENT_TYPE, PLATFORM_ID } from "../types";
 export type FetchLike = typeof fetch;
 export type ClawChatApiErrorKind = "validation" | "transport" | "api" | "auth";
 export class ClawChatApiError extends Error {

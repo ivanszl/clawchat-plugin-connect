@@ -1,17 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { cac } from "cac";
-import { type ActivateConnectResult, activateConnect as activateConnectDefault } from "./activation";
+import { type ActivateConnectResult, activateConnect as activateConnectDefault } from "../account/activation";
 import {
   type RemoveAgentBindingResult,
   removeAgentBinding as removeAgentBindingDefault,
-} from "./agent-binding-removal";
-import { type AgentLivewareOperation, isAgentLivewareOperation, validateAgentLivewareInput } from "./agent-liveware";
+} from "../account/agent-binding-removal";
+import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "../account/profile";
 import {
-  BACKGROUND_SERVICE_PROCESS_ACTION,
-  type BackgroundServiceAction,
-  manageBackgroundService as manageBackgroundServiceDefault,
-} from "./background-service";
+  type AgentLivewareOperation,
+  isAgentLivewareOperation,
+  validateAgentLivewareInput,
+} from "../agent/agent-liveware";
+import { installManagedSkills, preflightManagedSkills, verifyInstalledSkills } from "../agent/skills";
+import {
+  CONNECT_TOOL_CATALOG,
+  getConnectTool,
+  recordToolInput,
+  toolJsonSchema,
+  validateToolInput,
+} from "../agent/tool-catalog";
 import {
   defaultConfig,
   defaultConfigPath,
@@ -19,21 +27,10 @@ import {
   loadConfig,
   saveConfig,
   upsertAgentBinding,
-} from "./config";
-import { startConnectService as startConnectServiceDefault } from "./connect-service";
-import { resolveLivewareExecutablePath as resolveLivewareExecutablePathDefault } from "./liveware-exposure";
-import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "./profile";
-import { ProjectCatalog } from "./projects";
-import { createReleasedAgentBinding, releasedRuntimeAdapters } from "./runtime/released-adapters";
-import { installManagedSkills, preflightManagedSkills, verifyInstalledSkills } from "./skills";
-import { type ConnectStateStore, createStateStore, type ToolRequestRecord } from "./state";
-import {
-  CONNECT_TOOL_CATALOG,
-  getConnectTool,
-  recordToolInput,
-  toolJsonSchema,
-  validateToolInput,
-} from "./tool-catalog";
+} from "../config";
+import { type ConnectStateStore, createStateStore, type ToolRequestRecord } from "../persistence/state";
+import { ProjectCatalog } from "../projects/projects";
+import { createReleasedAgentBinding, releasedRuntimeAdapters } from "../runtime/released-adapters";
 import type {
   AgentBindingConfig,
   CodexAgentBindingConfig,
@@ -44,7 +41,14 @@ import type {
   ConnectConfig,
   LivewareAccessPolicy,
   OutputVisibility,
-} from "./types";
+} from "../types";
+import {
+  BACKGROUND_SERVICE_PROCESS_ACTION,
+  type BackgroundServiceAction,
+  manageBackgroundService as manageBackgroundServiceDefault,
+} from "./background-service";
+import { startConnectService as startConnectServiceDefault } from "./connect-service";
+import { resolveLivewareExecutablePath as resolveLivewareExecutablePathDefault } from "./liveware-exposure";
 import { updateConnect as updateConnectDefault } from "./update";
 import { CONNECT_VERSION } from "./version";
 

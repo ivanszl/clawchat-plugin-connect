@@ -2,7 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type HostDirectoryError, listHostDirectories, materializeProjectDirectory } from "../src/host-directories";
+import {
+  type HostDirectoryError,
+  listHostDirectories,
+  materializeProjectDirectory,
+} from "../src/projects/host-directories";
 
 describe("host directory selection", () => {
   it("lists only directories, hides dot directories by default, and resolves symbolic links", async () => {

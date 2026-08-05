@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
-import type { ProjectRecord } from "./types";
+import type { ProjectRecord } from "../types";
 
 export interface RuntimeWorkspaceChoice {
   workspaceId: string;

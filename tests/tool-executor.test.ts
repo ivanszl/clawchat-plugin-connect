@@ -1,8 +1,8 @@
 import { describe, expect, it, mock } from "bun:test";
-import { EVENT } from "../src/protocol";
-import { executeConnectTool } from "../src/tool-executor";
+import { executeConnectTool } from "../src/agent/tool-executor";
+import { EVENT } from "../src/clawchat/protocol";
+import type { ConnectWsClient } from "../src/clawchat/ws-client";
 import type { ActivationCredentials } from "../src/types";
-import type { ConnectWsClient } from "../src/ws-client";
 
 const activation: ActivationCredentials = {
   localAgentId: "codex",

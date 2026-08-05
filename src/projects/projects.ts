@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, realpath, rm, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { ConnectStateStore } from "./state";
-import type { ProjectRecord, RuntimeSessionRecord, RuntimeWorkspace } from "./types";
+import type { ConnectStateStore } from "../persistence/state";
+import type { ProjectRecord, RuntimeSessionRecord, RuntimeWorkspace } from "../types";
 import { findProjectForWorkspace, workspaceView } from "./workspace-catalog";
 
 export interface ProjectCatalogOptions {

@@ -3,7 +3,7 @@ import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promis
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CONNECT_VERSION } from "./version";
+import { CONNECT_VERSION } from "../service/version";
 
 const MANIFEST_NAME = ".clawchat-connect-manifest.json";
 

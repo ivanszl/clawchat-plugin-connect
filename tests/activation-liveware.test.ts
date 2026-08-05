@@ -2,16 +2,16 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activateConnect } from "../src/activation";
+import { activateConnect } from "../src/account/activation";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
+import { createStateStore } from "../src/persistence/state";
 import {
   type ClawChatLivewarePort,
   type LivewareApp,
   type LivewareControlPlanePort,
   type LivewareControlSession,
   prepareLivewareExposure,
-} from "../src/liveware-exposure";
-import { createStateStore } from "../src/state";
+} from "../src/service/liveware-exposure";
 import type { ActivationCredentials } from "../src/types";
 
 describe("Binding Owner activation with Liveware Exposure", () => {

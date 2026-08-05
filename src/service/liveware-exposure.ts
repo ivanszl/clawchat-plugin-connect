@@ -2,8 +2,8 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConnectStateStore } from "./state";
-import type { ActivationCredentials, LivewareAccessPolicy, LivewareExposureRecord } from "./types";
+import type { ConnectStateStore } from "../persistence/state";
+import type { ActivationCredentials, LivewareAccessPolicy, LivewareExposureRecord } from "../types";
 
 export const LIVEWARE_APP_NAME = "ClawChat Connect";
 const LIVEWARE_APP_BINDING_SEPARATOR = " · ";

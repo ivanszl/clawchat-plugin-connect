@@ -11,17 +11,17 @@ import type {
   TurnSubmissionCapability,
 } from "../client-contract";
 import { getAgentBinding } from "../config";
-import { synchronizeRuntimeProjects } from "../project-synchronizer";
-import { ProjectCatalog } from "../projects";
+import type { ConnectStateStore } from "../persistence/state";
+import { synchronizeRuntimeProjects } from "../projects/project-synchronizer";
+import { ProjectCatalog } from "../projects/projects";
+import { createSessionContinuity, type SessionContinuity } from "../projects/session-continuity";
+import { findProjectForWorkspace, workspaceView } from "../projects/workspace-catalog";
 import { resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { SessionActivity } from "../runtime/session-queue";
 import type { RuntimeLifecycleCapabilities, RuntimeModelOption, RuntimeThreadSummary } from "../runtime/types";
 import { isCodeBuddySessionRuntimeTarget } from "../runtime/workbuddy-runtime-target";
-import { createSessionContinuity, type SessionContinuity } from "../session-continuity";
-import type { ConnectStateStore } from "../state";
 import type { ConnectConfig, ProjectRecord, RuntimeSessionRecord, RuntimeStatus, RuntimeWorkspace } from "../types";
-import { findProjectForWorkspace, workspaceView } from "../workspace-catalog";
 import type { TranscriptProjection } from "./transcript-projection";
 
 const CLIENT_CATALOG_CHAT = "__connect_client_catalog__";

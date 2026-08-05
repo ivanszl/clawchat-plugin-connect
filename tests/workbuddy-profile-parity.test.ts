@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { SessionCatalog } from "../src/client-interface/session-catalog";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
+import { createStateStore } from "../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { RuntimeActivity } from "../src/runtime/types";
 import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
@@ -24,7 +25,6 @@ import {
   readWorkBuddyTaskRuntimeSelection,
   reconcileWorkBuddyTaskRuntime,
 } from "../src/runtime/workbuddy-task-discovery-macos";
-import { createStateStore } from "../src/state";
 import type { WorkBuddyAgentBindingConfig } from "../src/types";
 
 const profiles: [WorkBuddyProfile][] = [["workbuddy-ai"], ["workbuddy-cn"]];

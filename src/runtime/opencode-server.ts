@@ -16,8 +16,8 @@ import type {
   SessionStatus,
   TextPartInput,
 } from "@opencode-ai/sdk/v2/types";
+import { CONNECT_VERSION } from "../service/version";
 import type { OpenCodeAgentBindingConfig } from "../types";
-import { CONNECT_VERSION } from "../version";
 
 export const OPENCODE_SDK_VERSION = "1.18.10" as const;
 export const SUPPORTED_OPENCODE_VERSIONS = [OPENCODE_SDK_VERSION] as const;

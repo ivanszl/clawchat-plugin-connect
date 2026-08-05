@@ -3,10 +3,12 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Agent, Command, GlobalEvent, Provider, Session } from "@opencode-ai/sdk/v2/types";
+import type { ConnectWsClient } from "../src/clawchat/ws-client";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { TurnSubmission, type TurnSubmissionCapability } from "../src/client-interface/turn-submission";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
-import { ProjectCatalog } from "../src/projects";
+import { createStateStore } from "../src/persistence/state";
+import { ProjectCatalog } from "../src/projects/projects";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
 import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
 import type {
@@ -17,9 +19,7 @@ import type {
 } from "../src/runtime/opencode-server";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeStartContext, RuntimeActivity, RuntimeInteractionRequest } from "../src/runtime/types";
-import { createStateStore } from "../src/state";
 import type { RuntimeWorkspace } from "../src/types";
-import type { ConnectWsClient } from "../src/ws-client";
 
 const directory = "/repo";
 const runtimeWorkspace = {

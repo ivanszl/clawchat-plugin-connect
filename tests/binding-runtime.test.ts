@@ -2,9 +2,6 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type BindingProtocolEvent, startBindingRuntime } from "../src/binding-runtime";
-import { defaultConfig } from "../src/config";
-import { ProjectCatalog } from "../src/projects";
 import {
   type Envelope,
   EVENT,
@@ -12,10 +9,13 @@ import {
   type Transport,
   type TransportEvents,
   type TransportState,
-} from "../src/protocol";
+} from "../src/clawchat/protocol";
+import { defaultConfig } from "../src/config";
+import { createStateStore } from "../src/persistence/state";
+import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimePrompt } from "../src/runtime/types";
-import { createStateStore } from "../src/state";
+import { type BindingProtocolEvent, startBindingRuntime } from "../src/service/binding-runtime";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 class MemoryTransport implements Transport {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { executeAgentLiveware, validateAgentLivewareInput } from "../src/agent-liveware";
-import type { LivewareControlSession } from "../src/liveware-exposure";
-import { ClawChatToolApiError } from "../src/tool-executor";
+import { executeAgentLiveware, validateAgentLivewareInput } from "../src/agent/agent-liveware";
+import { ClawChatToolApiError } from "../src/agent/tool-executor";
+import type { LivewareControlSession } from "../src/service/liveware-exposure";
 import type { ActivationCredentials } from "../src/types";
 
 describe("Agent-managed Liveware validation", () => {

@@ -9,15 +9,15 @@ import {
   type Transport,
   type TransportEvents,
   type TransportState,
-} from "../src/protocol";
-import type { ConnectStateStore } from "../src/state";
+} from "../src/clawchat/protocol";
 import {
   ConnectWsClient,
   type ConnectWsClientOptions,
   createWebSocketTransport,
   type WebSocketConstructor,
   type WebSocketLike,
-} from "../src/ws-client";
+} from "../src/clawchat/ws-client";
+import type { ConnectStateStore } from "../src/persistence/state";
 
 class MemoryTransport implements Transport {
   state: TransportState = "closed";

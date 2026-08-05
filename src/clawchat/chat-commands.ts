@@ -1,13 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { getAgentBinding } from "./config";
-import { commandAddressPrefix } from "./message-mapper";
-import type { ProjectCatalog } from "./projects";
-import type { NormalizedInboundMessage } from "./protocol";
-import { requireModel, resolveEffort, resolveModelSelection } from "./runtime/model-selection";
-import type { RuntimeModelOption, SelectableRuntimeThread } from "./runtime/types";
-import { workBuddyRuntimeTargetKind } from "./runtime/workbuddy-runtime-target";
-import { createSessionContinuity } from "./session-continuity";
-import type { ConnectStateStore } from "./state";
+import { getAgentBinding } from "../config";
+import type { ConnectStateStore } from "../persistence/state";
+import type { ProjectCatalog } from "../projects/projects";
+import { createSessionContinuity } from "../projects/session-continuity";
+import { type RuntimeWorkspaceChoice, workspaceView } from "../projects/workspace-catalog";
+import { requireModel, resolveEffort, resolveModelSelection } from "../runtime/model-selection";
+import type { RuntimeModelOption, SelectableRuntimeThread } from "../runtime/types";
+import { workBuddyRuntimeTargetKind } from "../runtime/workbuddy-runtime-target";
 import type {
   AgentBindingConfig,
   ConnectConfig,
@@ -15,8 +14,9 @@ import type {
   ProjectRecord,
   RuntimeSessionRecord,
   SessionIntentRecord,
-} from "./types";
-import { type RuntimeWorkspaceChoice, workspaceView } from "./workspace-catalog";
+} from "../types";
+import { commandAddressPrefix } from "./message-mapper";
+import type { NormalizedInboundMessage } from "./protocol";
 
 export interface ChatCommandContext {
   message: NormalizedInboundMessage;

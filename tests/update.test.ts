@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import { updateConnect } from "../src/update";
+import { updateConnect } from "../src/service/update";
 
 describe("Connect update", () => {
   it("runs the official installer in the current installation directory and refreshes the service", async () => {

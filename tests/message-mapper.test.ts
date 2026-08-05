@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { addressInboundMessage, buildReplyTextMessagePayload, isMessageAddressedToAgent } from "../src/message-mapper";
-import type { NormalizedInboundMessage } from "../src/protocol";
+import {
+  addressInboundMessage,
+  buildReplyTextMessagePayload,
+  isMessageAddressedToAgent,
+} from "../src/clawchat/message-mapper";
+import type { NormalizedInboundMessage } from "../src/clawchat/protocol";
 
 function inboundMessage(chatType: "direct" | "group"): NormalizedInboundMessage {
   return {

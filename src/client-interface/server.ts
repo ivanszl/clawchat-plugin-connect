@@ -1,13 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { access, realpath, stat } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { BindingRuntimeHandle } from "../binding-runtime";
+import { realpath, stat } from "node:fs/promises";
+import { basename, isAbsolute } from "node:path";
+import { leadingSkillName } from "../agent/skill-invocation";
+import { bindingOutputVisibility } from "../clawchat/output-visibility";
 import {
   type AddProjectRequest,
   type BootstrapView,
   type CancelTurnRequest,
   CLIENT_API_PREFIX,
-  type ClientErrorView,
   type ClientViewEvent,
   type CreateSessionRequest,
   normalizeSessionRef,
@@ -19,44 +19,52 @@ import {
   type UpdateSessionPreferencesRequest,
 } from "../client-contract";
 import { getAgentBinding, saveConfig } from "../config";
+import type { ConnectStateStore } from "../persistence/state";
 import {
   HostDirectoryError,
   listHostDirectories,
   type MaterializedProjectDirectory,
   materializeProjectDirectory,
-} from "../host-directories";
-import { bindingOutputVisibility } from "../output-visibility";
-import { ProjectCatalog } from "../projects";
+} from "../projects/host-directories";
+import { ProjectCatalog } from "../projects/projects";
+import { createSessionContinuity, SessionLifecycleError } from "../projects/session-continuity";
+import { classifyWorkspaceArtifact } from "../projects/workspace-artifact";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { releasedRuntimeAdapters } from "../runtime/released-adapters";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
-import type { RuntimeSessionOption, RuntimeSlashSelection } from "../runtime/types";
-import { createSessionContinuity, SessionLifecycleError } from "../session-continuity";
-import { leadingSkillName } from "../skill-invocation";
-import type { ConnectStateStore } from "../state";
-import type { AgentBindingConfig, ConnectConfig, RuntimeWorkspace } from "../types";
-import { classifyWorkspaceArtifact } from "../workspace-artifact";
+import type { RuntimeSlashSelection } from "../runtime/types";
+import type { BindingRuntimeHandle } from "../service/binding-runtime";
+import type { AgentBindingConfig, ConnectConfig } from "../types";
 import { BINDING_SCOPE_HEADER } from "./binding-scoped-gateway";
+import { resolveClientAssetsPath, staticResponse } from "./client-assets";
+import {
+  ClientRequestError,
+  clientErrorView,
+  commandError,
+  errorResponse,
+  eventCursor,
+  isMutation,
+  isPathWithin,
+  isStringRecord,
+  jsonResponse,
+  parseBeforeCursor,
+  parseLimit,
+  readJsonBody,
+  requireDisplayName,
+  securityHeaders,
+  setOptionalString,
+  snapshotResponse,
+  validatePreferencePatch,
+  validRequestId,
+  workspaceArtifactHeaders,
+} from "./client-http";
 import { SessionCatalog } from "./session-catalog";
+import { validatedSessionOptions } from "./session-option-validation";
 import type { TranscriptProjection } from "./transcript-projection";
 import { TurnSubmission, type TurnSubmissionDraft, TurnSubmissionError } from "./turn-submission";
 import { FileTurnSubmissionStaging } from "./turn-submission-staging";
-
-const MAX_JSON_BODY_BYTES = 128 * 1_024;
-const OUTPUT_VISIBILITIES = new Set(["minimal", "normal", "full"]);
-
-class ClientRequestError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-    readonly retryable = false,
-  ) {
-    super(message);
-  }
-}
 
 class ClientBindingRequestScope {
   constructor(
@@ -1326,60 +1334,6 @@ async function scopeClientEvent(
   return entry?.bindingId === bindingScope ? event : null;
 }
 
-async function staticResponse(assetsRoot: string, pathname: string, head: boolean): Promise<Response> {
-  const decoded = decodeURIComponent(pathname);
-  const requested = decoded === "/" ? "index.html" : decoded.replace(/^\//u, "");
-  const assetRequest = requested.startsWith("assets/") || isKnownStaticFile(requested);
-  const path = assetRequest ? resolve(assetsRoot, requested) : resolve(assetsRoot, "index.html");
-  if (!path.startsWith(`${resolve(assetsRoot)}${sep}`)) return new Response("Not Found", { status: 404 });
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
-    if (assetRequest) return new Response("Not Found", { status: 404, headers: securityHeaders() });
-    return new Response("Connect Client has not been built. Run `bun run build:web`.", {
-      status: 503,
-      headers: securityHeaders({ "Content-Type": "text/plain; charset=utf-8" }),
-    });
-  }
-  const headers = securityHeaders({
-    "Content-Type": contentType(path),
-    "Cache-Control": requested === "index.html" || !assetRequest ? "no-cache" : "public, max-age=31536000, immutable",
-  });
-  return new Response(head ? null : file, { headers });
-}
-
-async function resolveClientAssetsPath(): Promise<string> {
-  const entry = process.argv[1] ? resolve(process.argv[1]) : "";
-  const candidates = [
-    entry ? resolve(dirname(entry), "../client") : "",
-    entry ? resolve(dirname(entry), "clawchat-connect-client") : "",
-    resolve(dirname(process.execPath), "clawchat-connect-client"),
-    resolve(dirname(process.execPath), "client"),
-    resolve(process.cwd(), "dist/client"),
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    try {
-      await access(join(candidate, "index.html"));
-      return candidate;
-    } catch {
-      // Try the next production layout.
-    }
-  }
-  return candidates[0] ?? resolve(process.cwd(), "dist/client");
-}
-
-async function readJsonBody<T>(request: Request): Promise<T> {
-  const length = Number(request.headers.get("content-length") ?? 0);
-  if (length > MAX_JSON_BODY_BYTES) throw new ClientRequestError(413, "body-too-large", "Request body is too large");
-  const text = await request.text();
-  if (text.length > MAX_JSON_BODY_BYTES)
-    throw new ClientRequestError(413, "body-too-large", "Request body is too large");
-  try {
-    return JSON.parse(text || "{}") as T;
-  } catch {
-    throw new ClientRequestError(400, "invalid-json", "Request body must be valid JSON");
-  }
-}
-
 async function idempotentCommand(
   store: ConnectStateStore,
   requestId: string,
@@ -1402,10 +1356,6 @@ async function idempotentCommand(
     if (!options.preserveClaimOnError) await store.abandonClientCommand(requestId).catch(() => undefined);
     throw error;
   }
-}
-
-function commandError(status: number, code: string, message: string, retryable = false) {
-  return { status, body: clientErrorView(code, message, retryable) };
 }
 
 function isProjectDirectoryRequest(value: unknown): value is ProjectDirectoryRequest {
@@ -1518,187 +1468,4 @@ async function sessionCommands(
     existingOnly,
     runtimeThreadId: (await catalog.runtimeThreadId(sessionRef)) ?? undefined,
   });
-}
-
-function jsonResponse(value: unknown, status = 200): Response {
-  return new Response(JSON.stringify(value), {
-    status,
-    headers: securityHeaders({ "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }),
-  });
-}
-
-function isPathWithin(root: string, candidate: string): boolean {
-  const nestedPath = relative(root, candidate);
-  return nestedPath === "" || (!nestedPath.startsWith(`..${sep}`) && nestedPath !== ".." && !isAbsolute(nestedPath));
-}
-
-function snapshotResponse(value: unknown, watermark: number): Response {
-  const response = jsonResponse(value);
-  response.headers.set("X-Client-View-Watermark", String(watermark));
-  return response;
-}
-
-function errorResponse(
-  status: number,
-  code: string,
-  message: string,
-  retryable = false,
-  diagnosticRef?: string,
-): Response {
-  const body = clientErrorView(code, message, retryable, diagnosticRef);
-  return jsonResponse(body, status);
-}
-
-function clientErrorView(code: string, message: string, retryable = false, diagnosticRef?: string): ClientErrorView {
-  return { error: { code, message, retryable, ...(diagnosticRef ? { diagnosticRef } : {}) } };
-}
-
-function securityHeaders(initial: Record<string, string> = {}): Headers {
-  return new Headers({
-    "Content-Security-Policy":
-      "default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https:; connect-src 'self'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-    "Cross-Origin-Opener-Policy": "same-origin",
-    "Cross-Origin-Resource-Policy": "same-origin",
-    ...initial,
-  });
-}
-
-function workspaceArtifactHeaders(initial: Record<string, string>): Headers {
-  return securityHeaders({
-    "Content-Security-Policy":
-      "default-src 'none'; script-src 'none'; script-src-attr 'none'; style-src 'none'; img-src 'self' data:; connect-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
-    ...initial,
-  });
-}
-
-function eventCursor(request: Request, url: URL): number {
-  const value = request.headers.get("last-event-id") || url.searchParams.get("after") || "0";
-  const cursor = Number(value);
-  return Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0;
-}
-
-function parseBeforeCursor(value: string | null): number | null {
-  if (!value) return null;
-  if (!/^s:\d+$/u.test(value)) throw new Error("invalid transcript cursor");
-  const sequence = Number(value.slice(2));
-  if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error("invalid transcript cursor");
-  return sequence;
-}
-
-function parseLimit(value: string | null): number {
-  const parsed = Number(value ?? 100);
-  return Number.isFinite(parsed) ? Math.max(1, Math.min(200, Math.trunc(parsed))) : 100;
-}
-
-function validRequestId(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9_-]{8,100}$/u.test(value);
-}
-
-function isStringRecord(value: unknown): value is Record<string, string> | undefined {
-  return (
-    value === undefined ||
-    (Boolean(value) &&
-      typeof value === "object" &&
-      !Array.isArray(value) &&
-      Object.values(value as Record<string, unknown>).every((item) => typeof item === "string"))
-  );
-}
-
-function validateSessionOptions(
-  selected: Record<string, string>,
-  definitions: RuntimeSessionOption[],
-  requireInPlace = false,
-): Record<string, string> {
-  const byId = new Map(definitions.map((definition) => [definition.id, definition]));
-  for (const [id, value] of Object.entries(selected)) {
-    const definition = byId.get(id);
-    if (!definition) throw new Error(`Session option is not available: ${id}`);
-    if (requireInPlace && definition.changePolicy !== "in-place")
-      throw new Error(`Session option requires a new Runtime Session: ${id}`);
-    if (!definition.values.some((candidate) => candidate.id === value))
-      throw new Error(`Session option value is not available: ${id}=${value}`);
-  }
-  return { ...selected };
-}
-
-async function validatedSessionOptions(
-  runtimeAdapters: RuntimeAdapterRegistry,
-  binding: AgentBindingConfig,
-  workspace: RuntimeWorkspace,
-  selected: Record<string, string>,
-  requireInPlace = false,
-  scope?: import("../runtime/types").RuntimeCatalogScope,
-): Promise<{ ok: true; value: Record<string, string> } | { ok: false; error: ReturnType<typeof commandError> }> {
-  try {
-    return {
-      ok: true,
-      value: validateSessionOptions(
-        selected,
-        await runtimeAdapters.listSessionOptions(binding, workspace, { ...scope, workspace }),
-        requireInPlace,
-      ),
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      error: commandError(400, "invalid-session-options", error instanceof Error ? error.message : String(error)),
-    };
-  }
-}
-
-function requireDisplayName(value: unknown): string {
-  if (typeof value !== "string" || !value.trim() || value.trim().length > 80) {
-    throw new ClientRequestError(400, "invalid-display-name", "displayName must contain 1 to 80 characters");
-  }
-  return value.trim();
-}
-
-function validatePreferencePatch(body: UpdateBindingPreferencesRequest): void {
-  if (body.displayName !== undefined) requireDisplayName(body.displayName);
-  if (body.model !== undefined && body.model !== null) {
-    if (typeof body.model !== "string" || body.model.trim().length > 200) {
-      throw new ClientRequestError(400, "invalid-model", "model must be null or contain at most 200 characters");
-    }
-  }
-  if (body.modelReasoningEffort !== undefined && body.modelReasoningEffort !== null) {
-    if (typeof body.modelReasoningEffort !== "string" || body.modelReasoningEffort.trim().length > 100) {
-      throw new ClientRequestError(
-        400,
-        "invalid-reasoning-effort",
-        "modelReasoningEffort must be null or contain at most 100 characters",
-      );
-    }
-  }
-  if (body.outputVisibility !== undefined && !OUTPUT_VISIBILITIES.has(body.outputVisibility)) {
-    throw new ClientRequestError(400, "invalid-output-visibility", "outputVisibility is invalid");
-  }
-}
-
-function setOptionalString<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | null): void {
-  if (value === null || (typeof value === "string" && !value.trim())) delete target[key];
-  else target[key] = (typeof value === "string" ? value.trim() : value) as T[K];
-}
-
-function isMutation(method: string): boolean {
-  return method !== "GET" && method !== "HEAD" && method !== "OPTIONS";
-}
-
-function isKnownStaticFile(path: string): boolean {
-  return /^(?:favicon\.ico|manifest\.webmanifest|robots\.txt)$/u.test(path);
-}
-
-function contentType(path: string): string {
-  const types: Record<string, string> = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "text/javascript; charset=utf-8",
-    ".css": "text/css; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".svg": "image/svg+xml",
-    ".png": "image/png",
-    ".woff2": "font/woff2",
-    ".webmanifest": "application/manifest+json",
-  };
-  return types[extname(path).toLowerCase()] ?? "application/octet-stream";
 }

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { CONNECT_VERSION } from "../src/version";
+import { CONNECT_VERSION } from "../src/service/version";
 
 const root = new URL("../skills", import.meta.url).pathname;
 const files: string[] = [];

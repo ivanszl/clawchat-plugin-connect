@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installManagedSkills, preflightManagedSkills, verifyInstalledSkills } from "../src/skills";
+import { installManagedSkills, preflightManagedSkills, verifyInstalledSkills } from "../src/agent/skills";
 
 describe("managed Agent skills", () => {
   it("rejects an invalid user Skill target before replacing managed files", async () => {

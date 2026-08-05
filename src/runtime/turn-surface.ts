@@ -1,5 +1,5 @@
-import { containsExplicitReplyMedia, containsNoReplySignal, stripNoReplySignals } from "../no-reply";
-import type { MaterializedRuntimeReply } from "../output-visibility";
+import { containsExplicitReplyMedia, containsNoReplySignal, stripNoReplySignals } from "../clawchat/no-reply";
+import type { MaterializedRuntimeReply } from "../clawchat/output-visibility";
 import type { RuntimeActivity } from "./types";
 
 export interface TurnSurface {

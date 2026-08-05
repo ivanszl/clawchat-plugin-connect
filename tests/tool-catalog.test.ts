@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { CONNECT_TOOL_CATALOG, getConnectTool, validateToolInput } from "../src/tool-catalog";
+import { CONNECT_TOOL_CATALOG, getConnectTool, validateToolInput } from "../src/agent/tool-catalog";
 
 describe("Connect Tool Catalog", () => {
   it("publishes exactly the agreed 24 tool-name entries without memory or conversation lookup", () => {

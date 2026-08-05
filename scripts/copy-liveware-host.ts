@@ -1,7 +1,7 @@
 import { chmod, copyFile, mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { livewareAssetName } from "../src/liveware-exposure";
+import { livewareAssetName } from "../src/service/liveware-exposure";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const asset = livewareAssetName(process.platform, process.arch);

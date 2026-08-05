@@ -1,11 +1,11 @@
+import type { ConnectStateStore, GroupSettingsRecord, InboundHandlingOutcome } from "../persistence/state";
+import { renderClawChatPrompt } from "../runtime/prompt-renderer";
+import { isRuntimeInteractionResponseText } from "../runtime/runtime-interaction-router";
 import type { ClawChatApiClient } from "./api-client";
 import { isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
 import { inboundContentDigest } from "./inbound-identity";
 import { addressInboundMessage, isMessageAddressedToAgent, normalizeInboundMessage } from "./message-mapper";
 import type { Envelope, Fragment, NormalizedInboundMessage } from "./protocol";
-import { renderClawChatPrompt } from "./runtime/prompt-renderer";
-import { isRuntimeInteractionResponseText } from "./runtime/runtime-interaction-router";
-import type { ConnectStateStore, GroupSettingsRecord, InboundHandlingOutcome } from "./state";
 
 export interface GroupIntakeCoordinatorOptions {
   bindingId: string;

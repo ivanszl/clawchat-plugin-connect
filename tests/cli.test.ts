@@ -2,16 +2,20 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "../src/chat-commands";
-import { runConnectCli } from "../src/cli";
+import type { UpdateAccountProfileResult } from "../src/account/profile";
+import {
+  handleChatCommand,
+  isConnectControlMessage,
+  requiresOrderedSessionControl,
+} from "../src/clawchat/chat-commands";
+import type { NormalizedInboundMessage } from "../src/clawchat/protocol";
 import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
-import type { UpdateAccountProfileResult } from "../src/profile";
-import { ProjectCatalog } from "../src/projects";
-import type { NormalizedInboundMessage } from "../src/protocol";
+import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
+import { ProjectCatalog } from "../src/projects/projects";
+import { workspaceView } from "../src/projects/workspace-catalog";
 import type { SelectableRuntimeThread } from "../src/runtime/types";
-import { type ConnectStateStore, createStateStore } from "../src/state";
-import { CONNECT_VERSION } from "../src/version";
-import { workspaceView } from "../src/workspace-catalog";
+import { runConnectCli } from "../src/service/cli";
+import { CONNECT_VERSION } from "../src/service/version";
 
 async function tempConfig(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "clawchat-connect-cli-"));

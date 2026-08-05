@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { type RuntimeLifecycleCapabilities, RuntimeLifecycleError } from "./runtime/types";
-import type { ConnectStateStore, SessionLifecycleAction, SessionLifecycleOperationRecord } from "./state";
-import type { RuntimeSessionRecord } from "./types";
+import type { ConnectStateStore, SessionLifecycleAction, SessionLifecycleOperationRecord } from "../persistence/state";
+import { type RuntimeLifecycleCapabilities, RuntimeLifecycleError } from "../runtime/types";
+import type { RuntimeSessionRecord } from "../types";
 
 export type TurnOrigin = "client" | "clawchat";
 

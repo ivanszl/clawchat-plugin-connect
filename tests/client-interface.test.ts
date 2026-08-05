@@ -2,15 +2,15 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 import { mkdir, mkdtemp, readdir, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { BindingRuntimeHandle } from "../src/binding-runtime";
 import { type ClientInterfaceHandle, startClientInterface } from "../src/client-interface/server";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
-import { ProjectCatalog } from "../src/projects";
+import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
+import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
 import type { ConnectRuntimeAdapter, RuntimeModelOption } from "../src/runtime/types";
-import { type ConnectStateStore, createStateStore } from "../src/state";
+import type { BindingRuntimeHandle } from "../src/service/binding-runtime";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 const openHandles: ClientInterfaceHandle[] = [];

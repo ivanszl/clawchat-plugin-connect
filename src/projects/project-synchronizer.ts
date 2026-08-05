@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
+import type { ConnectStateStore } from "../persistence/state";
+import type { RuntimeThreadSummary } from "../runtime/types";
+import type { ProjectRecord } from "../types";
 import type { ProjectCatalog } from "./projects";
-import type { RuntimeThreadSummary } from "./runtime/types";
-import type { ConnectStateStore } from "./state";
-import type { ProjectRecord } from "./types";
 
 export interface RuntimeProjectSynchronizationResult {
   projects: ProjectRecord[];

@@ -1,7 +1,7 @@
-import { createClawChatApiClient, type FetchLike, normalizeActivationResult } from "./api-client";
-import { getAgentBinding, loadConfig, saveConfig } from "./config";
-import { type ConnectStateStore, createStateStore } from "./state";
-import type { ActivationCredentials, ConnectConfig } from "./types";
+import { createClawChatApiClient, type FetchLike, normalizeActivationResult } from "../clawchat/api-client";
+import { getAgentBinding, loadConfig, saveConfig } from "../config";
+import { type ConnectStateStore, createStateStore } from "../persistence/state";
+import type { ActivationCredentials, ConnectConfig } from "../types";
 
 export interface ActivateConnectOptions {
   agentId: string;

@@ -1,23 +1,32 @@
 import { resolve } from "node:path";
-import { isAgentLivewareOperation } from "./agent-liveware";
+import { isAgentLivewareOperation } from "../agent/agent-liveware";
+import { verifyInstalledSkills } from "../agent/skills";
+import { getConnectTool } from "../agent/tool-catalog";
+import { isIndeterminateToolError } from "../agent/tool-executor";
+import {
+  type BindingScopedClientGatewayHandle,
+  type BindingScopedClientGatewayOptions,
+  startBindingScopedClientGateway,
+} from "../client-interface/binding-scoped-gateway";
+import {
+  type ClientInterfaceHandle,
+  type ClientInterfaceOptions,
+  startClientInterface,
+} from "../client-interface/server";
+import { TranscriptProjection } from "../client-interface/transcript-projection";
+import { defaultConfigPath, loadConfig } from "../config";
+import { type ConnectStateStore, createStateStore } from "../persistence/state";
+import { ProjectCatalog } from "../projects/projects";
+import type { RuntimeAdapterRegistry } from "../runtime/registry";
+import { createReleasedRuntimeAdapterRegistry } from "../runtime/released-adapters";
+import { RuntimeInteractionCoordinator } from "../runtime/runtime-interaction-coordinator";
+import type { ConnectConfig } from "../types";
 import {
   type BindingProtocolEventHandlers,
   type BindingRuntimeHandle,
   type BindingRuntimeOptions,
   startBindingRuntime,
 } from "./binding-runtime";
-import {
-  type BindingScopedClientGatewayHandle,
-  type BindingScopedClientGatewayOptions,
-  startBindingScopedClientGateway,
-} from "./client-interface/binding-scoped-gateway";
-import {
-  type ClientInterfaceHandle,
-  type ClientInterfaceOptions,
-  startClientInterface,
-} from "./client-interface/server";
-import { TranscriptProjection } from "./client-interface/transcript-projection";
-import { defaultConfigPath, loadConfig } from "./config";
 import {
   createLivewareExposureDependencies,
   type LivewareExposureDependencies,
@@ -26,15 +35,6 @@ import {
   retireLivewareExposure,
   startLivewareExposure,
 } from "./liveware-exposure";
-import { ProjectCatalog } from "./projects";
-import type { RuntimeAdapterRegistry } from "./runtime/registry";
-import { createReleasedRuntimeAdapterRegistry } from "./runtime/released-adapters";
-import { RuntimeInteractionCoordinator } from "./runtime/runtime-interaction-coordinator";
-import { verifyInstalledSkills } from "./skills";
-import { type ConnectStateStore, createStateStore } from "./state";
-import { getConnectTool } from "./tool-catalog";
-import { isIndeterminateToolError } from "./tool-executor";
-import type { ConnectConfig } from "./types";
 
 export interface ConnectServiceOptions {
   configPath?: string;

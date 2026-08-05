@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { toolFailureState } from "../src/connect-service";
-import { IndeterminateToolExecutionError } from "../src/tool-executor";
+import { IndeterminateToolExecutionError } from "../src/agent/tool-executor";
+import { toolFailureState } from "../src/service/connect-service";
 
 describe("tool request failure settlement", () => {
   it("marks deterministic Liveware errors failed", () => {

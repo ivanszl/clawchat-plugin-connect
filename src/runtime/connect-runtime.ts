@@ -2,27 +2,29 @@ import { randomUUID } from "node:crypto";
 import { open, realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { MessageBlockContent } from "../client-contract";
-import type { TranscriptProjection } from "../client-interface/transcript-projection";
-import { defaultConfigPath, getAgentBinding } from "../config";
-import { buildReplyTextMessagePayload } from "../message-mapper";
+import { buildReplyTextMessagePayload } from "../clawchat/message-mapper";
 import {
   allowedRuntimeKinds,
   type MaterializedRuntimeReply,
   materializeRuntimeOutput,
   policyForOutputVisibility,
   resolveOutputVisibility,
-} from "../output-visibility";
-import { synchronizeRuntimeProjects as synchronizeProjects } from "../project-synchronizer";
-import { ProjectCatalog } from "../projects";
-import { EVENT, type Fragment, type NormalizedInboundMessage } from "../protocol";
+} from "../clawchat/output-visibility";
+import { EVENT, type Fragment, type NormalizedInboundMessage } from "../clawchat/protocol";
+import type { ConnectWsClient } from "../clawchat/ws-client";
+import type { MessageBlockContent } from "../client-contract";
+import type { TranscriptProjection } from "../client-interface/transcript-projection";
+import { defaultConfigPath, getAgentBinding } from "../config";
+import type { ConnectStateStore } from "../persistence/state";
+import { synchronizeRuntimeProjects as synchronizeProjects } from "../projects/project-synchronizer";
+import { ProjectCatalog } from "../projects/projects";
 import {
   createSessionContinuity,
   type SessionContinuity,
   SessionLifecycleError,
   type TurnTarget,
-} from "../session-continuity";
-import type { ConnectStateStore } from "../state";
+} from "../projects/session-continuity";
+import { type RuntimeWorkspaceChoice, workspaceView } from "../projects/workspace-catalog";
 import type {
   AgentBindingConfig,
   ConnectConfig,
@@ -30,8 +32,6 @@ import type {
   RuntimeSessionRecord,
   RuntimeWorkspace,
 } from "../types";
-import { type RuntimeWorkspaceChoice, workspaceView } from "../workspace-catalog";
-import type { ConnectWsClient } from "../ws-client";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
 import { renderClawChatPrompt } from "./prompt-renderer";

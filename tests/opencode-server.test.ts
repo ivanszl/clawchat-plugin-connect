@@ -11,7 +11,7 @@ import {
   type OpenCodeServerProcess,
 } from "../src/runtime/opencode-server";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import { CONNECT_VERSION } from "../src/version";
+import { CONNECT_VERSION } from "../src/service/version";
 
 class FakeProcess extends EventEmitter implements OpenCodeServerProcess {
   readonly stderr = new PassThrough();

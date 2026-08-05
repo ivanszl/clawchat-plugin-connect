@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { replaceLeadingSkill } from "../skill-invocation";
+import { replaceLeadingSkill } from "../agent/skill-invocation";
 import type { CodexAgentBindingConfig, CodexApprovalPolicy, CodexSandboxMode, RuntimeWorkspace } from "../types";
 import {
   type CodexAppServerClient,

@@ -1,4 +1,4 @@
-import type { RuntimeOutputKind } from "../output-visibility";
+import type { RuntimeOutputKind } from "../clawchat/output-visibility";
 import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 
 export interface RuntimeInputMessageIdentity {
@@ -177,7 +177,7 @@ export interface ClawChatInteractionRoute {
   chatType: "direct" | "group";
   sourceMessageId: string | null;
   sourceSender?: { id: string; displayName: string };
-  sourceFragments?: import("../protocol").Fragment[];
+  sourceFragments?: import("../clawchat/protocol").Fragment[];
 }
 
 export interface RuntimeInteractionContext {

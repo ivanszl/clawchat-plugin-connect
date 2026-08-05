@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import type { Fragment, NormalizedInboundMessage } from "../src/protocol";
+import type { Fragment, NormalizedInboundMessage } from "../src/clawchat/protocol";
 import { RuntimeInteractionRouter } from "../src/runtime/runtime-interaction-router";
 import type { RuntimeInteractionPort, RuntimeInteractionRequest } from "../src/runtime/types";
 

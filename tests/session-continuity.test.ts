@@ -2,8 +2,8 @@ import { expect, it } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSessionContinuity } from "../src/session-continuity";
-import { createStateStore } from "../src/state";
+import { createStateStore } from "../src/persistence/state";
+import { createSessionContinuity } from "../src/projects/session-continuity";
 
 it("materializes one Turn Target when concurrent first messages consume a Session Intent", async () => {
   const directory = await mkdtemp(join(tmpdir(), "connect-session-continuity-"));

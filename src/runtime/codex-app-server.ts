@@ -1,8 +1,8 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { CONNECT_VERSION } from "../service/version";
 import type { CodexAgentBindingConfig } from "../types";
-import { CONNECT_VERSION } from "../version";
 
 type RpcId = number | string;
 type JsonObject = Record<string, unknown>;

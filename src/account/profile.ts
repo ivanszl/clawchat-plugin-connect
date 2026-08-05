@@ -1,7 +1,7 @@
-import { createClawChatApiClient, type FetchLike } from "./api-client";
-import { getAgentBinding, loadConfig } from "./config";
-import { type ConnectStateStore, createStateStore } from "./state";
-import type { ConnectConfig } from "./types";
+import { createClawChatApiClient, type FetchLike } from "../clawchat/api-client";
+import { getAgentBinding, loadConfig } from "../config";
+import { type ConnectStateStore, createStateStore } from "../persistence/state";
+import type { ConnectConfig } from "../types";
 
 export interface AccountProfilePatch {
   nickname?: string;

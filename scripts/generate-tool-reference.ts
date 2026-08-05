@@ -1,9 +1,9 @@
-import { CONNECT_TOOL_CATALOG, toolJsonSchema } from "../src/tool-catalog";
+import { CONNECT_TOOL_CATALOG, toolJsonSchema } from "../src/agent/tool-catalog";
 
 const lines = [
   "# ClawChat tool reference",
   "",
-  "This file is generated from `src/tool-catalog.ts`. Do not edit it directly.",
+  "This file is generated from `src/agent/tool-catalog.ts`. Do not edit it directly.",
   "",
 ];
 for (const tool of CONNECT_TOOL_CATALOG) {

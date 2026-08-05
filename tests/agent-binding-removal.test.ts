@@ -2,11 +2,11 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { removeAgentBinding } from "../src/agent-binding-removal";
+import { removeAgentBinding } from "../src/account/agent-binding-removal";
 import { FileTurnSubmissionStaging } from "../src/client-interface/turn-submission-staging";
 import { defaultConfig, loadConfig, saveConfig } from "../src/config";
-import { ProjectCatalog } from "../src/projects";
-import { createStateStore } from "../src/state";
+import { createStateStore } from "../src/persistence/state";
+import { ProjectCatalog } from "../src/projects/projects";
 import type { ActivationCredentials } from "../src/types";
 
 describe("Agent Binding removal", () => {

@@ -4,7 +4,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
-import { createStateStore } from "../src/state";
+import { createStateStore } from "../src/persistence/state";
 
 async function tempDir(): Promise<string> {
   return await mkdtemp(join(tmpdir(), "clawchat-connect-"));

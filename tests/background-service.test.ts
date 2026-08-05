@@ -7,7 +7,7 @@ import {
   connectCommandForProcess,
   currentConnectCommand,
   manageBackgroundService,
-} from "../src/background-service";
+} from "../src/service/background-service";
 
 function successfulCommand(stdout = ""): BackgroundCommandResult {
   return { exitCode: 0, stdout, stderr: "" };

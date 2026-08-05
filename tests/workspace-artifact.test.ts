@@ -3,7 +3,7 @@ import {
   classifyWorkspaceArtifact,
   normalizeWorkspaceArtifactHref,
   workspaceArtifactUrl,
-} from "../src/workspace-artifact";
+} from "../src/projects/workspace-artifact";
 
 describe("Workspace Artifact", () => {
   it("classifies every supported renderer from a local path", () => {

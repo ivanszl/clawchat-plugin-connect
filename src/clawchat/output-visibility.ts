@@ -1,6 +1,6 @@
-import { isProjectionOnlyRuntimeActivity, type RuntimeActivity } from "./runtime/types";
-import type { ConnectStateStore } from "./state";
-import type { ConnectConfig, OutputVisibility } from "./types";
+import type { ConnectStateStore } from "../persistence/state";
+import { isProjectionOnlyRuntimeActivity, type RuntimeActivity } from "../runtime/types";
+import type { ConnectConfig, OutputVisibility } from "../types";
 
 export type RuntimeOutputKind = "final" | "assistant" | "tool" | "progress" | "reasoning" | "control";
 export interface OutputVisibilityPolicy {

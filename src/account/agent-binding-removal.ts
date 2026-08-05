@@ -1,15 +1,15 @@
 import { resolve } from "node:path";
-import { manageBackgroundService } from "./background-service";
-import { FileTurnSubmissionStaging } from "./client-interface/turn-submission-staging";
-import { defaultConfigPath, loadConfig, saveConfig } from "./config";
+import { FileTurnSubmissionStaging } from "../client-interface/turn-submission-staging";
+import { defaultConfigPath, loadConfig, saveConfig } from "../config";
+import { type ConnectStateStore, createStateStore } from "../persistence/state";
+import { ProjectCatalog } from "../projects/projects";
+import { manageBackgroundService } from "../service/background-service";
 import {
   createLivewareExposureDependencies,
   resolveLivewareExecutablePath,
   retireLivewareExposure,
-} from "./liveware-exposure";
-import { ProjectCatalog } from "./projects";
-import { type ConnectStateStore, createStateStore } from "./state";
-import type { ActivationCredentials } from "./types";
+} from "../service/liveware-exposure";
+import type { ActivationCredentials } from "../types";
 
 export interface RemoveAgentBindingOptions {
   agentId: string;

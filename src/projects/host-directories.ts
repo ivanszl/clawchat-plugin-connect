@@ -6,7 +6,7 @@ import type {
   HostDirectoryListingView,
   HostDirectoryLocationView,
   ProjectDirectoryRequest,
-} from "./client-contract";
+} from "../client-contract";
 
 export class HostDirectoryError extends Error {
   constructor(

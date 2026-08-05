@@ -2,11 +2,13 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdir, mkdtemp, realpath, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { handleChatCommand } from "../src/chat-commands";
+import { handleChatCommand } from "../src/clawchat/chat-commands";
+import type { NormalizedInboundMessage } from "../src/clawchat/protocol";
+import type { ConnectWsClient } from "../src/clawchat/ws-client";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
-import { ProjectCatalog } from "../src/projects";
-import type { NormalizedInboundMessage } from "../src/protocol";
+import { createStateStore } from "../src/persistence/state";
+import { ProjectCatalog } from "../src/projects/projects";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type {
@@ -17,8 +19,6 @@ import type {
   RuntimeActivity,
 } from "../src/runtime/types";
 import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
-import { createStateStore } from "../src/state";
-import type { ConnectWsClient } from "../src/ws-client";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 function message(text = "hello"): NormalizedInboundMessage {

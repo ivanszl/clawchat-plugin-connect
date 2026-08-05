@@ -5,10 +5,10 @@ import { basename, join } from "node:path";
 import { SessionCatalog } from "../src/client-interface/session-catalog";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
+import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
 import { encodeCodeBuddySessionId } from "../src/runtime/workbuddy-runtime-target";
-import { type ConnectStateStore, createStateStore } from "../src/state";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 const stores: ConnectStateStore[] = [];

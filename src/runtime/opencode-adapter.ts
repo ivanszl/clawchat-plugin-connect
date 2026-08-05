@@ -15,7 +15,7 @@ import type {
   Session,
   ToolPart,
 } from "@opencode-ai/sdk/v2/types";
-import { leadingSkillArguments } from "../skill-invocation";
+import { leadingSkillArguments } from "../agent/skill-invocation";
 import type { AgentBindingConfig, OpenCodeAgentBindingConfig, RuntimeWorkspace } from "../types";
 import {
   createOpenCodeServerClient,

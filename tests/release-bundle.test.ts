@@ -3,8 +3,8 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installManagedSkillsFromPackage } from "../scripts/postinstall";
-import { livewareAssetName } from "../src/liveware-exposure";
-import { CONNECT_VERSION } from "../src/version";
+import { livewareAssetName } from "../src/service/liveware-exposure";
+import { CONNECT_VERSION } from "../src/service/version";
 
 async function listFiles(directory: string, prefix = ""): Promise<string[]> {
   const files: string[] = [];

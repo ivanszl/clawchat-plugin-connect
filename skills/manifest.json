@@ -3,7 +3,7 @@
   "files": {
     "clawchat-core/SKILL.md": "e0784471020e8e132898648b420ac1a582c9192366618962b2f2f087f83aacf8",
     "clawchat-core/agents/openai.yaml": "83cf32458e89607db5c51317fc1dcd5dbdb279a4f6d068a9eaa2e963490aeda7",
-    "clawchat-core/references/tools.md": "765cc5fb9f5a8a579331620bd52ced496fbf5e8059b48d2abe052ab5d88ac10b",
+    "clawchat-core/references/tools.md": "e050f5d1f3c7a0b1799f6c3eca6f5b1f2c00842b96f093108206d493f27f383a",
     "clawchat-liveware/SKILL.md": "a2c56bd4d036cf809103622487fca825c9a1c3c79bec9e64653fba21ca7bfbf1",
     "clawchat-liveware/agents/openai.yaml": "26a52ae53e9ea30f8c5bd0076d1743fa1a93c0befbd83b488cbc2ef9a18a7943",
     "clawchat-liveware/references/commands.md": "ee17d6d6d3285f623b181cbb305c79012efa337a563f7b311ec746ada5ec508a"

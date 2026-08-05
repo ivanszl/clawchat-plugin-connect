@@ -23,7 +23,7 @@
 **Files:**
 - Modify: `tests/background-service.test.ts:76-99`
 - Modify: `tests/background-service.test.ts:194-202`
-- Keep unchanged: `src/background-service.ts`
+- Keep unchanged: `src/service/background-service.ts`
 - Keep unchanged: `install.sh`
 - Keep unchanged: `install.ps1`
 
@@ -108,7 +108,7 @@ Run:
 
 ```bash
 git diff --check
-git diff -- tests/background-service.test.ts src/background-service.ts install.sh install.ps1 .github/workflows/release-beta.yml
+git diff -- tests/background-service.test.ts src/service/background-service.ts install.sh install.ps1 .github/workflows/release-beta.yml
 ```
 
 Expected: no whitespace errors; only the two approved assertions change, with no diff in production source, installers, or the release workflow.

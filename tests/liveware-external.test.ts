@@ -2,13 +2,13 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createStateStore } from "../src/persistence/state";
 import {
   createLivewareExposureDependencies,
   prepareLivewareExposure,
   type RunLivewareProcess,
   retireLivewareExposure,
-} from "../src/liveware-exposure";
-import { createStateStore } from "../src/state";
+} from "../src/service/liveware-exposure";
 import type { ActivationCredentials } from "../src/types";
 
 describe("production Liveware adapters", () => {

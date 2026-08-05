@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { startClientInterface } from "../../src/client-interface/server";
 import { TranscriptProjection } from "../../src/client-interface/transcript-projection";
 import { defaultConfig } from "../../src/config";
+import { createStateStore } from "../../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../../src/runtime/runtime-interaction-coordinator";
 import type { RuntimeActivity, RuntimeTranscriptEntry } from "../../src/runtime/types";
-import { createStateStore } from "../../src/state";
 import { fixedRuntimeAdapter } from "../runtime-adapter-fixture";
 
 const directory = await mkdtemp(join(tmpdir(), "connect-client-preview-"));

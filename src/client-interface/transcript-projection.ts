@@ -8,9 +8,9 @@ import type {
   TranscriptOrigin,
 } from "../client-contract";
 import { getAgentBinding } from "../config";
+import type { ConnectStateStore, TranscriptBlockInput } from "../persistence/state";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { type RuntimeActivity, type RuntimeTranscriptCompleteness, runtimeActivityOrdinal } from "../runtime/types";
-import type { ConnectStateStore, TranscriptBlockInput } from "../state";
 import type { ConnectConfig, RuntimeSessionRecord } from "../types";
 
 export interface TranscriptProjectionOptions {

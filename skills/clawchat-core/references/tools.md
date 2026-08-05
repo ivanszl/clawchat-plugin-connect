@@ -1,6 +1,6 @@
 # ClawChat tool reference
 
-This file is generated from `src/tool-catalog.ts`. Do not edit it directly.
+This file is generated from `src/agent/tool-catalog.ts`. Do not edit it directly.
 
 ## `clawchat_get_account_profile`
 

@@ -1,7 +1,11 @@
 import { describe, expect, it, mock } from "bun:test";
+import {
+  materializeRuntimeOutput,
+  policyForOutputVisibility,
+  resolveOutputVisibility,
+} from "../src/clawchat/output-visibility";
 import { defaultConfig } from "../src/config";
-import { materializeRuntimeOutput, policyForOutputVisibility, resolveOutputVisibility } from "../src/output-visibility";
-import type { ConnectStateStore } from "../src/state";
+import type { ConnectStateStore } from "../src/persistence/state";
 
 describe("output visibility", () => {
   it("uses a Binding-scoped chat override before the Binding default", async () => {

@@ -2,9 +2,9 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activateConnect } from "../src/activation";
+import { activateConnect } from "../src/account/activation";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
-import { createStateStore } from "../src/state";
+import { createStateStore } from "../src/persistence/state";
 
 async function tempDir(): Promise<string> {
   return await mkdtemp(join(tmpdir(), "clawchat-connect-activation-"));

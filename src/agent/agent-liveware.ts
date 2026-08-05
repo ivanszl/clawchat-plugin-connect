@@ -4,9 +4,9 @@ import {
   LIVEWARE_APP_NAME,
   type LivewareControlSession,
   resolveLivewareExecutablePath,
-} from "./liveware-exposure";
+} from "../service/liveware-exposure";
+import type { ActivationCredentials } from "../types";
 import { ClawChatToolApiError } from "./tool-executor";
-import type { ActivationCredentials } from "./types";
 
 export const AGENT_LIVEWARE_OPERATIONS = [
   "liveware_app_list",

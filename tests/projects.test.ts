@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { synchronizeRuntimeProjects } from "../src/project-synchronizer";
-import { ProjectCatalog } from "../src/projects";
-import { createStateStore } from "../src/state";
+import { createStateStore } from "../src/persistence/state";
+import { synchronizeRuntimeProjects } from "../src/projects/project-synchronizer";
+import { ProjectCatalog } from "../src/projects/projects";
 import type { RuntimeSessionRecord } from "../src/types";
 
 async function fixture() {

@@ -2,13 +2,10 @@ import { expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ClawChatApiClient } from "../src/api-client";
-import { startBindingRuntime } from "../src/binding-runtime";
-import { defaultConfig } from "../src/config";
-import { type GroupIntakeClock, GroupIntakeCoordinator } from "../src/group-intake";
-import { inboundContentDigest } from "../src/inbound-identity";
-import { normalizeInboundMessage } from "../src/message-mapper";
-import { ProjectCatalog } from "../src/projects";
+import type { ClawChatApiClient } from "../src/clawchat/api-client";
+import { type GroupIntakeClock, GroupIntakeCoordinator } from "../src/clawchat/group-intake";
+import { inboundContentDigest } from "../src/clawchat/inbound-identity";
+import { normalizeInboundMessage } from "../src/clawchat/message-mapper";
 import {
   type Envelope,
   EVENT,
@@ -17,14 +14,17 @@ import {
   type Transport,
   type TransportEvents,
   type TransportState,
-} from "../src/protocol";
+} from "../src/clawchat/protocol";
+import { defaultConfig } from "../src/config";
+import { createStateStore, type GroupSettingsRecord } from "../src/persistence/state";
+import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import {
   type ConnectRuntimePrompt,
   type RuntimeInputIdentity,
   runtimeInputIdentityContains,
 } from "../src/runtime/types";
-import { createStateStore, type GroupSettingsRecord } from "../src/state";
+import { startBindingRuntime } from "../src/service/binding-runtime";
 import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 
 class MemoryTransport implements Transport {

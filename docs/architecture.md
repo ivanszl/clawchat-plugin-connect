@@ -194,33 +194,27 @@ Protocol v2 frames and materialized messages are recorded before dispatch. Once 
 
 - Connect has no dynamic tool registry, local memory tools, or MCP entrypoint.
 - The Codex adapter does not inject tool or MCP configuration.
-- Profile updates are explicit CLI operations through `src/profile.ts`.
+- Profile updates are explicit CLI operations through `src/account/profile.ts`.
 - The REST client retains only activation and Profile-update operations required by Connect.
 - MCP servers configured independently in the user's Codex environment remain outside Connect's ownership.
 
 ## Layering
 
 ```text
-src/cli.ts                     CLI commands and process startup
-src/activation.ts              Activation and Profile nickname synchronization
-src/profile.ts                 Explicit authenticated Profile updates
-src/ws-client.ts               Protocol v2 over Bun WebSocket
-src/media-api-client.ts        Authenticated ClawChat media upload client
-src/message-mapper.ts          ClawChat message fragment mapping
-src/chat-commands.ts           Session and Project command intent
-src/projects.ts                Project catalog and workspace resolution
-src/runtime/types.ts           Direct runtime seam
-src/runtime/registry.ts        Runtime Adapter selection by Binding kind
-src/runtime/codex-app-server.ts Pinned app-server process and JSON-RPC transport
-src/runtime/codex-rollout.ts   Pinned-version Codex transcript fallback
-src/runtime/codex-adapter.ts   Codex Runtime Adapter and Connect event mapping
-src/runtime/connect-runtime.ts Queue, lifecycle, discovery, output, and reply dispatch
-src/runtime/media-cache.ts    Bounded state-local cache for runtime file/video inputs
-src/client-contract/index.ts    Browser-safe versioned Client views and intents
-src/client-interface/          Loopback server, catalog, and transcript projection
-web/src/                       React/Astryx/TanStack Connect Client
-src/api-client.ts              Minimal activation and Profile REST client
-src/state.ts                   Bun SQLite persistence
+src/bin.ts                Executable entrypoint
+src/index.ts              Package exports
+src/account/              Activation, Binding removal, and Profile updates
+src/agent/                Agent-callable Skills, tools, and Liveware commands
+src/clawchat/             Protocol v2, WebSocket transport, media, intake, and commands
+src/projects/             Project, Workspace, Session continuity, and host-directory behavior
+src/persistence/          SQLite adapter, schema, codecs, Session Refs, and state Interface
+src/service/              CLI, process startup, Binding runtime, Liveware exposure, and updates
+src/runtime/types.ts      Direct Runtime Adapter seam
+src/runtime/registry.ts   Runtime Adapter selection by Binding kind
+src/runtime/*-adapter.ts  Runtime-specific adapters and event mapping
+src/client-contract/      Browser-safe versioned Client views and intents
+src/client-interface/     HTTP/SSE interface, catalog, transcript projection, and commands
+web/src/                  React/Astryx/TanStack Connect Client
 ```
 
 ## Command authorization and ordering

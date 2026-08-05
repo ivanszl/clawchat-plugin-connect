@@ -1,9 +1,9 @@
 import { basename, isAbsolute } from "node:path";
-import { buildTextMessagePayload } from "./message-mapper";
-import { EVENT } from "./protocol";
+import { buildTextMessagePayload } from "../clawchat/message-mapper";
+import { EVENT } from "../clawchat/protocol";
+import type { ConnectWsClient } from "../clawchat/ws-client";
+import type { ActivationCredentials, ChatType } from "../types";
 import { getConnectTool, validateToolInput } from "./tool-catalog";
-import type { ActivationCredentials, ChatType } from "./types";
-import type { ConnectWsClient } from "./ws-client";
 
 const MAX_AVATAR_BYTES = 20 * 1024 * 1024;
 

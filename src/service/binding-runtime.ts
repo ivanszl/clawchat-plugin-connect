@@ -1,36 +1,36 @@
-import { executeAgentLiveware, isAgentLivewareOperation } from "./agent-liveware";
-import { type ClawChatApiClient, createClawChatApiClient } from "./api-client";
-import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "./chat-commands";
-import type { TranscriptProjection } from "./client-interface/transcript-projection";
-import { getAgentBinding } from "./config";
-import { type GroupDispatchMode, type GroupIntakeClock, GroupIntakeCoordinator } from "./group-intake";
-import { inboundContentDigest } from "./inbound-identity";
+import { executeAgentLiveware, isAgentLivewareOperation } from "../agent/agent-liveware";
+import { verifyInstalledSkills } from "../agent/skills";
+import { executeConnectTool } from "../agent/tool-executor";
+import { type ClawChatApiClient, createClawChatApiClient } from "../clawchat/api-client";
+import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "../clawchat/chat-commands";
+import { type GroupDispatchMode, type GroupIntakeClock, GroupIntakeCoordinator } from "../clawchat/group-intake";
+import { inboundContentDigest } from "../clawchat/inbound-identity";
 import {
   type AddressedInboundMessage,
   addressInboundMessage,
   buildReplyTextMessagePayload,
   buildTextMessagePayload,
   normalizeInboundMessage,
-} from "./message-mapper";
-import type { ProjectCatalog } from "./projects";
-import { type Envelope, EVENT, type NormalizedInboundMessage, type Transport } from "./protocol";
-import { ConnectRuntime } from "./runtime/connect-runtime";
-import type { RuntimeAdapterRegistry } from "./runtime/registry";
-import type { RuntimeInteractionCoordinator } from "./runtime/runtime-interaction-coordinator";
-import { RuntimeInteractionRouter } from "./runtime/runtime-interaction-router";
-import type { SessionActivity } from "./runtime/session-queue";
+} from "../clawchat/message-mapper";
+import { type Envelope, EVENT, type NormalizedInboundMessage, type Transport } from "../clawchat/protocol";
+import { ConnectWsClient } from "../clawchat/ws-client";
+import type { TranscriptProjection } from "../client-interface/transcript-projection";
+import { getAgentBinding } from "../config";
+import type { ConnectStateStore } from "../persistence/state";
+import type { ProjectCatalog } from "../projects/projects";
+import { ConnectRuntime } from "../runtime/connect-runtime";
+import type { RuntimeAdapterRegistry } from "../runtime/registry";
+import type { RuntimeInteractionCoordinator } from "../runtime/runtime-interaction-coordinator";
+import { RuntimeInteractionRouter } from "../runtime/runtime-interaction-router";
+import type { SessionActivity } from "../runtime/session-queue";
 import {
   type ConnectRuntimeMedia,
   type QueuedClientTurn,
   type RuntimeInputReceiptSnapshot,
   type RuntimeSlashSelection,
   runtimeInputIdentityContains,
-} from "./runtime/types";
-import { verifyInstalledSkills } from "./skills";
-import type { ConnectStateStore } from "./state";
-import { executeConnectTool } from "./tool-executor";
-import type { ActivationCredentials, ConnectConfig } from "./types";
-import { ConnectWsClient } from "./ws-client";
+} from "../runtime/types";
+import type { ActivationCredentials, ConnectConfig } from "../types";
 
 export interface BindingRuntimeOptions {
   agentId: string;

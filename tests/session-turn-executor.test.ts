@@ -1,7 +1,7 @@
 import { expect, it } from "bun:test";
+import type { TurnTarget } from "../src/projects/session-continuity";
 import { SessionTurnExecutor } from "../src/runtime/session-turn-executor";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
-import type { TurnTarget } from "../src/session-continuity";
 
 it("owns one native handle per Session and reports a new Runtime Thread through Session Continuity", async () => {
   const starts: string[] = [];

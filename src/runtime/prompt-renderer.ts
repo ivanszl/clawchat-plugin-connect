@@ -1,5 +1,5 @@
-import { inboundContentDigest } from "../inbound-identity";
-import type { NormalizedInboundMessage } from "../protocol";
+import { inboundContentDigest } from "../clawchat/inbound-identity";
+import type { NormalizedInboundMessage } from "../clawchat/protocol";
 
 export function renderClawChatPrompt(message: NormalizedInboundMessage): string {
   const sender = message.sender.nick_name || message.sender.id;

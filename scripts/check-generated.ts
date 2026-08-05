@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { CONNECT_TOOL_CATALOG, toolJsonSchema } from "../src/tool-catalog";
-import { CONNECT_VERSION } from "../src/version";
+import { CONNECT_TOOL_CATALOG, toolJsonSchema } from "../src/agent/tool-catalog";
+import { CONNECT_VERSION } from "../src/service/version";
 
 const skillsRoot = new URL("../skills", import.meta.url).pathname;
 const referenceLines = [
   "# ClawChat tool reference",
   "",
-  "This file is generated from `src/tool-catalog.ts`. Do not edit it directly.",
+  "This file is generated from `src/agent/tool-catalog.ts`. Do not edit it directly.",
   "",
 ];
 for (const tool of CONNECT_TOOL_CATALOG) {
