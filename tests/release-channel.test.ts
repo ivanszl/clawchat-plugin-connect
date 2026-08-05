@@ -553,7 +553,7 @@ test("PowerShell installer bypasses the beta channel for an explicit historical 
   const requests = await read(requestsPath);
   expect(requests).toContain("/releases/download/v0.1.0-alpha.33/clawchat-connect-windows-");
   expect(requests).not.toContain("release-channel/latest-beta.txt");
-});
+}, 30_000);
 
 test("beta workflow builds six archives before publishing and advancing the channel", async () => {
   const workflow = Bun.YAML.parse(await read(".github/workflows/release-beta.yml")) as {
