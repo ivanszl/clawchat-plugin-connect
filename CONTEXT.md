@@ -12,6 +12,10 @@ _Avoid_: Agent, when referring to the configured association rather than the ext
 A concrete integration that lets Connect start and operate one kind of coding agent runtime. Codex is the first Runtime Adapter, not the definition of Connect or Agent Binding.
 _Avoid_: Agent Binding, Codex, when referring to the adapter role
 
+**Claude Code Runtime**:
+A user-installed Claude Code coding-agent runtime whose native Sessions can be operated through an Agent Binding. Selecting a Claude model through another Runtime Adapter does not make that runtime a Claude Code Runtime.
+_Avoid_: Claude model, Anthropic API provider, Claude Runtime
+
 **CodeBuddy Runtime**:
 A user-installed CodeBuddy Code CLI installation whose native Sessions can be operated through an Agent Binding. It may expose Agent capabilities also used by WorkBuddy Desktop, but it does not expose WorkBuddy product state; its Sessions and tool-level Tasks are not WorkBuddy Tasks.
 _Avoid_: WorkBuddy Runtime, WorkBuddy Task
