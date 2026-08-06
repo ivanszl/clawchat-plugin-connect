@@ -137,6 +137,7 @@ export interface SessionIntentRecord {
 
 export interface RuntimeStatus {
   updatedAt: number;
+  runtimeAvailability: "available" | "startup-unavailable" | null;
   websocketConnected: boolean | null;
   activeAgent: string | null;
   activeChats: number;

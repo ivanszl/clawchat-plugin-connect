@@ -20,6 +20,179 @@ function liveActivity(
 }
 
 describe("Connect Transcript Projection", () => {
+  it("projects inherited Subagent history only once", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-subagent-deduplication-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-subagent-deduplication",
+        sessionId: "session-subagent-deduplication",
+        agentId: "codex",
+        runtimeSessionId: "thread-subagent-deduplication",
+        hasMessages: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-subagent-deduplication", "codex");
+      if (!session) throw new Error("test Session was not created");
+      const config = defaultConfig();
+      config.agents = { codex: { kind: "codex" } };
+      const inherited = {
+        id: "shared-user-message",
+        position: "0.1",
+        parentId: null,
+        kind: "user" as const,
+        text: "original prompt",
+        state: "complete" as const,
+        source: "history" as const,
+      };
+      const runtimeAdapters = new RuntimeAdapterRegistry([
+        fixedRuntimeAdapter({
+          kind: "codex",
+          modes: [],
+          readActivity: async () => ({
+            completeness: "complete",
+            limitations: [],
+            activities: [
+              inherited,
+              {
+                id: "subagent-one",
+                position: "0.2",
+                parentId: null,
+                kind: "subagent",
+                text: "Worker one",
+                state: "complete",
+                source: "history",
+                children: [
+                  { ...inherited, parentId: "subagent-one" },
+                  {
+                    id: "worker-one-result",
+                    position: "0.2.1",
+                    parentId: "subagent-one",
+                    kind: "assistant",
+                    text: "first result",
+                    state: "complete",
+                    source: "history",
+                  },
+                ],
+              },
+              {
+                id: "subagent-two",
+                position: "0.3",
+                parentId: null,
+                kind: "subagent",
+                text: "Worker two",
+                state: "complete",
+                source: "history",
+                children: [
+                  { ...inherited, parentId: "subagent-two" },
+                  {
+                    id: "worker-one-result",
+                    position: "0.3.1",
+                    parentId: "subagent-two",
+                    kind: "assistant",
+                    text: "latest result",
+                    state: "complete",
+                    source: "history",
+                  },
+                ],
+              },
+            ],
+          }),
+          start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+        }),
+      ]);
+
+      await new TranscriptProjection({ stateStore: store, config, runtimeAdapters }).reconcile(session);
+
+      const blocks = await store.listTranscriptBlocks(session.sessionRef);
+      expect(blocks.filter((block) => block.plainText === "original prompt")).toHaveLength(1);
+      expect(blocks.filter((block) => block.type === "subagent")).toMatchObject([
+        { blocks: [{ plainText: "latest result" }] },
+        { blocks: [] },
+      ]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("bounds nested Subagent history with a visible omission marker", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-transcript-subagent-bounds-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await store.upsertRuntimeSession({
+        chatId: "chat-subagent-bounds",
+        sessionId: "session-subagent-bounds",
+        agentId: "codex",
+        runtimeSessionId: "thread-subagent-bounds",
+        hasMessages: true,
+      });
+      const session = await store.getCurrentRuntimeSession("chat-subagent-bounds", "codex");
+      if (!session) throw new Error("test Session was not created");
+      const nested = (depth: number): RuntimeActivity => ({
+        id: `nested-${depth}`,
+        position: `0.${depth}`,
+        parentId: depth === 0 ? "bounded-worker" : `nested-${depth - 1}`,
+        kind: "subagent",
+        text: `Nested worker ${depth}`,
+        state: "complete",
+        source: "history",
+        children:
+          depth === 8
+            ? [
+                {
+                  id: "too-deep-result",
+                  position: "0.9.1",
+                  parentId: "nested-8",
+                  kind: "assistant",
+                  text: "must not be embedded",
+                  state: "complete",
+                  source: "history",
+                },
+              ]
+            : [nested(depth + 1)],
+      });
+      const activity: RuntimeActivity = {
+        id: "bounded-worker",
+        position: "0.1",
+        parentId: null,
+        kind: "subagent",
+        text: "Bounded worker",
+        state: "complete",
+        source: "history",
+        data: { title: "oversized title ".repeat(100_000), role: "oversized role ".repeat(100_000) },
+        children: [
+          nested(0),
+          ...Array.from({ length: 20 }, (_, index) => ({
+            id: `large-result-${index}`,
+            position: `0.10.${index}`,
+            parentId: "bounded-worker",
+            kind: "assistant" as const,
+            text: `result ${index} ${"x".repeat(20_000)}`,
+            state: "complete" as const,
+            source: "history" as const,
+          })),
+        ],
+      };
+
+      await new TranscriptProjection({
+        stateStore: store,
+        config: defaultConfig(),
+        runtimeAdapters: new RuntimeAdapterRegistry([]),
+      }).upsertRuntimeActivity(session.sessionRef, activity);
+
+      const blocks = await store.listTranscriptBlocks(session.sessionRef);
+      const block = blocks.find(
+        (candidate) => candidate.type === "subagent" && candidate.plainText === "Bounded worker",
+      );
+      const serialized = JSON.stringify(block);
+      expect(Buffer.byteLength(serialized)).toBeLessThan(512 * 1024);
+      expect(serialized).toContain("Additional Sub-agent history was omitted");
+      expect(serialized).not.toContain("must not be embedded");
+      expect(blocks.filter((candidate) => candidate.plainText === "must not be embedded")).toHaveLength(0);
+    } finally {
+      await store.close();
+    }
+  });
+
   it("rekeys a ClawChat inbound block from authoritative turn context instead of duplicating it", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-transcript-clawchat-user-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });

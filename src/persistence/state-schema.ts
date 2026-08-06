@@ -188,6 +188,7 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
     CREATE TABLE IF NOT EXISTS runtime_statuses(
       agent_id TEXT PRIMARY KEY,
       updated_at INTEGER NOT NULL,
+      runtime_availability TEXT CHECK(runtime_availability IN ('available', 'startup-unavailable')),
       websocket_connected INTEGER,
       active_chats INTEGER NOT NULL,
       global_running INTEGER NOT NULL,
@@ -263,10 +264,20 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_client_events_created
       ON client_events(created_at);
+    CREATE TABLE IF NOT EXISTS client_event_retention(
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      floor_cursor INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO client_event_retention(id, floor_cursor) VALUES (1, 0);
   `);
 }
 
 export async function migrateStateSchema(db: SqliteDb): Promise<void> {
+  const runtimeStatusColumns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_statuses)");
+  if (!runtimeStatusColumns.some((column) => column.name === "runtime_availability"))
+    await db.exec(
+      "ALTER TABLE runtime_statuses ADD COLUMN runtime_availability TEXT CHECK(runtime_availability IN ('available', 'startup-unavailable'))",
+    );
   const projectColumns = await db.all<{ name: string }[]>("PRAGMA table_info(projects)");
   if (projectColumns.some((column) => column.name === "additional_directories_json")) {
     const affected = await db.get<{ count: number }>(

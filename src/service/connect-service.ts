@@ -126,23 +126,23 @@ export async function startConnectService(
         attempts.push({ status: "rejected", reason });
       }
     }
-    const failures: string[] = [];
     for (let index = 0; index < attempts.length; index += 1) {
       const attempt = attempts[index];
       const agentId = activatedBindings[index]?.agentId ?? "unknown";
       if (attempt?.status === "fulfilled") {
         handles.push(attempt.value);
+        await store.setRuntimeAvailability(agentId, "available", null).catch(() => undefined);
         writeOutput(
           `Connected Agent Binding ${agentId} to ${attempt.value.websocketUrl} as ${attempt.value.deviceId}.\n`,
         );
       } else if (attempt) {
         const detail = attempt.reason instanceof Error ? attempt.reason.message : String(attempt.reason);
-        failures.push(`${agentId}: ${detail}`);
+        await store.setRuntimeAvailability(agentId, "startup-unavailable", detail).catch(() => undefined);
         writeError(`Failed to start Agent Binding ${agentId}: ${detail}\n`);
       }
     }
     if (handles.length === 0) {
-      throw new Error(`Connect could not start any activated Agent Bindings:\n- ${failures.join("\n- ")}`);
+      writeError("Connect started with no usable Agent Bindings; unavailable runtimes will remain disconnected.\n");
     }
     stopToolWorkers = startToolRequestWorkers(handles, store, writeError);
     clientInterface = await (dependencies.startClientInterface ?? startClientInterface)({
@@ -204,7 +204,9 @@ export async function startConnectService(
           }
         }
       } else {
-        for (const { agentId, activation } of activatedBindings) {
+        for (const { agentId, activation } of activatedBindings.filter(({ agentId }) =>
+          handles.some((handle) => handle.agentId === agentId),
+        )) {
           if (!activation) continue;
           let gateway: BindingScopedClientGatewayHandle | null = null;
           try {

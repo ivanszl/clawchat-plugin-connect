@@ -443,12 +443,19 @@ export class SessionCatalog {
       const managedRuntimeIds = new Set(
         managed.map((session) => session.runtimeSessionId).filter((id): id is string => Boolean(id)),
       );
-      const discoveredActive = (
-        await this.options.runtimeAdapters.discoverAllThreads(getAgentBinding(this.options.config, bindingId))
-      ).filter((thread) => !thread.parentRuntimeThreadId);
-      const discoveredArchived = (
-        await this.options.runtimeAdapters.discoverArchivedThreads(getAgentBinding(this.options.config, bindingId))
-      ).filter((thread) => !thread.parentRuntimeThreadId);
+      // A failed startup is terminal for this service lifetime. Avoid probing
+      // an uninstalled CLI or stopped desktop app from every catalog request.
+      const runtimeUnavailable = status?.runtimeAvailability === "startup-unavailable";
+      const discoveredActive = runtimeUnavailable
+        ? []
+        : (
+            await this.options.runtimeAdapters.discoverAllThreads(getAgentBinding(this.options.config, bindingId))
+          ).filter((thread) => !thread.parentRuntimeThreadId);
+      const discoveredArchived = runtimeUnavailable
+        ? []
+        : (
+            await this.options.runtimeAdapters.discoverArchivedThreads(getAgentBinding(this.options.config, bindingId))
+          ).filter((thread) => !thread.parentRuntimeThreadId);
       try {
         projects = (
           await synchronizeRuntimeProjects({
@@ -557,7 +564,11 @@ export class SessionCatalog {
         displayName: binding.displayName || bindingId,
         kind: binding.kind,
         status:
-          status?.websocketConnected == null ? "unknown" : status.websocketConnected ? "connected" : "disconnected",
+          status?.runtimeAvailability === "startup-unavailable" || status?.websocketConnected === false
+            ? "disconnected"
+            : status?.websocketConnected === true
+              ? "connected"
+              : "unknown",
         entries,
       });
     }
@@ -683,5 +694,7 @@ function catalogActions(
 
 function sessionStatus(status: RuntimeStatus | null, activity: SessionActivity): SessionCatalogEntryView["status"] {
   if (activity !== "idle") return activity;
-  return status?.websocketConnected === false ? "offline" : "idle";
+  return status?.runtimeAvailability === "startup-unavailable" || status?.websocketConnected === false
+    ? "offline"
+    : "idle";
 }

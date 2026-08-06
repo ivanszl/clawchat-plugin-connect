@@ -3,6 +3,8 @@ import type { ClientViewEvent, TranscriptBlock } from "../client-contract";
 export interface ConnectStateOptions {
   dbPath?: string;
   sessionRefFactory?: () => string;
+  clientEventRetentionLimit?: number;
+  storageCompactionThresholdBytes?: number;
 }
 
 export type GroupReplyMode = "all" | "mention";

@@ -155,6 +155,47 @@ describe("Connect Service", () => {
     expect(errors.join("")).toContain("broken: invalid credentials");
   });
 
+  it("keeps the service alive when every activated Binding is unavailable", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-none-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await stateStore.upsertActivation(activation("broken"));
+    const config = serviceConfig(["broken"]);
+    config.stateDbPath = stateStore.dbPath;
+    const errors: string[] = [];
+    const startClientInterface = mock(async () => ({
+      origin: "http://127.0.0.1:47823",
+      stop: async () => undefined,
+    }));
+
+    await expect(
+      startConnectService(
+        {
+          config,
+          configPath: join(directory, "config.json"),
+          stateStore,
+          waitUntilShutdown: async () => undefined,
+          writeOutput: () => undefined,
+          writeError: (message) => errors.push(message),
+        },
+        {
+          startBindingRuntime: async () => {
+            throw new Error("runtime executable was not found");
+          },
+          startClientInterface,
+          verifyInstalledSkills: async () => undefined,
+        },
+      ),
+    ).resolves.toEqual({ startedAgentIds: [] });
+
+    expect(startClientInterface).toHaveBeenCalledTimes(1);
+    expect(errors.join("")).toContain("runtime executable was not found");
+    expect(await stateStore.getRuntimeStatus("broken")).toMatchObject({
+      runtimeAvailability: "startup-unavailable",
+      recentError: "runtime executable was not found",
+    });
+    await stateStore.close();
+  });
+
   it("keeps a Tool Request worker alive after a transient state-store failure", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-tool-worker-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });

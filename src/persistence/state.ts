@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir } from "node:fs/promises";
+import { chmod, mkdir, stat, statfs } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
 import { inboundContentDigest, protocolDeliveryContentJson } from "../clawchat/inbound-identity";
-import type { ClientViewEvent, RuntimeInteractionBlock, TranscriptBlock } from "../client-contract";
+import type {
+  ClientViewEvent,
+  EmbeddedTranscriptBlock,
+  RuntimeInteractionBlock,
+  TranscriptBlock,
+} from "../client-contract";
 import { defaultStateDbPath } from "../config";
 import type { RuntimeInputIdentity } from "../runtime/types";
 import {
@@ -81,10 +86,17 @@ import type {
 export class ConnectStateStore {
   readonly dbPath: string;
   private readonly sessionRefFactory: () => string;
+  private readonly clientEventRetentionLimit: number;
+  private readonly storageCompactionThresholdBytes: number;
   private db: SqliteDb | null = null;
   constructor(options: ConnectStateOptions = {}) {
     this.dbPath = options.dbPath ?? defaultStateDbPath();
     this.sessionRefFactory = options.sessionRefFactory ?? generateSessionRef;
+    this.clientEventRetentionLimit = Math.max(
+      1,
+      Math.min(100_000, Math.trunc(options.clientEventRetentionLimit ?? 2_000)),
+    );
+    this.storageCompactionThresholdBytes = Math.max(0, options.storageCompactionThresholdBytes ?? 64 * 1024 * 1024);
     if (!isAbsolute(this.dbPath)) throw new Error("stateDbPath must be an absolute path");
   }
   async initialize(): Promise<void> {
@@ -93,10 +105,14 @@ export class ConnectStateStore {
     this.db = new BunSqliteAdapter(new Database(this.dbPath, { create: true }));
     try {
       await this.db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+      await this.db.exec("PRAGMA auto_vacuum = INCREMENTAL");
       await this.db.exec("PRAGMA journal_mode = WAL");
       await this.db.exec("PRAGMA foreign_keys = ON");
       await createStateSchema(this.db);
       await migrateStateSchema(this.db);
+      await this.installClientEventRetention(this.db);
+      await this.deduplicateStoredSubagentBlocks(this.db);
+      await this.reclaimDatabasePages(this.db);
       await backfillSessionRefs(this.db, (target) => this.getOrCreateSessionRef(target));
       await chmod(this.dbPath, 0o600).catch(() => undefined);
     } catch (error) {
@@ -1464,19 +1480,38 @@ export class ConnectStateStore {
     );
     return (result.changes ?? 0) > 0;
   }
-  async upsertRuntimeStatus(input: Omit<RuntimeStatus, "updatedAt">): Promise<void> {
+  async upsertRuntimeStatus(
+    input: Omit<RuntimeStatus, "updatedAt" | "runtimeAvailability"> & {
+      runtimeAvailability?: RuntimeStatus["runtimeAvailability"];
+    },
+  ): Promise<void> {
     if (!input.activeAgent) throw new Error("runtime status requires an Agent Binding id");
     const now = Date.now();
     const db = await this.requireDb();
     await db.run(
-      `INSERT INTO runtime_statuses(agent_id, updated_at, websocket_connected, active_chats, global_running, global_queued, recent_error) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET updated_at = excluded.updated_at, websocket_connected = excluded.websocket_connected, active_chats = excluded.active_chats, global_running = excluded.global_running, global_queued = excluded.global_queued, recent_error = excluded.recent_error`,
+      `INSERT INTO runtime_statuses(agent_id, updated_at, runtime_availability, websocket_connected, active_chats, global_running, global_queued, recent_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET updated_at = excluded.updated_at, runtime_availability = excluded.runtime_availability, websocket_connected = excluded.websocket_connected, active_chats = excluded.active_chats, global_running = excluded.global_running, global_queued = excluded.global_queued, recent_error = excluded.recent_error`,
       input.activeAgent,
       now,
+      input.runtimeAvailability ?? "available",
       input.websocketConnected == null ? null : input.websocketConnected ? 1 : 0,
       input.activeChats,
       input.globalRunning,
       input.globalQueued,
       input.recentError,
+    );
+  }
+  async setRuntimeAvailability(
+    agentId: string,
+    runtimeAvailability: RuntimeStatus["runtimeAvailability"],
+    recentError: string | null,
+  ): Promise<void> {
+    const db = await this.requireDb();
+    await db.run(
+      `INSERT INTO runtime_statuses(agent_id, updated_at, runtime_availability, websocket_connected, active_chats, global_running, global_queued, recent_error) VALUES (?, ?, ?, NULL, 0, 0, 0, ?) ON CONFLICT(agent_id) DO UPDATE SET updated_at = excluded.updated_at, runtime_availability = excluded.runtime_availability, recent_error = excluded.recent_error`,
+      agentId,
+      Date.now(),
+      runtimeAvailability,
+      recentError,
     );
   }
   async setRuntimeConnectionStatus(
@@ -1500,6 +1535,10 @@ export class ConnectStateStore {
     const connected = row.websocket_connected;
     return {
       updatedAt: numberValue(row.updated_at),
+      runtimeAvailability:
+        row.runtime_availability === "available" || row.runtime_availability === "startup-unavailable"
+          ? row.runtime_availability
+          : null,
       websocketConnected: connected == null ? null : Boolean(connected),
       activeAgent: stringValue(row.agent_id),
       activeChats: numberValue(row.active_chats),
@@ -1680,12 +1719,13 @@ export class ConnectStateStore {
             revision: relocated.revision,
             block: relocated,
           } satisfies ClientViewEvent;
+          const storedRelocatedEvent = clientEventStorage(relocatedEvent);
           run(
             "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
-            relocatedEvent.type,
+            storedRelocatedEvent.type,
             sessionRef,
             relocated.revision,
-            JSON.stringify(relocatedEvent),
+            storedRelocatedEvent.json,
             now,
           );
         }
@@ -1733,12 +1773,13 @@ export class ConnectStateStore {
         revision: block.revision,
         block,
       } satisfies ClientViewEvent;
+      const storedEvent = clientEventStorage(eventWithoutCursor);
       const eventInsert = run(
         "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
-        eventWithoutCursor.type,
+        storedEvent.type,
         sessionRef,
         block.revision,
-        JSON.stringify(eventWithoutCursor),
+        storedEvent.json,
         now,
       );
       return { block, cursor: Number(eventInsert.lastInsertRowid) };
@@ -1885,6 +1926,8 @@ export class ConnectStateStore {
       revision: block.revision,
       block,
     } satisfies ClientViewEvent;
+    const storedRemoved = clientEventStorage(removed);
+    const storedUpserted = clientEventStorage(upserted);
     db.transaction((run) => {
       if (stable && stable.block_id !== candidate.block_id) {
         run("DELETE FROM transcript_blocks WHERE session_ref = ? AND block_id = ?", sessionRef, stable.block_id);
@@ -1904,18 +1947,18 @@ export class ConnectStateStore {
       if (updated.changes !== 1) throw new Error("matching transcript block changed during reconciliation");
       run(
         "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
-        removed.type,
+        storedRemoved.type,
         sessionRef,
         removed.revision,
-        JSON.stringify(removed),
+        storedRemoved.json,
         now,
       );
       run(
         "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
-        upserted.type,
+        storedUpserted.type,
         sessionRef,
         upserted.revision,
-        JSON.stringify(upserted),
+        storedUpserted.json,
         now,
       );
     });
@@ -2021,12 +2064,13 @@ export class ConnectStateStore {
           revision: block.revision,
           block,
         } satisfies ClientViewEvent;
+        const storedEvent = clientEventStorage(event);
         run(
           "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
-          event.type,
+          storedEvent.type,
           sessionRef,
           event.revision,
-          JSON.stringify(event),
+          storedEvent.json,
           now,
         );
         settled += 1;
@@ -2038,7 +2082,14 @@ export class ConnectStateStore {
   async getClientEventCursor(): Promise<number> {
     const db = await this.requireDb();
     return numberValue(
-      (await db.get<{ cursor?: number }>("SELECT COALESCE(MAX(cursor), 0) AS cursor FROM client_events"))?.cursor,
+      (
+        await db.get<{ cursor?: number }>(
+          `SELECT MAX(
+             COALESCE((SELECT MAX(cursor) FROM client_events), 0),
+             (SELECT floor_cursor FROM client_event_retention WHERE id = 1)
+           ) AS cursor`,
+        )
+      )?.cursor,
     );
   }
 
@@ -2047,12 +2098,13 @@ export class ConnectStateStore {
       throw new Error(`Client view event ${event.type} must be committed by its owning projection`);
     }
     const db = await this.requireDb();
+    const storedEvent = clientEventStorage({ ...event, cursor: 0, previousCursor: undefined });
     const inserted = await db.run(
       "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
-      event.type,
+      storedEvent.type,
       event.type === "session.changed" ? event.sessionRef : "catalog",
       event.revision,
-      JSON.stringify({ ...event, cursor: 0, previousCursor: undefined }),
+      storedEvent.json,
       Date.now(),
     );
     return Number(inserted.lastInsertRowid);
@@ -2060,11 +2112,33 @@ export class ConnectStateStore {
 
   async listClientEvents(afterCursor: number, limit = 500): Promise<StoredClientEvent[]> {
     const db = await this.requireDb();
+    const retention = await db.get<{ floor_cursor: number }>(
+      "SELECT floor_cursor FROM client_event_retention WHERE id = 1",
+    );
+    const floorCursor = numberValue(retention?.floor_cursor);
+    if (afterCursor < floorCursor) {
+      const cursor = await this.getClientEventCursor();
+      return [
+        {
+          cursor,
+          event: {
+            type: "snapshot-required",
+            reason: "cursor-expired",
+            cursor,
+            previousCursor: afterCursor,
+          },
+          createdAt: Date.now(),
+        },
+      ];
+    }
     const rows = await db.all<
       Array<{ cursor: number; previous_cursor: number | null; event_json: string; created_at: number }>
     >(
       `SELECT current.cursor,
-        (SELECT MAX(previous.cursor) FROM client_events AS previous WHERE previous.cursor < current.cursor) AS previous_cursor,
+        COALESCE(
+          (SELECT MAX(previous.cursor) FROM client_events AS previous WHERE previous.cursor < current.cursor),
+          (SELECT floor_cursor FROM client_event_retention WHERE id = 1)
+        ) AS previous_cursor,
         current.event_json,
         current.created_at
        FROM client_events AS current
@@ -2092,6 +2166,111 @@ export class ConnectStateStore {
         return [];
       }
     });
+  }
+
+  private async installClientEventRetention(db: SqliteDb): Promise<void> {
+    const offset = this.clientEventRetentionLimit;
+    await db.exec(`
+      CREATE TEMP TRIGGER bound_client_event_history
+      AFTER INSERT ON client_events
+      BEGIN
+        UPDATE client_event_retention
+           SET floor_cursor = MAX(
+             floor_cursor,
+             COALESCE(
+               (SELECT cursor FROM client_events ORDER BY cursor DESC LIMIT 1 OFFSET ${offset}),
+               floor_cursor
+             )
+           )
+         WHERE id = 1;
+        DELETE FROM client_events
+         WHERE cursor <= (SELECT floor_cursor FROM client_event_retention WHERE id = 1);
+      END;
+      UPDATE client_event_retention
+         SET floor_cursor = MAX(
+           floor_cursor,
+           COALESCE(
+             (SELECT cursor FROM client_events ORDER BY cursor DESC LIMIT 1 OFFSET ${offset}),
+             floor_cursor
+           )
+         )
+       WHERE id = 1;
+      DELETE FROM client_events
+       WHERE cursor <= (SELECT floor_cursor FROM client_event_retention WHERE id = 1);
+    `);
+  }
+
+  private async deduplicateStoredSubagentBlocks(db: SqliteDb): Promise<void> {
+    const topLevel = await db.all<Array<{ session_ref: string; block_id: string }>>(
+      "SELECT session_ref, block_id FROM transcript_blocks ORDER BY session_ref, sequence",
+    );
+    const seenBySession = new Map<string, Set<string>>();
+    for (const row of topLevel) {
+      const seen = seenBySession.get(row.session_ref) ?? new Set<string>();
+      seen.add(row.block_id);
+      seenBySession.set(row.session_ref, seen);
+    }
+    const rows = await db.all<Array<{ session_ref: string; block_id: string; revision: number; block_json: string }>>(
+      "SELECT session_ref, block_id, revision, block_json FROM transcript_blocks WHERE block_type = 'subagent' ORDER BY session_ref, sequence",
+    );
+    let changed = 0;
+    const now = Date.now();
+    for (const row of rows) {
+      let block: TranscriptBlock;
+      try {
+        block = JSON.parse(row.block_json) as TranscriptBlock;
+      } catch {
+        continue;
+      }
+      if (block.type !== "subagent") continue;
+      const deduplicated = deduplicateStoredSubagent(block, seenBySession.get(row.session_ref) ?? new Set<string>());
+      if (JSON.stringify(deduplicated) === row.block_json) continue;
+      const updated = {
+        ...deduplicated,
+        revision: row.revision + 1,
+        updatedAt: new Date(now).toISOString(),
+      } satisfies TranscriptBlock;
+      await db.run(
+        "UPDATE transcript_blocks SET revision = ?, block_json = ?, updated_at = ? WHERE session_ref = ? AND block_id = ?",
+        updated.revision,
+        JSON.stringify(updated),
+        now,
+        row.session_ref,
+        row.block_id,
+      );
+      changed += 1;
+    }
+    if (changed > 0) {
+      const event = clientEventStorage({ type: "snapshot-required", cursor: 0, reason: "revision-gap" });
+      await db.run(
+        "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        event.type,
+        "transcript-maintenance",
+        changed,
+        event.json,
+        now,
+      );
+    }
+  }
+
+  private async reclaimDatabasePages(db: SqliteDb): Promise<void> {
+    const pageSize = numberValue((await db.get<{ page_size?: number }>("PRAGMA page_size"))?.page_size);
+    const pageCount = numberValue((await db.get<{ page_count?: number }>("PRAGMA page_count"))?.page_count);
+    const freePages = numberValue((await db.get<{ freelist_count?: number }>("PRAGMA freelist_count"))?.freelist_count);
+    const freeBytes = pageSize * freePages;
+    if (freeBytes < this.storageCompactionThresholdBytes || freePages === 0) return;
+    const autoVacuum = numberValue((await db.get<{ auto_vacuum?: number }>("PRAGMA auto_vacuum"))?.auto_vacuum);
+    if (autoVacuum === 2) {
+      await db.exec("PRAGMA incremental_vacuum(2048)");
+      return;
+    }
+    if (pageCount === 0 || freePages / pageCount < 0.2) return;
+    const [databaseFile, filesystem] = await Promise.all([stat(this.dbPath), statfs(dirname(this.dbPath))]);
+    const availableBytes = Number(filesystem.bavail) * Number(filesystem.bsize);
+    if (availableBytes < databaseFile.size * 1.25) return;
+    await db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    await db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+    await db.exec("VACUUM");
   }
 
   async submitToolRequest(input: {
@@ -2244,4 +2423,49 @@ export class ConnectStateStore {
 }
 export function createStateStore(options?: ConnectStateOptions): ConnectStateStore {
   return new ConnectStateStore(options);
+}
+
+const MAX_PERSISTED_CLIENT_EVENT_BYTES = 128 * 1024;
+
+function clientEventStorage(event: ClientViewEvent): { type: ClientViewEvent["type"]; json: string } {
+  const json = JSON.stringify(event);
+  if (Buffer.byteLength(json) <= MAX_PERSISTED_CLIENT_EVENT_BYTES) return { type: event.type, json };
+  const replacement = {
+    type: "snapshot-required",
+    cursor: 0,
+    reason: "revision-gap",
+  } satisfies ClientViewEvent;
+  return { type: replacement.type, json: JSON.stringify(replacement) };
+}
+
+function deduplicateStoredSubagent(block: TranscriptBlock, seen: Set<string>): TranscriptBlock {
+  if (block.type !== "subagent") return block;
+  const latest = new Map<string, EmbeddedTranscriptBlock>();
+  const childrenByParent = new Map<string, EmbeddedTranscriptBlock[]>();
+  const collect = (child: EmbeddedTranscriptBlock): void => {
+    latest.set(child.id, child);
+    if (child.type === "subagent") {
+      for (const nested of child.blocks) {
+        const children = childrenByParent.get(child.id) ?? [];
+        children.push(nested);
+        childrenByParent.set(child.id, children);
+        collect(nested);
+      }
+    }
+  };
+  for (const child of block.blocks) collect(child);
+  const materialize = (placement: EmbeddedTranscriptBlock): EmbeddedTranscriptBlock | null => {
+    if (seen.has(placement.id)) return null;
+    seen.add(placement.id);
+    const current = latest.get(placement.id) ?? placement;
+    if (current.type !== "subagent") return current;
+    const children = (childrenByParent.get(placement.id) ?? [])
+      .map(materialize)
+      .filter((child): child is EmbeddedTranscriptBlock => child !== null);
+    return { ...current, blocks: children };
+  };
+  return {
+    ...block,
+    blocks: block.blocks.map(materialize).filter((child): child is EmbeddedTranscriptBlock => child !== null),
+  };
 }

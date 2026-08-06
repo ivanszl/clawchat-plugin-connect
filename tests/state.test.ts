@@ -954,6 +954,149 @@ describe("state store", () => {
     await store.close();
   });
 
+  it("bounds Client Event history and reports an expired cursor without reusing cursors", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({
+      dbPath: join(dir, "state.sqlite"),
+      sessionRefFactory: () => "EVNTREF2",
+      clientEventRetentionLimit: 3,
+    });
+    await store.upsertRuntimeSession({
+      chatId: "chat-events",
+      sessionId: "session-events",
+      agentId: "codex",
+      runtimeSessionId: "thread-events",
+      hasMessages: true,
+    });
+    const session = await store.getCurrentRuntimeSession("chat-events", "codex");
+    if (!session) throw new Error("test session was not created");
+    const cursors: number[] = [];
+    for (let revision = 1; revision <= 5; revision += 1) {
+      const result = await store.upsertTranscriptBlock(session.sessionRef, {
+        id: "changing-block",
+        type: "message",
+        origin: "runtime",
+        state: "complete",
+        plainText: `revision ${revision}`,
+        role: "assistant",
+        author: "Agent",
+        markdown: `revision ${revision}`,
+      });
+      cursors.push(result.cursor);
+    }
+
+    expect(cursors).toEqual([...cursors].sort((left, right) => left - right));
+    await expect(store.listClientEvents(cursors[1] ?? 0)).resolves.toMatchObject([
+      { event: { previousCursor: cursors[1], type: "transcript.block-upserted" } },
+      { event: { type: "transcript.block-upserted" } },
+      { event: { type: "transcript.block-upserted" } },
+    ]);
+    await expect(store.listClientEvents(cursors[0] ?? 0)).resolves.toMatchObject([
+      {
+        cursor: cursors[4],
+        event: { cursor: cursors[4], previousCursor: cursors[0], type: "snapshot-required", reason: "cursor-expired" },
+      },
+    ]);
+    expect(await store.getClientEventCursor()).toBe(cursors[4]);
+    await store.close();
+  });
+
+  it("keeps an oversized Transcript block authoritative without duplicating it into Client Events", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite"), sessionRefFactory: () => "LARGREF2" });
+    await store.upsertRuntimeSession({
+      chatId: "chat-large-event",
+      sessionId: "session-large-event",
+      agentId: "codex",
+      runtimeSessionId: "thread-large-event",
+      hasMessages: true,
+    });
+    const session = await store.getCurrentRuntimeSession("chat-large-event", "codex");
+    if (!session) throw new Error("test session was not created");
+    const text = "large transcript content ".repeat(8_000);
+
+    const inserted = await store.upsertTranscriptBlock(session.sessionRef, {
+      id: "large-block",
+      type: "message",
+      origin: "runtime",
+      state: "complete",
+      plainText: text,
+      role: "assistant",
+      author: "Agent",
+      markdown: text,
+    });
+
+    await expect(store.listTranscriptBlocks(session.sessionRef)).resolves.toMatchObject([{ plainText: text }]);
+    await expect(store.listClientEvents(0)).resolves.toMatchObject([
+      {
+        cursor: inserted.cursor,
+        event: { cursor: inserted.cursor, type: "snapshot-required", reason: "revision-gap" },
+      },
+    ]);
+    await store.close();
+  });
+
+  it("deduplicates legacy Subagent blocks and reclaims their freed database pages on reopen", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const createStore = () =>
+      createStateStore({
+        dbPath,
+        sessionRefFactory: () => "BNDREF23",
+        storageCompactionThresholdBytes: 1,
+      });
+    let store = createStore();
+    await store.upsertRuntimeSession({
+      chatId: "chat-legacy-subagent",
+      sessionId: "session-legacy-subagent",
+      agentId: "codex",
+      runtimeSessionId: "thread-legacy-subagent",
+      hasMessages: true,
+    });
+    const session = await store.getCurrentRuntimeSession("chat-legacy-subagent", "codex");
+    if (!session) throw new Error("test session was not created");
+    const repeatedText = "legacy nested output ".repeat(600);
+    await store.upsertTranscriptBlock(session.sessionRef, {
+      id: "legacy-subagent",
+      type: "subagent",
+      origin: "runtime",
+      state: "complete",
+      plainText: "Legacy worker",
+      title: "Legacy worker",
+      role: null,
+      activityKind: "interacted",
+      blocks: Array.from({ length: 100 }, (_, index) => ({
+        id: "legacy-child",
+        type: "message" as const,
+        origin: "runtime" as const,
+        state: "complete" as const,
+        plainText: `${repeatedText}${index}`,
+        role: "assistant" as const,
+        author: "Agent",
+        markdown: `${repeatedText}${index}`,
+      })),
+    });
+    await store.close();
+    const legacyDatabase = new Database(dbPath);
+    legacyDatabase.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    legacyDatabase.exec("PRAGMA auto_vacuum = NONE");
+    legacyDatabase.exec("VACUUM");
+    legacyDatabase.close();
+    const beforeBytes = (await stat(dbPath)).size;
+
+    store = createStore();
+    const [bounded] = await store.listTranscriptBlocks(session.sessionRef);
+    expect(Buffer.byteLength(JSON.stringify(bounded))).toBeLessThan(50_000);
+    expect(JSON.stringify(bounded).match(/legacy-child/gu)).toHaveLength(1);
+    expect(JSON.stringify(bounded)).toContain(`${repeatedText}99`);
+    await store.close();
+    const afterCheckpoint = new Database(dbPath);
+    afterCheckpoint.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    expect(afterCheckpoint.query<{ auto_vacuum: number }, []>("PRAGMA auto_vacuum").get()?.auto_vacuum).toBe(2);
+    afterCheckpoint.close();
+    expect((await stat(dbPath)).size).toBeLessThan(beforeBytes);
+  });
+
   it("backfills an opaque ClawChat sender id with its resolved display name", async () => {
     const dir = await tempDir();
     const store = createStateStore({

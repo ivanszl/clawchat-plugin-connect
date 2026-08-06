@@ -18,6 +18,74 @@ afterEach(async () => {
 });
 
 describe("Session Catalog workspace grouping", () => {
+  it("does not rediscover a Runtime Binding that failed during startup", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-unavailable-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    stores.push(store);
+    await store.setRuntimeAvailability("codex", "startup-unavailable", "Codex executable was not found");
+    let discoveryCalls = 0;
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      discoverAllThreads: async () => {
+        discoveryCalls += 1;
+        throw new Error("must not probe unavailable Codex");
+      },
+      discoverArchivedThreads: async () => {
+        discoveryCalls += 1;
+        throw new Error("must not probe unavailable Codex");
+      },
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
+    const config = defaultConfig();
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+
+    await expect(catalog.view()).resolves.toMatchObject({
+      bindings: [{ bindingId: "codex", status: "disconnected", entries: [] }],
+    });
+    expect(discoveryCalls).toBe(0);
+  });
+
+  it("does not treat a transient ClawChat connection error as Runtime startup unavailability", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-transient-transport-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    stores.push(store);
+    await store.setRuntimeConnectionStatus("codex", false, "ClawChat transport reconnecting");
+    let discoveryCalls = 0;
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: ["workspace-write"],
+      discoverAllThreads: async () => {
+        discoveryCalls += 1;
+        return [];
+      },
+      discoverArchivedThreads: async () => {
+        discoveryCalls += 1;
+        return [];
+      },
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
+    const config = defaultConfig();
+    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+
+    await new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    }).view();
+
+    expect(discoveryCalls).toBe(2);
+  });
+
   it("returns remembered Runtime Workspace locations without refreshing Runtime discovery", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-location-cache-"));
     const workspace = join(directory, "project");

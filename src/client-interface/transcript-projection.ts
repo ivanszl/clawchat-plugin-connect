@@ -19,6 +19,11 @@ export interface TranscriptProjectionOptions {
   runtimeAdapters: RuntimeAdapterRegistry;
 }
 
+const MAX_EMBEDDED_SUBAGENT_DEPTH = 4;
+const MAX_EMBEDDED_SUBAGENT_BYTES = 500 * 1024;
+const MAX_SUBAGENT_LABEL_CHARACTERS = 16_000;
+const SUBAGENT_OMISSION_TEXT = "Additional Sub-agent history was omitted to keep the Client Transcript bounded.";
+
 export class TranscriptProjection {
   private readonly activeReconciliations = new Map<string, Promise<void>>();
   private readonly reconciledRuntimeRevisions = new Map<string, string>();
@@ -67,8 +72,10 @@ export class TranscriptProjection {
     const snapshot = await this.options.runtimeAdapters.readActivity(binding, session.runtimeSessionId);
     this.transcriptCompleteness.set(session.sessionRef.toUpperCase(), snapshot.completeness);
     const settlements: Array<NonNullable<ReturnType<typeof terminalTurnSettlement>>> = [];
+    for (const activity of canonicalizeRuntimeActivities(snapshot.activities)) {
+      await this.upsertProjectedRuntimeActivity(session.sessionRef, activity);
+    }
     for (const activity of snapshot.activities) {
-      await this.upsertRuntimeActivity(session.sessionRef, activity);
       const settlement = terminalTurnSettlement(activity);
       if (settlement) settlements.push(settlement);
     }
@@ -156,6 +163,15 @@ export class TranscriptProjection {
   }
 
   async upsertRuntimeActivity(sessionRef: string, activity: RuntimeActivity): Promise<TranscriptBlock> {
+    const [projectedActivity] = canonicalizeRuntimeActivities([activity]);
+    if (!projectedActivity) throw new Error(`Runtime activity ${activity.id} could not be projected`);
+    return await this.upsertProjectedRuntimeActivity(sessionRef, projectedActivity);
+  }
+
+  private async upsertProjectedRuntimeActivity(
+    sessionRef: string,
+    activity: RuntimeActivity,
+  ): Promise<TranscriptBlock> {
     const input = this.fromRuntimeActivity(sessionRef, activity);
     const surfaceMessageId =
       activity.kind === "user"
@@ -218,7 +234,7 @@ export class TranscriptProjection {
     ).block;
   }
 
-  private fromRuntimeActivity(sessionRef: string, entry: RuntimeActivity): EmbeddedTranscriptBlock {
+  private fromRuntimeActivity(sessionRef: string, entry: RuntimeActivity, subagentDepth = 0): EmbeddedTranscriptBlock {
     const id = stableBlockId(sessionRef, entry.id);
     const text = normalizeHistoryText(entry.text);
     const base = {
@@ -274,13 +290,26 @@ export class TranscriptProjection {
       return { ...base, type: "progress" as const, label: text };
     }
     if (entry.kind === "subagent") {
-      return {
+      const subagentText = boundedSubagentLabel(text);
+      const shell = {
         ...base,
+        plainText: subagentText,
         type: "subagent" as const,
-        title: stringData(entry, "title") || "Sub-agent",
-        role: stringData(entry, "role") || null,
+        title: boundedSubagentLabel(stringData(entry, "title") || "Sub-agent"),
+        role: stringData(entry, "role") ? boundedSubagentLabel(stringData(entry, "role")) : null,
         activityKind: subagentActivityKind(entry.data?.activityKind),
-        blocks: (entry.children ?? []).map((child) => this.fromRuntimeActivity(sessionRef, child)),
+        blocks: [] as EmbeddedTranscriptBlock[],
+      };
+      const markerBytes = Buffer.byteLength(JSON.stringify(subagentOmissionBlock(sessionRef, entry)));
+      const wrapperBytes = Buffer.byteLength(JSON.stringify(shell));
+      return {
+        ...shell,
+        blocks: this.projectSubagentChildren(
+          sessionRef,
+          entry,
+          subagentDepth,
+          Math.max(0, MAX_EMBEDDED_SUBAGENT_BYTES - wrapperBytes - markerBytes),
+        ),
       };
     }
     if (entry.kind === "error") {
@@ -294,6 +323,86 @@ export class TranscriptProjection {
     }
     return { ...base, type: "unknown" as const, label: entry.kind, detail: text };
   }
+
+  private projectSubagentChildren(
+    sessionRef: string,
+    entry: RuntimeActivity,
+    subagentDepth: number,
+    byteBudget: number,
+  ): EmbeddedTranscriptBlock[] {
+    const children = entry.children ?? [];
+    if (children.length === 0) return [];
+    if (subagentDepth >= MAX_EMBEDDED_SUBAGENT_DEPTH) {
+      return [subagentOmissionBlock(sessionRef, entry)];
+    }
+    const blocks: EmbeddedTranscriptBlock[] = [];
+    let serializedBytes = 2;
+    let omitted = false;
+    for (const child of children) {
+      const block = this.fromRuntimeActivity(sessionRef, child, subagentDepth + 1);
+      const blockBytes = Buffer.byteLength(JSON.stringify(block));
+      if (serializedBytes + blockBytes > byteBudget) {
+        if (!omitted) blocks.push(subagentOmissionBlock(sessionRef, entry));
+        omitted = true;
+        continue;
+      }
+      blocks.push(block);
+      serializedBytes += blockBytes + 1;
+    }
+    return blocks;
+  }
+}
+
+function subagentOmissionBlock(sessionRef: string, parent: RuntimeActivity): EmbeddedTranscriptBlock {
+  return {
+    id: stableBlockId(sessionRef, `${parent.id}:bounded-history`),
+    origin: "runtime",
+    runtimeSource: parent.source,
+    state: "complete",
+    plainText: SUBAGENT_OMISSION_TEXT,
+    type: "progress",
+    label: SUBAGENT_OMISSION_TEXT,
+  };
+}
+
+function canonicalizeRuntimeActivities(activities: RuntimeActivity[]): RuntimeActivity[] {
+  const latest = new Map<string, RuntimeActivity>();
+  const childrenByParent = new Map<string, RuntimeActivity[]>();
+  const visited = new WeakSet<RuntimeActivity>();
+  const collect = (activity: RuntimeActivity): void => {
+    if (visited.has(activity)) return;
+    visited.add(activity);
+    latest.set(activity.id, activity);
+    for (const child of activity.children ?? []) {
+      const children = childrenByParent.get(activity.id) ?? [];
+      children.push(child);
+      childrenByParent.set(activity.id, children);
+      collect(child);
+    }
+  };
+  for (const activity of activities) collect(activity);
+  const placed = new Set<string>();
+  const materialize = (placement: RuntimeActivity): RuntimeActivity | null => {
+    if (placed.has(placement.id)) return null;
+    placed.add(placement.id);
+    const current = latest.get(placement.id) ?? placement;
+    const { children: _latestChildren, ...latestFields } = current;
+    const children = (childrenByParent.get(placement.id) ?? [])
+      .map(materialize)
+      .filter((child): child is RuntimeActivity => child !== null);
+    return {
+      ...latestFields,
+      position: placement.position,
+      parentId: placement.parentId,
+      ...(children.length > 0 ? { children } : {}),
+    };
+  };
+  return activities.map(materialize).filter((activity): activity is RuntimeActivity => activity !== null);
+}
+
+function boundedSubagentLabel(text: string): string {
+  if (text.length <= MAX_SUBAGENT_LABEL_CHARACTERS) return text;
+  return `${text.slice(0, MAX_SUBAGENT_LABEL_CHARACTERS)}\n\n${SUBAGENT_OMISSION_TEXT}`;
 }
 
 function clientPromptMatchesRuntimeHistory(clientPrompt: string, runtimePrompt: string): boolean {
