@@ -334,7 +334,7 @@ describe("standalone release bundle", () => {
 
   it("documents the beta workflow as the current release channel", async () => {
     const readme = await readFile("README.md", "utf8");
-    expect(readme).toContain("Version tags such as `v0.1.0-beta.6` run the beta release workflow");
+    expect(readme).toContain("Version tags such as `v0.1.0-beta.7` run the beta release workflow");
     expect(readme).toContain("`v*-beta.*`");
     expect(readme).toContain("[`.github/workflows/release-beta.yml`](.github/workflows/release-beta.yml)");
     expect(readme).toContain("`release-channel/latest-beta.txt` pointer used by default installs and updates");

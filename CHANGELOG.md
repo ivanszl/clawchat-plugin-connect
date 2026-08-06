@@ -2,6 +2,19 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## [0.1.0-beta.7] - 2026-08-06
+
+### Changed
+
+- Kept Connect Client event history and embedded Subagent projections bounded, with explicit snapshot recovery when an event cursor expires.
+- Added automatic legacy transcript deduplication and safe SQLite page reclamation for existing installations.
+
+### Fixed
+
+- Kept Connect running when Codex, OpenCode, or WorkBuddy is unavailable without repeatedly probing the failed Runtime Adapter.
+- Isolated unavailable Agent Bindings from healthy Bindings, Connect Client startup, and Liveware exposure startup.
+- Prevented repeated inherited Subagent activity trees and oversized Client events from amplifying the state database.
+
 ## [0.1.0-beta.6] - 2026-08-05
 
 ### Changed
