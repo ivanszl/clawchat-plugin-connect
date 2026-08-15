@@ -13,7 +13,7 @@ export interface SessionTurnExecutorOptions {
 export type SessionTurnExecution = Omit<ConnectRuntimePrompt, "turnOrigin">;
 
 export class SessionTurnExecutor {
-  private readonly handles = new Map<string, ConnectRuntimeSession>();
+  private readonly handles = new Map<string, { bindingId: string; handle: ConnectRuntimeSession }>();
 
   constructor(private readonly options: SessionTurnExecutorOptions) {}
 
@@ -23,15 +23,15 @@ export class SessionTurnExecutor {
   }
 
   async cancel(sessionRef: string): Promise<boolean> {
-    return (await this.handles.get(normalizeSessionRef(sessionRef))?.cancel?.()) ?? false;
+    return (await this.handles.get(normalizeSessionRef(sessionRef))?.handle.cancel?.()) ?? false;
   }
 
   async release(sessionRef: string): Promise<boolean> {
     const key = normalizeSessionRef(sessionRef);
-    const handle = this.handles.get(key);
-    if (!handle) return false;
+    const entry = this.handles.get(key);
+    if (!entry) return false;
     this.handles.delete(key);
-    await handle.close();
+    await entry.handle.close();
     return true;
   }
 
@@ -41,8 +41,21 @@ export class SessionTurnExecutor {
     return released;
   }
 
+  async releaseBindings(bindingIds: ReadonlySet<string>): Promise<void> {
+    if (bindingIds.size === 0) return;
+    const handles: ConnectRuntimeSession[] = [];
+    for (const [sessionRef, entry] of this.handles) {
+      if (!bindingIds.has(entry.bindingId)) continue;
+      this.handles.delete(sessionRef);
+      handles.push(entry.handle);
+    }
+    const results = await Promise.allSettled(handles.map(async (handle) => await handle.close()));
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failure) throw failure.reason;
+  }
+
   async close(): Promise<void> {
-    const handles = [...this.handles.values()];
+    const handles = [...this.handles.values()].map(({ handle }) => handle);
     this.handles.clear();
     const results = await Promise.allSettled(handles.map(async (handle) => await handle.close()));
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
@@ -52,7 +65,7 @@ export class SessionTurnExecutor {
   private async handleFor(target: TurnTarget): Promise<ConnectRuntimeSession> {
     const key = normalizeSessionRef(target.sessionRef);
     const existing = this.handles.get(key);
-    if (existing) return existing;
+    if (existing) return existing.handle;
     const binding = this.options.bindingFor(target.bindingId);
     const handle = await this.options.start(binding, {
       agentId: target.bindingId,
@@ -65,7 +78,7 @@ export class SessionTurnExecutor {
         await this.options.attachRuntimeThread(target.sessionRef, runtimeThreadId);
       },
     });
-    this.handles.set(key, handle);
+    this.handles.set(key, { bindingId: target.bindingId, handle });
     return handle;
   }
 }

@@ -37,6 +37,8 @@ export function useClientLocale(): ClientLocale {
 const knownClientErrorKeys = {
   "client-warming-up": "@connect.error.clientWarmingUp",
   "binding-not-found": "@connect.error.bindingNotFound",
+  "binding-not-active": "@connect.error.bindingNotActive",
+  "binding-owner-mismatch": "@connect.error.bindingOwnerMismatch",
   "invalid-workspace": "@connect.error.invalidWorkspace",
   "invalid-name": "@connect.error.invalidName",
   "invalid-mode": "@connect.error.invalidMode",
@@ -48,6 +50,9 @@ const knownClientErrorKeys = {
   "session-not-found": "@connect.error.sessionNotFound",
   "session-state-conflict": "@connect.error.sessionStateConflict",
   "session-action-unsupported": "@connect.error.sessionActionUnsupported",
+  "session-binding-locked": "@connect.error.sessionBindingLocked",
+  "session-project-required": "@connect.error.sessionProjectRequired",
+  "continuation-binding-unchanged": "@connect.error.continuationBindingUnchanged",
   "interaction-not-found": "@connect.error.interactionNotFound",
   "interaction-expired": "@connect.error.interactionExpired",
   "interaction-not-pending": "@connect.error.interactionNotPending",

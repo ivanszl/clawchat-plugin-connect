@@ -55,6 +55,37 @@ describe("SessionQueue", () => {
     await expect(queue.enqueue("a", async () => undefined)).rejects.toThrow(/too many pending turns for Session a/);
     await Promise.all([blocker, queued]);
   });
+  it("does not persist Turn acceptance when queue capacity rejects the submission", async () => {
+    const queue = new SessionQueue({ maxConcurrentTurns: 1, maxPendingPerSession: 1 });
+    let release: () => void = () => undefined;
+    let markStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const running = queue.submit("a", async () => {
+      markStarted();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    });
+    await started;
+    const queued = queue.submit("a", async () => undefined);
+    let accepted = false;
+
+    await expect(
+      queue.submitAccepted(
+        "a",
+        async () => undefined,
+        async () => {
+          accepted = true;
+        },
+      ),
+    ).rejects.toThrow("too many pending turns");
+    expect(accepted).toBe(false);
+
+    release();
+    await Promise.all([running.completion, queued.completion]);
+  });
 
   it("claims a Session for lifecycle after cancelling queued turns and rejects new turns until completion", async () => {
     const queue = new SessionQueue({ maxConcurrentTurns: 1 });

@@ -14,14 +14,26 @@ import { getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
 import { synchronizeRuntimeProjects } from "../projects/project-synchronizer";
 import { ProjectCatalog } from "../projects/projects";
-import { createSessionContinuity, type SessionContinuity } from "../projects/session-continuity";
+import {
+  createSessionContinuity,
+  type SessionContinuity,
+  type SessionContinuityModule,
+  type SessionContinuityOptions,
+} from "../projects/session-continuity";
 import { findProjectForWorkspace, workspaceView } from "../projects/workspace-catalog";
 import { resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { SessionActivity } from "../runtime/session-queue";
 import type { RuntimeLifecycleCapabilities, RuntimeModelOption, RuntimeThreadSummary } from "../runtime/types";
 import { isCodeBuddySessionRuntimeTarget } from "../runtime/workbuddy-runtime-target";
-import type { ConnectConfig, ProjectRecord, RuntimeSessionRecord, RuntimeStatus, RuntimeWorkspace } from "../types";
+import {
+  type ConnectConfig,
+  type ProjectRecord,
+  type RuntimeSessionRecord,
+  type RuntimeStatus,
+  type RuntimeWorkspace,
+  runtimeFamilyFor,
+} from "../types";
 import type { TranscriptProjection } from "./transcript-projection";
 
 const CLIENT_CATALOG_CHAT = "__connect_client_catalog__";
@@ -32,6 +44,7 @@ export interface SessionCatalogOptions {
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection: TranscriptProjection;
   projects?: ProjectCatalog;
+  sessionContinuityModule?: SessionContinuityModule;
   sessionActivity?: (bindingId: string, sessionRef: string) => SessionActivity | Promise<SessionActivity>;
   activeTurnId?: (bindingId: string, sessionRef: string) => string | null | Promise<string | null>;
   queuedTurns?: (bindingId: string, sessionRef: string) => QueuedTurnView[] | Promise<QueuedTurnView[]>;
@@ -58,8 +71,7 @@ export class SessionCatalog {
 
   constructor(private readonly options: SessionCatalogOptions) {
     this.projects = options.projects ?? new ProjectCatalog(options.stateStore);
-    this.sessionContinuity = createSessionContinuity({
-      stateStore: options.stateStore,
+    const continuityOptions: Omit<SessionContinuityOptions, "stateStore"> = {
       lifecycle: {
         capabilities: (bindingId) =>
           options.runtimeAdapters.lifecycleCapabilities(getAgentBinding(options.config, bindingId)),
@@ -81,7 +93,10 @@ export class SessionCatalog {
             return await claim(bindingId, sessionRef);
           }
         : undefined,
-    });
+    };
+    this.sessionContinuity =
+      options.sessionContinuityModule?.create(continuityOptions) ??
+      createSessionContinuity({ ...continuityOptions, stateStore: options.stateStore });
   }
 
   invalidate(): void {
@@ -164,6 +179,11 @@ export class SessionCatalog {
     const hasMappedRuntimeThread = Boolean(session?.runtimeSessionId || target?.runtimeSessionId);
     const runtimeThreadAvailable = hasMappedRuntimeThread && catalogState.runtimeRevisionByRef.has(normalized);
     const runtimeThreadMissing = hasMappedRuntimeThread && !runtimeThreadAvailable;
+    const bindingLockReason = session
+      ? await this.options.stateStore.sessionBindingLock(normalized)
+      : hasMappedRuntimeThread
+        ? ("runtime-thread" as const)
+        : null;
     const binding = getAgentBinding(this.options.config, entry.bindingId);
     const runtimeStatus = await this.options.stateStore.getRuntimeStatus(entry.bindingId);
     const activity = (await this.options.sessionActivity?.(entry.bindingId, normalized)) ?? "idle";
@@ -247,6 +267,8 @@ export class SessionCatalog {
       sessionRef: normalized,
       bindingId: entry.bindingId,
       bindingKind: entry.bindingKind,
+      bindingLocked: bindingLockReason !== null,
+      bindingLockReason,
       projectId: entry.projectId,
       projectName: entry.projectName,
       workspaceName: entry.workspaceName,
@@ -460,7 +482,7 @@ export class SessionCatalog {
         projects = (
           await synchronizeRuntimeProjects({
             bindingId,
-            runtimeKind: binding.kind,
+            runtimeKind: runtimeFamilyFor(binding),
             threads: discoveredActive,
             projects: this.projects,
             stateStore: this.options.stateStore,
@@ -501,7 +523,15 @@ export class SessionCatalog {
           const workingDirectory = runtimeThread?.workingDirectory ?? null;
           if (workingDirectory) workingDirectoryByRef.set(session.sessionRef.toUpperCase(), workingDirectory);
           const activity = (await this.options.sessionActivity?.(bindingId, session.sessionRef)) ?? "idle";
-          return managedEntry(session, binding.kind, project, status, activity, lifecycleCapabilities, runtimeThread);
+          return managedEntry(
+            session,
+            runtimeFamilyFor(binding),
+            project,
+            status,
+            activity,
+            lifecycleCapabilities,
+            runtimeThread,
+          );
         }),
       );
       for (const thread of discovered) {
@@ -511,7 +541,11 @@ export class SessionCatalog {
           kind: thread.workspaceKind ?? ("persistent" as const),
           localRoot: thread.workingDirectory ?? null,
         };
-        const mapping = await this.options.stateStore.getRuntimeWorkspaceMapping(bindingId, binding.kind, identity.key);
+        const mapping = await this.options.stateStore.getRuntimeWorkspaceMapping(
+          bindingId,
+          runtimeFamilyFor(binding),
+          identity.key,
+        );
         const project =
           projectById.get(mapping?.projectId ?? "") ??
           (identity.localRoot ? findProjectForWorkspace(projects, identity.localRoot) : null);
@@ -523,7 +557,7 @@ export class SessionCatalog {
         runtimeRevisionByRef.set(sessionRef.toUpperCase(), `${thread.runtimeThreadId}:${thread.updatedAt}`);
         workspaceIdentityByRef.set(sessionRef.toUpperCase(), {
           bindingId,
-          runtimeKind: binding.kind,
+          runtimeKind: runtimeFamilyFor(binding),
           identityKey: identity.key,
           kind: identity.kind,
         });
@@ -534,7 +568,7 @@ export class SessionCatalog {
           sessionRef,
           entryKind: "runtime-thread",
           bindingId,
-          bindingKind: binding.kind,
+          bindingKind: runtimeFamilyFor(binding),
           projectId: project?.projectId ?? null,
           projectName: project?.name ?? null,
           workspaceId: workspace?.id ?? null,
@@ -562,7 +596,7 @@ export class SessionCatalog {
       bindings.push({
         bindingId,
         displayName: binding.displayName || bindingId,
-        kind: binding.kind,
+        kind: runtimeFamilyFor(binding),
         status:
           status?.runtimeAvailability === "startup-unavailable" || status?.websocketConnected === false
             ? "disconnected"

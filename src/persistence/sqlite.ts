@@ -32,15 +32,17 @@ export class BunSqliteAdapter {
       all: <Row>(sql: string, ...bindings: SQLQueryBindings[]) => Row[],
     ) => T,
   ): T {
-    return this.database.transaction(() =>
-      callback(
-        (sql, ...bindings) => this.database.query<unknown, SQLQueryBindings[]>(sql).run(...bindings),
-        <Row>(sql: string, ...bindings: SQLQueryBindings[]) =>
-          this.database.query<Row, SQLQueryBindings[]>(sql).get(...bindings),
-        <Row>(sql: string, ...bindings: SQLQueryBindings[]) =>
-          this.database.query<Row, SQLQueryBindings[]>(sql).all(...bindings),
-      ),
-    )();
+    return this.database
+      .transaction(() =>
+        callback(
+          (sql, ...bindings) => this.database.query<unknown, SQLQueryBindings[]>(sql).run(...bindings),
+          <Row>(sql: string, ...bindings: SQLQueryBindings[]) =>
+            this.database.query<Row, SQLQueryBindings[]>(sql).get(...bindings),
+          <Row>(sql: string, ...bindings: SQLQueryBindings[]) =>
+            this.database.query<Row, SQLQueryBindings[]>(sql).all(...bindings),
+        ),
+      )
+      .immediate();
   }
 
   async close(): Promise<void> {

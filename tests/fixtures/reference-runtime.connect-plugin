@@ -1,0 +1,95 @@
+{
+  "format": "clawchat-connect-plugin-bundle-v1",
+  "manifest": {
+    "manifestVersion": 1,
+    "interfaceVersion": "1",
+    "pluginId": "test.reference-runtime",
+    "version": "1.0.0",
+    "dependencies": [
+      {
+        "type": "host",
+        "id": "runtime-provider",
+        "interfaceVersion": "1"
+      },
+      {
+        "type": "host",
+        "id": "exposure-provider",
+        "interfaceVersion": "1"
+      }
+    ],
+    "installationConfigurationSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "capabilities": [
+      {
+        "id": "reference-runtime",
+        "type": "runtime",
+        "interfaceVersion": "1",
+        "family": "reference",
+        "configurationSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "instance": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      {
+        "id": "reference-exposure",
+        "type": "exposure",
+        "interfaceVersion": "1",
+        "configurationSchema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "channel": {
+              "type": "string",
+              "enum": [
+                "private",
+                "off"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "artifacts": [
+      {
+        "target": "darwin-arm64",
+        "entry": "runtime.mjs",
+        "integrity": "sha256-zQupBan3GQb0UZ7FFQrU+82D7pYx6Aw4Nl2IW01ZVcY="
+      },
+      {
+        "target": "darwin-x64",
+        "entry": "runtime.mjs",
+        "integrity": "sha256-zQupBan3GQb0UZ7FFQrU+82D7pYx6Aw4Nl2IW01ZVcY="
+      },
+      {
+        "target": "linux-arm64",
+        "entry": "runtime.mjs",
+        "integrity": "sha256-zQupBan3GQb0UZ7FFQrU+82D7pYx6Aw4Nl2IW01ZVcY="
+      },
+      {
+        "target": "linux-x64",
+        "entry": "runtime.mjs",
+        "integrity": "sha256-zQupBan3GQb0UZ7FFQrU+82D7pYx6Aw4Nl2IW01ZVcY="
+      },
+      {
+        "target": "win32-x64",
+        "entry": "runtime.mjs",
+        "integrity": "sha256-zQupBan3GQb0UZ7FFQrU+82D7pYx6Aw4Nl2IW01ZVcY="
+      }
+    ]
+  },
+  "files": {
+    "runtime.mjs": {
+      "encoding": "utf8",
+      "content": "export default {\n  async activate(context) {\n    const contextKeys = Object.keys(context).sort();\n    const runtimeProviders = context.hostCapabilities.get(\"runtime-provider\");\n    const exposureProviders = context.hostCapabilities.get(\"exposure-provider\");\n    runtimeProviders.register({\n      capabilityId: \"reference-runtime\",\n      family: \"reference\",\n      create(configuration) {\n        const instance = String(configuration.instance ?? \"reference\");\n        const activities = new Map();\n        let closed = false;\n        let nextThread = 1;\n        return {\n          modes: [\"trace\"],\n          async start(startContext) {\n            if (closed) throw new Error(`Reference Runtime ${instance} is closed`);\n            const runtimeThreadId =\n              startContext.runtimeThreadId ?? `${instance}-${startContext.agentId}-thread-${nextThread++}`;\n            if (!startContext.runtimeThreadId) await startContext.onRuntimeThreadId(runtimeThreadId);\n            return {\n              async *prompt(input) {\n                await input.onAccepted?.();\n                const activity = {\n                  id: `${runtimeThreadId}:assistant:0`,\n                  position: \"0.0\",\n                  parentId: null,\n                  kind: \"assistant\",\n                  text: `${instance}:${input.prompt}`,\n                  state: \"complete\",\n                  source: \"live\",\n                  data: { contextKeys, instance },\n                };\n                activities.set(runtimeThreadId, [activity]);\n                yield activity;\n              },\n              async close() {},\n            };\n          },\n          async readActivity(runtimeThreadId) {\n            return {\n              activities: activities.get(runtimeThreadId) ?? [],\n              completeness: \"complete\",\n              limitations: [],\n            };\n          },\n          async discoverAllThreads() {\n            return [...activities.keys()].map((runtimeThreadId) => ({\n              runtimeThreadId,\n              name: `${instance} thread`,\n              updatedAt: 1,\n            }));\n          },\n          async close() {\n            await Promise.resolve();\n            closed = true;\n          },\n        };\n      },\n    });\n    exposureProviders.register({\n      capabilityId: \"reference-exposure\",\n      async activate(configuration) {\n        const effects = (globalThis.__connectReferenceExposureEffects ??= []);\n        effects.push(`activate:${String(configuration.channel ?? \"private\")}`);\n        return () => effects.push(\"dispose\");\n      },\n    });\n  },\n};\n"
+    }
+  }
+}

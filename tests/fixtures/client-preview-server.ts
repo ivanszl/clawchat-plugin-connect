@@ -5,6 +5,9 @@ import { startClientInterface } from "../../src/client-interface/server";
 import { TranscriptProjection } from "../../src/client-interface/transcript-projection";
 import { defaultConfig } from "../../src/config";
 import { createStateStore } from "../../src/persistence/state";
+import type { OfficialPluginDiscovery } from "../../src/plugin/catalog";
+import type { ConnectPluginHost, ManagePluginOptions } from "../../src/plugin/host";
+import type { InstalledPluginLockEntry } from "../../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../../src/runtime/runtime-interaction-coordinator";
 import type { RuntimeActivity, RuntimeTranscriptEntry } from "../../src/runtime/types";
@@ -325,6 +328,157 @@ const runtime = {
   cancelClientTurn: async () => true,
   sessionActivity: async (sessionRef: string) => activityBySessionRef.get(sessionRef) ?? "idle",
 };
+const previewIntegrity = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+function previewPlugin(pluginId: string, status: InstalledPluginLockEntry["status"], error: string | null) {
+  const manifest: InstalledPluginLockEntry["manifest"] = {
+    manifestVersion: 1,
+    interfaceVersion: "1",
+    pluginId,
+    version: "1.0.0",
+    dependencies: [{ type: "host", id: "runtime-provider", interfaceVersion: "1" }],
+    installationConfigurationSchema: {
+      type: "object",
+      properties: {
+        channel: { type: "string", title: "Release channel", enum: ["stable", "preview"] },
+        telemetry: { type: "boolean", title: "Share local diagnostics", default: false },
+      },
+      required: ["channel"],
+      additionalProperties: false,
+    },
+    capabilities: [
+      {
+        id: "runtime",
+        type: "runtime",
+        interfaceVersion: "1",
+        family: "preview",
+        configurationSchema: {
+          type: "object",
+          properties: { workspace: { type: "string", title: "Workspace policy" } },
+          required: ["workspace"],
+          additionalProperties: false,
+        },
+      },
+    ],
+    artifacts: [{ target: "preview-target", entry: "entry.mjs", integrity: previewIntegrity }],
+  };
+  const version = {
+    source: { type: "local" as const, path: `/preview/${pluginId}.connect-plugin` },
+    version: "1.0.0",
+    target: "preview-target",
+    integrity: previewIntegrity,
+    activeArtifact: `/preview/${pluginId}/entry.mjs`,
+    manifestPath: `/preview/${pluginId}/connect-plugin.json`,
+    manifest,
+    installationConfiguration: { channel: "stable", telemetry: false },
+    exposureConfigurations: {},
+  };
+  return {
+    pluginId,
+    ...version,
+    status,
+    error,
+    retainedVersions: [{ ...version, version: "0.9.0", manifest: { ...manifest, version: "0.9.0" } }],
+  } satisfies InstalledPluginLockEntry;
+}
+const previewPlugins: InstalledPluginLockEntry[] = [
+  previewPlugin("preview.healthy", "active", null),
+  previewPlugin("preview.failed", "error", "provider registration failed in preview fixture"),
+];
+const previewOfficial: OfficialPluginDiscovery = {
+  catalogOrigin: "cache",
+  diagnostics: ["Preview fixture uses an authenticated cached Catalog"],
+  candidates: [
+    {
+      pluginId: "preview.official",
+      name: "Official Preview Runtime",
+      source: "npm:@clawchat/preview-runtime@1.0.0",
+      resolvedSource: {
+        type: "npm",
+        package: "@clawchat/preview-runtime",
+        registry: "https://registry.example.test",
+        version: "1.0.0",
+        tarball: "https://registry.example.test/preview-runtime.tgz",
+      },
+      version: "1.0.0",
+      target: "preview-target",
+      integrity: previewIntegrity,
+      detected: true,
+      compatible: true,
+      selected: true,
+      selectable: true,
+      probe: { detected: true, compatible: true, version: "preview" },
+      diagnostic: null,
+      manifest: previewPlugin("preview.official", "active", null).manifest,
+      installationConfiguration: { channel: "stable", telemetry: false },
+      exposureConfigurations: {},
+    },
+  ],
+};
+const previewPluginManager = {
+  list: async () => structuredClone(previewPlugins),
+  checkUpdates: async () => ({
+    "preview.healthy": {
+      status: "available" as const,
+      version: "2.0.0",
+      integrity: previewIntegrity,
+      diagnostic: null,
+    },
+    "preview.failed": {
+      status: "check-failed" as const,
+      version: null,
+      integrity: null,
+      diagnostic: "Preview registry is intentionally unavailable",
+    },
+  }),
+  discoverOfficial: async () => structuredClone(previewOfficial),
+  install: async (options: ManagePluginOptions) => {
+    const plugin = previewPlugin(`preview.direct.${previewPlugins.length}`, "active", null);
+    plugin.source = { type: "local", path: options.source };
+    previewPlugins.push(plugin);
+    return structuredClone(plugin);
+  },
+  installUpload: async () => {
+    const plugin = previewPlugin(`preview.upload.${previewPlugins.length}`, "active", null);
+    previewPlugins.push(plugin);
+    return structuredClone(plugin);
+  },
+  installOfficial: async () => {
+    const plugin = previewPlugin("preview.official", "active", null);
+    if (!previewPlugins.some((entry) => entry.pluginId === plugin.pluginId)) previewPlugins.push(plugin);
+    return [structuredClone(plugin)];
+  },
+  update: async (pluginId: string) => {
+    const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId)!;
+    plugin.version = "2.0.0";
+    return structuredClone(plugin);
+  },
+  reinstall: async (pluginId: string) => structuredClone(previewPlugins.find((entry) => entry.pluginId === pluginId)!),
+  enable: async (pluginId: string) => {
+    const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId)!;
+    plugin.status = "active";
+    return structuredClone(plugin);
+  },
+  disable: async (pluginId: string) => {
+    const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId)!;
+    plugin.status = "disabled";
+    return structuredClone(plugin);
+  },
+  select: async (pluginId: string, version: string) => {
+    const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId)!;
+    plugin.version = version;
+    return structuredClone(plugin);
+  },
+  configure: async (pluginId: string, options: { installationConfiguration: Record<string, unknown> }) => {
+    const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId)!;
+    plugin.installationConfiguration = structuredClone(options.installationConfiguration);
+    return structuredClone(plugin);
+  },
+  remove: async (pluginId: string) => {
+    const index = previewPlugins.findIndex((entry) => entry.pluginId === pluginId);
+    const [removed] = previewPlugins.splice(index, 1);
+    return structuredClone(removed!);
+  },
+} as unknown as ConnectPluginHost;
 const clientInterface = await startClientInterface({
   config,
   configPath: join(directory, "config.json"),
@@ -333,6 +487,7 @@ const clientInterface = await startClientInterface({
   transcriptProjection,
   runtimeInteractions,
   runtimes: [runtime],
+  pluginManager: previewPluginManager,
   assetsPath: join(repositoryRoot, "dist/client"),
   serverFactory: (options) =>
     Bun.serve({

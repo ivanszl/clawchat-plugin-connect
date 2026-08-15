@@ -2,6 +2,7 @@ param(
   [Parameter(Mandatory = $true)][string]$ConnectExecutable,
   [Parameter(Mandatory = $true)][string]$ClientDirectory,
   [Parameter(Mandatory = $true)][string]$LivewareExecutable,
+  [Parameter(Mandatory = $true)][string]$OfficialPluginsDirectory,
   [Parameter(Mandatory = $true)][string]$OutputArchive
 )
 
@@ -31,6 +32,18 @@ if (-not (Test-Path -LiteralPath $ClientEntry -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $LivewareExecutable -PathType Leaf)) {
   throw "Liveware executable does not exist: $LivewareExecutable"
 }
+if (-not (Test-Path -LiteralPath $OfficialPluginsDirectory -PathType Container)) {
+  throw "Official Plugins directory does not exist: $OfficialPluginsDirectory"
+}
+foreach ($OfficialPluginId in @(
+  "clawling.runtime.codex",
+  "clawling.runtime.opencode",
+  "clawling.runtime.workbuddy"
+)) {
+  if (@(Get-ChildItem -LiteralPath $OfficialPluginsDirectory -Filter "$OfficialPluginId-*.connect-plugin" -File).Count -eq 0) {
+    throw "Official Plugin Bundle does not exist for ${OfficialPluginId}: $OfficialPluginsDirectory"
+  }
+}
 if (-not (Test-Path -LiteralPath $SkillsDirectory -PathType Container)) {
   throw "Skills directory does not exist: $SkillsDirectory"
 }
@@ -50,6 +63,7 @@ try {
   Copy-Item -LiteralPath $ConnectExecutable -Destination (Join-Path $PayloadRoot "clawchat-connect.exe")
   Copy-Item -LiteralPath $LivewareExecutable -Destination (Join-Path $PayloadRoot "liveware.exe")
   Copy-Item -LiteralPath $ClientDirectory -Destination (Join-Path $PayloadRoot "clawchat-connect-client") -Recurse
+  Copy-Item -LiteralPath $OfficialPluginsDirectory -Destination (Join-Path $PayloadRoot "official-plugins") -Recurse
   Copy-Item -LiteralPath $SkillsDirectory -Destination (Join-Path $PayloadRoot "skills") -Recurse
   Copy-Item -LiteralPath $Changelog -Destination $PayloadRoot
   Copy-Item -LiteralPath $License -Destination $PayloadRoot

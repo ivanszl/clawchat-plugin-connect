@@ -1,4 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,15 @@ import {
 import type { NormalizedInboundMessage } from "../src/clawchat/protocol";
 import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
+import {
+  CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+  CONNECT_PLUGIN_BUNDLE_FORMAT,
+  CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+  CONNECT_PLUGIN_INTERFACE_VERSION,
+  CONNECT_PLUGIN_MANIFEST_VERSION,
+  type ConnectPluginBundleV1,
+} from "../src/plugin/sdk";
+import { currentConnectPluginTarget, installPluginBundle, setInstalledPluginStatus } from "../src/plugin/store";
 import { ProjectCatalog } from "../src/projects/projects";
 import { workspaceView } from "../src/projects/workspace-catalog";
 import type { SelectableRuntimeThread } from "../src/runtime/types";
@@ -32,6 +42,52 @@ function io() {
       writeStdout: (value: string) => stdout.push(value),
       writeStderr: (value: string) => stderr.push(value),
     },
+  };
+}
+
+const CLI_PLUGIN_ID = "example.cli-runtime";
+
+function cliPluginBundle(): ConnectPluginBundleV1 {
+  const source = "export default {};";
+  const integrity = `sha256-${createHash("sha256").update(source).digest("base64")}`;
+  return {
+    format: CONNECT_PLUGIN_BUNDLE_FORMAT,
+    manifest: {
+      manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
+      interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
+      pluginId: CLI_PLUGIN_ID,
+      version: "1.0.0",
+      dependencies: [
+        { type: "host", id: "runtime-provider", interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION },
+        { type: "host", id: "exposure-provider", interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION },
+      ],
+      installationConfigurationSchema: { type: "object", additionalProperties: false },
+      capabilities: [
+        {
+          id: "exact-runtime",
+          type: "runtime",
+          family: "example",
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: {
+            type: "object",
+            properties: {
+              endpoint: { type: "string", format: "uri" },
+              retries: { type: "integer", minimum: 1 },
+            },
+            required: ["endpoint"],
+            additionalProperties: false,
+          },
+        },
+        {
+          id: "exposure-only",
+          type: "exposure",
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: { type: "object", additionalProperties: false },
+        },
+      ],
+      artifacts: [{ target: currentConnectPluginTarget(), entry: "plugin.mjs", integrity }],
+    },
+    files: { "plugin.mjs": { encoding: "utf8", content: source } },
   };
 }
 
@@ -143,6 +199,93 @@ describe("runConnectCli", () => {
     expect(output.stderr.join("")).toContain(
       "WorkBuddy profile must be explicitly set to one of: workbuddy-ai, workbuddy-cn",
     );
+  });
+
+  it("creates only an exact active Plugin Runtime Binding with schema-valid configuration", async () => {
+    const path = await tempConfig();
+    const output = io();
+    await saveConfig(upsertAgentBinding(defaultConfig(), "bound", { kind: "codex" }), path);
+    const originalConfig = await readFile(path, "utf8");
+    const addPluginBinding = async (options: {
+      pluginId?: string;
+      capabilityId?: string;
+      family?: string;
+      runtimeConfig?: Record<string, unknown>;
+    }) =>
+      await runConnectCli(
+        [
+          "agent",
+          "add",
+          "bound",
+          "--kind",
+          options.family ?? "example",
+          "--plugin",
+          options.pluginId ?? CLI_PLUGIN_ID,
+          "--capability",
+          options.capabilityId ?? "exact-runtime",
+          "--runtime-config-json",
+          JSON.stringify(options.runtimeConfig ?? { endpoint: "https://runtime.example", retries: 2 }),
+          "--config",
+          path,
+        ],
+        output.deps,
+      );
+    const expectRejectedWithoutConfigChange = async (
+      expectedError: string,
+      options: Parameters<typeof addPluginBinding>[0] = {},
+    ) => {
+      output.stderr.length = 0;
+      await expect(addPluginBinding(options)).resolves.toBe(1);
+      expect(output.stderr.join("")).toContain(expectedError);
+      await expect(readFile(path, "utf8")).resolves.toBe(originalConfig);
+    };
+
+    await expectRejectedWithoutConfigChange("Plugin is not installed: missing.plugin", {
+      pluginId: "missing.plugin",
+    });
+
+    await installPluginBundle({
+      configPath: path,
+      source: { type: "local", path },
+      bundle: cliPluginBundle(),
+    });
+
+    await setInstalledPluginStatus(path, CLI_PLUGIN_ID, "disabled");
+    await expectRejectedWithoutConfigChange(`Plugin ${CLI_PLUGIN_ID} is not active (status: disabled)`);
+
+    await setInstalledPluginStatus(path, CLI_PLUGIN_ID, "error", new Error("activation failed"));
+    await expectRejectedWithoutConfigChange(`Plugin ${CLI_PLUGIN_ID} is not active (status: error): activation failed`);
+
+    await setInstalledPluginStatus(path, CLI_PLUGIN_ID, "active");
+    await expectRejectedWithoutConfigChange(`Plugin ${CLI_PLUGIN_ID} has no capability absent`, {
+      capabilityId: "absent",
+    });
+    await expectRejectedWithoutConfigChange(
+      `Plugin ${CLI_PLUGIN_ID} capability exposure-only is not a Runtime capability`,
+      { capabilityId: "exposure-only" },
+    );
+    await expectRejectedWithoutConfigChange(
+      `Plugin ${CLI_PLUGIN_ID}/exact-runtime Runtime family is example, not requested other`,
+      { family: "other" },
+    );
+    await expectRejectedWithoutConfigChange(`Plugin ${CLI_PLUGIN_ID}/exact-runtime Runtime configuration is invalid`, {
+      runtimeConfig: { endpoint: "not a uri", retries: 0 },
+    });
+
+    output.stderr.length = 0;
+    await expect(addPluginBinding({})).resolves.toBe(0);
+    expect(output.stderr).toEqual([]);
+    await expect(loadConfig(path)).resolves.toMatchObject({
+      defaultAgent: "bound",
+      agents: {
+        bound: {
+          kind: "plugin",
+          runtimeFamily: "example",
+          runtime: { pluginId: CLI_PLUGIN_ID, capabilityId: "exact-runtime" },
+          runtimeConfig: { endpoint: "https://runtime.example", retries: 2 },
+        },
+      },
+    });
   });
 
   it("requires explicit confirmation before removing an Agent Binding and its local data", async () => {

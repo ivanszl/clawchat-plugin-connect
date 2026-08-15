@@ -6,6 +6,16 @@ import { installManagedSkillsFromPackage } from "../scripts/postinstall";
 import { livewareAssetName } from "../src/service/liveware-exposure";
 import { CONNECT_VERSION } from "../src/service/version";
 
+const OFFICIAL_PLUGIN_BUNDLES = [
+  "clawling.runtime.codex-0.0.0-test.connect-plugin",
+  "clawling.runtime.opencode-0.0.0-test.connect-plugin",
+  "clawling.runtime.workbuddy-0.0.0-test.connect-plugin",
+] as const;
+
+async function writeOfficialPluginFixtures(directory: string, content = "official Plugin Bundle\n"): Promise<void> {
+  await Promise.all(OFFICIAL_PLUGIN_BUNDLES.map(async (name) => await writeFile(join(directory, name), content)));
+}
+
 async function listFiles(directory: string, prefix = ""): Promise<string[]> {
   const files: string[] = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -34,6 +44,7 @@ describe("standalone release bundle", () => {
       "clawchat-connect",
       "liveware",
       "clawchat-connect-client",
+      "official-plugins",
       "skills",
       "CHANGELOG.md",
       "LICENSE",
@@ -53,12 +64,17 @@ describe("standalone release bundle", () => {
     const connectBinary = join(directory, "clawchat-connect.exe");
     const livewareBinary = join(directory, "liveware-source.exe");
     const clientDirectory = join(directory, "client");
+    const officialPluginsDirectory = join(directory, "official-plugins");
     const archive = join(directory, "clawchat-connect-windows-x64.zip");
     const extractedDirectory = join(directory, "extracted");
-    await mkdir(clientDirectory, { recursive: true });
+    await Promise.all([
+      mkdir(clientDirectory, { recursive: true }),
+      mkdir(officialPluginsDirectory, { recursive: true }),
+    ]);
     await writeFile(connectBinary, "connect executable");
     await writeFile(livewareBinary, "liveware executable");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
+    await writeOfficialPluginFixtures(officialPluginsDirectory);
 
     const child = Bun.spawn(
       [
@@ -71,6 +87,7 @@ describe("standalone release bundle", () => {
         connectBinary,
         clientDirectory,
         livewareBinary,
+        officialPluginsDirectory,
         archive,
       ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
@@ -106,6 +123,7 @@ describe("standalone release bundle", () => {
         "LICENSE",
         "clawchat-connect-client/index.html",
         "clawchat-connect.exe",
+        ...OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
         "liveware.exe",
         "skills/clawchat-core/SKILL.md",
         "skills/clawchat-core/agents/openai.yaml",
@@ -121,6 +139,9 @@ describe("standalone release bundle", () => {
       ["clawchat-connect.exe", connectBinary],
       ["liveware.exe", livewareBinary],
       ["clawchat-connect-client/index.html", join(clientDirectory, "index.html")],
+      ...OFFICIAL_PLUGIN_BUNDLES.map(
+        (name) => [`official-plugins/${name}`, join(officialPluginsDirectory, name)] as const,
+      ),
       ["CHANGELOG.md", "CHANGELOG.md"],
       ["LICENSE", "LICENSE"],
       ["skills/clawchat-core/SKILL.md", "skills/clawchat-core/SKILL.md"],
@@ -141,15 +162,25 @@ describe("standalone release bundle", () => {
     const connectBinary = join(directory, "connect");
     const livewareBinary = join(directory, "liveware-source");
     const clientDirectory = join(directory, "client");
+    const officialPluginsDirectory = join(directory, "official-plugins");
     const archive = join(directory, "clawchat-connect-darwin-arm64.tar.gz");
-    await mkdir(clientDirectory);
+    await Promise.all([mkdir(clientDirectory), mkdir(officialPluginsDirectory)]);
     await writeFile(connectBinary, "#!/bin/sh\nexit 0\n");
     await writeFile(livewareBinary, "#!/bin/sh\nexit 0\n");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
+    await writeOfficialPluginFixtures(officialPluginsDirectory);
     await Promise.all([chmod(connectBinary, 0o755), chmod(livewareBinary, 0o755)]);
 
     const child = Bun.spawn(
-      ["sh", "scripts/package-release-archive.sh", connectBinary, clientDirectory, livewareBinary, archive],
+      [
+        "sh",
+        "scripts/package-release-archive.sh",
+        connectBinary,
+        clientDirectory,
+        livewareBinary,
+        officialPluginsDirectory,
+        archive,
+      ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
     );
     const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
@@ -166,6 +197,8 @@ describe("standalone release bundle", () => {
         "clawchat-connect-client/",
         "clawchat-connect-client/index.html",
         "liveware",
+        "official-plugins/",
+        ...OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
         "skills/",
         "skills/clawchat-core/",
         "skills/clawchat-core/SKILL.md",
@@ -219,14 +252,24 @@ describe("standalone release bundle", () => {
     const connectBinary = join(directory, "clawchat-connect.exe");
     const livewareBinary = join(directory, "liveware-source.exe");
     const clientDirectory = join(directory, "client");
+    const officialPluginsDirectory = join(directory, "official-plugins");
     const archive = join(directory, "clawchat-connect-windows-x64.zip");
-    await mkdir(clientDirectory);
+    await Promise.all([mkdir(clientDirectory), mkdir(officialPluginsDirectory)]);
     await writeFile(connectBinary, "connect executable");
     await writeFile(livewareBinary, "liveware executable");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
+    await writeOfficialPluginFixtures(officialPluginsDirectory);
 
     const child = Bun.spawn(
-      ["sh", "scripts/package-windows-release.sh", connectBinary, clientDirectory, livewareBinary, archive],
+      [
+        "sh",
+        "scripts/package-windows-release.sh",
+        connectBinary,
+        clientDirectory,
+        livewareBinary,
+        officialPluginsDirectory,
+        archive,
+      ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
     );
     const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
@@ -242,6 +285,8 @@ describe("standalone release bundle", () => {
         "clawchat-connect-client/",
         "clawchat-connect-client/index.html",
         "clawchat-connect.exe",
+        "official-plugins/",
+        ...OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
         "liveware.exe",
         "skills/",
         "skills/clawchat-core/",
@@ -272,6 +317,12 @@ describe("standalone release bundle", () => {
     expect(installer).toContain("CHANGELOG.md");
     expect(installer).toContain('service", "stop');
     expect(installer).toContain("$transactionStarted");
+    expect(installer).toContain('$officialPluginsSource = Join-Path $extractedDirectory "official-plugins"');
+    expect(installer).toContain('$officialPluginsStaging = "$officialPluginsTarget.new"');
+    expect(installer).toContain(
+      '@{ Target = $officialPluginsTarget; Backup = (Join-Path $backupDirectory "official-plugins"); Name = "officialPlugins" }',
+    );
+    expect(installer).toContain("Move-Item -LiteralPath $officialPluginsStaging -Destination $officialPluginsTarget");
     expect(installer).toContain("if ($transactionStarted -and -not $transactionCommitted)");
     const workflow = await readFile(".github/workflows/release-beta.yml", "utf8");
     expect(workflow).toContain("bun-windows-x64 windows x64");
@@ -280,6 +331,7 @@ describe("standalone release bundle", () => {
     expect(workflow).not.toMatch(/^\s*bun-linux-x64 linux x64$/mu);
     expect(workflow).toContain("install.ps1");
     expect(workflow).toContain("sh scripts/package-windows-release.sh");
+    expect(workflow).toContain("./tests/windows-installer-preflight.ps1");
     expect(workflow).toContain("bun scripts/release-beta.ts publish build/release-notes.md build/release/*");
     expect(workflow).not.toContain("--clobber");
     expect(workflow).toContain("release-channel");
@@ -366,6 +418,7 @@ describe("standalone release bundle", () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-install-"));
     const sourceDirectory = join(directory, "source");
     const clientDirectory = join(sourceDirectory, "client");
+    const officialPluginsDirectory = join(sourceDirectory, "official-plugins");
     const fixtureDirectory = join(directory, "fixtures");
     const commandDirectory = join(directory, "commands");
     const installDirectory = join(directory, "installed");
@@ -376,6 +429,7 @@ describe("standalone release bundle", () => {
     const archive = join(fixtureDirectory, asset);
     await Promise.all([
       mkdir(clientDirectory, { recursive: true }),
+      mkdir(officialPluginsDirectory, { recursive: true }),
       mkdir(fixtureDirectory, { recursive: true }),
       mkdir(commandDirectory, { recursive: true }),
     ]);
@@ -385,11 +439,20 @@ describe("standalone release bundle", () => {
       writeFile(connectBinary, '#!/bin/sh\n[ "$' + '{1:-}" = --help ] || [ "$' + '{1:-}" = skills ]\n'),
       writeFile(livewareBinary, '#!/bin/sh\n[ "$' + '{1:-}" = --help ]\n'),
       writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n"),
+      writeOfficialPluginFixtures(officialPluginsDirectory, "installed release\n"),
     ]);
     await Promise.all([chmod(connectBinary, 0o755), chmod(livewareBinary, 0o755)]);
 
     const packageProcess = Bun.spawn(
-      ["sh", "scripts/package-release-archive.sh", connectBinary, clientDirectory, livewareBinary, archive],
+      [
+        "sh",
+        "scripts/package-release-archive.sh",
+        connectBinary,
+        clientDirectory,
+        livewareBinary,
+        officialPluginsDirectory,
+        archive,
+      ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
     );
     expect(await packageProcess.exited).toBe(0);
@@ -449,6 +512,15 @@ describe("standalone release bundle", () => {
     await expect(readFile(join(installDirectory, "clawchat-connect-client", "index.html"), "utf8")).resolves.toContain(
       "<!doctype html>",
     );
+    const installedOfficialPluginsDirectory = join(installDirectory, "official-plugins");
+    await expect(readdir(installedOfficialPluginsDirectory).then((entries) => entries.sort())).resolves.toEqual(
+      [...OFFICIAL_PLUGIN_BUNDLES].sort(),
+    );
+    for (const bundle of OFFICIAL_PLUGIN_BUNDLES) {
+      await expect(readFile(join(installedOfficialPluginsDirectory, bundle), "utf8")).resolves.toBe(
+        "installed release\n",
+      );
+    }
     await expect(readFile(join(installDirectory, "skills", "manifest.json"), "utf8")).resolves.toContain(
       CONNECT_VERSION,
     );
@@ -484,7 +556,15 @@ describe("standalone release bundle", () => {
     );
     await chmod(connectBinary, 0o755);
     const failingPackage = Bun.spawn(
-      ["sh", "scripts/package-release-archive.sh", connectBinary, clientDirectory, livewareBinary, archive],
+      [
+        "sh",
+        "scripts/package-release-archive.sh",
+        connectBinary,
+        clientDirectory,
+        livewareBinary,
+        officialPluginsDirectory,
+        archive,
+      ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
     );
     expect(await failingPackage.exited).toBe(0);
@@ -519,5 +599,64 @@ describe("standalone release bundle", () => {
     await expect(readFile(join(installDirectory, "clawchat-connect-client", "index.html"), "utf8")).resolves.toContain(
       "<!doctype html>",
     );
+
+    const retiredBundle = "clawling.runtime.retired-0.0.0-test.connect-plugin";
+    await writeFile(join(installedOfficialPluginsDirectory, retiredBundle), "retired installed release\n");
+    const installedBundleContents = new Map<string, string>();
+    for (const bundle of [...OFFICIAL_PLUGIN_BUNDLES, retiredBundle]) {
+      installedBundleContents.set(bundle, await readFile(join(installedOfficialPluginsDirectory, bundle), "utf8"));
+    }
+
+    await writeOfficialPluginFixtures(officialPluginsDirectory, "upgrade release\n");
+    await writeFile(
+      connectBinary,
+      [
+        "#!/bin/sh",
+        '[ "$' + '{1:-}" = --help ] && exit 0',
+        '[ "$' + '{1:-}" = skills ] && [ "$' + '{2:-}" = preflight ] && exit 0',
+        '[ "$' + '{1:-}" = skills ] && [ "$' + '{2:-}" = install ] && exit 23',
+        "exit 1",
+        "",
+      ].join("\n"),
+    );
+    await chmod(connectBinary, 0o755);
+    const rollbackPackage = Bun.spawn(
+      [
+        "sh",
+        "scripts/package-release-archive.sh",
+        connectBinary,
+        clientDirectory,
+        livewareBinary,
+        officialPluginsDirectory,
+        archive,
+      ],
+      { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
+    );
+    expect(await rollbackPackage.exited).toBe(0);
+    const rollbackChecksumProcess = Bun.spawn(["shasum", "-a", "256", archive], { stdout: "pipe" });
+    const rollbackChecksum = (await new Response(rollbackChecksumProcess.stdout).text()).split(/\s+/u)[0];
+    expect(await rollbackChecksumProcess.exited).toBe(0);
+    await writeFile(join(fixtureDirectory, "checksums.txt"), `${rollbackChecksum}  ${asset}\n`);
+
+    const rolledBackInstall = Bun.spawn(["sh", "install.sh"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PATH: `${commandDirectory}:${process.env.PATH ?? ""}`,
+        CLAWCHAT_CONNECT_INSTALL_DIR: installDirectory,
+        CLAWCHAT_CONNECT_LICENSE_DIR: join(installDirectory, "licenses"),
+        CONNECT_INSTALL_FIXTURES: fixtureDirectory,
+        CONNECT_INSTALL_REQUESTS: requestsPath,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(await rolledBackInstall.exited).not.toBe(0);
+    await expect(readdir(installedOfficialPluginsDirectory).then((entries) => entries.sort())).resolves.toEqual(
+      [...installedBundleContents.keys()].sort(),
+    );
+    for (const [bundle, content] of installedBundleContents) {
+      await expect(readFile(join(installedOfficialPluginsDirectory, bundle), "utf8")).resolves.toBe(content);
+    }
   });
 });

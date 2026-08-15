@@ -838,6 +838,106 @@ describe("state store", () => {
     await store.close();
   });
 
+  it("preserves empty Sessions created by the schema that defines binding locking", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const initial = createStateStore({ dbPath });
+    await initial.setSessionIntent({
+      chatId: "chat-fresh",
+      agentId: "codex",
+      projectId: null,
+      name: "Fresh empty Session",
+    });
+    await initial.resolveOrMaterializeRuntimeSession({
+      chatId: "chat-fresh",
+      agentId: "codex",
+      sessionId: "empty-fresh",
+      acceptedTurn: false,
+    });
+    await initial.close();
+
+    const reopened = createStateStore({ dbPath });
+    await expect(reopened.getCurrentRuntimeSession("chat-fresh", "codex")).resolves.toMatchObject({
+      sessionId: "empty-fresh",
+      name: "Fresh empty Session",
+      hasMessages: false,
+    });
+    await expect(reopened.getSessionIntent("chat-fresh", "codex")).resolves.toBeNull();
+    await reopened.close();
+  });
+
+  it("rolls back every legacy empty Session migration step and retries after an injected failure", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const bootstrap = createStateStore({ dbPath });
+    await bootstrap.initialize();
+    await bootstrap.close();
+
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      DROP TABLE runtime_sessions;
+      CREATE TABLE runtime_sessions(
+        chat_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        runtime_session_id TEXT,
+        name TEXT,
+        mode TEXT,
+        is_current INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(chat_id, agent_id, session_id)
+      );
+      INSERT INTO runtime_sessions VALUES (
+        'chat-retry', 'empty-current', 'codex', NULL, 'Retry me', 'read-only', 1, 1, 1
+      );
+      INSERT INTO runtime_sessions VALUES (
+        'chat-message', 'message-backed', 'codex', NULL, 'Keep me', NULL, 1, 1, 1
+      );
+      INSERT INTO clawchat_messages(
+        platform, local_agent_id, kind, direction, event_type, chat_id, message_id, text, created_at
+      ) VALUES (
+        'clawchat-connect', 'codex', 'message', 'inbound', 'message.created',
+        'chat-message', 'message-1', 'hello', 2
+      );
+      CREATE TRIGGER fail_legacy_intent_migration
+      BEFORE INSERT ON session_intents
+      BEGIN
+        SELECT RAISE(ABORT, 'injected legacy migration failure');
+      END;
+    `);
+    legacy.close();
+
+    const interrupted = createStateStore({ dbPath });
+    await expect(interrupted.initialize()).rejects.toThrow("injected legacy migration failure");
+    const afterFailure = new Database(dbPath);
+    const columnsAfterFailure = afterFailure
+      .query<{ name: string }, []>("PRAGMA table_info(runtime_sessions)")
+      .all()
+      .map((column) => column.name);
+    expect(columnsAfterFailure).not.toContain("binding_locked");
+    expect(
+      afterFailure.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runtime_sessions").get()?.count,
+    ).toBe(2);
+    expect(
+      afterFailure.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM session_intents").get()?.count,
+    ).toBe(0);
+    afterFailure.exec("DROP TRIGGER fail_legacy_intent_migration");
+    afterFailure.close();
+
+    const retried = createStateStore({ dbPath });
+    await expect(retried.getCurrentRuntimeSession("chat-retry", "codex")).resolves.toBeNull();
+    await expect(retried.getSessionIntent("chat-retry", "codex")).resolves.toMatchObject({
+      name: "Retry me",
+      mode: "read-only",
+    });
+    await expect(retried.getCurrentRuntimeSession("chat-message", "codex")).resolves.toMatchObject({
+      sessionId: "message-backed",
+      hasMessages: true,
+    });
+    await retried.close();
+  });
+
   it("keeps transcript projection updates idempotent and rekeys explicit Runtime Activity aliases", async () => {
     const dir = await tempDir();
     const store = createStateStore({

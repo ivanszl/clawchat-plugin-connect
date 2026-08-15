@@ -41,11 +41,19 @@ export interface OpenCodeRuntimeAdapterOptions {
   serverClientOptions?: OpenCodeServerClientOptions;
   eventReconnectDelays?: readonly number[];
 }
+export type OpenCodeRuntimeStartContext = Pick<
+  ConnectRuntimeStartContext,
+  "agentId" | "chatId" | "sessionId" | "runtimeSessionId" | "onRuntimeSessionId" | "cacheMedia"
+>;
+
+export interface OpenCodeRuntimeAdapter extends Omit<ConnectRuntimeAdapter, "start"> {
+  start(binding: AgentBindingConfig, context: OpenCodeRuntimeStartContext): Promise<ConnectRuntimeSession>;
+}
 
 class OpenCodeReconnect {}
 type EventListener = (event: GlobalEvent | Error | OpenCodeReconnect) => Promise<void> | void;
 
-export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOptions = {}): ConnectRuntimeAdapter {
+export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOptions = {}): OpenCodeRuntimeAdapter {
   let clientPromise: Promise<OpenCodeServerClient> | null = null;
   let eventsAbort: AbortController | null = null;
   let eventsPump: Promise<void> | null = null;
@@ -283,7 +291,7 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
 
 interface OpenCodeRuntimeSessionOptions {
   clientFor(): Promise<OpenCodeServerClient>;
-  context: ConnectRuntimeStartContext;
+  context: OpenCodeRuntimeStartContext;
   listeners: Set<EventListener>;
   threadDirectories: Map<string, string>;
   observedUserMessages: Map<string, Set<string>>;

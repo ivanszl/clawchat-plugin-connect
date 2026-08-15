@@ -1,0 +1,298 @@
+import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createPluginAgentBinding } from "../src/plugin/binding";
+import { ConnectPluginHost } from "../src/plugin/host";
+import type { ConnectPluginBundleV1, ConnectPluginManifestV1 } from "../src/plugin/sdk";
+import { installLocalPlugin, listInstalledPlugins } from "../src/plugin/store";
+import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+
+const fixturePath = join(import.meta.dir, "fixtures", "reference-runtime.connect-plugin");
+
+type MutableBundle = ConnectPluginBundleV1 & { manifest: ConnectPluginManifestV1 };
+
+async function bundleFixture(
+  directory: string,
+  name: string,
+  mutate: (bundle: MutableBundle) => void,
+  source?: string,
+): Promise<string> {
+  const bundle = JSON.parse(await readFile(fixturePath, "utf8")) as MutableBundle;
+  mutate(bundle);
+  if (source !== undefined) {
+    bundle.files["runtime.mjs"] = { encoding: "utf8", content: source };
+    const integrity = `sha256-${createHash("sha256").update(source).digest("base64")}`;
+    bundle.manifest.artifacts = bundle.manifest.artifacts.map((artifact) => ({ ...artifact, integrity }));
+  }
+  const path = join(directory, `${name}.connect-plugin`);
+  await writeFile(path, `${JSON.stringify(bundle, null, 2)}\n`);
+  return path;
+}
+
+function runtimeBinding(pluginId: string, configuration: Record<string, unknown>) {
+  return createPluginAgentBinding({
+    runtimeFamily: "reference",
+    pluginId,
+    capabilityId: "reference-runtime",
+    configuration,
+  });
+}
+
+function readGlobalEffects(key: string): string[] | undefined {
+  return Reflect.get(globalThis, key) as string[] | undefined;
+}
+
+describe("atomic multi-capability Plugin Bundles", () => {
+  it("stores independent Bundle/Exposure/Binding configuration and activates Runtime plus Exposure together", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-multi-"));
+    const configPath = join(directory, "config.json");
+    Reflect.deleteProperty(globalThis, "__connectReferenceExposureEffects");
+    const installed = await installLocalPlugin({
+      configPath,
+      bundlePath: fixturePath,
+      installationConfiguration: {},
+      exposureConfigurations: { "reference-exposure": { channel: "private" } },
+    });
+    expect(installed.manifest.capabilities.map(({ id, type }) => [id, type])).toEqual([
+      ["reference-runtime", "runtime"],
+      ["reference-exposure", "exposure"],
+    ]);
+    expect(installed.exposureConfigurations).toEqual({ "reference-exposure": { channel: "private" } });
+
+    const diagnostics: string[] = [];
+    const registry = new RuntimeAdapterRegistry([]);
+    const host = new ConnectPluginHost(configPath, registry, (_pluginId, error) => diagnostics.push(String(error)));
+    await host.activateInstalled();
+    await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "alpha" }))).resolves.toBeUndefined();
+    await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "beta" }))).resolves.toBeUndefined();
+    expect(readGlobalEffects("__connectReferenceExposureEffects")).toEqual(["activate:private"]);
+    expect(diagnostics).toEqual([]);
+    expect(host.activePluginIds()).toEqual([installed.pluginId]);
+
+    await host.close();
+    expect(readGlobalEffects("__connectReferenceExposureEffects")).toEqual(["activate:private", "dispose"]);
+    await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "gamma" }))).rejects.toThrow(
+      `no Runtime Adapter registered for provider: ${installed.pluginId}/reference-runtime`,
+    );
+  });
+
+  it("rejects duplicate Plugin identities without replacing the locked Bundle", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-duplicate-id-"));
+    const configPath = join(directory, "config.json");
+    await installLocalPlugin({ configPath, bundlePath: fixturePath });
+    await expect(installLocalPlugin({ configPath, bundlePath: fixturePath })).rejects.toThrow(
+      "Plugin identity is already installed",
+    );
+    await expect(listInstalledPlugins(configPath)).resolves.toHaveLength(1);
+  });
+
+  const manifestRejections: Array<{
+    name: string;
+    mutate(bundle: MutableBundle): void;
+    message: string;
+    target?: string;
+  }> = [
+    {
+      name: "duplicate-capability",
+      mutate: (bundle) => bundle.manifest.capabilities.push(structuredClone(bundle.manifest.capabilities[0]!)),
+      message: "Duplicate Plugin capability ID",
+    },
+    {
+      name: "plugin-dependency",
+      mutate: (bundle) => {
+        bundle.manifest.dependencies = [{ type: "plugin", id: "other", interfaceVersion: "1" } as never];
+      },
+      message: "user-plugin dependencies are prohibited",
+    },
+    {
+      name: "unsupported-capability",
+      mutate: (bundle) => {
+        bundle.manifest.capabilities[0] = { ...bundle.manifest.capabilities[0]!, type: "persistence" } as never;
+      },
+      message: "unsupported capability type",
+    },
+    {
+      name: "unsupported-plugin-interface",
+      mutate: (bundle) => {
+        bundle.manifest.interfaceVersion = "2" as never;
+      },
+      message: "Unsupported Connect Plugin interface version",
+    },
+    {
+      name: "unsupported-capability-interface",
+      mutate: (bundle) => {
+        bundle.manifest.capabilities[0]!.interfaceVersion = "2" as never;
+      },
+      message: "unsupported runtime capability interface version",
+    },
+    {
+      name: "unsupported-host-capability",
+      mutate: (bundle) => {
+        bundle.manifest.dependencies[0]!.id = "persistence" as never;
+      },
+      message: "unsupported Host Capability",
+    },
+    {
+      name: "malformed-schema",
+      mutate: (bundle) => {
+        bundle.manifest.installationConfigurationSchema = { type: "not-a-json-schema-type" };
+      },
+      message: "not a valid JSON Schema",
+    },
+    {
+      name: "unsupported-target",
+      mutate: () => undefined,
+      message: "does not support Connect target test-unsupported",
+      target: "test-unsupported",
+    },
+  ];
+
+  for (const rejection of manifestRejections) {
+    it(`rejects ${rejection.name} before activation`, async () => {
+      const directory = await mkdtemp(join(tmpdir(), `connect-plugin-${rejection.name}-`));
+      const bundlePath = await bundleFixture(directory, rejection.name, rejection.mutate);
+      await expect(
+        installLocalPlugin({ configPath: join(directory, "config.json"), bundlePath, target: rejection.target }),
+      ).rejects.toThrow(rejection.message);
+    });
+  }
+
+  it("rejects installation and Exposure values against their independent schemas", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-invalid-config-"));
+    const installationBundle = await bundleFixture(directory, "installation-schema", (bundle) => {
+      bundle.manifest.installationConfigurationSchema = {
+        type: "object",
+        additionalProperties: false,
+        required: ["endpoint"],
+        properties: { endpoint: { type: "string", format: "uri" } },
+      };
+    });
+    await expect(
+      installLocalPlugin({
+        configPath: join(directory, "installation.json"),
+        bundlePath: installationBundle,
+        installationConfiguration: { endpoint: "not a URI" },
+      }),
+    ).rejects.toThrow("installation configuration is invalid");
+    await expect(
+      installLocalPlugin({
+        configPath: join(directory, "exposure.json"),
+        bundlePath: fixturePath,
+        exposureConfigurations: { "reference-exposure": { channel: "public" } },
+      }),
+    ).rejects.toThrow("Exposure configuration is invalid");
+  });
+
+  it("rejects undeclared Host Capability use and duplicate provider registration as one Bundle error", async () => {
+    const cases = [
+      {
+        name: "undeclared-host-use",
+        source: `export default { activate(context) { context.hostCapabilities.get("exposure-provider"); } };`,
+        message: "used undeclared Host Capability exposure-provider",
+      },
+      {
+        name: "duplicate-provider",
+        source: `export default { activate(context) { const host = context.hostCapabilities.get("runtime-provider"); const provider = { capabilityId: "reference-runtime", family: "reference", create() { return { modes: [], async start() { throw new Error("unused"); } }; } }; host.register(provider); host.register(provider); } };`,
+        message: "registered capability reference-runtime more than once",
+      },
+    ];
+    for (const scenario of cases) {
+      const directory = await mkdtemp(join(tmpdir(), `connect-plugin-${scenario.name}-`));
+      const configPath = join(directory, "config.json");
+      const bundlePath = await bundleFixture(
+        directory,
+        scenario.name,
+        (bundle) => {
+          bundle.manifest.pluginId = `test.${scenario.name}`;
+          bundle.manifest.dependencies = [bundle.manifest.dependencies[0]!];
+          bundle.manifest.capabilities = [bundle.manifest.capabilities[0]!];
+        },
+        scenario.source,
+      );
+      await installLocalPlugin({ configPath, bundlePath });
+      const diagnostics: string[] = [];
+      const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), (_id, error) =>
+        diagnostics.push(error instanceof Error ? error.message : String(error)),
+      );
+      await host.activateInstalled();
+      expect(host.activePluginIds()).toEqual([]);
+      expect(diagnostics).toEqual([expect.stringContaining(scenario.message)]);
+      await expect(listInstalledPlugins(configPath)).resolves.toEqual([
+        expect.objectContaining({ status: "error", error: expect.stringContaining(scenario.message) }),
+      ]);
+    }
+  });
+
+  it("rolls back every earlier contribution effect when a later contribution fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-rollback-"));
+    const configPath = join(directory, "config.json");
+    Reflect.deleteProperty(globalThis, "__connectAtomicEffects");
+    const source = `export default { activate(context) {
+      const runtime = context.hostCapabilities.get("runtime-provider");
+      const exposure = context.hostCapabilities.get("exposure-provider");
+      runtime.register({ capabilityId: "reference-runtime", family: "reference", create() { return { modes: [], async start() { throw new Error("unused"); } }; } });
+      exposure.register({ capabilityId: "first-exposure", async activate() { const effects = (globalThis.__connectAtomicEffects ??= []); effects.push("activate:first"); return () => effects.push("dispose:first"); } });
+      exposure.register({ capabilityId: "failing-exposure", async activate() { throw new Error("second contribution failed"); } });
+    } };`;
+    const bundlePath = await bundleFixture(
+      directory,
+      "rollback",
+      (bundle) => {
+        bundle.manifest.pluginId = "test.atomic-rollback";
+        const exposureSchema = bundle.manifest.capabilities[1]!.configurationSchema;
+        bundle.manifest.capabilities = [
+          bundle.manifest.capabilities[0]!,
+          { id: "first-exposure", type: "exposure", interfaceVersion: "1", configurationSchema: exposureSchema },
+          { id: "failing-exposure", type: "exposure", interfaceVersion: "1", configurationSchema: exposureSchema },
+        ];
+      },
+      source,
+    );
+    const installed = await installLocalPlugin({ configPath, bundlePath });
+    const diagnostics: string[] = [];
+    const registry = new RuntimeAdapterRegistry([]);
+    const host = new ConnectPluginHost(configPath, registry, (_id, error) =>
+      diagnostics.push(error instanceof Error ? error.message : String(error)),
+    );
+    await host.activateInstalled();
+
+    expect(host.activePluginIds()).toEqual([]);
+    expect(readGlobalEffects("__connectAtomicEffects")).toEqual(["activate:first", "dispose:first"]);
+    await expect(registry.prepare(runtimeBinding(installed.pluginId, {}))).rejects.toThrow(
+      `no Runtime Adapter registered for provider: ${installed.pluginId}/reference-runtime`,
+    );
+    expect(diagnostics).toEqual(["second contribution failed"]);
+    await expect(listInstalledPlugins(configPath)).resolves.toEqual([
+      expect.objectContaining({ pluginId: installed.pluginId, status: "error", error: "second contribution failed" }),
+    ]);
+  });
+
+  it("rejects invalid per-Binding Runtime configuration before invoking Plugin code", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-binding-schema-"));
+    const configPath = join(directory, "config.json");
+    const globals = globalThis as typeof globalThis & { __connectRuntimeCreates?: number };
+    delete globals.__connectRuntimeCreates;
+    const source = `export default { activate(context) { context.hostCapabilities.get("runtime-provider").register({ capabilityId: "reference-runtime", family: "reference", create() { globalThis.__connectRuntimeCreates = (globalThis.__connectRuntimeCreates ?? 0) + 1; return { modes: [], async start() { throw new Error("unused"); } }; } }); } };`;
+    const bundlePath = await bundleFixture(
+      directory,
+      "binding-schema",
+      (bundle) => {
+        bundle.manifest.pluginId = "test.binding-schema";
+        bundle.manifest.dependencies = [bundle.manifest.dependencies[0]!];
+        bundle.manifest.capabilities = [bundle.manifest.capabilities[0]!];
+      },
+      source,
+    );
+    const installed = await installLocalPlugin({ configPath, bundlePath });
+    const registry = new RuntimeAdapterRegistry([]);
+    const host = new ConnectPluginHost(configPath, registry, () => undefined);
+    await host.activateInstalled();
+    await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: 42 }))).rejects.toThrow(
+      "Agent Binding Runtime configuration",
+    );
+    expect(globals.__connectRuntimeCreates).toBeUndefined();
+    await host.close();
+  });
+});

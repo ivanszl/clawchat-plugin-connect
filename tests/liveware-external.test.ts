@@ -43,6 +43,7 @@ describe("production Liveware adapters", () => {
           }),
         );
       }
+      if (operation === "tunnel unbind app-0000000000000001") return success("{}");
       if (operation === "app delete app-0000000000000001") return success("{}");
       throw new Error(`unexpected Liveware command: ${command.join(" ")}`);
     };
@@ -97,6 +98,15 @@ describe("production Liveware adapters", () => {
     await retireLivewareExposure({ activation: principal, deviceId: "device-1", stateStore }, dependencies);
 
     expect(record.appId).toBe("app-0000000000000001");
+    expect(commands.map(({ command }) => command.slice(1, -1).join(" "))).toEqual([
+      "app list",
+      "app create ClawChat Connect · codex --policy private",
+      "app access app-0000000000000001 --policy private",
+      "tunnel bind app-0000000000000001 http://127.0.0.1:47823 --relay-url https://relay.example",
+      "app inspect app-0000000000000001",
+      "tunnel unbind app-0000000000000001",
+      "app delete app-0000000000000001",
+    ]);
     expect(commands.every(({ command }) => !command.some((argument) => /token/u.test(argument)))).toBe(true);
     expect(commands.every(({ env }) => env.LIVEWARE_TOKEN === "liveware-token")).toBe(true);
     expect(

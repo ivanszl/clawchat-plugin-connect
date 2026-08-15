@@ -1,3 +1,5 @@
+import type { RuntimeCapabilityRef } from "./plugin/sdk";
+
 export const PLATFORM_ID = "clawchat-connect" as const;
 export const AGENT_TYPE = "clawbot" as const;
 
@@ -18,6 +20,21 @@ export interface AgentBindingConfigBase {
   displayName?: string;
   sessionOptions?: Record<string, string>;
   additionalDirectories?: string[];
+}
+
+export interface PluginAgentBindingConfig extends AgentBindingConfigBase {
+  kind: "plugin";
+  runtimeFamily: string;
+  runtime: RuntimeCapabilityRef;
+  runtimeConfig: Record<string, unknown>;
+  model?: string;
+  modelReasoningEffort?: string;
+  codexPathOverride?: never;
+  sandboxMode?: never;
+  approvalPolicy?: never;
+  webSearchMode?: never;
+  networkAccessEnabled?: never;
+  profile?: never;
 }
 
 export interface CodexAgentBindingConfig extends AgentBindingConfigBase {
@@ -57,7 +74,15 @@ export interface WorkBuddyAgentBindingConfig extends AgentBindingConfigBase {
   networkAccessEnabled?: never;
 }
 
-export type AgentBindingConfig = CodexAgentBindingConfig | OpenCodeAgentBindingConfig | WorkBuddyAgentBindingConfig;
+export type AgentBindingConfig =
+  | CodexAgentBindingConfig
+  | OpenCodeAgentBindingConfig
+  | WorkBuddyAgentBindingConfig
+  | PluginAgentBindingConfig;
+
+export function runtimeFamilyFor(binding: AgentBindingConfig): string {
+  return binding.kind === "plugin" ? binding.runtimeFamily : binding.kind;
+}
 
 export interface ConnectConfig {
   baseUrl: string;

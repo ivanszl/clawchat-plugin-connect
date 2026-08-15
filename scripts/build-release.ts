@@ -111,6 +111,7 @@ export function releasePayload(_target: ReleaseTarget): ReleasePayload {
       "clawchat-connect",
       "liveware",
       "clawchat-connect-client",
+      "official-plugins",
       "skills",
       "CHANGELOG.md",
       "LICENSE",
@@ -122,6 +123,7 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
   const connectExecutable = join("dist", target.connectExecutable);
   const clientDirectory = join("dist", "client");
   const livewareExecutable = join("dist", target.livewareExecutable);
+  const officialPluginsDirectory = join("dist", "official-plugins");
   const outputArchive = join("build", "release", target.archiveName);
   const packageCommand =
     target.platform === "windows"
@@ -135,6 +137,7 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
           connectExecutable,
           clientDirectory,
           livewareExecutable,
+          officialPluginsDirectory,
           outputArchive,
         ]
       : [
@@ -143,6 +146,7 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
           connectExecutable,
           clientDirectory,
           livewareExecutable,
+          officialPluginsDirectory,
           outputArchive,
         ];
 
@@ -156,6 +160,15 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
     },
     { name: "clean distributable", command: [process.execPath, "run", "clean"] },
     { name: "build standalone executable", command: [process.execPath, "run", "build:binary"] },
+    {
+      name: "build official Plugins",
+      command: [
+        process.execPath,
+        join("scripts", "build-official-plugins.ts"),
+        "--target",
+        `${target.platform === "windows" ? "win32" : target.platform}-${target.architecture}`,
+      ],
+    },
     { name: "package release archive", command: packageCommand },
     { name: "copy release support files" },
     { name: "write checksums" },

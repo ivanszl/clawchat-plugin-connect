@@ -5,8 +5,7 @@ import { SessionCatalog } from "../../src/client-interface/session-catalog";
 import { TranscriptProjection } from "../../src/client-interface/transcript-projection";
 import { defaultConfig } from "../../src/config";
 import { createStateStore } from "../../src/persistence/state";
-import { createReleasedRuntimeAdapterRegistry } from "../../src/runtime/released-adapters";
-import type { WorkBuddyAgentBindingConfig } from "../../src/types";
+import { createInstalledWorkBuddyPluginRuntime } from "./workbuddy-installed-plugin";
 import {
   requiredWorkBuddyTestEnv,
   workBuddyTestBindingId,
@@ -26,8 +25,8 @@ const {
 
 const directory = await mkdtemp(join(tmpdir(), `clawchat-${workBuddyTestProfile}-adoption-`));
 const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
-const runtimeAdapters = createReleasedRuntimeAdapterRegistry();
-const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: workBuddyTestProfile };
+const installedPlugin = await createInstalledWorkBuddyPluginRuntime(workBuddyTestProfile);
+const { binding, runtimeAdapters } = installedPlugin;
 const config = defaultConfig();
 config.defaultAgent = workBuddyTestBindingId;
 config.agents = { [workBuddyTestBindingId]: binding };
@@ -75,7 +74,7 @@ try {
   }
   process.stdout.write(
     `${JSON.stringify({
-      profile: binding.profile,
+      profile: workBuddyTestProfile,
       taskId,
       workspace: canonicalWorkspace,
       titlePresent: Boolean(thread.name),
@@ -89,7 +88,7 @@ try {
     })}\n`,
   );
 } finally {
-  await runtimeAdapters.close();
+  await installedPlugin.close();
   await store.close();
   await rm(directory, { recursive: true, force: true });
 }

@@ -214,10 +214,10 @@ export const es = {
   "@connect.error.invalidInteractionResponse": {
     defaultMessage: "Elige una respuesta válida para esta Runtime Interaction.",
   },
-  "@connect.settings.title": { defaultMessage: "Preferencias seguras" },
+  "@connect.settings.title": { defaultMessage: "Configuración de Connect" },
   "@connect.settings.description": {
     defaultMessage:
-      "Aquí solo se pueden cambiar el nombre visible, el modelo, el nivel de razonamiento y la visibilidad de la salida. Los argumentos de inicio de Runtime y la política de aprobación siguen bajo el control de la configuración local.",
+      "Administra preferencias seguras de Agent, Projects del host y Plugins locales de confianza. Los argumentos de inicio de Runtime y la política de aprobación siguen bajo control de la configuración local.",
   },
   "@connect.settings.binding.save": { defaultMessage: "Guardar configuración" },
   "@connect.settings.binding.saving": { defaultMessage: "Guardando configuración" },
@@ -278,6 +278,112 @@ export const es = {
   "@connect.settings.projects.removeConfirm.action": { defaultMessage: "Eliminar Project" },
   "@connect.settings.projects.removeConfirm.removing": { defaultMessage: "Eliminando Project" },
   "@connect.settings.projects.removeConfirm.cancel": { defaultMessage: "Cancelar" },
+  "@connect.settings.plugins.title": { defaultMessage: "Plugins de confianza" },
+  "@connect.settings.plugins.description": {
+    defaultMessage:
+      "Instala y administra Plugins autocontenidos de Runtime y Exposure para esta instalación de Connect.",
+  },
+  "@connect.settings.plugins.loading": { defaultMessage: "Cargando Plugins" },
+  "@connect.settings.plugins.loadFailed": { defaultMessage: "No se pudieron cargar los Plugins" },
+  "@connect.settings.plugins.actionFailed": { defaultMessage: "Falló la acción del Plugin" },
+  "@connect.settings.plugins.installed": { defaultMessage: "Plugins instalados" },
+  "@connect.settings.plugins.installedEmpty": { defaultMessage: "No hay Plugins instalados" },
+  "@connect.settings.plugins.available": { defaultMessage: "Catálogo oficial" },
+  "@connect.settings.plugins.availableEmpty": { defaultMessage: "No hay Plugins oficiales disponibles" },
+  "@connect.settings.plugins.actions": { defaultMessage: "Acciones del Plugin" },
+  "@connect.settings.plugins.source": { defaultMessage: "Origen" },
+  "@connect.settings.plugins.version": { defaultMessage: "Versión exacta" },
+  "@connect.settings.plugins.capabilities": { defaultMessage: "Capacidades" },
+  "@connect.settings.plugins.integrity": { defaultMessage: "Integridad" },
+  "@connect.settings.plugins.dependents": { defaultMessage: "Bindings dependientes" },
+  "@connect.settings.plugins.updateAvailability": { defaultMessage: "Disponibilidad de actualización" },
+  "@connect.settings.plugins.retained": { defaultMessage: "Versiones conservadas" },
+  "@connect.settings.plugins.none": { defaultMessage: "Ninguno" },
+  "@connect.settings.plugins.unknown": { defaultMessage: "Desconocido" },
+  "@connect.settings.plugins.status.active": { defaultMessage: "Activo" },
+  "@connect.settings.plugins.status.disabled": { defaultMessage: "Desactivado" },
+  "@connect.settings.plugins.status.error": { defaultMessage: "Error" },
+  "@connect.settings.plugins.status.available": { defaultMessage: "Disponible" },
+  "@connect.settings.plugins.status.unavailable": { defaultMessage: "No disponible" },
+  "@connect.settings.plugins.update.current": { defaultMessage: "Actual" },
+  "@connect.settings.plugins.update.available": { defaultMessage: "Actualización disponible" },
+  "@connect.settings.plugins.update.check-failed": { defaultMessage: "Falló la comprobación de actualización" },
+  "@connect.settings.plugins.update.not-installed": { defaultMessage: "No instalado" },
+  "@connect.settings.plugins.update.action": { defaultMessage: "Comprobar y actualizar explícitamente" },
+  "@connect.settings.plugins.reinstall.action": { defaultMessage: "Reinstalar la versión exacta" },
+  "@connect.settings.plugins.enable.action": { defaultMessage: "Activar" },
+  "@connect.settings.plugins.disable.action": { defaultMessage: "Desactivar" },
+  "@connect.settings.plugins.select.action": { defaultMessage: "Seleccionar versión conservada {version}" },
+  "@connect.settings.plugins.remove.action": { defaultMessage: "Eliminar" },
+  "@connect.settings.plugins.remove.title": { defaultMessage: "¿Eliminar {plugin}?" },
+  "@connect.settings.plugins.remove.description": {
+    defaultMessage: "¿Eliminar {plugin}, sus versiones conservadas y los artefactos instalados?",
+  },
+  "@connect.settings.plugins.remove.forceDescription": {
+    defaultMessage: "¿Eliminar {plugin} y purgar permanentemente sus Bindings dependientes: {bindings}?",
+  },
+  "@connect.settings.plugins.remove.confirm": { defaultMessage: "Eliminar Plugin" },
+  "@connect.settings.plugins.cancel": { defaultMessage: "Cancelar" },
+  "@connect.settings.plugins.install": { defaultMessage: "Instalar Plugin" },
+  "@connect.settings.plugins.installFailed": { defaultMessage: "Falló la instalación del Plugin" },
+  "@connect.settings.plugins.installReference.action": { defaultMessage: "Instalar desde npm o GitHub" },
+  "@connect.settings.plugins.installReference.title": { defaultMessage: "Instalar desde npm o GitHub" },
+  "@connect.settings.plugins.installReference.description": {
+    defaultMessage:
+      "Resuelve un Bundle autocontenido y verificado sin ejecutar scripts de paquetes ni compilaciones del repositorio.",
+  },
+  "@connect.settings.plugins.installReference.source": { defaultMessage: "Origen del Plugin" },
+  "@connect.settings.plugins.installReference.sourceDescription": {
+    defaultMessage: "Usa npm:package[@version] o github:owner/repository[@release].",
+  },
+  "@connect.settings.plugins.upload.action": { defaultMessage: "Subir Bundle" },
+  "@connect.settings.plugins.upload.title": { defaultMessage: "Subir un Plugin Bundle local" },
+  "@connect.settings.plugins.upload.description": {
+    defaultMessage: "Sube un Bundle JSON .connect-plugin autocontenido al Connect Service local.",
+  },
+  "@connect.settings.plugins.upload.file": { defaultMessage: "Plugin Bundle" },
+  "@connect.settings.plugins.upload.fileDescription": { defaultMessage: "Selecciona un archivo .connect-plugin." },
+  "@connect.settings.plugins.upload.required": { defaultMessage: "Selecciona primero un Plugin Bundle." },
+  "@connect.settings.plugins.installationConfiguration": { defaultMessage: "Configuración de instalación" },
+  "@connect.settings.plugins.capabilityConfigurations": {
+    defaultMessage: "Configuraciones de Exposure por ID de capacidad",
+  },
+  "@connect.settings.plugins.trust.title": { defaultMessage: "Código local de confianza" },
+  "@connect.settings.plugins.trust.description": {
+    defaultMessage:
+      "Los Plugins se ejecutan como código local de confianza con la autoridad del sistema operativo del usuario que ejecuta Connect Service.",
+  },
+  "@connect.settings.plugins.official.install": { defaultMessage: "Instalar Plugin oficial" },
+  "@connect.settings.plugins.official.installed": { defaultMessage: "Instalado" },
+  "@connect.settings.plugins.configure.action": { defaultMessage: "Configurar" },
+  "@connect.settings.plugins.configure.title": { defaultMessage: "Configurar {plugin}" },
+  "@connect.settings.plugins.configure.description": {
+    defaultMessage:
+      "Los campos proceden de los JSON Schemas validados de instalación e instancia de capacidad del Bundle.",
+  },
+  "@connect.settings.plugins.configure.save": { defaultMessage: "Guardar configuración" },
+  "@connect.settings.plugins.configure.failed": { defaultMessage: "No se pudo guardar la configuración del Plugin" },
+  "@connect.settings.plugins.capability.title": { defaultMessage: "Capacidad: {capability}" },
+  "@connect.settings.plugins.capability.description": { defaultMessage: "Tipo: {type}. Familia de Runtime: {family}." },
+  "@connect.settings.plugins.capability.noInstances": {
+    defaultMessage: "Ninguna instancia configurada usa esta capacidad.",
+  },
+  "@connect.settings.plugins.schema.empty": { defaultMessage: "Este Schema no tiene campos configurables." },
+  "@connect.settings.plugins.schema.jsonDescription": {
+    defaultMessage: "Introduce un valor JSON que coincida con este Schema validado.",
+  },
+  "@connect.settings.plugins.schema.invalidJson": { defaultMessage: "Introduce JSON válido." },
+  "@connect.settings.plugins.schema.objectDescription": {
+    defaultMessage: "Introduce un objeto JSON. El Bundle lo valida durante la instalación.",
+  },
+  "@connect.settings.plugins.schema.invalidObject": { defaultMessage: "Introduce un objeto JSON válido." },
+  "@connect.settings.plugins.diagnostic": { defaultMessage: "Diagnóstico de {stage}" },
+  "@connect.settings.plugins.diagnostic.import": { defaultMessage: "Importación" },
+  "@connect.settings.plugins.diagnostic.validation": { defaultMessage: "Validación" },
+  "@connect.settings.plugins.diagnostic.activation": { defaultMessage: "Activación" },
+  "@connect.settings.plugins.diagnostic.provider": { defaultMessage: "Provider" },
+  "@connect.settings.plugins.diagnostic.probe": { defaultMessage: "Sonda" },
+  "@connect.settings.plugins.diagnostic.update": { defaultMessage: "Actualización" },
   "@connect.settings.error.bindingNotFound": {
     defaultMessage: "El Agent Binding ya no está disponible. Detalle del servidor: {detail}",
   },
@@ -500,4 +606,50 @@ export const es = {
   },
   "@connect.composer.error.unknown": { defaultMessage: "La Turn Submission ha fallado." },
   "@connect.composer.error.withDiagnostic": { defaultMessage: "{message} Referencia de diagnóstico: {reference}" },
+  "@connect.session.agent.fixed.title": { defaultMessage: "Agent Binding fixed for this Session" },
+  "@connect.session.agent.fixed.acceptedTurn": {
+    defaultMessage: "The first Turn has been accepted. Continue the Project in a new Session to use another Agent.",
+  },
+  "@connect.session.agent.fixed.runtimeThread": {
+    defaultMessage: "A Runtime Thread is associated. Continue the Project in a new Session to use another Agent.",
+  },
+  "@connect.session.agent.empty.label": { defaultMessage: "Agent Binding for this empty Session" },
+  "@connect.session.agent.empty.description": {
+    defaultMessage: "You can change Agent in place until the first Turn is accepted.",
+  },
+  "@connect.session.agent.empty.unavailable": { defaultMessage: "No other active Agent Binding is available." },
+  "@connect.session.agent.empty.action": { defaultMessage: "Change Agent in this Session" },
+  "@connect.session.agent.changeFailure": { defaultMessage: "Unable to change Agent" },
+  "@connect.session.continue.action": { defaultMessage: "Continue Project with another Agent" },
+  "@connect.session.continue.title": { defaultMessage: "Continue with another Agent" },
+  "@connect.session.continue.subtitle": { defaultMessage: "Create a fresh Session in the same Project." },
+  "@connect.session.continue.warning.title": { defaultMessage: "Only workspace files carry forward" },
+  "@connect.session.continue.warning.description": {
+    defaultMessage:
+      "A new Session and Runtime Thread are created. Conversation history, tool context, hidden reasoning, and memory are not transferred. Workspace files remain through the shared Project, and the original Session stays unchanged.",
+  },
+  "@connect.session.continue.binding.label": { defaultMessage: "Agent Binding for the new Session" },
+  "@connect.session.continue.binding.description": {
+    defaultMessage: "Only active Agent Bindings owned by this Connect installation are eligible.",
+  },
+  "@connect.session.continue.project": { defaultMessage: "Shared Project: {project}" },
+  "@connect.session.continue.failure": { defaultMessage: "Unable to create continuation Session" },
+  "@connect.session.continue.cancel": { defaultMessage: "Cancel" },
+  "@connect.session.continue.confirm": { defaultMessage: "Create fresh Session" },
+  "@connect.error.sessionBindingLocked": {
+    defaultMessage: "This Session's Agent is fixed. Continue its Project in a new Session instead.",
+  },
+  "@connect.error.sessionProjectRequired": {
+    defaultMessage: "Only Sessions associated with a Project can continue with another Agent.",
+  },
+  "@connect.error.bindingNotActive": { defaultMessage: "The selected Agent Binding is not active." },
+  "@connect.error.bindingOwnerMismatch": {
+    defaultMessage: "The selected Agent Binding does not belong to this Installation Owner.",
+  },
+  "@connect.error.continuationBindingUnchanged": { defaultMessage: "Choose another Agent Binding." },
+  "@connect.settings.continuity.title": { defaultMessage: "Changing Agents between Sessions" },
+  "@connect.settings.continuity.description": {
+    defaultMessage:
+      "An empty Session can change Agent until its first Turn is accepted. After that, continuing with another Agent creates a new Session in the same Project. Conversation history, tool context, memory, and the native Runtime Thread are not transferred; workspace files remain and the original Session is unchanged.",
+  },
 } satisfies ClientCatalog;

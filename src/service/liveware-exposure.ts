@@ -305,6 +305,7 @@ export async function retireLivewareExposure(
   }
   await dependencies.clawChat.unregister(options.activation, options.deviceId, existing.appId);
   const control = await dependencies.controlPlane.connect(options.activation.accessToken);
+  await control.unbindTunnel?.(existing.appId);
   await control.deleteApp(existing.appId);
   await options.stateStore.clearLivewareExposure(options.activation.localAgentId);
 }

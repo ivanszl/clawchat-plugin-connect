@@ -25,20 +25,22 @@ import {
   type TurnTarget,
 } from "../projects/session-continuity";
 import { type RuntimeWorkspaceChoice, workspaceView } from "../projects/workspace-catalog";
-import type {
-  AgentBindingConfig,
-  ConnectConfig,
-  ProjectRecord,
-  RuntimeSessionRecord,
-  RuntimeWorkspace,
+import {
+  type AgentBindingConfig,
+  type ConnectConfig,
+  type ProjectRecord,
+  type RuntimeSessionRecord,
+  type RuntimeWorkspace,
+  runtimeFamilyFor,
 } from "../types";
+import type { ConnectExecutionCapabilities } from "./execution-capabilities";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
 import { renderClawChatPrompt } from "./prompt-renderer";
 import type { RuntimeAdapterRegistry } from "./registry";
 import { type QueueStats, type SessionActivity, SessionQueue, type SessionQueueTicket } from "./session-queue";
 import { SessionTurnExecutor } from "./session-turn-executor";
-import { ClawChatTurnSurface, ClientTurnSurface } from "./turn-surface";
+import { ClawChatTurnSurface, ClientTurnSurface, type ConnectTurnSurfaceCapabilities } from "./turn-surface";
 import type {
   ConnectRuntimeMedia,
   QueuedClientTurn,
@@ -55,9 +57,12 @@ export interface ConnectRuntimeOptions {
   stateStore: ConnectStateStore;
   wsClient: ConnectWsClient;
   projects?: ProjectCatalog;
-  runtimeAdapters: RuntimeAdapterRegistry;
+  sessionContinuity?: SessionContinuity;
+  execution?: ConnectExecutionCapabilities;
+  runtimeAdapters?: RuntimeAdapterRegistry;
   transcriptProjection?: TranscriptProjection;
   runtimeInteractions?: RuntimeInteractionPort;
+  turnSurfaces?: ConnectTurnSurfaceCapabilities;
   resolveSenderDisplayName?: (senderId: string) => Promise<string | null>;
 }
 
@@ -65,6 +70,8 @@ export class ConnectRuntime {
   private readonly runtimeAdapters: RuntimeAdapterRegistry;
   private readonly projects: ProjectCatalog;
   private readonly sessionContinuity: SessionContinuity;
+  private readonly transcriptProjection?: TranscriptProjection;
+  private readonly ownsExecutor: boolean;
   private readonly executor: SessionTurnExecutor;
   private readonly activeTurnSessionChats = new Map<string, string>();
   private readonly acceptedClientTurnIds = new Map<string, string>();
@@ -75,22 +82,33 @@ export class ConnectRuntime {
 
   constructor(private readonly options: ConnectRuntimeOptions) {
     getAgentBinding(options.config, options.agentId);
-    this.runtimeAdapters = options.runtimeAdapters;
+    const execution = options.execution;
+    const runtimeAdapters = execution?.runtimeAdapters ?? options.runtimeAdapters;
+    if (!runtimeAdapters) throw new Error("Runtime Adapter coordination is required");
+    this.runtimeAdapters = runtimeAdapters;
+    this.transcriptProjection = execution?.transcriptProjection ?? options.transcriptProjection;
     this.projects = options.projects ?? new ProjectCatalog(options.stateStore);
-    this.sessionContinuity = createSessionContinuity({ stateStore: options.stateStore });
-    this.executor = new SessionTurnExecutor({
+    this.sessionContinuity = options.sessionContinuity ?? createSessionContinuity({ stateStore: options.stateStore });
+    const executorOptions = {
       configPath: options.configPath ?? defaultConfigPath(),
       stateDbPath: options.config.stateDbPath,
-      bindingFor: (bindingId) => getAgentBinding(options.config, bindingId),
-      start: async (binding, context) => await this.runtimeAdapters.start(binding, context),
-      attachRuntimeThread: async (sessionRef, runtimeThreadId) =>
+      bindingFor: (bindingId: string) => getAgentBinding(options.config, bindingId),
+      attachRuntimeThread: async (sessionRef: string, runtimeThreadId: string | null) =>
         await this.sessionContinuity.forSession(sessionRef).attachRuntimeThread(runtimeThreadId),
-    });
-    this.queue = new SessionQueue({
+    };
+    this.executor =
+      execution?.createSessionTurnExecutor(executorOptions) ??
+      new SessionTurnExecutor({
+        ...executorOptions,
+        start: async (binding, context) => await this.runtimeAdapters.start(binding, context),
+      });
+    this.ownsExecutor = !execution;
+    const queueOptions = {
       maxConcurrentTurns: options.config.maxConcurrentTurns,
       maxPendingPerSession: options.config.maxPendingPerSession,
-      onStatsChange: async (stats) => await this.recordRuntimeStatus(stats),
-    });
+      onStatsChange: async (stats: QueueStats) => await this.recordRuntimeStatus(stats),
+    };
+    this.queue = execution?.createSessionQueue(options.agentId, queueOptions) ?? new SessionQueue(queueOptions);
   }
 
   async handleInboundMessage(
@@ -117,14 +135,22 @@ export class ConnectRuntime {
           );
           if (!handled) {
             const current = await this.materializeCurrentSession(message.chatId);
+            if (current.agentId !== this.options.agentId) {
+              throw new SessionLifecycleError(
+                "session-state-conflict",
+                `Session ${current.sessionRef} belongs to a different Agent Binding`,
+              );
+            }
             await this.projectClawChatMessage(message, current);
-            await this.queue.enqueue(
+            const ticket = await this.queue.submitAccepted(
               sessionKey(current.chatId, current.sessionId),
               async () => {
                 await this.runTrackedTurn(message, current, onTurnAccepted);
               },
+              async () => await this.acceptTurnTarget(current.sessionRef, current.agentId),
               `Session ${current.sessionRef}`,
             );
+            await ticket.completion;
           }
         });
         return;
@@ -133,16 +159,24 @@ export class ConnectRuntime {
       let completion: Promise<void> | null = null;
       await this.withRoutingGate(message.chatId, async () => {
         const current = await this.materializeCurrentSession(message.chatId);
+        if (current.agentId !== this.options.agentId) {
+          throw new SessionLifecycleError(
+            "session-state-conflict",
+            `Session ${current.sessionRef} belongs to a different Agent Binding`,
+          );
+        }
         await this.projectClawChatMessage(message, current);
         const key = sessionKey(current.chatId, current.sessionId);
-        completion = this.queue.enqueue(
+        const ticket = await this.queue.submitAccepted(
           key,
           async () => {
             if (await beforeTurn?.()) return;
             await this.runTrackedTurn(message, current, onTurnAccepted);
           },
+          async () => await this.acceptTurnTarget(current.sessionRef, current.agentId),
           `Session ${current.sessionRef}`,
         );
+        completion = ticket.completion;
       });
       if (!completion) throw new Error("failed to enqueue Session turn");
       await completion;
@@ -209,31 +243,41 @@ export class ConnectRuntime {
     if (!current || current.agentId !== this.options.agentId) throw new Error(`Unknown Session Ref: ${sessionRef}`);
     const target = await this.sessionContinuity.forSession(current.sessionRef).targetForTurn("client");
     signal?.throwIfAborted();
-    const turnId = randomUUID();
-    const key = sessionKey(current.chatId, current.sessionId);
-    try {
-      this.queue.assertAccepting(key, `Session ${current.sessionRef}`);
-    } catch {
+    if (target.bindingId !== this.options.agentId) {
       throw new SessionLifecycleError(
         "session-state-conflict",
-        `Session ${current.sessionRef} lifecycle operation is in progress`,
+        `Session ${current.sessionRef} belongs to a different Agent Binding`,
       );
     }
-    signal?.throwIfAborted();
-    const ticket = this.queue.submit(
-      key,
-      async () => {
-        this.activeTurnSessionChats.set(key, current.chatId);
-        await this.recordRuntimeStatus(this.queue.stats());
-        try {
-          await this.runClientTurn(target, text, turnId, media, selection);
-        } finally {
-          this.activeTurnSessionChats.delete(key);
+    const turnId = randomUUID();
+    const key = sessionKey(current.chatId, current.sessionId);
+    let ticket: SessionQueueTicket;
+    try {
+      ticket = await this.queue.submitAccepted(
+        key,
+        async () => {
+          this.activeTurnSessionChats.set(key, current.chatId);
           await this.recordRuntimeStatus(this.queue.stats());
-        }
-      },
-      `Session ${current.sessionRef}`,
-    );
+          try {
+            await this.runClientTurn(target, text, turnId, media, selection);
+          } finally {
+            this.activeTurnSessionChats.delete(key);
+            await this.recordRuntimeStatus(this.queue.stats());
+          }
+        },
+        async () => {
+          signal?.throwIfAborted();
+          await this.acceptTurnTarget(current.sessionRef, target.bindingId);
+        },
+        `Session ${current.sessionRef}`,
+      );
+    } catch (error) {
+      if (error instanceof SessionLifecycleError) throw error;
+      throw new SessionLifecycleError(
+        "session-state-conflict",
+        error instanceof Error ? error.message : `Session ${current.sessionRef} cannot accept another Turn`,
+      );
+    }
     const turn: QueuedClientTurn = {
       turnId,
       sessionRef: current.sessionRef,
@@ -326,7 +370,7 @@ export class ConnectRuntime {
   }
 
   async dispose(): Promise<void> {
-    await this.executor.close();
+    if (this.ownsExecutor) await this.executor.close();
   }
 
   async closeSession(chatId: string): Promise<boolean> {
@@ -391,7 +435,7 @@ export class ConnectRuntime {
     const binding = getAgentBinding(this.options.config, this.options.agentId);
     return await synchronizeProjects({
       bindingId: this.options.agentId,
-      runtimeKind: binding.kind,
+      runtimeKind: runtimeFamilyFor(binding),
       threads: await this.runtimeAdapters.discoverAllThreads(binding),
       projects: this.projects,
       stateStore: this.options.stateStore,
@@ -463,19 +507,31 @@ export class ConnectRuntime {
       chatId: message.chatId,
     });
     const policy = policyForOutputVisibility(mode);
-    const surface = new ClawChatTurnSurface({
-      noReplyProtocol: message.chatType === "group",
-      project: async (event) => {
-        await this.options.transcriptProjection?.upsertRuntimeActivity(current.sessionRef, event);
-      },
-      materialize: (event) => materializeRuntimeOutput(event, policy),
-      deliver: async (event, reply) => {
-        const delivery = await this.sendReply(message, reply, workspace);
-        if (delivery?.media.length) {
-          await this.options.transcriptProjection?.applyRuntimeDelivery(current.sessionRef, event, delivery);
-        }
-      },
-    });
+    const surface =
+      this.options.turnSurfaces?.createClawChat({
+        sessionRef: current.sessionRef,
+        noReplyProtocol: message.chatType === "group",
+        materialize: (event) => materializeRuntimeOutput(event, policy),
+        deliver: async (event, reply) => {
+          const delivery = await this.sendReply(message, reply, workspace);
+          if (delivery?.media.length) {
+            await this.transcriptProjection?.applyRuntimeDelivery(current.sessionRef, event, delivery);
+          }
+        },
+      }) ??
+      new ClawChatTurnSurface({
+        noReplyProtocol: message.chatType === "group",
+        project: async (event) => {
+          await this.transcriptProjection?.upsertRuntimeActivity(current.sessionRef, event);
+        },
+        materialize: (event) => materializeRuntimeOutput(event, policy),
+        deliver: async (event, reply) => {
+          const delivery = await this.sendReply(message, reply, workspace);
+          if (delivery?.media.length) {
+            await this.transcriptProjection?.applyRuntimeDelivery(current.sessionRef, event, delivery);
+          }
+        },
+      });
     const runtimeInteractions = this.options.runtimeInteractions;
     for await (const event of this.executor.execute(target, {
       prompt: renderClawChatPrompt(message),
@@ -534,7 +590,7 @@ export class ConnectRuntime {
     const activeAgentId = target.bindingId || this.options.agentId;
     const workspace = await this.projects.resolveWorkspace(current);
     const model = await this.modelFor(current, activeAgentId, workspace);
-    await this.options.transcriptProjection?.appendUserMessage({
+    await this.transcriptProjection?.appendUserMessage({
       sessionRef: current.sessionRef,
       text: prompt,
       origin: "client",
@@ -549,11 +605,13 @@ export class ConnectRuntime {
         height: item.height ?? null,
       })),
     });
-    const surface = new ClientTurnSurface({
-      project: async (event) => {
-        await this.options.transcriptProjection?.upsertRuntimeActivity(current.sessionRef, event);
-      },
-    });
+    const surface =
+      this.options.turnSurfaces?.createClient({ sessionRef: current.sessionRef }) ??
+      new ClientTurnSurface({
+        project: async (event) => {
+          await this.transcriptProjection?.upsertRuntimeActivity(current.sessionRef, event);
+        },
+      });
     try {
       for await (const event of this.executor.execute(target, {
         prompt,
@@ -640,11 +698,30 @@ export class ConnectRuntime {
     return runtimeSessionFromTurnTarget(target);
   }
 
+  private async acceptTurnTarget(sessionRef: string, bindingId: string): Promise<void> {
+    if (bindingId !== this.options.agentId) {
+      throw new SessionLifecycleError(
+        "session-state-conflict",
+        `Session ${sessionRef} belongs to a different Agent Binding`,
+      );
+    }
+    const accepted = await this.options.stateStore.acceptSessionTurn({
+      sessionRef,
+      bindingId: this.options.agentId,
+    });
+    if (!accepted) {
+      throw new SessionLifecycleError(
+        "session-state-conflict",
+        `Session ${sessionRef} Agent Binding changed before the Turn was accepted`,
+      );
+    }
+  }
+
   private async projectClawChatMessage(
     message: NormalizedInboundMessage,
     current: RuntimeSessionRecord,
   ): Promise<void> {
-    await this.options.transcriptProjection?.appendUserMessage({
+    await this.transcriptProjection?.appendUserMessage({
       sessionRef: current.sessionRef,
       text: message.text,
       origin: "clawchat",

@@ -255,9 +255,10 @@ export interface ConnectRuntimeStartContext {
   chatId: string;
   sessionId: string;
   runtimeSessionId: string | null;
-  configPath: string;
-  stateDbPath: string;
+  configPath?: string;
+  stateDbPath?: string;
   onRuntimeSessionId(runtimeSessionId: string): Promise<void>;
+  cacheMedia?(media: ConnectRuntimeMedia, trustedOrigins?: readonly string[]): Promise<string>;
 }
 
 export interface RuntimeThreadSummary {

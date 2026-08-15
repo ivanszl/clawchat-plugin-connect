@@ -44,6 +44,11 @@ export interface ClawChatTurnSurfaceOptions {
   deliver(event: RuntimeActivity, reply: MaterializedRuntimeReply): Promise<void>;
 }
 
+export interface ConnectTurnSurfaceCapabilities {
+  createClient(options: { sessionRef: string }): ClientTurnSurface;
+  createClawChat(options: Omit<ClawChatTurnSurfaceOptions, "project"> & { sessionRef: string }): ClawChatTurnSurface;
+}
+
 export class ClawChatTurnSurface implements TurnSurface {
   readonly origin = "clawchat" as const;
   private readonly buffered = new Map<string, { event: RuntimeActivity; reply: MaterializedRuntimeReply }>();

@@ -7,7 +7,7 @@ import type { NormalizedInboundMessage } from "../src/clawchat/protocol";
 import type { ConnectWsClient } from "../src/clawchat/ws-client";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
-import { createStateStore } from "../src/persistence/state";
+import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { ProjectCatalog } from "../src/projects/projects";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
@@ -88,6 +88,15 @@ async function runtimeFixture() {
   return { config, store, wsClient, uploadMedia, sendMessageEnvelope, configPath: join(directory, "config.json") };
 }
 
+async function resetToUnlockedRuntimeSession(store: ConnectStateStore) {
+  await store.deleteRuntimeSession("chat-1", "codex", "session-1");
+  return await store.resolveOrMaterializeRuntimeSession({
+    chatId: "chat-1",
+    agentId: "codex",
+    sessionId: "session-1",
+    acceptedTurn: false,
+  });
+}
 describe("ConnectRuntime Agent Binding sessions", () => {
   it.each(["workbuddy-ai", "workbuddy-cn"] as const)(
     "serializes Client and ClawChat turns through one adopted %s Task Attachment",
@@ -1680,6 +1689,151 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     await firstRelease();
     const secondRelease = await runtime.claimSessionLifecycle(sessionRef);
     await secondRelease();
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("leaves an ordinary ClawChat Session unlocked when queue capacity rejects admission", async () => {
+    const fixture = await runtimeFixture();
+    fixture.config.maxPendingPerSession = 0;
+    const current = await resetToUnlockedRuntimeSession(fixture.store);
+    const start = mock(async () => ({
+      prompt: async function* () {
+        yield activity("must not run");
+      },
+      close: mock(async () => undefined),
+    }));
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([
+        fixedRuntimeAdapter({ kind: "codex", modes: ["workspace-write"], start }),
+      ]),
+    });
+
+    await runtime.handleInboundMessage(message("capacity rejected"));
+
+    expect(start).not.toHaveBeenCalled();
+    await expect(fixture.store.sessionBindingLock(current.sessionRef)).resolves.toBeNull();
+    await expect(fixture.store.getRuntimeSessionByRef(current.sessionRef)).resolves.toMatchObject({
+      agentId: "codex",
+      hasMessages: false,
+    });
+    expect(JSON.stringify(fixture.sendMessageEnvelope.mock.calls)).toContain("too many pending turns");
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("locks an ordinary ClawChat Session only after queue admission", async () => {
+    const fixture = await runtimeFixture();
+    const current = await resetToUnlockedRuntimeSession(fixture.store);
+    const start = mock(async () => ({
+      prompt: async function* () {
+        yield activity("accepted");
+      },
+      close: mock(async () => undefined),
+    }));
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([
+        fixedRuntimeAdapter({ kind: "codex", modes: ["workspace-write"], start }),
+      ]),
+    });
+
+    await runtime.handleInboundMessage(message("accepted"));
+
+    expect(start).toHaveBeenCalledTimes(1);
+    await expect(fixture.store.sessionBindingLock(current.sessionRef)).resolves.toBe("accepted-turn");
+    await expect(fixture.store.getRuntimeSessionByRef(current.sessionRef)).resolves.toMatchObject({
+      agentId: "codex",
+      hasMessages: true,
+    });
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("rejects a Client Turn when its Session switches Binding before queue acceptance", async () => {
+    const fixture = await runtimeFixture();
+    const current = await resetToUnlockedRuntimeSession(fixture.store);
+    const start = mock(async () => ({
+      prompt: async function* () {
+        yield activity("must not run");
+      },
+      close: mock(async () => undefined),
+    }));
+    const acceptSessionTurn = fixture.store.acceptSessionTurn.bind(fixture.store);
+    fixture.store.acceptSessionTurn = async (input) => {
+      const moved = await fixture.store.changeSessionBinding(current.sessionRef, "opencode");
+      expect(moved).toEqual({ changed: true });
+      return await acceptSessionTurn(input);
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([
+        fixedRuntimeAdapter({ kind: "codex", modes: ["workspace-write"], start }),
+      ]),
+    });
+
+    await expect(runtime.enqueueClientTurn(current.sessionRef, "race")).rejects.toMatchObject({
+      code: "session-state-conflict",
+      message: expect.stringContaining("Agent Binding changed"),
+    });
+    expect(start).not.toHaveBeenCalled();
+    await expect(fixture.store.getRuntimeSessionByRef(current.sessionRef)).resolves.toMatchObject({
+      agentId: "opencode",
+      hasMessages: false,
+    });
+    await expect(fixture.store.sessionBindingLock(current.sessionRef)).resolves.toBeNull();
+    await runtime.dispose();
+    await fixture.store.close();
+  });
+
+  it("rejects a ClawChat Turn when its Session switches Binding before queue acceptance", async () => {
+    const fixture = await runtimeFixture();
+    const current = await resetToUnlockedRuntimeSession(fixture.store);
+    const start = mock(async () => ({
+      prompt: async function* () {
+        yield activity("must not run");
+      },
+      close: mock(async () => undefined),
+    }));
+    const acceptSessionTurn = fixture.store.acceptSessionTurn.bind(fixture.store);
+    fixture.store.acceptSessionTurn = async (input) => {
+      const moved = await fixture.store.changeSessionBinding(current.sessionRef, "opencode");
+      expect(moved).toEqual({ changed: true });
+      return await acceptSessionTurn(input);
+    };
+    const runtime = new ConnectRuntime({
+      agentId: "codex",
+      config: fixture.config,
+      configPath: fixture.configPath,
+      stateStore: fixture.store,
+      wsClient: fixture.wsClient,
+      runtimeAdapters: new RuntimeAdapterRegistry([
+        fixedRuntimeAdapter({ kind: "codex", modes: ["workspace-write"], start }),
+      ]),
+    });
+
+    await runtime.handleInboundMessage(message("race"));
+
+    expect(start).not.toHaveBeenCalled();
+    await expect(fixture.store.getRuntimeSessionByRef(current.sessionRef)).resolves.toMatchObject({
+      agentId: "opencode",
+      hasMessages: false,
+    });
+    await expect(fixture.store.sessionBindingLock(current.sessionRef)).resolves.toBeNull();
+    expect(JSON.stringify(fixture.sendMessageEnvelope.mock.calls)).toContain("Agent Binding changed");
     await runtime.dispose();
     await fixture.store.close();
   });

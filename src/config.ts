@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { normalizePluginAgentBinding } from "./plugin/binding";
 import { normalizeReleasedAgentBinding } from "./runtime/released-adapters";
 import type { AgentBindingConfig, ClientHost, ConnectConfig, LivewareAccessPolicy, OutputVisibility } from "./types";
 
@@ -39,6 +40,9 @@ function readString(value: unknown): string {
 }
 
 function normalizeAgentBinding(agentId: string, raw: unknown): AgentBindingConfig {
+  if (raw && typeof raw === "object" && !Array.isArray(raw) && "kind" in raw && raw.kind === "plugin") {
+    return normalizePluginAgentBinding(agentId, raw);
+  }
   return normalizeReleasedAgentBinding(agentId, raw);
 }
 

@@ -66,6 +66,7 @@ cleanup() {
     restore_target "$install_dir/liveware" "$tmp_dir/backup/liveware" "$liveware_existed"
     restore_target "$install_dir/clawchat-connect-client" "$tmp_dir/backup/client" "$client_existed"
     restore_target "$install_dir/skills" "$tmp_dir/backup/skills" "$skills_existed"
+    restore_target "$install_dir/official-plugins" "$tmp_dir/backup/official-plugins" "$official_plugins_existed"
     restore_target "$license_dir" "$tmp_dir/backup/licenses" "$licenses_existed"
   fi
   rm -rf "$tmp_dir"
@@ -93,9 +94,17 @@ fi
 [ "$actual_checksum" = "$expected_checksum" ] || fail "checksum verification failed for $asset"
 
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" \
-  clawchat-connect clawchat-connect-client liveware skills CHANGELOG.md LICENSE
+  clawchat-connect clawchat-connect-client official-plugins liveware skills CHANGELOG.md LICENSE
 [ -f "$tmp_dir/clawchat-connect" ] || fail "release archive does not contain clawchat-connect"
 [ -f "$tmp_dir/clawchat-connect-client/index.html" ] || fail "release archive does not contain Connect Client"
+[ -d "$tmp_dir/official-plugins" ] || fail "release archive does not contain official Plugins"
+for official_plugin_id in clawling.runtime.codex clawling.runtime.opencode clawling.runtime.workbuddy; do
+  official_plugin_found=0
+  for official_plugin_bundle in "$tmp_dir/official-plugins/${official_plugin_id}-"*.connect-plugin; do
+    if [ -f "$official_plugin_bundle" ]; then official_plugin_found=1; break; fi
+  done
+  [ "$official_plugin_found" = 1 ] || fail "release archive does not contain the ${official_plugin_id} official Plugin Bundle"
+done
 [ -f "$tmp_dir/liveware" ] || fail "release archive does not contain Liveware"
 [ -f "$tmp_dir/skills/manifest.json" ] || fail "release archive does not contain Agent skills"
 [ -f "$tmp_dir/CHANGELOG.md" ] || fail "release archive does not contain the Changelog"
@@ -109,12 +118,14 @@ mkdir -p "$install_dir" "$tmp_dir/backup"
 connect_staging="$install_dir/.clawchat-connect.new.$$"
 liveware_staging="$install_dir/.liveware.new.$$"
 client_staging="$install_dir/.clawchat-connect-client.new.$$"
+official_plugins_staging="$install_dir/.official-plugins.new.$$"
 skills_staging="$install_dir/.skills.new.$$"
 licenses_staging="$install_dir/.licenses.new.$$"
 cp "$tmp_dir/clawchat-connect" "$connect_staging"
 cp "$tmp_dir/liveware" "$liveware_staging"
 chmod 755 "$connect_staging" "$liveware_staging"
 cp -R "$tmp_dir/clawchat-connect-client" "$client_staging"
+cp -R "$tmp_dir/official-plugins" "$official_plugins_staging"
 cp -R "$tmp_dir/skills" "$skills_staging"
 mkdir -p "$licenses_staging"
 cp "$tmp_dir/CHANGELOG.md" "$tmp_dir/LICENSE" "$licenses_staging/"
@@ -122,6 +133,7 @@ cp "$tmp_dir/CHANGELOG.md" "$tmp_dir/LICENSE" "$licenses_staging/"
 connect_existed=0
 liveware_existed=0
 client_existed=0
+official_plugins_existed=0
 skills_existed=0
 licenses_existed=0
 if [ -e "$install_dir/clawchat-connect" ]; then
@@ -136,6 +148,10 @@ if [ -e "$install_dir/clawchat-connect-client" ]; then
   client_existed=1
   cp -R "$install_dir/clawchat-connect-client" "$tmp_dir/backup/client"
 fi
+if [ -e "$install_dir/official-plugins" ]; then
+  official_plugins_existed=1
+  cp -R "$install_dir/official-plugins" "$tmp_dir/backup/official-plugins"
+fi
 if [ -e "$install_dir/skills" ]; then
   skills_existed=1
   cp -R "$install_dir/skills" "$tmp_dir/backup/skills"
@@ -147,10 +163,12 @@ fi
 
 transaction_started=1
 mkdir -p "$(dirname "$license_dir")"
-rm -rf "$install_dir/clawchat-connect" "$install_dir/liveware" "$install_dir/clawchat-connect-client" "$install_dir/skills" "$license_dir"
+rm -rf "$install_dir/clawchat-connect" "$install_dir/liveware" "$install_dir/clawchat-connect-client" \
+  "$install_dir/official-plugins" "$install_dir/skills" "$license_dir"
 mv "$connect_staging" "$install_dir/clawchat-connect"
 mv "$liveware_staging" "$install_dir/liveware"
 mv "$client_staging" "$install_dir/clawchat-connect-client"
+mv "$official_plugins_staging" "$install_dir/official-plugins"
 mv "$skills_staging" "$install_dir/skills"
 mv "$licenses_staging" "$license_dir"
 "$install_dir/clawchat-connect" skills install >/dev/null
@@ -159,6 +177,7 @@ transaction_committed=1
 printf 'Installed clawchat-connect to %s/clawchat-connect\n' "$install_dir"
 printf 'Installed bundled Liveware to %s/liveware\n' "$install_dir"
 printf 'Installed Connect Client assets to %s/clawchat-connect-client\n' "$install_dir"
+printf 'Installed official Plugin Bundles to %s/official-plugins\n' "$install_dir"
 printf 'Installed managed Agent skills to %s/.agents/skills\n' "$HOME"
 printf 'Installed license notices to %s\n' "$license_dir"
 case ":${PATH}:" in

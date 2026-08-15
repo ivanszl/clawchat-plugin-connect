@@ -3,12 +3,16 @@ import type {
   BindingPreferenceView,
   BootstrapView,
   CancelTurnResponse,
+  ConfigurePluginRequest,
   CreateSessionRequest,
   HostDirectoryListingView,
+  ManagePluginRequest,
+  PluginAdministrationView,
   ProjectDirectoryRequest,
   ProjectView,
   RespondToRuntimeInteractionRequest,
   RuntimeInteractionBlock,
+  SelectPluginVersionRequest,
   SessionArchiveResponse,
   SessionCatalogView,
   SessionDeleteResponse,
@@ -30,12 +34,18 @@ export const clientKeys = {
   projects: ["client", "projects"] as const,
   hostDirectories: (path: string | null, showHidden: boolean) =>
     ["client", "host-directories", path, showHidden] as const,
+  plugins: ["client", "plugins"] as const,
 };
 
 export const bootstrapQueryOptions = queryOptions({
   queryKey: clientKeys.bootstrap,
   queryFn: async () => await clientFetch<BootstrapView>(`${CLIENT_API_PREFIX}/bootstrap`),
   staleTime: Number.POSITIVE_INFINITY,
+});
+
+export const pluginAdministrationQueryOptions = queryOptions({
+  queryKey: clientKeys.plugins,
+  queryFn: async () => await clientFetch<PluginAdministrationView>(`${CLIENT_API_PREFIX}/plugins/administration`),
 });
 
 export const catalogQueryOptions = queryOptions({
@@ -135,6 +145,23 @@ export async function createSession(input: Omit<CreateSessionRequest, "requestId
   });
 }
 
+export async function changeSessionBinding(sessionRef: string, bindingId: string): Promise<SessionView> {
+  return await clientFetch<SessionView>(`${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(sessionRef)}/binding`, {
+    method: "PATCH",
+    body: JSON.stringify({ requestId: requestId(), bindingId }),
+  });
+}
+
+export async function continueSession(sessionRef: string, bindingId: string): Promise<SessionView> {
+  return await clientFetch<SessionView>(
+    `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(sessionRef)}/continuations`,
+    {
+      method: "POST",
+      body: JSON.stringify({ requestId: requestId(), bindingId }),
+    },
+  );
+}
+
 export async function cancelTurn(sessionRef: string, turnId: string): Promise<CancelTurnResponse> {
   return await clientFetch<CancelTurnResponse>(
     `${CLIENT_API_PREFIX}/sessions/${sessionRef}/turns/${encodeURIComponent(turnId)}/cancel`,
@@ -205,5 +232,73 @@ export async function updateBindingPreferences(
   return await clientFetch(`${CLIENT_API_PREFIX}/bindings/${encodeURIComponent(bindingId)}/preferences`, {
     method: "PATCH",
     body: JSON.stringify({ requestId: requestId(), ...updates }),
+  });
+}
+
+export async function installPlugin(input: ManagePluginRequest): Promise<void> {
+  await clientFetch(`${CLIENT_API_PREFIX}/plugins`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function uploadPlugin(
+  bundle: File,
+  installationConfiguration: Record<string, unknown>,
+  exposureConfigurations: Record<string, Record<string, unknown>>,
+): Promise<void> {
+  const form = new FormData();
+  form.set("bundle", bundle);
+  form.set("installationConfiguration", JSON.stringify(installationConfiguration));
+  form.set("exposureConfigurations", JSON.stringify(exposureConfigurations));
+  await clientFetch(`${CLIENT_API_PREFIX}/plugins/upload`, { method: "POST", body: form });
+}
+
+export async function installOfficialPlugins(pluginIds: string[]): Promise<void> {
+  await clientFetch(`${CLIENT_API_PREFIX}/plugins/official/setup`, {
+    method: "POST",
+    body: JSON.stringify({ pluginIds }),
+  });
+}
+
+export async function configurePlugin(pluginId: string, input: ConfigurePluginRequest): Promise<void> {
+  await clientFetch(`${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(pluginId)}/configure`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updatePlugin(pluginId: string): Promise<void> {
+  await clientFetch(`${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(pluginId)}/update`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function reinstallPlugin(pluginId: string): Promise<void> {
+  await clientFetch(`${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(pluginId)}/reinstall`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function setPluginEnabled(pluginId: string, enabled: boolean): Promise<void> {
+  await clientFetch(`${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(pluginId)}/${enabled ? "enable" : "disable"}`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export async function selectPluginVersion(pluginId: string, input: SelectPluginVersionRequest): Promise<void> {
+  await clientFetch(`${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(pluginId)}/select`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function removePlugin(pluginId: string, force: boolean): Promise<void> {
+  await clientFetch(`${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(pluginId)}${force ? "?force=1" : ""}`, {
+    method: "DELETE",
+    body: JSON.stringify({}),
   });
 }

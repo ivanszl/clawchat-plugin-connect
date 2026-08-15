@@ -65,6 +65,7 @@ describe("activateConnect", () => {
       conversationId: "cnv-1",
     });
     await expect(store.getActivation("codex")).resolves.toMatchObject({ accessToken: "token-1", userId: "usr-agent" });
+    await expect(store.getInstallationOwner()).resolves.toBe("usr-owner");
     await store.close();
   });
   it("sends stored agent user_id when reactivating the same local agent", async () => {
@@ -73,7 +74,7 @@ describe("activateConnect", () => {
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
-    await store.upsertActivation({
+    await store.commitActivationForInstallationOwner({
       localAgentId: "codex",
       accessToken: "old",
       refreshToken: null,
@@ -99,7 +100,7 @@ describe("activateConnect", () => {
     );
     await store.close();
   });
-  it("keeps another Agent Binding active when a different Binding Owner activates", async () => {
+  it("rejects a different-owner Agent Binding without changing local state", async () => {
     const dir = await tempDir();
     const config = upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" });
     config.agents.work = {
@@ -109,7 +110,7 @@ describe("activateConnect", () => {
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
-    await store.upsertActivation({
+    await store.commitActivationForInstallationOwner({
       localAgentId: "personal",
       accessToken: "personal-token",
       refreshToken: null,
@@ -131,13 +132,66 @@ describe("activateConnect", () => {
         : response({ code: 0, data: { nickname: "work" } }),
     ) as unknown as typeof fetch;
 
-    await activateConnect({ agentId: "work", code: "WORKCODE", config, store, fetchImpl });
-
+    await expect(activateConnect({ agentId: "work", code: "WORKCODE", config, store, fetchImpl })).rejects.toThrow(
+      "this Connect installation is owned by personal-owner",
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     await expect(store.listActivations()).resolves.toEqual([
       expect.objectContaining({ localAgentId: "personal", ownerUserId: "personal-owner" }),
-      expect.objectContaining({ localAgentId: "work", ownerUserId: "work-owner" }),
     ]);
+    await expect(store.getActivation("work")).resolves.toBeNull();
+    await expect(store.getInstallationOwner()).resolves.toBe("personal-owner");
     await store.close();
+  });
+  it("backfills a legacy single-owner installation and rejects another owner without mutation", async () => {
+    const dir = await tempDir();
+    const dbPath = join(dir, "state.sqlite");
+    const legacy = createStateStore({ dbPath });
+    await legacy.upsertActivation({
+      localAgentId: "personal",
+      accessToken: "legacy-token",
+      refreshToken: null,
+      serverAgentId: "legacy-agent",
+      userId: "legacy-user",
+      ownerUserId: "legacy-owner",
+      conversationId: "legacy-conversation",
+    });
+    await expect(
+      legacy.commitActivationForInstallationOwner({
+        localAgentId: "work",
+        accessToken: "other-token",
+        refreshToken: null,
+        serverAgentId: "other-agent",
+        userId: "other-user",
+        ownerUserId: "other-owner",
+        conversationId: "other-conversation",
+      }),
+    ).resolves.toBe("installation-owner-mismatch");
+    await expect(legacy.getActivation("work")).resolves.toBeNull();
+    await legacy.close();
+
+    const upgraded = createStateStore({ dbPath });
+    await expect(upgraded.getInstallationOwner()).resolves.toBe("legacy-owner");
+    await expect(upgraded.listActivations()).resolves.toEqual([
+      expect.objectContaining({
+        localAgentId: "personal",
+        accessToken: "legacy-token",
+        ownerUserId: "legacy-owner",
+      }),
+    ]);
+    await expect(
+      upgraded.commitActivationForInstallationOwner({
+        localAgentId: "work",
+        accessToken: "other-token",
+        refreshToken: null,
+        serverAgentId: "other-agent",
+        userId: "other-user",
+        ownerUserId: "other-owner",
+        conversationId: "other-conversation",
+      }),
+    ).resolves.toBe("installation-owner-mismatch");
+    await expect(upgraded.getActivation("work")).resolves.toBeNull();
+    await upgraded.close();
   });
   it("rejects assigning an occupied Agent Binding to a different Binding Owner", async () => {
     const dir = await tempDir();
@@ -145,7 +199,7 @@ describe("activateConnect", () => {
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
-    await store.upsertActivation({
+    await store.commitActivationForInstallationOwner({
       localAgentId: "personal",
       accessToken: "original-token",
       refreshToken: null,
@@ -194,7 +248,7 @@ describe("activateConnect", () => {
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
-    await store.upsertActivation({
+    await store.commitActivationForInstallationOwner({
       localAgentId: "personal",
       accessToken: "personal-token",
       refreshToken: null,
@@ -225,7 +279,7 @@ describe("activateConnect", () => {
     });
     await store.close();
   });
-  it("keeps activation credentials and reports an actionable error when Profile synchronization fails", async () => {
+  it("leaves credentials and Installation Owner unset when Profile synchronization fails", async () => {
     const dir = await tempDir();
     const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
     config.livewareAccessPolicy = "off";
@@ -244,9 +298,10 @@ describe("activateConnect", () => {
     ) as unknown as typeof fetch;
 
     await expect(activateConnect({ agentId: "work", code: "A1B2C3", config, store, fetchImpl })).rejects.toThrow(
-      "credentials were saved",
+      "local credentials and Installation Owner were preserved",
     );
-    await expect(store.getActivation("work")).resolves.toMatchObject({ accessToken: "token-1" });
+    await expect(store.getActivation("work")).resolves.toBeNull();
+    await expect(store.getInstallationOwner()).resolves.toBeNull();
     await store.close();
   });
 

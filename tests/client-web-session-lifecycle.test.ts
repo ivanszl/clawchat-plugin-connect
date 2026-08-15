@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 const sessionRouteUrl = new URL("../web/src/routes/sessions.$sessionRef.tsx", import.meta.url);
 const navigationUrl = new URL("../web/src/features/session-catalog/SessionNavigation.tsx", import.meta.url);
+const settingsUrl = new URL("../web/src/features/settings/SettingsPage.tsx", import.meta.url);
 
 describe("Connect Client Session lifecycle", () => {
   it("uses Astryx actions and a destructive confirmation for native lifecycle commands", async () => {
@@ -15,6 +16,24 @@ describe("Connect Client Session lifecycle", () => {
     expect(source).toContain('t("@connect.session.delete.description")');
     expect(source).toContain("localizedClientError(t, lifecycle.error)");
     expect(source).not.toContain("window.confirm");
+  });
+
+  it("distinguishes empty-Session switching from a fresh same-Project continuation", async () => {
+    const source = await Bun.file(sessionRouteUrl).text();
+    const settings = await Bun.file(settingsUrl).text();
+    const controls = source.slice(
+      source.indexOf("function SessionAgentControls("),
+      source.indexOf("\nfunction SessionModelControls("),
+    );
+
+    expect(controls).toContain("<Selector");
+    expect(controls).toContain("changeSessionBinding(view.sessionRef");
+    expect(controls).toContain("continueSession(view.sessionRef");
+    expect(controls).toContain('t("@connect.session.continue.warning.description")');
+    expect(controls).toContain('navigate({ to: "/sessions/$sessionRef"');
+    expect(controls).not.toContain("<div");
+    expect(controls).not.toContain("<span");
+    expect(settings).toContain('t("@connect.settings.continuity.description")');
   });
 
   it("localizes the complete new-Session dialog without changing technical choices", async () => {

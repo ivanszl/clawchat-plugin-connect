@@ -158,8 +158,19 @@ export interface ResolveOrMaterializeRuntimeSessionInput {
   chatId: string;
   agentId: string;
   sessionId: string;
+  acceptedTurn?: boolean;
 }
 
+export type SessionBindingLockReason = "accepted-turn" | "runtime-thread";
+
+export type ChangeSessionBindingResult =
+  | { changed: true }
+  | { changed: false; reason: "session-not-found" | "binding-locked"; lockReason?: SessionBindingLockReason };
+
+export interface AcceptSessionTurnInput {
+  sessionRef: string;
+  bindingId: string;
+}
 export type SessionLifecycleAction = "archive" | "restore" | "delete";
 export type SessionLifecycleOperationState = "intent" | "native-confirmed" | "complete";
 

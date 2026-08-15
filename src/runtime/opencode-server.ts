@@ -19,9 +19,12 @@ import type {
 } from "@opencode-ai/sdk/v2/types";
 import { CONNECT_VERSION } from "../service/version";
 import type { OpenCodeAgentBindingConfig } from "../types";
-
-export const OPENCODE_SDK_VERSION = "1.18.13" as const;
-export const SUPPORTED_OPENCODE_VERSIONS = ["1.18.10", OPENCODE_SDK_VERSION] as const;
+import {
+  isSupportedOpenCodeVersion,
+  OPENCODE_SDK_VERSION,
+  parseOpenCodeVersion,
+  SUPPORTED_OPENCODE_VERSIONS,
+} from "./opencode-version";
 
 export interface OpenCodeMessage {
   info: Message;
@@ -110,7 +113,7 @@ export async function createOpenCodeServerClient(
   }
   const rawVersion = await (options.readVersion ?? readOpenCodeVersion)(executable, env);
   const version = parseOpenCodeVersion(rawVersion);
-  if (!SUPPORTED_OPENCODE_VERSIONS.includes(version as (typeof SUPPORTED_OPENCODE_VERSIONS)[number])) {
+  if (!isSupportedOpenCodeVersion(version)) {
     throw new Error(
       `OpenCode compatibility failure for executable version: Connect ${CONNECT_VERSION}, @opencode-ai/sdk ${OPENCODE_SDK_VERSION}, OpenCode ${version}; supported OpenCode versions: ${SUPPORTED_OPENCODE_VERSIONS.join(", ")}`,
     );
@@ -322,12 +325,6 @@ async function readStreamText(stream: NodeJS.ReadableStream): Promise<string> {
   stream.setEncoding?.("utf8");
   for await (const chunk of stream) value += String(chunk);
   return value;
-}
-
-function parseOpenCodeVersion(raw: string): string {
-  const match = /(?:^|\s)(\d+\.\d+\.\d+)(?:\s|$)/u.exec(raw.trim());
-  if (!match?.[1]) throw new Error(`Failed to read OpenCode version: ${raw.trim() || "empty output"}`);
-  return match[1];
 }
 
 async function allocateLoopbackPort(): Promise<number> {

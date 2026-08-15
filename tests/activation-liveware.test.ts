@@ -14,8 +14,8 @@ import {
 } from "../src/service/liveware-exposure";
 import type { ActivationCredentials } from "../src/types";
 
-describe("Binding Owner activation with Liveware Exposure", () => {
-  it("adds another Binding Owner without publishing an unscoped Liveware Exposure", async () => {
+describe("Installation Owner activation with Liveware Exposure", () => {
+  it("rejects another owner without mutating the existing Liveware Exposure or local state", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-multi-owner-"));
     const config = upsertAgentBinding(upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" }), "work", {
       kind: "codex",
@@ -24,7 +24,7 @@ describe("Binding Owner activation with Liveware Exposure", () => {
     config.livewareAccessPolicy = "private";
     const store = createStateStore({ dbPath: config.stateDbPath });
     const previous = activation("personal", "token-old", "owner-old", "agent-user-old");
-    await store.upsertActivation(previous);
+    await store.commitActivationForInstallationOwner(previous);
     await store.insertProject({ projectId: "project-1", name: "Existing Project", rootPath: directory });
     await store.upsertRuntimeSession({
       chatId: "chat-existing",
@@ -58,18 +58,18 @@ describe("Binding Owner activation with Liveware Exposure", () => {
           })
         : json({ code: 0, data: { nickname: "codex" } });
 
-    const result = await activateConnect({
-      agentId: "work",
-      code: "NEWOWNER",
-      config,
-      store,
-      fetchImpl: fetchImpl as typeof fetch,
-    });
+    await expect(
+      activateConnect({
+        agentId: "work",
+        code: "NEWOWNER",
+        config,
+        store,
+        fetchImpl: fetchImpl as typeof fetch,
+      }),
+    ).rejects.toThrow("this Connect installation is owned by owner-old");
 
-    expect(result.ownerUserId).toBe("owner-new");
     await expect(store.listActivations()).resolves.toEqual([
       expect.objectContaining({ localAgentId: "personal", ownerUserId: "owner-old", accessToken: "token-old" }),
-      expect.objectContaining({ localAgentId: "work", ownerUserId: "owner-new", accessToken: "token-new" }),
     ]);
     await expect(store.listProjects()).resolves.toEqual([
       expect.objectContaining({ projectId: "project-1", name: "Existing Project" }),

@@ -18,11 +18,18 @@ import type { TranscriptProjection } from "../client-interface/transcript-projec
 import { getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
 import type { ProjectCatalog } from "../projects/projects";
+import {
+  createSessionContinuity,
+  type SessionContinuity,
+  type SessionContinuityModule,
+} from "../projects/session-continuity";
 import { ConnectRuntime } from "../runtime/connect-runtime";
+import type { ConnectExecutionCapabilities } from "../runtime/execution-capabilities";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { RuntimeInteractionCoordinator } from "../runtime/runtime-interaction-coordinator";
 import { RuntimeInteractionRouter } from "../runtime/runtime-interaction-router";
 import type { SessionActivity } from "../runtime/session-queue";
+import type { ConnectTurnSurfaceCapabilities } from "../runtime/turn-surface";
 import {
   type ConnectRuntimeMedia,
   type QueuedClientTurn,
@@ -40,9 +47,12 @@ export interface BindingRuntimeOptions {
   deviceId: string;
   stateStore: ConnectStateStore;
   projects: ProjectCatalog;
-  runtimeAdapters: RuntimeAdapterRegistry;
+  sessionContinuityModule?: SessionContinuityModule;
+  execution?: ConnectExecutionCapabilities;
+  runtimeAdapters?: RuntimeAdapterRegistry;
   transcriptProjection?: TranscriptProjection;
   runtimeInteractions?: RuntimeInteractionCoordinator;
+  turnSurfaces?: ConnectTurnSurfaceCapabilities;
   wsTransport?: Transport;
   clawChatApi?: ClawChatApiClient;
   groupIntakeClock?: GroupIntakeClock;
@@ -102,6 +112,11 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   await resetRuntimeStatus(options);
   await (options.verifyInstalledSkills ?? verifyInstalledSkills)();
   const binding = getAgentBinding(options.config, options.agentId);
+  const execution = options.execution;
+  const runtimeAdapters = execution?.runtimeAdapters ?? options.runtimeAdapters;
+  if (!runtimeAdapters) throw new Error("Runtime Adapter coordination is required");
+  const transcriptProjection = execution?.transcriptProjection ?? options.transcriptProjection;
+  const runtimeInteractions = execution?.runtimeInteractions ?? options.runtimeInteractions;
   const runtimeConfig: ConnectConfig = {
     ...options.config,
     agents: { ...options.config.agents, [options.agentId]: binding },
@@ -127,6 +142,8 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     senderDisplayNames.set(senderId, resolution);
     return await resolution;
   };
+  const sessionContinuity =
+    options.sessionContinuityModule?.create() ?? createSessionContinuity({ stateStore: options.stateStore });
   let runtime: ConnectRuntime;
   let inboundMessages: InboundMessageProcessor;
   let wsClient: ConnectWsClient;
@@ -166,7 +183,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     },
   });
   interactionRouter = new RuntimeInteractionRouter({
-    clientPort: options.runtimeInteractions,
+    clientPort: runtimeInteractions,
     ownerUserId: options.activation.ownerUserId,
     ownerConversationId: options.activation.conversationId,
     agentUserId: options.activation.userId,
@@ -209,9 +226,12 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     stateStore: options.stateStore,
     wsClient,
     projects: options.projects,
-    runtimeAdapters: options.runtimeAdapters,
-    transcriptProjection: options.transcriptProjection,
+    sessionContinuity,
+    execution,
+    runtimeAdapters: execution ? undefined : runtimeAdapters,
+    transcriptProjection: execution ? undefined : transcriptProjection,
     runtimeInteractions: interactionRouter,
+    turnSurfaces: options.turnSurfaces,
     resolveSenderDisplayName,
   });
   groupIntake = new GroupIntakeCoordinator({
@@ -236,6 +256,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         wsClient,
         runtime,
         interactionRouter,
+        sessionContinuity,
         onTurnAccepted,
         groupDispatchMode,
       }),
@@ -248,7 +269,15 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         `${options.agentId}: group settings initialization failed: ${error instanceof Error ? error.message : String(error)}\n`,
       ),
     );
-  inboundMessages = new InboundMessageProcessor(options, wsClient, runtime, interactionRouter, groupIntake);
+  inboundMessages = new InboundMessageProcessor(
+    options,
+    wsClient,
+    runtime,
+    interactionRouter,
+    groupIntake,
+    sessionContinuity,
+    runtimeAdapters,
+  );
   let groupRecoveryAfterSettings: Promise<void> | null = null;
   const recoverGroupMessages = (): Promise<void> => {
     if (groupRecoveryAfterSettings) return groupRecoveryAfterSettings;
@@ -288,7 +317,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     } else if (state === "disconnected") void recordConnectionStatus(options, false, null).catch(() => undefined);
   });
   try {
-    await options.runtimeAdapters.prepare(binding);
+    await runtimeAdapters.prepare(binding);
     await wsClient.connect();
     void resolveSenderDisplayName(options.activation.ownerUserId)
       .then(async (ownerDisplayName) => {
@@ -389,6 +418,8 @@ class InboundMessageProcessor {
     private readonly runtime: ConnectRuntime,
     private readonly interactionRouter: RuntimeInteractionRouter,
     private readonly groupIntake: GroupIntakeCoordinator,
+    private readonly sessionContinuity: SessionContinuity,
+    private readonly runtimeAdapters: RuntimeAdapterRegistry,
   ) {}
 
   accept(message: NormalizedInboundMessage): "accepted" {
@@ -439,6 +470,7 @@ class InboundMessageProcessor {
             wsClient: this.wsClient,
             runtime: this.runtime,
             interactionRouter: this.interactionRouter,
+            sessionContinuity: this.sessionContinuity,
             onTurnAccepted: markHandled,
           }).then(async (handledWithoutTurn) => {
             if (handledWithoutTurn) await markHandled();
@@ -545,7 +577,7 @@ class InboundMessageProcessor {
         if (!cached.complete) unknown = true;
         continue;
       }
-      const reconciliation = await this.options.runtimeAdapters.reconcileInput(binding, runtimeSessionId, candidate);
+      const reconciliation = await this.runtimeAdapters.reconcileInput(binding, runtimeSessionId, candidate);
       if (reconciliation.receipts) receiptSnapshots.set(runtimeSessionId, reconciliation.receipts);
       else if (reconciliation.outcome === "unknown") receiptSnapshots.set(runtimeSessionId, null);
       if (reconciliation.outcome === "accepted") return reconciliation;
@@ -626,6 +658,7 @@ async function dispatchInboundMessage(
     wsClient: ConnectWsClient;
     runtime: ConnectRuntime;
     interactionRouter: RuntimeInteractionRouter;
+    sessionContinuity: SessionContinuity;
     onTurnAccepted: () => Promise<void>;
     groupDispatchMode?: GroupDispatchMode;
   },
@@ -669,6 +702,7 @@ async function dispatchInboundMessage(
       config: params.config,
       stateStore: params.stateStore,
       projects: params.projects,
+      sessionContinuity: params.sessionContinuity,
       closeRuntimeSession: (chatId) => params.runtime.closeSession(chatId),
       invalidateRuntimeSession: (chatId) => params.runtime.invalidateSession(chatId),
       cancelRuntimeTurn: (chatId) => params.runtime.cancelTurn(chatId),

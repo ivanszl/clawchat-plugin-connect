@@ -7,10 +7,20 @@ import {
   type AddProjectRequest,
   type BootstrapView,
   type CancelTurnRequest,
+  type ChangeSessionBindingRequest,
   CLIENT_API_PREFIX,
   type ClientViewEvent,
+  type ConfigurePluginRequest,
+  type ContinueSessionRequest,
   type CreateSessionRequest,
+  type InstalledPluginView,
+  MAX_PLUGIN_BUNDLE_BYTES,
   normalizeSessionRef,
+  PLUGIN_MANAGER_CONFIG_HEADER,
+  type PluginAdministrationView,
+  type PluginCapabilityView,
+  type PluginDiagnosticStage,
+  type PluginDiagnosticView,
   type ProjectDirectoryRequest,
   type SessionCatalogView,
   type SessionMutationRequest,
@@ -20,6 +30,9 @@ import {
 } from "../client-contract";
 import { getAgentBinding, saveConfig } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
+import type { OfficialPluginDiscovery } from "../plugin/catalog";
+import type { ConfigurePluginOptions, ConnectPluginHost, ManagePluginOptions, PluginUpdateCheck } from "../plugin/host";
+import type { InstalledPluginLockEntry } from "../plugin/store";
 import {
   HostDirectoryError,
   listHostDirectories,
@@ -27,7 +40,11 @@ import {
   materializeProjectDirectory,
 } from "../projects/host-directories";
 import { ProjectCatalog } from "../projects/projects";
-import { createSessionContinuity, SessionLifecycleError } from "../projects/session-continuity";
+import {
+  createSessionContinuity,
+  type SessionContinuityModule,
+  SessionLifecycleError,
+} from "../projects/session-continuity";
 import { classifyWorkspaceArtifact } from "../projects/workspace-artifact";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
@@ -36,7 +53,7 @@ import { releasedRuntimeAdapters } from "../runtime/released-adapters";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { RuntimeSlashSelection } from "../runtime/types";
 import type { BindingRuntimeHandle } from "../service/binding-runtime";
-import type { AgentBindingConfig, ConnectConfig } from "../types";
+import { type AgentBindingConfig, type ConnectConfig, runtimeFamilyFor } from "../types";
 import { BINDING_SCOPE_HEADER } from "./binding-scoped-gateway";
 import { resolveClientAssetsPath, staticResponse } from "./client-assets";
 import {
@@ -66,6 +83,9 @@ import type { TranscriptProjection } from "./transcript-projection";
 import { TurnSubmission, type TurnSubmissionDraft, TurnSubmissionError } from "./turn-submission";
 import { FileTurnSubmissionStaging } from "./turn-submission-staging";
 
+const MAX_PLUGIN_MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
+const MAX_PLUGIN_UPLOAD_BODY_BYTES = MAX_PLUGIN_BUNDLE_BYTES + MAX_PLUGIN_MULTIPART_OVERHEAD_BYTES;
+
 class ClientBindingRequestScope {
   constructor(
     readonly bindingId: string | null,
@@ -91,6 +111,8 @@ export interface ClientInterfaceOptions {
   transcriptProjection: TranscriptProjection;
   runtimeInteractions?: RuntimeInteractionCoordinator;
   projects?: ProjectCatalog;
+  sessionContinuityModule?: SessionContinuityModule;
+  pluginManager?: ConnectPluginHost;
   runtimes: BindingRuntimeHandle[];
   assetsPath?: string;
   hostname?: string;
@@ -98,11 +120,15 @@ export interface ClientInterfaceOptions {
   serverFactory?: ClientHttpServerFactory;
 }
 
+export interface ClientHttpServerRequestContext {
+  requestIP(request: Request): { address: string } | null;
+}
+
 export interface ClientHttpServerOptions {
   hostname: string;
   port: number;
   idleTimeout: number;
-  fetch(request: Request): Response | Promise<Response>;
+  fetch(request: Request, server?: ClientHttpServerRequestContext): Response | Promise<Response>;
 }
 
 export interface ClientHttpServerHandle {
@@ -123,7 +149,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   const origin = `http://${hostname}:${port}`;
   const assetsPath = options.assetsPath ?? (await resolveClientAssetsPath());
   const projects = options.projects ?? new ProjectCatalog(options.stateStore);
-  const sessionContinuity = createSessionContinuity({ stateStore: options.stateStore });
+  const sessionContinuity =
+    options.sessionContinuityModule?.create() ?? createSessionContinuity({ stateStore: options.stateStore });
   const runtimes = new Map(options.runtimes.map((runtime) => [runtime.agentId, runtime]));
   const catalog = new SessionCatalog({
     ...options,
@@ -188,14 +215,37 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     hostname,
     port,
     idleTimeout: 0,
-    fetch: async (request) => {
+    fetch: async (request, requestServer) => {
       try {
         const requestOrigin = allowedRequestOrigin(request, hostname, port);
         if (!requestOrigin) return errorResponse(400, "invalid-host", "Invalid Host header");
         const url = new URL(request.url);
+        const pluginAdministrationPath = isPluginAdministrationPath(url.pathname);
+        if (
+          hostname === "0.0.0.0" &&
+          pluginAdministrationPath &&
+          !isLoopbackAddress(requestServer?.requestIP(request)?.address)
+        ) {
+          return errorResponse(404, "not-found", "Client Interface endpoint was not found");
+        }
         const bindingScope = request.headers.get(BINDING_SCOPE_HEADER)?.trim() || null;
         if (bindingScope && !options.config.agents[bindingScope]) {
           return errorResponse(404, "binding-not-found", "Agent Binding was not found");
+        }
+        if (
+          pluginAdministrationPath &&
+          bindingScope &&
+          (await options.stateStore.getLivewareExposure(bindingScope))?.accessPolicy !== "private"
+        ) {
+          return errorResponse(404, "not-found", "Client Interface endpoint was not found");
+        }
+        const pluginManagerConfigPath = request.headers.get(PLUGIN_MANAGER_CONFIG_HEADER);
+        if (pluginManagerConfigPath && pluginAdministrationPath && pluginManagerConfigPath !== options.configPath) {
+          return errorResponse(
+            409,
+            "plugin-manager-installation-mismatch",
+            "The running Plugin manager belongs to a different Connect installation",
+          );
         }
         const requestScope = new ClientBindingRequestScope(bindingScope, catalog);
         if (url.pathname.startsWith(CLIENT_API_PREFIX)) {
@@ -222,6 +272,176 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             );
             if (mutationError) return mutationError;
           }
+          if (url.pathname === `${CLIENT_API_PREFIX}/plugins/administration` && request.method === "GET") {
+            if (!options.pluginManager) {
+              return errorResponse(503, "plugin-manager-unavailable", "Plugin management is unavailable", true);
+            }
+            const [installed, updates, official] = await Promise.all([
+              options.pluginManager.list(),
+              options.pluginManager.checkUpdates(),
+              options.pluginManager.discoverOfficial(),
+            ]);
+            return jsonResponse(pluginAdministrationView(options.config, installed, updates, official));
+          }
+          if (url.pathname === `${CLIENT_API_PREFIX}/plugins/upload` && request.method === "POST") {
+            if (!options.pluginManager) {
+              return errorResponse(503, "plugin-manager-unavailable", "Plugin management is unavailable", true);
+            }
+            const declaredLength = Number(request.headers.get("content-length") ?? "0");
+            if (Number.isFinite(declaredLength) && declaredLength > MAX_PLUGIN_UPLOAD_BODY_BYTES) {
+              return errorResponse(
+                413,
+                "plugin-upload-too-large",
+                `Plugin Bundle exceeds the ${MAX_PLUGIN_BUNDLE_BYTES} byte upload limit`,
+              );
+            }
+            const form = await readPluginUploadFormData(request);
+            const bundle = form.get("bundle");
+            if (!(bundle instanceof File) || !bundle.name.endsWith(".connect-plugin")) {
+              return errorResponse(400, "invalid-plugin-upload", "bundle must be one .connect-plugin file");
+            }
+            if (bundle.size > MAX_PLUGIN_BUNDLE_BYTES) {
+              return errorResponse(
+                413,
+                "plugin-upload-too-large",
+                `Plugin Bundle exceeds the ${MAX_PLUGIN_BUNDLE_BYTES} byte upload limit`,
+              );
+            }
+            try {
+              const installationConfiguration = parsePluginFormConfiguration(
+                form.get("installationConfiguration"),
+                "installationConfiguration",
+              );
+              const exposureConfigurations = parsePluginFormConfiguration(
+                form.get("exposureConfigurations"),
+                "exposureConfigurations",
+              );
+              return jsonResponse(
+                await options.pluginManager.installUpload(bundle.name, new Uint8Array(await bundle.arrayBuffer()), {
+                  installationConfiguration,
+                  exposureConfigurations,
+                }),
+                201,
+              );
+            } catch (error) {
+              return errorResponse(
+                409,
+                "plugin-operation-failed",
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+          }
+          if (url.pathname === `${CLIENT_API_PREFIX}/plugins/official` && request.method === "GET") {
+            if (!options.pluginManager) {
+              return errorResponse(503, "plugin-manager-unavailable", "Plugin management is unavailable", true);
+            }
+            return jsonResponse(await options.pluginManager.discoverOfficial());
+          }
+          if (url.pathname === `${CLIENT_API_PREFIX}/plugins/official/setup` && request.method === "POST") {
+            if (!options.pluginManager) {
+              return errorResponse(503, "plugin-manager-unavailable", "Plugin management is unavailable", true);
+            }
+            const body = await readJsonBody<{ pluginIds?: unknown }>(request);
+            if (!Array.isArray(body.pluginIds) || !body.pluginIds.every((pluginId) => typeof pluginId === "string")) {
+              return errorResponse(
+                400,
+                "invalid-official-plugin-selection",
+                "pluginIds must be an array of Plugin IDs",
+              );
+            }
+            try {
+              return jsonResponse(await options.pluginManager.installOfficial(body.pluginIds), 201);
+            } catch (error) {
+              return errorResponse(
+                409,
+                "plugin-operation-failed",
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+          }
+          const pluginPath = url.pathname.match(/^\/client\/v1\/plugins(?:\/([^/]+)(?:\/([^/]+))?)?$/u);
+          if (pluginPath) {
+            if (!options.pluginManager) {
+              return errorResponse(503, "plugin-manager-unavailable", "Plugin management is unavailable", true);
+            }
+            if (!pluginPath[1] && request.method === "GET") {
+              return jsonResponse(await options.pluginManager.list());
+            }
+            if (!pluginPath[1] && request.method === "POST") {
+              const body = await readJsonBody<Partial<ManagePluginOptions>>(request);
+              if (typeof body.source !== "string" || !body.source.trim()) {
+                return errorResponse(400, "invalid-plugin-source", "source is required");
+              }
+              try {
+                return jsonResponse(await options.pluginManager.install({ ...body, source: body.source }), 201);
+              } catch (error) {
+                return errorResponse(
+                  409,
+                  "plugin-operation-failed",
+                  error instanceof Error ? error.message : String(error),
+                );
+              }
+            }
+            const pluginId = decodeURIComponent(pluginPath[1] ?? "");
+            const action = pluginPath[2] ? decodeURIComponent(pluginPath[2]) : null;
+            try {
+              if (request.method === "DELETE" && action === null) {
+                return jsonResponse(
+                  await options.pluginManager.remove(pluginId, url.searchParams.get("force") === "1"),
+                );
+              }
+              if (request.method === "POST" && action === "update") {
+                const body = await readJsonBody<Partial<ManagePluginOptions>>(request);
+                if (body.source !== undefined && (typeof body.source !== "string" || !body.source.trim())) {
+                  return errorResponse(400, "invalid-plugin-source", "source must be a non-empty string");
+                }
+                return jsonResponse(await options.pluginManager.update(pluginId, body));
+              }
+              if (request.method === "POST" && action === "reinstall") {
+                return jsonResponse(await options.pluginManager.reinstall(pluginId));
+              }
+              if (request.method === "POST" && action === "configure") {
+                const body = await readJsonBody<Partial<ConfigurePluginRequest>>(request);
+                if (
+                  !isPlainRecord(body.installationConfiguration) ||
+                  !isPlainRecord(body.exposureConfigurations) ||
+                  !isPlainRecord(body.runtimeConfigurations)
+                ) {
+                  return errorResponse(
+                    400,
+                    "invalid-plugin-configuration",
+                    "installationConfiguration, exposureConfigurations, and runtimeConfigurations must be JSON objects",
+                  );
+                }
+                return jsonResponse(await options.pluginManager.configure(pluginId, body as ConfigurePluginOptions));
+              }
+              if (request.method === "POST" && action === "enable") {
+                return jsonResponse(await options.pluginManager.enable(pluginId));
+              }
+              if (request.method === "POST" && action === "disable") {
+                return jsonResponse(await options.pluginManager.disable(pluginId));
+              }
+              if (request.method === "POST" && action === "select") {
+                const body = await readJsonBody<{ version?: unknown; integrity?: unknown }>(request);
+                if (typeof body.version !== "string" || !body.version.trim()) {
+                  return errorResponse(400, "invalid-plugin-version", "version is required");
+                }
+                if (body.integrity !== undefined && typeof body.integrity !== "string") {
+                  return errorResponse(400, "invalid-plugin-integrity", "integrity must be a string");
+                }
+                return jsonResponse(
+                  await options.pluginManager.select(pluginId, body.version, body.integrity as string | undefined),
+                );
+              }
+            } catch (error) {
+              return errorResponse(
+                409,
+                "plugin-operation-failed",
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+            return errorResponse(404, "not-found", "Client Interface endpoint was not found");
+          }
           if (url.pathname === `${CLIENT_API_PREFIX}/bootstrap` && request.method === "GET") {
             const view: BootstrapView = {
               apiVersion: 1,
@@ -240,7 +460,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                     bindingId,
                     displayName: binding.displayName || bindingId,
                     clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
-                    runtimeKind: binding.kind,
+                    runtimeKind: runtimeFamilyFor(binding),
                     runtimeProfile: binding.kind === "workbuddy" ? binding.profile : null,
                     outputVisibility: bindingOutputVisibility(options.config, bindingId),
                     model: binding.model ?? null,
@@ -532,6 +752,68 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             return view && requestScope.includesBinding(view.bindingId)
               ? snapshotResponse(view, watermark)
               : errorResponse(404, "session-not-found", "Session was not found");
+          }
+          const changeBindingMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/binding$/u);
+          if (changeBindingMatch && request.method === "PATCH") {
+            const sessionRef = normalizeSessionRef(changeBindingMatch[1] ?? "");
+            if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
+            const body = await readJsonBody<ChangeSessionBindingRequest>(request);
+            if (!validRequestId(body.requestId))
+              return errorResponse(400, "invalid-request-id", "requestId is required");
+            if (typeof body.bindingId !== "string" || !body.bindingId.trim()) {
+              return errorResponse(400, "invalid-binding", "bindingId is required");
+            }
+            return await idempotentCommand(
+              options.stateStore,
+              body.requestId,
+              "session.binding.change",
+              `${sessionRef}:${body.bindingId}`,
+              async () => {
+                await requireActiveOwnerBinding(options, body.bindingId);
+                await sessionContinuity.forSession(sessionRef).changeBinding(body.bindingId);
+                catalog.invalidate();
+                const view = await catalog.sessionView(sessionRef);
+                return view
+                  ? { status: 200, body: view }
+                  : commandError(404, "session-not-found", "Session was not found");
+              },
+            );
+          }
+          const continuationMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/continuations$/u);
+          if (continuationMatch && request.method === "POST") {
+            const sessionRef = normalizeSessionRef(continuationMatch[1] ?? "");
+            if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
+            const body = await readJsonBody<ContinueSessionRequest>(request);
+            if (!validRequestId(body.requestId))
+              return errorResponse(400, "invalid-request-id", "requestId is required");
+            if (typeof body.bindingId !== "string" || !body.bindingId.trim()) {
+              return errorResponse(400, "invalid-binding", "bindingId is required");
+            }
+            return await idempotentCommand(
+              options.stateStore,
+              body.requestId,
+              "session.continue",
+              `${sessionRef}:${body.bindingId}`,
+              async () => {
+                const source = await options.stateStore.getRuntimeSessionByRef(sessionRef);
+                if (!source) return commandError(404, "session-not-found", "Session was not found");
+                if (source.agentId === body.bindingId) {
+                  return commandError(
+                    409,
+                    "continuation-binding-unchanged",
+                    "Choose another active Agent Binding for the continuation",
+                  );
+                }
+                await requireActiveOwnerBinding(options, body.bindingId);
+                const continuation = await sessionContinuity.forSession(sessionRef).continueWith(body.bindingId);
+                catalog.invalidate();
+                const view = await catalog.sessionView(continuation.sessionRef);
+                if (view) return { status: 201, body: view };
+                await sessionContinuity.forSession(continuation.sessionRef).discardEmpty();
+                catalog.invalidate();
+                return commandError(503, "session-create-failed", "Continuation Session could not be created", true);
+              },
+            );
           }
           const transcriptMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/transcript$/u);
           if (transcriptMatch && request.method === "GET") {
@@ -1109,6 +1391,263 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       await server.stop(true);
     },
   };
+}
+
+function pluginAdministrationView(
+  config: ConnectConfig,
+  installedEntries: InstalledPluginLockEntry[],
+  updates: Record<string, PluginUpdateCheck>,
+  official: OfficialPluginDiscovery,
+): PluginAdministrationView {
+  const installed = installedEntries.map((entry): InstalledPluginView => {
+    const dependentBindings = Object.entries(config.agents)
+      .filter((candidate): candidate is [string, AgentBindingConfig & { kind: "plugin" }] => {
+        const binding = candidate[1];
+        return binding.kind === "plugin" && binding.runtime.pluginId === entry.pluginId;
+      })
+      .map(([bindingId, binding]) => ({
+        bindingId,
+        displayName: binding.displayName || bindingId,
+        capabilityId: binding.runtime.capabilityId,
+      }))
+      .sort((left, right) => left.bindingId.localeCompare(right.bindingId));
+    const update = updates[entry.pluginId] ?? {
+      status: "check-failed" as const,
+      version: null,
+      integrity: null,
+      diagnostic: "Update availability was not checked",
+    };
+    const diagnostics: PluginDiagnosticView[] = [];
+    if (entry.error) diagnostics.push(pluginDiagnostic(entry.error, "activation"));
+    if (update.status === "check-failed") diagnostics.push({ stage: "update", message: update.diagnostic });
+    return {
+      kind: "installed",
+      pluginId: entry.pluginId,
+      name: entry.pluginId,
+      source: structuredClone(entry.source),
+      version: entry.version,
+      target: entry.target,
+      integrity: entry.integrity,
+      status: entry.status,
+      dependentBindings,
+      updateAvailability: update,
+      retainedVersions: entry.retainedVersions.map((retained) => ({
+        source: structuredClone(retained.source),
+        version: retained.version,
+        target: retained.target,
+        integrity: retained.integrity,
+      })),
+      installationConfigurationSchema: structuredClone(entry.manifest.installationConfigurationSchema),
+      installationConfiguration: structuredClone(entry.installationConfiguration),
+      capabilities: entry.manifest.capabilities.map(
+        (capability): PluginCapabilityView => ({
+          id: capability.id,
+          type: capability.type,
+          family: capability.type === "runtime" ? capability.family : null,
+          configurationSchema: structuredClone(capability.configurationSchema),
+          instances:
+            capability.type === "runtime"
+              ? Object.entries(config.agents)
+                  .filter((candidate): candidate is [string, AgentBindingConfig & { kind: "plugin" }] => {
+                    const binding = candidate[1];
+                    return (
+                      binding.kind === "plugin" &&
+                      binding.runtime.pluginId === entry.pluginId &&
+                      binding.runtime.capabilityId === capability.id
+                    );
+                  })
+                  .map(([bindingId, binding]) => ({
+                    instanceId: bindingId,
+                    bindingId,
+                    displayName: binding.displayName || bindingId,
+                    configuration: structuredClone(binding.runtimeConfig),
+                  }))
+              : [
+                  {
+                    instanceId: capability.id,
+                    bindingId: null,
+                    displayName: capability.id,
+                    configuration: structuredClone(entry.exposureConfigurations[capability.id] ?? {}),
+                  },
+                ],
+        }),
+      ),
+      diagnostics,
+    };
+  });
+  return {
+    installed,
+    available: official.candidates.map((candidate) => ({
+      kind: "available",
+      pluginId: candidate.pluginId,
+      name: candidate.name,
+      sourceReference: candidate.source,
+      source: candidate.resolvedSource ? structuredClone(candidate.resolvedSource) : null,
+      version: candidate.version,
+      target: candidate.target,
+      integrity: candidate.integrity,
+      status: candidate.version && candidate.integrity ? "available" : "unavailable",
+      dependentBindings: [],
+      updateAvailability: {
+        status: "not-installed",
+        version: candidate.version,
+        integrity: candidate.integrity,
+        diagnostic: null,
+      },
+      installationConfigurationSchema: candidate.manifest
+        ? structuredClone(candidate.manifest.installationConfigurationSchema)
+        : null,
+      installationConfiguration: structuredClone(candidate.installationConfiguration),
+      capabilities:
+        candidate.manifest?.capabilities.map(
+          (capability): PluginCapabilityView => ({
+            id: capability.id,
+            type: capability.type,
+            family: capability.type === "runtime" ? capability.family : null,
+            configurationSchema: structuredClone(capability.configurationSchema),
+            instances:
+              capability.type === "exposure"
+                ? [
+                    {
+                      instanceId: capability.id,
+                      bindingId: null,
+                      displayName: capability.id,
+                      configuration: isPlainRecord(candidate.exposureConfigurations[capability.id])
+                        ? structuredClone(candidate.exposureConfigurations[capability.id] as Record<string, unknown>)
+                        : {},
+                    },
+                  ]
+                : [],
+          }),
+        ) ?? [],
+      detected: candidate.detected,
+      compatible: candidate.compatible,
+      selected: candidate.selected,
+      diagnostics: candidate.diagnostic ? [pluginDiagnostic(candidate.diagnostic, "probe")] : [],
+    })),
+    catalogOrigin: official.catalogOrigin,
+    diagnostics: official.diagnostics.map((message) => pluginDiagnostic(message, "probe")),
+  };
+}
+
+function pluginDiagnostic(message: string, fallback: PluginDiagnosticStage): PluginDiagnosticView {
+  const normalized = message.toLowerCase();
+  const stage: PluginDiagnosticStage = normalized.includes("probe")
+    ? "probe"
+    : normalized.includes("provider") || normalized.includes("register")
+      ? "provider"
+      : normalized.includes("import") || normalized.includes("export") || normalized.includes("entry artifact")
+        ? "import"
+        : normalized.includes("schema") ||
+            normalized.includes("validation") ||
+            normalized.includes("malformed") ||
+            normalized.includes("integrity")
+          ? "validation"
+          : fallback;
+  return { stage, message };
+}
+
+async function readPluginUploadFormData(request: Request): Promise<FormData> {
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  const reader = request.body?.getReader();
+  if (reader) {
+    try {
+      while (true) {
+        request.signal.throwIfAborted();
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        totalBytes += chunk.value.byteLength;
+        if (totalBytes > MAX_PLUGIN_UPLOAD_BODY_BYTES) {
+          try {
+            await reader.cancel();
+          } catch {
+            // The size limit determines this response even when the incoming stream cannot be cancelled cleanly.
+          }
+          throw new ClientRequestError(
+            413,
+            "plugin-upload-too-large",
+            `Plugin Bundle exceeds the ${MAX_PLUGIN_BUNDLE_BYTES} byte upload limit`,
+          );
+        }
+        chunks.push(chunk.value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  request.signal.throwIfAborted();
+
+  const boundedBody = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    boundedBody.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return await new Request(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: boundedBody,
+    signal: request.signal,
+  }).formData();
+}
+
+function parsePluginFormConfiguration(value: FormDataEntryValue | null, label: string): Record<string, unknown> {
+  if (value === null || value === "") return {};
+  if (typeof value !== "string") throw new Error(`${label} must be a JSON object`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch (error) {
+    throw new Error(`${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!isPlainRecord(parsed)) throw new Error(`${label} must be a JSON object`);
+  return parsed;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function requireActiveOwnerBinding(options: ClientInterfaceOptions, bindingId: string): Promise<void> {
+  if (!options.config.agents[bindingId]) {
+    throw new ClientRequestError(404, "binding-not-found", "Agent Binding was not found");
+  }
+  const [ownerUserId, activation] = await Promise.all([
+    options.stateStore.getInstallationOwner(),
+    options.stateStore.getActivation(bindingId),
+  ]);
+  if (!activation) {
+    throw new ClientRequestError(
+      409,
+      "binding-not-active",
+      `Agent Binding ${bindingId} is not activated for this installation`,
+    );
+  }
+  if (!ownerUserId || activation.ownerUserId !== ownerUserId) {
+    throw new ClientRequestError(
+      409,
+      "binding-owner-mismatch",
+      `Agent Binding ${bindingId} does not belong to the current Installation Owner`,
+    );
+  }
+}
+
+function isPluginAdministrationPath(pathname: string): boolean {
+  return pathname === `${CLIENT_API_PREFIX}/plugins` || pathname.startsWith(`${CLIENT_API_PREFIX}/plugins/`);
+}
+
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false;
+  const normalized = address.toLowerCase();
+  if (normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") return true;
+  const ipv4 = normalized.startsWith("::ffff:") ? normalized.slice(7) : normalized;
+  const octets = ipv4.split(".");
+  return (
+    octets.length === 4 &&
+    octets[0] === "127" &&
+    octets.every((octet) => /^\d{1,3}$/u.test(octet) && Number(octet) <= 255)
+  );
 }
 
 function allowedRequestOrigin(request: Request, listeningHost: string, port: number): string | null {

@@ -21,19 +21,21 @@ Connect rejects every other application, embedded CodeBuddy, or ACP version. Bot
 - macOS must have the selected exact distribution installed. Its embedded CodeBuddy CLI and ACP v1 tuple must match the pinned profile.
 - `/new [name]` creates a Connect-owned CodeBuddy Session on the next real message. The response explicitly warns that this Session will not appear in WorkBuddy Desktop.
 - To use desktop history and synchronization, create or select a WorkBuddy Task, open it, and complete one native turn if it has no active private endpoint yet. WorkBuddy Desktop must be running while Connect attaches to that Task.
-- Add the Binding with an explicit profile:
+- Install `clawling.runtime.workbuddy` from the official Plugin Catalog, then create each Agent Binding against one explicit named capability:
 
   ```bash
-  clawchat-connect agent add desktop --kind workbuddy --profile workbuddy-ai
-  # or
-  clawchat-connect agent add mainland --kind workbuddy --profile workbuddy-cn
+  clawchat-connect plugin setup --non-interactive --select clawling.runtime.workbuddy
+  clawchat-connect agent add desktop --kind workbuddy --plugin clawling.runtime.workbuddy --capability workbuddy-ai
+  clawchat-connect agent add mainland --kind workbuddy --plugin clawling.runtime.workbuddy --capability workbuddy-cn
   ```
+
+  The two capability schemas accept no profile override. Selecting `workbuddy-ai` or `workbuddy-cn` fixes the distribution for that Binding, and each Binding creates an independent Runtime Adapter, ACP client, process, catalog cache, and recovery state.
 
 - Discover and adopt an existing Task from Connect Client or the ordinary Session catalog before submitting a desktop-synchronized turn.
 
 ClawChat `/sessions` lists both target kinds in the current Project (and all materialized WorkBuddy targets in the Non-Project workspace). `/switch <session-ref>` can select either kind. Selecting a Project remains independent of target kind; `/new` inherits the selected Project.
 
-`clawchat-connect status --agent <binding-id>` reports the selected profile, exact supported tuple, and the latest operator diagnostic. Configuration accepts only `kind`, `profile`, `displayName`, and `outputVisibility` for a WorkBuddy Binding. Endpoints, ports, process identifiers, connection identifiers, tokens, passwords, authorization values, product configuration, executable overrides, and version overrides are desktop-owned and rejected.
+Official Catalog discovery reports each installed distribution as exact, missing, or unsupported before setup. Runtime activation then fails closed if Task endpoint initialization negotiates anything other than ACP v1. Endpoints, ports, process identifiers, connection identifiers, tokens, passwords, authorization values, product configuration, executable overrides, version overrides, and profile overrides remain desktop-owned and are rejected.
 
 ## Security and ownership boundary
 

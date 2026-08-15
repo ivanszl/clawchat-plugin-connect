@@ -61,6 +61,7 @@ jobs:
           bun test tests/background-service.test.ts
           bun test tests/build-release.test.ts tests/release-channel.test.ts
           bun test tests/release-bundle.test.ts --test-name-pattern "native Windows packager creates the exact archive-root payload"
+          ./tests/windows-installer-preflight.ps1
           bun scripts/verify-liveware-bundle.ts
 
       - name: Validate PowerShell installer syntax
@@ -142,17 +143,23 @@ jobs:
               liveware_asset="liveware-${platform}-${liveware_architecture}"
             fi
             sh scripts/verify-liveware-bundle.sh "${liveware_asset}"
+            plugin_platform="${platform}"
+            [ "${plugin_platform}" = "windows" ] && plugin_platform="win32"
+            rm -rf dist/official-plugins
+            bun scripts/build-official-plugins.ts --target "${plugin_platform}-${architecture}"
             if [ "${platform}" = "windows" ]; then
               sh scripts/package-windows-release.sh \
                 "${output}" \
                 dist/client \
                 "vendor/liveware/${liveware_asset}" \
+                dist/official-plugins \
                 "build/release/clawchat-connect-${platform}-${architecture}.zip"
             else
               sh scripts/package-release-archive.sh \
                 "${output}" \
                 dist/client \
                 "vendor/liveware/${liveware_asset}" \
+                dist/official-plugins \
                 "build/release/clawchat-connect-${platform}-${architecture}.tar.gz"
             fi
           done <<'TARGETS'

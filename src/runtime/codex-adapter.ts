@@ -730,9 +730,15 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     const turnInput: CodexUserInput[] = prompt ? [{ type: "text", text: prompt, text_elements: [] }] : [];
     if (selectedSkill) turnInput.push({ type: "skill", name: selectedSkill.name, path: selectedSkill.path });
     for (const media of input.media ?? []) {
-      const path = input.trustedMediaOrigins
-        ? await this.cacheMedia(media, this.context.stateDbPath, input.trustedMediaOrigins)
-        : await this.cacheMedia(media, this.context.stateDbPath);
+      let path: string;
+      if (this.context.cacheMedia) {
+        path = await this.context.cacheMedia(media, input.trustedMediaOrigins);
+      } else {
+        if (!this.context.stateDbPath) throw new Error("Codex Runtime media caching is unavailable");
+        path = input.trustedMediaOrigins
+          ? await this.cacheMedia(media, this.context.stateDbPath, input.trustedMediaOrigins)
+          : await this.cacheMedia(media, this.context.stateDbPath);
+      }
       if (media.kind === "image") {
         turnInput.push({ type: "localImage", path });
         continue;

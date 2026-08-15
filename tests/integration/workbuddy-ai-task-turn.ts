@@ -1,10 +1,9 @@
 import { realpath } from "node:fs/promises";
 import type { RuntimeActivity } from "../../src/runtime/types";
-import { createWorkBuddyRuntimeAdapter } from "../../src/runtime/workbuddy-adapter";
 import { workBuddyProfileCompatibility } from "../../src/runtime/workbuddy-task-discovery";
 import { readWorkBuddyTaskRuntimeSelection } from "../../src/runtime/workbuddy-task-discovery-macos";
 import { inspectInstalledWorkBuddyTaskTranscript } from "../../src/runtime/workbuddy-task-transcript";
-import type { WorkBuddyAgentBindingConfig } from "../../src/types";
+import { createInstalledWorkBuddyPluginRuntime } from "./workbuddy-installed-plugin";
 import { verifyInstalledWorkBuddyNativeUi } from "./workbuddy-native-ui";
 import {
   requiredWorkBuddyTestEnv,
@@ -35,9 +34,9 @@ const selectedModel = (
 ).model;
 if (!selectedModel) throw new Error("The dedicated WorkBuddy Task has no selected model to preserve");
 
-const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: workBuddyTestProfile };
-const adapter = createWorkBuddyRuntimeAdapter();
-const session = await adapter.start(binding, {
+const installedPlugin = await createInstalledWorkBuddyPluginRuntime(workBuddyTestProfile);
+const { binding, runtimeAdapters } = installedPlugin;
+const session = await runtimeAdapters.start(binding, {
   agentId: workBuddyTestBindingId,
   chatId: "client-installed-verification",
   sessionId: "client-installed-verification",
@@ -52,7 +51,7 @@ const runtimeWorkspace = {
   skipGitRepoCheck: false,
 };
 const catalogScope = { runtimeThreadId: taskId, workspace: runtimeWorkspace };
-const models = (await adapter.listModels?.(binding, catalogScope)) ?? [];
+const models = (await runtimeAdapters.listModels(binding, catalogScope)) ?? [];
 const currentTaskModel = models.find((model) => model.isDefault);
 if (currentTaskModel?.id !== selectedModel) {
   throw new Error(
@@ -62,9 +61,9 @@ if (currentTaskModel?.id !== selectedModel) {
 if (workBuddyTestProfile === "workbuddy-ai" && !/fast/iu.test(currentTaskModel.displayName)) {
   throw new Error(`The dedicated WorkBuddy AI Task must use a Fast product model, got ${currentTaskModel.displayName}`);
 }
-const sessionOptions = (await adapter.listSessionOptions?.(binding, runtimeWorkspace, catalogScope)) ?? [];
-const commands = (await adapter.listCommands?.(binding, runtimeWorkspace, { runtimeThreadId: taskId })) ?? [];
-const skills = (await adapter.listSkills?.(binding, runtimeWorkspace, { runtimeThreadId: taskId })) ?? [];
+const sessionOptions = (await runtimeAdapters.listSessionOptions(binding, runtimeWorkspace, catalogScope)) ?? [];
+const commands = (await runtimeAdapters.listCommands(binding, runtimeWorkspace, { runtimeThreadId: taskId })) ?? [];
+const skills = (await runtimeAdapters.listSkills(binding, runtimeWorkspace, { runtimeThreadId: taskId })) ?? [];
 
 const activities: RuntimeActivity[] = [];
 let accepted = 0;
@@ -112,7 +111,7 @@ if (
   throw new Error("The installed WorkBuddy turn produced duplicate completed assistant identities");
 }
 
-const replay = await adapter.readActivity?.(binding, taskId);
+const replay = await runtimeAdapters.readActivity(binding, taskId);
 if (!replay?.activities.some((activity) => activity.kind === "user" && activity.text.includes(turnMarker))) {
   throw new Error("The completed Connect turn was not persisted in native WorkBuddy history");
 }
@@ -138,7 +137,7 @@ if (persistedModel !== selectedModel) {
   );
 }
 
-await adapter.close?.();
+await installedPlugin.close();
 await verifyInstalledWorkBuddyNativeUi({
   compatibility: workBuddyProfileCompatibility(workBuddyTestProfile),
   taskTitle: uiTaskTitle,
@@ -155,7 +154,7 @@ console.log(
       priorAssistantMarker,
       model: persistedModel,
       modelDisplayName: currentTaskModel.displayName,
-      modeOptions: adapter.modesFor?.(binding, catalogScope) ?? [],
+      modeOptions: runtimeAdapters.modesFor(binding, catalogScope),
       sessionOptionCount: sessionOptions.length,
       runtimeCommandCount: commands.length,
       runtimeSkillCount: skills.length,

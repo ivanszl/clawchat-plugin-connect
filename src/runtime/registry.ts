@@ -1,4 +1,5 @@
-import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
+import type { RuntimeCapabilityRef } from "../plugin/sdk";
+import { type AgentBindingConfig, type RuntimeWorkspace, runtimeFamilyFor } from "../types";
 import type {
   ConnectRuntimeAdapter,
   ConnectRuntimeSession,
@@ -18,14 +19,20 @@ import { RuntimeLifecycleError } from "./types";
 
 export interface RuntimeAdapterDefinition {
   kind: string;
-  create(): ConnectRuntimeAdapter;
+  runtime?: RuntimeCapabilityRef;
+  create(binding: AgentBindingConfig): ConnectRuntimeAdapter;
+}
+export interface RuntimeAdapterReplacement {
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
+  unregister(): Promise<void>;
 }
 
 const RUNTIME_CATALOG_TTL_MS = 30_000;
 
 export class RuntimeAdapterRegistry {
-  private readonly definitions = new Map<string, RuntimeAdapterDefinition>();
-  private readonly adaptersByBinding = new Map<string, ConnectRuntimeAdapter>();
+  private readonly definitions = new Map<string, { definition: RuntimeAdapterDefinition; registration: symbol }>();
+  private readonly adaptersByBinding = new Map<string, { providerKey: string; adapter: ConnectRuntimeAdapter }>();
   private readonly anonymousBindingIds = new WeakMap<object, string>();
   private nextAnonymousBindingId = 1;
   private readonly modelLists = new Map<
@@ -49,12 +56,85 @@ export class RuntimeAdapterRegistry {
   private readonly catalogChangeSubscriptions = new Map<string, () => void>();
 
   constructor(definitions: readonly RuntimeAdapterDefinition[]) {
-    for (const definition of definitions) {
-      const kind = definition.kind.trim();
-      if (!kind) throw new Error("Runtime Adapter kind is required");
-      if (this.definitions.has(kind)) throw new Error(`duplicate Runtime Adapter kind: ${kind}`);
-      this.definitions.set(kind, definition);
+    for (const definition of definitions) this.addDefinition(definition);
+  }
+
+  register(definition: RuntimeAdapterDefinition): () => Promise<void> {
+    return this.registerAll([definition]);
+  }
+
+  registerAll(definitions: readonly RuntimeAdapterDefinition[]): () => Promise<void> {
+    const pending = definitions.map((definition) => this.normalizeDefinition(definition));
+    const providerKeys = new Set<string>();
+    for (const { providerKey, definition } of pending) {
+      if (this.definitions.has(providerKey) || providerKeys.has(providerKey)) {
+        throw new Error(
+          definition.runtime
+            ? `duplicate Runtime Adapter provider: ${providerKey}`
+            : `duplicate Runtime Adapter kind: ${definition.kind}`,
+        );
+      }
+      providerKeys.add(providerKey);
     }
+    const registration = Symbol("runtime-adapter-registration");
+    for (const { providerKey, definition } of pending) {
+      this.definitions.set(providerKey, { definition, registration });
+    }
+    let registered = true;
+    return async () => {
+      if (!registered) return;
+      registered = false;
+      await this.unregisterRegistration(providerKeys, registration);
+    };
+  }
+
+  replaceAll(
+    definitions: readonly RuntimeAdapterDefinition[],
+    replacedRuntimeRefs: readonly RuntimeCapabilityRef[],
+  ): RuntimeAdapterReplacement {
+    const pending = definitions.map((definition) => this.normalizeDefinition(definition));
+    const replacementKeys = new Set(
+      replacedRuntimeRefs.map((runtime) => `plugin:${runtime.pluginId}\0${runtime.capabilityId}`),
+    );
+    const pendingKeys = new Set<string>();
+    for (const { providerKey, definition } of pending) {
+      if (pendingKeys.has(providerKey) || (this.definitions.has(providerKey) && !replacementKeys.has(providerKey))) {
+        throw new Error(`duplicate Runtime Adapter provider: ${providerKey}`);
+      }
+      if (!definition.runtime) throw new Error("Only Plugin Runtime providers can participate in Bundle replacement");
+      pendingKeys.add(providerKey);
+    }
+
+    const registration = Symbol("runtime-adapter-replacement");
+    let state: "pending" | "committed" | "rolled-back" | "unregistered" = "pending";
+    return {
+      commit: async () => {
+        if (state !== "pending") return;
+
+        for (const providerKey of replacementKeys) this.definitions.delete(providerKey);
+        for (const { providerKey, definition } of pending) {
+          this.definitions.set(providerKey, { definition, registration });
+        }
+        state = "committed";
+        const previousAdapters = this.takeAdaptersFor(replacementKeys);
+
+        const results = await Promise.allSettled(previousAdapters.map(async ({ adapter }) => await adapter.close?.()));
+        const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+        if (failure) throw failure.reason;
+      },
+      rollback: async () => {
+        if (state !== "pending") return;
+        state = "rolled-back";
+      },
+      unregister: async () => {
+        if (state === "unregistered" || state === "rolled-back") return;
+        if (state === "pending") {
+          throw new Error("Runtime Adapter replacement must be committed or rolled back before unregistering");
+        }
+        state = "unregistered";
+        await this.unregisterRegistration(pendingKeys, registration);
+      },
+    };
   }
 
   async start(binding: AgentBindingConfig, context: ConnectRuntimeStartContext): Promise<ConnectRuntimeSession> {
@@ -193,7 +273,7 @@ export class RuntimeAdapterRegistry {
     if (!operation)
       throw new RuntimeLifecycleError(
         "unsupported",
-        `${binding.kind} Runtime Adapter does not support thread archiving`,
+        `${runtimeFamilyFor(binding)} Runtime Adapter does not support thread archiving`,
       );
     if (adapter.discoverArchivedThreads) {
       if ((await adapter.discoverArchivedThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId))
@@ -214,7 +294,7 @@ export class RuntimeAdapterRegistry {
     if (!operation)
       throw new RuntimeLifecycleError(
         "unsupported",
-        `${binding.kind} Runtime Adapter does not support thread restoration`,
+        `${runtimeFamilyFor(binding)} Runtime Adapter does not support thread restoration`,
       );
     if (adapter.discoverAllThreads) {
       if ((await adapter.discoverAllThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId))
@@ -235,7 +315,7 @@ export class RuntimeAdapterRegistry {
     if (!operation)
       throw new RuntimeLifecycleError(
         "unsupported",
-        `${binding.kind} Runtime Adapter does not support thread deletion`,
+        `${runtimeFamilyFor(binding)} Runtime Adapter does not support thread deletion`,
       );
     if (adapter.discoverAllThreads && adapter.discoverArchivedThreads) {
       const [active, archived] = await Promise.all([
@@ -249,59 +329,48 @@ export class RuntimeAdapterRegistry {
 
   async close(): Promise<void> {
     const results = await Promise.allSettled(
-      [...this.adaptersByBinding.values()].map(async (adapter) => await adapter.close?.()),
+      [...this.adaptersByBinding.values()].map(async ({ adapter }) => await adapter.close?.()),
     );
     this.adaptersByBinding.clear();
-    for (const unsubscribe of this.skillChangeSubscriptions.values()) unsubscribe();
-    for (const unsubscribe of this.commandChangeSubscriptions.values()) unsubscribe();
-    for (const unsubscribe of this.catalogChangeSubscriptions.values()) unsubscribe();
-    this.skillChangeSubscriptions.clear();
-    this.commandChangeSubscriptions.clear();
-    this.catalogChangeSubscriptions.clear();
-    this.modelLists.clear();
-    this.sessionOptionLists.clear();
-    this.skillLists.clear();
-    this.commandLists.clear();
+    for (const bindingId of new Set([
+      ...this.skillChangeSubscriptions.keys(),
+      ...this.commandChangeSubscriptions.keys(),
+      ...this.catalogChangeSubscriptions.keys(),
+    ])) {
+      this.clearBinding(bindingId);
+    }
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failure) throw failure.reason;
   }
 
   private require(binding: AgentBindingConfig): ConnectRuntimeAdapter {
-    const definition = this.definitions.get(binding.kind);
-    if (!definition) throw new Error(`no Runtime Adapter registered for kind: ${binding.kind}`);
+    const providerKey = this.providerKey(binding);
+    const registered = this.definitions.get(providerKey);
+    const definition = registered?.definition;
+    const family = runtimeFamilyFor(binding);
+    if (!definition) {
+      if (binding.kind !== "plugin") {
+        throw new Error(`no Runtime Adapter registered for kind: ${binding.kind}`);
+      }
+      throw new Error(
+        `no Runtime Adapter registered for provider: ${binding.runtime.pluginId}/${binding.runtime.capabilityId}`,
+      );
+    }
+    if (definition.kind !== family) {
+      throw new Error(`Runtime provider ${providerKey} advertises ${definition.kind}, not Binding family ${family}`);
+    }
     const bindingId = this.bindingId(binding);
     const existing = this.adaptersByBinding.get(bindingId);
     if (existing) {
-      if (existing.kind !== binding.kind) throw new Error(`Agent Binding ${bindingId} changed Runtime Adapter kind`);
-      return existing;
+      if (existing.providerKey !== providerKey) throw new Error(`Agent Binding ${bindingId} changed Runtime provider`);
+      return existing.adapter;
     }
-    const adapter = definition.create();
-    if (adapter.kind !== binding.kind)
-      throw new Error(`Runtime Adapter factory for ${binding.kind} created ${adapter.kind}`);
-    this.adaptersByBinding.set(bindingId, adapter);
-    if (adapter.onSkillsChanged) {
-      this.skillChangeSubscriptions.set(
-        bindingId,
-        adapter.onSkillsChanged(() => {
-          for (const key of this.skillLists.keys()) if (key.startsWith(`${bindingId}\0`)) this.skillLists.delete(key);
-        }),
-      );
+    const adapter = definition.create(binding);
+    if (adapter.kind !== family) {
+      throw new Error(`Runtime Adapter factory for ${providerKey} created ${adapter.kind}, expected ${family}`);
     }
-    if (adapter.onCommandsChanged) {
-      this.commandChangeSubscriptions.set(
-        bindingId,
-        adapter.onCommandsChanged(() => {
-          for (const key of this.commandLists.keys())
-            if (key.startsWith(`${bindingId}\0`)) this.commandLists.delete(key);
-        }),
-      );
-    }
-    if (adapter.onCatalogsChanged) {
-      this.catalogChangeSubscriptions.set(
-        bindingId,
-        adapter.onCatalogsChanged(() => this.invalidateBindingCatalogs(bindingId)),
-      );
-    }
+    this.adaptersByBinding.set(bindingId, { providerKey, adapter });
+    this.installAdapterSubscriptions(bindingId, adapter);
     return adapter;
   }
 
@@ -353,6 +422,105 @@ export class RuntimeAdapterRegistry {
     this.nextAnonymousBindingId += 1;
     this.anonymousBindingIds.set(binding, created);
     return created;
+  }
+
+  private addDefinition(definition: RuntimeAdapterDefinition): string {
+    const normalized = this.normalizeDefinition(definition);
+    if (this.definitions.has(normalized.providerKey)) {
+      throw new Error(
+        normalized.definition.runtime
+          ? `duplicate Runtime Adapter provider: ${normalized.providerKey}`
+          : `duplicate Runtime Adapter kind: ${normalized.definition.kind}`,
+      );
+    }
+    this.definitions.set(normalized.providerKey, {
+      definition: normalized.definition,
+      registration: Symbol("builtin-runtime-adapter"),
+    });
+    return normalized.providerKey;
+  }
+
+  private normalizeDefinition(definition: RuntimeAdapterDefinition): {
+    providerKey: string;
+    definition: RuntimeAdapterDefinition;
+  } {
+    const kind = definition.kind.trim();
+    if (!kind) throw new Error("Runtime Adapter family is required");
+    return {
+      providerKey: definition.runtime
+        ? `plugin:${definition.runtime.pluginId}\0${definition.runtime.capabilityId}`
+        : `builtin:${kind}`,
+      definition: { ...definition, kind },
+    };
+  }
+
+  private providerKey(binding: AgentBindingConfig): string {
+    return binding.kind === "plugin"
+      ? `plugin:${binding.runtime.pluginId}\0${binding.runtime.capabilityId}`
+      : `builtin:${binding.kind}`;
+  }
+
+  private installAdapterSubscriptions(bindingId: string, adapter: ConnectRuntimeAdapter): void {
+    if (adapter.onSkillsChanged) {
+      this.skillChangeSubscriptions.set(
+        bindingId,
+        adapter.onSkillsChanged(() => {
+          for (const key of this.skillLists.keys()) if (key.startsWith(`${bindingId}\0`)) this.skillLists.delete(key);
+        }),
+      );
+    }
+    if (adapter.onCommandsChanged) {
+      this.commandChangeSubscriptions.set(
+        bindingId,
+        adapter.onCommandsChanged(() => {
+          for (const key of this.commandLists.keys()) {
+            if (key.startsWith(`${bindingId}\0`)) this.commandLists.delete(key);
+          }
+        }),
+      );
+    }
+    if (adapter.onCatalogsChanged) {
+      this.catalogChangeSubscriptions.set(
+        bindingId,
+        adapter.onCatalogsChanged(() => this.invalidateBindingCatalogs(bindingId)),
+      );
+    }
+  }
+
+  private takeAdaptersFor(
+    providerKeys: ReadonlySet<string>,
+  ): Array<{ bindingId: string; providerKey: string; adapter: ConnectRuntimeAdapter }> {
+    const removed: Array<{ bindingId: string; providerKey: string; adapter: ConnectRuntimeAdapter }> = [];
+    for (const [bindingId, instance] of this.adaptersByBinding) {
+      if (!providerKeys.has(instance.providerKey)) continue;
+      removed.push({ bindingId, ...instance });
+      this.adaptersByBinding.delete(bindingId);
+      this.clearBinding(bindingId);
+    }
+    return removed;
+  }
+
+  private async unregisterRegistration(providerKeys: ReadonlySet<string>, registration: symbol): Promise<void> {
+    const ownedKeys = new Set<string>();
+    for (const providerKey of providerKeys) {
+      if (this.definitions.get(providerKey)?.registration !== registration) continue;
+      this.definitions.delete(providerKey);
+      ownedKeys.add(providerKey);
+    }
+    const closing = this.takeAdaptersFor(ownedKeys);
+    const results = await Promise.allSettled(closing.map(async ({ adapter }) => await adapter.close?.()));
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (failure) throw failure.reason;
+  }
+
+  private clearBinding(bindingId: string): void {
+    this.skillChangeSubscriptions.get(bindingId)?.();
+    this.commandChangeSubscriptions.get(bindingId)?.();
+    this.catalogChangeSubscriptions.get(bindingId)?.();
+    this.skillChangeSubscriptions.delete(bindingId);
+    this.commandChangeSubscriptions.delete(bindingId);
+    this.catalogChangeSubscriptions.delete(bindingId);
+    this.invalidateBindingCatalogs(bindingId);
   }
 
   private catalogKey(prefix: string, scope?: RuntimeCatalogScope): string {

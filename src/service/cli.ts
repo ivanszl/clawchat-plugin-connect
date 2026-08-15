@@ -6,6 +6,12 @@ import {
   type RemoveAgentBindingResult,
   removeAgentBinding as removeAgentBindingDefault,
 } from "../account/agent-binding-removal";
+import {
+  OWNER_RESET_CONFIRMATION_PHRASE,
+  OWNER_RESET_PREVIEW,
+  type ResetInstallationOwnerResult,
+  resetInstallationOwner as resetInstallationOwnerDefault,
+} from "../account/owner-reset";
 import { type AccountProfilePatch, updateAccountProfile as updateAccountProfileDefault } from "../account/profile";
 import {
   type AgentLivewareOperation,
@@ -20,6 +26,7 @@ import {
   toolJsonSchema,
   validateToolInput,
 } from "../agent/tool-catalog";
+import { PLUGIN_MANAGER_CONFIG_HEADER } from "../client-contract";
 import {
   defaultConfig,
   defaultConfigPath,
@@ -29,18 +36,29 @@ import {
   upsertAgentBinding,
 } from "../config";
 import { type ConnectStateStore, createStateStore, type ToolRequestRecord } from "../persistence/state";
+import { createPluginAgentBinding } from "../plugin/binding";
+import type { OfficialCatalogOptions, OfficialPluginDiscovery } from "../plugin/catalog";
+import { resolvePluginSource } from "../plugin/source";
+import {
+  type InstalledPluginLockEntry,
+  installPluginBundle,
+  listInstalledPlugins,
+  pluginDependents,
+  validatePluginConfiguration,
+} from "../plugin/store";
 import { ProjectCatalog } from "../projects/projects";
 import { createReleasedAgentBinding, releasedRuntimeAdapters } from "../runtime/released-adapters";
-import type {
-  AgentBindingConfig,
-  CodexAgentBindingConfig,
-  CodexApprovalPolicy,
-  CodexReasoningEffort,
-  CodexSandboxMode,
-  CodexWebSearchMode,
-  ConnectConfig,
-  LivewareAccessPolicy,
-  OutputVisibility,
+import {
+  type AgentBindingConfig,
+  type CodexAgentBindingConfig,
+  type CodexApprovalPolicy,
+  type CodexReasoningEffort,
+  type CodexSandboxMode,
+  type CodexWebSearchMode,
+  type ConnectConfig,
+  type LivewareAccessPolicy,
+  type OutputVisibility,
+  runtimeFamilyFor,
 } from "../types";
 import {
   BACKGROUND_SERVICE_PROCESS_ACTION,
@@ -57,9 +75,12 @@ export interface CliIo {
   writeStderr(value: string): void;
 }
 
+type PluginManagementFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 export interface ConnectCliDeps extends Partial<CliIo> {
   activateConnect?: typeof activateConnectDefault;
   removeAgentBinding?: typeof removeAgentBindingDefault;
+  resetInstallationOwner?: typeof resetInstallationOwnerDefault;
   updateAccountProfile?: typeof updateAccountProfileDefault;
   manageBackgroundService?: typeof manageBackgroundServiceDefault;
   startConnectService?: typeof startConnectServiceDefault;
@@ -67,6 +88,8 @@ export interface ConnectCliDeps extends Partial<CliIo> {
   openUrl?: (url: string) => Promise<void>;
   resolveLivewareExecutablePath?: typeof resolveLivewareExecutablePathDefault;
   updateConnect?: typeof updateConnectDefault;
+  pluginManagementFetch?: PluginManagementFetch;
+  pluginSourceOptions?: OfficialCatalogOptions;
   createStateStore?: typeof createStateStore;
   readStdin?: () => Promise<string>;
   toolRequestWaitMs?: number;
@@ -78,6 +101,9 @@ interface AgentCliOptions {
   profile?: string;
   runtimePath?: string;
   codexPath?: string;
+  plugin?: string;
+  capability?: string;
+  runtimeConfigJson?: string;
 }
 
 const HELP_TEXT = `${[
@@ -88,6 +114,14 @@ const HELP_TEXT = `${[
   "  agent add <id> --kind <kind> [--profile <profile>] [--runtime-path <path>] [--config <path>]",
   "  agent list [--config <path>]",
   "  agent remove <id> --yes [--config <path>]",
+  "  owner reset [--yes-reset-owner] [--config <path>]",
+  "  plugin install <local-path|npm:package[@version]|github:owner/repo[@release]> [--installation-config-json <object>] [--exposure-config-json <object>] [--config <path>]",
+  "  plugin update <id> [source] [--installation-config-json <object>] [--exposure-config-json <object>] [--config <path>]",
+  "  plugin setup [--non-interactive --select <id,id>] [--deselect <id,id>] [--config <path>]",
+  "  plugin enable|disable <id> [--config <path>]",
+  "  plugin remove <id> [--force] [--config <path>]",
+  "  plugin select <id> <version> [--integrity <sri>] [--config <path>]",
+  "  plugin list [--config <path>]",
   "  project add <absolute-path> [--config <path>]",
   "  project list [--config <path>]",
   "  project remove <workspace-id> [--config <path>]",
@@ -133,6 +167,16 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     deps.removeAgentBinding ?? removeAgentBindingDefault,
   );
   if (nestedAgentResult !== null) return nestedAgentResult;
+  const ownerResult = await maybeRunOwnerCommand(argv, io, deps);
+  if (ownerResult !== null) return ownerResult;
+  const pluginResult = await maybeRunPluginCommand(
+    argv,
+    io,
+    deps.pluginManagementFetch ?? fetch,
+    deps.readStdin ?? readStdinDefault,
+    deps.pluginSourceOptions,
+  );
+  if (pluginResult !== null) return pluginResult;
   const nestedProjectResult = await maybeRunNestedProjectCommand(argv, io);
   if (nestedProjectResult !== null) return nestedProjectResult;
   const nestedProfileResult = await maybeRunNestedProfileCommand(
@@ -322,6 +366,31 @@ async function maybeRunSkillsCommand(argv: string[], io: CliIo): Promise<number 
     io.writeStdout(
       `${JSON.stringify({ installed: result.skills, targetRoot: result.targetRoot, forceOverwritten: true })}\n`,
     );
+    return 0;
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+async function maybeRunOwnerCommand(argv: string[], io: CliIo, deps: ConnectCliDeps): Promise<number | null> {
+  if (argv[0] !== "owner") return null;
+  try {
+    if (argv[1] !== "reset") {
+      throw new Error("owner action must be: reset");
+    }
+    io.writeStdout(OWNER_RESET_PREVIEW);
+    if (!argv.includes("--yes-reset-owner")) {
+      io.writeStdout(`Type ${OWNER_RESET_CONFIRMATION_PHRASE} to continue: `);
+      const confirmation = (await (deps.readStdin ?? readStdinDefault)()).trim();
+      if (confirmation !== OWNER_RESET_CONFIRMATION_PHRASE) {
+        throw new Error("Owner Reset cancelled; confirmation phrase did not match");
+      }
+    }
+    const result = await (deps.resetInstallationOwner ?? resetInstallationOwnerDefault)({
+      configPath: optionValue(argv, "--config"),
+    });
+    io.writeStdout(formatOwnerReset(result));
     return 0;
   } catch (error) {
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -590,6 +659,245 @@ async function openUrlDefault(url: string): Promise<void> {
   if (code !== 0) throw new Error(`Could not open the browser; use the printed Connect Client URL (exit ${code})`);
 }
 
+class PluginManagerUnavailableError extends Error {}
+
+async function maybeRunPluginCommand(
+  argv: string[],
+  io: CliIo,
+  fetchPluginManager: PluginManagementFetch,
+  readStdin: () => Promise<string>,
+  sourceOptions: OfficialCatalogOptions = {},
+): Promise<number | null> {
+  if (argv[0] !== "plugin") return null;
+  const action = argv[1];
+  const configPath = resolve(optionValue(argv, "--config") ?? defaultConfigPath());
+  try {
+    const config = await loadConfig(configPath);
+    const request = async <T>(path: string, method = "GET", body?: unknown): Promise<T> => {
+      const hostname = config.clientHost === "0.0.0.0" ? "127.0.0.1" : config.clientHost;
+      const origin = `http://${hostname}:${config.clientPort}`;
+      let response: Response;
+      try {
+        response = await fetchPluginManager(`${origin}/client/v1/plugins${path}`, {
+          method,
+          headers: {
+            Origin: origin,
+            [PLUGIN_MANAGER_CONFIG_HEADER]: configPath,
+            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+      } catch (error) {
+        throw new PluginManagerUnavailableError("The running Connect Plugin manager is unavailable", { cause: error });
+      }
+      const value: unknown = await response.json();
+      if (!response.ok) {
+        const detail =
+          value !== null &&
+          typeof value === "object" &&
+          "error" in value &&
+          value.error !== null &&
+          typeof value.error === "object" &&
+          "message" in value.error &&
+          typeof value.error.message === "string"
+            ? value.error.message
+            : undefined;
+        throw new Error(detail || `Plugin management request failed with HTTP ${response.status}`);
+      }
+      return value as T;
+    };
+    const sourceConfiguration = (source?: string) => ({
+      ...(source ? { source } : {}),
+      installationConfiguration: parseJsonObjectOption(
+        optionValue(argv, "--installation-config-json"),
+        "--installation-config-json",
+      ),
+      exposureConfigurations: parseJsonObjectOption(
+        optionValue(argv, "--exposure-config-json"),
+        "--exposure-config-json",
+      ),
+    });
+
+    if (action === "install") {
+      const sourceArgument = argv[2];
+      if (!sourceArgument || sourceArgument.startsWith("--"))
+        throw new Error("plugin install requires a Plugin source");
+      const source = cliPluginSource(sourceArgument);
+      let installed: InstalledPluginLockEntry;
+      try {
+        installed = await request("", "POST", sourceConfiguration(source));
+      } catch (error) {
+        if (!(error instanceof PluginManagerUnavailableError)) throw error;
+        const resolved = await resolvePluginSource(source, sourceOptions);
+        installed = await installPluginBundle({
+          configPath,
+          ...sourceConfiguration(),
+          source: resolved.source,
+          bundle: resolved.bundle,
+          target: resolved.target,
+        });
+      }
+      io.writeStdout(formatPluginOperation("Installed", installed));
+      return 0;
+    }
+    if (action === "setup") {
+      const discovery = await request<OfficialPluginDiscovery>("/official");
+      for (const diagnostic of discovery.diagnostics) io.writeStderr(`${diagnostic}\n`);
+      if (discovery.candidates.length === 0) {
+        io.writeStdout(
+          "No official Plugins are available; direct npm, GitHub, and local installation remain available.\n",
+        );
+        return 0;
+      }
+      const initiallySelected = new Set(
+        discovery.candidates.filter((candidate) => candidate.selected).map((candidate) => candidate.pluginId),
+      );
+      io.writeStdout(
+        `${discovery.candidates
+          .map(
+            (candidate) =>
+              `${candidate.selected ? "[x]" : "[ ]"} ${candidate.pluginId}@${candidate.version ?? "unresolved"} — ${
+                candidate.diagnostic ??
+                (candidate.detected ? "detected compatible runtime" : "not detected; selectable")
+              }`,
+          )
+          .join("\n")}\n`,
+      );
+      let selected: Set<string>;
+      const explicit = optionValue(argv, "--select");
+      if (argv.includes("--non-interactive")) {
+        if (explicit === undefined) throw new Error("plugin setup --non-interactive requires --select <id,id>");
+        selected = commaSeparatedPluginIds(explicit);
+      } else {
+        io.writeStdout(
+          `Select official Plugin IDs separated by commas (Enter keeps detected selections: ${[...initiallySelected].join(",") || "none"}): `,
+        );
+        const answer = (await readStdin()).trim();
+        selected = answer ? commaSeparatedPluginIds(answer) : initiallySelected;
+      }
+      for (const pluginId of commaSeparatedPluginIds(optionValue(argv, "--deselect") ?? "")) selected.delete(pluginId);
+      const available = new Set(discovery.candidates.map((candidate) => candidate.pluginId));
+      const unknown = [...selected].filter((pluginId) => !available.has(pluginId));
+      if (unknown.length > 0) throw new Error(`Official Plugin selection is not in the Catalog: ${unknown.join(", ")}`);
+      const installed = await request<InstalledPluginLockEntry[]>("/official/setup", "POST", {
+        pluginIds: [...selected],
+      });
+      for (const entry of installed) io.writeStdout(formatPluginOperation("Installed", entry));
+      if (installed.length === 0) io.writeStdout("No official Plugins selected.\n");
+      return 0;
+    }
+    if (action === "list") {
+      let installed: InstalledPluginLockEntry[];
+      try {
+        installed = await request("");
+      } catch (error) {
+        if (!(error instanceof PluginManagerUnavailableError)) throw error;
+        installed = await listInstalledPlugins(configPath);
+      }
+      if (installed.length === 0) {
+        io.writeStdout("No Plugins installed.\n");
+        return 0;
+      }
+      io.writeStdout(
+        `${installed
+          .map((plugin) => {
+            const dependents = pluginDependents(config, plugin.pluginId);
+            return [
+              `- ${plugin.pluginId}@${plugin.version} [${plugin.status}]`,
+              `  source: ${formatPluginSource(plugin.source)}`,
+              `  target: ${plugin.target}`,
+              `  integrity: ${plugin.integrity}`,
+              `  capabilities: ${formatPluginCapabilities(plugin)}`,
+              `  dependent Bindings: ${dependents.length > 0 ? dependents.join(", ") : "none"}`,
+              `  retained versions: ${
+                plugin.retainedVersions.length > 0
+                  ? plugin.retainedVersions.map((version) => `${version.version} (${version.integrity})`).join(", ")
+                  : "none"
+              }`,
+              ...(plugin.error ? [`  diagnostic: ${plugin.error}`] : []),
+            ].join("\n");
+          })
+          .join("\n")}\n`,
+      );
+      return 0;
+    }
+
+    const pluginId = argv[2];
+    if (!pluginId || pluginId.startsWith("--")) throw new Error(`plugin ${action ?? "operation"} requires a Plugin ID`);
+    let managed: InstalledPluginLockEntry;
+    if (action === "update") {
+      const source = argv[3] && !argv[3]!.startsWith("--") ? cliPluginSource(argv[3]!) : undefined;
+      managed = await request(`/${encodeURIComponent(pluginId)}/update`, "POST", sourceConfiguration(source));
+      io.writeStdout(formatPluginOperation("Updated", managed));
+      return 0;
+    }
+    if (action === "enable" || action === "disable") {
+      managed = await request(`/${encodeURIComponent(pluginId)}/${action}`, "POST", {});
+      io.writeStdout(formatPluginOperation(action === "enable" ? "Enabled" : "Disabled", managed));
+      return 0;
+    }
+    if (action === "remove") {
+      const force = argv.includes("--force");
+      managed = await request(`/${encodeURIComponent(pluginId)}${force ? "?force=1" : ""}`, "DELETE");
+      io.writeStdout(formatPluginOperation("Removed", managed));
+      return 0;
+    }
+    if (action === "select") {
+      const version = argv[3];
+      if (!version || version.startsWith("--")) throw new Error("plugin select requires a retained version");
+      managed = await request(`/${encodeURIComponent(pluginId)}/select`, "POST", {
+        version,
+        integrity: optionValue(argv, "--integrity"),
+      });
+      io.writeStdout(formatPluginOperation("Selected", managed));
+      return 0;
+    }
+    throw new Error("plugin action must be one of: install, update, setup, enable, disable, remove, select, list");
+  } catch (error) {
+    io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+}
+
+function formatPluginOperation(verb: string, installed: InstalledPluginLockEntry): string {
+  return [
+    `${verb} Plugin ${installed.pluginId}@${installed.version}`,
+    `Source: ${formatPluginSource(installed.source)}`,
+    `Target: ${installed.target}`,
+    `Integrity: ${installed.integrity}`,
+    `Capabilities: ${formatPluginCapabilities(installed)}`,
+    "",
+  ].join("\n");
+}
+
+function cliPluginSource(value: string): string {
+  if (value.startsWith("npm:") || value.startsWith("github:") || /^https:\/\/github\.com\//u.test(value)) return value;
+  const path = resolve(value.startsWith("local:") ? value.slice(6) : value);
+  return `local:${path}`;
+}
+
+function commaSeparatedPluginIds(value: string): Set<string> {
+  const ids = value
+    .split(",")
+    .map((pluginId) => pluginId.trim())
+    .filter(Boolean);
+  return new Set(ids);
+}
+
+function formatPluginSource(source: InstalledPluginLockEntry["source"]): string {
+  if (source.type === "local") return `local:${source.path}`;
+  if (source.type === "npm") return `npm:${source.package}@${source.version} (${source.registry})`;
+  return `github:${source.repository}@${source.release}`;
+}
+
+function formatPluginCapabilities(installed: InstalledPluginLockEntry): string {
+  return installed.manifest.capabilities
+    .map((capability) =>
+      capability.type === "runtime" ? `${capability.id} (runtime:${capability.family})` : `${capability.id} (exposure)`,
+    )
+    .join(", ");
+}
+
 async function maybeRunNestedAgentCommand(
   argv: string[],
   io: CliIo,
@@ -598,20 +906,23 @@ async function maybeRunNestedAgentCommand(
   if (argv[0] !== "agent") return null;
   const action = argv[1];
   const id = argv[2];
-  const configPath = optionValue(argv, "--config");
+  const configPath = resolve(optionValue(argv, "--config") ?? defaultConfigPath());
   try {
     if (action === "add") {
       if (!id) throw new Error("agent id is required");
-      const config = upsertAgentBinding(
-        await loadConfig(configPath),
-        id,
-        agentBindingFromCli({
+      const binding = await validatedAgentBindingFromCli(
+        {
           kind: optionValue(argv, "--kind"),
           profile: optionValue(argv, "--profile"),
           runtimePath: optionValue(argv, "--runtime-path"),
           codexPath: optionValue(argv, "--codex-path"),
-        }),
+          plugin: optionValue(argv, "--plugin"),
+          capability: optionValue(argv, "--capability"),
+          runtimeConfigJson: optionValue(argv, "--runtime-config-json"),
+        },
+        configPath,
       );
+      const config = upsertAgentBinding(await loadConfig(configPath), id, binding);
       io.writeStdout(`Updated agent ${id}: ${await saveConfig(config, configPath)}\n`);
       return 0;
     }
@@ -780,7 +1091,70 @@ function isBackgroundServiceAction(value: string | undefined): value is Backgrou
   );
 }
 
+async function validatedAgentBindingFromCli(options: AgentCliOptions, configPath: string): Promise<AgentBindingConfig> {
+  const binding = agentBindingFromCli(options);
+  if (binding.kind !== "plugin") return binding;
+
+  const installed = (await listInstalledPlugins(configPath)).find(
+    (candidate) => candidate.pluginId === binding.runtime.pluginId,
+  );
+  if (!installed) throw new Error(`Plugin is not installed: ${binding.runtime.pluginId}`);
+  if (installed.status !== "active") {
+    const diagnostic = installed.error ? `: ${installed.error}` : "";
+    throw new Error(`Plugin ${installed.pluginId} is not active (status: ${installed.status})${diagnostic}`);
+  }
+  const capability = installed.manifest.capabilities.find((candidate) => candidate.id === binding.runtime.capabilityId);
+  if (!capability) {
+    throw new Error(`Plugin ${installed.pluginId} has no capability ${binding.runtime.capabilityId}`);
+  }
+  if (capability.type !== "runtime") {
+    throw new Error(
+      `Plugin ${installed.pluginId} capability ${binding.runtime.capabilityId} is not a Runtime capability`,
+    );
+  }
+  if (capability.family !== binding.runtimeFamily) {
+    throw new Error(
+      `Plugin ${installed.pluginId}/${capability.id} Runtime family is ${capability.family}, not requested ${binding.runtimeFamily}`,
+    );
+  }
+  return {
+    ...binding,
+    runtimeConfig: validatePluginConfiguration(
+      capability.configurationSchema,
+      binding.runtimeConfig,
+      `Plugin ${installed.pluginId}/${capability.id} Runtime configuration`,
+    ),
+  };
+}
+
 function agentBindingFromCli(options: AgentCliOptions): AgentBindingConfig {
+  if (options.plugin || options.capability || options.runtimeConfigJson) {
+    if (!options.kind?.trim() || !options.plugin?.trim() || !options.capability?.trim()) {
+      throw new Error(
+        "Plugin Agent Binding requires --kind <runtime-family>, --plugin <plugin-id>, and --capability <capability-id>",
+      );
+    }
+    if (options.profile || options.runtimePath || options.codexPath) {
+      throw new Error("Plugin Agent Binding configuration belongs in --runtime-config-json");
+    }
+    let configuration: unknown = {};
+    if (options.runtimeConfigJson) {
+      try {
+        configuration = JSON.parse(options.runtimeConfigJson) as unknown;
+      } catch {
+        throw new Error("--runtime-config-json must be a JSON object");
+      }
+    }
+    if (!configuration || typeof configuration !== "object" || Array.isArray(configuration)) {
+      throw new Error("--runtime-config-json must be a JSON object");
+    }
+    return createPluginAgentBinding({
+      runtimeFamily: options.kind,
+      pluginId: options.plugin,
+      capabilityId: options.capability,
+      configuration: configuration as Record<string, unknown>,
+    });
+  }
   try {
     const binding = createReleasedAgentBinding(options.kind, {
       executablePath: options.runtimePath ?? options.codexPath,
@@ -802,6 +1176,9 @@ function agentBindingFromCli(options: AgentCliOptions): AgentBindingConfig {
 
 function formatAgentListRow(id: string, binding: AgentBindingConfig, isDefault: boolean): string {
   const selected = isDefault ? " (default)" : "";
+  if (binding.kind === "plugin") {
+    return `- ${id}${selected}: ${binding.runtimeFamily} (${binding.runtime.pluginId}/${binding.runtime.capabilityId})`;
+  }
   const executablePath =
     binding.executablePathOverride ?? (binding.kind === "codex" ? binding.codexPathOverride : undefined);
   const profile = binding.kind === "workbuddy" ? `/${binding.profile}` : "";
@@ -811,6 +1188,30 @@ function formatAgentListRow(id: string, binding: AgentBindingConfig, isDefault: 
 function optionValue(argv: string[], name: string): string | undefined {
   const index = argv.indexOf(name);
   return index >= 0 ? argv[index + 1] : undefined;
+}
+
+function parseJsonObjectOption(value: string | undefined, name: string): Record<string, unknown> {
+  if (value === undefined) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    throw new Error(`${name} must be a JSON object`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${name} must be a JSON object`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function formatOwnerReset(result: ResetInstallationOwnerResult): string {
+  return `${[
+    result.ownerUserId
+      ? `Reset Installation Owner ${result.ownerUserId}.`
+      : "Reset ambiguous legacy Installation Owner state.",
+    `removed Agent Bindings: ${result.removedBindings.length > 0 ? result.removedBindings.join(", ") : "none"}`,
+    `Connect is unowned: ${result.configPath}`,
+  ].join("\n")}\n`;
 }
 
 function formatActivation(result: ActivateConnectResult): string {
@@ -837,7 +1238,7 @@ function formatStatus(
   return `${[
     "ClawChat Connect status",
     `agent: ${agentId ?? "not selected"}`,
-    ...(binding ? [`runtime adapter: ${binding.kind}${profileId ? `/${profileId}` : ""}`] : []),
+    ...(binding ? [`runtime adapter: ${runtimeFamilyFor(binding)}${profileId ? `/${profileId}` : ""}`] : []),
     ...(profileMetadata
       ? [
           `supported tuple: ${profileMetadata.displayName} ${profileMetadata.applicationVersion} / ${profileMetadata.embeddedRuntime.name} ${profileMetadata.embeddedRuntime.version} / ${profileMetadata.protocol.name} v${profileMetadata.protocol.version}`,

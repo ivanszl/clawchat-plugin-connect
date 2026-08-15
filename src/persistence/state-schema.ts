@@ -3,6 +3,13 @@ import type { SqliteDb } from "./sqlite";
 import { nullableString, stringValue } from "./state-codecs";
 import type { SessionRefTarget } from "./state-types";
 
+export const AMBIGUOUS_LEGACY_OWNER_DIAGNOSTIC =
+  "Connect found legacy ClawChat activations for multiple owners without an Installation Owner. Startup is blocked to prevent cross-owner Agent Bindings. Run `clawchat-connect owner reset` to purge legacy owner-scoped state, then activate the intended owner again.";
+
+export interface StateSchemaMigrationOptions {
+  allowAmbiguousLegacyOwnerReset?: boolean;
+}
+
 export async function createStateSchema(db: SqliteDb): Promise<void> {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS activations(
@@ -17,6 +24,11 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
       activated_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       PRIMARY KEY(platform, local_agent_id)
+    );
+    CREATE TABLE IF NOT EXISTS installation_owner(
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      owner_user_id TEXT NOT NULL,
+      established_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS device_state(
       id INTEGER PRIMARY KEY CHECK(id = 1),
@@ -50,6 +62,7 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
       reasoning_effort TEXT,
       session_options_json TEXT NOT NULL DEFAULT '{}',
       has_messages INTEGER NOT NULL DEFAULT 0,
+      binding_locked INTEGER NOT NULL DEFAULT 0,
       is_current INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -272,7 +285,7 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
   `);
 }
 
-export async function migrateStateSchema(db: SqliteDb): Promise<void> {
+export async function migrateStateSchema(db: SqliteDb, options: StateSchemaMigrationOptions = {}): Promise<boolean> {
   const runtimeStatusColumns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_statuses)");
   if (!runtimeStatusColumns.some((column) => column.name === "runtime_availability"))
     await db.exec(
@@ -300,6 +313,27 @@ export async function migrateStateSchema(db: SqliteDb): Promise<void> {
     );
     await db.exec("DROP TABLE liveware_exposure");
   }
+  await db.run(
+    `INSERT INTO installation_owner(id, owner_user_id, established_at)
+     SELECT 1, MIN(TRIM(owner_user_id)), MAX(updated_at)
+       FROM activations
+      WHERE platform = ? AND TRIM(owner_user_id) <> ''
+     HAVING COUNT(DISTINCT TRIM(owner_user_id)) = 1
+        AND NOT EXISTS (SELECT 1 FROM installation_owner WHERE id = 1)`,
+    PLATFORM_ID,
+  );
+  const legacyOwnerState = await db.get<{ installation_owner: string | null; owner_count: number }>(
+    `SELECT (SELECT owner_user_id FROM installation_owner WHERE id = 1) AS installation_owner,
+            COUNT(DISTINCT TRIM(owner_user_id)) AS owner_count
+       FROM activations
+      WHERE platform = ? AND TRIM(owner_user_id) <> ''`,
+    PLATFORM_ID,
+  );
+  const hasAmbiguousLegacyOwners =
+    !nullableString(legacyOwnerState?.installation_owner) && (legacyOwnerState?.owner_count ?? 0) > 1;
+  if (hasAmbiguousLegacyOwners && !options.allowAmbiguousLegacyOwnerReset) {
+    throw new Error(AMBIGUOUS_LEGACY_OWNER_DIAGNOSTIC);
+  }
   const outputVisibilityColumns = await db.all<{ name: string }[]>("PRAGMA table_info(output_visibility)");
   if (!outputVisibilityColumns.some((column) => column.name === "local_agent_id")) {
     await db.exec(`
@@ -320,26 +354,94 @@ export async function migrateStateSchema(db: SqliteDb): Promise<void> {
     `);
   }
   const columns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_sessions)");
-  if (!columns.some((column) => column.name === "project_id"))
-    await db.exec("ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT REFERENCES projects(project_id)");
-  if (!columns.some((column) => column.name === "has_messages"))
-    await db.exec("ALTER TABLE runtime_sessions ADD COLUMN has_messages INTEGER NOT NULL DEFAULT 0");
-  if (!columns.some((column) => column.name === "model"))
-    await db.exec("ALTER TABLE runtime_sessions ADD COLUMN model TEXT");
-  if (!columns.some((column) => column.name === "reasoning_effort"))
-    await db.exec("ALTER TABLE runtime_sessions ADD COLUMN reasoning_effort TEXT");
-  if (!columns.some((column) => column.name === "session_options_json"))
-    await db.exec("ALTER TABLE runtime_sessions ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
+  const requiresLegacyEmptySessionMigration = !columns.some((column) => column.name === "binding_locked");
+  const intentColumns = await db.all<{ name: string }[]>("PRAGMA table_info(session_intents)");
+  if (requiresLegacyEmptySessionMigration) {
+    db.transaction((run) => {
+      if (!columns.some((column) => column.name === "project_id"))
+        run("ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT REFERENCES projects(project_id)");
+      if (!columns.some((column) => column.name === "has_messages"))
+        run("ALTER TABLE runtime_sessions ADD COLUMN has_messages INTEGER NOT NULL DEFAULT 0");
+      if (!columns.some((column) => column.name === "model")) run("ALTER TABLE runtime_sessions ADD COLUMN model TEXT");
+      if (!columns.some((column) => column.name === "reasoning_effort"))
+        run("ALTER TABLE runtime_sessions ADD COLUMN reasoning_effort TEXT");
+      if (!columns.some((column) => column.name === "session_options_json"))
+        run("ALTER TABLE runtime_sessions ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
+      if (!intentColumns.some((column) => column.name === "model"))
+        run("ALTER TABLE session_intents ADD COLUMN model TEXT");
+      if (!intentColumns.some((column) => column.name === "reasoning_effort"))
+        run("ALTER TABLE session_intents ADD COLUMN reasoning_effort TEXT");
+      if (!intentColumns.some((column) => column.name === "session_options_json"))
+        run("ALTER TABLE session_intents ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
+      run("ALTER TABLE runtime_sessions ADD COLUMN binding_locked INTEGER NOT NULL DEFAULT 0");
+      run(
+        `UPDATE runtime_sessions AS rs SET has_messages = 1
+          WHERE has_messages = 0
+            AND (
+              runtime_session_id IS NOT NULL
+              OR EXISTS (
+                SELECT 1
+                  FROM clawchat_messages AS message
+                 WHERE message.local_agent_id = rs.agent_id
+                   AND message.chat_id = rs.chat_id
+                   AND message.direction = 'inbound'
+                   AND message.kind = 'message'
+                   AND COALESCE(message.text, '') NOT LIKE '/%'
+                   AND message.created_at >= rs.created_at
+                   AND NOT EXISTS (
+                     SELECT 1
+                       FROM runtime_sessions AS newer
+                      WHERE newer.chat_id = rs.chat_id
+                        AND newer.agent_id = rs.agent_id
+                        AND newer.created_at > rs.created_at
+                        AND newer.created_at <= message.created_at
+                   )
+              )
+            )`,
+      );
+      run("UPDATE runtime_sessions SET binding_locked = 1 WHERE has_messages = 1 OR runtime_session_id IS NOT NULL");
+      run(
+        `INSERT INTO session_intents(
+           chat_id, agent_id, project_id, name, mode, model, reasoning_effort,
+           session_options_json, created_at, updated_at
+         )
+         SELECT chat_id, agent_id, project_id, name, mode, model, reasoning_effort,
+                session_options_json, created_at, updated_at
+           FROM runtime_sessions
+          WHERE is_current = 1 AND has_messages = 0 AND runtime_session_id IS NULL
+         ON CONFLICT(chat_id, agent_id) DO UPDATE SET
+           project_id = excluded.project_id,
+           name = excluded.name,
+           mode = excluded.mode,
+           model = excluded.model,
+           reasoning_effort = excluded.reasoning_effort,
+           session_options_json = excluded.session_options_json,
+           created_at = excluded.created_at,
+           updated_at = excluded.updated_at`,
+      );
+      run("DELETE FROM runtime_sessions WHERE has_messages = 0 AND runtime_session_id IS NULL");
+    });
+  } else {
+    if (!columns.some((column) => column.name === "project_id"))
+      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT REFERENCES projects(project_id)");
+    if (!columns.some((column) => column.name === "has_messages"))
+      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN has_messages INTEGER NOT NULL DEFAULT 0");
+    if (!columns.some((column) => column.name === "model"))
+      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN model TEXT");
+    if (!columns.some((column) => column.name === "reasoning_effort"))
+      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN reasoning_effort TEXT");
+    if (!columns.some((column) => column.name === "session_options_json"))
+      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
+    if (!intentColumns.some((column) => column.name === "model"))
+      await db.exec("ALTER TABLE session_intents ADD COLUMN model TEXT");
+    if (!intentColumns.some((column) => column.name === "reasoning_effort"))
+      await db.exec("ALTER TABLE session_intents ADD COLUMN reasoning_effort TEXT");
+    if (!intentColumns.some((column) => column.name === "session_options_json"))
+      await db.exec("ALTER TABLE session_intents ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
+  }
   await db.exec(
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_sessions_identity ON runtime_sessions(chat_id, agent_id, session_id)",
   );
-  const intentColumns = await db.all<{ name: string }[]>("PRAGMA table_info(session_intents)");
-  if (!intentColumns.some((column) => column.name === "model"))
-    await db.exec("ALTER TABLE session_intents ADD COLUMN model TEXT");
-  if (!intentColumns.some((column) => column.name === "reasoning_effort"))
-    await db.exec("ALTER TABLE session_intents ADD COLUMN reasoning_effort TEXT");
-  if (!intentColumns.some((column) => column.name === "session_options_json"))
-    await db.exec("ALTER TABLE session_intents ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
   const messageColumns = await db.all<{ name: string }[]>("PRAGMA table_info(clawchat_messages)");
   if (!messageColumns.some((column) => column.name === "rejected_at"))
     await db.exec("ALTER TABLE clawchat_messages ADD COLUMN rejected_at INTEGER");
@@ -366,19 +468,15 @@ export async function migrateStateSchema(db: SqliteDb): Promise<void> {
     await db.exec("ALTER TABLE tool_requests ADD COLUMN turn_id TEXT");
   if (!toolRequestColumns.some((column) => column.name === "origin"))
     await db.exec("ALTER TABLE tool_requests ADD COLUMN origin TEXT");
+  if (!requiresLegacyEmptySessionMigration) {
+    await db.run(
+      `UPDATE runtime_sessions AS rs SET has_messages = 1 WHERE has_messages = 0 AND (runtime_session_id IS NOT NULL OR EXISTS (SELECT 1 FROM clawchat_messages AS message WHERE message.local_agent_id = rs.agent_id AND message.chat_id = rs.chat_id AND message.direction = 'inbound' AND message.kind = 'message' AND COALESCE(message.text, '') NOT LIKE '/%' AND message.created_at >= rs.created_at AND NOT EXISTS (SELECT 1 FROM runtime_sessions AS newer WHERE newer.chat_id = rs.chat_id AND newer.agent_id = rs.agent_id AND newer.created_at > rs.created_at AND newer.created_at <= message.created_at)))`,
+    );
+  }
   await db.run(
-    `UPDATE runtime_sessions AS rs SET has_messages = 1 WHERE has_messages = 0 AND (runtime_session_id IS NOT NULL OR EXISTS (SELECT 1 FROM clawchat_messages AS message WHERE message.local_agent_id = rs.agent_id AND message.chat_id = rs.chat_id AND message.direction = 'inbound' AND message.kind = 'message' AND COALESCE(message.text, '') NOT LIKE '/%' AND message.created_at >= rs.created_at AND NOT EXISTS (SELECT 1 FROM runtime_sessions AS newer WHERE newer.chat_id = rs.chat_id AND newer.agent_id = rs.agent_id AND newer.created_at > rs.created_at AND newer.created_at <= message.created_at)))`,
+    "UPDATE runtime_sessions SET binding_locked = 1 WHERE binding_locked = 0 AND (has_messages = 1 OR runtime_session_id IS NOT NULL)",
   );
-  const now = Date.now();
-  await db.run(
-    `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, model, reasoning_effort, session_options_json, created_at, updated_at) SELECT chat_id, agent_id, project_id, name, mode, model, reasoning_effort, session_options_json, ?, ? FROM runtime_sessions WHERE is_current = 1 AND has_messages = 0 ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, session_options_json = excluded.session_options_json, updated_at = excluded.updated_at`,
-    now,
-    now,
-  );
-  await db.run(
-    `DELETE FROM session_refs WHERE runtime_session_id IS NULL AND EXISTS (SELECT 1 FROM runtime_sessions AS session WHERE session.chat_id = session_refs.chat_id AND session.agent_id = session_refs.agent_id AND session.session_id = session_refs.session_id AND session.has_messages = 0)`,
-  );
-  await db.run("DELETE FROM runtime_sessions WHERE has_messages = 0 AND runtime_session_id IS NULL");
+  return hasAmbiguousLegacyOwners;
 }
 
 export async function backfillSessionRefs(

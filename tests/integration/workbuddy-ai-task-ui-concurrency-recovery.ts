@@ -1,10 +1,9 @@
 import { realpath } from "node:fs/promises";
 import type { RuntimeActivity } from "../../src/runtime/types";
-import { createWorkBuddyRuntimeAdapter } from "../../src/runtime/workbuddy-adapter";
 import { discoverWorkBuddyTask } from "../../src/runtime/workbuddy-task-discovery";
 import { createWorkBuddyMacosDiscoverySource } from "../../src/runtime/workbuddy-task-discovery-macos";
 import { inspectInstalledWorkBuddyTaskTranscript } from "../../src/runtime/workbuddy-task-transcript";
-import type { WorkBuddyAgentBindingConfig } from "../../src/types";
+import { createInstalledWorkBuddyPluginRuntime } from "./workbuddy-installed-plugin";
 import { selectInstalledWorkBuddyNativeTask } from "./workbuddy-native-ui";
 import {
   requiredWorkBuddyTestEnv,
@@ -46,12 +45,12 @@ const uiOriginatedAssistantMarker = `${uiOriginatedAssistantMarkerSeed}_${runMar
 const backgroundAttachmentMarker = `${runMarker}_BACKGROUND_ATTACHMENT`;
 const probeMarker = `${runMarker}_NOT_TRANSMITTED`;
 const turnMarker = `${runMarker}_CONTINUED`;
-const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: workBuddyTestProfile };
+const installedPlugin = await createInstalledWorkBuddyPluginRuntime(workBuddyTestProfile);
+const { binding, runtimeAdapters } = installedPlugin;
 const discoverySource = createWorkBuddyMacosDiscoverySource(workBuddyTestProfile);
 const discoveryInput = { profile: workBuddyTestProfile, taskId, expectedWorkspace: canonicalWorkspace };
 const before = await discoverWorkBuddyTask(discoveryInput, discoverySource);
-const adapter = createWorkBuddyRuntimeAdapter();
-const session = await adapter.start(binding, {
+const session = await runtimeAdapters.start(binding, {
   agentId: `${workBuddyTestBindingId}-recovery`,
   chatId: "client-installed-recovery",
   sessionId: "client-installed-recovery",
@@ -183,7 +182,7 @@ try {
   ) {
     throw new Error("The attached UI-originated turn was not recovered exclusively as projection-only activity");
   }
-  const afterProbe = await adapter.readActivity?.(binding, taskId);
+  const afterProbe = await runtimeAdapters.readActivity(binding, taskId);
   if (afterProbe?.activities.some((activity) => activity.kind === "user" && activity.text.includes(probeMarker))) {
     throw new Error("The uncommitted restart probe appeared in authoritative WorkBuddy history");
   }
@@ -209,7 +208,7 @@ try {
   if (!completedAssistant?.text.includes(priorAssistantMarker) || !completedAssistant.text.includes(turnMarker)) {
     throw new Error("The recovered WorkBuddy response did not continue the same native Task context");
   }
-  const replay = await adapter.readActivity?.(binding, taskId);
+  const replay = await runtimeAdapters.readActivity(binding, taskId);
   if (!replay?.activities.some((activity) => activity.kind === "user" && activity.text.includes(turnMarker))) {
     throw new Error("The post-restart Connect prompt was not persisted to the same WorkBuddy Task");
   }
@@ -248,7 +247,7 @@ try {
     await selectInstalledWorkBuddyNativeTask(workBuddyTestCompatibility, uiRestoreTaskTitle);
   } finally {
     await session.close();
-    await adapter.close?.();
+    await installedPlugin.close();
   }
 }
 

@@ -26,6 +26,7 @@ import {
 } from "../../client-interface/query-options";
 import { localizedClientError, settingsClientErrorKeys, useClientTranslator } from "../../i18n/client-i18n";
 import { HostDirectoryPicker, projectDirectoryLabel } from "../projects/HostDirectoryPicker";
+import { PluginSettings } from "./PluginSettings";
 
 type ProjectListItem = { workspaceId: string; name: string; rootPath: string };
 
@@ -48,10 +49,17 @@ export function SettingsPage() {
               <Heading level={1}>{t("@connect.settings.title")}</Heading>
               <Text type="supporting">{t("@connect.settings.description")}</Text>
             </VStack>
+            <Banner
+              status="info"
+              title={t("@connect.settings.continuity.title")}
+              description={t("@connect.settings.continuity.description")}
+              container="section"
+            />
             <VStack gap={4}>
               {bootstrap.data.bindings.map((binding) => (
                 <BindingSettings key={binding.bindingId} binding={binding} />
               ))}
+              <PluginSettings />
               <ProjectSettings
                 projects={projects.data ?? []}
                 isLoading={projects.isPending}

@@ -64,6 +64,9 @@ export interface RuntimeLifecycle {
 export interface SessionLifecycle {
   capabilities(): Promise<RuntimeLifecycleCapabilities>;
   targetForTurn(turnOrigin: TurnOrigin): Promise<TurnTarget>;
+  bindingLock(): Promise<"accepted-turn" | "runtime-thread" | null>;
+  changeBinding(bindingId: string): Promise<void>;
+  continueWith(bindingId: string): Promise<SessionTarget>;
   attachRuntimeThread(runtimeThreadId: string | null): Promise<void>;
   changeModel(model: string | null, reasoningEffort: string | null): Promise<void>;
   changeSessionOptions(sessionOptions: Record<string, string>): Promise<void>;
@@ -76,7 +79,12 @@ export interface SessionLifecycle {
 
 export class SessionLifecycleError extends Error {
   constructor(
-    readonly code: "session-not-found" | "session-state-conflict" | "session-action-unsupported",
+    readonly code:
+      | "session-not-found"
+      | "session-state-conflict"
+      | "session-action-unsupported"
+      | "session-binding-locked"
+      | "session-project-required",
     message: string,
   ) {
     super(message);
@@ -86,6 +94,7 @@ export class SessionLifecycleError extends Error {
 export interface SessionContinuityOptions {
   stateStore: ConnectStateStore;
   sessionIdFactory?: () => string;
+  conversationIdFactory?: () => string;
   operationIdFactory?: () => string;
   lifecycle?: RuntimeLifecycle;
   releaseRuntimeHandle?: (sessionRef: string) => Promise<void>;
@@ -93,8 +102,19 @@ export interface SessionContinuityOptions {
   beforeLifecycleLocalCommit?: (operation: SessionLifecycleOperationRecord) => Promise<void>;
 }
 
+export interface SessionContinuityModule {
+  create(options?: Omit<SessionContinuityOptions, "stateStore">): SessionContinuity;
+}
+
+export function createSessionContinuityModule(stateStore: ConnectStateStore): SessionContinuityModule {
+  return {
+    create: (options = {}) => createSessionContinuity({ ...options, stateStore }),
+  };
+}
+
 export function createSessionContinuity(options: SessionContinuityOptions): SessionContinuity {
   const sessionIdFactory = options.sessionIdFactory ?? randomUUID;
+  const conversationIdFactory = options.conversationIdFactory ?? (() => `__connect_client_session__:${randomUUID()}`);
   const operationIdFactory = options.operationIdFactory ?? randomUUID;
   const runLifecycle = async (sessionRef: string, action: SessionLifecycleAction): Promise<void> => {
     const release = options.claimRuntimeLifecycle
@@ -147,6 +167,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
             chatId: scope.chatId,
             agentId: scope.bindingId,
             sessionId: sessionIdFactory(),
+            acceptedTurn: false,
           });
           return sessionTarget(session);
         },
@@ -155,6 +176,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
             chatId: scope.chatId,
             agentId: scope.bindingId,
             sessionId: sessionIdFactory(),
+            acceptedTurn: false,
           });
           return {
             ...sessionTarget(session),
@@ -264,6 +286,54 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
           const session = await options.stateStore.getRuntimeSessionByRef(normalized);
           if (!session) throw new Error(`Session ${normalized} was not found`);
           return { ...sessionTarget(session), turnOrigin };
+        },
+        async bindingLock() {
+          const session = await options.stateStore.getRuntimeSessionByRef(normalized);
+          if (!session) throw new SessionLifecycleError("session-not-found", `Session ${normalized} was not found`);
+          return await options.stateStore.sessionBindingLock(normalized);
+        },
+        async changeBinding(bindingId) {
+          const result = await options.stateStore.changeSessionBinding(normalized, bindingId);
+          if (result.changed) return;
+          if (result.reason === "session-not-found") {
+            throw new SessionLifecycleError("session-not-found", `Session ${normalized} was not found`);
+          }
+          const detail =
+            result.lockReason === "runtime-thread"
+              ? "a Runtime Thread is already associated"
+              : "the first Turn has already been accepted";
+          throw new SessionLifecycleError(
+            "session-binding-locked",
+            `Session ${normalized} Agent Binding is fixed because ${detail}; continue the Project in a new Session instead`,
+          );
+        },
+        async continueWith(bindingId) {
+          const source = await options.stateStore.getRuntimeSessionByRef(normalized);
+          if (!source) throw new SessionLifecycleError("session-not-found", `Session ${normalized} was not found`);
+          if (!source.projectId) {
+            throw new SessionLifecycleError(
+              "session-project-required",
+              `Session ${normalized} is not associated with a Project`,
+            );
+          }
+          const chatId = conversationIdFactory();
+          await options.stateStore.setSessionIntent({
+            chatId,
+            agentId: bindingId,
+            projectId: source.projectId,
+            name: source.name,
+            mode: null,
+            model: null,
+            reasoningEffort: null,
+            sessionOptions: {},
+          });
+          const continuation = await options.stateStore.resolveOrMaterializeRuntimeSession({
+            chatId,
+            agentId: bindingId,
+            sessionId: sessionIdFactory(),
+            acceptedTurn: false,
+          });
+          return sessionTarget(continuation);
         },
         async attachRuntimeThread(runtimeThreadId) {
           const session = await options.stateStore.getRuntimeSessionByRef(normalized);

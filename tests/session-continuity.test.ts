@@ -43,6 +43,8 @@ it("materializes one Turn Target when concurrent first messages consume a Sessio
     runtimeThreadId: null,
     turnOrigin: "clawchat",
   });
+  await expect(stateStore.getRuntimeSessionByRef(first.sessionRef)).resolves.toMatchObject({ hasMessages: false });
+  await expect(stateStore.sessionBindingLock(first.sessionRef)).resolves.toBeNull();
 
   await stateStore.close();
 });
@@ -78,6 +80,101 @@ it("creates an explicit empty Session from one complete selection", async () => 
     runtimeThreadId: null,
   });
 
+  await stateStore.close();
+  const reopened = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await expect(reopened.getRuntimeSessionByRef(created.sessionRef)).resolves.toMatchObject({
+    agentId: "codex",
+    sessionId: "session-client",
+    hasMessages: false,
+  });
+  await expect(reopened.sessionBindingLock(created.sessionRef)).resolves.toBeNull();
+  await expect(reopened.getSessionRefTarget(created.sessionRef)).resolves.toMatchObject({
+    sessionRef: created.sessionRef,
+    agentId: "codex",
+    sessionId: "session-client",
+  });
+  await reopened.close();
+});
+
+it("changes an empty Session Binding and fixes the accepted Turn Target atomically", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "connect-session-continuity-binding-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  const continuity = createSessionContinuity({
+    stateStore,
+    sessionIdFactory: () => "session-binding",
+  });
+  const created = await continuity
+    .inConversation({ chatId: "__connect_client_session__:binding", bindingId: "codex" })
+    .create({
+      projectId: null,
+      name: "Empty",
+      mode: null,
+      model: null,
+      reasoningEffort: null,
+    });
+
+  expect(await continuity.forSession(created.sessionRef).bindingLock()).toBeNull();
+  await continuity.forSession(created.sessionRef).changeBinding("opencode");
+  expect(await stateStore.getRuntimeSessionByRef(created.sessionRef)).toMatchObject({
+    agentId: "opencode",
+    hasMessages: false,
+    runtimeSessionId: null,
+  });
+
+  expect(await stateStore.acceptSessionTurn({ sessionRef: created.sessionRef, bindingId: "opencode" })).toBe(true);
+  await expect(continuity.forSession(created.sessionRef).changeBinding("codex")).rejects.toMatchObject({
+    code: "session-binding-locked",
+  });
+  expect(await stateStore.getRuntimeSessionByRef(created.sessionRef)).toMatchObject({
+    agentId: "opencode",
+    hasMessages: true,
+  });
+  await stateStore.close();
+});
+
+it("continues a Project in a fresh Session without moving Runtime identity or history", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "connect-session-continuity-continue-"));
+  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+  await stateStore.insertProject({
+    projectId: "project-shared",
+    name: "Shared",
+    rootPath: join(directory, "shared"),
+  });
+  await stateStore.upsertRuntimeSession({
+    chatId: "source-chat",
+    sessionId: "source-session",
+    agentId: "codex",
+    runtimeSessionId: "source-thread",
+    projectId: "project-shared",
+    name: "Source",
+    hasMessages: true,
+  });
+  const source = await stateStore.getCurrentRuntimeSession("source-chat", "codex");
+  const continuity = createSessionContinuity({
+    stateStore,
+    sessionIdFactory: () => "continuation-session",
+    conversationIdFactory: () => "__connect_client_session__:continuation",
+  });
+
+  const continuation = await continuity.forSession(source?.sessionRef ?? "").continueWith("opencode");
+
+  expect(continuation).toMatchObject({
+    bindingId: "opencode",
+    projectId: "project-shared",
+    sessionId: "continuation-session",
+    runtimeThreadId: null,
+    sessionOptions: {},
+  });
+  expect(continuation.sessionRef).not.toBe(source?.sessionRef);
+  expect(await stateStore.getRuntimeSessionByRef(continuation.sessionRef)).toMatchObject({
+    hasMessages: false,
+    runtimeSessionId: null,
+  });
+  expect(await stateStore.getRuntimeSessionByRef(source?.sessionRef ?? "")).toMatchObject({
+    agentId: "codex",
+    runtimeSessionId: "source-thread",
+    hasMessages: true,
+  });
   await stateStore.close();
 });
 

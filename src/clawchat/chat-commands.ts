@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
 import type { ProjectCatalog } from "../projects/projects";
-import { createSessionContinuity } from "../projects/session-continuity";
+import { createSessionContinuity, type SessionContinuity } from "../projects/session-continuity";
 import { type RuntimeWorkspaceChoice, workspaceView } from "../projects/workspace-catalog";
 import { requireModel, resolveEffort, resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeModelOption, SelectableRuntimeThread } from "../runtime/types";
@@ -15,6 +15,7 @@ import type {
   RuntimeSessionRecord,
   SessionIntentRecord,
 } from "../types";
+import { runtimeFamilyFor } from "../types";
 import { commandAddressPrefix } from "./message-mapper";
 import type { NormalizedInboundMessage } from "./protocol";
 
@@ -25,6 +26,7 @@ export interface ChatCommandContext {
   config: ConnectConfig;
   stateStore: ConnectStateStore;
   projects: ProjectCatalog;
+  sessionContinuity?: SessionContinuity;
   closeRuntimeSession?: (chatId: string) => Promise<boolean>;
   invalidateRuntimeSession?: (chatId: string) => Promise<boolean>;
   cancelRuntimeTurn?: (chatId: string) => Promise<boolean>;
@@ -229,7 +231,7 @@ async function handleNew(ctx: ChatCommandContext, name: string): Promise<ChatCom
   const binding = getAgentBinding(ctx.config, ctx.agentId);
   const selected = await selectedSessionContext(ctx);
   await closeRuntimeSession(ctx);
-  await createSessionContinuity({ stateStore: ctx.stateStore })
+  await continuityFor(ctx)
     .inConversation({ chatId: ctx.message.chatId, bindingId: ctx.agentId })
     .planNext({
       projectId: selected?.projectId ?? null,
@@ -458,7 +460,7 @@ async function handleMode(ctx: ChatCommandContext, mode: string | undefined): Pr
   const selectedMode = mode === "default" ? null : mode;
   if (ctx.runtimeModesFor) {
     if (modes.length === 0)
-      return { handled: true, text: `Runtime ${binding.kind} does not support configurable modes.` };
+      return { handled: true, text: `Runtime ${runtimeFamilyFor(binding)} does not support configurable modes.` };
     if (selectedMode && !modes.includes(selectedMode)) {
       return { handled: true, text: commandUsage(ctx.message.chatType, "/mode") };
     }
@@ -487,14 +489,14 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
   }
 
   const models = (await ctx.listRuntimeModels?.(binding, current ?? intent)) ?? null;
-  if (!models) return { handled: true, text: `Runtime ${binding.kind} does not support model selection.` };
+  if (!models) return { handled: true, text: `Runtime ${runtimeFamilyFor(binding)} does not support model selection.` };
 
   if (!modelReference) {
     const effective = resolveModelSelection(binding, selected, models);
     return {
       handled: true,
       text: [
-        `**Available ${binding.kind} models**`,
+        `**Available ${runtimeFamilyFor(binding)} models**`,
         `Current: \`${effective.model ?? "runtime default"}\`${effective.reasoningEffort ? ` · \`${effective.reasoningEffort}\`` : ""} (${effective.source})`,
         "",
         ...models.map(
@@ -624,7 +626,7 @@ async function invalidateRuntimeSession(ctx: ChatCommandContext): Promise<boolea
 }
 
 function conversationSessions(ctx: ChatCommandContext) {
-  return createSessionContinuity({ stateStore: ctx.stateStore }).inConversation({
+  return continuityFor(ctx).inConversation({
     chatId: ctx.message.chatId,
     bindingId: ctx.agentId,
   });
@@ -633,4 +635,8 @@ function conversationSessions(ctx: ChatCommandContext) {
 function parseOutputVisibility(value: unknown): OutputVisibility | null {
   const mode = typeof value === "string" ? value.trim().toLowerCase() : "";
   return mode === "minimal" || mode === "normal" || mode === "full" ? mode : null;
+}
+
+function continuityFor(ctx: ChatCommandContext): SessionContinuity {
+  return ctx.sessionContinuity ?? createSessionContinuity({ stateStore: ctx.stateStore });
 }

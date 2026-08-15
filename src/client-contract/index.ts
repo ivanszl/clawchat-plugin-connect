@@ -1,5 +1,120 @@
 export const CLIENT_API_PREFIX = "/client/v1" as const;
+export const PLUGIN_MANAGER_CONFIG_HEADER = "X-ClawChat-Connect-Config-Path" as const;
 export const SESSION_REF_PATTERN = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/u;
+export const MAX_PLUGIN_BUNDLE_BYTES = 16 * 1024 * 1024;
+
+export type PluginJsonSchemaView = Readonly<Record<string, unknown>>;
+
+export type PluginSourceView =
+  | { type: "local"; path: string }
+  | { type: "npm"; package: string; registry: string; version: string; tarball: string }
+  | {
+      type: "github";
+      repository: string;
+      apiBase: string;
+      version: string;
+      release: string;
+      asset: string;
+    };
+
+export type PluginDiagnosticStage = "import" | "validation" | "activation" | "provider" | "probe" | "update";
+
+export interface PluginDiagnosticView {
+  stage: PluginDiagnosticStage;
+  message: string;
+}
+
+export interface PluginCapabilityInstanceView {
+  instanceId: string;
+  bindingId: string | null;
+  displayName: string;
+  configuration: Record<string, unknown>;
+}
+
+export interface PluginCapabilityView {
+  id: string;
+  type: "runtime" | "exposure";
+  family: string | null;
+  configurationSchema: PluginJsonSchemaView;
+  instances: PluginCapabilityInstanceView[];
+}
+
+export interface RetainedPluginVersionView {
+  source: PluginSourceView;
+  version: string;
+  target: string;
+  integrity: string;
+}
+
+export type PluginUpdateAvailabilityView =
+  | { status: "current"; version: string; integrity: string; diagnostic: null }
+  | { status: "available"; version: string; integrity: string; diagnostic: null }
+  | { status: "check-failed"; version: null; integrity: null; diagnostic: string }
+  | { status: "not-installed"; version: string | null; integrity: string | null; diagnostic: null };
+
+export interface InstalledPluginView {
+  kind: "installed";
+  pluginId: string;
+  name: string;
+  source: PluginSourceView;
+  version: string;
+  target: string;
+  integrity: string;
+  status: "active" | "disabled" | "error";
+  dependentBindings: Array<{ bindingId: string; displayName: string; capabilityId: string }>;
+  updateAvailability: PluginUpdateAvailabilityView;
+  retainedVersions: RetainedPluginVersionView[];
+  installationConfigurationSchema: PluginJsonSchemaView;
+  installationConfiguration: Record<string, unknown>;
+  capabilities: PluginCapabilityView[];
+  diagnostics: PluginDiagnosticView[];
+}
+
+export interface AvailablePluginView {
+  kind: "available";
+  pluginId: string;
+  name: string;
+  sourceReference: string;
+  source: PluginSourceView | null;
+  version: string | null;
+  target: string;
+  integrity: string | null;
+  status: "available" | "unavailable";
+  dependentBindings: [];
+  updateAvailability: PluginUpdateAvailabilityView;
+  installationConfigurationSchema: PluginJsonSchemaView | null;
+  installationConfiguration: Record<string, unknown>;
+  capabilities: PluginCapabilityView[];
+  detected: boolean;
+  compatible: boolean;
+  selected: boolean;
+  diagnostics: PluginDiagnosticView[];
+}
+
+export interface PluginAdministrationView {
+  installed: InstalledPluginView[];
+  available: AvailablePluginView[];
+  catalogOrigin: "remote" | "cache" | null;
+  diagnostics: PluginDiagnosticView[];
+}
+
+export interface ManagePluginRequest {
+  source: string;
+  target?: string;
+  installationConfiguration?: Record<string, unknown>;
+  exposureConfigurations?: Record<string, Record<string, unknown>>;
+}
+
+export interface ConfigurePluginRequest {
+  installationConfiguration: Record<string, unknown>;
+  exposureConfigurations: Record<string, Record<string, unknown>>;
+  runtimeConfigurations: Record<string, Record<string, unknown>>;
+}
+
+export interface SelectPluginVersionRequest {
+  version: string;
+  integrity?: string;
+}
 
 export type TranscriptOrigin = "client" | "clawchat" | "runtime";
 export type TranscriptState = "pending" | "streaming" | "complete" | "error" | "cancelled";
@@ -216,6 +331,8 @@ export interface SessionView {
   sessionRef: string;
   bindingId: string;
   bindingKind: string;
+  bindingLocked: boolean;
+  bindingLockReason: "accepted-turn" | "runtime-thread" | null;
   projectId: string | null;
   projectName: string | null;
   workspaceName: string | null;
@@ -465,6 +582,14 @@ export interface CancelTurnResponse {
 
 export interface SessionMutationRequest {
   requestId: string;
+}
+
+export interface ChangeSessionBindingRequest extends SessionMutationRequest {
+  bindingId: string;
+}
+
+export interface ContinueSessionRequest extends SessionMutationRequest {
+  bindingId: string;
 }
 
 export interface UpdateSessionPreferencesRequest {

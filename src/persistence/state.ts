@@ -54,9 +54,16 @@ import {
   toJson,
   toolRequestRecord,
 } from "./state-codecs";
-import { backfillSessionRefs, createStateSchema, migrateStateSchema } from "./state-schema";
+import {
+  AMBIGUOUS_LEGACY_OWNER_DIAGNOSTIC,
+  backfillSessionRefs,
+  createStateSchema,
+  migrateStateSchema,
+} from "./state-schema";
 import type {
+  AcceptSessionTurnInput,
   AdoptRuntimeThreadRefInput,
+  ChangeSessionBindingResult,
   ClientCommandClaim,
   ClientCommandOutcome,
   ConnectStateOptions,
@@ -72,6 +79,7 @@ import type {
   ProtocolDeliveryState,
   ResolveOrMaterializeRuntimeSessionInput,
   RuntimeWorkspaceMappingRecord,
+  SessionBindingLockReason,
   SessionLifecycleAction,
   SessionLifecycleOperationRecord,
   SessionLifecycleOperationState,
@@ -89,6 +97,8 @@ export class ConnectStateStore {
   private readonly clientEventRetentionLimit: number;
   private readonly storageCompactionThresholdBytes: number;
   private db: SqliteDb | null = null;
+  private ambiguousLegacyOwnerState = false;
+  private installationOwnerResetInProgress = false;
   constructor(options: ConnectStateOptions = {}) {
     this.dbPath = options.dbPath ?? defaultStateDbPath();
     this.sessionRefFactory = options.sessionRefFactory ?? generateSessionRef;
@@ -100,7 +110,10 @@ export class ConnectStateStore {
     if (!isAbsolute(this.dbPath)) throw new Error("stateDbPath must be an absolute path");
   }
   async initialize(): Promise<void> {
-    if (this.db) return;
+    if (this.db) {
+      this.assertInstallationOwnerStateAllowed();
+      return;
+    }
     await mkdir(dirname(this.dbPath), { recursive: true, mode: 0o700 });
     this.db = new BunSqliteAdapter(new Database(this.dbPath, { create: true }));
     try {
@@ -109,21 +122,27 @@ export class ConnectStateStore {
       await this.db.exec("PRAGMA journal_mode = WAL");
       await this.db.exec("PRAGMA foreign_keys = ON");
       await createStateSchema(this.db);
-      await migrateStateSchema(this.db);
+      this.ambiguousLegacyOwnerState = await migrateStateSchema(this.db, {
+        allowAmbiguousLegacyOwnerReset: this.installationOwnerResetInProgress,
+      });
       await this.installClientEventRetention(this.db);
       await this.deduplicateStoredSubagentBlocks(this.db);
       await this.reclaimDatabasePages(this.db);
       await backfillSessionRefs(this.db, (target) => this.getOrCreateSessionRef(target));
       await chmod(this.dbPath, 0o600).catch(() => undefined);
+      this.assertInstallationOwnerStateAllowed();
     } catch (error) {
       await this.db.close();
       this.db = null;
+      this.ambiguousLegacyOwnerState = false;
       throw error;
     }
   }
   async close(): Promise<void> {
     await this.db?.close();
     this.db = null;
+    this.ambiguousLegacyOwnerState = false;
+    this.installationOwnerResetInProgress = false;
   }
 
   async upsertActivation(input: ActivationCredentials): Promise<void> {
@@ -142,6 +161,95 @@ export class ConnectStateStore {
       now,
       now,
     );
+  }
+  async getInstallationOwner(): Promise<string | null> {
+    const db = await this.requireDb();
+    const row = await db.get<{ owner_user_id?: string }>("SELECT owner_user_id FROM installation_owner WHERE id = 1");
+    return nullableString(row?.owner_user_id);
+  }
+
+  async prepareInstallationOwnerReset(): Promise<{
+    ownerUserId: string | null;
+    legacyOwnerUserIds: string[];
+  }> {
+    this.installationOwnerResetInProgress = true;
+    try {
+      const db = await this.requireDb();
+      const ownerRow = await db.get<{ owner_user_id?: string }>(
+        "SELECT owner_user_id FROM installation_owner WHERE id = 1",
+      );
+      const ownerRows = await db.all<Array<{ owner_user_id: string }>>(
+        `SELECT DISTINCT TRIM(owner_user_id) AS owner_user_id
+           FROM activations
+          WHERE platform = ? AND TRIM(owner_user_id) <> ''
+          ORDER BY owner_user_id`,
+        PLATFORM_ID,
+      );
+      return {
+        ownerUserId: nullableString(ownerRow?.owner_user_id),
+        legacyOwnerUserIds: ownerRows.map((row) => row.owner_user_id),
+      };
+    } catch (error) {
+      this.installationOwnerResetInProgress = false;
+      throw error;
+    }
+  }
+
+  finishInstallationOwnerReset(): void {
+    this.installationOwnerResetInProgress = false;
+  }
+
+  async commitActivationForInstallationOwner(
+    input: ActivationCredentials,
+  ): Promise<"established" | "existing" | "binding-owner-mismatch" | "installation-owner-mismatch"> {
+    const now = Date.now();
+    const db = await this.requireDb();
+    return db.transaction((run, get) => {
+      const existingActivation = get<{ owner_user_id?: string }>(
+        "SELECT owner_user_id FROM activations WHERE platform = ? AND local_agent_id = ?",
+        PLATFORM_ID,
+        input.localAgentId,
+      );
+      const existingBindingOwner = nullableString(existingActivation?.owner_user_id);
+      if (existingBindingOwner && existingBindingOwner !== input.ownerUserId) return "binding-owner-mismatch";
+
+      const ownerRow = get<{ owner_user_id?: string }>("SELECT owner_user_id FROM installation_owner WHERE id = 1");
+      const installationOwner = nullableString(ownerRow?.owner_user_id);
+      if (installationOwner && installationOwner !== input.ownerUserId) return "installation-owner-mismatch";
+
+      if (!installationOwner) {
+        const legacyOwners = get<{ owner_user_id?: string; owner_count: number }>(
+          `SELECT MIN(TRIM(owner_user_id)) AS owner_user_id,
+                  COUNT(DISTINCT TRIM(owner_user_id)) AS owner_count
+             FROM activations
+            WHERE platform = ? AND TRIM(owner_user_id) <> ''`,
+          PLATFORM_ID,
+        );
+        const legacyOwner = nullableString(legacyOwners?.owner_user_id);
+        if ((legacyOwners?.owner_count ?? 0) > 1 || (legacyOwner && legacyOwner !== input.ownerUserId)) {
+          return "installation-owner-mismatch";
+        }
+        run(
+          "INSERT INTO installation_owner(id, owner_user_id, established_at) VALUES (1, ?, ?)",
+          input.ownerUserId,
+          now,
+        );
+      }
+      run(
+        `INSERT INTO activations(platform, local_agent_id, access_token, refresh_token, server_agent_id, user_id, owner_user_id, conversation_id, activated_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(platform, local_agent_id) DO UPDATE SET access_token = excluded.access_token, refresh_token = excluded.refresh_token, server_agent_id = excluded.server_agent_id, user_id = excluded.user_id, owner_user_id = excluded.owner_user_id, conversation_id = excluded.conversation_id, updated_at = excluded.updated_at`,
+        PLATFORM_ID,
+        input.localAgentId,
+        input.accessToken,
+        input.refreshToken,
+        input.serverAgentId,
+        input.userId,
+        input.ownerUserId,
+        input.conversationId,
+        now,
+        now,
+      );
+      return installationOwner ? "existing" : "established";
+    });
   }
   async getActivation(localAgentId: string): Promise<ActivationCredentials | null> {
     const db = await this.requireDb();
@@ -196,6 +304,58 @@ export class ConnectStateStore {
         },
       ];
     });
+  }
+
+  async purgeInstallationOwnerState(ownerUserId: string | null): Promise<void> {
+    const expectedOwner = ownerUserId === null ? null : requireStateString(ownerUserId, "Installation Owner");
+    const db = await this.requireDb();
+    db.transaction((run, get) => {
+      const ownerRow = get<{ owner_user_id?: string }>("SELECT owner_user_id FROM installation_owner WHERE id = 1");
+      const currentOwner = nullableString(ownerRow?.owner_user_id);
+      if (!currentOwner) {
+        const legacyOwners = get<{ owner_count: number }>(
+          `SELECT COUNT(DISTINCT TRIM(owner_user_id)) AS owner_count
+             FROM activations
+            WHERE platform = ? AND TRIM(owner_user_id) <> ''`,
+          PLATFORM_ID,
+        );
+        if ((legacyOwners?.owner_count ?? 0) <= 1) {
+          throw new Error("Connect installation is already unowned");
+        }
+        if (expectedOwner !== null || !this.installationOwnerResetInProgress) {
+          throw new Error(AMBIGUOUS_LEGACY_OWNER_DIAGNOSTIC);
+        }
+      } else if (expectedOwner !== currentOwner) {
+        throw new Error(
+          `Installation Owner changed from ${expectedOwner ?? "unowned"} to ${currentOwner}; owner-scoped state was preserved`,
+        );
+      }
+
+      run("DELETE FROM turn_submission_cancellations");
+      run("DELETE FROM transcript_blocks");
+      run("DELETE FROM session_lifecycle_operations");
+      run("DELETE FROM client_commands");
+      run("DELETE FROM client_events");
+      run("UPDATE client_event_retention SET floor_cursor = 0 WHERE id = 1");
+      run("DELETE FROM tool_requests");
+      run("DELETE FROM runtime_workspace_mappings");
+      run("DELETE FROM output_visibility");
+      run("DELETE FROM group_settings");
+      run("DELETE FROM group_settings_snapshots");
+      run("DELETE FROM runtime_sessions");
+      run("DELETE FROM session_intents");
+      run("DELETE FROM session_refs");
+      run("DELETE FROM clawchat_messages");
+      run("DELETE FROM protocol_delivery_state");
+      run("DELETE FROM protocol_inbox");
+      run("DELETE FROM protocol_delivery_quarantine");
+      run("DELETE FROM protocol_event_dedup");
+      run("DELETE FROM runtime_statuses");
+      run("DELETE FROM liveware_exposures");
+      run("DELETE FROM activations WHERE platform = ?", PLATFORM_ID);
+      run("DELETE FROM installation_owner WHERE id = 1");
+    });
+    this.ambiguousLegacyOwnerState = false;
   }
 
   async purgeAgentBinding(localAgentId: string): Promise<void> {
@@ -673,6 +833,14 @@ export class ConnectStateStore {
       now,
       now,
     );
+    if (input.hasMessages !== false || input.runtimeSessionId) {
+      await db.run(
+        "UPDATE runtime_sessions SET binding_locked = 1 WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
+        input.chatId,
+        input.agentId,
+        input.sessionId,
+      );
+    }
     const sessionRef = await this.getOrCreateSessionRef({
       chatId: input.chatId,
       agentId: input.agentId,
@@ -716,8 +884,8 @@ export class ConnectStateStore {
       run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
       run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
       run(
-        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, session_options_json, has_messages, is_current, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, session_options_json, has_messages, binding_locked, is_current, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, ?, ?)`,
         input.chatId,
         input.sessionId,
         input.agentId,
@@ -838,14 +1006,25 @@ export class ConnectStateStore {
         input.chatId,
         input.agentId,
       );
-      if (current?.session_id) return current.session_id;
+      if (current?.session_id) {
+        if (input.acceptedTurn) {
+          run(
+            "UPDATE runtime_sessions SET has_messages = 1, binding_locked = 1, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
+            now,
+            input.chatId,
+            input.agentId,
+            current.session_id,
+          );
+        }
+        return current.session_id;
+      }
       const intent = get<Record<string, unknown>>(
         "SELECT * FROM session_intents WHERE chat_id = ? AND agent_id = ?",
         input.chatId,
         input.agentId,
       );
       run(
-        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, session_options_json, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)`,
+        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, session_options_json, has_messages, binding_locked, is_current, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         input.chatId,
         input.sessionId,
         input.agentId,
@@ -855,6 +1034,8 @@ export class ConnectStateStore {
         nullableString(intent?.model),
         nullableString(intent?.reasoning_effort),
         JSON.stringify(stringRecordFromJson(intent?.session_options_json)),
+        input.acceptedTurn ? 1 : 0,
+        input.acceptedTurn ? 1 : 0,
         now,
         now,
       );
@@ -887,6 +1068,108 @@ export class ConnectStateStore {
       sessionRef,
     );
     return row ? runtimeSessionFromRow(row) : null;
+  }
+  async sessionBindingLock(sessionRef: string): Promise<SessionBindingLockReason | null> {
+    const db = await this.requireDb();
+    const row = await db.get<{ binding_locked: number; runtime_session_id: string | null }>(
+      `SELECT rs.binding_locked, rs.runtime_session_id
+       FROM runtime_sessions AS rs
+       JOIN session_refs AS sr
+         ON sr.chat_id = rs.chat_id AND sr.agent_id = rs.agent_id AND sr.session_id = rs.session_id
+       WHERE sr.session_ref = ? COLLATE NOCASE
+       LIMIT 1`,
+      sessionRef,
+    );
+    if (!row?.binding_locked) return null;
+    return row.runtime_session_id ? "runtime-thread" : "accepted-turn";
+  }
+
+  async acceptSessionTurn(input: AcceptSessionTurnInput): Promise<boolean> {
+    const db = await this.requireDb();
+    return db.transaction((run, get) => {
+      const session = get<{ agent_id: string }>(
+        `SELECT rs.agent_id
+         FROM runtime_sessions AS rs
+         JOIN session_refs AS sr
+           ON sr.chat_id = rs.chat_id AND sr.agent_id = rs.agent_id AND sr.session_id = rs.session_id
+         WHERE sr.session_ref = ? COLLATE NOCASE
+         LIMIT 1`,
+        input.sessionRef,
+      );
+      if (!session || session.agent_id !== input.bindingId) return false;
+      const accepted = run(
+        `UPDATE runtime_sessions
+         SET has_messages = 1, binding_locked = 1, updated_at = ?
+         WHERE agent_id = ?
+           AND EXISTS (
+             SELECT 1 FROM session_refs AS sr
+             WHERE sr.session_ref = ? COLLATE NOCASE
+               AND sr.chat_id = runtime_sessions.chat_id
+               AND sr.agent_id = runtime_sessions.agent_id
+               AND sr.session_id = runtime_sessions.session_id
+           )`,
+        Date.now(),
+        input.bindingId,
+        input.sessionRef,
+      );
+      return accepted.changes === 1;
+    });
+  }
+
+  async changeSessionBinding(sessionRef: string, bindingId: string): Promise<ChangeSessionBindingResult> {
+    const db = await this.requireDb();
+    const now = Date.now();
+    return db.transaction((run, get) => {
+      const session = get<{
+        chat_id: string;
+        session_id: string;
+        agent_id: string;
+        binding_locked: number;
+        runtime_session_id: string | null;
+      }>(
+        `SELECT rs.chat_id, rs.session_id, rs.agent_id, rs.binding_locked, rs.runtime_session_id
+         FROM runtime_sessions AS rs
+         JOIN session_refs AS sr
+           ON sr.chat_id = rs.chat_id AND sr.agent_id = rs.agent_id AND sr.session_id = rs.session_id
+         WHERE sr.session_ref = ? COLLATE NOCASE
+         LIMIT 1`,
+        sessionRef,
+      );
+      if (!session) return { changed: false, reason: "session-not-found" };
+      if (session.agent_id === bindingId) return { changed: true };
+      if (session.binding_locked) {
+        return {
+          changed: false,
+          reason: "binding-locked",
+          lockReason: session.runtime_session_id ? "runtime-thread" : "accepted-turn",
+        };
+      }
+      const movedSession = run(
+        `UPDATE runtime_sessions
+         SET agent_id = ?, mode = NULL, model = NULL, reasoning_effort = NULL,
+             session_options_json = '{}', updated_at = ?
+         WHERE chat_id = ? AND agent_id = ? AND session_id = ? AND binding_locked = 0`,
+        bindingId,
+        now,
+        session.chat_id,
+        session.agent_id,
+        session.session_id,
+      );
+      if (movedSession.changes !== 1) {
+        return { changed: false, reason: "binding-locked", lockReason: "accepted-turn" };
+      }
+      const movedRef = run(
+        `UPDATE session_refs
+         SET agent_id = ?, updated_at = ?
+         WHERE session_ref = ? COLLATE NOCASE AND agent_id = ?`,
+        bindingId,
+        now,
+        sessionRef,
+        session.agent_id,
+      );
+      if (movedRef.changes !== 1) throw new Error(`Session ${sessionRef} Binding could not be changed`);
+      return { changed: true };
+    });
   }
   async listProjectedInboundSessionRefs(agentId: string, chatId: string, messageId: string): Promise<string[]> {
     const db = await this.requireDb();
@@ -924,7 +1207,8 @@ export class ConnectStateStore {
   ): Promise<boolean> {
     const db = await this.requireDb();
     const result = await db.run(
-      "UPDATE runtime_sessions SET runtime_session_id = ?, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
+      "UPDATE runtime_sessions SET runtime_session_id = ?, binding_locked = CASE WHEN ? IS NOT NULL THEN 1 ELSE binding_locked END, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
+      runtimeSessionId,
       runtimeSessionId,
       Date.now(),
       chatId,
@@ -2415,9 +2699,16 @@ export class ConnectStateStore {
     );
   }
 
+  private assertInstallationOwnerStateAllowed(): void {
+    if (this.ambiguousLegacyOwnerState && !this.installationOwnerResetInProgress) {
+      throw new Error(AMBIGUOUS_LEGACY_OWNER_DIAGNOSTIC);
+    }
+  }
+
   private async requireDb(): Promise<SqliteDb> {
     if (!this.db) await this.initialize();
     if (!this.db) throw new Error("clawchat-connect sqlite database is not open");
+    this.assertInstallationOwnerStateAllowed();
     return this.db;
   }
 }

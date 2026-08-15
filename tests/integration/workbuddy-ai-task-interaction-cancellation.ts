@@ -1,7 +1,6 @@
 import { realpath } from "node:fs/promises";
 import type { RuntimeActivity, RuntimeInteractionRequest, RuntimeInteractionResponse } from "../../src/runtime/types";
-import { createWorkBuddyRuntimeAdapter } from "../../src/runtime/workbuddy-adapter";
-import type { WorkBuddyAgentBindingConfig } from "../../src/types";
+import { createInstalledWorkBuddyPluginRuntime } from "./workbuddy-installed-plugin";
 import { requiredWorkBuddyTestEnv, workBuddyTestBindingId, workBuddyTestProfile } from "./workbuddy-test-profile";
 
 const {
@@ -14,9 +13,9 @@ const {
   "verify installed Runtime Interaction routing and native prompt cancellation",
 );
 const canonicalWorkspace = await realpath(workspace);
-const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: workBuddyTestProfile };
-const adapter = createWorkBuddyRuntimeAdapter();
-const session = await adapter.start(binding, {
+const installedPlugin = await createInstalledWorkBuddyPluginRuntime(workBuddyTestProfile);
+const { binding, runtimeAdapters } = installedPlugin;
+const session = await runtimeAdapters.start(binding, {
   agentId: `${workBuddyTestBindingId}-interaction-cancellation`,
   chatId: "client-installed-interaction-cancellation",
   sessionId: "client-installed-interaction-cancellation",
@@ -108,7 +107,7 @@ try {
   );
 } finally {
   await session.close();
-  await adapter.close?.();
+  await installedPlugin.close();
 }
 
 async function collect(activities: AsyncIterable<RuntimeActivity>): Promise<RuntimeActivity[]> {

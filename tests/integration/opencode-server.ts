@@ -1,7 +1,17 @@
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildOfficialPlugin } from "../../scripts/build-official-plugins";
+import { defaultConfig, saveConfig } from "../../src/config";
+import { createPluginAgentBinding } from "../../src/plugin/binding";
+import { ConnectPluginHost } from "../../src/plugin/host";
+import descriptor from "../../src/plugin/official/opencode-descriptor";
+import {
+  OPENCODE_OFFICIAL_CAPABILITY_ID,
+  OPENCODE_OFFICIAL_PLUGIN_ID,
+} from "../../src/plugin/official/opencode-manifest";
 import { createOpenCodeServerClient } from "../../src/runtime/opencode-server";
+import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 
 const executable = process.env.OPENCODE_EXECUTABLE || Bun.which("opencode");
 if (!executable) throw new Error("Set OPENCODE_EXECUTABLE or add OpenCode to PATH");
@@ -11,6 +21,7 @@ const client = await createOpenCodeServerClient({ kind: "opencode", executablePa
 const eventsAbort = new AbortController();
 let createdSessionId: string | null = null;
 const seenEvents: string[] = [];
+let pluginHost: ConnectPluginHost | null = null;
 
 try {
   const eventReceived = (async (): Promise<string> => {
@@ -60,14 +71,62 @@ try {
     }),
   ]);
   if (eventSessionId !== session.id) throw new Error("OpenCode global event belonged to a different Session");
-  if (!(await within(client.deleteSession(session.id, directory), "Session deletion")))
-    throw new Error("OpenCode Session deletion failed");
+  const configPath = join(directory, ".connect-integration.json");
+  const bundlePath = join(directory, "opencode.connect-plugin");
+  const binding = createPluginAgentBinding({
+    runtimeFamily: "opencode",
+    pluginId: OPENCODE_OFFICIAL_PLUGIN_ID,
+    capabilityId: OPENCODE_OFFICIAL_CAPABILITY_ID,
+    configuration: { executablePathOverride: executable },
+  });
+  const config = defaultConfig();
+  config.agents = { opencode: binding };
+  config.defaultAgent = "opencode";
+  await saveConfig(config, configPath);
+  const built = await buildOfficialPlugin(descriptor, { write: false });
+  await writeFile(bundlePath, `${JSON.stringify(built.bundle)}\n`);
+  const registry = new RuntimeAdapterRegistry([]);
+  pluginHost = new ConnectPluginHost(configPath, registry, () => undefined);
+  await within(pluginHost.install({ source: `local:${bundlePath}` }), "official Plugin installation");
+  await within(registry.prepare(binding), "Plugin Binding preparation");
+  const workspace = { projectId: "integration", workingDirectory: directory, skipGitRepoCheck: true };
+  const [pluginOptions, pluginModels, pluginSkills, pluginCommands, pluginThreads] = await within(
+    Promise.all([
+      registry.listSessionOptions(binding, workspace),
+      registry.listModels(binding),
+      registry.listSkills(binding, workspace),
+      registry.listCommands(binding, workspace),
+      registry.discoverThreads(binding, workspace),
+    ]),
+    "Plugin capability discovery",
+  );
+  if (!pluginOptions?.some((option) => option.id === "agent"))
+    throw new Error("Official OpenCode Plugin did not preserve Agent discovery");
+  if (
+    !pluginOptions.some((option) => option.id === "model") ||
+    !pluginOptions.some((option) => option.id === "variant")
+  )
+    throw new Error("Official OpenCode Plugin did not preserve provider-qualified models and variants");
+  if (!pluginModels?.length) throw new Error("Official OpenCode Plugin returned no models");
+  if (!Array.isArray(pluginSkills) || !Array.isArray(pluginCommands))
+    throw new Error("Official OpenCode Plugin did not preserve Runtime Skill and Command catalogs");
+  if (!pluginThreads.some((thread) => thread.runtimeThreadId === session.id))
+    throw new Error("Official OpenCode Plugin did not discover the native Session");
+  const activity = await within(registry.readActivity(binding, session.id), "Plugin native Session activity");
+  if (activity.completeness !== "complete" || activity.activities.length !== 0)
+    throw new Error("Official OpenCode Plugin did not preserve the empty native transcript");
+  await within(registry.deleteThread(binding, session.id), "Plugin native Session deletion");
+  if ((await within(client.listSessions(directory), "post-Plugin Session listing")).some(({ id }) => id === session.id))
+    throw new Error("Official OpenCode Plugin did not delete the native Session");
   createdSessionId = null;
-  process.stdout.write(`OpenCode ${client.version} installed-runtime integration passed\n`);
+  await pluginHost.close();
+  pluginHost = null;
+  process.stdout.write(`OpenCode ${client.version} installed official Runtime Plugin integration passed\n`);
 } finally {
   eventsAbort.abort();
   if (createdSessionId)
     await within(client.deleteSession(createdSessionId, directory), "cleanup Session deletion").catch(() => false);
+  await pluginHost?.close().catch(() => undefined);
   await client.close();
   await rm(directory, { recursive: true, force: true });
 }

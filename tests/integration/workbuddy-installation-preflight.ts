@@ -1,6 +1,6 @@
 import { realpath } from "node:fs/promises";
 import type { WorkBuddyProfile } from "../../src/runtime/workbuddy-task-discovery";
-import { listWorkBuddyTasks } from "../../src/runtime/workbuddy-task-discovery-macos";
+import { createInstalledWorkBuddyPluginRuntime } from "./workbuddy-installed-plugin";
 
 const profiles = ["workbuddy-ai", "workbuddy-cn"] as const;
 
@@ -25,12 +25,24 @@ async function verifyProfile(profile: WorkBuddyProfile) {
   }
   const taskId = requiredEnv(`${prefix}_TASK_ID`);
   const workspace = await realpath(requiredEnv(`${prefix}_TASK_WORKSPACE`));
-  const tasks = await listWorkBuddyTasks(profile);
-  const selected = tasks.find((task) => task.id === taskId);
-  if (!selected || (await realpath(selected.workspace)) !== workspace) {
-    throw new Error(`${profile} did not expose its configured dedicated Task from the selected distribution`);
+  const installedPlugin = await createInstalledWorkBuddyPluginRuntime(profile);
+  try {
+    const { binding, runtimeAdapters } = installedPlugin;
+    const tasks = await runtimeAdapters.discoverAllThreads(binding);
+    const selected = tasks.find((task) => task.runtimeThreadId === taskId);
+    if (!selected?.workingDirectory || (await realpath(selected.workingDirectory)) !== workspace) {
+      throw new Error(`${profile} did not expose its configured dedicated Task from the selected Plugin capability`);
+    }
+    return {
+      profile,
+      taskId,
+      workspace,
+      taskCount: tasks.length,
+      catalogTaskIds: tasks.map((task) => task.runtimeThreadId),
+    };
+  } finally {
+    await installedPlugin.close();
   }
-  return { profile, taskId, workspace, taskCount: tasks.length, catalogTaskIds: tasks.map((task) => task.id) };
 }
 
 function requiredEnv(name: string): string {

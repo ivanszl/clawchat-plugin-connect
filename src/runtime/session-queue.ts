@@ -27,6 +27,11 @@ export class SessionQueue {
   private readonly queues = new Map<string, QueueItem[]>();
   private readonly runningSessions = new Set<string>();
   private readonly lifecycleClaims = new Set<string>();
+  private readonly acceptanceReservations = new Map<string, number>();
+  private bindingQuiescing = false;
+  private pendingLifecycleAcquisitions = 0;
+  private admissionsSettled: (() => void) | undefined;
+  private runningSettled: (() => void) | undefined;
   private running = 0;
   constructor(options: SessionQueueOptions = {}) {
     this.maxConcurrentTurns = options.maxConcurrentTurns ?? 4;
@@ -45,21 +50,64 @@ export class SessionQueue {
     run: () => Promise<void>,
     displayIdentity = `Session ${sessionIdentity}`,
   ): SessionQueueTicket {
+    return this.submitItem(sessionIdentity, run, displayIdentity, false);
+  }
+  async submitAccepted(
+    sessionIdentity: string,
+    run: () => Promise<void>,
+    accept: () => Promise<void>,
+    displayIdentity = `Session ${sessionIdentity}`,
+  ): Promise<SessionQueueTicket> {
     this.assertAccepting(sessionIdentity, displayIdentity);
     const queue = this.queues.get(sessionIdentity) ?? [];
-    if (queue.length >= this.maxPendingPerSession) throw new Error(`too many pending turns for ${displayIdentity}`);
-    this.queues.set(sessionIdentity, queue);
-    const { item, ticket } = this.createItem(sessionIdentity, run);
-    queue.push(item);
-    this.pump();
-    void this.notifyStats().catch(() => undefined);
-    return ticket;
+    const reserved = this.acceptanceReservations.get(sessionIdentity) ?? 0;
+    if (queue.length + reserved >= this.maxPendingPerSession) {
+      throw new Error(`too many pending turns for ${displayIdentity}`);
+    }
+    this.acceptanceReservations.set(sessionIdentity, reserved + 1);
+    try {
+      await accept();
+    } catch (error) {
+      this.releaseAcceptanceReservation(sessionIdentity);
+      throw error;
+    }
+    this.releaseAcceptanceReservation(sessionIdentity);
+    return this.submitItem(sessionIdentity, run, displayIdentity, true);
   }
 
   assertAccepting(sessionIdentity: string, displayIdentity = `Session ${sessionIdentity}`): void {
+    if (this.bindingQuiescing) {
+      throw new Error(`${displayIdentity} Agent Binding lifecycle operation is in progress`);
+    }
     if (this.lifecycleClaims.has(sessionIdentity)) {
       throw new Error(`${displayIdentity} lifecycle operation is in progress`);
     }
+  }
+
+  async acquireBindingQuiescence(displayIdentity = "Agent Binding"): Promise<() => Promise<void>> {
+    if (this.bindingQuiescing) {
+      throw new Error(`${displayIdentity} lifecycle operation is already in progress`);
+    }
+    this.bindingQuiescing = true;
+    this.rejectQueued(`${displayIdentity} lifecycle operation started`);
+    try {
+      await this.waitForAdmissions();
+      this.rejectQueued(`${displayIdentity} lifecycle operation started`);
+      await this.waitForRunningTurns();
+    } catch (error) {
+      this.bindingQuiescing = false;
+      this.pump();
+      throw error;
+    }
+
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      this.bindingQuiescing = false;
+      this.pump();
+      await this.notifyStats().catch(() => undefined);
+    };
   }
 
   async claim<T>(
@@ -82,10 +130,17 @@ export class SessionQueue {
     onClaim?: () => Promise<void>,
     onAcquired?: () => Promise<void>,
   ): Promise<() => Promise<void>> {
+    if (this.bindingQuiescing) {
+      throw new Error(`${displayIdentity} Agent Binding lifecycle operation is in progress`);
+    }
     if (this.lifecycleClaims.has(sessionIdentity)) {
       throw new Error(`${displayIdentity} lifecycle operation is in progress`);
     }
+    if ((this.acceptanceReservations.get(sessionIdentity) ?? 0) > 0) {
+      throw new Error(`${displayIdentity} Turn acceptance is in progress`);
+    }
     this.lifecycleClaims.add(sessionIdentity);
+    this.pendingLifecycleAcquisitions += 1;
     const queue = this.queues.get(sessionIdentity) ?? [];
     this.queues.set(sessionIdentity, queue);
     for (const pending of queue.splice(0)) {
@@ -95,7 +150,15 @@ export class SessionQueue {
       await onClaim?.();
     } catch (error) {
       this.lifecycleClaims.delete(sessionIdentity);
+      if (queue.length === 0 && !this.runningSessions.has(sessionIdentity)) this.queues.delete(sessionIdentity);
+      this.releaseLifecycleAcquisition();
       throw error;
+    }
+    this.releaseLifecycleAcquisition();
+    if (this.bindingQuiescing) {
+      this.lifecycleClaims.delete(sessionIdentity);
+      if (queue.length === 0 && !this.runningSessions.has(sessionIdentity)) this.queues.delete(sessionIdentity);
+      throw new Error(`${displayIdentity} Agent Binding lifecycle operation is in progress`);
     }
     let releaseOperation: () => void = () => undefined;
     const released = new Promise<void>((resolve) => {
@@ -140,7 +203,52 @@ export class SessionQueue {
     if ((this.queues.get(sessionIdentity)?.length ?? 0) > 0) return "queued";
     return "idle";
   }
+  private submitItem(
+    sessionIdentity: string,
+    run: () => Promise<void>,
+    displayIdentity: string,
+    admittedBeforeBindingGate: boolean,
+  ): SessionQueueTicket {
+    if (!admittedBeforeBindingGate) this.assertAccepting(sessionIdentity, displayIdentity);
+    else if (this.lifecycleClaims.has(sessionIdentity)) {
+      throw new Error(`${displayIdentity} lifecycle operation is in progress`);
+    }
+    const queue = this.queues.get(sessionIdentity) ?? [];
+    if (queue.length >= this.maxPendingPerSession) {
+      throw new Error(`too many pending turns for ${displayIdentity}`);
+    }
+    this.queues.set(sessionIdentity, queue);
+    const { item, ticket } = this.createItem(sessionIdentity, run);
+    queue.push(item);
+    this.pump();
+    void this.notifyStats().catch(() => undefined);
+    return ticket;
+  }
+
+  private rejectQueued(message: string): void {
+    for (const [sessionIdentity, queue] of this.queues) {
+      for (const pending of queue.splice(0)) pending.settle(new Error(message));
+      if (!this.runningSessions.has(sessionIdentity)) this.queues.delete(sessionIdentity);
+    }
+    void this.notifyStats().catch(() => undefined);
+  }
+
+  private async waitForAdmissions(): Promise<void> {
+    if (this.acceptanceReservations.size === 0 && this.pendingLifecycleAcquisitions === 0) return;
+    await new Promise<void>((resolve) => {
+      this.admissionsSettled = resolve;
+    });
+  }
+
+  private async waitForRunningTurns(): Promise<void> {
+    if (this.running === 0) return;
+    await new Promise<void>((resolve) => {
+      this.runningSettled = resolve;
+    });
+  }
+
   private pump(): void {
+    if (this.bindingQuiescing) return;
     if (this.running >= this.maxConcurrentTurns) return;
     for (const [sessionIdentity, queue] of this.queues) {
       if (this.running >= this.maxConcurrentTurns) return;
@@ -172,6 +280,10 @@ export class SessionQueue {
       this.pump();
     }
     item.settle(failure);
+    if (this.running === 0) {
+      this.runningSettled?.();
+      this.runningSettled = undefined;
+    }
   }
 
   private createItem(
@@ -217,6 +329,24 @@ export class SessionQueue {
     return { item, ticket };
   }
 
+  private releaseAcceptanceReservation(sessionIdentity: string): void {
+    const reserved = this.acceptanceReservations.get(sessionIdentity) ?? 0;
+    if (reserved <= 1) this.acceptanceReservations.delete(sessionIdentity);
+    else this.acceptanceReservations.set(sessionIdentity, reserved - 1);
+    this.settleAdmissionsIfIdle();
+  }
+
+  private releaseLifecycleAcquisition(): void {
+    this.pendingLifecycleAcquisitions -= 1;
+    this.settleAdmissionsIfIdle();
+  }
+
+  private settleAdmissionsIfIdle(): void {
+    if (this.acceptanceReservations.size === 0 && this.pendingLifecycleAcquisitions === 0) {
+      this.admissionsSettled?.();
+      this.admissionsSettled = undefined;
+    }
+  }
   private async notifyStats(): Promise<void> {
     await this.onStatsChange?.(this.stats());
   }

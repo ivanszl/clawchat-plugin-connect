@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ClientInterfaceOptions } from "../src/client-interface/server";
 import { defaultConfig, getAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
@@ -42,6 +43,43 @@ describe("Connect Service", () => {
     ).rejects.toThrow("managed skills mismatch");
   });
 
+  it("rejects startup after disposing composition resources that already started", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-startup-failure-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await stateStore.upsertActivation(activation("codex"));
+    const config = serviceConfig(["codex"]);
+    config.stateDbPath = stateStore.dbPath;
+    const events: string[] = [];
+
+    await expect(
+      startConnectService(
+        {
+          config,
+          stateStore,
+          waitUntilShutdown: async () => undefined,
+          writeOutput: () => undefined,
+          writeError: () => undefined,
+        },
+        {
+          startBindingRuntime: async () => ({
+            agentId: "codex",
+            websocketUrl: config.websocketUrl,
+            deviceId: "device-1",
+            close: async () => {
+              events.push("binding-close");
+            },
+          }),
+          startClientInterface: async () => {
+            throw new Error("client bind failed");
+          },
+          verifyInstalledSkills: async () => undefined,
+        },
+      ),
+    ).rejects.toThrow("client bind failed");
+
+    expect(events).toEqual(["binding-close"]);
+  });
+
   it("starts multiple Agent Bindings for one Binding Owner in one process and closes them together", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
@@ -58,7 +96,7 @@ describe("Connect Service", () => {
       maxConcurrentStarts = Math.max(maxConcurrentStarts, activeStarts);
       await new Promise((resolve) => setTimeout(resolve, 5));
       activeStarts -= 1;
-      await options.runtimeAdapters.prepare(getAgentBinding(options.config, options.agentId));
+      await options.execution?.runtimeAdapters.prepare(getAgentBinding(options.config, options.agentId));
       return {
         agentId: options.agentId,
         websocketUrl: config.websocketUrl,
@@ -69,7 +107,10 @@ describe("Connect Service", () => {
       };
     });
     const stopClientInterface = mock(async () => undefined);
-    const startClientInterface = mock(async () => ({ origin: "http://127.0.0.1:47823", stop: stopClientInterface }));
+    const startClientInterface = mock(async (_options: ClientInterfaceOptions) => ({
+      origin: "http://127.0.0.1:47823",
+      stop: stopClientInterface,
+    }));
     const closeRuntimeAdapter = mock(async () => undefined);
     const notifyHandler = mock(() => undefined);
     const createRuntimeAdapterRegistry = () =>
@@ -87,6 +128,7 @@ describe("Connect Service", () => {
         },
       ]);
 
+    const clientAssetsPath = join(directory, "production-client");
     const result = await startConnectService(
       {
         config,
@@ -100,6 +142,7 @@ describe("Connect Service", () => {
         startBindingRuntime,
         startClientInterface,
         createRuntimeAdapterRegistry,
+        resolveClientAssetsPath: async () => clientAssetsPath,
         verifyInstalledSkills: async () => undefined,
       },
     );
@@ -111,10 +154,73 @@ describe("Connect Service", () => {
     expect(
       startBindingRuntime.mock.calls.every(([options]) => options.protocolEventHandlers?.notify === notifyHandler),
     ).toBe(true);
+    const execution = startBindingRuntime.mock.calls[0]?.[0].execution;
+    expect(execution).toBeDefined();
+    expect(startBindingRuntime.mock.calls.every(([options]) => options.execution === execution)).toBe(true);
+    const turnSurfaces = startBindingRuntime.mock.calls[0]?.[0].turnSurfaces;
+    expect(turnSurfaces).toBeDefined();
+    expect(startBindingRuntime.mock.calls.every(([options]) => options.turnSurfaces === turnSurfaces)).toBe(true);
+    expect(startBindingRuntime.mock.calls.every(([options]) => options.runtimeAdapters === undefined)).toBe(true);
+    expect(startClientInterface.mock.calls[0]?.[0].runtimeAdapters).toBe(execution?.runtimeAdapters);
+    expect(startClientInterface.mock.calls[0]?.[0].transcriptProjection).toBe(execution?.transcriptProjection);
+    expect(startClientInterface.mock.calls[0]?.[0].runtimeInteractions).toBe(execution?.runtimeInteractions);
+    expect(startClientInterface.mock.calls[0]?.[0].assetsPath).toBe(clientAssetsPath);
     expect(closed).toEqual(["codex-work", "codex-review"]);
     expect(startClientInterface).toHaveBeenCalledTimes(1);
     expect(stopClientInterface).toHaveBeenCalledTimes(1);
     expect(closeRuntimeAdapter).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports disposal failures after awaiting every remaining cleanup", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-cleanup-failure-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    await stateStore.upsertActivation(activation("codex"));
+    const config = serviceConfig(["codex"]);
+    config.stateDbPath = stateStore.dbPath;
+    const events: string[] = [];
+    const errors: string[] = [];
+    const closeStore = stateStore.close.bind(stateStore);
+    stateStore.close = async () => {
+      await closeStore();
+      events.push("store-close");
+      throw new Error("store cleanup failed");
+    };
+
+    await expect(
+      startConnectService(
+        {
+          config,
+          stateStore,
+          waitUntilShutdown: async () => undefined,
+          writeOutput: () => undefined,
+          writeError: (message) => errors.push(message),
+        },
+        {
+          startBindingRuntime: async () => ({
+            agentId: "codex",
+            websocketUrl: config.websocketUrl,
+            deviceId: "device-1",
+            close: async () => {
+              events.push("binding-close");
+              throw new Error("binding cleanup failed");
+            },
+          }),
+          startClientInterface: async () => ({
+            origin: "http://127.0.0.1:47823",
+            stop: async () => {
+              events.push("client-stop");
+              throw new Error("client cleanup failed");
+            },
+          }),
+          verifyInstalledSkills: async () => undefined,
+        },
+      ),
+    ).resolves.toEqual({ startedAgentIds: ["codex"] });
+
+    expect(events).toEqual(["client-stop", "binding-close", "store-close"]);
+    expect(errors.join("")).toContain("client cleanup failed");
+    expect(errors.join("")).toContain("binding cleanup failed");
+    expect(errors.join("")).toContain("store cleanup failed");
   });
 
   it("keeps healthy Bindings running when another activated Binding fails to start", async () => {

@@ -2,19 +2,25 @@ import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
+import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
 import { Popover } from "@astryxdesign/core/Popover";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Spinner } from "@astryxdesign/core/Spinner";
+import { HStack, VStack } from "@astryxdesign/core/Stack";
+import { Text } from "@astryxdesign/core/Text";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import type { SessionView } from "../../../src/client-contract";
+import type { BindingPreferenceView, SessionView } from "../../../src/client-contract";
 import {
   archiveSession,
   bootstrapQueryOptions,
   catalogQueryOptions,
+  changeSessionBinding,
   clientKeys,
+  continueSession,
   deleteSession,
   sessionQueryOptions,
   slashSuggestionsQueryOptions,
@@ -173,6 +179,7 @@ function SessionPage() {
       <div className="session-work-area" data-artifact-open={artifactWorkspace.activeTab ? true : undefined}>
         <div className="session-conversation">
           <div className="session-notices">
+            <SessionAgentControls view={view} bindings={bootstrap.data?.bindings ?? []} />
             {!view.runtimeThreadAvailable && !view.allowedActions.includes("send") ? (
               <Banner
                 status="warning"
@@ -252,6 +259,168 @@ function SessionPage() {
         onAction={() => lifecycle.mutate("delete", { onSuccess: () => setDeleteOpen(false) })}
       />
     </section>
+  );
+}
+
+function SessionAgentControls({ view, bindings }: { view: SessionView; bindings: BindingPreferenceView[] }) {
+  const t = useClientTranslator();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const eligibleBindings = useMemo(() => bindings.filter((binding) => binding.clawChatUserId !== null), [bindings]);
+  const continuationBindings = useMemo(
+    () => eligibleBindings.filter((binding) => binding.bindingId !== view.bindingId),
+    [eligibleBindings, view.bindingId],
+  );
+  const [selectedBindingId, setSelectedBindingId] = useState(view.bindingId);
+  const [continuationBindingId, setContinuationBindingId] = useState(continuationBindings[0]?.bindingId ?? "");
+  const [continuationOpen, setContinuationOpen] = useState(false);
+  useEffect(() => {
+    setSelectedBindingId(view.bindingId);
+    setContinuationBindingId((current) =>
+      continuationBindings.some((binding) => binding.bindingId === current)
+        ? current
+        : (continuationBindings[0]?.bindingId ?? ""),
+    );
+  }, [continuationBindings, view.bindingId]);
+  const bindingOptions = eligibleBindings.map((binding) => ({
+    value: binding.bindingId,
+    label: `${binding.displayName} (${binding.bindingId})`,
+  }));
+  const continuationOptions = continuationBindings.map((binding) => ({
+    value: binding.bindingId,
+    label: `${binding.displayName} (${binding.bindingId})`,
+  }));
+  const change = useMutation({
+    mutationFn: async () => await changeSessionBinding(view.sessionRef, selectedBindingId),
+    onSuccess: async (updated) => {
+      queryClient.setQueryData(clientKeys.session(view.sessionRef), updated);
+      await queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
+    },
+  });
+  const continuation = useMutation({
+    mutationFn: async () => await continueSession(view.sessionRef, continuationBindingId),
+    onSuccess: async (created) => {
+      setContinuationOpen(false);
+      await queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
+      await navigate({ to: "/sessions/$sessionRef", params: { sessionRef: created.sessionRef } });
+    },
+  });
+  return (
+    <VStack gap={2}>
+      {view.bindingLocked ? (
+        <Banner
+          status="info"
+          title={t("@connect.session.agent.fixed.title")}
+          description={t(
+            view.bindingLockReason === "runtime-thread"
+              ? "@connect.session.agent.fixed.runtimeThread"
+              : "@connect.session.agent.fixed.acceptedTurn",
+          )}
+          container="section"
+        />
+      ) : (
+        <VStack gap={2}>
+          <Selector
+            label={t("@connect.session.agent.empty.label")}
+            description={t("@connect.session.agent.empty.description")}
+            options={bindingOptions}
+            value={selectedBindingId}
+            onChange={setSelectedBindingId}
+            isDisabled={bindingOptions.length < 2 || change.isPending}
+            disabledMessage={t("@connect.session.agent.empty.unavailable")}
+            width="100%"
+          />
+          <HStack justify="end">
+            <Button
+              label={t("@connect.session.agent.empty.action")}
+              variant="secondary"
+              isLoading={change.isPending}
+              isDisabled={selectedBindingId === view.bindingId}
+              onClick={() => change.mutate()}
+            />
+          </HStack>
+          {change.isError ? (
+            <Banner
+              status="error"
+              title={t("@connect.session.agent.changeFailure")}
+              description={localizedClientError(t, change.error)}
+            />
+          ) : null}
+        </VStack>
+      )}
+      {view.bindingLocked && view.projectId ? (
+        <HStack justify="end">
+          <Button
+            label={t("@connect.session.continue.action")}
+            variant="secondary"
+            isDisabled={continuationBindings.length === 0}
+            onClick={() => setContinuationOpen(true)}
+          />
+        </HStack>
+      ) : null}
+      <Dialog
+        isOpen={continuationOpen}
+        onOpenChange={(isOpen) => {
+          if (!continuation.isPending) setContinuationOpen(isOpen);
+        }}
+        purpose="form"
+        width={520}
+      >
+        <Layout
+          height="auto"
+          header={
+            <DialogHeader
+              title={t("@connect.session.continue.title")}
+              subtitle={t("@connect.session.continue.subtitle")}
+              onOpenChange={setContinuationOpen}
+            />
+          }
+          content={
+            <LayoutContent>
+              <VStack gap={4}>
+                <Banner
+                  status="warning"
+                  title={t("@connect.session.continue.warning.title")}
+                  description={t("@connect.session.continue.warning.description")}
+                />
+                <Selector
+                  label={t("@connect.session.continue.binding.label")}
+                  description={t("@connect.session.continue.binding.description")}
+                  options={continuationOptions}
+                  value={continuationBindingId}
+                  onChange={setContinuationBindingId}
+                  width="100%"
+                />
+                <Text>
+                  {t("@connect.session.continue.project", { project: view.projectName ?? view.workspaceName ?? "" })}
+                </Text>
+                {continuation.isError ? (
+                  <Banner
+                    status="error"
+                    title={t("@connect.session.continue.failure")}
+                    description={localizedClientError(t, continuation.error)}
+                  />
+                ) : null}
+              </VStack>
+            </LayoutContent>
+          }
+          footer={
+            <LayoutFooter hasDivider>
+              <HStack gap={2} justify="end">
+                <Button label={t("@connect.session.continue.cancel")} onClick={() => setContinuationOpen(false)} />
+                <Button
+                  label={t("@connect.session.continue.confirm")}
+                  variant="primary"
+                  isLoading={continuation.isPending}
+                  isDisabled={!continuationBindingId}
+                  onClick={() => continuation.mutate()}
+                />
+              </HStack>
+            </LayoutFooter>
+          }
+        />
+      </Dialog>
+    </VStack>
   );
 }
 

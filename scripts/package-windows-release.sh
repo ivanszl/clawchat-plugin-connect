@@ -5,7 +5,8 @@ set -eu
 connect_binary="${1:?Connect executable is required}"
 client_directory="${2:?Client directory is required}"
 liveware_binary="${3:?Liveware executable is required}"
-archive="${4:?archive path is required}"
+official_plugins_directory="${4:?official Plugins directory is required}"
+archive="${5:?archive path is required}"
 script_directory="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 repository_root="$(dirname "$script_directory")"
 staging_directory="$(mktemp -d "${TMPDIR:-/tmp}/clawchat-connect-windows-release.XXXXXX")"
@@ -16,6 +17,14 @@ trap 'rm -rf "$staging_directory"' 0 1 2 3 15
 test -f "$connect_binary"
 test -f "$client_directory/index.html"
 test -f "$liveware_binary"
+test -d "$official_plugins_directory"
+for official_plugin_id in clawling.runtime.codex clawling.runtime.opencode clawling.runtime.workbuddy; do
+  official_plugin_found=0
+  for official_plugin_bundle in "$official_plugins_directory/${official_plugin_id}-"*.connect-plugin; do
+    if [ -f "$official_plugin_bundle" ]; then official_plugin_found=1; break; fi
+  done
+  [ "$official_plugin_found" = 1 ]
+done
 test -f "$repository_root/LICENSE"
 test -f "$repository_root/CHANGELOG.md"
 test -f "$repository_root/skills/manifest.json"
@@ -28,6 +37,7 @@ archive="$archive_directory/$archive_name"
 cp "$connect_binary" "$staging_directory/clawchat-connect.exe"
 cp "$liveware_binary" "$staging_directory/liveware.exe"
 cp -R "$client_directory" "$staging_directory/clawchat-connect-client"
+cp -R "$official_plugins_directory" "$staging_directory/official-plugins"
 cp -R "$repository_root/skills" "$staging_directory/skills"
 cp "$repository_root/LICENSE" "$repository_root/CHANGELOG.md" "$staging_directory/"
 
@@ -36,6 +46,7 @@ cp "$repository_root/LICENSE" "$repository_root/CHANGELOG.md" "$staging_director
   zip -q -r "$archive" \
     clawchat-connect.exe \
     clawchat-connect-client \
+    official-plugins \
     liveware.exe \
     skills \
     CHANGELOG.md \

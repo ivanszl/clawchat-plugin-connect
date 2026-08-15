@@ -371,7 +371,7 @@ clawchat-connect service restart
 
 Then open `http://<computer-LAN-IP>:47823/`.
 
-LAN mode has no authentication or TLS. Anyone who can reach the port can enumerate host directory names and structure, read Sessions, manage Project paths and runtime preferences, and submit local coding-agent turns. Never expose it to the internet. Return to loopback mode with:
+LAN mode has no authentication or TLS. Anyone who can reach the port can enumerate host directory names and structure, read Sessions, manage Project paths and runtime preferences, and submit local coding-agent turns. Plugin administration remains restricted to an actual loopback connection, including the private loopback Liveware gateway; forwarded headers cannot grant it to a LAN peer. Never expose LAN mode to the internet. Return to loopback mode with:
 
 ```bash
 clawchat-connect config set clientHost 127.0.0.1
