@@ -22,7 +22,7 @@ import type { RuntimeWorkspace } from "../src/types";
 import { pluginBinding, TEST_RUNTIME_CAPABILITY } from "./runtime-adapter-fixture";
 
 const workspace: RuntimeWorkspace = {
-  projectId: "project-1",
+  workspaceRef: "project-1",
   workingDirectory: "/repo",
   skipGitRepoCheck: false,
 };
@@ -477,7 +477,7 @@ describe("Codex app-server runtime adapter", () => {
         for await (const _activity of otherSession.prompt({
           prompt: "/grill-with-docs Must not cross workspaces",
           skill: skills?.[0],
-          workspace: { ...workspace, projectId: "project-2", workingDirectory: "/other-repo" },
+          workspace: { ...workspace, workspaceRef: "project-2", workingDirectory: "/other-repo" },
         })) {
           // A Skill discovered for /repo is not valid in another workspace.
         }

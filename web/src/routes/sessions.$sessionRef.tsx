@@ -233,7 +233,7 @@ function SessionPage() {
           <div className="session-composer-surface">
             <SessionComposer
               sessionRef={sessionRef}
-              contextLabel={`${view.workspaceName || view.projectName || t("@connect.session.context.nonProject")} / ${view.sessionRef}`}
+              contextLabel={`${view.workspaceName || t("@connect.navigation.unnamedWorkspace")} / ${view.sessionRef}`}
               continueInClawChatHref={clawChatHref}
               canSend={view.allowedActions.includes("send") && view.status !== "offline"}
               isRuntimeActive={view.status === "running" || view.status === "queued"}
@@ -348,7 +348,7 @@ function SessionAgentControls({ view, bindings }: { view: SessionView; bindings:
           ) : null}
         </VStack>
       )}
-      {view.bindingLocked && view.projectId ? (
+      {view.bindingLocked ? (
         <HStack justify="end">
           <Button
             label={t("@connect.session.continue.action")}
@@ -391,9 +391,7 @@ function SessionAgentControls({ view, bindings }: { view: SessionView; bindings:
                   onChange={setContinuationBindingId}
                   width="100%"
                 />
-                <Text>
-                  {t("@connect.session.continue.project", { project: view.projectName ?? view.workspaceName ?? "" })}
-                </Text>
+                <Text>{t("@connect.session.continue.workspace", { workspace: view.workspaceName ?? "" })}</Text>
                 {continuation.isError ? (
                   <Banner
                     status="error"

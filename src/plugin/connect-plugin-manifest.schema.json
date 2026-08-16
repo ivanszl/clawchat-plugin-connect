@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/src/plugin/connect-plugin-manifest.schema.json",
   "title": "ClawChat Connect Plugin author manifest v1",
-  "description": "The author-owned manifest accepted by the public Plugin Bundle builder. The builder generates artifacts and probe metadata from the supplied entry files.",
+  "description": "The author-owned manifest accepted by the public Plugin Bundle builder. The builder generates artifact metadata from the supplied entry file.",
   "type": "object",
   "required": [
     "manifestVersion",
@@ -31,7 +31,7 @@
       "items": {
         "oneOf": [
           { "$ref": "#/$defs/runtimeCapability" },
-          { "$ref": "#/$defs/exposureCapability" }
+          { "$ref": "#/$defs/clientExtensionCapability" }
         ]
       }
     }
@@ -54,7 +54,7 @@
       "additionalProperties": false,
       "properties": {
         "type": { "const": "host" },
-        "id": { "enum": ["runtime-provider", "exposure-provider"] },
+        "id": { "enum": ["runtime-provider", "durable-state"] },
         "interfaceVersion": { "const": "1" }
       }
     },
@@ -67,18 +67,78 @@
         "type": { "const": "runtime" },
         "interfaceVersion": { "const": "1" },
         "family": { "$ref": "#/$defs/identity" },
-        "configurationSchema": { "$ref": "#/$defs/configurationSchema" }
+        "configurationSchema": { "$ref": "#/$defs/configurationSchema" },
+        "durableState": { "$ref": "#/$defs/durableState" }
       }
     },
-    "exposureCapability": {
+    "clientExtensionCapability": {
       "type": "object",
-      "required": ["id", "type", "interfaceVersion", "configurationSchema"],
+      "required": ["id", "type", "interfaceVersion", "configurationSchema", "browser"],
       "additionalProperties": false,
       "properties": {
         "id": { "$ref": "#/$defs/identity" },
-        "type": { "const": "exposure" },
+        "type": { "const": "client-extension" },
         "interfaceVersion": { "const": "1" },
-        "configurationSchema": { "$ref": "#/$defs/configurationSchema" }
+        "configurationSchema": { "$ref": "#/$defs/configurationSchema" },
+        "browser": { "$ref": "#/$defs/clientExtensionBrowser" },
+        "durableState": { "$ref": "#/$defs/durableState" }
+      }
+    },
+    "durableState": {
+      "type": "object",
+      "required": ["schemaVersion", "lifetime", "schema", "migrations"],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": { "type": "integer", "minimum": 1 },
+        "lifetime": { "enum": ["installation", "owner", "binding"] },
+        "schema": { "$ref": "#/$defs/configurationSchema" },
+        "migrations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to"],
+            "additionalProperties": false,
+            "properties": {
+              "from": { "type": "integer", "minimum": 1 },
+              "to": { "type": "integer", "minimum": 2 }
+            }
+          }
+        }
+      }
+    },
+    "clientExtensionBrowser": {
+      "type": "object",
+      "required": ["entry", "integrity", "styles", "slots"],
+      "additionalProperties": false,
+      "properties": {
+        "entry": { "type": "string", "minLength": 1 },
+        "integrity": { "type": "string", "pattern": "^sha256-[A-Za-z0-9+/]{43}=$" },
+        "styles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["entry", "integrity"],
+            "additionalProperties": false,
+            "properties": {
+              "entry": { "type": "string", "minLength": 1 },
+              "integrity": { "type": "string", "pattern": "^sha256-[A-Za-z0-9+/]{43}=$" }
+            }
+          }
+        },
+        "slots": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "interfaceVersion", "priority"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "enum": ["kernel.root.after"] },
+              "interfaceVersion": { "const": "1" },
+              "priority": { "type": "integer" }
+            }
+          }
+        }
       }
     }
   }

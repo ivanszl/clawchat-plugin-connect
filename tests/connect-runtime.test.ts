@@ -8,7 +8,6 @@ import type { ConnectWsClient } from "../src/clawchat/ws-client";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
-import { ProjectCatalog } from "../src/projects/projects";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type {
@@ -19,6 +18,7 @@ import type {
   RuntimeActivity,
 } from "../src/runtime/types";
 import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
+import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 function message(text = "hello"): NormalizedInboundMessage {
@@ -73,7 +73,7 @@ async function runtimeFixture() {
     chatId: "chat-1",
     sessionId: "session-1",
     agentId: "codex",
-    projectId: null,
+    workspaceRef: null,
     isCurrent: true,
   });
   const uploadMedia = mock(async (_file: Blob, _options?: { filename?: string }) => ({
@@ -298,13 +298,13 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     await fixture.store.close();
   });
 
-  it("synchronizes the persistent Runtime Workspace groups used by Connect Client into Projects", async () => {
+  it("synchronizes Runtime-reported identities into the Binding Workspace Catalog", async () => {
     const fixture = await runtimeFixture();
     const registeredRoot = join(dirname(fixture.config.stateDbPath), "clawchat-plugin-connect");
     const discoveredRoot = join(dirname(fixture.config.stateDbPath), "clawpet");
     await Promise.all([mkdir(registeredRoot), mkdir(discoveredRoot)]);
-    const projects = new ProjectCatalog(fixture.store);
-    const registered = await projects.add(registeredRoot);
+    const workspaces = new WorkspaceCatalog(fixture.store);
+    const registered = await workspaces.add("codex", registeredRoot);
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
@@ -338,6 +338,13 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         },
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+      discoverWorkspaces: async () => ({
+        status: "complete",
+        identities: [
+          { key: "connect", kind: "persistent", localRoot: registeredRoot },
+          { key: "clawpet", kind: "persistent", localRoot: discoveredRoot },
+        ],
+      }),
     };
     const runtime = new ConnectRuntime({
       agentId: "codex",
@@ -345,20 +352,24 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      projects,
+      workspaces,
       runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
     await expect(runtime.listRuntimeWorkspaces()).resolves.toEqual([
-      expect.objectContaining({
+      {
         name: "clawchat-plugin-connect",
-        projectId: registered.projectId,
-        projectName: "clawchat-plugin-connect",
-      }),
-      expect.objectContaining({
+        workspaceRef: registered.workspaceRef,
+        rootPath: await realpath(registeredRoot),
+      },
+      {
         name: "clawpet",
-        projectId: expect.any(String),
-        projectName: "clawpet",
+        workspaceRef: expect.any(String),
+        rootPath: await realpath(discoveredRoot),
+      },
+      expect.objectContaining({
+        name: "Default",
+        workspaceRef: expect.any(String),
       }),
     ]);
 
@@ -489,7 +500,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     }
   });
 
-  it("starts the first message in a Non-Project Session with an isolated workspace", async () => {
+  it("starts the first message in the Binding Default Workspace", async () => {
     const fixture = await runtimeFixture();
     await fixture.store.deleteRuntimeSession("chat-1", "codex", "session-1");
     const prompts: ConnectRuntimePrompt[] = [];
@@ -515,10 +526,11 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
     await runtime.handleInboundMessage(message());
 
-    await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({ projectId: null });
+    const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
+    expect(current?.workspaceRef).toEqual(expect.any(String));
     const promptInput = prompts[0];
     if (!promptInput) throw new Error("expected runtime prompt");
-    expect(promptInput.workspace).toMatchObject({ projectId: null, skipGitRepoCheck: true });
+    expect(promptInput.workspace).toMatchObject({ workspaceRef: current?.workspaceRef, skipGitRepoCheck: true });
     expect((await stat(promptInput.workspace.workingDirectory)).isDirectory()).toBe(true);
     await runtime.dispose();
     await fixture.store.close();
@@ -530,7 +542,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     await fixture.store.setSessionIntent({
       chatId: "chat-1",
       agentId: "codex",
-      projectId: null,
+      workspaceRef: null,
       model: "gpt-session",
       reasoningEffort: "high",
     });
@@ -773,14 +785,14 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         close: mock(async () => undefined),
       })),
     };
-    const projects = new ProjectCatalog(fixture.store);
+    const workspaces = new WorkspaceCatalog(fixture.store);
     const runtime = new ConnectRuntime({
       agentId: "codex",
       config: fixture.config,
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      projects,
+      workspaces,
       runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
@@ -798,7 +810,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             ownerUserId: "user-1",
             config: fixture.config,
             stateStore: fixture.store,
-            projects,
+            workspaces,
             listRuntimeModels: async () => models,
             runtimeFamilyFor: () => "codex",
           })
@@ -969,7 +981,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     const fixture = await runtimeFixture();
     const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
     if (!current) throw new Error("test session was not created");
-    const workspace = await new ProjectCatalog(fixture.store).resolveWorkspace(current);
+    const workspace = await new WorkspaceCatalog(fixture.store).resolveWorkspace(current);
     const secretPath = join(workspace.workingDirectory, ".env");
     await writeFile(secretPath, "SECRET_TOKEN=do-not-upload\n");
     const markdown = `![result](${secretPath})`;
@@ -1011,7 +1023,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     const fixture = await runtimeFixture();
     const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
     if (!current) throw new Error("test session was not created");
-    const workspace = await new ProjectCatalog(fixture.store).resolveWorkspace(current);
+    const workspace = await new WorkspaceCatalog(fixture.store).resolveWorkspace(current);
     const specPath = join(workspace.workingDirectory, ".scratch", "example-spec", "spec.md");
     await mkdir(dirname(specPath), { recursive: true });
     await writeFile(specPath, "# Example spec\n");
@@ -1094,14 +1106,14 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
   it("discovers within a pending Project and materializes its Session on the first message", async () => {
     const fixture = await runtimeFixture();
-    const projects = new ProjectCatalog(fixture.store);
-    const projectRoot = await mkdtemp(join(tmpdir(), "clawchat-connect-selected-project-"));
-    const canonicalProjectRoot = await realpath(projectRoot);
-    const project = await projects.add(projectRoot);
+    const workspaces = new WorkspaceCatalog(fixture.store);
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "clawchat-connect-selected-project-"));
+    const canonicalProjectRoot = await realpath(workspaceRoot);
+    const project = await workspaces.add("codex", workspaceRoot);
     await fixture.store.setSessionIntent({
       chatId: "chat-1",
       agentId: "codex",
-      projectId: project.projectId,
+      workspaceRef: project.workspaceRef,
       name: "Planned work",
       mode: "read-only",
       model: "gpt-planned",
@@ -1141,7 +1153,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      projects,
+      workspaces,
       runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
@@ -1156,7 +1168,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
     await expect(fixture.store.getSessionIntent("chat-1", "codex")).resolves.toBeNull();
     await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
-      projectId: project.projectId,
+      workspaceRef: project.workspaceRef,
       name: "Planned work",
       mode: "read-only",
       model: "gpt-planned",
@@ -1165,7 +1177,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     });
     expect(prompts).toHaveLength(1);
     expect(prompts[0]).toMatchObject({
-      workspace: { projectId: project.projectId, workingDirectory: canonicalProjectRoot },
+      workspace: { workspaceRef: project.workspaceRef, workingDirectory: canonicalProjectRoot },
       mode: "read-only",
       model: "gpt-planned",
       reasoningEffort: "medium",
@@ -1261,14 +1273,14 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         close: mock(async () => undefined),
       })),
     };
-    const projects = new ProjectCatalog(fixture.store);
+    const workspaces = new WorkspaceCatalog(fixture.store);
     const runtime = new ConnectRuntime({
       agentId: "codex",
       config: fixture.config,
       configPath: fixture.configPath,
       stateStore: fixture.store,
       wsClient: fixture.wsClient,
-      projects,
+      workspaces,
       runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
     });
 
@@ -1285,7 +1297,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             ownerUserId: "user-1",
             config: fixture.config,
             stateStore: fixture.store,
-            projects,
+            workspaces,
             closeRuntimeSession: async (chatId) => await runtime.closeSession(chatId),
             runtimeFamilyFor: () => "codex",
           })
@@ -1308,19 +1320,19 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     await fixture.store.close();
   });
 
-  it("routes following messages after ordered /project and /switch controls", async () => {
-    for (const scenario of ["project", "switch"] as const) {
+  it("routes following messages after ordered /workspace and /switch controls", async () => {
+    for (const scenario of ["workspace", "switch"] as const) {
       const fixture = await runtimeFixture();
-      const projects = new ProjectCatalog(fixture.store);
-      const projectRoot = join(dirname(fixture.configPath), `repo-${scenario}`);
-      await mkdir(projectRoot);
-      const project = await projects.add(projectRoot);
+      const workspaces = new WorkspaceCatalog(fixture.store);
+      const workspaceRoot = join(dirname(fixture.configPath), `repo-${scenario}`);
+      await mkdir(workspaceRoot);
+      const project = await workspaces.add("codex", workspaceRoot);
       if (scenario === "switch") {
         await fixture.store.upsertRuntimeSession({
           chatId: "chat-1",
           sessionId: "session-target",
           agentId: "codex",
-          projectId: project.projectId,
+          workspaceRef: project.workspaceRef,
           name: "Target Session",
           isCurrent: false,
         });
@@ -1333,7 +1345,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       const firstGate = new Promise<void>((resolve) => {
         releaseFirst = resolve;
       });
-      const prompted: Array<{ sessionId: string; projectId: string }> = [];
+      const prompted: Array<{ sessionId: string; workspaceRef: string }> = [];
       const adapter: ConnectRuntimeAdapter = {
         kind: "codex",
         modes: ["workspace-write"],
@@ -1341,7 +1353,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
           prompt: async function* (input: ConnectRuntimePrompt) {
             prompted.push({
               sessionId: input.metadata?.sessionId ?? "missing",
-              projectId: input.metadata?.projectId ?? "missing",
+              workspaceRef: input.metadata?.workspaceRef ?? "missing",
             });
             if (prompted.length === 1) {
               markFirstStarted?.();
@@ -1358,14 +1370,14 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         configPath: fixture.configPath,
         stateStore: fixture.store,
         wsClient: fixture.wsClient,
-        projects,
+        workspaces,
         runtimeAdapters: new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]),
       });
 
       const first = runtime.handleInboundMessage(message("first turn"));
       await firstStarted;
       const controlMessage = message(
-        scenario === "project" ? `/project ${projects.workspaceId(project)}` : "/switch Target Session",
+        scenario === "workspace" ? `/workspace ${project.workspaceRef}` : "/switch Target Session",
       );
       controlMessage.messageId = `${scenario}-control`;
       const control = runtime.handleInboundMessage(
@@ -1378,7 +1390,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
               ownerUserId: "user-1",
               config: fixture.config,
               stateStore: fixture.store,
-              projects,
+              workspaces,
               closeRuntimeSession: async (chatId) => await runtime.closeSession(chatId),
               discoverRuntimeThreads: async (chatId) => await runtime.discoverRuntimeThreads(chatId),
               runtimeFamilyFor: () => "codex",
@@ -1390,13 +1402,14 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       followingMessage.messageId = `${scenario}-following`;
       const following = runtime.handleInboundMessage(followingMessage);
       await Bun.sleep(5);
-      expect(prompted).toEqual([{ sessionId: "session-1", projectId: "none" }]);
+      expect(prompted).toEqual([{ sessionId: "session-1", workspaceRef: expect.any(String) }]);
+      expect(prompted[0]?.workspaceRef).not.toBe(project.workspaceRef);
 
       releaseFirst?.();
       await Promise.all([first, control, following]);
 
       expect(prompted).toHaveLength(2);
-      expect(prompted[1]?.projectId).toBe(project.projectId);
+      expect(prompted[1]?.workspaceRef).toBe(project.workspaceRef);
       if (scenario === "switch") expect(prompted[1]?.sessionId).toBe("session-target");
       else expect(prompted[1]?.sessionId).not.toBe("session-1");
       await runtime.dispose();
@@ -1901,7 +1914,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       chatId: "chat-1",
       sessionId: "session-2",
       agentId: "codex",
-      projectId: null,
+      workspaceRef: null,
       isCurrent: false,
     });
     const sessions = await fixture.store.listRuntimeSessions("chat-1", "codex");

@@ -27,7 +27,7 @@ runtimeAdapterConformance("installed official OpenCode Plugin", async () => {
   const binding = createAgentBinding({
     pluginId: OPENCODE_OFFICIAL_PLUGIN_ID,
     capabilityId: OPENCODE_OFFICIAL_CAPABILITY_ID,
-    configuration: { env: { CONFORMANCE_INSTANCE: instance } },
+    configuration: { displayName: instance },
   });
   const config = defaultConfig();
   config.agents = { opencode: binding };
@@ -60,7 +60,7 @@ runtimeAdapterConformance("installed official OpenCode Plugin", async () => {
       if (!current) throw new Error("OpenCode conformance client was not prepared");
       current.pending = true;
       return await registry.listSessionOptions(binding, {
-        projectId: null,
+        workspaceRef: "WSDEFALT",
         workingDirectory: "/repo",
         skipGitRepoCheck: true,
       });

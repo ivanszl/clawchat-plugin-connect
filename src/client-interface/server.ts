@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import { leadingSkillName } from "../agent/skill-invocation";
 import { bindingOutputVisibility } from "../clawchat/output-visibility";
 import {
-  type AddProjectRequest,
+  type AddWorkspaceRequest,
+  BINDING_SCOPE_HEADER,
   type BootstrapView,
   type CancelTurnRequest,
   type ChangeSessionBindingRequest,
@@ -21,18 +22,23 @@ import {
   type PluginCapabilityView,
   type PluginDiagnosticStage,
   type PluginDiagnosticView,
-  type ProjectDirectoryRequest,
   type SessionCatalogView,
   type SessionMutationRequest,
   type SessionView,
   type UpdateBindingPreferencesRequest,
   type UpdateSessionPreferencesRequest,
   type UpsertBindingProviderRequest,
+  type WorkspaceDirectoryRequest,
 } from "../client-contract";
 import { ConnectConfigMutationCoordinator, getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
 import { createAgentBinding } from "../plugin/binding";
 import type { OfficialPluginDiscovery } from "../plugin/catalog";
+import {
+  assertCurrentClientExtensionEpoch,
+  deriveClientExtensionGraph,
+  resolveClientExtensionArtifact,
+} from "../plugin/client-extension";
 import type {
   ConfigurePluginOptions,
   ConnectPluginManagement,
@@ -41,20 +47,11 @@ import type {
   UpsertBindingProviderResult,
 } from "../plugin/host";
 import { RuntimeProviderValidationError } from "../plugin/host";
-import { type InstalledPluginLockEntry, validatePluginConfiguration } from "../plugin/store";
 import {
-  HostDirectoryError,
-  listHostDirectories,
-  type MaterializedProjectDirectory,
-  materializeProjectDirectory,
-} from "../projects/host-directories";
-import { ProjectCatalog } from "../projects/projects";
-import {
-  createSessionContinuity,
-  type SessionContinuityModule,
-  SessionLifecycleError,
-} from "../projects/session-continuity";
-import { classifyWorkspaceArtifact } from "../projects/workspace-artifact";
+  type InstalledPluginLockEntry,
+  validatePluginConfiguration,
+  verifyConnectPluginIntegrity,
+} from "../plugin/store";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
@@ -62,7 +59,19 @@ import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runti
 import type { RuntimeSlashSelection } from "../runtime/types";
 import type { BindingRuntimeHandle } from "../service/binding-runtime";
 import type { AgentBindingConfig, ConnectConfig } from "../types";
-import { BINDING_SCOPE_HEADER } from "./binding-scoped-gateway";
+import {
+  HostDirectoryError,
+  listHostDirectories,
+  type MaterializedWorkspaceDirectory,
+  materializeWorkspaceDirectory,
+} from "../workspaces/host-directories";
+import {
+  createSessionContinuity,
+  type SessionContinuityModule,
+  SessionLifecycleError,
+} from "../workspaces/session-continuity";
+import { classifyWorkspaceArtifact } from "../workspaces/workspace-artifact";
+import { WorkspaceCatalog } from "../workspaces/workspaces";
 import { resolveClientAssetsPath, staticResponse } from "./client-assets";
 import {
   ClientRequestError,
@@ -119,7 +128,7 @@ export interface ClientInterfaceOptions {
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection: TranscriptProjection;
   runtimeInteractions?: RuntimeInteractionCoordinator;
-  projects?: ProjectCatalog;
+  workspaces?: WorkspaceCatalog;
   sessionContinuityModule?: SessionContinuityModule;
   pluginManager?: ConnectPluginManagement;
   runtimes: BindingRuntimeHandle[];
@@ -156,6 +165,7 @@ interface ActiveTurnSubmission {
 export interface ClientInterfaceHandle {
   origin: string;
   fetch?(request: Request): Promise<Response>;
+  fetchPrivateGateway(request: Request): Promise<Response>;
   retireBindings(bindingIds: readonly string[]): Promise<void>;
   stop(): Promise<void>;
 }
@@ -165,9 +175,21 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   const port = options.port ?? options.config.clientPort;
   const origin = `http://${hostname}:${port}`;
   const assetsPath = options.assetsPath ?? (await resolveClientAssetsPath());
-  const projects = options.projects ?? new ProjectCatalog(options.stateStore);
+  const workspaces = options.workspaces ?? new WorkspaceCatalog(options.stateStore);
+  const continuityOptions = {
+    resolveDefaultWorkspace: async (bindingId: string) => (await workspaces.ensureDefault(bindingId)).workspaceRef,
+    resolveContinuationWorkspace: async (source: import("../types").RuntimeSessionRecord, bindingId: string) => {
+      if (source.agentId === bindingId && source.workspaceRef) return source.workspaceRef;
+      const sourceWorkspace = source.workspaceRef ? await workspaces.get(source.agentId, source.workspaceRef) : null;
+      const target = sourceWorkspace
+        ? (await workspaces.list(bindingId)).find((workspace) => workspace.rootPath === sourceWorkspace.rootPath)
+        : null;
+      return target?.workspaceRef ?? (await workspaces.ensureDefault(bindingId)).workspaceRef;
+    },
+  };
   const sessionContinuity =
-    options.sessionContinuityModule?.create() ?? createSessionContinuity({ stateStore: options.stateStore });
+    options.sessionContinuityModule?.create(continuityOptions) ??
+    createSessionContinuity({ ...continuityOptions, stateStore: options.stateStore });
   const runtimes = new Map(options.runtimes.map((runtime) => [runtime.agentId, runtime]));
   const configMutations =
     options.pluginManager?.configMutations ?? new ConnectConfigMutationCoordinator(options.config, options.configPath);
@@ -177,7 +199,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     retiredBindings.has(bindingId) || retiringBindings.has(bindingId);
   const catalog = new SessionCatalog({
     ...options,
-    projects,
+    workspaces,
     runtimeFamily: async (binding) =>
       runtimeFamilyForClient(binding, options.runtimeAdapters, (await options.pluginManager?.list()) ?? []),
     sessionActivity: async (bindingId, sessionRef) =>
@@ -289,8 +311,47 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           }
         }
         if (isMutation(request.method)) {
-          const mutationError = await validateMutationRequest(request, requestOrigin, options.stateStore, bindingScope);
+          const mutationError = await validateMutationRequest(request, requestOrigin);
           if (mutationError) return mutationError;
+        }
+        const clientExtensionArtifactPath = url.pathname.match(
+          /^\/client\/v1\/plugin-artifacts\/([^/]+)\/([1-9]\d*)\/([^/]+)\/(.+)$/u,
+        );
+        if (clientExtensionArtifactPath && request.method === "GET") {
+          const installed = (await options.pluginManager?.listPublishedClientExtensions()) ?? [];
+          const [, encodedPluginId, generation, encodedCapabilityId, encodedEntry] = clientExtensionArtifactPath;
+          let pluginId: string;
+          let capabilityId: string;
+          let artifactEntry: string;
+          try {
+            pluginId = decodeURIComponent(encodedPluginId ?? "");
+            capabilityId = decodeURIComponent(encodedCapabilityId ?? "");
+            artifactEntry = (encodedEntry ?? "")
+              .split("/")
+              .map((segment) => decodeURIComponent(segment))
+              .join("/");
+          } catch {
+            return errorResponse(400, "invalid-client-extension-artifact", "Client Extension artifact path is invalid");
+          }
+          const artifact = resolveClientExtensionArtifact(
+            installed,
+            pluginId,
+            Number(generation),
+            capabilityId,
+            artifactEntry,
+          );
+          if (!artifact) {
+            return errorResponse(404, "client-extension-artifact-not-found", "Client Extension artifact was not found");
+          }
+          const bytes = await readFile(artifact.path);
+          verifyConnectPluginIntegrity(bytes, artifact.integrity, `${pluginId}/${capabilityId} ${artifactEntry}`);
+          return new Response(bytes, {
+            headers: {
+              "cache-control": "private, no-store",
+              "content-type": artifact.contentType,
+              "x-content-type-options": "nosniff",
+            },
+          });
         }
         if (url.pathname === `${CLIENT_API_PREFIX}/plugins/administration` && request.method === "GET") {
           if (!options.pluginManager) {
@@ -389,7 +450,19 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return errorResponse(400, "invalid-plugin-source", "source is required");
             }
             try {
-              return jsonResponse(await options.pluginManager.install({ ...body, source: body.source }), 201);
+              return jsonResponse(
+                await options.pluginManager.install({
+                  source: body.source,
+                  ...(body.target !== undefined ? { target: body.target } : {}),
+                  ...(body.installationConfiguration !== undefined
+                    ? { installationConfiguration: body.installationConfiguration }
+                    : {}),
+                  ...(body.exposureConfigurations !== undefined
+                    ? { exposureConfigurations: body.exposureConfigurations }
+                    : {}),
+                }),
+                201,
+              );
             } catch (error) {
               return errorResponse(
                 409,
@@ -409,7 +482,18 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               if (body.source !== undefined && (typeof body.source !== "string" || !body.source.trim())) {
                 return errorResponse(400, "invalid-plugin-source", "source must be a non-empty string");
               }
-              return jsonResponse(await options.pluginManager.update(pluginId, body));
+              return jsonResponse(
+                await options.pluginManager.update(pluginId, {
+                  ...(body.source !== undefined ? { source: body.source } : {}),
+                  ...(body.target !== undefined ? { target: body.target } : {}),
+                  ...(body.installationConfiguration !== undefined
+                    ? { installationConfiguration: body.installationConfiguration }
+                    : {}),
+                  ...(body.exposureConfigurations !== undefined
+                    ? { exposureConfigurations: body.exposureConfigurations }
+                    : {}),
+                }),
+              );
             }
             if (request.method === "POST" && action === "reinstall") {
               return jsonResponse(await options.pluginManager.reinstall(pluginId));
@@ -458,12 +542,14 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
         }
         if (url.pathname === `${CLIENT_API_PREFIX}/bootstrap` && request.method === "GET") {
           const installed = (await options.pluginManager?.list()) ?? [];
+          const publishedClientExtensions = (await options.pluginManager?.listPublishedClientExtensions()) ?? [];
           const view: BootstrapView = {
             apiVersion: 1,
             eventCursor: await options.stateStore.getClientEventCursor(),
             outputVisibility: bindingScope
               ? bindingOutputVisibility(options.config, bindingScope)
               : options.config.outputVisibility,
+            clientExtensions: deriveClientExtensionGraph(publishedClientExtensions),
             bindings: await Promise.all(
               Object.entries(options.config.agents)
                 .filter(([bindingId]) => requestScope.includesBinding(bindingId))
@@ -509,10 +595,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           const path = url.searchParams.get("path");
           const showHidden = url.searchParams.get("showHidden") === "1";
           try {
-            const projectShortcuts = (await projects.list()).map((project) => ({
-              kind: "project" as const,
-              name: project.name,
-              path: project.rootPath,
+            const workspaceShortcuts = (await workspaces.listAll()).map((workspace) => ({
+              kind: "workspace" as const,
+              name: `${workspace.bindingId}: ${workspace.name}`,
+              path: workspace.rootPath,
             }));
             const runtimeShortcuts = (await catalog.runtimeWorkspaceLocations()).map((workspace) => ({
               kind: "runtime-workspace" as const,
@@ -523,47 +609,67 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               await listHostDirectories({
                 path,
                 showHidden,
-                shortcuts: [...projectShortcuts, ...runtimeShortcuts],
+                shortcuts: [...workspaceShortcuts, ...runtimeShortcuts],
               }),
             );
           } catch (error) {
             return hostDirectoryErrorResponse(error);
           }
         }
-        if (url.pathname === `${CLIENT_API_PREFIX}/projects` && request.method === "GET") {
+        if (url.pathname === `${CLIENT_API_PREFIX}/workspaces` && request.method === "GET") {
+          const visible = (
+            await Promise.all(
+              Object.keys(options.config.agents)
+                .filter((bindingId) => requestScope.includesBinding(bindingId))
+                .map(async (bindingId) => await workspaces.list(bindingId)),
+            )
+          ).flat();
           return jsonResponse(
-            (await projects.list()).map((project) => ({
-              ...project,
-              workspaceId: projects.workspaceId(project),
+            visible.map((workspace) => ({
+              bindingId: workspace.bindingId,
+              workspaceRef: workspace.workspaceRef,
+              name: workspace.name,
+              rootPath: workspace.rootPath,
+              isDefault: workspace.source === "default",
             })),
           );
         }
-        if (url.pathname === `${CLIENT_API_PREFIX}/projects` && request.method === "POST") {
-          const body = await readJsonBody<AddProjectRequest>(request);
+        if (url.pathname === `${CLIENT_API_PREFIX}/workspaces` && request.method === "POST") {
+          const body = await readJsonBody<AddWorkspaceRequest>(request);
           if (!validRequestId(body.requestId)) return errorResponse(400, "invalid-request-id", "requestId is required");
-          if ("name" in body) return errorResponse(400, "invalid-project", "Project names are derived from its root");
-          if ("additionalDirectories" in body)
-            return errorResponse(400, "invalid-project", "Project additional directories are not supported");
-          if (!isProjectDirectoryRequest(body.directory))
-            return errorResponse(400, "invalid-project", "A valid Project directory is required");
+          if (typeof body.bindingId !== "string" || !options.config.agents[body.bindingId])
+            return errorResponse(400, "invalid-binding", "A valid bindingId is required");
+          if (!requestScope.includesBinding(body.bindingId))
+            return errorResponse(404, "binding-not-found", "Agent Binding was not found");
+          if (!isWorkspaceDirectoryRequest(body.directory))
+            return errorResponse(400, "invalid-workspace", "A valid Workspace directory is required");
           return await idempotentCommand(
             options.stateStore,
             body.requestId,
-            "project.add",
-            JSON.stringify(body.directory),
+            "workspace.add",
+            `${body.bindingId}:${JSON.stringify(body.directory)}`,
             async () => {
-              let materialized: MaterializedProjectDirectory | null = null;
+              let materialized: MaterializedWorkspaceDirectory | null = null;
               try {
-                materialized = await materializeProjectDirectory(body.directory);
-                const registered = await projects.ensureRegistered(materialized.rootPath);
+                materialized = await materializeWorkspaceDirectory(body.directory);
+                const existing = (await workspaces.list(body.bindingId)).find(
+                  (workspace) => workspace.rootPath === materialized?.rootPath,
+                );
+                const workspace = await workspaces.add(body.bindingId, materialized.rootPath);
                 catalog.invalidate();
                 return {
-                  status: registered.created ? 201 : 200,
-                  body: { ...registered.project, workspaceId: projects.workspaceId(registered.project) },
+                  status: existing ? 200 : 201,
+                  body: {
+                    bindingId: workspace.bindingId,
+                    workspaceRef: workspace.workspaceRef,
+                    name: workspace.name,
+                    rootPath: workspace.rootPath,
+                    isDefault: false,
+                  },
                 };
               } catch (error) {
                 await materialized?.rollback();
-                return hostDirectoryCommandError(error, "project-conflict");
+                return hostDirectoryCommandError(error, "workspace-conflict");
               }
             },
           );
@@ -596,10 +702,12 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               if (!options.config.agents[body.bindingId])
                 return commandError(404, "binding-not-found", "Agent Binding was not found");
               const binding = getAgentBinding(options.config, body.bindingId);
-              let workspaceProject =
-                body.workspace.kind === "existing" ? await projects.get(body.workspace.workspaceId) : null;
-              if (body.workspace.kind === "existing" && !workspaceProject)
-                return commandError(400, "invalid-workspace", "Project Workspace ID was not found");
+              let workspaceRecord =
+                body.workspace.kind === "existing"
+                  ? await workspaces.get(body.bindingId, body.workspace.workspaceRef)
+                  : null;
+              if (body.workspace.kind === "existing" && !workspaceRecord)
+                return commandError(400, "invalid-workspace", "Workspace Ref was not found for this Agent Binding");
               const name = body.name?.trim() || null;
               if (name && name.length > 200)
                 return commandError(400, "invalid-name", "Session name must be at most 200 characters");
@@ -619,24 +727,21 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               } catch (error) {
                 return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
               }
-              let materialized: MaterializedProjectDirectory | null = null;
-              let createdProjectId: string | null = null;
+              let materialized: MaterializedWorkspaceDirectory | null = null;
+              let createdWorkspaceRef: string | null = null;
               let preserveMaterializedDirectory = false;
               try {
-                if (body.workspace.kind === "new-project") {
-                  materialized = await materializeProjectDirectory(body.workspace.directory);
-                  const registered = await projects.ensureRegistered(materialized.rootPath);
-                  workspaceProject = registered.project;
-                  if (registered.created) createdProjectId = registered.project.projectId;
+                if (body.workspace.kind === "new") {
+                  materialized = await materializeWorkspaceDirectory(body.workspace.directory);
+                  const existing = (await workspaces.list(body.bindingId)).find(
+                    (workspace) => workspace.rootPath === materialized?.rootPath,
+                  );
+                  workspaceRecord = await workspaces.add(body.bindingId, materialized.rootPath);
+                  if (!existing) createdWorkspaceRef = workspaceRecord.workspaceRef;
                   else preserveMaterializedDirectory = true;
                 }
-                const workspace = workspaceProject
-                  ? await projects.resolveProjectWorkspace(workspaceProject.projectId)
-                  : {
-                      projectId: null,
-                      workingDirectory: projects.workspaceRoot,
-                      skipGitRepoCheck: true,
-                    };
+                if (!workspaceRecord) throw new Error("Workspace resolution failed");
+                const workspace = await workspaces.resolveWorkspaceRef(body.bindingId, workspaceRecord.workspaceRef);
                 const validatedOptions = await validatedSessionOptions(
                   options.runtimeAdapters,
                   binding,
@@ -644,12 +749,18 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   body.sessionOptions ?? {},
                 );
                 if (!validatedOptions.ok) {
-                  await rollbackInlineProject(projects, createdProjectId, materialized, preserveMaterializedDirectory);
+                  await rollbackInlineWorkspace(
+                    workspaces,
+                    body.bindingId,
+                    createdWorkspaceRef,
+                    materialized,
+                    preserveMaterializedDirectory,
+                  );
                   return validatedOptions.error;
                 }
                 const chatId = `__connect_client_session__:${randomUUID()}`;
                 const session = await sessionContinuity.inConversation({ chatId, bindingId: body.bindingId }).create({
-                  projectId: workspaceProject?.projectId ?? null,
+                  workspaceRef: workspaceRecord.workspaceRef,
                   name,
                   mode: body.mode,
                   model,
@@ -677,37 +788,51 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 }
                 return { status: 201, body: view };
               } catch (error) {
-                await rollbackInlineProject(projects, createdProjectId, materialized, preserveMaterializedDirectory);
+                await rollbackInlineWorkspace(
+                  workspaces,
+                  body.bindingId,
+                  createdWorkspaceRef,
+                  materialized,
+                  preserveMaterializedDirectory,
+                );
                 catalog.invalidate();
-                if (error instanceof HostDirectoryError) return hostDirectoryCommandError(error, "project-conflict");
+                if (error instanceof HostDirectoryError) return hostDirectoryCommandError(error, "workspace-conflict");
                 throw error;
               }
             },
           );
         }
-        const projectMatch = url.pathname.match(/^\/client\/v1\/projects\/([^/]+)$/u);
-        if (projectMatch && request.method === "DELETE") {
-          const reference = decodeURIComponent(projectMatch[1] ?? "");
+        const workspaceMatch = url.pathname.match(/^\/client\/v1\/workspaces\/([^/]+)\/([^/]+)$/u);
+        if (workspaceMatch && request.method === "DELETE") {
+          const bindingId = decodeURIComponent(workspaceMatch[1] ?? "");
+          const workspaceRef = decodeURIComponent(workspaceMatch[2] ?? "");
+          if (!requestScope.includesBinding(bindingId))
+            return errorResponse(404, "binding-not-found", "Agent Binding was not found");
           const body = await readJsonBody<SessionMutationRequest>(request);
           if (!validRequestId(body.requestId)) return errorResponse(400, "invalid-request-id", "requestId is required");
-          return await idempotentCommand(options.stateStore, body.requestId, "project.remove", reference, async () => {
-            try {
-              const result = await projects.remove(reference);
-              if (!result.removed)
+          return await idempotentCommand(
+            options.stateStore,
+            body.requestId,
+            "workspace.remove",
+            `${bindingId}:${workspaceRef}`,
+            async () => {
+              try {
+                const removed = await workspaces.remove(bindingId, workspaceRef);
+                catalog.invalidate();
+                return {
+                  status: 200,
+                  body: { bindingId, workspaceRef: removed.workspaceRef, removed: true },
+                };
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
                 return commandError(
-                  409,
-                  "project-in-use",
-                  `${result.referencedSessions} Session(s) and ${result.pendingIntents} Session Intent(s) still reference this Project`,
+                  message.includes("used by") || message.includes("Default Workspace") ? 409 : 404,
+                  message.includes("used by") ? "workspace-in-use" : "workspace-not-found",
+                  message,
                 );
-              catalog.invalidate();
-              return {
-                status: 200,
-                body: { workspaceId: projects.workspaceId(result.project), removed: true },
-              };
-            } catch (error) {
-              return commandError(404, "project-not-found", error instanceof Error ? error.message : String(error));
-            }
-          });
+              }
+            },
+          );
         }
         if (url.pathname === `${CLIENT_API_PREFIX}/events` && request.method === "GET") {
           const after = eventCursor(request, url);
@@ -1185,7 +1310,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               let reasoningEffort: string | null = null;
               try {
                 if (body.model) {
-                  const workspace = await projects.resolveWorkspace(session);
+                  const workspace = await workspaces.resolveWorkspace(session);
                   const models = await options.runtimeAdapters.listModels(binding, {
                     runtimeThreadId: session.runtimeSessionId ?? undefined,
                     workspace,
@@ -1204,7 +1329,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 const validatedOptions = await validatedSessionOptions(
                   options.runtimeAdapters,
                   binding,
-                  await projects.resolveWorkspace(session),
+                  await workspaces.resolveWorkspace(session),
                   body.sessionOptions,
                   true,
                   { runtimeThreadId: session.runtimeSessionId ?? undefined },
@@ -1390,6 +1515,20 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           const body = await readJsonBody<UpdateBindingPreferencesRequest>(request);
           if (!validRequestId(body.requestId)) return errorResponse(400, "invalid-request-id", "requestId is required");
           validatePreferencePatch(body);
+          if (body.clientExtensionEpoch !== undefined) {
+            const clientExtensionGraph = deriveClientExtensionGraph(
+              (await options.pluginManager?.listPublishedClientExtensions()) ?? [],
+            );
+            try {
+              assertCurrentClientExtensionEpoch(clientExtensionGraph, body.clientExtensionEpoch);
+            } catch {
+              return errorResponse(
+                409,
+                "stale-client-extension-epoch",
+                "The Client Extension graph changed; refresh before retrying",
+              );
+            }
+          }
           return await idempotentCommand(
             options.stateStore,
             body.requestId,
@@ -1521,6 +1660,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   return {
     origin,
     fetch: async (request) => await handleRequest(request),
+    fetchPrivateGateway: async (request) =>
+      await handleRequest(request, {
+        requestIP: () => ({ address: "127.0.0.1" }),
+      }),
     retireBindings: async (bindingIds) => {
       const retiring = new Set(bindingIds);
       for (const bindingId of retiring) retiringBindings.add(bindingId);
@@ -1822,14 +1965,8 @@ function allowedRequestOrigin(request: Request, listeningHost: string, port: num
   return `http://${authority}`;
 }
 
-async function validateMutationRequest(
-  request: Request,
-  origin: string,
-  stateStore: ConnectStateStore,
-  bindingScope: string | null,
-): Promise<Response | null> {
-  const requestOrigin = request.headers.get("origin");
-  if (requestOrigin !== origin && !(await isRegisteredLivewareOrigin(requestOrigin, stateStore, bindingScope))) {
+async function validateMutationRequest(request: Request, origin: string): Promise<Response | null> {
+  if (request.headers.get("origin") !== origin) {
     return errorResponse(403, "invalid-origin", "Invalid request Origin");
   }
   const fetchSite = request.headers.get("sec-fetch-site");
@@ -1837,23 +1974,6 @@ async function validateMutationRequest(
     return errorResponse(403, "cross-site-request", "Cross-site request was rejected");
   }
   return null;
-}
-
-async function isRegisteredLivewareOrigin(
-  requestOrigin: string | null,
-  stateStore: ConnectStateStore,
-  bindingScope: string | null,
-): Promise<boolean> {
-  if (!requestOrigin) return false;
-  try {
-    const origin = new URL(requestOrigin).origin;
-    const exposures = bindingScope
-      ? [await stateStore.getLivewareExposure(bindingScope)].filter((exposure) => exposure !== null)
-      : await stateStore.listLivewareExposures();
-    return exposures.some((exposure) => origin === new URL(exposure.publicUrl).origin);
-  } catch {
-    return false;
-  }
 }
 
 function clientViewPublisher(store: ConnectStateStore, catalog: SessionCatalog): () => Promise<void> {
@@ -2056,7 +2176,7 @@ async function idempotentCommand(
   }
 }
 
-function isProjectDirectoryRequest(value: unknown): value is ProjectDirectoryRequest {
+function isWorkspaceDirectoryRequest(value: unknown): value is WorkspaceDirectoryRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return (
@@ -2069,9 +2189,8 @@ function isSessionWorkspaceRequest(value: unknown): value is CreateSessionReques
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return (
-    record.kind === "none" ||
-    (record.kind === "existing" && typeof record.workspaceId === "string" && Boolean(record.workspaceId.trim())) ||
-    (record.kind === "new-project" && isProjectDirectoryRequest(record.directory))
+    (record.kind === "existing" && typeof record.workspaceRef === "string" && Boolean(record.workspaceRef.trim())) ||
+    (record.kind === "new" && isWorkspaceDirectoryRequest(record.directory))
   );
 }
 
@@ -2094,19 +2213,20 @@ function hostDirectoryCommandError(error: unknown, fallbackCode: string) {
   return commandError(status, error.code, error.message);
 }
 
-async function rollbackInlineProject(
-  projects: ProjectCatalog,
-  createdProjectId: string | null,
-  materialized: MaterializedProjectDirectory | null,
+async function rollbackInlineWorkspace(
+  workspaces: WorkspaceCatalog,
+  bindingId: string,
+  createdWorkspaceRef: string | null,
+  materialized: MaterializedWorkspaceDirectory | null,
   preserveMaterializedDirectory: boolean,
 ): Promise<void> {
   if (!materialized || preserveMaterializedDirectory) return;
-  if (!createdProjectId) {
+  if (!createdWorkspaceRef) {
     await materialized.rollback();
     return;
   }
-  const removed = await projects.remove(createdProjectId).catch(() => null);
-  if (removed?.removed) await materialized.rollback();
+  const removed = await workspaces.remove(bindingId, createdWorkspaceRef).catch(() => null);
+  if (removed) await materialized.rollback();
 }
 
 async function turnSubmissionDigest(draft: TurnSubmissionDraft): Promise<string> {

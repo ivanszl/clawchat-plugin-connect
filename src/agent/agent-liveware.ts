@@ -1,10 +1,10 @@
 import {
-  createLivewareExposureDependencies,
+  createLivewareControlDependencies,
   isConnectManagedLivewareAppName,
   LIVEWARE_APP_NAME,
   type LivewareControlSession,
   resolveLivewareExecutablePath,
-} from "../service/liveware-exposure";
+} from "../service/liveware-control";
 import type { ActivationCredentials } from "../types";
 import { ClawChatToolApiError } from "./tool-executor";
 
@@ -49,6 +49,7 @@ export async function executeAgentLiveware(
   options: {
     activation: ActivationCredentials;
     clawChatBaseUrl: string;
+    configPath?: string;
     deviceId: string;
     registerApp(name: string, appId: string, url: string): Promise<unknown>;
     unregisterApp(appId: string): Promise<unknown>;
@@ -59,8 +60,8 @@ export async function executeAgentLiveware(
   const input = validateAgentLivewareInput(operation, rawInput);
   const control = options.connectControl
     ? await options.connectControl(options.activation.accessToken)
-    : await createLivewareExposureDependencies({
-        livewarePath: await resolveLivewareExecutablePath(),
+    : await createLivewareControlDependencies({
+        livewarePath: await resolveLivewareExecutablePath(options.configPath),
         clawChatBaseUrl: options.clawChatBaseUrl,
       }).controlPlane.connect(options.activation.accessToken);
   const appId = typeof input.appId === "string" ? input.appId : "";

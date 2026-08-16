@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0046
+---
+
 # Scope multiple ClawChat accounts by Agent Binding
 
 One Connect installation may operate multiple ClawChat accounts concurrently, and each account may own multiple Agent Bindings. Same-kind Bindings own independent credentials, Runtime instances, Sessions, messages, transcripts, tool requests, protocol state, Runtime status, and Liveware Exposures; Projects remain installation-global so Bindings may deliberately work in the same local workspace. This supersedes ADR-0010 and the singleton-owner, singleton-App, and installation-wide capability clauses of ADR-0018.

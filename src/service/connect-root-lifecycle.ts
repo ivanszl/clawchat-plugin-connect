@@ -1,5 +1,5 @@
 import { Context } from "cordis";
-import type { ConnectStateStore } from "../persistence/state";
+import type { PersistenceService } from "../persistence/service";
 import { mountMandatoryPluginHost } from "../plugin/host";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { ConnectConfig } from "../types";
@@ -14,7 +14,7 @@ import {
 } from "./connect-surface-modules";
 
 interface ConnectRootLifecycleOptions {
-  stateStore: ConnectStateStore;
+  persistence: PersistenceService;
   config: ConnectConfig;
   configPath: string;
   surfaceOptions: Omit<ConnectSurfaceOptions, "config" | "configPath">;
@@ -36,7 +36,7 @@ export async function runConnectRootLifecycle(options: ConnectRootLifecycleOptio
   let disposeSurfaces: (() => Promise<void>) | undefined;
 
   try {
-    await mountMandatoryDurableModules(root, options.stateStore, options.reportDisposalFailure);
+    await mountMandatoryDurableModules(root, options.persistence, options.reportDisposalFailure);
     await mountMandatoryExecutionModules(
       root,
       options.config,

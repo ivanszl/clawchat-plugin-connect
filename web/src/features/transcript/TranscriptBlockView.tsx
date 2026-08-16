@@ -22,7 +22,7 @@ import type {
   SlashSuggestionView,
   TranscriptBlock,
 } from "../../../../src/client-contract";
-import { normalizeWorkspaceArtifactHref, workspaceArtifactUrl } from "../../../../src/projects/workspace-artifact";
+import { normalizeWorkspaceArtifactHref, workspaceArtifactUrl } from "../../../../src/workspaces/workspace-artifact";
 import { respondToRuntimeInteraction } from "../../client-interface/query-options";
 import { type ClientTranslator, localizedClientError, useClientTranslator } from "../../i18n/client-i18n";
 import { leadingSlashSuggestion, slashSuggestionToken } from "../slash-suggestions";

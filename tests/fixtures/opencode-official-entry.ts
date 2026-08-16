@@ -20,7 +20,7 @@ const entry = createOpenCodeOfficialPluginEntry({
   requireExecutable: () => ({ path: "/opt/opencode", version: OPENCODE_SDK_VERSION }),
   runtimeAdapter: {
     createServer: async (binding) => {
-      const instance = binding.env?.CONFORMANCE_INSTANCE;
+      const instance = binding.displayName;
       if (!instance) throw new Error("OpenCode conformance instance is required");
       const state: ConformanceState = {
         active: true,

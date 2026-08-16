@@ -58,7 +58,7 @@ export function runtimeAdapterConformance(
       else expect(models).toBeNull();
       expect(
         await registry.discoverThreads(binding, {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: "/tmp",
           skipGitRepoCheck: true,
         }),

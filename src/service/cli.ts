@@ -37,9 +37,14 @@ import {
 } from "../config";
 import { type ConnectStateStore, createStateStore, type ToolRequestRecord } from "../persistence/state";
 import { createAgentBinding } from "../plugin/binding";
-import { discoverOfficialPlugins, type OfficialCatalogOptions, type OfficialPluginDiscovery } from "../plugin/catalog";
+import {
+  discoverOfficialPlugins,
+  type OfficialCatalogOptions,
+  type OfficialPluginCatalogEntry,
+  type OfficialPluginDiscovery,
+} from "../plugin/catalog";
 import { validateInstalledRuntimeBinding } from "../plugin/host";
-import { type ResolvedPluginSource, resolvePluginSource } from "../plugin/source";
+import { resolvePluginSource } from "../plugin/source";
 import {
   type InstalledPluginLockEntry,
   installPluginBundle,
@@ -47,15 +52,14 @@ import {
   pluginDependents,
   validatePluginConfiguration,
 } from "../plugin/store";
-import { ProjectCatalog } from "../projects/projects";
-import type { AgentBindingConfig, ConnectConfig, LivewareAccessPolicy, OutputVisibility } from "../types";
+import type { AgentBindingConfig, ConnectConfig, OutputVisibility } from "../types";
+import { WorkspaceCatalog } from "../workspaces/workspaces";
 import {
   BACKGROUND_SERVICE_PROCESS_ACTION,
   type BackgroundServiceAction,
   manageBackgroundService as manageBackgroundServiceDefault,
 } from "./background-service";
 import { startConnectService as startConnectServiceDefault } from "./connect-service";
-import { resolveLivewareExecutablePath as resolveLivewareExecutablePathDefault } from "./liveware-exposure";
 import { updateConnect as updateConnectDefault } from "./update";
 import { CONNECT_VERSION } from "./version";
 
@@ -75,7 +79,6 @@ export interface ConnectCliDeps extends Partial<CliIo> {
   startConnectService?: typeof startConnectServiceDefault;
   waitUntilShutdown?: () => Promise<void>;
   openUrl?: (url: string) => Promise<void>;
-  resolveLivewareExecutablePath?: typeof resolveLivewareExecutablePathDefault;
   updateConnect?: typeof updateConnectDefault;
   pluginManagementFetch?: PluginManagementFetch;
   pluginSourceOptions?: OfficialCatalogOptions;
@@ -106,9 +109,9 @@ const HELP_TEXT = `${[
   "  plugin remove <id> [--force] [--config <path>]",
   "  plugin select <id> <version> [--integrity <sri>] [--config <path>]",
   "  plugin list [--config <path>]",
-  "  project add <absolute-path> [--config <path>]",
-  "  project list [--config <path>]",
-  "  project remove <workspace-id> [--config <path>]",
+  "  workspace add <binding-id> <absolute-path> [--config <path>]",
+  "  workspace list <binding-id> [--config <path>]",
+  "  workspace remove <binding-id> <workspace-ref> [--config <path>]",
   "  activate <agentId> <code> [--config <path>]",
   "  profile update [--agent <id>] [--nickname <text>] [--avatar-url <url>] [--bio <text>] [--config <path>]",
   "  tool list",
@@ -161,8 +164,8 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     deps.pluginSourceOptions,
   );
   if (pluginResult !== null) return pluginResult;
-  const nestedProjectResult = await maybeRunNestedProjectCommand(argv, io);
-  if (nestedProjectResult !== null) return nestedProjectResult;
+  const nestedWorkspaceResult = await maybeRunNestedWorkspaceCommand(argv, io);
+  if (nestedWorkspaceResult !== null) return nestedWorkspaceResult;
   const nestedProfileResult = await maybeRunNestedProfileCommand(
     argv,
     io,
@@ -293,7 +296,6 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       const store = createStateStore({ dbPath: config.stateDbPath });
       const activation = agentId ? await store.getActivation(agentId) : null;
       const status = agentId ? await store.getRuntimeStatus(agentId) : null;
-      const livewareExposure = agentId ? await store.getLivewareExposure(agentId) : null;
       await store.close();
       io.writeStdout(
         formatStatus(
@@ -301,7 +303,6 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
           agentId,
           activation !== null,
           status,
-          livewareExposure,
           await listInstalledPlugins(resolve(options.config ?? defaultConfigPath())),
         ),
       );
@@ -314,14 +315,6 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       commandRan = true;
       const config = await loadConfig(options.config);
       const problems = [config.defaultAgent ? null : "defaultAgent is not set"].filter(Boolean);
-      let livewarePath: string | null = null;
-      if (config.livewareAccessPolicy !== "off") {
-        try {
-          livewarePath = await (deps.resolveLivewareExecutablePath ?? resolveLivewareExecutablePathDefault)();
-        } catch (error) {
-          problems.push(error instanceof Error ? error.message : String(error));
-        }
-      }
       try {
         await verifyInstalledSkills();
       } catch (error) {
@@ -329,8 +322,8 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       }
       io.writeStdout(
         problems.length === 0
-          ? `clawchat-connect doctor: ok${livewarePath ? `\nliveware: ${livewarePath}` : ""}\n`
-          : `clawchat-connect doctor:${livewarePath ? `\nliveware: ${livewarePath}` : ""}\n- ${problems.join("\n- ")}\n`,
+          ? "clawchat-connect doctor: ok\n"
+          : `clawchat-connect doctor:\n- ${problems.join("\n- ")}\n`,
       );
     });
 
@@ -574,42 +567,41 @@ async function maybeRunUpdateCommand(
   }
 }
 
-async function maybeRunNestedProjectCommand(argv: string[], io: CliIo): Promise<number | null> {
-  if (argv[0] !== "project") return null;
+async function maybeRunNestedWorkspaceCommand(argv: string[], io: CliIo): Promise<number | null> {
+  if (argv[0] !== "workspace") return null;
   const action = argv[1];
+  const bindingId = argv[2];
   const configPath = optionValue(argv, "--config");
   let store: ConnectStateStore | null = null;
   try {
     const config = await loadConfig(configPath);
+    if (!bindingId || !config.agents[bindingId]) throw new Error("workspace requires a valid Agent Binding ID");
     store = createStateStore({ dbPath: config.stateDbPath });
-    const projects = new ProjectCatalog(store);
+    const workspaces = new WorkspaceCatalog(store);
     if (action === "add") {
-      const rootPath = argv[2];
-      if (!rootPath || rootPath.startsWith("--")) throw new Error("project add requires an absolute path");
-      const project = await projects.add(rootPath);
-      io.writeStdout(`Registered Project ${project.name} at ${project.rootPath}.\n`);
+      const rootPath = argv[3];
+      if (!rootPath || rootPath.startsWith("--")) throw new Error("workspace add requires an absolute path");
+      const workspace = await workspaces.add(bindingId, rootPath);
+      io.writeStdout(
+        `Registered Workspace ${workspace.name} (${workspace.workspaceRef}) for ${bindingId} at ${workspace.rootPath}.\n`,
+      );
       return 0;
     }
     if (action === "list") {
-      const rows = (await projects.list()).map(
-        (project) => `- ${project.name} (${projects.workspaceId(project)}): ${project.rootPath}`,
+      const rows = (await workspaces.list(bindingId)).map(
+        (workspace) => `- ${workspace.name} (${workspace.workspaceRef}): ${workspace.rootPath}`,
       );
-      io.writeStdout(rows.length > 0 ? `${rows.join("\n")}\n` : "No Projects registered.\n");
+      io.writeStdout(rows.length > 0 ? `${rows.join("\n")}\n` : "No Workspaces registered.\n");
       return 0;
     }
     if (action === "remove") {
-      const reference = argv[2];
-      if (!reference || reference.startsWith("--")) throw new Error("project remove requires a Workspace ID");
-      if (!/^[a-f0-9]{24}$/iu.test(reference)) throw new Error("project remove requires a valid Workspace ID");
-      const result = await projects.remove(reference);
-      if (!result.removed)
-        throw new Error(
-          `Cannot remove Project ${result.project.name}: ${result.referencedSessions} Session(s) and ${result.pendingIntents} Session Intent(s) still reference it`,
-        );
-      io.writeStdout(`Removed Project ${result.project.name}.\n`);
+      const workspaceRef = argv[3];
+      if (!workspaceRef || workspaceRef.startsWith("--")) throw new Error("workspace remove requires a Workspace Ref");
+      const workspace = await workspaces.remove(bindingId, workspaceRef);
+      io.writeStdout(`Removed Workspace ${workspace.name}.\n`);
       return 0;
     }
-    throw new Error("project action must be one of: add, list, remove");
+    throw new Error("workspace action must be one of: add, list, remove");
   } catch (error) {
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
@@ -736,14 +728,7 @@ async function maybeRunPluginCommand(
       return 0;
     }
     if (action === "setup") {
-      const offlineCandidates = new Map<
-        string,
-        {
-          resolved: ResolvedPluginSource;
-          installationConfiguration: Record<string, unknown>;
-          exposureConfigurations: Record<string, unknown>;
-        }
-      >();
+      const offlineCandidates = new Map<string, OfficialPluginCatalogEntry>();
       let discovery: OfficialPluginDiscovery;
       let installSelection: (pluginIds: readonly string[]) => Promise<InstalledPluginLockEntry[]>;
       try {
@@ -752,12 +737,8 @@ async function maybeRunPluginCommand(
           await request<InstalledPluginLockEntry[]>("/official/setup", "POST", { pluginIds });
       } catch (error) {
         if (!(error instanceof PluginManagerUnavailableError)) throw error;
-        discovery = await discoverOfficialPlugins(configPath, sourceOptions, (entry, resolved) => {
-          offlineCandidates.set(entry.pluginId, {
-            resolved,
-            installationConfiguration: structuredClone(entry.installationConfiguration ?? {}),
-            exposureConfigurations: structuredClone(entry.exposureConfigurations ?? {}),
-          });
+        discovery = await discoverOfficialPlugins(configPath, sourceOptions, (entry) => {
+          offlineCandidates.set(entry.pluginId, entry);
         });
         installSelection = async (pluginIds) => {
           const installed: InstalledPluginLockEntry[] = [];
@@ -766,14 +747,30 @@ async function maybeRunPluginCommand(
             if (!candidate) {
               throw new Error(`Official Plugin ${pluginId} is not in the latest staged discovery`);
             }
+            const resolved = await resolvePluginSource(candidate.source, {
+              ...sourceOptions,
+              target: candidate.target,
+            });
+            const artifact = resolved.bundle.manifest.artifacts.find((entry) => entry.target === candidate.target);
+            if (
+              resolved.bundle.manifest.pluginId !== candidate.pluginId ||
+              resolved.bundle.manifest.version !== candidate.version ||
+              resolved.target !== candidate.target ||
+              artifact?.integrity !== candidate.integrity
+            ) {
+              throw new Error(
+                `Official Plugin ${candidate.pluginId} resolved artifact does not match its authenticated Catalog lock`,
+              );
+            }
             installed.push(
               await installPluginBundle({
                 configPath,
-                source: candidate.resolved.source,
-                bundle: candidate.resolved.bundle,
-                target: candidate.resolved.target,
+                source: resolved.source,
+                bundle: resolved.bundle,
+                target: resolved.target,
                 installationConfiguration: candidate.installationConfiguration,
                 exposureConfigurations: candidate.exposureConfigurations,
+                officialCapabilityGrants: candidate.capabilityGrants,
               }),
             );
           }
@@ -990,7 +987,7 @@ async function runAgentBindingRemoval(
 ): Promise<void> {
   if (!confirmed) {
     throw new Error(
-      `Removing Agent Binding ${agentId} retires its Liveware Exposure and permanently deletes its Sessions and local data; repeat with --yes`,
+      `Removing Agent Binding ${agentId} retires its Liveware Publication and permanently deletes its Sessions and Connect-owned Workspace records; Workspace files remain; repeat with --yes`,
     );
   }
   const result = await removeAgentBinding({ agentId, configPath });
@@ -1242,7 +1239,6 @@ function formatStatus(
   agentId: string | null,
   activated: boolean,
   status: Awaited<ReturnType<ConnectStateStore["getRuntimeStatus"]>>,
-  livewareExposure: Awaited<ReturnType<ConnectStateStore["getLivewareExposure"]>>,
   installed: readonly InstalledPluginLockEntry[],
 ): string {
   const binding = agentId ? config.agents[agentId] : undefined;
@@ -1258,8 +1254,6 @@ function formatStatus(
     `activated: ${activated ? "yes" : "no"}`,
     `websocket: ${config.websocketUrl}`,
     `media upload: ${config.mediaUploadUrl}`,
-    `liveware policy: ${config.livewareAccessPolicy}`,
-    `liveware exposure: ${livewareExposure?.publicUrl ?? "not active"}`,
     `runtime: ${status?.websocketConnected === true ? "connected" : status?.websocketConnected === false ? "disconnected" : "unknown"}`,
     `running: ${status?.globalRunning ?? 0}`,
     `queued: ${status?.globalQueued ?? 0}`,
@@ -1314,10 +1308,6 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
     config.clientHost = value;
     return;
   }
-  if (key === "livewareAccessPolicy") {
-    config.livewareAccessPolicy = parseLivewareAccessPolicy(value);
-    return;
-  }
   const match = key.match(/^agents\.([^.]+)\.([A-Za-z]+)$/u);
   if (!match) throw new Error(`Unsupported config key: ${key}`);
   const agentId = match[1];
@@ -1344,9 +1334,4 @@ function parseOutputVisibility(value: string): OutputVisibility {
   const mode = value.trim().toLowerCase();
   if (mode === "minimal" || mode === "normal" || mode === "full") return mode;
   throw new Error("outputVisibility must be minimal, normal, or full");
-}
-
-function parseLivewareAccessPolicy(value: string): LivewareAccessPolicy {
-  if (value === "off" || value === "private" || value === "public") return value;
-  throw new Error("livewareAccessPolicy must be off, private, or public");
 }

@@ -17,12 +17,7 @@ import { ConnectWsClient } from "../clawchat/ws-client";
 import type { TranscriptProjection } from "../client-interface/transcript-projection";
 import { getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
-import type { ProjectCatalog } from "../projects/projects";
-import {
-  createSessionContinuity,
-  type SessionContinuity,
-  type SessionContinuityModule,
-} from "../projects/session-continuity";
+import { ConnectBindingLivewarePublicationStateStore } from "../plugin/official/liveware-publication-state";
 import { ConnectRuntime } from "../runtime/connect-runtime";
 import type { ConnectExecutionCapabilities } from "../runtime/execution-capabilities";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
@@ -38,6 +33,12 @@ import {
   runtimeInputIdentityContains,
 } from "../runtime/types";
 import type { ActivationCredentials, ConnectConfig } from "../types";
+import {
+  createSessionContinuity,
+  type SessionContinuity,
+  type SessionContinuityModule,
+} from "../workspaces/session-continuity";
+import type { WorkspaceCatalog } from "../workspaces/workspaces";
 
 export interface BindingRuntimeOptions {
   agentId: string;
@@ -46,7 +47,7 @@ export interface BindingRuntimeOptions {
   configPath: string;
   deviceId: string;
   stateStore: ConnectStateStore;
-  projects: ProjectCatalog;
+  workspaces: WorkspaceCatalog;
   sessionContinuityModule?: SessionContinuityModule;
   execution?: ConnectExecutionCapabilities;
   runtimeAdapters?: RuntimeAdapterRegistry;
@@ -142,14 +143,19 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     senderDisplayNames.set(senderId, resolution);
     return await resolution;
   };
+  const continuityOptions = {
+    resolveDefaultWorkspace: async (bindingId: string) =>
+      (await options.workspaces.ensureDefault(bindingId)).workspaceRef,
+  };
   const sessionContinuity =
-    options.sessionContinuityModule?.create() ?? createSessionContinuity({ stateStore: options.stateStore });
+    options.sessionContinuityModule?.create(continuityOptions) ??
+    createSessionContinuity({ ...continuityOptions, stateStore: options.stateStore });
   let runtime: ConnectRuntime;
   let inboundMessages: InboundMessageProcessor;
   let wsClient: ConnectWsClient;
   let interactionRouter: RuntimeInteractionRouter;
   let groupIntake: GroupIntakeCoordinator;
-  let runtimeProjectSynchronization = Promise.resolve();
+  let runtimeWorkspaceSynchronization = Promise.resolve();
   wsClient = new ConnectWsClient({
     agentId: options.agentId,
     url: options.config.websocketUrl,
@@ -225,7 +231,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     configPath: options.configPath,
     stateStore: options.stateStore,
     wsClient,
-    projects: options.projects,
+    workspaces: options.workspaces,
     sessionContinuity,
     execution,
     runtimeAdapters: execution ? undefined : runtimeAdapters,
@@ -338,16 +344,16 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         ),
       );
     await recordConnectionStatus(options, true, null);
-    runtimeProjectSynchronization = runtime
-      .synchronizeRuntimeProjects()
+    runtimeWorkspaceSynchronization = runtime
+      .synchronizeRuntimeWorkspaces()
       .then((synchronization) => {
         for (const failure of synchronization.failures) {
-          options.writeError(`${options.agentId}: Project synchronization skipped ${failure}\n`);
+          options.writeError(`${options.agentId}: Workspace synchronization skipped ${failure}\n`);
         }
       })
       .catch((error) => {
         options.writeError(
-          `${options.agentId}: Project synchronization unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+          `${options.agentId}: Workspace synchronization unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
         );
       });
   } catch (error) {
@@ -379,10 +385,13 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         wsClient,
       };
       if (isAgentLivewareOperation(toolName)) {
-        const managedAppId = (await options.stateStore.getLivewareExposure(options.agentId))?.appId ?? null;
+        const managedAppId =
+          (await new ConnectBindingLivewarePublicationStateStore(options.stateStore).read(options.agentId))?.value
+            .appId ?? null;
         return await executeAgentLiveware(toolName, input, {
           activation: options.activation,
           clawChatBaseUrl: options.config.baseUrl,
+          configPath: options.configPath,
           deviceId: options.deviceId,
           registerApp: async (name, appId, url) =>
             await executeConnectTool("clawchat_register_app", { name, appId, url }, toolOptions),
@@ -396,7 +405,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       wsClient.close();
       await Promise.all([closeInboundProcessing(), groupIntake.close()]);
       await interactionRouter.close();
-      await runtimeProjectSynchronization;
+      await runtimeWorkspaceSynchronization;
       await runtime.dispose();
       await recordConnectionStatus(options, false, null);
     },
@@ -701,7 +710,7 @@ async function dispatchInboundMessage(
       ownerUserId: params.activation.ownerUserId,
       config: params.config,
       stateStore: params.stateStore,
-      projects: params.projects,
+      workspaces: params.workspaces,
       sessionContinuity: params.sessionContinuity,
       closeRuntimeSession: (chatId) => params.runtime.closeSession(chatId),
       invalidateRuntimeSession: (chatId) => params.runtime.invalidateSession(chatId),

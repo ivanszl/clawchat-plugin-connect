@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, stat, statfs } from "node:fs/promises";
-import { dirname, isAbsolute } from "node:path";
+import { stat, statfs } from "node:fs/promises";
+import { dirname } from "node:path";
 import { inboundContentDigest, protocolDeliveryContentJson } from "../clawchat/inbound-identity";
 import type {
   ClientViewEvent,
@@ -12,13 +12,12 @@ import { defaultStateDbPath } from "../config";
 import type { RuntimeInputIdentity } from "../runtime/types";
 import {
   type ActivationCredentials,
-  type LivewareExposureRecord,
   type OutputVisibility,
   PLATFORM_ID,
-  type ProjectRecord,
   type RuntimeSessionRecord,
   type RuntimeStatus,
   type SessionIntentRecord,
+  type WorkspaceRecord,
 } from "../types";
 
 export * from "./state-types";
@@ -31,18 +30,17 @@ import {
   runtimeSessionSelect,
   type SessionRefRow,
 } from "./session-refs";
-import { BunSqliteAdapter, Database, SQLITE_BUSY_TIMEOUT_MS, type SqliteDb } from "./sqlite";
+import type { SqliteDb } from "./sqlite";
+import { OfficialSqlitePersistenceProvider } from "./sqlite-provider";
 import {
   boundedJson,
   boundedText,
   groupSettingsRecordFromRow,
-  livewareExposureFromRow,
   normalizeGroupSettingsRecord,
   nullableString,
   numberValue,
   parseJsonValue,
   preserveConnectOwnedMessageMetadata,
-  projectFromRow,
   requireStateString,
   runtimeSessionFromRow,
   sameTranscriptPayload,
@@ -53,13 +51,9 @@ import {
   stringValue,
   toJson,
   toolRequestRecord,
+  workspaceFromRow,
 } from "./state-codecs";
-import {
-  AMBIGUOUS_LEGACY_OWNER_DIAGNOSTIC,
-  backfillSessionRefs,
-  createStateSchema,
-  migrateStateSchema,
-} from "./state-schema";
+import { AMBIGUOUS_LEGACY_OWNER_DIAGNOSTIC, backfillSessionRefs } from "./state-schema";
 import type {
   AcceptSessionTurnInput,
   AdoptRuntimeThreadRefInput,
@@ -71,14 +65,14 @@ import type {
   GroupSettingsSnapshotRecord,
   HandledInboundMessage,
   InboundHandlingOutcome,
-  InsertProjectInput,
+  InsertWorkspaceInput,
   MessageInput,
   ProtocolDeliveryInput,
   ProtocolDeliveryQuarantineInput,
   ProtocolDeliveryQuarantineRecord,
   ProtocolDeliveryState,
+  ReconcileWorkspaceCatalogInput,
   ResolveOrMaterializeRuntimeSessionInput,
-  RuntimeWorkspaceMappingRecord,
   SessionBindingLockReason,
   SessionLifecycleAction,
   SessionLifecycleOperationRecord,
@@ -91,55 +85,85 @@ import type {
   TranscriptBlockInput,
   UpsertRuntimeSessionInput,
 } from "./state-types";
+export const MAX_PLUGIN_DURABLE_STATE_BYTES = 1024 * 1024;
+
+export type PluginDurableStateLifetime = "installation" | "owner" | "binding";
+
+export interface PluginDurableStateNamespace {
+  readonly pluginId: string;
+  readonly activationGeneration: number;
+  readonly capabilityId: string;
+  readonly instanceId: string;
+  readonly lifetime: PluginDurableStateLifetime;
+  readonly scopeKey: string;
+}
+
+export interface PluginDurableStateRecord {
+  readonly schemaVersion: number;
+  readonly revision: number;
+  readonly value: unknown;
+}
+
+export interface PluginDurableStateSnapshot {
+  readonly namespace: PluginDurableStateNamespace;
+  readonly record: PluginDurableStateRecord;
+}
+
+export interface PluginDurableStateMigrationCommit {
+  readonly namespace: PluginDurableStateNamespace;
+  readonly revision: number;
+  readonly schemaVersion: number;
+  readonly value: unknown;
+}
+
+interface PluginDurableStateRow {
+  readonly schema_version: number;
+  readonly revision: number;
+  readonly state_json: string;
+}
+
 export class ConnectStateStore {
   readonly dbPath: string;
   private readonly sessionRefFactory: () => string;
   private readonly clientEventRetentionLimit: number;
   private readonly storageCompactionThresholdBytes: number;
   private db: SqliteDb | null = null;
+  private readonly persistenceProvider: OfficialSqlitePersistenceProvider;
   private ambiguousLegacyOwnerState = false;
   private installationOwnerResetInProgress = false;
   constructor(options: ConnectStateOptions = {}) {
     this.dbPath = options.dbPath ?? defaultStateDbPath();
+    this.persistenceProvider = new OfficialSqlitePersistenceProvider({ dbPath: this.dbPath });
     this.sessionRefFactory = options.sessionRefFactory ?? generateSessionRef;
     this.clientEventRetentionLimit = Math.max(
       1,
       Math.min(100_000, Math.trunc(options.clientEventRetentionLimit ?? 2_000)),
     );
     this.storageCompactionThresholdBytes = Math.max(0, options.storageCompactionThresholdBytes ?? 64 * 1024 * 1024);
-    if (!isAbsolute(this.dbPath)) throw new Error("stateDbPath must be an absolute path");
   }
   async initialize(): Promise<void> {
     if (this.db) {
       this.assertInstallationOwnerStateAllowed();
       return;
     }
-    await mkdir(dirname(this.dbPath), { recursive: true, mode: 0o700 });
-    this.db = new BunSqliteAdapter(new Database(this.dbPath, { create: true }));
+    const initialized = await this.persistenceProvider.initialize(this.installationOwnerResetInProgress);
+    this.db = initialized.db;
+    this.ambiguousLegacyOwnerState = initialized.ambiguousLegacyOwnerState;
     try {
-      await this.db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
-      await this.db.exec("PRAGMA auto_vacuum = INCREMENTAL");
-      await this.db.exec("PRAGMA journal_mode = WAL");
-      await this.db.exec("PRAGMA foreign_keys = ON");
-      await createStateSchema(this.db);
-      this.ambiguousLegacyOwnerState = await migrateStateSchema(this.db, {
-        allowAmbiguousLegacyOwnerReset: this.installationOwnerResetInProgress,
-      });
       await this.installClientEventRetention(this.db);
       await this.deduplicateStoredSubagentBlocks(this.db);
       await this.reclaimDatabasePages(this.db);
       await backfillSessionRefs(this.db, (target) => this.getOrCreateSessionRef(target));
-      await chmod(this.dbPath, 0o600).catch(() => undefined);
       this.assertInstallationOwnerStateAllowed();
     } catch (error) {
-      await this.db.close();
+      await this.persistenceProvider.close();
       this.db = null;
       this.ambiguousLegacyOwnerState = false;
       throw error;
     }
   }
   async close(): Promise<void> {
-    await this.db?.close();
+    await this.persistenceProvider.close();
     this.db = null;
     this.ambiguousLegacyOwnerState = false;
     this.installationOwnerResetInProgress = false;
@@ -338,7 +362,8 @@ export class ConnectStateStore {
       run("DELETE FROM client_events");
       run("UPDATE client_event_retention SET floor_cursor = 0 WHERE id = 1");
       run("DELETE FROM tool_requests");
-      run("DELETE FROM runtime_workspace_mappings");
+      run("DELETE FROM workspace_catalog_state");
+      run("DELETE FROM workspace_catalog_entries");
       run("DELETE FROM output_visibility");
       run("DELETE FROM group_settings");
       run("DELETE FROM group_settings_snapshots");
@@ -351,7 +376,7 @@ export class ConnectStateStore {
       run("DELETE FROM protocol_delivery_quarantine");
       run("DELETE FROM protocol_event_dedup");
       run("DELETE FROM runtime_statuses");
-      run("DELETE FROM liveware_exposures");
+      run("DELETE FROM plugin_durable_state WHERE lifetime IN ('owner', 'binding')");
       run("DELETE FROM activations WHERE platform = ?", PLATFORM_ID);
       run("DELETE FROM installation_owner WHERE id = 1");
     });
@@ -401,7 +426,8 @@ export class ConnectStateStore {
         bindingId,
       );
       run("DELETE FROM tool_requests WHERE binding_id = ?", bindingId);
-      run("DELETE FROM runtime_workspace_mappings WHERE binding_id = ?", bindingId);
+      run("DELETE FROM workspace_catalog_state WHERE binding_id = ?", bindingId);
+      run("DELETE FROM workspace_catalog_entries WHERE binding_id = ?", bindingId);
       run("DELETE FROM output_visibility WHERE local_agent_id = ?", bindingId);
       run("DELETE FROM group_settings WHERE local_agent_id = ?", bindingId);
       run("DELETE FROM group_settings_snapshots WHERE local_agent_id = ?", bindingId);
@@ -414,20 +440,9 @@ export class ConnectStateStore {
       run("DELETE FROM protocol_delivery_quarantine WHERE local_agent_id = ?", bindingId);
       run("DELETE FROM protocol_event_dedup WHERE local_agent_id = ?", bindingId);
       run("DELETE FROM runtime_statuses WHERE agent_id = ?", bindingId);
-      run("DELETE FROM liveware_exposures WHERE local_agent_id = ?", bindingId);
+      run("DELETE FROM plugin_durable_state WHERE lifetime = 'binding' AND scope_key = ?", bindingId);
       run("DELETE FROM activations WHERE platform = ? AND local_agent_id = ?", PLATFORM_ID, bindingId);
     });
-  }
-
-  async getLivewareExposure(localAgentId: string): Promise<LivewareExposureRecord | null> {
-    const db = await this.requireDb();
-    const row = await db.get<Record<string, unknown>>(
-      `SELECT owner_user_id, local_agent_id, app_id, public_url, access_policy
-         FROM liveware_exposures
-        WHERE local_agent_id = ?`,
-      localAgentId,
-    );
-    return row ? livewareExposureFromRow(row) : null;
   }
 
   async replaceGroupSettingsSnapshot(localAgentId: string, rows: readonly GroupSettingsRecord[]): Promise<void> {
@@ -489,45 +504,6 @@ export class ConnectStateStore {
       stale: Number(metadata?.stale ?? 0) === 1,
       rows: rows.map(groupSettingsRecordFromRow),
     };
-  }
-
-  async listLivewareExposures(): Promise<LivewareExposureRecord[]> {
-    const db = await this.requireDb();
-    const rows = await db.all<Array<Record<string, unknown>>>(
-      `SELECT owner_user_id, local_agent_id, app_id, public_url, access_policy
-         FROM liveware_exposures
-        ORDER BY local_agent_id`,
-    );
-    return rows.flatMap((row) => {
-      const exposure = livewareExposureFromRow(row);
-      return exposure ? [exposure] : [];
-    });
-  }
-
-  async setLivewareExposure(record: LivewareExposureRecord): Promise<void> {
-    const db = await this.requireDb();
-    await db.run(
-      `INSERT INTO liveware_exposures(
-         owner_user_id, local_agent_id, app_id, public_url, access_policy, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(local_agent_id) DO UPDATE SET
-         owner_user_id = excluded.owner_user_id,
-         app_id = excluded.app_id,
-         public_url = excluded.public_url,
-         access_policy = excluded.access_policy,
-         updated_at = excluded.updated_at`,
-      record.ownerUserId,
-      record.localAgentId,
-      record.appId,
-      record.publicUrl,
-      record.accessPolicy,
-      Date.now(),
-    );
-  }
-
-  async clearLivewareExposure(localAgentId: string): Promise<void> {
-    const db = await this.requireDb();
-    await db.run("DELETE FROM liveware_exposures WHERE local_agent_id = ?", localAgentId);
   }
 
   async getDeviceId(): Promise<string | null> {
@@ -749,60 +725,158 @@ export class ConnectStateStore {
     );
   }
 
-  async insertProject(input: InsertProjectInput): Promise<ProjectRecord> {
+  async insertWorkspace(input: InsertWorkspaceInput): Promise<WorkspaceRecord> {
     const now = Date.now();
     const db = await this.requireDb();
     await db.run(
-      `INSERT INTO projects(project_id, name, root_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-      input.projectId,
-      input.name,
-      input.rootPath,
+      `INSERT INTO workspace_catalog_entries(
+         binding_id, workspace_ref, runtime_identity_key, source, name, root_path, selectable, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      requireStateString(input.bindingId, "Agent Binding ID"),
+      requireStateString(input.workspaceRef, "Workspace Ref"),
+      input.runtimeIdentityKey,
+      input.source,
+      requireStateString(input.name, "Workspace name"),
+      requireStateString(input.rootPath, "Workspace root"),
+      input.selectable ? 1 : 0,
       now,
       now,
     );
-    const project = await this.getProject(input.projectId);
-    if (!project) throw new Error(`failed to persist project ${input.projectId}`);
-    return project;
+    const workspace = await this.getWorkspace(input.bindingId, input.workspaceRef);
+    if (!workspace) throw new Error(`failed to persist Workspace ${input.workspaceRef}`);
+    return workspace;
   }
-  async getProject(reference: string): Promise<ProjectRecord | null> {
+
+  async getWorkspace(bindingId: string, workspaceRef: string): Promise<WorkspaceRecord | null> {
     const db = await this.requireDb();
     const row = await db.get<Record<string, unknown>>(
-      `SELECT * FROM projects WHERE project_id = ? OR name = ? COLLATE NOCASE ORDER BY CASE WHEN project_id = ? THEN 0 ELSE 1 END LIMIT 1`,
-      reference,
-      reference,
-      reference,
+      `SELECT * FROM workspace_catalog_entries
+       WHERE binding_id = ? AND workspace_ref = ? COLLATE NOCASE`,
+      requireStateString(bindingId, "Agent Binding ID"),
+      requireStateString(workspaceRef, "Workspace Ref"),
     );
-    return row ? projectFromRow(row) : null;
+    return row ? workspaceFromRow(row) : null;
   }
-  async listProjects(): Promise<ProjectRecord[]> {
+
+  async listWorkspaces(bindingId?: string): Promise<WorkspaceRecord[]> {
     const db = await this.requireDb();
-    const rows = await db.all<Record<string, unknown>[]>(`SELECT * FROM projects ORDER BY name COLLATE NOCASE`);
-    return rows.map(projectFromRow);
+    const rows = bindingId
+      ? await db.all<Record<string, unknown>[]>(
+          `SELECT * FROM workspace_catalog_entries WHERE binding_id = ?
+           ORDER BY source, name COLLATE NOCASE, workspace_ref`,
+          requireStateString(bindingId, "Agent Binding ID"),
+        )
+      : await db.all<Record<string, unknown>[]>(
+          `SELECT * FROM workspace_catalog_entries
+           ORDER BY binding_id, source, name COLLATE NOCASE, workspace_ref`,
+        );
+    return rows.map(workspaceFromRow);
   }
-  async countRuntimeSessionsForProject(projectId: string): Promise<number> {
+
+  async countRuntimeSessionsForWorkspace(bindingId: string, workspaceRef: string): Promise<number> {
     const db = await this.requireDb();
     const row = await db.get<{ count?: number }>(
-      `SELECT COUNT(*) AS count FROM runtime_sessions WHERE project_id = ?`,
-      projectId,
+      "SELECT COUNT(*) AS count FROM runtime_sessions WHERE agent_id = ? AND workspace_ref = ? COLLATE NOCASE",
+      requireStateString(bindingId, "Agent Binding ID"),
+      requireStateString(workspaceRef, "Workspace Ref"),
     );
     return numberValue(row?.count);
   }
-  async countSessionIntentsForProject(projectId: string): Promise<number> {
+
+  async deleteWorkspace(bindingId: string, workspaceRef: string): Promise<void> {
     const db = await this.requireDb();
-    const row = await db.get<{ count?: number }>(
-      `SELECT COUNT(*) AS count FROM session_intents WHERE project_id = ?`,
-      projectId,
+    await db.run(
+      "DELETE FROM workspace_catalog_entries WHERE binding_id = ? AND workspace_ref = ? COLLATE NOCASE",
+      requireStateString(bindingId, "Agent Binding ID"),
+      requireStateString(workspaceRef, "Workspace Ref"),
     );
-    return numberValue(row?.count);
   }
-  async deleteProject(projectId: string): Promise<boolean> {
+
+  async reconcileWorkspaceCatalog(input: ReconcileWorkspaceCatalogInput): Promise<void> {
+    const bindingId = requireStateString(input.bindingId, "Agent Binding ID");
     const db = await this.requireDb();
-    const result = await db.run(`DELETE FROM projects WHERE project_id = ?`, projectId);
-    return result.changes > 0;
+    const now = Date.now();
+    db.transaction((run, get) => {
+      run(
+        `INSERT INTO workspace_catalog_state(binding_id, discovery_status, updated_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(binding_id) DO UPDATE SET
+           discovery_status = excluded.discovery_status,
+           updated_at = excluded.updated_at`,
+        bindingId,
+        input.status,
+        now,
+      );
+      if (input.status === "unavailable") return;
+      const observedKeys = new Set<string>();
+      for (const identity of input.identities) {
+        if (!identity.rootPath) continue;
+        observedKeys.add(identity.runtimeIdentityKey);
+        const existing = get<Record<string, unknown>>(
+          `SELECT * FROM workspace_catalog_entries
+           WHERE binding_id = ? AND (runtime_identity_key = ? OR root_path = ?)
+           ORDER BY CASE WHEN runtime_identity_key = ? THEN 0 ELSE 1 END LIMIT 1`,
+          bindingId,
+          identity.runtimeIdentityKey,
+          identity.rootPath,
+          identity.runtimeIdentityKey,
+        );
+        if (existing) {
+          run(
+            `UPDATE workspace_catalog_entries
+             SET runtime_identity_key = ?, name = ?, selectable = 1, updated_at = ?
+             WHERE binding_id = ? AND workspace_ref = ?`,
+            identity.runtimeIdentityKey,
+            identity.name,
+            now,
+            bindingId,
+            stringValue(existing.workspace_ref),
+          );
+        } else {
+          run(
+            `INSERT INTO workspace_catalog_entries(
+               binding_id, workspace_ref, runtime_identity_key, source, name, root_path, selectable, created_at, updated_at
+             ) VALUES (?, ?, ?, 'runtime', ?, ?, 1, ?, ?)`,
+            bindingId,
+            identity.workspaceRef,
+            identity.runtimeIdentityKey,
+            identity.name,
+            identity.rootPath,
+            now,
+            now,
+          );
+        }
+      }
+      if (input.status === "complete") {
+        const keys = [...observedKeys];
+        if (keys.length === 0) {
+          run(
+            `UPDATE workspace_catalog_entries SET selectable = 0, updated_at = ?
+             WHERE binding_id = ? AND source = 'runtime' AND runtime_identity_key IS NOT NULL`,
+            now,
+            bindingId,
+          );
+        } else {
+          run(
+            `UPDATE workspace_catalog_entries SET selectable = 0, updated_at = ?
+             WHERE binding_id = ? AND source = 'runtime' AND runtime_identity_key IS NOT NULL
+               AND runtime_identity_key NOT IN (${keys.map(() => "?").join(",")})`,
+            now,
+            bindingId,
+            ...keys,
+          );
+        }
+      }
+    });
   }
-  async deleteRuntimeWorkspaceMappingsForProject(projectId: string): Promise<void> {
+
+  async deleteWorkspaceCatalog(bindingId: string): Promise<void> {
+    const normalized = requireStateString(bindingId, "Agent Binding ID");
     const db = await this.requireDb();
-    await db.run(`DELETE FROM runtime_workspace_mappings WHERE project_id = ?`, projectId);
+    db.transaction((run) => {
+      run("DELETE FROM workspace_catalog_state WHERE binding_id = ?", normalized);
+      run("DELETE FROM workspace_catalog_entries WHERE binding_id = ?", normalized);
+    });
   }
 
   async upsertRuntimeSession(input: UpsertRuntimeSessionInput): Promise<void> {
@@ -817,12 +891,12 @@ export class ConnectStateStore {
       await db.run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
     }
     await db.run(
-      `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, session_options_json, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id, session_id) DO UPDATE SET agent_id = excluded.agent_id, runtime_session_id = excluded.runtime_session_id, project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, session_options_json = excluded.session_options_json, has_messages = CASE WHEN runtime_sessions.has_messages = 1 OR excluded.has_messages = 1 THEN 1 ELSE 0 END, is_current = excluded.is_current, updated_at = excluded.updated_at`,
+      `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, workspace_ref, name, mode, model, reasoning_effort, session_options_json, has_messages, is_current, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id, session_id) DO UPDATE SET agent_id = excluded.agent_id, runtime_session_id = excluded.runtime_session_id, workspace_ref = excluded.workspace_ref, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, session_options_json = excluded.session_options_json, has_messages = CASE WHEN runtime_sessions.has_messages = 1 OR excluded.has_messages = 1 THEN 1 ELSE 0 END, is_current = excluded.is_current, updated_at = excluded.updated_at`,
       input.chatId,
       input.sessionId,
       input.agentId,
       input.runtimeSessionId ?? null,
-      input.projectId ?? null,
+      input.workspaceRef ?? null,
       input.name ?? null,
       input.mode ?? null,
       input.model ?? null,
@@ -884,13 +958,13 @@ export class ConnectStateStore {
       run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
       run("DELETE FROM session_intents WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
       run(
-        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, session_options_json, has_messages, binding_locked, is_current, created_at, updated_at)
+        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, workspace_ref, name, mode, model, reasoning_effort, session_options_json, has_messages, binding_locked, is_current, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, ?, ?)`,
         input.chatId,
         input.sessionId,
         input.agentId,
         target.runtime_session_id,
-        input.projectId,
+        input.workspaceRef,
         input.name ?? null,
         input.mode ?? null,
         input.model ?? null,
@@ -957,10 +1031,10 @@ export class ConnectStateStore {
     db.transaction((run) => {
       run("UPDATE runtime_sessions SET is_current = 0 WHERE chat_id = ? AND agent_id = ?", input.chatId, input.agentId);
       run(
-        `INSERT INTO session_intents(chat_id, agent_id, project_id, name, mode, model, reasoning_effort, session_options_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id) DO UPDATE SET project_id = excluded.project_id, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, session_options_json = excluded.session_options_json, updated_at = excluded.updated_at`,
+        `INSERT INTO session_intents(chat_id, agent_id, workspace_ref, name, mode, model, reasoning_effort, session_options_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, agent_id) DO UPDATE SET workspace_ref = excluded.workspace_ref, name = excluded.name, mode = excluded.mode, model = excluded.model, reasoning_effort = excluded.reasoning_effort, session_options_json = excluded.session_options_json, updated_at = excluded.updated_at`,
         input.chatId,
         input.agentId,
-        input.projectId,
+        input.workspaceRef,
         input.name ?? null,
         input.mode ?? null,
         input.model ?? null,
@@ -1024,11 +1098,11 @@ export class ConnectStateStore {
         input.agentId,
       );
       run(
-        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, project_id, name, mode, model, reasoning_effort, session_options_json, has_messages, binding_locked, is_current, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+        `INSERT INTO runtime_sessions(chat_id, session_id, agent_id, runtime_session_id, workspace_ref, name, mode, model, reasoning_effort, session_options_json, has_messages, binding_locked, is_current, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         input.chatId,
         input.sessionId,
         input.agentId,
-        nullableString(intent?.project_id),
+        nullableString(intent?.workspace_ref),
         nullableString(intent?.name),
         nullableString(intent?.mode),
         nullableString(intent?.model),
@@ -1231,16 +1305,16 @@ export class ConnectStateStore {
     return result.changes > 0;
   }
 
-  async setRuntimeSessionProject(
+  async setRuntimeSessionWorkspace(
     chatId: string,
     agentId: string,
     sessionId: string,
-    projectId: string,
+    workspaceRef: string,
   ): Promise<boolean> {
     const db = await this.requireDb();
     const result = await db.run(
-      "UPDATE runtime_sessions SET project_id = ?, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
-      projectId,
+      "UPDATE runtime_sessions SET workspace_ref = ?, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
+      workspaceRef,
       Date.now(),
       chatId,
       agentId,
@@ -1462,61 +1536,6 @@ export class ConnectStateStore {
       "SELECT * FROM session_lifecycle_operations WHERE state != 'complete' ORDER BY created_at ASC",
     );
     return rows.map(sessionLifecycleOperationFromRow);
-  }
-
-  async mapRuntimeWorkspaceIdentity(input: {
-    bindingId: string;
-    runtimeKind: string;
-    identityKey: string;
-    projectId: string;
-  }): Promise<RuntimeWorkspaceMappingRecord> {
-    const db = await this.requireDb();
-    const now = Date.now();
-    const existing = await this.getRuntimeWorkspaceMapping(input.bindingId, input.runtimeKind, input.identityKey);
-    if (existing && existing.projectId !== input.projectId) {
-      throw new Error(
-        `Runtime Workspace Identity ${input.identityKey} is already mapped to Project ${existing.projectId}`,
-      );
-    }
-    await db.run(
-      `INSERT INTO runtime_workspace_mappings(
-        binding_id, runtime_kind, identity_key, project_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(binding_id, runtime_kind, identity_key)
-      DO UPDATE SET updated_at = excluded.updated_at`,
-      input.bindingId,
-      input.runtimeKind,
-      input.identityKey,
-      input.projectId,
-      now,
-      now,
-    );
-    return { ...input, createdAt: now, updatedAt: now };
-  }
-
-  async getRuntimeWorkspaceMapping(
-    bindingId: string,
-    runtimeKind: string,
-    identityKey: string,
-  ): Promise<RuntimeWorkspaceMappingRecord | null> {
-    const db = await this.requireDb();
-    const row = await db.get<Record<string, unknown>>(
-      `SELECT * FROM runtime_workspace_mappings
-       WHERE binding_id = ? AND runtime_kind = ? AND identity_key = ?`,
-      bindingId,
-      runtimeKind,
-      identityKey,
-    );
-    return row
-      ? {
-          bindingId: stringValue(row.binding_id),
-          runtimeKind: stringValue(row.runtime_kind),
-          identityKey: stringValue(row.identity_key),
-          projectId: stringValue(row.project_id),
-          createdAt: numberValue(row.created_at),
-          updatedAt: numberValue(row.updated_at),
-        }
-      : null;
   }
 
   async claimMessageOnce(input: MessageInput): Promise<boolean> {
@@ -2699,6 +2718,219 @@ export class ConnectStateStore {
     );
   }
 
+  async readPluginDurableState(namespace: PluginDurableStateNamespace): Promise<PluginDurableStateRecord | null> {
+    validatePluginDurableStateNamespace(namespace);
+    const db = await this.requireDb();
+    const row = await db.get<PluginDurableStateRow>(
+      `SELECT schema_version, revision, state_json
+       FROM plugin_durable_state
+       WHERE plugin_id = ? AND activation_generation = ? AND capability_id = ?
+         AND instance_id = ? AND lifetime = ? AND scope_key = ?`,
+      namespace.pluginId,
+      namespace.activationGeneration,
+      namespace.capabilityId,
+      namespace.instanceId,
+      namespace.lifetime,
+      namespace.scopeKey,
+    );
+    if (!row) return null;
+    return {
+      schemaVersion: row.schema_version,
+      revision: row.revision,
+      value: JSON.parse(row.state_json) as unknown,
+    };
+  }
+
+  async listPluginDurableState(pluginId: string, activationGeneration?: number): Promise<PluginDurableStateSnapshot[]> {
+    if (!pluginId.trim()) throw new Error("Plugin Durable State Plugin identity is required");
+    if (
+      activationGeneration !== undefined &&
+      (!Number.isSafeInteger(activationGeneration) || activationGeneration < 1)
+    ) {
+      throw new Error("Plugin Durable State Activation Generation must be a positive safe integer");
+    }
+    const db = await this.requireDb();
+    type SnapshotRow = PluginDurableStateRow & {
+      activation_generation: number;
+      capability_id: string;
+      instance_id: string;
+      lifetime: PluginDurableStateLifetime;
+      scope_key: string;
+    };
+    const rows =
+      activationGeneration === undefined
+        ? await db.all<SnapshotRow[]>(
+            `SELECT activation_generation, capability_id, instance_id, lifetime, scope_key,
+                    schema_version, revision, state_json
+             FROM plugin_durable_state WHERE plugin_id = ?
+             ORDER BY activation_generation, capability_id, instance_id, lifetime, scope_key`,
+            pluginId,
+          )
+        : await db.all<SnapshotRow[]>(
+            `SELECT activation_generation, capability_id, instance_id, lifetime, scope_key,
+                    schema_version, revision, state_json
+             FROM plugin_durable_state WHERE plugin_id = ? AND activation_generation = ?
+             ORDER BY capability_id, instance_id, lifetime, scope_key`,
+            pluginId,
+            activationGeneration,
+          );
+    return rows.map((row) => ({
+      namespace: {
+        pluginId,
+        activationGeneration: row.activation_generation,
+        capabilityId: row.capability_id,
+        instanceId: row.instance_id,
+        lifetime: row.lifetime,
+        scopeKey: row.scope_key,
+      },
+      record: {
+        schemaVersion: row.schema_version,
+        revision: row.revision,
+        value: JSON.parse(row.state_json) as unknown,
+      },
+    }));
+  }
+
+  async commitPluginDurableStateMigrations(migrations: readonly PluginDurableStateMigrationCommit[]): Promise<void> {
+    if (migrations.length === 0) return;
+    const prepared = migrations.map((migration) => {
+      validatePluginDurableStateNamespace(migration.namespace);
+      if (!Number.isSafeInteger(migration.revision) || migration.revision < 1) {
+        throw new Error("Plugin Durable State migration revision must be a positive safe integer");
+      }
+      if (!Number.isSafeInteger(migration.schemaVersion) || migration.schemaVersion < 1) {
+        throw new Error("Plugin Durable State schema version must be a positive safe integer");
+      }
+      return { ...migration, stateJson: serializePluginDurableState(migration.value) };
+    });
+    const target = prepared[0]?.namespace;
+    if (!target) return;
+    if (
+      prepared.some(
+        ({ namespace }) =>
+          namespace.pluginId !== target.pluginId || namespace.activationGeneration !== target.activationGeneration,
+      )
+    ) {
+      throw new Error("Plugin Durable State staged generation must have one Plugin identity and generation");
+    }
+    const db = await this.requireDb();
+    db.transaction((run) => {
+      run(
+        "DELETE FROM plugin_durable_state WHERE plugin_id = ? AND activation_generation = ?",
+        target.pluginId,
+        target.activationGeneration,
+      );
+      for (const migration of prepared) {
+        const namespace = migration.namespace;
+        run(
+          `INSERT INTO plugin_durable_state(
+             plugin_id, activation_generation, capability_id, instance_id, lifetime, scope_key,
+             schema_version, revision, state_json, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          namespace.pluginId,
+          namespace.activationGeneration,
+          namespace.capabilityId,
+          namespace.instanceId,
+          namespace.lifetime,
+          namespace.scopeKey,
+          migration.schemaVersion,
+          migration.revision,
+          migration.stateJson,
+          Date.now(),
+        );
+      }
+    });
+  }
+
+  async compareAndSwapPluginDurableState(
+    namespace: PluginDurableStateNamespace,
+    expectedRevision: number | null,
+    schemaVersion: number,
+    value: unknown,
+  ): Promise<PluginDurableStateRecord> {
+    validatePluginDurableStateNamespace(namespace);
+    if (!Number.isSafeInteger(schemaVersion) || schemaVersion < 1) {
+      throw new Error("Plugin Durable State schema version must be a positive safe integer");
+    }
+    if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1)) {
+      throw new Error("Plugin Durable State expected revision must be null or a positive safe integer");
+    }
+    const stateJson = serializePluginDurableState(value);
+    const db = await this.requireDb();
+    const revision = db.transaction((run, get) => {
+      const current = get<PluginDurableStateRow>(
+        `SELECT schema_version, revision, state_json
+         FROM plugin_durable_state
+         WHERE plugin_id = ? AND activation_generation = ? AND capability_id = ?
+           AND instance_id = ? AND lifetime = ? AND scope_key = ?`,
+        namespace.pluginId,
+        namespace.activationGeneration,
+        namespace.capabilityId,
+        namespace.instanceId,
+        namespace.lifetime,
+        namespace.scopeKey,
+      );
+      if ((current?.revision ?? null) !== expectedRevision) {
+        throw new Error(
+          `Plugin Durable State compare-and-swap conflict: expected revision ${expectedRevision ?? "absent"}, received ${current?.revision ?? "absent"}`,
+        );
+      }
+      const nextRevision = (current?.revision ?? 0) + 1;
+      run(
+        `INSERT INTO plugin_durable_state(
+           plugin_id, activation_generation, capability_id, instance_id, lifetime, scope_key,
+           schema_version, revision, state_json, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(plugin_id, activation_generation, capability_id, instance_id, lifetime, scope_key)
+         DO UPDATE SET schema_version = excluded.schema_version, revision = excluded.revision,
+           state_json = excluded.state_json, updated_at = excluded.updated_at`,
+        namespace.pluginId,
+        namespace.activationGeneration,
+        namespace.capabilityId,
+        namespace.instanceId,
+        namespace.lifetime,
+        namespace.scopeKey,
+        schemaVersion,
+        nextRevision,
+        stateJson,
+        Date.now(),
+      );
+      return nextRevision;
+    });
+    return { schemaVersion, revision, value: JSON.parse(stateJson) as unknown };
+  }
+
+  async deletePluginDurableStateNamespace(namespace: PluginDurableStateNamespace): Promise<void> {
+    validatePluginDurableStateNamespace(namespace);
+    const db = await this.requireDb();
+    await db.run(
+      `DELETE FROM plugin_durable_state
+       WHERE plugin_id = ? AND activation_generation = ? AND capability_id = ?
+         AND instance_id = ? AND lifetime = ? AND scope_key = ?`,
+      namespace.pluginId,
+      namespace.activationGeneration,
+      namespace.capabilityId,
+      namespace.instanceId,
+      namespace.lifetime,
+      namespace.scopeKey,
+    );
+  }
+
+  async deletePluginDurableStateForPlugin(pluginId: string): Promise<void> {
+    if (!pluginId.trim()) throw new Error("Plugin Durable State Plugin identity is required");
+    const db = await this.requireDb();
+    await db.run("DELETE FROM plugin_durable_state WHERE plugin_id = ?", pluginId);
+  }
+
+  async deletePluginDurableStateScope(
+    lifetime: Exclude<PluginDurableStateLifetime, "installation">,
+    scopeKey: string,
+  ): Promise<void> {
+    if (!scopeKey.trim()) throw new Error("Plugin Durable State scope identity is required");
+    const db = await this.requireDb();
+    await db.run("DELETE FROM plugin_durable_state WHERE lifetime = ? AND scope_key = ?", lifetime, scopeKey);
+  }
+
   private assertInstallationOwnerStateAllowed(): void {
     if (this.ambiguousLegacyOwnerState && !this.installationOwnerResetInProgress) {
       throw new Error(AMBIGUOUS_LEGACY_OWNER_DIAGNOSTIC);
@@ -2712,6 +2944,70 @@ export class ConnectStateStore {
     return this.db;
   }
 }
+function validatePluginDurableStateNamespace(namespace: PluginDurableStateNamespace): void {
+  for (const [label, value] of [
+    ["Plugin", namespace.pluginId],
+    ["capability", namespace.capabilityId],
+    ["instance", namespace.instanceId],
+    ["scope", namespace.scopeKey],
+  ] as const) {
+    if (!value.trim() || value !== value.trim()) {
+      throw new Error(`Plugin Durable State ${label} identity must be non-empty and exact`);
+    }
+  }
+  if (!Number.isSafeInteger(namespace.activationGeneration) || namespace.activationGeneration < 1) {
+    throw new Error("Plugin Durable State Activation Generation must be a positive safe integer");
+  }
+  if (namespace.lifetime !== "installation" && namespace.lifetime !== "owner" && namespace.lifetime !== "binding") {
+    throw new Error("Plugin Durable State lifetime is unsupported");
+  }
+  if (namespace.lifetime === "installation" && namespace.scopeKey !== "installation") {
+    throw new Error("Installation-scoped Plugin Durable State uses the Core-owned installation scope");
+  }
+}
+
+function serializePluginDurableState(value: unknown): string {
+  validatePluginDurableStateJson(value, "$", new WeakSet<object>());
+  const serialized = JSON.stringify(value);
+  if (Buffer.byteLength(serialized) > MAX_PLUGIN_DURABLE_STATE_BYTES) {
+    throw new Error("Plugin Durable State exceeds 1 MiB");
+  }
+  return serialized;
+}
+
+function validatePluginDurableStateJson(value: unknown, path: string, ancestors: WeakSet<object>): void {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    return;
+  }
+  if (!value || typeof value !== "object") {
+    throw new Error(`Plugin Durable State ${path} is not JSON`);
+  }
+  if (ancestors.has(value)) throw new Error(`Plugin Durable State ${path} contains a cycle`);
+  ancestors.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((child, index) => {
+      validatePluginDurableStateJson(child, `${path}[${index}]`, ancestors);
+    });
+  } else {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error(`Plugin Durable State ${path} must use plain JSON objects`);
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (/authorization|credential|password|secret|token|api.?key|access.?key/iu.test(key)) {
+        throw new Error(`Plugin Durable State must remain secret-free; ${path}.${key} is authorization-shaped`);
+      }
+      validatePluginDurableStateJson(child, `${path}.${key}`, ancestors);
+    }
+  }
+  ancestors.delete(value);
+}
+
 export function createStateStore(options?: ConnectStateOptions): ConnectStateStore {
   return new ConnectStateStore(options);
 }

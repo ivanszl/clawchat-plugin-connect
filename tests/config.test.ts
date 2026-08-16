@@ -164,12 +164,9 @@ describe("Agent Binding configuration", () => {
     expect(config.agents.work?.runtimeConfig).toEqual({ home: "work" });
   });
 
-  it("enables a private Liveware Exposure by default and accepts the current policies", () => {
-    expect(normalizeConfig({}).livewareAccessPolicy).toBe("private");
-    expect(normalizeConfig({ livewareAccessPolicy: "off" }).livewareAccessPolicy).toBe("off");
-    expect(normalizeConfig({ livewareAccessPolicy: "public" }).livewareAccessPolicy).toBe("public");
-    expect(() => normalizeConfig({ livewareAccessPolicy: "allowlist" })).toThrow(
-      "livewareAccessPolicy must be one of: off, private, public",
+  it("rejects the removed Core-owned Liveware policy instead of silently migrating it", () => {
+    expect(() => normalizeConfig({ livewareAccessPolicy: "private" })).toThrow(
+      "livewareAccessPolicy was removed; configure the official Liveware Plugin exposure capability instead",
     );
   });
 

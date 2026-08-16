@@ -133,11 +133,7 @@ describe("WorkBuddy Runtime Adapter", () => {
       };
       const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
       const profileBinding = workBuddyBinding(profile);
-      const runtimeWorkspace = {
-        projectId: null,
-        workingDirectory: workspace,
-        skipGitRepoCheck: false,
-      };
+      const runtimeWorkspace = { workspaceRef: "WSDEFALT", workingDirectory: workspace, skipGitRepoCheck: false };
       const scope = { runtimeThreadId: taskId, workspace: runtimeWorkspace };
 
       await expect(adapter.listModels?.(profileBinding, scope)).resolves.toEqual(catalog.models);
@@ -181,11 +177,7 @@ describe("WorkBuddy Runtime Adapter", () => {
       { ...binding },
       "desktop-catalog-refresh",
     ) as WorkBuddyRuntimeAdapterBinding;
-    const runtimeWorkspace = {
-      projectId: null,
-      workingDirectory: workspace,
-      skipGitRepoCheck: false,
-    };
+    const runtimeWorkspace = { workspaceRef: "WSDEFALT", workingDirectory: workspace, skipGitRepoCheck: false };
     const session = await registry.start(scopedBinding, {
       agentId: "desktop-catalog-refresh",
       chatId: "client",
@@ -241,7 +233,7 @@ describe("WorkBuddy Runtime Adapter", () => {
     ]);
     await expect(
       adapter.discoverThreads?.(binding, {
-        projectId: null,
+        workspaceRef: "WSDEFALT",
         workingDirectory: workspace,
         skipGitRepoCheck: false,
       }),
@@ -650,7 +642,7 @@ describe("WorkBuddy Runtime Adapter", () => {
           detached.prompt({
             prompt: "new",
             workspace: {
-              projectId: null,
+              workspaceRef: "WSDEFALT",
               workingDirectory: workspace,
               skipGitRepoCheck: false,
             },
@@ -676,7 +668,7 @@ describe("WorkBuddy Runtime Adapter", () => {
     for await (const activity of session.prompt({
       prompt: "What did the desktop transcript say?",
       workspace: {
-        projectId: null,
+        workspaceRef: "WSDEFALT",
         workingDirectory: workspace,
         skipGitRepoCheck: false,
       },
@@ -714,11 +706,7 @@ describe("WorkBuddy Runtime Adapter", () => {
     };
     const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
     const runtimeSessionId = "codebuddy-session:existing-native-session";
-    const runtimeWorkspace = {
-      projectId: null,
-      workingDirectory: workspace,
-      skipGitRepoCheck: false,
-    };
+    const runtimeWorkspace = { workspaceRef: "WSDEFALT", workingDirectory: workspace, skipGitRepoCheck: false };
 
     await expect(
       adapter.listModels?.(binding, { runtimeThreadId: runtimeSessionId, workspace: runtimeWorkspace }),
@@ -832,7 +820,7 @@ describe("WorkBuddy Runtime Adapter", () => {
         accepted += 1;
       },
       workspace: {
-        projectId: null,
+        workspaceRef: "WSDEFALT",
         workingDirectory: workspace,
         skipGitRepoCheck: false,
       },
@@ -952,7 +940,7 @@ describe("WorkBuddy Runtime Adapter", () => {
         turnId: "uncertain-turn",
         turnOrigin: "clawchat",
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
           skipGitRepoCheck: false,
         },
@@ -1059,7 +1047,7 @@ describe("WorkBuddy Runtime Adapter", () => {
             accepted += 1;
           },
           workspace: {
-            projectId: null,
+            workspaceRef: "WSDEFALT",
             workingDirectory: workspace,
             skipGitRepoCheck: false,
           },
@@ -1142,7 +1130,7 @@ describe("WorkBuddy Runtime Adapter", () => {
             },
           },
           workspace: {
-            projectId: null,
+            workspaceRef: "WSDEFALT",
             workingDirectory: workspace,
             skipGitRepoCheck: false,
           },
@@ -1235,7 +1223,7 @@ describe("WorkBuddy Runtime Adapter", () => {
           prompt: "unsettled prompt",
           turnId: "unsettled-turn",
           workspace: {
-            projectId: null,
+            workspaceRef: "WSDEFALT",
             workingDirectory: workspace,
             skipGitRepoCheck: false,
           },

@@ -94,13 +94,11 @@ try {
 
   Expand-Archive -LiteralPath $archivePath -DestinationPath $extractedDirectory
   $connectSource = Join-Path $extractedDirectory "clawchat-connect.exe"
-  $livewareSource = Join-Path $extractedDirectory "liveware.exe"
   $clientSource = Join-Path $extractedDirectory "clawchat-connect-client"
   $officialPluginsSource = Join-Path $extractedDirectory "official-plugins"
   $skillsSource = Join-Path $extractedDirectory "skills"
   foreach ($requiredPath in @(
     $connectSource,
-    $livewareSource,
     (Join-Path $clientSource "index.html"),
     (Join-Path $skillsSource "manifest.json"),
     (Join-Path $extractedDirectory "CHANGELOG.md"),
@@ -115,7 +113,8 @@ try {
   }
   foreach ($officialPluginId in @(
     "clawling.runtime.codex",
-    "clawling.runtime.opencode"
+    "clawling.runtime.opencode",
+    "clawling.exposure.liveware"
   )) {
     $officialPluginBundles = @(Get-ChildItem -LiteralPath $officialPluginsSource -Filter "$officialPluginId-*.connect-plugin" -File)
     if ($officialPluginBundles.Count -eq 0) {
@@ -125,14 +124,10 @@ try {
 
   New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
   $connectTarget = Join-Path $InstallDirectory "clawchat-connect.exe"
-  $livewareTarget = Join-Path $InstallDirectory "liveware.exe"
+  $legacyLivewareTarget = Join-Path $InstallDirectory "liveware.exe"
   & $connectSource "--help" | Out-Null
   if ($LASTEXITCODE -ne 0) {
     throw "Staged clawchat-connect.exe failed its startup check"
-  }
-  & $livewareSource "--help" | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Staged liveware.exe failed its startup check"
   }
   & $connectSource "skills" "preflight" | Out-Null
   if ($LASTEXITCODE -ne 0) {
@@ -145,9 +140,7 @@ try {
   }
 
   $connectStaging = "$connectTarget.new"
-  $livewareStaging = "$livewareTarget.new"
   Copy-Item -LiteralPath $connectSource -Destination $connectStaging -Force
-  Copy-Item -LiteralPath $livewareSource -Destination $livewareStaging -Force
   $clientTarget = Join-Path $InstallDirectory "clawchat-connect-client"
   $clientStaging = "$clientTarget.new"
   if (Test-Path -LiteralPath $clientStaging) {
@@ -174,7 +167,7 @@ try {
   New-Item -ItemType Directory -Path $backupDirectory | Out-Null
   $targets = @(
     @{ Target = $connectTarget; Backup = (Join-Path $backupDirectory "connect"); Name = "connect" },
-    @{ Target = $livewareTarget; Backup = (Join-Path $backupDirectory "liveware"); Name = "liveware" },
+    @{ Target = $legacyLivewareTarget; Backup = (Join-Path $backupDirectory "liveware"); Name = "liveware" },
     @{ Target = $clientTarget; Backup = (Join-Path $backupDirectory "client"); Name = "client" },
     @{ Target = $officialPluginsTarget; Backup = (Join-Path $backupDirectory "official-plugins"); Name = "officialPlugins" },
     @{ Target = $skillsBundleTarget; Backup = (Join-Path $backupDirectory "skills"); Name = "skills" },
@@ -193,7 +186,6 @@ try {
     }
   }
   Move-Item -LiteralPath $connectStaging -Destination $connectTarget
-  Move-Item -LiteralPath $livewareStaging -Destination $livewareTarget
   Move-Item -LiteralPath $clientStaging -Destination $clientTarget
   Move-Item -LiteralPath $officialPluginsStaging -Destination $officialPluginsTarget
   Move-Item -LiteralPath $skillsBundleStaging -Destination $skillsBundleTarget
@@ -225,7 +217,6 @@ try {
   $env:PATH = "$InstallDirectory;$env:PATH"
 
   Write-Host "Installed clawchat-connect.exe to $connectTarget"
-  Write-Host "Installed bundled Liveware to $livewareTarget"
   Write-Host "Installed Connect Client assets to $clientTarget"
   Write-Host "Installed official Plugin Bundles to $officialPluginsTarget"
   Write-Host "Installed managed Agent skills to $HOME\.agents\skills"

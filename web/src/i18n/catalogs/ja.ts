@@ -16,6 +16,9 @@ export const ja = {
   "@astryx.topNav.heading.openMenu": { defaultMessage: "メニューを開く" },
   "@astryx.topNav.heading.dialogLabel": { defaultMessage: "ナビゲーションメニュー" },
   "@astryx.topNav.landmarkLabel": { defaultMessage: "上部ナビゲーション" },
+  "@astryx.fileInput.clearLabel": { defaultMessage: "{label} をクリア" },
+  "@astryx.fileInput.required": { defaultMessage: "必須" },
+  "@astryx.fileInput.triggerWithFiles": { defaultMessage: "{label}、{fileNames}" },
   "@astryx.textInput.clearLabel": { defaultMessage: "{label}をクリア" },
   "@astryx.dialog.close": { defaultMessage: "閉じる" },
   "@astryx.selector.placeholder": { defaultMessage: "オプションを選択" },
@@ -82,13 +85,13 @@ export const ja = {
   "@connect.shell.backToSessions": { defaultMessage: "Session に戻る" },
   "@connect.home.title": { defaultMessage: "セッションを選択" },
   "@connect.home.description": {
-    defaultMessage: "左側には、この Agent Binding で検出できるすべての Project と Non-Project Session が表示されます。",
+    defaultMessage: "左側には、この Agent Binding で検出できるすべての Workspace と Session が表示されます。",
   },
   "@connect.home.note": {
     defaultMessage: "Connect Client からのメッセージはこの Agent Binding にのみ送信され、ClawChat には同期されません。",
   },
   "@connect.navigation.search.label": { defaultMessage: "Session を検索" },
-  "@connect.navigation.search.placeholder": { defaultMessage: "Session または Project を検索" },
+  "@connect.navigation.search.placeholder": { defaultMessage: "Session または Workspace を検索" },
   "@connect.navigation.newSession": { defaultMessage: "新しい Session" },
   "@connect.navigation.loading": { defaultMessage: "Session を読み込んでいます" },
   "@connect.navigation.loadFailure": {
@@ -103,7 +106,7 @@ export const ja = {
   "@connect.navigation.status.running": { defaultMessage: "実行中" },
   "@connect.navigation.status.queued": { defaultMessage: "待機中" },
   "@connect.navigation.status.error": { defaultMessage: "エラー" },
-  "@connect.newSession.directory.title": { defaultMessage: "Project ディレクトリを選択" },
+  "@connect.newSession.directory.title": { defaultMessage: "Workspace ディレクトリを選択" },
   "@connect.newSession.directory.description": { defaultMessage: "Connect Service を実行しているホストを参照します。" },
   "@connect.newSession.title": { defaultMessage: "新しい Session" },
   "@connect.newSession.description": { defaultMessage: "ワークスペースと Runtime オプションをまとめて選択します。" },
@@ -111,8 +114,8 @@ export const ja = {
   "@connect.newSession.name.description": { defaultMessage: "この Session の任意の表示名です。" },
   "@connect.newSession.name.tooLong": { defaultMessage: "Session 名は 200 文字以内にしてください。" },
   "@connect.newSession.binding.label": { defaultMessage: "Agent Binding" },
-  "@connect.newSession.project.add": { defaultMessage: "Project を追加" },
-  "@connect.newSession.project.nonProject": { defaultMessage: "Non-Project（分離ワークスペース）" },
+  "@connect.newSession.workspace.label": { defaultMessage: "ワークスペース" },
+  "@connect.newSession.workspace.add": { defaultMessage: "ワークスペースを追加" },
   "@connect.newSession.mode.label": { defaultMessage: "モード" },
   "@connect.newSession.mode.default": { defaultMessage: "デフォルトモード" },
   "@connect.newSession.model.label": { defaultMessage: "モデル" },
@@ -124,7 +127,6 @@ export const ja = {
   "@connect.newSession.cancel": { defaultMessage: "キャンセル" },
   "@connect.newSession.create": { defaultMessage: "Session を作成" },
   "@connect.session.loading": { defaultMessage: "Session を開いています" },
-  "@connect.session.context.nonProject": { defaultMessage: "Non-Project" },
   "@connect.session.loadFailure": { defaultMessage: "Session を開けません" },
   "@connect.session.archived.badge": { defaultMessage: "アーカイブ済み" },
   "@connect.session.archived.title": { defaultMessage: "この Session はアーカイブ済みです" },
@@ -173,7 +175,7 @@ export const ja = {
   "@connect.hostDirectory.select": { defaultMessage: "このディレクトリを選択" },
   "@connect.error.clientWarmingUp": { defaultMessage: "Connect Client はまだ初期化中です。" },
   "@connect.error.bindingNotFound": { defaultMessage: "選択した Agent Binding は利用できなくなりました。" },
-  "@connect.error.invalidWorkspace": { defaultMessage: "選択した Project は利用できなくなりました。" },
+  "@connect.error.invalidWorkspace": { defaultMessage: "選択した Workspace は利用できなくなりました。" },
   "@connect.error.invalidName": { defaultMessage: "Session 名が無効です。" },
   "@connect.error.invalidMode": { defaultMessage: "選択したモードは利用できなくなりました。" },
   "@connect.error.invalidModel": { defaultMessage: "選択したモデルは利用できなくなりました。" },
@@ -193,7 +195,7 @@ export const ja = {
   "@connect.error.directoryAlreadyExists": { defaultMessage: "そのホストディレクトリは既に存在します。" },
   "@connect.error.invalidDirectory": { defaultMessage: "有効なホストの絶対ディレクトリを入力してください。" },
   "@connect.error.invalidDirectoryName": { defaultMessage: "有効なディレクトリ名を 1 つ入力してください。" },
-  "@connect.error.projectConflict": { defaultMessage: "Project が既存のワークスペースと競合しています。" },
+  "@connect.error.workspaceConflict": { defaultMessage: "Workspace が既存のワークスペースと競合しています。" },
   "@connect.error.internal": { defaultMessage: "Connect Client は要求を完了できませんでした。" },
   "@connect.error.withDiagnostic": { defaultMessage: "{message} 診断参照：{diagnosticRef}" },
   "@connect.error.interactionNotFound": { defaultMessage: "この Runtime Interaction は利用できなくなりました。" },
@@ -205,7 +207,7 @@ export const ja = {
   "@connect.settings.title": { defaultMessage: "Connect 設定" },
   "@connect.settings.description": {
     defaultMessage:
-      "安全な Agent 設定、ホスト Project、信頼済みローカルプラグインを管理します。Runtime の起動引数と承認ポリシーは引き続きローカル設定で管理されます。",
+      "安全な Agent 設定、ホスト Workspace、信頼済みローカルプラグインを管理します。Runtime の起動引数と承認ポリシーは引き続きローカル設定で管理されます。",
   },
   "@connect.settings.binding.save": { defaultMessage: "設定を保存" },
   "@connect.settings.binding.saving": { defaultMessage: "設定を保存中" },
@@ -271,43 +273,44 @@ export const ja = {
   "@connect.settings.binding.visibility.minimal": { defaultMessage: "最小" },
   "@connect.settings.binding.visibility.normal": { defaultMessage: "標準" },
   "@connect.settings.binding.visibility.full": { defaultMessage: "すべて" },
-  "@connect.settings.projects.title": { defaultMessage: "Projects" },
-  "@connect.settings.projects.description": {
-    defaultMessage: "Project のパスは Connect ホストに保持され、ClawChat のメッセージには送信されません。",
+  "@connect.settings.workspaces.title": { defaultMessage: "Workspaces" },
+  "@connect.settings.workspaces.description": {
+    defaultMessage: "Workspace のパスは Connect ホストに保持され、ClawChat のメッセージには送信されません。",
   },
-  "@connect.settings.projects.chooseDirectory": { defaultMessage: "ディレクトリを選択" },
-  "@connect.settings.projects.add": { defaultMessage: "Project を追加" },
-  "@connect.settings.projects.adding": { defaultMessage: "Project を追加中" },
-  "@connect.settings.projects.selectRequired": { defaultMessage: "先に Project ディレクトリを選択してください。" },
-  "@connect.settings.projects.pendingDirectory": { defaultMessage: "追加するディレクトリ" },
-  "@connect.settings.projects.added": { defaultMessage: "Project を追加しました" },
-  "@connect.settings.projects.addedDescription": { defaultMessage: "{project} を追加しました。" },
-  "@connect.settings.projects.addFailed": { defaultMessage: "Project を追加できません" },
-  "@connect.settings.projects.removed": { defaultMessage: "Project を削除しました" },
-  "@connect.settings.projects.removedDescription": { defaultMessage: "{project} を削除しました。" },
-  "@connect.settings.projects.removeFailed": { defaultMessage: "Project を削除できません" },
-  "@connect.settings.projects.registered": { defaultMessage: "登録済みの Project" },
-  "@connect.settings.projects.loading": { defaultMessage: "Project を読み込んでいます" },
-  "@connect.settings.projects.loadFailed": { defaultMessage: "Project を読み込めません" },
-  "@connect.settings.projects.empty": { defaultMessage: "登録済みの Project はありません" },
-  "@connect.settings.projects.workspaceId": { defaultMessage: "Workspace ID：{workspaceId}" },
-  "@connect.settings.projects.remove": { defaultMessage: "削除" },
-  "@connect.settings.projects.removeAccessible": { defaultMessage: "{project} を削除" },
-  "@connect.settings.projects.directoryDialog.title": { defaultMessage: "Project ディレクトリを選択" },
-  "@connect.settings.projects.directoryDialog.description": {
+  "@connect.settings.workspaces.chooseDirectory": { defaultMessage: "ディレクトリを選択" },
+  "@connect.settings.workspaces.add": { defaultMessage: "Workspace を追加" },
+  "@connect.settings.workspaces.adding": { defaultMessage: "Workspace を追加中" },
+  "@connect.settings.workspaces.selectRequired": { defaultMessage: "先に Workspace ディレクトリを選択してください。" },
+  "@connect.settings.workspaces.pendingDirectory": { defaultMessage: "追加するディレクトリ" },
+  "@connect.settings.workspaces.added": { defaultMessage: "Workspace を追加しました" },
+  "@connect.settings.workspaces.addedDescription": { defaultMessage: "{workspace} を追加しました。" },
+  "@connect.settings.workspaces.addFailed": { defaultMessage: "Workspace を追加できません" },
+  "@connect.settings.workspaces.removed": { defaultMessage: "Workspace を削除しました" },
+  "@connect.settings.workspaces.removedDescription": { defaultMessage: "{workspace} を削除しました。" },
+  "@connect.settings.workspaces.removeFailed": { defaultMessage: "Workspace を削除できません" },
+  "@connect.settings.workspaces.registered": { defaultMessage: "登録済みの Workspace" },
+  "@connect.settings.workspaces.loading": { defaultMessage: "Workspace を読み込んでいます" },
+  "@connect.settings.workspaces.loadFailed": { defaultMessage: "Workspace を読み込めません" },
+  "@connect.settings.workspaces.empty": { defaultMessage: "登録済みの Workspace はありません" },
+  "@connect.settings.workspaces.workspaceId": { defaultMessage: "Workspace ID：{workspaceId}" },
+  "@connect.settings.workspaces.remove": { defaultMessage: "削除" },
+  "@connect.settings.workspaces.removeAccessible": { defaultMessage: "{workspace} を削除" },
+  "@connect.settings.workspaces.directoryDialog.title": { defaultMessage: "Workspace ディレクトリを選択" },
+  "@connect.settings.workspaces.directoryDialog.description": {
     defaultMessage: "Connect Service を実行しているホストを参照します。",
   },
-  "@connect.settings.projects.removeConfirm.title": { defaultMessage: "{project} を削除しますか？" },
-  "@connect.settings.projects.removeConfirm.description": {
+  "@connect.settings.workspaces.removeConfirm.title": { defaultMessage: "{workspace} を削除しますか？" },
+  "@connect.settings.workspaces.removeConfirm.description": {
     defaultMessage:
-      "{project} を Connect から削除しますか？ホスト上のディレクトリ {path} は削除されません。Session から参照されている Project は削除できません。",
+      "{workspace} を Connect から削除しますか？ホスト上のディレクトリ {path} は削除されません。Session から参照されている Workspace は削除できません。",
   },
-  "@connect.settings.projects.removeConfirm.action": { defaultMessage: "Project を削除" },
-  "@connect.settings.projects.removeConfirm.removing": { defaultMessage: "Project を削除中" },
-  "@connect.settings.projects.removeConfirm.cancel": { defaultMessage: "キャンセル" },
+  "@connect.settings.workspaces.removeConfirm.action": { defaultMessage: "Workspace を削除" },
+  "@connect.settings.workspaces.removeConfirm.removing": { defaultMessage: "Workspace を削除中" },
+  "@connect.settings.workspaces.removeConfirm.cancel": { defaultMessage: "キャンセル" },
   "@connect.settings.plugins.title": { defaultMessage: "信頼済みプラグイン" },
   "@connect.settings.plugins.description": {
-    defaultMessage: "この Connect インストールの自己完結型 Runtime／Exposure プラグインを管理します。",
+    defaultMessage:
+      "自己完結型の Runtime／Client Extension プラグインと、リリース検証済みの公式 Exposure を管理します。",
   },
   "@connect.settings.plugins.loading": { defaultMessage: "プラグインを読み込み中" },
   "@connect.settings.plugins.loadFailed": { defaultMessage: "プラグインを読み込めません" },
@@ -373,10 +376,10 @@ export const ja = {
   "@connect.settings.plugins.upload.required": { defaultMessage: "先に Plugin Bundle を選択してください。" },
   "@connect.settings.plugins.installationConfiguration": { defaultMessage: "インストール設定" },
   "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "ケイパビリティ ID 別 Exposure 設定" },
-  "@connect.settings.plugins.trust.title": { defaultMessage: "信頼されたローカルコード" },
+  "@connect.settings.plugins.trust.title": { defaultMessage: "プラグインは信頼済みコードとして実行されます" },
   "@connect.settings.plugins.trust.description": {
     defaultMessage:
-      "プラグインは、Connect Service 実行ユーザーの OS 権限を持つ信頼済みローカルコードとして実行されます。",
+      "Host アーティファクトは Connect プロセス内で、Client Extension のブラウザーアーティファクトは同一オリジンの信頼済みコードとして実行されます。型付きスロット、DOM の直接変更禁止、ルート登録禁止はブラウザーサンドボックスではなくアーキテクチャ上の契約です。",
   },
   "@connect.settings.plugins.official.install": { defaultMessage: "公式プラグインをインストール" },
   "@connect.settings.plugins.official.installed": { defaultMessage: "インストール済み" },
@@ -419,14 +422,14 @@ export const ja = {
   "@connect.settings.error.invalidReasoningEffort": {
     defaultMessage: "選択した推論レベルは利用できません。サーバー詳細：{detail}",
   },
-  "@connect.settings.error.projectInUse": {
-    defaultMessage: "この Project は使用中です。サーバー詳細：{detail}",
+  "@connect.settings.error.workspaceInUse": {
+    defaultMessage: "この Workspace は使用中です。サーバー詳細：{detail}",
   },
-  "@connect.settings.error.projectNotFound": {
-    defaultMessage: "この Project は登録されていません。サーバー詳細：{detail}",
+  "@connect.settings.error.workspaceNotFound": {
+    defaultMessage: "この Workspace は登録されていません。サーバー詳細：{detail}",
   },
-  "@connect.settings.error.projectConflict": {
-    defaultMessage: "Project が既存のワークスペースと競合しています。サーバー詳細：{detail}",
+  "@connect.settings.error.workspaceConflict": {
+    defaultMessage: "Workspace が既存のワークスペースと競合しています。サーバー詳細：{detail}",
   },
   "@connect.settings.error.directoryNotFound": {
     defaultMessage: "選択したホストディレクトリは存在しません。サーバー詳細：{detail}",
@@ -616,10 +619,10 @@ export const ja = {
   "@connect.composer.error.withDiagnostic": { defaultMessage: "{message} 診断参照：{reference}" },
   "@connect.session.agent.fixed.title": { defaultMessage: "Agent Binding fixed for this Session" },
   "@connect.session.agent.fixed.acceptedTurn": {
-    defaultMessage: "The first Turn has been accepted. Continue the Project in a new Session to use another Agent.",
+    defaultMessage: "The first Turn has been accepted. Continue the Workspace in a new Session to use another Agent.",
   },
   "@connect.session.agent.fixed.runtimeThread": {
-    defaultMessage: "A Runtime Thread is associated. Continue the Project in a new Session to use another Agent.",
+    defaultMessage: "A Runtime Thread is associated. Continue the Workspace in a new Session to use another Agent.",
   },
   "@connect.session.agent.empty.label": { defaultMessage: "Agent Binding for this empty Session" },
   "@connect.session.agent.empty.description": {
@@ -628,27 +631,24 @@ export const ja = {
   "@connect.session.agent.empty.unavailable": { defaultMessage: "No other active Agent Binding is available." },
   "@connect.session.agent.empty.action": { defaultMessage: "Change Agent in this Session" },
   "@connect.session.agent.changeFailure": { defaultMessage: "Unable to change Agent" },
-  "@connect.session.continue.action": { defaultMessage: "Continue Project with another Agent" },
+  "@connect.session.continue.action": { defaultMessage: "Continue Workspace with another Agent" },
   "@connect.session.continue.title": { defaultMessage: "Continue with another Agent" },
-  "@connect.session.continue.subtitle": { defaultMessage: "Create a fresh Session in the same Project." },
+  "@connect.session.continue.subtitle": { defaultMessage: "Create a fresh Session in the same Workspace." },
   "@connect.session.continue.warning.title": { defaultMessage: "Only workspace files carry forward" },
   "@connect.session.continue.warning.description": {
     defaultMessage:
-      "A new Session and Runtime Thread are created. Conversation history, tool context, hidden reasoning, and memory are not transferred. Workspace files remain through the shared Project, and the original Session stays unchanged.",
+      "A new Session and Runtime Thread are created. Conversation history, tool context, hidden reasoning, and memory are not transferred. Workspace files remain through the shared Workspace, and the original Session stays unchanged.",
   },
   "@connect.session.continue.binding.label": { defaultMessage: "Agent Binding for the new Session" },
   "@connect.session.continue.binding.description": {
     defaultMessage: "Only active Agent Bindings owned by this Connect installation are eligible.",
   },
-  "@connect.session.continue.project": { defaultMessage: "Shared Project: {project}" },
+  "@connect.session.continue.workspace": { defaultMessage: "Shared Workspace: {workspace}" },
   "@connect.session.continue.failure": { defaultMessage: "Unable to create continuation Session" },
   "@connect.session.continue.cancel": { defaultMessage: "Cancel" },
   "@connect.session.continue.confirm": { defaultMessage: "Create fresh Session" },
   "@connect.error.sessionBindingLocked": {
-    defaultMessage: "This Session's Agent is fixed. Continue its Project in a new Session instead.",
-  },
-  "@connect.error.sessionProjectRequired": {
-    defaultMessage: "Only Sessions associated with a Project can continue with another Agent.",
+    defaultMessage: "This Session's Agent is fixed. Continue its Workspace in a new Session instead.",
   },
   "@connect.error.bindingNotActive": { defaultMessage: "The selected Agent Binding is not active." },
   "@connect.error.bindingOwnerMismatch": {
@@ -658,6 +658,6 @@ export const ja = {
   "@connect.settings.continuity.title": { defaultMessage: "Changing Agents between Sessions" },
   "@connect.settings.continuity.description": {
     defaultMessage:
-      "An empty Session can change Agent until its first Turn is accepted. After that, continuing with another Agent creates a new Session in the same Project. Conversation history, tool context, memory, and the native Runtime Thread are not transferred; workspace files remain and the original Session is unchanged.",
+      "An empty Session can change Agent until its first Turn is accepted. After that, continuing with another Agent creates a new Session in the same Workspace. Conversation history, tool context, memory, and the native Runtime Thread are not transferred; workspace files remain and the original Session is unchanged.",
   },
 } satisfies ClientCatalog;

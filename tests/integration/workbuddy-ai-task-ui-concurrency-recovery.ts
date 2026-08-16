@@ -253,7 +253,7 @@ try {
 
 function runtimeWorkspace(workingDirectory: string) {
   return {
-    projectId: null,
+    workspaceRef: "WSDEFALT",
     workingDirectory,
     skipGitRepoCheck: false,
   };

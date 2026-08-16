@@ -6,7 +6,6 @@ export const AGENT_TYPE = "clawbot" as const;
 export type OutputVisibility = "minimal" | "normal" | "full";
 export type ChatType = "direct" | "group";
 export type ClientHost = "127.0.0.1" | "0.0.0.0";
-export type LivewareAccessPolicy = "off" | "private" | "public";
 
 export interface AgentBindingConfigBase {
   outputVisibility?: OutputVisibility;
@@ -33,7 +32,6 @@ export interface ConnectConfig {
   maxPendingPerSession?: number;
   clientHost: ClientHost;
   clientPort: number;
-  livewareAccessPolicy: LivewareAccessPolicy;
 }
 
 export interface ActivationCredentials {
@@ -46,24 +44,20 @@ export interface ActivationCredentials {
   conversationId: string | null;
 }
 
-export interface LivewareExposureRecord {
-  ownerUserId: string;
-  localAgentId: string;
-  appId: string;
-  publicUrl: string;
-  accessPolicy: Exclude<LivewareAccessPolicy, "off">;
-}
-
-export interface ProjectRecord {
-  projectId: string;
+export interface WorkspaceRecord {
+  bindingId: string;
+  workspaceRef: string;
+  runtimeIdentityKey: string | null;
+  source: "default" | "runtime";
   name: string;
   rootPath: string;
+  selectable: boolean;
   createdAt: number;
   updatedAt: number;
 }
 
 export interface RuntimeWorkspace {
-  projectId: string | null;
+  workspaceRef: string;
   workingDirectory: string;
   skipGitRepoCheck: boolean;
 }
@@ -74,7 +68,7 @@ export interface RuntimeSessionRecord {
   sessionRef: string;
   agentId: string;
   runtimeSessionId: string | null;
-  projectId: string | null;
+  workspaceRef: string | null;
   name: string | null;
   mode: string | null;
   model: string | null;
@@ -88,7 +82,7 @@ export interface RuntimeSessionRecord {
 export interface SessionIntentRecord {
   chatId: string;
   agentId: string;
-  projectId: string | null;
+  workspaceRef: string | null;
   name: string | null;
   mode: string | null;
   model: string | null;

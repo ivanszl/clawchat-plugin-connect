@@ -18,7 +18,7 @@ describe("Connect Client Session lifecycle", () => {
     expect(source).not.toContain("window.confirm");
   });
 
-  it("distinguishes empty-Session switching from a fresh same-Project continuation", async () => {
+  it("distinguishes empty-Session switching from a fresh same-Workspace continuation", async () => {
     const source = await Bun.file(sessionRouteUrl).text();
     const settings = await Bun.file(settingsUrl).text();
     const controls = source.slice(
@@ -40,7 +40,9 @@ describe("Connect Client Session lifecycle", () => {
     const source = await Bun.file(navigationUrl).text();
 
     expect(source).toContain('t("@connect.newSession.title")');
-    expect(source).toContain('t("@connect.newSession.project.nonProject")');
+    expect(source).toContain('t("@connect.newSession.workspace.label")');
+    expect(source).toContain('value: "pending-workspace"');
+    expect(source).not.toContain("pending-project");
     expect(source).toContain('t("@connect.newSession.mode.default")');
     expect(source).not.toContain('t("@connect.newSession.model.default")');
     expect(source).toContain("const defaultModel =");

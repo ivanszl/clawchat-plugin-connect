@@ -18,7 +18,7 @@ const codexPluginEntry: ConnectPluginEntry = {
       create(configuration) {
         const binding = codexBinding(configuration, installationExecutable);
         const configuredExecutable = binding.executablePathOverride ?? binding.codexPathOverride;
-        const compatible = requireCompatibleCodexExecutable(configuredExecutable, binding.env);
+        const compatible = requireCompatibleCodexExecutable(configuredExecutable, undefined);
         binding.executablePathOverride = compatible.path;
         delete binding.codexPathOverride;
         return createCodexOfficialAdapter(createCodexRuntimeAdapter(), binding);
@@ -35,9 +35,7 @@ function codexBinding(
 ): CodexRuntimeAdapterBinding {
   const executablePathOverride = optionalString(configuration.executablePathOverride);
   const codexPathOverride = optionalString(configuration.codexPathOverride);
-  const env = stringRecord(configuration.env);
   const additionalDirectories = stringArray(configuration.additionalDirectories);
-  const sessionOptions = stringRecord(configuration.sessionOptions);
   return {
     runtime: { pluginId: CODEX_PLUGIN_ID, capabilityId: CODEX_CAPABILITY_ID },
     runtimeConfig: structuredClone(configuration) as Record<string, unknown>,
@@ -48,7 +46,6 @@ function codexBinding(
         : installationExecutable
           ? { executablePathOverride: installationExecutable }
           : {}),
-    ...(env ? { env } : {}),
     ...(optionalString(configuration.displayName) ? { displayName: optionalString(configuration.displayName) } : {}),
     ...(optionalString(configuration.sandboxMode)
       ? {
@@ -77,7 +74,6 @@ function codexBinding(
           >,
         }
       : {}),
-    ...(sessionOptions ? { sessionOptions } : {}),
   };
 }
 
@@ -160,11 +156,6 @@ function internalStartContext(context: ConnectPluginRuntimeStartContext): Connec
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function stringRecord(value: unknown): Record<string, string> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item)]));
 }
 
 function stringArray(value: unknown): string[] | undefined {

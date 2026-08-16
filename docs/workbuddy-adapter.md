@@ -5,7 +5,7 @@ The WorkBuddy Runtime Adapter has two explicit Runtime Thread targets backed by 
 - a **WorkBuddy Task Attachment** adopts an existing desktop Task through its pinned private Task ACP interface and stays synchronized with WorkBuddy Desktop;
 - a **CodeBuddy Session** starts or loads the distribution's embedded CodeBuddy CLI over stdio ACP. It is owned by Connect and does not appear in WorkBuddy Desktop.
 
-The two targets share an Agent Binding and Project catalog, but never silently fall back to one another.
+The two targets share one Agent Binding and its Workspace Catalog, but never silently fall back to one another.
 
 ## Supported distributions
 
@@ -33,7 +33,7 @@ Connect rejects every other application, embedded CodeBuddy, or ACP version. Bot
 
 - Discover and adopt an existing Task from Connect Client or the ordinary Session catalog before submitting a desktop-synchronized turn.
 
-ClawChat `/sessions` lists both target kinds in the current Project (and all materialized WorkBuddy targets in the Non-Project workspace). `/switch <session-ref>` can select either kind. Selecting a Project remains independent of target kind; `/new` inherits the selected Project.
+ClawChat `/sessions` lists both target kinds in the current Workspace. `/switch <session-ref>` can select either kind. Selecting a Workspace remains independent of target kind; `/new` inherits the selected Workspace.
 
 Official Catalog discovery reports each installed distribution as exact, missing, or unsupported before setup. Runtime activation then fails closed if Task endpoint initialization negotiates anything other than ACP v1. Endpoints, ports, process identifiers, connection identifiers, tokens, passwords, authorization values, product configuration, executable overrides, version overrides, and profile overrides remain desktop-owned and are rejected.
 
@@ -115,4 +115,4 @@ Optional `TURN_MARKER` and `RECOVERY_MARKER` values make a diagnostic run reprod
 
 The preflight requires both exact applications to be running simultaneously and resolves each configured Task only through its selected profile. The UI step switches to the dedicated Task, verifies the synchronized marker, and restores `UI_RESTORE_TASK_TITLE`. The concurrency/restart step asks the operator to complete one marked native UI turn while Connect holds the Attachment, switches the application to `UI_BACKGROUND_TASK_TITLE`, then deliberately asks the operator to restart only the selected distribution. It verifies projection-only reconciliation, continued use of the original Task, and stable Task identity across rotated application, sidecar, endpoint, and credential state.
 
-The tag-triggered GitHub release workflow intentionally does not run installed WorkBuddy, ClawChat, or Liveware UI qualification. It runs deterministic code checks and packaging on clean GitHub-hosted runners; no WorkBuddy Task metadata or credentials belong in GitHub Actions. Maintainers may perform manual testing during the task, but no separate local qualification run or recorded local result is required before creating the release tag.
+The tag-triggered GitHub release workflow cannot run signed-in WorkBuddy, ClawChat, or Liveware UI qualification on clean hosted runners. Release qualification therefore requires separate real installed-product evidence before the tag: an actual WorkBuddy Task attachment and the signed-in ClawChat/Liveware scenarios must pass without replacing them with mocks or unauthenticated browser probes.

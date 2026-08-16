@@ -1,18 +1,13 @@
 import { randomUUID, verify } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
-import type {
-  ConnectPluginManifestV1,
-  ConnectPluginProbeEntry,
-  ConnectPluginRuntimeProbeContext,
-  ConnectPluginRuntimeProbeResult,
-  ConnectPluginSource,
-} from "./sdk";
-import type { PluginSourceResolverOptions, ResolvedPluginSource } from "./source";
-import { readBoundedResponseBytes, resolvePluginSource } from "./source";
-import { connectPluginBundleFileBytes, pluginInstallationPaths, verifyConnectPluginIntegrity } from "./store";
+import { delimiter, dirname, resolve } from "node:path";
+import type { ManagedConnectPluginManifestV1 } from "./official-sdk";
+import type { ConnectPluginSource } from "./sdk";
+import type { PluginSourceResolverOptions } from "./source";
+import { readBoundedResponseBytes } from "./source";
+import type { OfficialPluginCapabilityGrant } from "./store";
+import { pluginInstallationPaths } from "./store";
 
 export const CONNECT_PLUGIN_CATALOG_FORMAT = "clawchat-connect-plugin-catalog-v1" as const;
 export const OFFICIAL_PLUGIN_CATALOG_URL = "https://plugins.clawchat.ai/v1/catalog.json";
@@ -20,10 +15,32 @@ export const MAX_OFFICIAL_PLUGIN_CATALOG_BYTES = 4 * 1024 * 1024;
 export const OFFICIAL_PLUGIN_CATALOG_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAvsVHDCNTOmCpScmRqdyHQjI3JfDBKGc+t74UTbkg7Gs=
 -----END PUBLIC KEY-----`;
+export interface OfficialRuntimeDiscoveryRule {
+  readonly executableNames: readonly string[];
+  readonly versionCommand?: {
+    readonly argv: readonly string[];
+    readonly outputPattern: string;
+    readonly timeoutMs: number;
+    readonly maxOutputBytes: number;
+  };
+}
+
+export interface OfficialDiscoveryCommandRequest {
+  readonly executable: string;
+  readonly argv: readonly string[];
+  readonly timeoutMs: number;
+  readonly maxOutputBytes: number;
+}
+
 export interface OfficialPluginCatalogEntry {
   pluginId: string;
   name: string;
   source: string;
+  version: string;
+  target: string;
+  integrity: string;
+  discovery?: OfficialRuntimeDiscoveryRule;
+  capabilityGrants?: readonly OfficialPluginCapabilityGrant[];
   installationConfiguration?: Record<string, unknown>;
   exposureConfigurations?: Record<string, unknown>;
 }
@@ -40,6 +57,7 @@ export interface OfficialCatalogOptions extends PluginSourceResolverOptions {
   catalogPublicKey?: string;
   catalogFetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   findExecutable?: (command: string) => Promise<string | null>;
+  runDiscoveryCommand?: (request: OfficialDiscoveryCommandRequest) => Promise<{ readonly stdout: string }>;
 }
 
 export interface OfficialCatalogResult {
@@ -48,21 +66,29 @@ export interface OfficialCatalogResult {
   diagnostics: string[];
 }
 
+export interface OfficialRuntimeDiscoveryResult {
+  readonly detected: boolean;
+  readonly compatible: boolean;
+  readonly executablePath?: string;
+  readonly version?: string;
+}
+
 export interface OfficialPluginCandidate {
   pluginId: string;
   name: string;
   source: string;
-  version: string | null;
+  version: string;
   target: string;
-  integrity: string | null;
+  integrity: string;
   detected: boolean;
   compatible: boolean;
   selected: boolean;
   selectable: true;
-  probe: ConnectPluginRuntimeProbeResult | null;
+  discovery: OfficialRuntimeDiscoveryResult | null;
   diagnostic: string | null;
   resolvedSource: ConnectPluginSource | null;
-  manifest: ConnectPluginManifestV1 | null;
+  manifest: ManagedConnectPluginManifestV1 | null;
+  capabilityGrants: readonly OfficialPluginCapabilityGrant[];
   installationConfiguration: Record<string, unknown>;
   exposureConfigurations: Record<string, unknown>;
 }
@@ -116,117 +142,117 @@ export async function fetchOfficialPluginCatalog(
 export async function discoverOfficialPlugins(
   configPath: string,
   options: OfficialCatalogOptions = {},
-  onResolved?: (catalogEntry: OfficialPluginCatalogEntry, resolved: ResolvedPluginSource) => void | Promise<void>,
+  onCandidate?: (catalogEntry: OfficialPluginCatalogEntry) => void | Promise<void>,
 ): Promise<OfficialPluginDiscovery> {
   const loaded = await fetchOfficialPluginCatalog(configPath, options);
   if (!loaded.catalog) return { candidates: [], catalogOrigin: null, diagnostics: loaded.diagnostics };
-  const stagingRoot = resolve(pluginInstallationPaths(configPath).store, ".official-staging");
   const candidates: OfficialPluginCandidate[] = [];
-  await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+  const findExecutable = options.findExecutable ?? findExecutableOnPath;
+  const runCommand = options.runDiscoveryCommand ?? runDiscoveryCommand;
   for (const catalogEntry of loaded.catalog.plugins) {
-    const candidateRoot = resolve(stagingRoot, randomUUID());
+    await onCandidate?.(catalogEntry);
+    const base = {
+      pluginId: catalogEntry.pluginId,
+      name: catalogEntry.name,
+      source: catalogEntry.source,
+      version: catalogEntry.version,
+      target: catalogEntry.target,
+      integrity: catalogEntry.integrity,
+      selectable: true as const,
+      resolvedSource: null,
+      manifest: null,
+      capabilityGrants: structuredClone(catalogEntry.capabilityGrants ?? []),
+      installationConfiguration: structuredClone(catalogEntry.installationConfiguration ?? {}),
+      exposureConfigurations: structuredClone(catalogEntry.exposureConfigurations ?? {}),
+    };
+    if (catalogEntry.target !== (options.target ?? `${process.platform}-${process.arch}`)) {
+      candidates.push({
+        ...base,
+        detected: false,
+        compatible: false,
+        selected: false,
+        discovery: null,
+        diagnostic: `Official Plugin target ${catalogEntry.target} is incompatible with ${options.target ?? `${process.platform}-${process.arch}`}`,
+      });
+      continue;
+    }
+    if (!catalogEntry.discovery) {
+      candidates.push({
+        ...base,
+        detected: false,
+        compatible: false,
+        selected: false,
+        discovery: null,
+        diagnostic: "Official Plugin has no declarative runtime discovery rule; it remains manually selectable",
+      });
+      continue;
+    }
     try {
-      const resolved = await resolvePluginSource(catalogEntry.source, options);
-      if (resolved.bundle.manifest.pluginId !== catalogEntry.pluginId) {
-        throw new Error(
-          `Catalog identity ${catalogEntry.pluginId} does not match Bundle identity ${resolved.bundle.manifest.pluginId}`,
-        );
+      let executablePath: string | null = null;
+      for (const command of catalogEntry.discovery.executableNames) {
+        executablePath = await findExecutable(command);
+        if (executablePath) break;
       }
-      await onResolved?.(catalogEntry, resolved);
-      const artifact = resolved.bundle.manifest.artifacts.find((entry) => entry.target === resolved.target);
-      if (!artifact) {
-        throw new Error(
-          `Resolved Plugin ${catalogEntry.pluginId}@${resolved.bundle.manifest.version} has no ${resolved.target} artifact`,
-        );
-      }
-      const base = {
-        pluginId: catalogEntry.pluginId,
-        name: catalogEntry.name,
-        source: catalogEntry.source,
-        version: resolved.bundle.manifest.version,
-        target: resolved.target,
-        integrity: artifact.integrity,
-        selectable: true as const,
-        resolvedSource: resolved.source,
-        manifest: structuredClone(resolved.bundle.manifest),
-        installationConfiguration: structuredClone(catalogEntry.installationConfiguration ?? {}),
-        exposureConfigurations: structuredClone(catalogEntry.exposureConfigurations ?? {}),
-      };
-      for (const bundlePath of Object.keys(resolved.bundle.files)) {
-        const outputPath = resolve(candidateRoot, bundlePath);
-        if (!isWithin(candidateRoot, outputPath)) {
-          throw new Error(`Official Plugin staged file escapes its temporary root: ${bundlePath}`);
-        }
-        await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 });
-        await writeFile(outputPath, connectPluginBundleFileBytes(resolved.bundle, bundlePath), { mode: 0o600 });
-      }
-      await writeFile(
-        resolve(candidateRoot, "connect-plugin.json"),
-        `${JSON.stringify(resolved.bundle.manifest, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-      if (!resolved.bundle.manifest.probe) {
+      if (!executablePath) {
         candidates.push({
           ...base,
           detected: false,
           compatible: false,
           selected: false,
-          probe: null,
-          diagnostic: "Official Plugin does not declare a runtime probe; it remains manually selectable",
+          discovery: { detected: false, compatible: false },
+          diagnostic: "Declared runtime executable was not found",
         });
         continue;
       }
-      const probeManifest = resolved.bundle.manifest.probe;
-      const probeBytes = connectPluginBundleFileBytes(resolved.bundle, probeManifest.entry);
-      verifyConnectPluginIntegrity(probeBytes, probeManifest.integrity, `${catalogEntry.pluginId} runtime probe`);
-      const probePath = resolve(candidateRoot, probeManifest.entry);
-      if (!isWithin(candidateRoot, probePath)) throw new Error("Runtime probe path escapes its temporary staging root");
-      // The selected official Bundle probe is a runtime registry artifact, so its module path is not known statically.
-      const imported = (await import(`${pathToFileURL(probePath).href}?stage=${randomUUID()}`)) as {
-        default?: unknown;
-      };
-      const probeEntry = imported.default as Partial<ConnectPluginProbeEntry> | undefined;
-      if (!probeEntry || typeof probeEntry.probe !== "function") {
-        throw new Error("Runtime probe module must default-export a probe(context) function");
+      const versionCommand = catalogEntry.discovery.versionCommand;
+      if (!versionCommand) {
+        const discovery = { detected: true, compatible: true, executablePath } as const;
+        candidates.push({ ...base, ...discovery, selected: true, discovery, diagnostic: null });
+        continue;
       }
-      const context: ConnectPluginRuntimeProbeContext = Object.freeze({
-        platform: process.platform,
-        arch: process.arch,
-        findExecutable: options.findExecutable ?? findExecutableOnPath,
-      });
-      const probe = validateProbeResult(await probeEntry.probe(context), catalogEntry.pluginId);
+      const result = await withTimeout(
+        runCommand({
+          executable: executablePath,
+          argv: versionCommand.argv,
+          timeoutMs: versionCommand.timeoutMs,
+          maxOutputBytes: versionCommand.maxOutputBytes,
+        }),
+        versionCommand.timeoutMs,
+        `Official Plugin ${catalogEntry.pluginId} discovery command timed out after ${versionCommand.timeoutMs} ms`,
+      );
+      if (Buffer.byteLength(result.stdout) > versionCommand.maxOutputBytes) {
+        throw new Error(
+          `Official Plugin ${catalogEntry.pluginId} discovery command exceeded its ${versionCommand.maxOutputBytes}-byte output limit`,
+        );
+      }
+      const match = new RegExp(versionCommand.outputPattern, "u").exec(result.stdout.trim());
+      const compatible = match !== null;
+      const version = match?.groups?.version;
+      const discovery = {
+        detected: true,
+        compatible,
+        executablePath,
+        ...(version ? { version } : {}),
+      };
       candidates.push({
         ...base,
-        detected: probe.detected,
-        compatible: probe.compatible,
-        selected: probe.detected && probe.compatible,
-        probe,
-        diagnostic: probe.detail ?? null,
+        detected: true,
+        compatible,
+        selected: compatible,
+        discovery,
+        diagnostic: compatible ? null : "Detected runtime version output did not match the Catalog compatibility rule",
       });
     } catch (error) {
       candidates.push({
-        pluginId: catalogEntry.pluginId,
-        name: catalogEntry.name,
-        source: catalogEntry.source,
-        version: null,
-        target: options.target ?? `${process.platform}-${process.arch}`,
-        integrity: null,
-        detected: false,
+        ...base,
+        detected: true,
         compatible: false,
         selected: false,
-        selectable: true,
-        probe: null,
-        diagnostic: `Official Plugin probe failed in isolation: ${errorMessage(error)}`,
-        resolvedSource: null,
-        manifest: null,
-        installationConfiguration: structuredClone(catalogEntry.installationConfiguration ?? {}),
-        exposureConfigurations: structuredClone(catalogEntry.exposureConfigurations ?? {}),
+        discovery: { detected: true, compatible: false },
+        diagnostic: `Official Plugin discovery failed in isolation: ${errorMessage(error)}`,
       });
-    } finally {
-      await rm(candidateRoot, { recursive: true, force: true });
     }
   }
-  await rm(stagingRoot, { recursive: true, force: true });
   return { candidates, catalogOrigin: loaded.origin, diagnostics: loaded.diagnostics };
 }
 
@@ -255,17 +281,32 @@ function validateAuthenticatedCatalog(value: unknown, publicKey: string): Offici
       typeof candidate.name !== "string" ||
       !candidate.name.trim() ||
       typeof candidate.source !== "string" ||
-      !candidate.source.trim()
+      !candidate.source.trim() ||
+      typeof candidate.version !== "string" ||
+      !candidate.version.trim() ||
+      typeof candidate.target !== "string" ||
+      !candidate.target.trim() ||
+      typeof candidate.integrity !== "string" ||
+      !/^sha256-[A-Za-z0-9+/]{43}=$/u.test(candidate.integrity)
     ) {
-      throw new Error("Official Plugin Catalog entry identity, name, or source is malformed");
+      throw new Error("Official Plugin Catalog entry identity, source, version, target, or integrity is malformed");
     }
-    if (identities.has(candidate.pluginId))
+    if (identities.has(candidate.pluginId)) {
       throw new Error(`Duplicate official Plugin identity: ${candidate.pluginId}`);
+    }
     identities.add(candidate.pluginId);
+    const capabilityGrants = validateCatalogCapabilityGrants(candidate.capabilityGrants, candidate.pluginId);
     return {
       pluginId: candidate.pluginId,
       name: candidate.name,
       source: candidate.source,
+      version: candidate.version,
+      target: candidate.target,
+      integrity: candidate.integrity,
+      ...(candidate.discovery !== undefined
+        ? { discovery: validateDiscoveryRule(candidate.discovery, candidate.pluginId) }
+        : {}),
+      ...(capabilityGrants ? { capabilityGrants } : {}),
       ...(isRecord(candidate.installationConfiguration)
         ? { installationConfiguration: structuredClone(candidate.installationConfiguration) }
         : {}),
@@ -301,30 +342,154 @@ async function writeCatalogCache(path: string, catalog: OfficialPluginCatalogV1)
   }
 }
 
-function validateProbeResult(value: unknown, pluginId: string): ConnectPluginRuntimeProbeResult {
-  if (!isRecord(value) || typeof value.detected !== "boolean" || typeof value.compatible !== "boolean") {
-    throw new Error(`Official Plugin ${pluginId} runtime probe returned a malformed result`);
+function validateDiscoveryRule(value: unknown, pluginId: string): OfficialRuntimeDiscoveryRule {
+  if (!isRecord(value)) throw new Error(`Official Plugin ${pluginId} discovery rule is malformed`);
+  assertOnlyKeys(value, ["executableNames", "versionCommand"], `Official Plugin ${pluginId} discovery rule`);
+  if (
+    !Array.isArray(value.executableNames) ||
+    value.executableNames.length < 1 ||
+    value.executableNames.length > 8 ||
+    value.executableNames.some(
+      (command) => typeof command !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/u.test(command),
+    )
+  ) {
+    throw new Error(`Official Plugin ${pluginId} discovery executable lookup is malformed`);
   }
-  if (!value.detected && value.compatible) {
-    throw new Error(`Official Plugin ${pluginId} runtime probe cannot report compatibility without detection`);
+  if (new Set(value.executableNames).size !== value.executableNames.length) {
+    throw new Error(`Official Plugin ${pluginId} discovery executable lookup contains duplicates`);
   }
-  for (const field of ["version", "path", "detail"] as const) {
-    if (value[field] !== undefined && typeof value[field] !== "string") {
-      throw new Error(`Official Plugin ${pluginId} runtime probe ${field} is malformed`);
-    }
+  if (value.versionCommand === undefined) {
+    return { executableNames: [...value.executableNames] as string[] };
+  }
+  if (!isRecord(value.versionCommand)) {
+    throw new Error(`Official Plugin ${pluginId} version command is malformed`);
+  }
+  assertOnlyKeys(
+    value.versionCommand,
+    ["argv", "outputPattern", "timeoutMs", "maxOutputBytes"],
+    `Official Plugin ${pluginId} version command`,
+  );
+  const { argv, outputPattern, timeoutMs, maxOutputBytes } = value.versionCommand;
+  if (
+    !Array.isArray(argv) ||
+    argv.length > 16 ||
+    argv.some((argument) => typeof argument !== "string" || argument.length > 256 || argument.includes("\0"))
+  ) {
+    throw new Error(`Official Plugin ${pluginId} version command argv is malformed`);
+  }
+  if (typeof outputPattern !== "string" || !outputPattern || outputPattern.length > 512) {
+    throw new Error(`Official Plugin ${pluginId} version output matcher is malformed`);
+  }
+  try {
+    new RegExp(outputPattern, "u");
+  } catch (error) {
+    throw new Error(`Official Plugin ${pluginId} version output matcher is invalid`, { cause: error });
+  }
+  if (!Number.isSafeInteger(timeoutMs) || (timeoutMs as number) < 1 || (timeoutMs as number) > 10_000) {
+    throw new Error(`Official Plugin ${pluginId} version command timeout is outside 1..10000 ms`);
+  }
+  if (!Number.isSafeInteger(maxOutputBytes) || (maxOutputBytes as number) < 1 || (maxOutputBytes as number) > 65_536) {
+    throw new Error(`Official Plugin ${pluginId} version command output limit is outside 1..65536 bytes`);
   }
   return {
-    detected: value.detected,
-    compatible: value.compatible,
-    ...(typeof value.version === "string" ? { version: value.version } : {}),
-    ...(typeof value.path === "string" ? { path: value.path } : {}),
-    ...(typeof value.detail === "string" ? { detail: value.detail } : {}),
+    executableNames: [...value.executableNames] as string[],
+    versionCommand: {
+      argv: [...argv] as string[],
+      outputPattern,
+      timeoutMs: timeoutMs as number,
+      maxOutputBytes: maxOutputBytes as number,
+    },
   };
+}
+
+function validateCatalogCapabilityGrants(
+  value: unknown,
+  pluginId: string,
+): readonly OfficialPluginCapabilityGrant[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`Official Plugin ${pluginId} capability grants are malformed`);
+  const grants = value.map((grant): OfficialPluginCapabilityGrant => {
+    if (
+      !isRecord(grant) ||
+      grant.type !== "exposure" ||
+      typeof grant.capabilityId !== "string" ||
+      !grant.capabilityId.trim() ||
+      typeof grant.artifactIntegrity !== "string" ||
+      !/^sha256-[A-Za-z0-9+/]{43}=$/u.test(grant.artifactIntegrity)
+    ) {
+      throw new Error(`Official Plugin ${pluginId} capability grant is malformed`);
+    }
+    return {
+      type: "exposure",
+      capabilityId: grant.capabilityId,
+      artifactIntegrity: grant.artifactIntegrity,
+    };
+  });
+  if (new Set(grants.map((grant) => grant.capabilityId)).size !== grants.length) {
+    throw new Error(`Official Plugin ${pluginId} capability grants contain duplicates`);
+  }
+  return grants;
+}
+
+async function runDiscoveryCommand(request: OfficialDiscoveryCommandRequest): Promise<{ readonly stdout: string }> {
+  const subprocess = Bun.spawn([request.executable, ...request.argv], {
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  try {
+    const [exitCode, stdout] = await Promise.all([
+      withTimeout(subprocess.exited, request.timeoutMs, `Discovery command timed out after ${request.timeoutMs} ms`),
+      readBoundedCommandOutput(subprocess.stdout, request.maxOutputBytes),
+    ]);
+    if (exitCode !== 0) throw new Error(`Discovery command exited with status ${exitCode}`);
+    return { stdout };
+  } catch (error) {
+    subprocess.kill();
+    throw error;
+  }
+}
+
+async function readBoundedCommandOutput(stream: ReadableStream<Uint8Array>, maximumBytes: number): Promise<string> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let observed = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      observed += next.value.byteLength;
+      if (observed > maximumBytes) throw new Error(`Discovery command exceeded its ${maximumBytes}-byte output limit`);
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(observed);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+}
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function findExecutableOnPath(command: string): Promise<string | null> {
   if (!command || command.includes("/") || command.includes("\\")) {
-    throw new Error("Runtime probe executable names must be bare command names");
+    throw new Error("Runtime discovery executable names must be bare command names");
   }
   for (const directory of (process.env.PATH ?? "").split(delimiter)) {
     if (!directory) continue;
@@ -339,9 +504,11 @@ async function findExecutableOnPath(command: string): Promise<string | null> {
   return null;
 }
 
-function isWithin(root: string, path: string): boolean {
-  const child = relative(root, path);
-  return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`));
+function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  const unsupported = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unsupported.length > 0) {
+    throw new Error(`${label} contains unsupported field: ${unsupported.sort().join(", ")}`);
+  }
 }
 
 function errorMessage(error: unknown): string {

@@ -277,6 +277,12 @@ export interface RuntimeWorkspaceIdentity {
   kind: "persistent" | "transient";
   localRoot: string | null;
 }
+export type RuntimeWorkspaceDiscoveryStatus = "complete" | "partial" | "unavailable";
+
+export interface RuntimeWorkspaceSnapshot {
+  status: RuntimeWorkspaceDiscoveryStatus;
+  identities: readonly RuntimeWorkspaceIdentity[];
+}
 
 export interface RuntimeLifecycleCapabilities {
   archive: boolean;
@@ -401,6 +407,7 @@ export interface ConnectRuntimeAdapter {
   ): Promise<RuntimeCommandSummary[]>;
   onCommandsChanged?(listener: () => void): () => void;
   onCatalogsChanged?(listener: () => void): () => void;
+  discoverWorkspaces?(binding: AgentBindingConfig): Promise<RuntimeWorkspaceSnapshot>;
   discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;

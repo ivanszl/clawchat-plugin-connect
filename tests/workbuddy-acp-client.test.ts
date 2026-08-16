@@ -338,7 +338,7 @@ describe("WorkBuddy private ACP client", () => {
         accepted += 1;
       },
       workspace: {
-        projectId: null,
+        workspaceRef: "WSDEFALT",
         workingDirectory: workspace,
         skipGitRepoCheck: false,
       },
@@ -377,7 +377,7 @@ describe("WorkBuddy private ACP client", () => {
       turnId: "connect-turn-2",
       turnOrigin: "clawchat",
       workspace: {
-        projectId: null,
+        workspaceRef: "WSDEFALT",
         workingDirectory: workspace,
         skipGitRepoCheck: false,
       },
@@ -549,7 +549,7 @@ describe("WorkBuddy private ACP client", () => {
         prompt: "use the selected model",
         model: "workbuddy-deep",
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
           skipGitRepoCheck: false,
         },
@@ -563,7 +563,7 @@ describe("WorkBuddy private ACP client", () => {
         prompt: "/product-research compare sources",
         skill: { id: "workbuddy-skill:product-research", name: "product-research" },
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
           skipGitRepoCheck: false,
         },
@@ -584,7 +584,7 @@ describe("WorkBuddy private ACP client", () => {
         mode: "work",
         sessionOptions: { thought_level: "low" },
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
           skipGitRepoCheck: false,
         },
@@ -602,7 +602,7 @@ describe("WorkBuddy private ACP client", () => {
           prompt: "/removed-skill run",
           skill: { id: "workbuddy-skill:removed-skill", name: "removed-skill" },
           workspace: {
-            projectId: null,
+            workspaceRef: "WSDEFALT",
             workingDirectory: workspace,
             skipGitRepoCheck: false,
           },
@@ -615,7 +615,7 @@ describe("WorkBuddy private ACP client", () => {
           prompt: "inspect image",
           media: [{ kind: "image", url: "file:///private/tmp/unsupported.png", size: 1 }],
           workspace: {
-            projectId: null,
+            workspaceRef: "WSDEFALT",
             workingDirectory: workspace,
             skipGitRepoCheck: false,
           },
@@ -715,7 +715,7 @@ describe("WorkBuddy private ACP client", () => {
           },
         },
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
           skipGitRepoCheck: false,
         },
@@ -851,7 +851,7 @@ describe("WorkBuddy private ACP client", () => {
             },
           },
           workspace: {
-            projectId: null,
+            workspaceRef: "WSDEFALT",
             workingDirectory: workspace,
             skipGitRepoCheck: false,
           },
@@ -973,7 +973,7 @@ describe("WorkBuddy private ACP client", () => {
           },
         },
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
           skipGitRepoCheck: false,
         },
@@ -1094,7 +1094,7 @@ describe("WorkBuddy private ACP client", () => {
           },
         },
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
           skipGitRepoCheck: false,
         },
@@ -1166,7 +1166,7 @@ describe("WorkBuddy private ACP client", () => {
           accepted += 1;
         },
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
           skipGitRepoCheck: false,
         },
@@ -1236,7 +1236,7 @@ describe("WorkBuddy private ACP client", () => {
       prompt: "Continue after UI",
       turnId: "after-ui",
       workspace: {
-        projectId: null,
+        workspaceRef: "WSDEFALT",
         workingDirectory: workspace,
         skipGitRepoCheck: false,
       },
@@ -1373,7 +1373,7 @@ describe("WorkBuddy private ACP client", () => {
       prompt: `Prompt ${suffix}`,
       turnId: `turn-${suffix}`,
       workspace: {
-        projectId: null,
+        workspaceRef: "WSDEFALT",
         workingDirectory: workspace,
         skipGitRepoCheck: false,
       },
@@ -1428,7 +1428,7 @@ describe("WorkBuddy private ACP client", () => {
           accepted += 1;
         },
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
           skipGitRepoCheck: false,
         },
@@ -1477,7 +1477,7 @@ describe("WorkBuddy private ACP client", () => {
           accepted += 1;
         },
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
           skipGitRepoCheck: false,
         },

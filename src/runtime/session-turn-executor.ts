@@ -1,5 +1,5 @@
-import type { TurnTarget } from "../projects/session-continuity";
 import type { AgentBindingConfig } from "../types";
+import type { TurnTarget } from "../workspaces/session-continuity";
 import type { ConnectRuntimePrompt, ConnectRuntimeSession, ConnectRuntimeStartContext, RuntimeActivity } from "./types";
 
 export interface SessionTurnExecutorOptions {

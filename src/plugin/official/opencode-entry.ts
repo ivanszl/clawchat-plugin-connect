@@ -42,7 +42,7 @@ export function createOpenCodeOfficialPluginEntry(
           const binding = openCodeBinding(installation, configuration);
           const executable = (options.requireExecutable ?? requireCompatibleOpenCodeExecutable)(
             binding.executablePathOverride,
-            binding.env,
+            undefined,
           );
           return bridgeOpenCodeAdapter(createOpenCodeRuntimeAdapter(options.runtimeAdapter), {
             ...binding,

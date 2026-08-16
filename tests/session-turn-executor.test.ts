@@ -1,7 +1,7 @@
 import { expect, it } from "bun:test";
-import type { TurnTarget } from "../src/projects/session-continuity";
 import { SessionTurnExecutor } from "../src/runtime/session-turn-executor";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
+import type { TurnTarget } from "../src/workspaces/session-continuity";
 import { pluginBinding } from "./runtime-adapter-fixture";
 
 it("owns one native handle per Session and reports a new Runtime Thread through Session Continuity", async () => {
@@ -39,7 +39,7 @@ it("owns one native handle per Session and reports a new Runtime Thread through 
     sessionId: "session",
     sessionRef: "ABCDEFGH",
     runtimeThreadId: null,
-    projectId: null,
+    workspaceRef: "WSDEFALT",
     name: null,
     mode: null,
     model: null,
@@ -61,7 +61,7 @@ it("owns one native handle per Session and reports a new Runtime Thread through 
       executor.execute(target, {
         prompt: "first",
         workspace: {
-          projectId: null,
+          workspaceRef: "WSDEFALT",
           workingDirectory: "/tmp",
           skipGitRepoCheck: true,
         },
@@ -83,7 +83,7 @@ it("owns one native handle per Session and reports a new Runtime Thread through 
     executor.execute(target, {
       prompt: "second",
       workspace: {
-        projectId: null,
+        workspaceRef: "WSDEFALT",
         workingDirectory: "/tmp",
         skipGitRepoCheck: true,
       },

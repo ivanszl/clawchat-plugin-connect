@@ -20,11 +20,11 @@ test("localizes a warming startup failure by stable code", () => {
 });
 
 test("uses a feature-specific stable-code message while preserving server detail", () => {
-  const error = new ClientInterfaceError(409, "project-in-use", "Project alpha is used by Session beta", false);
+  const error = new ClientInterfaceError(409, "workspace-in-use", "Workspace alpha is used by Session beta", false);
   const t = (key: ClientMessageKey, values?: Parameters<TranslatorFn>[1]) =>
-    key === "@connect.settings.error.projectInUse" ? `Localized: ${values?.detail}` : key;
+    key === "@connect.settings.error.workspaceInUse" ? `Localized: ${values?.detail}` : key;
 
-  expect(localizedClientError(t, error, { "project-in-use": "@connect.settings.error.projectInUse" })).toBe(
-    "Localized: Project alpha is used by Session beta",
+  expect(localizedClientError(t, error, { "workspace-in-use": "@connect.settings.error.workspaceInUse" })).toBe(
+    "Localized: Workspace alpha is used by Session beta",
   );
 });

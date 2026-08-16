@@ -1,3 +1,6 @@
+import type * as Astryx from "@astryxdesign/core";
+import type * as React from "react";
+import type { BindingPreferenceView, UpdateBindingPreferencesRequest } from "../client-contract";
 import type {
   ConnectRuntimeMedia,
   ConnectRuntimePrompt,
@@ -12,6 +15,7 @@ import type {
   RuntimeSessionOption,
   RuntimeSkillSummary,
   RuntimeThreadSummary,
+  RuntimeWorkspaceSnapshot,
 } from "../runtime/types";
 import type { RuntimeWorkspace } from "../types";
 
@@ -20,10 +24,37 @@ export const CONNECT_PLUGIN_INTERFACE_VERSION = "1" as const;
 export const CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION = "1" as const;
 export const CONNECT_HOST_CAPABILITY_INTERFACE_VERSION = "1" as const;
 export const CONNECT_PLUGIN_BUNDLE_FORMAT = "clawchat-connect-plugin-bundle-v1" as const;
+export const CONNECT_CLIENT_EXTENSION_SLOT_CATALOG = {
+  "kernel.root.after": { interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION },
+} as const;
+export type ConnectPluginClientExtensionSlotId = keyof typeof CONNECT_CLIENT_EXTENSION_SLOT_CATALOG;
 
 export type ConnectPluginId = string;
 export type ConnectPluginCapabilityId = string;
 export type ConnectPluginJsonSchema = Readonly<Record<string, unknown>>;
+
+export type ConnectPluginDurableStateLifetime = "installation" | "owner" | "binding";
+
+export interface ConnectPluginDurableStateManifest {
+  readonly schemaVersion: number;
+  readonly lifetime: ConnectPluginDurableStateLifetime;
+  readonly schema: ConnectPluginJsonSchema;
+  readonly migrations: readonly { readonly from: number; readonly to: number }[];
+}
+
+export interface ConnectPluginDurableStateRecord {
+  readonly schemaVersion: number;
+  readonly revision: number;
+  readonly value: Readonly<Record<string, unknown>>;
+}
+
+export interface ConnectPluginDurableState {
+  read(): Promise<ConnectPluginDurableStateRecord | null>;
+  compareAndSwap(
+    expectedRevision: number | null,
+    value: Readonly<Record<string, unknown>>,
+  ): Promise<ConnectPluginDurableStateRecord>;
+}
 
 export interface RuntimeCapabilityRef {
   pluginId: ConnectPluginId;
@@ -34,6 +65,7 @@ interface ConnectPluginCapabilityManifestBase {
   id: ConnectPluginCapabilityId;
   interfaceVersion: typeof CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION;
   configurationSchema: ConnectPluginJsonSchema;
+  durableState?: ConnectPluginDurableStateManifest;
 }
 
 export interface ConnectPluginRuntimeCapabilityManifest extends ConnectPluginCapabilityManifestBase {
@@ -41,15 +73,34 @@ export interface ConnectPluginRuntimeCapabilityManifest extends ConnectPluginCap
   family: string;
 }
 
-export interface ConnectPluginExposureCapabilityManifest extends ConnectPluginCapabilityManifestBase {
-  type: "exposure";
+export interface ConnectPluginClientExtensionSlotManifest {
+  id: ConnectPluginClientExtensionSlotId;
+  interfaceVersion: typeof CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION;
+  priority: number;
+}
+
+export interface ConnectPluginClientExtensionStyleManifest {
+  entry: string;
+  integrity: string;
+}
+
+export interface ConnectPluginClientExtensionBrowserManifest {
+  entry: string;
+  integrity: string;
+  styles: ConnectPluginClientExtensionStyleManifest[];
+  slots: ConnectPluginClientExtensionSlotManifest[];
+}
+
+export interface ConnectPluginClientExtensionCapabilityManifest extends ConnectPluginCapabilityManifestBase {
+  type: "client-extension";
+  browser: ConnectPluginClientExtensionBrowserManifest;
 }
 
 export type ConnectPluginCapabilityManifest =
   | ConnectPluginRuntimeCapabilityManifest
-  | ConnectPluginExposureCapabilityManifest;
+  | ConnectPluginClientExtensionCapabilityManifest;
 
-export type ConnectHostCapabilityId = "runtime-provider" | "exposure-provider";
+export type ConnectHostCapabilityId = "runtime-provider" | "durable-state";
 
 export interface ConnectPluginHostCapabilityDependency {
   type: "host";
@@ -59,10 +110,6 @@ export interface ConnectPluginHostCapabilityDependency {
 
 export interface ConnectPluginArtifactManifest {
   target: string;
-  entry: string;
-  integrity: string;
-}
-export interface ConnectPluginProbeManifest {
   entry: string;
   integrity: string;
 }
@@ -76,7 +123,6 @@ export interface ConnectPluginManifestV1 {
   installationConfigurationSchema: ConnectPluginJsonSchema;
   capabilities: ConnectPluginCapabilityManifest[];
   artifacts: ConnectPluginArtifactManifest[];
-  probe?: ConnectPluginProbeManifest;
 }
 
 export interface LocalPluginSource {
@@ -110,25 +156,6 @@ export interface ConnectPluginBundleV1 {
 }
 
 export type ConnectPluginConfiguration = Readonly<Record<string, unknown>>;
-export interface ConnectPluginRuntimeProbeContext {
-  readonly platform: string;
-  readonly arch: string;
-  findExecutable(command: string): Promise<string | null>;
-}
-
-export interface ConnectPluginRuntimeProbeResult {
-  detected: boolean;
-  compatible: boolean;
-  version?: string;
-  path?: string;
-  detail?: string;
-}
-
-export interface ConnectPluginProbeEntry {
-  probe(
-    context: ConnectPluginRuntimeProbeContext,
-  ): ConnectPluginRuntimeProbeResult | Promise<ConnectPluginRuntimeProbeResult>;
-}
 
 /**
  * Runtime start data intentionally omits Connect config and persistence paths.
@@ -136,6 +163,7 @@ export interface ConnectPluginProbeEntry {
  * supplied callback.
  */
 export interface ConnectPluginRuntimeStartContext {
+  readonly activationGeneration: number;
   bindingId: string;
   chatId: string;
   sessionId: string;
@@ -167,6 +195,7 @@ export interface ConnectPluginRuntimeAdapter {
   ): Promise<RuntimeCommandSummary[]>;
   onCommandsChanged?(listener: () => void): () => void;
   onCatalogsChanged?(listener: () => void): () => void;
+  discoverWorkspaces?(): Promise<RuntimeWorkspaceSnapshot>;
   discoverThreads?(workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
   discoverAllThreads?(): Promise<RuntimeThreadSummary[]>;
   discoverArchivedThreads?(): Promise<RuntimeThreadSummary[]>;
@@ -180,53 +209,75 @@ export interface ConnectPluginRuntimeAdapter {
   close?(): Promise<void>;
 }
 
+export interface ConnectPluginRuntimeInstanceContext {
+  readonly activationGeneration: number;
+  readonly durableState?: ConnectPluginDurableState;
+}
+
 export interface ConnectPluginRuntimeProvider {
   capabilityId: ConnectPluginCapabilityId;
   family: string;
-  create(configuration: ConnectPluginConfiguration): ConnectPluginRuntimeAdapter;
-}
-
-/**
- * The complete public Client facade available to Exposure capabilities.
- * Requests are forwarded to this Connect installation without revealing its
- * loopback origin or any mutable Connect service module.
- */
-export interface ConnectPluginClientExposure {
-  fetch(request: Request): Promise<Response>;
-}
-
-export interface ConnectPluginExposureActivation {
-  readonly configuration: ConnectPluginConfiguration;
-  readonly client: ConnectPluginClientExposure;
-}
-
-export interface ConnectPluginExposureProvider {
-  capabilityId: ConnectPluginCapabilityId;
-  activate(
-    activation: ConnectPluginExposureActivation,
-  ): ConnectPluginDisposer | undefined | Promise<ConnectPluginDisposer | undefined>;
+  create(
+    configuration: ConnectPluginConfiguration,
+    context: ConnectPluginRuntimeInstanceContext,
+  ): ConnectPluginRuntimeAdapter;
 }
 
 export interface ConnectRuntimeProviderHostCapability {
   readonly interfaceVersion: typeof CONNECT_HOST_CAPABILITY_INTERFACE_VERSION;
+
   register(provider: ConnectPluginRuntimeProvider): void;
 }
 
-export interface ConnectExposureProviderHostCapability {
+export interface ConnectDurableStateHostCapability {
   readonly interfaceVersion: typeof CONNECT_HOST_CAPABILITY_INTERFACE_VERSION;
-  register(provider: ConnectPluginExposureProvider): void;
+}
+export type ConnectPluginClientExtensionComponent = React.ComponentType;
+
+export interface ConnectPluginClientExtensionServices {
+  readonly bindingPreferences: {
+    update(
+      bindingId: string,
+      updates: Omit<UpdateBindingPreferencesRequest, "requestId" | "clientExtensionEpoch">,
+    ): Promise<BindingPreferenceView>;
+  };
+}
+
+export interface ConnectPluginClientExtensionContext {
+  readonly epoch: string;
+  readonly React: typeof React;
+  readonly Astryx: typeof Astryx;
+  readonly slots: {
+    register(
+      slotId: ConnectPluginClientExtensionSlotId,
+      component: ConnectPluginClientExtensionComponent,
+    ): ConnectPluginDisposer;
+  };
+  readonly effects: {
+    add(disposer: ConnectPluginDisposer): ConnectPluginDisposer;
+    setTimeout(callback: () => void, delay: number): ConnectPluginDisposer;
+    setInterval(callback: () => void, delay: number): ConnectPluginDisposer;
+  };
+  readonly client: ConnectPluginClientExtensionServices;
+}
+
+export interface ConnectPluginClientExtensionEntry {
+  activate(
+    context: ConnectPluginClientExtensionContext,
+  ): ConnectPluginDisposer | undefined | Promise<ConnectPluginDisposer | undefined>;
 }
 
 export interface ConnectPluginHostCapabilities {
   get(id: "runtime-provider"): ConnectRuntimeProviderHostCapability;
-  get(id: "exposure-provider"): ConnectExposureProviderHostCapability;
+  get(id: "durable-state"): ConnectDurableStateHostCapability;
 }
 
 /**
  * The complete public host facade. It exposes immutable Bundle configuration
- * and only manifest-declared Runtime/Exposure registration capabilities.
+ * and only manifest-declared Runtime registration and Durable State capabilities.
  */
 export interface ConnectPluginContext {
+  readonly activationGeneration: number;
   readonly interfaceVersion: typeof CONNECT_PLUGIN_INTERFACE_VERSION;
   readonly installationConfiguration: ConnectPluginConfiguration;
   readonly hostCapabilities: ConnectPluginHostCapabilities;
@@ -234,7 +285,17 @@ export interface ConnectPluginContext {
 
 export type ConnectPluginDisposer = () => void | Promise<void>;
 
+export interface ConnectPluginDurableStateMigration {
+  readonly capabilityId: ConnectPluginCapabilityId;
+  readonly fromSchemaVersion: number;
+  readonly toSchemaVersion: number;
+  readonly value: Readonly<Record<string, unknown>>;
+}
+
 export interface ConnectPluginEntry {
+  migrateDurableState?(
+    migration: ConnectPluginDurableStateMigration,
+  ): Readonly<Record<string, unknown>> | Promise<Readonly<Record<string, unknown>>>;
   activate(
     context: ConnectPluginContext,
   ): ConnectPluginDisposer | undefined | Promise<ConnectPluginDisposer | undefined>;

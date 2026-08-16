@@ -31,7 +31,6 @@
     "install.md",
     "CONTRIBUTING.md",
     "scripts/postinstall.ts",
-    "vendor/liveware",
     "skills",
     "docs",
     "LICENSE"

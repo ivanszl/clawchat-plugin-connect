@@ -14,8 +14,6 @@ export interface ReleaseTarget {
   archiveName: string;
   archiveFormat: "tar.gz" | "zip";
   connectExecutable: "clawchat-connect" | "clawchat-connect.exe";
-  livewareExecutable: "liveware" | "liveware.exe";
-  livewareAsset: string;
 }
 
 export interface ReleasePayload {
@@ -40,8 +38,6 @@ const releaseTargets: Record<string, ReleaseTarget> = {
     archiveName: "clawchat-connect-darwin-arm64.tar.gz",
     archiveFormat: "tar.gz",
     connectExecutable: "clawchat-connect",
-    livewareExecutable: "liveware",
-    livewareAsset: "liveware-darwin-arm64",
   },
   "darwin/x64": {
     platform: "darwin",
@@ -49,8 +45,6 @@ const releaseTargets: Record<string, ReleaseTarget> = {
     archiveName: "clawchat-connect-darwin-x64.tar.gz",
     archiveFormat: "tar.gz",
     connectExecutable: "clawchat-connect",
-    livewareExecutable: "liveware",
-    livewareAsset: "liveware-darwin-amd64",
   },
   "linux/arm64": {
     platform: "linux",
@@ -58,8 +52,6 @@ const releaseTargets: Record<string, ReleaseTarget> = {
     archiveName: "clawchat-connect-linux-arm64.tar.gz",
     archiveFormat: "tar.gz",
     connectExecutable: "clawchat-connect",
-    livewareExecutable: "liveware",
-    livewareAsset: "liveware-linux-arm64",
   },
   "linux/x64": {
     platform: "linux",
@@ -67,8 +59,6 @@ const releaseTargets: Record<string, ReleaseTarget> = {
     archiveName: "clawchat-connect-linux-x64.tar.gz",
     archiveFormat: "tar.gz",
     connectExecutable: "clawchat-connect",
-    livewareExecutable: "liveware",
-    livewareAsset: "liveware-linux-amd64",
   },
   "win32/arm64": {
     platform: "windows",
@@ -76,8 +66,6 @@ const releaseTargets: Record<string, ReleaseTarget> = {
     archiveName: "clawchat-connect-windows-arm64.zip",
     archiveFormat: "zip",
     connectExecutable: "clawchat-connect.exe",
-    livewareExecutable: "liveware.exe",
-    livewareAsset: "liveware-windows-arm64.exe",
   },
   "win32/x64": {
     platform: "windows",
@@ -85,8 +73,6 @@ const releaseTargets: Record<string, ReleaseTarget> = {
     archiveName: "clawchat-connect-windows-x64.zip",
     archiveFormat: "zip",
     connectExecutable: "clawchat-connect.exe",
-    livewareExecutable: "liveware.exe",
-    livewareAsset: "liveware-windows-amd64.exe",
   },
 };
 
@@ -109,7 +95,6 @@ export function releasePayload(_target: ReleaseTarget): ReleasePayload {
   return {
     entries: [
       "clawchat-connect",
-      "liveware",
       "clawchat-connect-client",
       "official-plugins",
       "skills",
@@ -122,7 +107,6 @@ export function releasePayload(_target: ReleaseTarget): ReleasePayload {
 export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
   const connectExecutable = join("dist", target.connectExecutable);
   const clientDirectory = join("dist", "client");
-  const livewareExecutable = join("dist", target.livewareExecutable);
   const officialPluginsDirectory = join("dist", "official-plugins");
   const pluginTarget = `${target.platform === "windows" ? "win32" : target.platform}-${target.architecture}`;
   const outputArchive = join("build", "release", target.archiveName);
@@ -137,7 +121,6 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
           join("scripts", "package-windows-release.ps1"),
           connectExecutable,
           clientDirectory,
-          livewareExecutable,
           officialPluginsDirectory,
           outputArchive,
           pluginTarget,
@@ -147,7 +130,6 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
           join("scripts", "package-release-archive.sh"),
           connectExecutable,
           clientDirectory,
-          livewareExecutable,
           officialPluginsDirectory,
           outputArchive,
           pluginTarget,

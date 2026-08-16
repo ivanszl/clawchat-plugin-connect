@@ -94,7 +94,7 @@ try {
   pluginHost = new ConnectPluginHost(configPath, registry, () => undefined);
   await within(pluginHost.install({ source: `local:${bundlePath}` }), "official Plugin installation");
   await within(registry.prepare(binding), "Plugin Binding preparation");
-  const workspace = { projectId: "integration", workingDirectory: directory, skipGitRepoCheck: true };
+  const workspace = { workspaceRef: "integration", workingDirectory: directory, skipGitRepoCheck: true };
   const [pluginOptions, pluginModels, pluginSkills, pluginCommands, pluginThreads] = await within(
     Promise.all([
       registry.listSessionOptions(binding, workspace),

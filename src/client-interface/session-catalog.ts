@@ -12,15 +12,6 @@ import type {
 } from "../client-contract";
 import { getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
-import { synchronizeRuntimeProjects } from "../projects/project-synchronizer";
-import { ProjectCatalog } from "../projects/projects";
-import {
-  createSessionContinuity,
-  type SessionContinuity,
-  type SessionContinuityModule,
-  type SessionContinuityOptions,
-} from "../projects/session-continuity";
-import { findProjectForWorkspace, workspaceView } from "../projects/workspace-catalog";
 import { resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { SessionActivity } from "../runtime/session-queue";
@@ -29,11 +20,19 @@ import { isCodeBuddySessionRuntimeTarget } from "../runtime/workbuddy-runtime-ta
 import type {
   AgentBindingConfig,
   ConnectConfig,
-  ProjectRecord,
   RuntimeSessionRecord,
   RuntimeStatus,
   RuntimeWorkspace,
+  WorkspaceRecord,
 } from "../types";
+import {
+  createSessionContinuity,
+  type SessionContinuity,
+  type SessionContinuityModule,
+  type SessionContinuityOptions,
+} from "../workspaces/session-continuity";
+import { synchronizeRuntimeWorkspaces } from "../workspaces/workspace-synchronizer";
+import { WorkspaceCatalog } from "../workspaces/workspaces";
 import type { TranscriptProjection } from "./transcript-projection";
 
 const CLIENT_CATALOG_CHAT = "__connect_client_catalog__";
@@ -44,7 +43,7 @@ export interface SessionCatalogOptions {
   runtimeFamily?: (binding: AgentBindingConfig) => string | Promise<string>;
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection: TranscriptProjection;
-  projects?: ProjectCatalog;
+  workspaces?: WorkspaceCatalog;
   sessionContinuityModule?: SessionContinuityModule;
   sessionActivity?: (bindingId: string, sessionRef: string) => SessionActivity | Promise<SessionActivity>;
   activeTurnId?: (bindingId: string, sessionRef: string) => string | null | Promise<string | null>;
@@ -56,10 +55,6 @@ interface CatalogState {
   view: SessionCatalogView;
   entriesByRef: Map<string, SessionCatalogEntryView>;
   workingDirectoryByRef: Map<string, string>;
-  workspaceIdentityByRef: Map<
-    string,
-    { bindingId: string; runtimeKind: string; identityKey: string; kind: "persistent" | "transient" }
-  >;
   runtimeRevisionByRef: Map<string, string>;
   expiresAt: number;
 }
@@ -67,11 +62,11 @@ interface CatalogState {
 export class SessionCatalog {
   private state: CatalogState | null = null;
   private runtimeWorkspaceLocationCache: Array<{ name: string; path: string }> = [];
-  private readonly projects: ProjectCatalog;
+  private readonly workspaces: WorkspaceCatalog;
   private readonly sessionContinuity: SessionContinuity;
 
   constructor(private readonly options: SessionCatalogOptions) {
-    this.projects = options.projects ?? new ProjectCatalog(options.stateStore);
+    this.workspaces = options.workspaces ?? new WorkspaceCatalog(options.stateStore);
     const continuityOptions: Omit<SessionContinuityOptions, "stateStore"> = {
       lifecycle: {
         capabilities: (bindingId) => {
@@ -98,6 +93,20 @@ export class SessionCatalog {
             return await claim(bindingId, sessionRef);
           }
         : undefined,
+      resolveDefaultWorkspace: async (bindingId) => (await this.workspaces.ensureDefault(bindingId)).workspaceRef,
+      resolveContinuationWorkspace: async (source, bindingId) => {
+        if (source.agentId === bindingId && source.workspaceRef) return source.workspaceRef;
+        const sourceWorkspace = source.workspaceRef
+          ? await this.workspaces.get(source.agentId, source.workspaceRef)
+          : null;
+        if (sourceWorkspace) {
+          const target = (await this.workspaces.list(bindingId)).find(
+            (workspace) => resolve(workspace.rootPath) === resolve(sourceWorkspace.rootPath),
+          );
+          if (target) return target.workspaceRef;
+        }
+        return (await this.workspaces.ensureDefault(bindingId)).workspaceRef;
+      },
     };
     this.sessionContinuity =
       options.sessionContinuityModule?.create(continuityOptions) ??
@@ -153,9 +162,8 @@ export class SessionCatalog {
   private rememberRuntimeWorkspaceLocations(state: CatalogState): void {
     const locations = new Map<string, { name: string; path: string }>();
     for (const [sessionRef, path] of state.workingDirectoryByRef) {
-      if (this.projects.isIsolatedWorkspace(path)) continue;
       const entry = state.entriesByRef.get(sessionRef);
-      locations.set(resolve(path), { name: entry?.workspaceName || entry?.projectName || resolve(path), path });
+      locations.set(resolve(path), { name: entry?.workspaceName || resolve(path), path });
     }
     this.runtimeWorkspaceLocationCache = [...locations.values()];
   }
@@ -166,17 +174,8 @@ export class SessionCatalog {
     const entry = state.entriesByRef.get(normalized) ?? null;
     if (!entry) return null;
     const managed = await this.options.stateStore.getRuntimeSessionByRef(normalized);
-    if (managed) return await this.projects.resolveWorkspace(managed);
-    if (entry.projectId) {
-      return await this.projects.resolveProjectWorkspace(entry.projectId).catch(() => null);
-    }
-    const workingDirectory = state.workingDirectoryByRef.get(normalized) ?? null;
-    if (!workingDirectory) return null;
-    return {
-      projectId: null,
-      workingDirectory: resolve(workingDirectory),
-      skipGitRepoCheck: true,
-    };
+    if (managed) return await this.workspaces.resolveWorkspace(managed);
+    return await this.workspaces.resolveWorkspaceRef(entry.bindingId, entry.workspaceRef).catch(() => null);
   }
 
   async sessionView(sessionRef: string): Promise<SessionView | null> {
@@ -198,7 +197,7 @@ export class SessionCatalog {
     const runtimeStatus = await this.options.stateStore.getRuntimeStatus(entry.bindingId);
     const activity = (await this.options.sessionActivity?.(entry.bindingId, normalized)) ?? "idle";
     const runtimeThreadId = session?.runtimeSessionId ?? target?.runtimeSessionId ?? undefined;
-    const runtimeWorkspace = session ? await this.projects.resolveWorkspace(session) : undefined;
+    const runtimeWorkspace = session ? await this.workspaces.resolveWorkspace(session) : undefined;
     const catalogScope = { runtimeThreadId, workspace: runtimeWorkspace };
     const providerAvailable = this.options.runtimeAdapters.hasProvider(binding);
     let advertisedModels: Awaited<ReturnType<RuntimeAdapterRegistry["listModels"]>> = null;
@@ -283,8 +282,7 @@ export class SessionCatalog {
       bindingKind: entry.bindingKind,
       bindingLocked: bindingLockReason !== null,
       bindingLockReason,
-      projectId: entry.projectId,
-      projectName: entry.projectName,
+      workspaceRef: entry.workspaceRef,
       workspaceName: entry.workspaceName,
       name: entry.name,
       isArchived: entry.isArchived,
@@ -340,7 +338,7 @@ export class SessionCatalog {
         sessionRef: normalized,
         agentId: target.agentId,
         runtimeSessionId: target.runtimeSessionId,
-        projectId: entry.projectId,
+        workspaceRef: entry.workspaceRef,
         name: entry.name,
         mode: null,
         model: null,
@@ -366,21 +364,11 @@ export class SessionCatalog {
     const state = await this.load();
     const entry = state.entriesByRef.get(normalized) ?? null;
     if (!entry || entry.isArchived) return null;
-    const workingDirectory = state.workingDirectoryByRef.get(normalized) ?? null;
-    const discoveredProject =
-      !entry.projectId && entry.workspaceId && workingDirectory
-        ? await this.projects.ensureDiscoveredWorkspace(workingDirectory)
-        : null;
-    if (discoveredProject) {
-      const identity = state.workspaceIdentityByRef.get(normalized);
-      if (identity?.kind === "persistent") {
-        await this.sessionContinuity.associateWorkspace({ ...identity, projectId: discoveredProject.projectId });
-      }
-    }
+    const workspace = await this.workspaces.require(entry.bindingId, entry.workspaceRef);
     const existing = await this.options.stateStore.getRuntimeSessionByRef(normalized);
     if (existing) {
-      if (!existing.projectId && discoveredProject) {
-        await this.sessionContinuity.forSession(existing.sessionRef).associateProject(discoveredProject.projectId);
+      if (!existing.workspaceRef) {
+        await this.sessionContinuity.forSession(existing.sessionRef).associateWorkspaceRef(workspace.workspaceRef);
         this.invalidate();
         return await this.options.stateStore.getRuntimeSessionByRef(normalized);
       }
@@ -396,7 +384,7 @@ export class SessionCatalog {
       sessionRef: normalized,
       sessionId: randomUUID(),
       selection: {
-        projectId: entry.projectId ?? discoveredProject?.projectId ?? null,
+        workspaceRef: workspace.workspaceRef,
         name: entry.name,
         mode: null,
         model: null,
@@ -407,19 +395,8 @@ export class SessionCatalog {
     return await this.options.stateStore.getRuntimeSessionByRef(normalized);
   }
 
-  async ensureWorkspaceProject(bindingId: string, workspaceId: string): Promise<ProjectRecord | null> {
-    const state = await this.load();
-    const entry = state.view.bindings
-      .find((binding) => binding.bindingId === bindingId)
-      ?.entries.find((candidate) => candidate.workspaceId === workspaceId);
-    const workingDirectory = entry ? state.workingDirectoryByRef.get(entry.sessionRef.toUpperCase()) : null;
-    if (!workingDirectory) return null;
-    const project = await this.projects.ensureDiscoveredWorkspace(workingDirectory);
-    const identity = entry ? state.workspaceIdentityByRef.get(entry.sessionRef.toUpperCase()) : null;
-    if (project && identity?.kind === "persistent") {
-      await this.sessionContinuity.associateWorkspace({ ...identity, projectId: project.projectId });
-    }
-    return project;
+  async ensureWorkspace(bindingId: string, workspaceRef: string): Promise<WorkspaceRecord | null> {
+    return await this.workspaces.get(bindingId, workspaceRef);
   }
 
   async archive(sessionRef: string): Promise<boolean> {
@@ -465,15 +442,10 @@ export class SessionCatalog {
 
   private async load(force = false): Promise<CatalogState> {
     if (!force && this.state && this.state.expiresAt > Date.now()) return this.state;
-    let projects = await this.projects.list();
     const sessions = await this.options.stateStore.listAllRuntimeSessions();
     const bindings: SessionCatalogBindingView[] = [];
     const entriesByRef = new Map<string, SessionCatalogEntryView>();
     const workingDirectoryByRef = new Map<string, string>();
-    const workspaceIdentityByRef = new Map<
-      string,
-      { bindingId: string; runtimeKind: string; identityKey: string; kind: "persistent" | "transient" }
-    >();
     const runtimeRevisionByRef = new Map<string, string>();
 
     for (const [bindingId, binding] of Object.entries(this.options.config.agents)) {
@@ -500,20 +472,24 @@ export class SessionCatalog {
         : (
             await this.options.runtimeAdapters.discoverArchivedThreads(getAgentBinding(this.options.config, bindingId))
           ).filter((thread) => !thread.parentRuntimeThreadId);
+      let workspaces: WorkspaceRecord[];
       try {
-        projects = (
-          await synchronizeRuntimeProjects({
+        const snapshot = runtimeUnavailable
+          ? { status: "unavailable" as const, identities: [] }
+          : await this.options.runtimeAdapters.discoverWorkspaces(getAgentBinding(this.options.config, bindingId));
+        workspaces = (
+          await synchronizeRuntimeWorkspaces({
             bindingId,
-            runtimeKind: family,
-            threads: discoveredActive,
-            projects: this.projects,
-            stateStore: this.options.stateStore,
+            snapshot,
+            workspaces: this.workspaces,
           })
-        ).projects;
+        ).workspaces;
       } catch {
-        projects = await this.projects.list();
+        workspaces = await this.workspaces.list(bindingId);
       }
-      const projectById = new Map(projects.map((project) => [project.projectId, project]));
+      const defaultWorkspace = await this.workspaces.ensureDefault(bindingId);
+      const workspaceByRef = new Map(workspaces.map((workspace) => [workspace.workspaceRef, workspace]));
+      workspaceByRef.set(defaultWorkspace.workspaceRef, defaultWorkspace);
       const discovered = [
         ...new Map(
           [...discoveredActive, ...discoveredArchived].map((thread) => [thread.runtimeThreadId, thread]),
@@ -522,7 +498,16 @@ export class SessionCatalog {
       const discoveredById = new Map(discovered.map((thread) => [thread.runtimeThreadId, thread]));
       const entries: SessionCatalogEntryView[] = await Promise.all(
         managed.map(async (session) => {
-          const project = projectById.get(session.projectId ?? "") ?? null;
+          const workspace = workspaceByRef.get(session.workspaceRef ?? "") ?? defaultWorkspace;
+          if (!session.workspaceRef) {
+            await this.options.stateStore.setRuntimeSessionWorkspace(
+              session.chatId,
+              session.agentId,
+              session.sessionId,
+              workspace.workspaceRef,
+            );
+            session.workspaceRef = workspace.workspaceRef;
+          }
           const runtimeSessionId = session.runtimeSessionId;
           const discoveredRuntimeThread = runtimeSessionId ? discoveredById.get(runtimeSessionId) : undefined;
           const runtimeThread =
@@ -532,7 +517,7 @@ export class SessionCatalog {
                   runtimeThreadId: runtimeSessionId,
                   name: session.name,
                   updatedAt: session.updatedAt,
-                  workingDirectory: project?.rootPath ?? null,
+                  workingDirectory: workspace.rootPath,
                   workspaceKind: "persistent" as const,
                 }
               : undefined);
@@ -542,10 +527,10 @@ export class SessionCatalog {
               `${runtimeThread.runtimeThreadId}:${runtimeThread.updatedAt}`,
             );
           }
-          const workingDirectory = runtimeThread?.workingDirectory ?? null;
-          if (workingDirectory) workingDirectoryByRef.set(session.sessionRef.toUpperCase(), workingDirectory);
+          const workingDirectory = runtimeThread?.workingDirectory ?? workspace.rootPath;
+          workingDirectoryByRef.set(session.sessionRef.toUpperCase(), workingDirectory);
           const activity = (await this.options.sessionActivity?.(bindingId, session.sessionRef)) ?? "idle";
-          return managedEntry(session, family, project, status, activity, lifecycleCapabilities, runtimeThread);
+          return managedEntry(session, family, workspace, status, activity, lifecycleCapabilities, runtimeThread);
         }),
       );
       for (const thread of discovered) {
@@ -555,34 +540,26 @@ export class SessionCatalog {
           kind: thread.workspaceKind ?? ("persistent" as const),
           localRoot: thread.workingDirectory ?? null,
         };
-        const mapping = await this.options.stateStore.getRuntimeWorkspaceMapping(bindingId, family, identity.key);
-        const project =
-          projectById.get(mapping?.projectId ?? "") ??
-          (identity.localRoot ? findProjectForWorkspace(projects, identity.localRoot) : null);
+        const workspace =
+          workspaces.find((candidate) => candidate.runtimeIdentityKey === identity.key) ??
+          (identity.localRoot
+            ? workspaces.find((candidate) => resolve(candidate.rootPath) === resolve(identity.localRoot as string))
+            : null) ??
+          defaultWorkspace;
         const sessionRef = await this.options.stateStore.getOrCreateSessionRef({
           chatId: CLIENT_CATALOG_CHAT,
           agentId: bindingId,
           runtimeSessionId: thread.runtimeThreadId,
         });
         runtimeRevisionByRef.set(sessionRef.toUpperCase(), `${thread.runtimeThreadId}:${thread.updatedAt}`);
-        workspaceIdentityByRef.set(sessionRef.toUpperCase(), {
-          bindingId,
-          runtimeKind: family,
-          identityKey: identity.key,
-          kind: identity.kind,
-        });
-        if (thread.workingDirectory) workingDirectoryByRef.set(sessionRef.toUpperCase(), thread.workingDirectory);
-        const workspace =
-          project || identity.kind !== "transient" ? workspaceView(project?.rootPath ?? thread.workingDirectory) : null;
+        workingDirectoryByRef.set(sessionRef.toUpperCase(), thread.workingDirectory ?? workspace.rootPath);
         entries.push({
           sessionRef,
           entryKind: "runtime-thread",
           bindingId,
           bindingKind: family,
-          projectId: project?.projectId ?? null,
-          projectName: project?.name ?? null,
-          workspaceId: workspace?.id ?? null,
-          workspaceName: workspace?.name ?? null,
+          workspaceRef: workspace.workspaceRef,
+          workspaceName: workspace.name,
           name: thread.name || `Session ${sessionRef}`,
           isArchived: thread.isArchived === true,
           status: sessionStatus(status, "idle"),
@@ -626,7 +603,6 @@ export class SessionCatalog {
       view: { revision: Date.now(), bindings },
       entriesByRef,
       workingDirectoryByRef,
-      workspaceIdentityByRef,
       runtimeRevisionByRef,
       expiresAt: Date.now() + 2_000,
     };
@@ -665,27 +641,19 @@ function clientTurnSubmissionCapability(
 function managedEntry(
   session: RuntimeSessionRecord,
   bindingKind: string,
-  project: ProjectRecord | null,
+  workspace: WorkspaceRecord,
   status: RuntimeStatus | null,
   activity: SessionActivity,
   lifecycleCapabilities: RuntimeLifecycleCapabilities,
   runtimeThread?: RuntimeThreadSummary,
 ): SessionCatalogEntryView {
-  const workspace = workspaceView(
-    project?.rootPath ??
-      (session.chatId === CLIENT_CATALOG_CHAT && runtimeThread?.workspaceKind !== "transient"
-        ? runtimeThread?.workingDirectory
-        : null),
-  );
   return {
     sessionRef: session.sessionRef,
     entryKind: "session",
     bindingId: session.agentId,
     bindingKind,
-    projectId: project?.projectId ?? null,
-    projectName: project?.name ?? null,
-    workspaceId: workspace?.id ?? null,
-    workspaceName: workspace?.name ?? null,
+    workspaceRef: workspace.workspaceRef,
+    workspaceName: workspace.name,
     name: session.name || runtimeThread?.name || `Session ${session.sessionRef}`,
     isArchived: runtimeThread?.isArchived === true,
     status: sessionStatus(status, activity),

@@ -7,16 +7,18 @@ import { activateConnect } from "../src/account/activation";
 import { OWNER_RESET_CONFIRMATION_PHRASE, resetInstallationOwner } from "../src/account/owner-reset";
 import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
+import { ConnectBindingLivewarePublicationStateStore } from "../src/plugin/official/liveware-publication-state";
+import { retireOfficialLivewarePublications } from "../src/plugin/official/liveware-retirement";
 import { pluginInstallationPaths } from "../src/plugin/store";
-import { ProjectCatalog } from "../src/projects/projects";
 import { runConnectCli } from "../src/service/cli";
 import type {
   ClawChatLivewarePort,
   LivewareApp,
   LivewareControlPlanePort,
   LivewareControlSession,
-} from "../src/service/liveware-exposure";
+} from "../src/service/liveware-control";
 import type { ActivationCredentials } from "../src/types";
+import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { pluginBinding } from "./runtime-adapter-fixture";
 
 const PLUGIN_ID = "test.owner-reset-preserved";
@@ -45,13 +47,13 @@ describe("Installation Owner Reset", () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-owner-reset-"));
     const configPath = join(directory, "config.json");
     const stateDbPath = join(directory, "state.sqlite");
-    const projectRoot = join(directory, "global-project");
+    const workspaceRoot = join(directory, "global-project");
     const nativeRoot = join(directory, "native-runtime");
     const codingAgentRoot = join(directory, "coding-agent-install");
-    await mkdir(projectRoot, { recursive: true });
+    await mkdir(workspaceRoot, { recursive: true });
     await mkdir(nativeRoot, { recursive: true });
     await mkdir(codingAgentRoot, { recursive: true });
-    await Bun.write(join(projectRoot, "workspace.txt"), "preserve project workspace");
+    await Bun.write(join(workspaceRoot, "workspace.txt"), "preserve project workspace");
     await Bun.write(join(nativeRoot, "thread-and-transcript.json"), '{"thread":"native-1","transcript":["native"]}');
     await Bun.write(join(codingAgentRoot, "runtime"), "installed coding agent");
 
@@ -80,20 +82,29 @@ describe("Installation Owner Reset", () => {
     const lockBefore = await readFile(pluginPaths.lockfile, "utf8");
 
     const store = createStateStore({ dbPath: stateDbPath });
+    const publicationState = new ConnectBindingLivewarePublicationStateStore(store);
     await store.setDeviceId("device-owner-reset");
     const personal = activation("personal", "token-personal");
     const work = activation("work", "token-work");
     await expect(store.commitActivationForInstallationOwner(personal)).resolves.toBe("established");
     await expect(store.commitActivationForInstallationOwner(work)).resolves.toBe("existing");
-    await store.setLivewareExposure(exposure("personal", "app-personal"));
-    await store.setLivewareExposure(exposure("work", "app-work"));
-    const project = await store.insertProject({ projectId: "project-global", name: "Global", rootPath: projectRoot });
+    await publicationState.compareAndSwap("personal", null, publication("personal", "app-personal"));
+    await publicationState.compareAndSwap("work", null, publication("work", "app-work"));
+    const project = await store.insertWorkspace({
+      bindingId: "personal",
+      workspaceRef: "GLOBAL01",
+      runtimeIdentityKey: null,
+      source: "runtime",
+      name: "Global",
+      rootPath: workspaceRoot,
+      selectable: true,
+    });
     await store.upsertRuntimeSession({
       chatId: "chat-personal",
       sessionId: "session-personal",
       agentId: "personal",
       runtimeSessionId: "native-thread-personal",
-      projectId: project.projectId,
+      workspaceRef: project.workspaceRef,
       isCurrent: true,
     });
     await store.upsertRuntimeSession({
@@ -101,7 +112,7 @@ describe("Installation Owner Reset", () => {
       sessionId: "session-work",
       agentId: "work",
       runtimeSessionId: "native-thread-work",
-      projectId: null,
+      workspaceRef: null,
       isCurrent: true,
     });
     const sessions = await store.listAllRuntimeSessions();
@@ -146,16 +157,10 @@ describe("Installation Owner Reset", () => {
       resolvedOptionId: null,
       resolvedBy: null,
     });
-    await store.mapRuntimeWorkspaceIdentity({
-      bindingId: "work",
-      runtimeKind: "codex",
-      identityKey: "native-workspace",
-      projectId: project.projectId,
-    });
 
-    const projects = new ProjectCatalog(store);
-    const transientWorkspace = await projects.resolveWorkspace(workSession);
-    await Bun.write(join(transientWorkspace.workingDirectory, "transient.txt"), "remove me");
+    const workspaces = new WorkspaceCatalog(store);
+    const transientWorkspace = await workspaces.resolveWorkspace(workSession);
+    await Bun.write(join(transientWorkspace.workingDirectory, "transient.txt"), "preserve transient workspace");
     const stagingRoot = join(directory, "turn-submissions", "submission-owner-reset");
     await mkdir(stagingRoot, { recursive: true });
     await Bun.write(
@@ -179,7 +184,13 @@ describe("Installation Owner Reset", () => {
             startService: async () => {
               actions.push("connections:restart");
             },
-            livewareDependencies: external,
+            retireLivewarePublications: async (bindingIds) =>
+              await retireOfficialLivewarePublications({
+                bindingIds,
+                clawChatBaseUrl: "https://clawchat.test",
+                stateStore: store,
+                dependencies: external,
+              }),
           }),
       }),
     ).resolves.toBe(0);
@@ -188,11 +199,9 @@ describe("Installation Owner Reset", () => {
       "connections:stop",
       "registration:remove:personal:app-personal:token-personal",
       "control:connect:token-personal",
-      "tunnel:unbind:app-personal",
       "app:delete:app-personal",
       "registration:remove:work:app-work:token-work",
       "control:connect:token-work",
-      "tunnel:unbind:app-work",
       "app:delete:app-work",
     ]);
     expect(output.stdout.join("")).toContain("Owner Reset will retain:");
@@ -202,17 +211,20 @@ describe("Installation Owner Reset", () => {
     await expect(store.listAllRuntimeSessions()).resolves.toEqual([]);
     await expect(store.getToolRequest("tool-owner-reset")).resolves.toBeNull();
     await expect(store.getOutputVisibility("work", "chat-work")).resolves.toBeNull();
-    await expect(store.listLivewareExposures()).resolves.toEqual([]);
-    await expect(store.listProjects()).resolves.toEqual([expect.objectContaining({ projectId: "project-global" })]);
+    await expect(publicationState.read("personal")).resolves.toBeNull();
+    await expect(publicationState.read("work")).resolves.toBeNull();
+    await expect(store.listWorkspaces()).resolves.toEqual([]);
     await expect(readdir(join(directory, "turn-submissions"))).resolves.toEqual([]);
-    await expect(Bun.file(join(transientWorkspace.workingDirectory, "transient.txt")).exists()).resolves.toBe(false);
+    await expect(Bun.file(join(transientWorkspace.workingDirectory, "transient.txt")).text()).resolves.toBe(
+      "preserve transient workspace",
+    );
 
     const resetConfig = await loadConfig(configPath);
     expect(resetConfig.agents).toEqual({});
     expect(resetConfig.defaultAgent).toBeNull();
     expect(resetConfig.clientPort).toBe(49_321);
     expect(resetConfig.outputVisibility).toBe("full");
-    expect(await readFile(join(projectRoot, "workspace.txt"), "utf8")).toBe("preserve project workspace");
+    expect(await readFile(join(workspaceRoot, "workspace.txt"), "utf8")).toBe("preserve project workspace");
     expect(await readFile(join(nativeRoot, "thread-and-transcript.json"), "utf8")).toContain("native-1");
     expect(await readFile(join(codingAgentRoot, "runtime"), "utf8")).toBe("installed coding agent");
     expect(await readFile(pluginPaths.lockfile, "utf8")).toBe(lockBefore);
@@ -238,12 +250,12 @@ describe("Installation Owner Reset", () => {
     await expect(store.getActivation("next")).resolves.toBeNull();
     await store.close();
   });
-  it("rejects ambiguous legacy ownership at startup and explicit reset preserves Projects and installed Plugins", async () => {
+  it("rejects ambiguous legacy ownership and resets Binding-scoped catalogs without deleting Workspace files", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-ambiguous-owner-reset-"));
     const configPath = join(directory, "config.json");
     const stateDbPath = join(directory, "state.sqlite");
-    const projectRoot = join(directory, "retained-project");
-    await mkdir(projectRoot, { recursive: true });
+    const workspaceRoot = join(directory, "retained-project");
+    await mkdir(workspaceRoot, { recursive: true });
     let config = upsertAgentBinding(defaultConfig(), "personal", pluginBinding());
     config = upsertAgentBinding(config, "work", pluginBinding());
     config.stateDbPath = stateDbPath;
@@ -268,10 +280,14 @@ describe("Installation Owner Reset", () => {
     const lockBefore = await readFile(pluginPaths.lockfile, "utf8");
 
     const bootstrap = createStateStore({ dbPath: stateDbPath });
-    await bootstrap.insertProject({
-      projectId: "project-retained",
+    await bootstrap.insertWorkspace({
+      bindingId: "personal",
+      workspaceRef: "RETAIN01",
+      runtimeIdentityKey: null,
+      source: "runtime",
       name: "Retained",
-      rootPath: projectRoot,
+      rootPath: workspaceRoot,
+      selectable: true,
     });
     await bootstrap.close();
 
@@ -284,14 +300,6 @@ describe("Installation Owner Reset", () => {
       INSERT INTO activations VALUES (
         'clawchat-connect', 'work', 'token-work', NULL, 'server-work',
         'user-work', 'owner-work', 'conversation-work', 2, 2
-      );
-      INSERT INTO liveware_exposures VALUES (
-        'personal', 'owner-personal', 'app-personal',
-        'https://personal.apps.example', 'private', 1
-      );
-      INSERT INTO liveware_exposures VALUES (
-        'work', 'owner-work', 'app-work',
-        'https://work.apps.example', 'private', 2
       );
       DELETE FROM installation_owner;
     `);
@@ -306,11 +314,11 @@ describe("Installation Owner Reset", () => {
       {
         store,
         getServiceStatus: async () => ({ running: false }),
-        retireLivewareExposure: async ({ activation }) => {
-          retired.push(activation.localAgentId);
+        retireLivewarePublications: async (bindingIds) => {
+          retired.push(...bindingIds);
         },
         purgeStagedSessions: async () => undefined,
-        purgeBindingWorkspaces: async () => undefined,
+        purgeBindingCatalog: async () => undefined,
       },
     );
 
@@ -318,10 +326,8 @@ describe("Installation Owner Reset", () => {
     expect(retired).toEqual(["personal", "work"]);
     await expect(store.getInstallationOwner()).resolves.toBeNull();
     await expect(store.listActivations()).resolves.toEqual([]);
-    await expect(store.listLivewareExposures()).resolves.toEqual([]);
-    await expect(store.listProjects()).resolves.toEqual([
-      expect.objectContaining({ projectId: "project-retained", rootPath: projectRoot }),
-    ]);
+    await expect(new ConnectBindingLivewarePublicationStateStore(store).read("personal")).resolves.toBeNull();
+    await expect(store.listWorkspaces()).resolves.toEqual([]);
     expect(await readFile(pluginPaths.lockfile, "utf8")).toBe(lockBefore);
     expect(await Bun.file(activeArtifact).exists()).toBe(true);
     await store.close();
@@ -340,13 +346,18 @@ function activation(localAgentId: string, accessToken: string): ActivationCreden
   };
 }
 
-function exposure(localAgentId: string, appId: string) {
+function publication(bindingId: string, appId: string) {
   return {
-    ownerUserId: "installation-owner",
-    localAgentId,
+    bindingId,
+    activationGeneration: 1,
+    desired: "private" as const,
+    status: "active" as const,
+    transition: null,
+    correlationKey: `publication:${bindingId}`,
     appId,
     publicUrl: `https://${appId}.example.test`,
-    accessPolicy: "private" as const,
+    registrationId: `registration-${bindingId}`,
+    diagnostic: null,
   };
 }
 
@@ -354,17 +365,36 @@ function fakeLivewarePorts(actions: string[]): {
   controlPlane: LivewareControlPlanePort;
   clawChat: ClawChatLivewarePort;
 } {
+  const deletedApps = new Set<string>();
+  const removedRegistrations = new Set<string>();
   const controlPlane: LivewareControlPlanePort = {
     async connect(token) {
       actions.push(`control:connect:${token}`);
       const session: LivewareControlSession = {
         async listApps(): Promise<LivewareApp[]> {
-          return [];
+          const bindingId = token.replace(/^token-/u, "");
+          const appId = `app-${bindingId}`;
+          return deletedApps.has(appId)
+            ? []
+            : [
+                {
+                  appId,
+                  name: `ClawChat Connect · ${bindingId}`,
+                  publicUrl: `https://${appId}.example.test`,
+                },
+              ];
         },
         async createApp(): Promise<LivewareApp> {
           throw new Error("not used");
         },
         async setAccessPolicy(): Promise<void> {},
+        async inspectApp(appId): Promise<LivewareApp> {
+          return {
+            appId,
+            name: `ClawChat Connect · ${appId.replace(/^app-/u, "")}`,
+            publicUrl: `https://${appId}.example.test`,
+          };
+        },
         async bindTunnel(): Promise<string> {
           throw new Error("not used");
         },
@@ -372,22 +402,31 @@ function fakeLivewarePorts(actions: string[]): {
           actions.push(`tunnel:unbind:${appId}`);
         },
         async deleteApp(appId): Promise<void> {
+          deletedApps.add(appId);
           actions.push(`app:delete:${appId}`);
-        },
-        async startAgent() {
-          throw new Error("not used");
         },
       };
       return session;
     },
   };
   const clawChat: ClawChatLivewarePort = {
-    async list() {
-      return [];
+    async list(principal) {
+      const appId = `app-${principal.localAgentId}`;
+      return removedRegistrations.has(appId)
+        ? []
+        : [
+            {
+              livewareId: appId,
+              name: `ClawChat Connect · ${principal.localAgentId}`,
+              subtitle: "Private Connect Client",
+              url: `https://${appId}.example.test`,
+            },
+          ];
     },
     async register() {},
     async unregister(principal, _deviceId, appId) {
       actions.push(`registration:remove:${principal.localAgentId}:${appId}:${principal.accessToken}`);
+      removedRegistrations.add(appId);
     },
   };
   return { controlPlane, clawChat };

@@ -1,18 +1,16 @@
 # Agent installation runbook
 
-This document is written for an automation Agent installing ClawChat Connect on a user's computer. It covers installation, Agent Binding activation, background-service setup, and Liveware startup.
+This document is written for an automation Agent installing ClawChat Connect on a user's computer. It covers installation, Agent Binding activation, background-service setup, Plugin selection, and optional private Liveware publication.
 
 ## Success criteria
 
 The installation is complete only when:
 
-1. `clawchat-connect doctor` reports `ok` and shows a bundled Liveware path.
+1. `clawchat-connect doctor` reports `ok`.
 2. `$HOME/.agents/skills/clawchat-core` and `$HOME/.agents/skills/clawchat-liveware` match the installed release manifest. `doctor` checks this; `clawchat-connect skills install` repairs both by force-overwriting them from the offline bundle.
 3. `clawchat-connect service status` reports the native user service as running.
-4. `clawchat-connect status --agent <id>` reports:
-   - `activated: yes`;
-   - `runtime: connected`;
-   - a URL for `liveware exposure`.
+4. `clawchat-connect status --agent <id>` reports `activated: yes` and `runtime: connected`.
+5. When the official Liveware Plugin is selected, the signed-in ClawChat account shows the Binding's private launcher and opening it loads the installed Connect Client through the shared gateway. Verify this in the real ClawChat surface; a mock or an unauthenticated HTTP probe is not acceptance evidence.
 
 ## Required inputs
 
@@ -25,11 +23,11 @@ Never write the invite code to a file, commit it, print it, or enable shell trac
 
 ## How Liveware starts
 
-Do not run the bundled `liveware` or `liveware.exe` directly.
+Do not run the official Plugin's `liveware` or `liveware.exe` companion directly.
 
-`clawchat-connect service install` installs and immediately starts the Connect Service. The service provisions the `ClawChat Connect` Liveware App, binds its tunnel to the local Connect Client, starts the bundled Liveware agent, and restarts that agent if it exits.
+Core starts the local Shared Client Gateway when the release-verified official Liveware Plugin acquires its first Client Exposure lease and stops it after the final lease is released. With the Plugin active, its `private` policy provisions one independent Binding Liveware Publication for every activated Binding and starts the Bundle's platform companion. Every Publication tunnels to the same Shared Client Gateway; the local Client remains available if the optional Plugin is missing or erroneous.
 
-The default Liveware policy is `private`, which admits only the Connect Owner.
+The capability accepts only `private` and `off`. `private` admits only the Installation Owner; `off` retires all Publications and releases the Plugin's gateway lease.
 
 ## macOS and Linux
 
@@ -68,14 +66,13 @@ if [ -f "$config_path" ]; then
   fi
 else
   "$connect_bin" init
-  "$connect_bin" plugin setup --non-interactive --select clawling.runtime.codex
+  "$connect_bin" plugin setup --non-interactive --select clawling.runtime.codex,clawling.exposure.liveware
   "$connect_bin" agent add "$agent_id" --plugin clawling.runtime.codex --capability codex
 fi
 
 "$connect_bin" activate "$agent_id" "$CLAWCHAT_INVITE_CODE"
 unset CLAWCHAT_INVITE_CODE
 
-"$connect_bin" config set livewareAccessPolicy private
 "$connect_bin" doctor
 "$connect_bin" service install
 
@@ -83,7 +80,7 @@ attempt=1
 while [ "$attempt" -le 30 ]; do
   status_output="$("$connect_bin" status --agent "$agent_id" 2>&1 || true)"
   case "$status_output" in
-    *"activated: yes"*"liveware exposure: http"*"runtime: connected"*)
+    *"activated: yes"*"runtime: connected"*)
       printf '%s\n' "$status_output"
       "$connect_bin" service status
       exit 0
@@ -154,7 +151,7 @@ if (Test-Path -LiteralPath $ConfigPath) {
 } else {
   & $Connect init
   if ($LASTEXITCODE -ne 0) { throw "Connect initialization failed" }
-  & $Connect plugin setup --non-interactive --select clawling.runtime.codex
+  & $Connect plugin setup --non-interactive --select clawling.runtime.codex,clawling.exposure.liveware
   if ($LASTEXITCODE -ne 0) { throw "Codex Runtime Plugin setup failed" }
   & $Connect agent add $AgentId --plugin clawling.runtime.codex --capability codex
   if ($LASTEXITCODE -ne 0) { throw "Agent Binding configuration failed" }
@@ -164,7 +161,6 @@ if (Test-Path -LiteralPath $ConfigPath) {
 if ($LASTEXITCODE -ne 0) { throw "ClawChat activation failed" }
 Remove-Item Env:CLAWCHAT_INVITE_CODE
 
-& $Connect config set livewareAccessPolicy private
 & $Connect doctor
 if ($LASTEXITCODE -ne 0) { throw "Connect doctor failed" }
 
@@ -175,7 +171,6 @@ for ($Attempt = 1; $Attempt -le 30; $Attempt++) {
   $StatusOutput = (& $Connect status --agent $AgentId 2>&1) -join "`n"
   if (
     $StatusOutput.Contains("activated: yes") -and
-    $StatusOutput.Contains("liveware exposure: http") -and
     $StatusOutput.Contains("runtime: connected")
   ) {
     Write-Output $StatusOutput
@@ -185,7 +180,7 @@ for ($Attempt = 1; $Attempt -le 30; $Attempt++) {
   Start-Sleep -Seconds 2
 }
 
-Write-Error "Connect or Liveware did not become ready within 60 seconds."
+Write-Error "Connect or the selected Runtime did not become ready within 60 seconds."
 & $Connect status --agent $AgentId
 & $Connect service status
 & $Connect service logs --lines 100
@@ -194,7 +189,7 @@ exit 1
 
 ## Existing installations
 
-To update Connect and restart its managed Liveware agent:
+To update Connect, refresh the native service definition, and activate the selected Plugin versions:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
@@ -209,28 +204,14 @@ On Windows, rerun `install.ps1`, then run the same `service install`, `service s
 
 ## Liveware access policy
 
-Keep the default private policy unless the user explicitly requests broader access:
+Use Connect Client's Plugin settings to configure the official `clawling.exposure.liveware/liveware` capability:
 
-```bash
-clawchat-connect config set livewareAccessPolicy private
-clawchat-connect service restart
-```
+- `{ "accessPolicy": "private" }` publishes one owner-only App per activated Binding.
+- `{ "accessPolicy": "off" }` persists retirement intent, retires every Binding Liveware Publication, and releases the Shared Client Gateway lease.
 
-To admit any authenticated ClawChat user who can open the Liveware App:
+The capability has no `public` policy. Do not attempt to grant the installation-wide Client to arbitrary Plugin Bundles; only the release-verified official Bundle receives Core's privileged Client Exposure grant.
 
-```bash
-clawchat-connect config set livewareAccessPolicy public
-clawchat-connect service restart
-```
-
-`public` exposes the complete Connect Client. Every admitted user can inspect Sessions, manage Project paths and preferences, and submit local runtime turns.
-
-To unregister and retire the Liveware Exposure:
-
-```bash
-clawchat-connect config set livewareAccessPolicy off
-clawchat-connect service restart
-```
+After changing the policy, verify the real signed-in ClawChat launcher state. For `private`, each activated Binding must have an independent App and tunnel that opens the same installed Client. For `off`, the launchers must be absent after retirement. Ordinary browser HTTP responses, including `401`, do not prove either behavior.
 
 ## Recovery
 

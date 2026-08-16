@@ -11,14 +11,20 @@ import {
   type TransportEvents,
   type TransportState,
 } from "../src/clawchat/protocol";
-import { PLUGIN_MANAGER_CONFIG_HEADER } from "../src/client-contract";
-import { BINDING_SCOPE_HEADER } from "../src/client-interface/binding-scoped-gateway";
+import { BINDING_SCOPE_HEADER, PLUGIN_MANAGER_CONFIG_HEADER } from "../src/client-contract";
 import { type ClientHttpServerOptions, startClientInterface } from "../src/client-interface/server";
 import { defaultConfig, getAgentBinding, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
 import type { ConnectPluginContext } from "../src/plugin/sdk";
-import { installLocalPlugin, listInstalledPlugins, removeInstalledPlugin } from "../src/plugin/store";
+import {
+  commitStagedPlugin,
+  currentConnectPluginTarget,
+  listInstalledPlugins,
+  readConnectPluginBundle,
+  removeInstalledPlugin,
+  stagePluginBundle,
+} from "../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { startBindingRuntime } from "../src/service/binding-runtime";
 import { runConnectCli } from "../src/service/cli";
@@ -26,6 +32,7 @@ import { startConnectService } from "../src/service/connect-service";
 import type { ActivationCredentials } from "../src/types";
 
 const PUBLIC_CONTEXT_KEYS: Array<keyof ConnectPluginContext> = [
+  "activationGeneration",
   "hostCapabilities",
   "installationConfiguration",
   "interfaceVersion",
@@ -110,7 +117,27 @@ async function localRequest(
   return await fetchHandler(new Request(new URL(path, origin), { ...init, headers }));
 }
 
-describe("local Runtime Plugin platform", () => {
+async function installOfficialFixture(configPath: string, bundlePath: string) {
+  const bundle = await readConnectPluginBundle(bundlePath);
+  const artifact = bundle.manifest.artifacts.find(({ target }) => target === currentConnectPluginTarget());
+  if (!artifact) throw new Error(`Fixture ${bundle.manifest.pluginId} has no current target artifact`);
+  const staged = await stagePluginBundle({
+    configPath,
+    source: { type: "local", path: bundlePath },
+    bundle,
+    exposureConfigurations: { "reference-exposure": { channel: "private" } },
+    officialCapabilityGrants: [
+      {
+        capabilityId: "reference-exposure",
+        type: "exposure",
+        artifactIntegrity: artifact.integrity,
+      },
+    ],
+  });
+  return await commitStagedPlugin(configPath, staged, "install");
+}
+
+describe("official multi-capability Plugin platform", () => {
   it("runs class-instance Plugin providers through activation, Client Turn start, and disposal", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-platform-"));
     Reflect.deleteProperty(globalThis, "__connectReferenceExposure");
@@ -123,15 +150,14 @@ describe("local Runtime Plugin platform", () => {
     secondBundle.manifest.pluginId = "test.reference-runtime-two";
     await writeFile(secondBundlePath, `${JSON.stringify(secondBundle, null, 2)}\n`);
 
-    const firstInstall = await installLocalPlugin({ configPath, bundlePath: fixturePath });
-    const secondInstall = await installLocalPlugin({ configPath, bundlePath: secondBundlePath });
+    const firstInstall = await installOfficialFixture(configPath, fixturePath);
+    const secondInstall = await installOfficialFixture(configPath, secondBundlePath);
     expect(firstInstall.activeArtifact).not.toBe(secondInstall.activeArtifact);
     expect(firstInstall.activeArtifact).toContain("plugins");
     await expect(listInstalledPlugins(configPath)).resolves.toHaveLength(2);
 
     let config = defaultConfig();
     config.stateDbPath = stateStore.dbPath;
-    config.livewareAccessPolicy = "off";
     config.clientHost = "127.0.0.1";
     config.clientPort = 47_823;
     config = upsertAgentBinding(
@@ -230,7 +256,7 @@ describe("local Runtime Plugin platform", () => {
     ]);
     const exposure = referenceExposure();
     expect(exposure).toMatchObject({
-      activationKeys: ["client", "configuration"],
+      activationKeys: ["activationGeneration", "client", "configuration"],
       activationFrozen: true,
       configurationFrozen: true,
       clientKeys: ["fetch"],
@@ -256,25 +282,26 @@ describe("local Runtime Plugin platform", () => {
     expect(registry.modesFor(getAgentBinding(config, "trace-alpha"))).toEqual(["trace"]);
     expect(registry.modesFor(getAgentBinding(config, "trace-beta"))).toEqual(["trace"]);
 
-    const projectRoot = join(directory, "workspace");
-    await mkdir(projectRoot);
-    const projectResponse = await localRequest(handler, "http://127.0.0.1:47823", "/client/v1/projects", {
+    const workspaceRoot = join(directory, "workspace");
+    await mkdir(workspaceRoot);
+    const projectResponse = await localRequest(handler, "http://127.0.0.1:47823", "/client/v1/workspaces", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         requestId: "plugin_project_create",
-        directory: { kind: "existing-directory", rootPath: projectRoot },
+        bindingId: "trace-alpha",
+        directory: { kind: "existing-directory", rootPath: workspaceRoot },
       }),
     });
     expect(projectResponse.status).toBe(201);
-    const project = (await projectResponse.json()) as { workspaceId: string };
+    const project = (await projectResponse.json()) as { workspaceRef: string };
     const sessionResponse = await localRequest(handler, "http://127.0.0.1:47823", "/client/v1/sessions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         requestId: "plugin_session_create",
         bindingId: "trace-alpha",
-        workspace: { kind: "existing", workspaceId: project.workspaceId },
+        workspace: { kind: "existing", workspaceRef: project.workspaceRef },
         name: "Plugin tracer",
         mode: "trace",
         model: null,

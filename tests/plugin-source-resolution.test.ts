@@ -46,7 +46,7 @@ function sri(source: string | Uint8Array): string {
   return `sha256-${createHash("sha256").update(source).digest("base64")}`;
 }
 
-function sourceBundle(pluginId: string, version: string, target: string, probeSource?: string): ConnectPluginBundleV1 {
+function sourceBundle(pluginId: string, version: string, target: string): ConnectPluginBundleV1 {
   const entry = `export default { activate(context) { context.hostCapabilities.get("runtime-provider").register({ capabilityId: "runtime", family: "source-test", create() { return { modes: [], async start() { throw new Error("unused"); } }; } }); } };`;
   return {
     format: CONNECT_PLUGIN_BUNDLE_FORMAT,
@@ -69,11 +69,9 @@ function sourceBundle(pluginId: string, version: string, target: string, probeSo
         },
       ],
       artifacts: [{ target, entry: "plugin.mjs", integrity: sri(entry) }],
-      ...(probeSource ? { probe: { entry: "probe.mjs", integrity: sri(probeSource) } } : {}),
     },
     files: {
       "plugin.mjs": { encoding: "utf8", content: entry },
-      ...(probeSource ? { "probe.mjs": { encoding: "utf8" as const, content: probeSource } } : {}),
     },
   };
 }
@@ -619,28 +617,58 @@ describe("Plugin source resolution", () => {
 });
 
 describe("official Plugin Catalog setup", () => {
-  it("authenticates and caches the Catalog, isolates probes, cleans staging, and supports both CLI selection modes", async () => {
+  it("authenticates declarative discovery, isolates failures, avoids unselected downloads, and supports setup", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-catalog-"));
     const configPath = join(directory, "config.json");
     await saveConfig(defaultConfig(), configPath);
     const target = "catalog-test-target";
-    const definitions = [
-      [
-        "test.detected",
-        `export default { async probe(context) { return { detected: (await context.findExecutable("detected")) !== null, compatible: true, version: "1.0.0" }; } };`,
-      ],
-      [
-        "test.undetected",
-        `export default { async probe(context) { return { detected: (await context.findExecutable("missing")) !== null, compatible: false }; } };`,
-      ],
-      ["test.failed", `export default { probe() { throw new Error("isolated probe boom"); } };`],
-    ] as const;
-    const catalogEntries: OfficialPluginCatalogV1["plugins"] = [];
-    for (const [pluginId, probe] of definitions) {
-      const path = join(directory, `${pluginId}.connect-plugin`);
-      await writeFile(path, JSON.stringify(sourceBundle(pluginId, "1.0.0", target, probe)));
-      catalogEntries.push({ pluginId, name: pluginId, source: `local:${path}` });
-    }
+    const detectedBundle = sourceBundle("test.detected", "1.0.0", target);
+    const detectedPath = join(directory, "test.detected.connect-plugin");
+    await writeFile(detectedPath, JSON.stringify(detectedBundle));
+    const detectedIntegrity = detectedBundle.manifest.artifacts[0]?.integrity;
+    if (!detectedIntegrity) throw new Error("Expected detected fixture integrity");
+    const rule = (command: string, outputPattern = "^tool (?<version>1\\.0\\.0)$", timeoutMs = 50) => ({
+      executableNames: [command],
+      versionCommand: {
+        argv: ["--version"],
+        outputPattern,
+        timeoutMs,
+        maxOutputBytes: 128,
+      },
+    });
+    const catalogEntries: OfficialPluginCatalogV1["plugins"] = [
+      {
+        pluginId: "test.detected",
+        name: "test.detected",
+        source: `local:${detectedPath}`,
+        version: "1.0.0",
+        target,
+        integrity: detectedIntegrity,
+        discovery: rule("detected"),
+      },
+      {
+        pluginId: "test.undetected",
+        name: "test.undetected",
+        source: `local:${join(directory, "must-not-download-undetected.connect-plugin")}`,
+        version: "1.0.0",
+        target,
+        integrity: detectedIntegrity,
+        discovery: rule("missing"),
+      },
+      ...(["timeout", "overflow", "malformed", "incompatible", "failed"] as const).map((kind) => ({
+        pluginId: `test.${kind}`,
+        name: `test.${kind}`,
+        source: `local:${join(directory, `must-not-download-${kind}.connect-plugin`)}`,
+        version: "1.0.0",
+        target,
+        integrity: detectedIntegrity,
+        discovery: rule(
+          kind,
+          kind === "incompatible" ? "^tool (?<version>1\\.0\\.0)$" : undefined,
+          kind === "timeout" ? 5 : 50,
+        ),
+      })),
+    ];
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const unsigned: Omit<OfficialPluginCatalogV1, "signature"> = {
       format: CONNECT_PLUGIN_CATALOG_FORMAT,
@@ -658,18 +686,31 @@ describe("official Plugin Catalog setup", () => {
       target,
       catalogUrl,
       catalogPublicKey: publicKeyPem,
-      findExecutable: async (command: string) => (command === "detected" ? "/fake/bin/detected" : null),
+      findExecutable: async (command: string) => (command === "missing" ? null : `/fake/bin/${command}`),
+      runDiscoveryCommand: async ({ executable }: { executable: string }) => {
+        const command = executable.split("/").at(-1);
+        if (command === "timeout") return await new Promise<{ stdout: string }>(() => undefined);
+        if (command === "overflow") return { stdout: "x".repeat(129) };
+        if (command === "malformed") return { stdout: "not a version" };
+        if (command === "incompatible") return { stdout: "tool 2.0.0" };
+        if (command === "failed") throw new Error("isolated discovery boom");
+        return { stdout: "tool 1.0.0" };
+      },
     };
     const remote = await discoverOfficialPlugins(configPath, options);
+    expect(remote.diagnostics).toEqual([]);
     expect(remote.catalogOrigin).toBe("remote");
     expect(remote.candidates).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ pluginId: "test.detected", detected: true, compatible: true, selected: true }),
         expect.objectContaining({ pluginId: "test.undetected", detected: false, selected: false, selectable: true }),
+        expect.objectContaining({ pluginId: "test.timeout", diagnostic: expect.stringContaining("timed out") }),
+        expect.objectContaining({ pluginId: "test.overflow", diagnostic: expect.stringContaining("128-byte") }),
+        expect.objectContaining({ pluginId: "test.malformed", compatible: false }),
+        expect.objectContaining({ pluginId: "test.incompatible", compatible: false }),
         expect.objectContaining({
           pluginId: "test.failed",
-          selected: false,
-          diagnostic: expect.stringContaining("isolated probe boom"),
+          diagnostic: expect.stringContaining("isolated discovery boom"),
         }),
       ]),
     );
@@ -686,19 +727,19 @@ describe("official Plugin Catalog setup", () => {
     const offlineSetupConfigPath = join(directory, "offline-setup", "config.json");
     await saveConfig(defaultConfig(), offlineSetupConfigPath);
     const offlineOutput: string[] = [];
-    await expect(
-      runConnectCli(
-        ["plugin", "setup", "--non-interactive", "--select", "test.detected", "--config", offlineSetupConfigPath],
-        {
-          pluginSourceOptions: options,
-          pluginManagementFetch: async () => {
-            throw new TypeError("Plugin Manager Service is offline");
-          },
-          writeStdout: (value) => offlineOutput.push(value),
-          writeStderr: (value) => offlineOutput.push(value),
+    const offlineCode = await runConnectCli(
+      ["plugin", "setup", "--non-interactive", "--select", "test.detected", "--config", offlineSetupConfigPath],
+      {
+        pluginSourceOptions: options,
+        pluginManagementFetch: async () => {
+          throw new TypeError("Plugin Manager Service is offline");
         },
-      ),
-    ).resolves.toBe(0);
+        writeStdout: (value) => offlineOutput.push(value),
+        writeStderr: (value) => offlineOutput.push(value),
+      },
+    );
+    expect(offlineOutput.join(" ")).toContain("Installed Plugin test.detected@1.0.0");
+    expect(offlineCode).toBe(0);
     await expect(listInstalledPlugins(offlineSetupConfigPath)).resolves.toEqual([
       expect.objectContaining({ pluginId: "test.detected", version: "1.0.0", status: "active" }),
     ]);

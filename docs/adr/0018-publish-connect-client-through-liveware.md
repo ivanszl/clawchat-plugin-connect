@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0046
 ---
 
 # Publish Connect Client through a managed Liveware Exposure

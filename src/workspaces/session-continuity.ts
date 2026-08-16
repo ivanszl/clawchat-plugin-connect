@@ -11,7 +11,7 @@ export interface SessionScope {
 }
 
 export interface SessionSelection {
-  projectId: string | null;
+  workspaceRef: string;
   name: string | null;
   mode: string | null;
   model: string | null;
@@ -45,12 +45,6 @@ export interface ConversationSessions {
 export interface SessionContinuity {
   inConversation(scope: SessionScope): ConversationSessions;
   forSession(sessionRef: string): SessionLifecycle;
-  associateWorkspace(input: {
-    bindingId: string;
-    runtimeKind: string;
-    identityKey: string;
-    projectId: string;
-  }): Promise<void>;
   reconcileLifecycle(): Promise<void>;
 }
 
@@ -70,7 +64,7 @@ export interface SessionLifecycle {
   attachRuntimeThread(runtimeThreadId: string | null): Promise<void>;
   changeModel(model: string | null, reasoningEffort: string | null): Promise<void>;
   changeSessionOptions(sessionOptions: Record<string, string>): Promise<void>;
-  associateProject(projectId: string): Promise<void>;
+  associateWorkspaceRef(workspaceRef: string): Promise<void>;
   discardEmpty(): Promise<void>;
   archive(): Promise<void>;
   restore(): Promise<void>;
@@ -84,7 +78,7 @@ export class SessionLifecycleError extends Error {
       | "session-state-conflict"
       | "session-action-unsupported"
       | "session-binding-locked"
-      | "session-project-required",
+      | "session-workspace-required",
     message: string,
   ) {
     super(message);
@@ -100,6 +94,8 @@ export interface SessionContinuityOptions {
   releaseRuntimeHandle?: (sessionRef: string) => Promise<void>;
   claimRuntimeLifecycle?: (sessionRef: string) => Promise<() => Promise<void>>;
   beforeLifecycleLocalCommit?: (operation: SessionLifecycleOperationRecord) => Promise<void>;
+  resolveDefaultWorkspace?: (bindingId: string) => Promise<string>;
+  resolveContinuationWorkspace?: (source: RuntimeSessionRecord, bindingId: string) => Promise<string>;
 }
 
 export interface SessionContinuityModule {
@@ -155,6 +151,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
             chatId: scope.chatId,
             agentId: scope.bindingId,
             ...selection,
+            workspaceRef: requireWorkspaceRef(selection.workspaceRef),
           });
         },
         async create(selection) {
@@ -162,6 +159,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
             chatId: scope.chatId,
             agentId: scope.bindingId,
             ...selection,
+            workspaceRef: requireWorkspaceRef(selection.workspaceRef),
           });
           const session = await options.stateStore.resolveOrMaterializeRuntimeSession({
             chatId: scope.chatId,
@@ -172,12 +170,31 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
           return sessionTarget(session);
         },
         async targetForOrdinaryTurn(turnOrigin) {
-          const session = await options.stateStore.resolveOrMaterializeRuntimeSession({
-            chatId: scope.chatId,
-            agentId: scope.bindingId,
-            sessionId: sessionIdFactory(),
-            acceptedTurn: false,
-          });
+          const current = await options.stateStore.getCurrentRuntimeSession(scope.chatId, scope.bindingId);
+          const intent = await options.stateStore.getSessionIntent(scope.chatId, scope.bindingId);
+          if (!current && !intent) {
+            const workspaceRef = await options.resolveDefaultWorkspace?.(scope.bindingId);
+            if (!workspaceRef) throw new Error(`Agent Binding ${scope.bindingId} has no Default Workspace`);
+            await options.stateStore.setSessionIntent({
+              chatId: scope.chatId,
+              agentId: scope.bindingId,
+              workspaceRef,
+              name: null,
+              mode: null,
+              model: null,
+              reasoningEffort: null,
+              sessionOptions: {},
+            });
+          }
+          const session = await ensureSessionWorkspace(
+            options,
+            await options.stateStore.resolveOrMaterializeRuntimeSession({
+              chatId: scope.chatId,
+              agentId: scope.bindingId,
+              sessionId: sessionIdFactory(),
+              acceptedTurn: false,
+            }),
+          );
           return {
             ...sessionTarget(session),
             turnOrigin,
@@ -192,7 +209,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
             chatId: scope.chatId,
             sessionId: input.sessionId,
             agentId: scope.bindingId,
-            projectId: input.selection.projectId,
+            workspaceRef: input.selection.workspaceRef,
             name: input.selection.name,
             mode: input.selection.mode,
             model: input.selection.model,
@@ -206,7 +223,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
           const current = await options.stateStore.getCurrentRuntimeSession(scope.chatId, scope.bindingId);
           if (intent || !current) {
             await this.planNext({
-              projectId: intent?.projectId ?? null,
+              workspaceRef: requireExistingWorkspaceRef(intent?.workspaceRef, current?.workspaceRef),
               name: intent?.name ?? null,
               mode,
               model: intent?.model ?? null,
@@ -227,7 +244,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
           const current = await options.stateStore.getCurrentRuntimeSession(scope.chatId, scope.bindingId);
           if (intent || !current) {
             await this.planNext({
-              projectId: intent?.projectId ?? null,
+              workspaceRef: requireExistingWorkspaceRef(intent?.workspaceRef, current?.workspaceRef),
               name: intent?.name ?? null,
               mode: intent?.mode ?? null,
               model,
@@ -251,7 +268,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
           const current = await options.stateStore.getCurrentRuntimeSession(scope.chatId, scope.bindingId);
           if (intent || !current) {
             await this.planNext({
-              projectId: intent?.projectId ?? null,
+              workspaceRef: requireExistingWorkspaceRef(intent?.workspaceRef, current?.workspaceRef),
               name: intent?.name ?? null,
               mode: intent?.mode ?? null,
               model: intent?.model ?? null,
@@ -285,7 +302,7 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
         async targetForTurn(turnOrigin) {
           const session = await options.stateStore.getRuntimeSessionByRef(normalized);
           if (!session) throw new Error(`Session ${normalized} was not found`);
-          return { ...sessionTarget(session), turnOrigin };
+          return { ...sessionTarget(await ensureSessionWorkspace(options, session)), turnOrigin };
         },
         async bindingLock() {
           const session = await options.stateStore.getRuntimeSessionByRef(normalized);
@@ -304,23 +321,34 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
               : "the first Turn has already been accepted";
           throw new SessionLifecycleError(
             "session-binding-locked",
-            `Session ${normalized} Agent Binding is fixed because ${detail}; continue the Project in a new Session instead`,
+            `Session ${normalized} Agent Binding is fixed because ${detail}; continue with another Agent in a new Session instead`,
           );
         },
         async continueWith(bindingId) {
           const source = await options.stateStore.getRuntimeSessionByRef(normalized);
           if (!source) throw new SessionLifecycleError("session-not-found", `Session ${normalized} was not found`);
-          if (!source.projectId) {
+          if (!source.workspaceRef) {
             throw new SessionLifecycleError(
-              "session-project-required",
-              `Session ${normalized} is not associated with a Project`,
+              "session-workspace-required",
+              `Session ${normalized} is not associated with a Workspace`,
+            );
+          }
+          const workspaceRef = options.resolveContinuationWorkspace
+            ? await options.resolveContinuationWorkspace(source, bindingId)
+            : bindingId === source.agentId
+              ? source.workspaceRef
+              : null;
+          if (!workspaceRef) {
+            throw new SessionLifecycleError(
+              "session-workspace-required",
+              `Agent Binding ${bindingId} cannot resolve a Workspace for Session ${normalized}`,
             );
           }
           const chatId = conversationIdFactory();
           await options.stateStore.setSessionIntent({
             chatId,
             agentId: bindingId,
-            projectId: source.projectId,
+            workspaceRef,
             name: source.name,
             mode: null,
             model: null,
@@ -368,14 +396,14 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
           );
           if (!updated) throw new Error(`Session ${normalized} was not found`);
         },
-        async associateProject(projectId) {
+        async associateWorkspaceRef(workspaceRef) {
           const session = await options.stateStore.getRuntimeSessionByRef(normalized);
           if (!session) throw new Error(`Session ${normalized} was not found`);
-          const updated = await options.stateStore.setRuntimeSessionProject(
+          const updated = await options.stateStore.setRuntimeSessionWorkspace(
             session.chatId,
             session.agentId,
             session.sessionId,
-            projectId,
+            workspaceRef,
           );
           if (!updated) throw new Error(`Session ${normalized} was not found`);
         },
@@ -396,9 +424,6 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
         },
       };
     },
-    async associateWorkspace(input) {
-      await options.stateStore.mapRuntimeWorkspaceIdentity(input);
-    },
     async reconcileLifecycle() {
       const lifecycle = requireLifecycle(options.lifecycle);
       for (const operation of await options.stateStore.listIncompleteSessionLifecycleOperations()) {
@@ -409,6 +434,23 @@ export function createSessionContinuity(options: SessionContinuityOptions): Sess
   };
 }
 
+async function ensureSessionWorkspace(
+  options: SessionContinuityOptions,
+  session: RuntimeSessionRecord,
+): Promise<RuntimeSessionRecord> {
+  if (session.workspaceRef) return session;
+  const workspaceRef = await options.resolveDefaultWorkspace?.(session.agentId);
+  if (!workspaceRef) throw new Error("Workspace Ref is required");
+  const updated = await options.stateStore.setRuntimeSessionWorkspace(
+    session.chatId,
+    session.agentId,
+    session.sessionId,
+    workspaceRef,
+  );
+  if (!updated) throw new Error(`Session ${session.sessionRef} no longer exists`);
+  return { ...session, workspaceRef };
+}
+
 function sessionTarget(session: RuntimeSessionRecord): SessionTarget {
   return {
     chatId: session.chatId,
@@ -416,7 +458,7 @@ function sessionTarget(session: RuntimeSessionRecord): SessionTarget {
     sessionId: session.sessionId,
     sessionRef: session.sessionRef,
     runtimeThreadId: session.runtimeSessionId,
-    projectId: session.projectId,
+    workspaceRef: requireWorkspaceRef(session.workspaceRef),
     name: session.name,
     mode: session.mode,
     model: session.model,
@@ -454,7 +496,7 @@ async function executeLifecycleOperation(
     await options.stateStore.setSessionIntent({
       chatId: session.chatId,
       agentId: session.agentId,
-      projectId: session.projectId,
+      workspaceRef: requireWorkspaceRef(session.workspaceRef),
       name: session.name,
       mode: session.mode,
       model: session.model,
@@ -475,4 +517,15 @@ function requireLifecycleCapability(capabilities: RuntimeLifecycleCapabilities, 
   if (!capabilities[action]) {
     throw new SessionLifecycleError("session-action-unsupported", `Runtime Adapter does not support Session ${action}`);
   }
+}
+
+function requireWorkspaceRef(value: string | null | undefined): string {
+  const normalized = value?.trim();
+  if (!normalized) throw new Error("Workspace Ref is required");
+  return normalized;
+}
+
+function requireExistingWorkspaceRef(...values: Array<string | null | undefined>): string {
+  const workspaceRef = values.find((value) => value?.trim());
+  return requireWorkspaceRef(workspaceRef);
 }

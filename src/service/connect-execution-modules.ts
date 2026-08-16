@@ -206,7 +206,7 @@ export async function mountMandatoryExecutionModules(
     apply: (ctx) => {
       transcriptProjection = new TranscriptProjection({
         config,
-        stateStore: ctx.connectPersistence.stateStore,
+        stateStore: ctx.connectPersistence.state,
         runtimeAdapters: ctx.connectRuntimeAdapters,
       });
       ctx.provide("connectTranscriptProjection", transcriptProjection);

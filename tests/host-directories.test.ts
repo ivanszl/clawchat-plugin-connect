@@ -5,8 +5,8 @@ import { join } from "node:path";
 import {
   type HostDirectoryError,
   listHostDirectories,
-  materializeProjectDirectory,
-} from "../src/projects/host-directories";
+  materializeWorkspaceDirectory,
+} from "../src/workspaces/host-directories";
 
 describe("host directory selection", () => {
   it("lists only directories, hides dot directories by default, and resolves symbolic links", async () => {
@@ -24,14 +24,14 @@ describe("host directory selection", () => {
     const listing = await listHostDirectories({
       path: root,
       showHidden: false,
-      shortcuts: [{ kind: "project", name: "Visible", path: visible }],
+      shortcuts: [{ kind: "workspace", name: "Visible", path: visible }],
     });
     expect(listing.currentPath).toBe(await realpath(root));
     expect(listing.entries.map((entry) => entry.name)).toContain("visible");
     expect(listing.entries.map((entry) => entry.name)).not.toContain(".hidden");
     expect(listing.entries.map((entry) => entry.name)).not.toContain("file.txt");
     expect(listing.locations).toContainEqual(
-      expect.objectContaining({ kind: "project", name: "Visible", path: await realpath(visible) }),
+      expect.objectContaining({ kind: "workspace", name: "Visible", path: await realpath(visible) }),
     );
     if (linked) {
       expect(listing.entries).toContainEqual(
@@ -49,12 +49,12 @@ describe("host directory selection", () => {
 
   it("creates a staged child directory and removes it only while it remains empty", async () => {
     const root = await mkdtemp(join(tmpdir(), "clawchat-connect-new-directory-"));
-    const empty = await materializeProjectDirectory({ kind: "new-directory", parentPath: root, name: "empty" });
+    const empty = await materializeWorkspaceDirectory({ kind: "new-directory", parentPath: root, name: "empty" });
     expect((await stat(empty.rootPath)).isDirectory()).toBe(true);
     await empty.rollback();
     await expect(stat(empty.rootPath).catch(() => null)).resolves.toBeNull();
 
-    const populated = await materializeProjectDirectory({
+    const populated = await materializeWorkspaceDirectory({
       kind: "new-directory",
       parentPath: root,
       name: "populated",
@@ -67,11 +67,11 @@ describe("host directory selection", () => {
   it("rejects path traversal and an existing new-folder name", async () => {
     const root = await mkdtemp(join(tmpdir(), "clawchat-connect-invalid-directory-"));
     await expect(
-      materializeProjectDirectory({ kind: "new-directory", parentPath: root, name: "../escape" }),
+      materializeWorkspaceDirectory({ kind: "new-directory", parentPath: root, name: "../escape" }),
     ).rejects.toMatchObject({ code: "invalid-directory-name" } satisfies Partial<HostDirectoryError>);
     await mkdir(join(root, "existing"));
     await expect(
-      materializeProjectDirectory({ kind: "new-directory", parentPath: root, name: "existing" }),
+      materializeWorkspaceDirectory({ kind: "new-directory", parentPath: root, name: "existing" }),
     ).rejects.toMatchObject({ code: "directory-already-exists" } satisfies Partial<HostDirectoryError>);
   });
 });

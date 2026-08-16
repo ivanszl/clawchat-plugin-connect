@@ -1,20 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createStateStore } from "../src/persistence/state";
-import {
-  createLivewareExposureDependencies,
-  prepareLivewareExposure,
-  type RunLivewareProcess,
-  retireLivewareExposure,
-} from "../src/service/liveware-exposure";
+import { createLivewareControlDependencies, type RunLivewareProcess } from "../src/service/liveware-control";
 import type { ActivationCredentials } from "../src/types";
 
 describe("production Liveware adapters", () => {
   it("uses the pinned CLI contract and the canonical ClawChat Liveware registration surface", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-liveware-external-"));
-    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const commands: Array<{ command: string[]; env: Record<string, string> }> = [];
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const runProcess: RunLivewareProcess = async (command, env) => {
@@ -75,7 +64,7 @@ describe("production Liveware adapters", () => {
       }
       throw new Error(`unexpected request: ${init.method} ${url}`);
     };
-    const dependencies = createLivewareExposureDependencies({
+    const dependencies = createLivewareControlDependencies({
       livewarePath: "/bundle/liveware",
       clawChatBaseUrl: "https://clawchat.example",
       livewareApiUrl: "https://control.example",
@@ -85,19 +74,23 @@ describe("production Liveware adapters", () => {
     });
     const principal = activation();
 
-    const record = await prepareLivewareExposure(
-      {
-        activation: principal,
-        deviceId: "device-1",
-        upstream: "http://127.0.0.1:47823",
-        accessPolicy: "private",
-        stateStore,
-      },
-      dependencies,
-    );
-    await retireLivewareExposure({ activation: principal, deviceId: "device-1", stateStore }, dependencies);
+    const session = await dependencies.controlPlane.connect(principal.accessToken);
+    await session.listApps();
+    const app = await session.createApp("ClawChat Connect · codex", "private");
+    await session.setAccessPolicy(app.appId, "private");
+    const publicUrl = await session.bindTunnel(app.appId, "http://127.0.0.1:47823");
+    await dependencies.clawChat.list(principal, "device-1");
+    await dependencies.clawChat.register(principal, "device-1", {
+      livewareId: app.appId,
+      name: app.name,
+      subtitle: "Connect Web",
+      url: publicUrl,
+    });
+    await dependencies.clawChat.unregister(principal, "device-1", app.appId);
+    await session.unbindTunnel?.(app.appId);
+    await session.deleteApp(app.appId);
 
-    expect(record.appId).toBe("app-0000000000000001");
+    expect(app.appId).toBe("app-0000000000000001");
     expect(commands.map(({ command }) => command.slice(1, -1).join(" "))).toEqual([
       "app list",
       "app create ClawChat Connect · codex --policy private",
@@ -117,7 +110,6 @@ describe("production Liveware adapters", () => {
           return headers.Authorization === "Bearer clawchat-token" && headers["X-Device-Id"] === "device-1";
         }),
     ).toBe(true);
-    await stateStore.close();
   });
 });
 

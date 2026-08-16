@@ -95,10 +95,7 @@ jobs:
             --minify `
             --target=bun-windows-x64 `
             --outfile=build/windows-smoke/clawchat-connect.exe
-          Copy-Item vendor/liveware/liveware-windows-amd64.exe build/windows-smoke/liveware.exe
           & ./build/windows-smoke/clawchat-connect.exe --help | Out-Null
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & ./build/windows-smoke/liveware.exe --help | Out-Null
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   release:
@@ -123,6 +120,7 @@ jobs:
           set -euo pipefail
           bun run build:web
           mkdir -p build/release build/bin
+          bun scripts/verify-liveware-bundle.ts
           while read -r target platform architecture; do
             if [ "${platform}" = "windows" ]; then
               output="build/bin/${platform}-${architecture}/clawchat-connect.exe"
@@ -131,18 +129,9 @@ jobs:
             fi
             mkdir -p "$(dirname "${output}")"
             bun build ./src/bin.ts --compile --minify --target="${target}" --outfile="${output}"
-            case "${architecture}" in
-              x64) liveware_architecture="amd64" ;;
-              arm64) liveware_architecture="arm64" ;;
-              *) echo "Unsupported Liveware architecture: ${architecture}" >&2; exit 1 ;;
-            esac
-            if [ "${platform}" = "windows" ]; then
-              liveware_asset="liveware-windows-${liveware_architecture}.exe"
-            else
+            if [ "${platform}" != "windows" ]; then
               chmod 755 "${output}"
-              liveware_asset="liveware-${platform}-${liveware_architecture}"
             fi
-            sh scripts/verify-liveware-bundle.sh "${liveware_asset}"
             plugin_platform="${platform}"
             [ "${plugin_platform}" = "windows" ] && plugin_platform="win32"
             rm -rf dist/official-plugins
@@ -151,7 +140,6 @@ jobs:
               sh scripts/package-windows-release.sh \
                 "${output}" \
                 dist/client \
-                "vendor/liveware/${liveware_asset}" \
                 dist/official-plugins \
                 "build/release/clawchat-connect-${platform}-${architecture}.zip" \
                 "${plugin_platform}-${architecture}"
@@ -159,7 +147,6 @@ jobs:
               sh scripts/package-release-archive.sh \
                 "${output}" \
                 dist/client \
-                "vendor/liveware/${liveware_asset}" \
                 dist/official-plugins \
                 "build/release/clawchat-connect-${platform}-${architecture}.tar.gz" \
                 "${plugin_platform}-${architecture}"

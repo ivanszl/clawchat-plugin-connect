@@ -17,7 +17,6 @@ import {
 } from "../src/clawchat/protocol";
 import { defaultConfig } from "../src/config";
 import { createStateStore, type GroupSettingsRecord } from "../src/persistence/state";
-import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import {
   type ConnectRuntimePrompt,
@@ -25,6 +24,7 @@ import {
   runtimeInputIdentityContains,
 } from "../src/runtime/types";
 import { startBindingRuntime } from "../src/service/binding-runtime";
+import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 class MemoryTransport implements Transport {
@@ -313,7 +313,7 @@ it("applies a persisted real-time all-message group policy without changing dire
     configPath: join(directory, "config.json"),
     deviceId: "device-local",
     stateStore,
-    projects: new ProjectCatalog(stateStore),
+    workspaces: new WorkspaceCatalog(stateStore),
     runtimeAdapters,
     wsTransport: transport,
     groupIntakeClock: clock,
@@ -963,7 +963,7 @@ it("applies a persisted real-time all-message group policy without changing dire
     configPath: join(directory, "config.json"),
     deviceId: "device-local",
     stateStore,
-    projects: new ProjectCatalog(stateStore),
+    workspaces: new WorkspaceCatalog(stateStore),
     runtimeAdapters,
     wsTransport: recoveryTransport,
     groupIntakeClock: clock,

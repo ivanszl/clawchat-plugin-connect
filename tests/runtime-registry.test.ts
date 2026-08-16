@@ -89,7 +89,7 @@ describe("RuntimeAdapterRegistry", () => {
     await expect(registry.listModels(selected)).resolves.toBeNull();
     await expect(
       registry.discoverThreads(selected, {
-        projectId: "project-1",
+        workspaceRef: "project-1",
         workingDirectory: "/repo",
         skipGitRepoCheck: true,
       }),
@@ -140,7 +140,7 @@ describe("RuntimeAdapterRegistry", () => {
     const registry = new RuntimeAdapterRegistry([definition(exactRuntime, () => codex)]);
     const selected = binding(exactRuntime);
     const workspace: RuntimeWorkspace = {
-      projectId: "project-1",
+      workspaceRef: "project-1",
       workingDirectory: "/repo",
       skipGitRepoCheck: true,
     };
@@ -175,7 +175,7 @@ describe("RuntimeAdapterRegistry", () => {
     const registry = new RuntimeAdapterRegistry([definition(exactRuntime, () => opencode, "opencode")]);
     const selected = binding(exactRuntime);
     const workspace: RuntimeWorkspace = {
-      projectId: "project-1",
+      workspaceRef: "project-1",
       workingDirectory: "/repo",
       skipGitRepoCheck: true,
     };
@@ -214,7 +214,7 @@ describe("RuntimeAdapterRegistry", () => {
     const registry = new RuntimeAdapterRegistry([definition(exactRuntime, () => codex)]);
     const selected = binding(exactRuntime);
     const workspace: RuntimeWorkspace = {
-      projectId: "project-1",
+      workspaceRef: "project-1",
       workingDirectory: "/repo",
       skipGitRepoCheck: true,
     };
@@ -240,7 +240,7 @@ describe("RuntimeAdapterRegistry", () => {
     const registry = new RuntimeAdapterRegistry([definition(exactRuntime, () => codex)]);
     const selected = binding(exactRuntime);
     const workspace: RuntimeWorkspace = {
-      projectId: "project-1",
+      workspaceRef: "project-1",
       workingDirectory: "/repo",
       skipGitRepoCheck: true,
     };

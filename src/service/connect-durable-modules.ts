@@ -1,12 +1,8 @@
 import type { Context, Plugin } from "cordis";
-import type { ConnectStateStore } from "../persistence/state";
-import { ProjectCatalog } from "../projects/projects";
-import { createSessionContinuityModule, type SessionContinuityModule } from "../projects/session-continuity";
+import type { PersistenceService } from "../persistence/service";
 import type { ActivationCredentials, ConnectConfig, RuntimeStatus } from "../types";
-
-interface ConnectPersistenceModule {
-  readonly stateStore: ConnectStateStore;
-}
+import { createSessionContinuityModule, type SessionContinuityModule } from "../workspaces/session-continuity";
+import { WorkspaceCatalog } from "../workspaces/workspaces";
 
 export interface ActivatedAgentBinding {
   readonly agentId: string;
@@ -26,40 +22,40 @@ export interface AgentBindingModule {
 }
 
 export interface ConnectDurableModules {
-  readonly stateStore: ConnectStateStore;
+  readonly stateStore: PersistenceService["state"];
   readonly agentBindings: AgentBindingModule;
-  readonly projects: ProjectCatalog;
+  readonly workspaces: WorkspaceCatalog;
   readonly sessions: SessionContinuityModule;
 }
 
 declare module "cordis" {
   interface Context {
-    connectPersistence: ConnectPersistenceModule;
+    connectPersistence: PersistenceService;
     connectAgentBindings: AgentBindingModule;
-    connectProjects: ProjectCatalog;
+    connectWorkspaces: WorkspaceCatalog;
     connectSessionContinuity: SessionContinuityModule;
   }
 }
 
 export async function mountMandatoryDurableModules(
   root: Context,
-  stateStore: ConnectStateStore,
+  persistence: PersistenceService,
   reportDisposalFailure: (error: unknown) => void,
 ): Promise<ConnectDurableModules> {
-  let persistenceModule!: ConnectPersistenceModule;
+  let persistenceModule!: PersistenceService;
   let agentBindingModule!: AgentBindingModule;
-  let projectModule!: ProjectCatalog;
+  let workspaceModule!: WorkspaceCatalog;
   let sessionContinuityModule!: SessionContinuityModule;
   const persistencePlugin = {
     name: "connect-persistence",
     provide: "connectPersistence",
     apply: async (ctx) => {
-      await stateStore.initialize();
-      persistenceModule = { stateStore };
+      await persistence.initialize();
+      persistenceModule = persistence;
       ctx.provide("connectPersistence", persistenceModule);
       return async () => {
         try {
-          await stateStore.close();
+          await persistence.close();
         } catch (error) {
           reportDisposalFailure(error);
         }
@@ -72,7 +68,7 @@ export async function mountMandatoryDurableModules(
     inject: ["connectPersistence"],
     provide: "connectAgentBindings",
     apply: (ctx) => {
-      const store = ctx.connectPersistence.stateStore;
+      const store = ctx.connectPersistence.state;
       agentBindingModule = {
         async prepareService(config) {
           const activatedBindings = (
@@ -101,34 +97,34 @@ export async function mountMandatoryDurableModules(
     },
   } satisfies Plugin;
 
-  const projectPlugin = {
-    name: "connect-projects",
+  const workspacePlugin = {
+    name: "connect-workspaces",
     inject: ["connectPersistence"],
-    provide: "connectProjects",
+    provide: "connectWorkspaces",
     apply: (ctx) => {
-      projectModule = new ProjectCatalog(ctx.connectPersistence.stateStore);
-      ctx.provide("connectProjects", projectModule);
+      workspaceModule = new WorkspaceCatalog(ctx.connectPersistence.state);
+      ctx.provide("connectWorkspaces", workspaceModule);
     },
   } satisfies Plugin;
 
   const sessionContinuityPlugin = {
     name: "connect-session-continuity",
-    inject: ["connectPersistence", "connectAgentBindings", "connectProjects"],
+    inject: ["connectPersistence", "connectAgentBindings", "connectWorkspaces"],
     provide: "connectSessionContinuity",
     apply: (ctx) => {
-      sessionContinuityModule = createSessionContinuityModule(ctx.connectPersistence.stateStore);
+      sessionContinuityModule = createSessionContinuityModule(ctx.connectPersistence.state);
       ctx.provide("connectSessionContinuity", sessionContinuityModule);
     },
   } satisfies Plugin;
 
   await root.plugin(persistencePlugin);
-  await Promise.all([root.plugin(agentBindingPlugin), root.plugin(projectPlugin)]);
+  await Promise.all([root.plugin(agentBindingPlugin), root.plugin(workspacePlugin)]);
   await root.plugin(sessionContinuityPlugin);
 
   return {
-    stateStore: persistenceModule.stateStore,
+    stateStore: persistenceModule.state,
     agentBindings: agentBindingModule,
-    projects: projectModule,
+    workspaces: workspaceModule,
     sessions: sessionContinuityModule,
   };
 }

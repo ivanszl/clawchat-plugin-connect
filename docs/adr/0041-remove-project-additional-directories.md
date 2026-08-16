@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0047
 ---
 
 # Remove Project additional directories

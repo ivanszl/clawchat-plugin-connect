@@ -16,6 +16,11 @@ const stores: ConnectStateStore[] = [];
 afterEach(async () => {
   await Promise.allSettled(stores.splice(0).map(async (store) => await store.close()));
 });
+const persistentWorkspace = (rootPath: string) => ({
+  key: rootPath,
+  kind: "persistent" as const,
+  localRoot: rootPath,
+});
 
 describe("Session Catalog workspace grouping", () => {
   it("does not rediscover a Runtime Binding that failed during startup", async () => {
@@ -62,7 +67,7 @@ describe("Session Catalog workspace grouping", () => {
       sessionId: "session-1",
       agentId: "plugin-binding",
       runtimeSessionId: "thread-1",
-      projectId: null,
+      workspaceRef: null,
       name: "Archived Plugin Session",
       hasMessages: true,
       isCurrent: true,
@@ -127,7 +132,7 @@ describe("Session Catalog workspace grouping", () => {
       transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
     }).view();
 
-    expect(discoveryCalls).toBe(2);
+    expect(discoveryCalls).toBe(3);
   });
 
   it("returns remembered Runtime Workspace locations without refreshing Runtime discovery", async () => {
@@ -144,7 +149,14 @@ describe("Session Catalog workspace grouping", () => {
       discoverAllThreads: async () => {
         discoveryCalls += 1;
         if (discoveryBlocked) return await new Promise<never>(() => undefined);
-        return [{ runtimeThreadId: "thread-project", name: "Project task", updatedAt: 1, workingDirectory: workspace }];
+        return [
+          {
+            runtimeThreadId: "thread-project",
+            name: "Project task",
+            updatedAt: 1,
+            workspaceIdentity: persistentWorkspace(workspace),
+          },
+        ];
       },
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
@@ -166,8 +178,8 @@ describe("Session Catalog workspace grouping", () => {
       new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 50)),
     ]);
 
-    expect(locations).toEqual([{ name: "project", path: workspace }]);
-    expect(discoveryCalls).toBe(1);
+    expect(locations).toEqual([{ name: "project", path: await realpath(workspace) }]);
+    expect(discoveryCalls).toBe(2);
   });
 
   it("does not expose a child Runtime Thread as a standalone Session", async () => {
@@ -180,13 +192,18 @@ describe("Session Catalog workspace grouping", () => {
       kind: "codex",
       modes: ["workspace-write"],
       discoverAllThreads: async () => [
-        { runtimeThreadId: "thread-parent", name: "Parent task", updatedAt: 2, workingDirectory: workspace },
+        {
+          runtimeThreadId: "thread-parent",
+          name: "Parent task",
+          updatedAt: 2,
+          workspaceIdentity: persistentWorkspace(workspace),
+        },
         {
           runtimeThreadId: "thread-child",
           parentRuntimeThreadId: "thread-parent",
           name: "Child task",
           updatedAt: 1,
-          workingDirectory: workspace,
+          workspaceIdentity: persistentWorkspace(workspace),
         },
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
@@ -206,7 +223,7 @@ describe("Session Catalog workspace grouping", () => {
     expect(entries.map((entry) => entry.name)).toEqual(["Parent task"]);
   });
 
-  it("synchronizes active persistent Runtime Workspaces into root-derived Projects", async () => {
+  it("synchronizes active persistent Runtime Workspaces into binding-scoped Workspaces", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-"));
     const firstWorkspace = join(directory, "first-project");
     const secondWorkspace = join(directory, "second-project");
@@ -221,13 +238,13 @@ describe("Session Catalog workspace grouping", () => {
           runtimeThreadId: "thread-first",
           name: "First task",
           updatedAt: 2,
-          workingDirectory: firstWorkspace,
+          workspaceIdentity: persistentWorkspace(firstWorkspace),
         },
         {
           runtimeThreadId: "thread-second",
           name: "Second task",
           updatedAt: 1,
-          workingDirectory: secondWorkspace,
+          workspaceIdentity: persistentWorkspace(secondWorkspace),
         },
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
@@ -246,17 +263,16 @@ describe("Session Catalog workspace grouping", () => {
 
     expect(entries).toHaveLength(2);
     expect(entries.map((entry) => entry.workspaceName)).toEqual([basename(firstWorkspace), basename(secondWorkspace)]);
-    expect(entries[0]?.workspaceId).toBeTruthy();
-    expect(entries[1]?.workspaceId).toBeTruthy();
-    expect(entries[0]?.workspaceId).not.toBe(entries[1]?.workspaceId);
-    expect(entries.map((entry) => entry.projectId)).toEqual([expect.any(String), expect.any(String)]);
-    await expect(store.listProjects()).resolves.toHaveLength(2);
+    expect(entries[0]?.workspaceRef).toBeTruthy();
+    expect(entries[1]?.workspaceRef).toBeTruthy();
+    expect(entries[0]?.workspaceRef).not.toBe(entries[1]?.workspaceRef);
+    await expect(store.listWorkspaces("codex")).resolves.toHaveLength(3);
     await expect(catalog.sessionView(entries[0]?.sessionRef ?? "")).resolves.toMatchObject({
       workspaceName: basename(firstWorkspace),
     });
 
     const adopted = await catalog.adopt(entries[0]?.sessionRef ?? "");
-    const adoptedProject = adopted?.projectId ? await store.getProject(adopted.projectId) : null;
+    const adoptedProject = adopted?.workspaceRef ? await store.getWorkspace("codex", adopted.workspaceRef) : null;
     expect(adoptedProject?.rootPath).toBe(await realpath(firstWorkspace));
   });
 
@@ -270,7 +286,12 @@ describe("Session Catalog workspace grouping", () => {
       kind: "workbuddy",
       modes: [],
       discoverAllThreads: async () => [
-        { runtimeThreadId: "task-native", name: "Native Task", updatedAt: 2, workingDirectory: workspace },
+        {
+          runtimeThreadId: "task-native",
+          name: "Native Task",
+          updatedAt: 2,
+          workspaceIdentity: persistentWorkspace(workspace),
+        },
       ],
       listModels: async () => {
         throw new Error("native Task replay is temporarily unavailable");
@@ -295,7 +316,7 @@ describe("Session Catalog workspace grouping", () => {
     });
   });
 
-  it("does not synchronize a workspace discovered only through archived Runtime Threads", async () => {
+  it("assigns an archived Runtime Thread to Default without synchronizing its archived root", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-archived-workspace-"));
     const workspace = join(directory, "archived-project");
     await mkdir(workspace);
@@ -310,7 +331,7 @@ describe("Session Catalog workspace grouping", () => {
           runtimeThreadId: "thread-archived",
           name: "Archived task",
           updatedAt: 1,
-          workingDirectory: workspace,
+          workspaceIdentity: persistentWorkspace(workspace),
           isArchived: true,
         },
       ],
@@ -328,11 +349,11 @@ describe("Session Catalog workspace grouping", () => {
 
     const entry = (await catalog.view()).bindings[0]?.entries[0];
 
-    expect(entry).toMatchObject({ isArchived: true, projectId: null });
-    await expect(store.listProjects()).resolves.toEqual([]);
+    expect(entry).toMatchObject({ isArchived: true, workspaceRef: expect.any(String), workspaceName: "Default" });
+    await expect(store.listWorkspaces()).resolves.toHaveLength(1);
   });
 
-  it("keeps Codex App scratch threads as direct Non-Project leaves", async () => {
+  it("places Codex App scratch threads in the binding Default Workspace", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-date-workspaces-"));
     const firstWorkspace = join(directory, "2026-07-24", "f");
     const secondWorkspace = join(directory, "2026-07-23", "f");
@@ -347,15 +368,13 @@ describe("Session Catalog workspace grouping", () => {
           runtimeThreadId: "thread-current-date",
           name: "Current date task",
           updatedAt: 2,
-          workingDirectory: firstWorkspace,
-          workspaceKind: "transient",
+          workspaceIdentity: { key: firstWorkspace, kind: "transient", localRoot: firstWorkspace },
         },
         {
           runtimeThreadId: "thread-previous-date",
           name: "Previous date task",
           updatedAt: 1,
-          workingDirectory: secondWorkspace,
-          workspaceKind: "transient",
+          workspaceIdentity: { key: secondWorkspace, kind: "transient", localRoot: secondWorkspace },
         },
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
@@ -373,20 +392,20 @@ describe("Session Catalog workspace grouping", () => {
     const entries = (await catalog.view()).bindings[0]?.entries ?? [];
 
     expect(entries).toHaveLength(2);
-    expect(entries.map((entry) => entry.workspaceId)).toEqual([null, null]);
-    expect(entries.map((entry) => entry.workspaceName)).toEqual([null, null]);
+    expect(entries.map((entry) => entry.workspaceRef)).toEqual([expect.any(String), expect.any(String)]);
+    expect(entries.map((entry) => entry.workspaceName)).toEqual(["Default", "Default"]);
 
     const adopted = await catalog.adopt(entries[0]?.sessionRef ?? "");
-    expect(adopted?.projectId).toBeNull();
-    expect(await store.listProjects()).toEqual([]);
+    expect(adopted?.workspaceRef).toEqual(expect.any(String));
+    await expect(store.listWorkspaces("codex")).resolves.toHaveLength(1);
     expect((await catalog.view()).bindings[0]?.entries[0]).toMatchObject({
       sessionRef: entries[0]?.sessionRef,
-      workspaceId: null,
-      workspaceName: null,
+      workspaceRef: expect.any(String),
+      workspaceName: "Default",
     });
   });
 
-  it("keeps a managed Non-Project Session as a direct catalog leaf", async () => {
+  it("assigns a legacy Session without a Workspace to the Binding Default", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-non-project-"));
     const isolatedWorkspace = join(directory, "workspaces", "agent", "chat", "session");
     await mkdir(isolatedWorkspace, { recursive: true });
@@ -397,8 +416,8 @@ describe("Session Catalog workspace grouping", () => {
       sessionId: "session-1",
       agentId: "codex",
       runtimeSessionId: "thread-non-project",
-      projectId: null,
-      name: "Non-Project task",
+      workspaceRef: null,
+      name: "Legacy task",
       hasMessages: true,
       isCurrent: true,
     });
@@ -408,9 +427,9 @@ describe("Session Catalog workspace grouping", () => {
       discoverAllThreads: async () => [
         {
           runtimeThreadId: "thread-non-project",
-          name: "Non-Project task",
+          name: "Legacy task",
           updatedAt: 1,
-          workingDirectory: isolatedWorkspace,
+          workspaceIdentity: persistentWorkspace(isolatedWorkspace),
         },
       ],
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
@@ -427,7 +446,7 @@ describe("Session Catalog workspace grouping", () => {
 
     const entry = (await catalog.view()).bindings[0]?.entries[0];
 
-    expect(entry).toMatchObject({ projectId: null, workspaceId: null, workspaceName: null });
+    expect(entry).toMatchObject({ workspaceRef: expect.any(String), workspaceName: "Default" });
   });
 
   it("keeps a managed CodeBuddy Session sendable when WorkBuddy desktop discovery cannot list it", async () => {
@@ -439,7 +458,7 @@ describe("Session Catalog workspace grouping", () => {
       sessionId: "session-1",
       agentId: "desktop",
       runtimeSessionId: encodeCodeBuddySessionId("native-codebuddy-session"),
-      projectId: null,
+      workspaceRef: null,
       name: "ClawChat CodeBuddy Session",
       hasMessages: true,
       isCurrent: true,
@@ -594,7 +613,7 @@ describe("Session Catalog workspace grouping", () => {
           runtimeThreadId: "thread-1",
           name: "Thread",
           updatedAt: 1,
-          workingDirectory: directory,
+          workspaceIdentity: persistentWorkspace(directory),
         },
       ],
       readActivity: async (_binding, runtimeThreadId) => {
@@ -670,7 +689,7 @@ describe("Session Catalog workspace grouping", () => {
       runtimeThreadId: "thread-1",
       name: "Lifecycle task",
       updatedAt: 1,
-      workingDirectory: directory,
+      workspaceIdentity: persistentWorkspace(directory),
     };
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",

@@ -3,20 +3,27 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PLUGIN_MANAGER_CONFIG_HEADER } from "../src/client-contract";
-import { BINDING_SCOPE_HEADER } from "../src/client-interface/binding-scoped-gateway";
+import { BINDING_SCOPE_HEADER, PLUGIN_MANAGER_CONFIG_HEADER } from "../src/client-contract";
 import { defaultConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
 import { ConnectPluginHost } from "../src/plugin/host";
-import type { ConnectPluginBundleV1, ConnectPluginManifestV1 } from "../src/plugin/sdk";
-import { installLocalPlugin, listInstalledPlugins } from "../src/plugin/store";
-import { ProjectCatalog } from "../src/projects/projects";
+import type { ManagedConnectPluginBundleV1, ManagedConnectPluginManifestV1 } from "../src/plugin/official-sdk";
+import {
+  commitStagedPlugin,
+  currentConnectPluginTarget,
+  installLocalPlugin,
+  listInstalledPlugins,
+  MAX_PLUGIN_CONFIGURATION_BYTES,
+  readConnectPluginBundle,
+  stagePluginBundle,
+} from "../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 
 const fixturePath = join(import.meta.dir, "fixtures", "reference-runtime.connect-plugin");
 
-type MutableBundle = ConnectPluginBundleV1 & { manifest: ConnectPluginManifestV1 };
+type MutableBundle = ManagedConnectPluginBundleV1 & { manifest: ManagedConnectPluginManifestV1 };
 function required<T>(value: T | undefined, label: string): T {
   if (value === undefined) throw new Error(`Expected ${label}`);
   return value;
@@ -38,6 +45,33 @@ async function bundleFixture(
   const path = join(directory, `${name}.connect-plugin`);
   await writeFile(path, `${JSON.stringify(bundle, null, 2)}\n`);
   return path;
+}
+async function installOfficialFixture(
+  configPath: string,
+  bundlePath = fixturePath,
+  exposureConfigurations: Record<string, Record<string, unknown>> = {
+    "reference-exposure": { channel: "private" },
+  },
+) {
+  const bundle = await readConnectPluginBundle(bundlePath);
+  const artifact = required(
+    bundle.manifest.artifacts.find((candidate) => candidate.target === currentConnectPluginTarget()),
+    "reference fixture artifact",
+  );
+  const staged = await stagePluginBundle({
+    configPath,
+    source: { type: "local", path: bundlePath },
+    bundle,
+    exposureConfigurations,
+    officialCapabilityGrants: bundle.manifest.capabilities
+      .filter(({ type }) => type === "exposure")
+      .map(({ id }) => ({
+        capabilityId: id,
+        type: "exposure" as const,
+        artifactIntegrity: artifact.integrity,
+      })),
+  });
+  return await commitStagedPlugin(configPath, staged, "install");
 }
 
 function runtimeBinding(pluginId: string, configuration: Record<string, unknown>) {
@@ -73,12 +107,7 @@ describe("atomic multi-capability Plugin Bundles", () => {
     const configPath = join(directory, "config.json");
     Reflect.deleteProperty(globalThis, "__connectReferenceExposureEffects");
     Reflect.deleteProperty(globalThis, "__connectReferenceExposure");
-    const installed = await installLocalPlugin({
-      configPath,
-      bundlePath: fixturePath,
-      installationConfiguration: {},
-      exposureConfigurations: { "reference-exposure": { channel: "private" } },
-    });
+    const installed = await installOfficialFixture(configPath);
     expect(installed.manifest.capabilities.map(({ id, type }) => [id, type])).toEqual([
       ["reference-runtime", "runtime"],
       ["reference-exposure", "exposure"],
@@ -88,34 +117,25 @@ describe("atomic multi-capability Plugin Bundles", () => {
     const diagnostics: string[] = [];
     const registry = new RuntimeAdapterRegistry([]);
     const host = new ConnectPluginHost(configPath, registry, (_pluginId, error) => diagnostics.push(String(error)));
+    const forwarded: Request[] = [];
+    const unbindClient = await host.bindClientInterface({
+      origin: "http://127.0.0.1:47823",
+      fetch: async (request) => {
+        forwarded.push(request);
+        return new Response("existing Connect Client content");
+      },
+    });
     await host.activateInstalled();
     await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "alpha" }))).resolves.toBeUndefined();
     await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "beta" }))).resolves.toBeUndefined();
     expect(readGlobalEffects("__connectReferenceExposureEffects")).toEqual(["activate:private"]);
     const exposure = referenceExposure();
     expect(exposure).toMatchObject({
-      activationKeys: ["client", "configuration"],
+      activationKeys: ["activationGeneration", "client", "configuration"],
       activationFrozen: true,
       configurationFrozen: true,
       clientKeys: ["fetch"],
       clientFrozen: true,
-    });
-    const unavailable = await exposure.fetch(new Request("https://exposure.example/client/v1/bootstrap"));
-    expect(unavailable.status).toBe(503);
-    await expect(unavailable.json()).resolves.toEqual({
-      error: {
-        code: "plugin-client-unavailable",
-        message: "Connect Client is not available yet",
-        retryable: true,
-      },
-    });
-    const forwarded: Request[] = [];
-    const unbindClient = host.bindClientInterface({
-      origin: "http://127.0.0.1:47823",
-      fetch: async (request) => {
-        forwarded.push(request);
-        return new Response("existing Connect Client content");
-      },
     });
     const exposed = await exposure.fetch(
       new Request("https://exposure.example/client/v1/bootstrap?source=plugin", {
@@ -179,13 +199,18 @@ describe("atomic multi-capability Plugin Bundles", () => {
     expect(Reflect.get(globalThis, "__connectReferenceExposure")).toBeUndefined();
   });
 
+  it("rejects a public local Bundle that declares privileged Client Exposure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-public-exposure-"));
+    await expect(
+      installLocalPlugin({ configPath: join(directory, "config.json"), bundlePath: fixturePath }),
+    ).rejects.toThrow("release-verified official capability grant");
+  });
+
   it("rejects duplicate Plugin identities without replacing the locked Bundle", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-duplicate-id-"));
     const configPath = join(directory, "config.json");
-    await installLocalPlugin({ configPath, bundlePath: fixturePath });
-    await expect(installLocalPlugin({ configPath, bundlePath: fixturePath })).rejects.toThrow(
-      "Plugin identity is already installed",
-    );
+    await installOfficialFixture(configPath);
+    await expect(installOfficialFixture(configPath)).rejects.toThrow("Plugin identity is already installed");
     await expect(listInstalledPlugins(configPath)).resolves.toHaveLength(1);
   });
 
@@ -249,6 +274,58 @@ describe("atomic multi-capability Plugin Bundles", () => {
       message: "not a valid JSON Schema",
     },
     {
+      name: "unsupported-schema-keyword",
+      mutate: (bundle) => {
+        bundle.manifest.installationConfigurationSchema = {
+          type: "object",
+          additionalProperties: false,
+          properties: { nested: { $ref: "#/$defs/nested" } },
+          $defs: { nested: { type: "string" } },
+        };
+      },
+      message: "unsupported JSON Schema keyword",
+    },
+    {
+      name: "open-nested-object-schema",
+      mutate: (bundle) => {
+        bundle.manifest.installationConfigurationSchema = {
+          type: "object",
+          additionalProperties: false,
+          properties: { nested: { type: "object", properties: {} } },
+        };
+      },
+      message: "additionalProperties: false",
+    },
+    {
+      name: "secret-shaped-configuration",
+      mutate: (bundle) => {
+        bundle.manifest.installationConfigurationSchema = {
+          type: "object",
+          additionalProperties: false,
+          properties: { accessToken: { type: "string" } },
+        };
+      },
+      message: "secret-free",
+    },
+    {
+      name: "unsupported-client-extension-slot",
+      mutate: (bundle) => {
+        bundle.manifest.capabilities.push({
+          id: "unsupported-slot",
+          type: "client-extension",
+          interfaceVersion: "1",
+          configurationSchema: { type: "object", additionalProperties: false },
+          browser: {
+            entry: "client.mjs",
+            integrity: required(bundle.manifest.artifacts[0], "fixture artifact").integrity,
+            styles: [],
+            slots: [{ id: "unknown.slot" as never, interfaceVersion: "1", priority: 10 }],
+          },
+        });
+      },
+      message: "unsupported Client Extension slot unknown.slot",
+    },
+    {
       name: "unsupported-target",
       mutate: () => undefined,
       message: "does not support Connect target test-unsupported",
@@ -266,6 +343,45 @@ describe("atomic multi-capability Plugin Bundles", () => {
     });
   }
 
+  it("keeps defaults as suggestions and enforces the exact serialized configuration limit", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-config-contract-"));
+    const bundlePath = await bundleFixture(directory, "configuration-contract", (bundle) => {
+      bundle.manifest.dependencies = bundle.manifest.dependencies.filter(({ id }) => id === "runtime-provider");
+      bundle.manifest.capabilities = bundle.manifest.capabilities.filter(({ type }) => type === "runtime");
+      bundle.manifest.installationConfigurationSchema = {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          payload: { type: "string" },
+          suggestion: { type: "string", default: "suggested-only" },
+        },
+      };
+    });
+    const empty = await installLocalPlugin({
+      configPath: join(directory, "empty", "config.json"),
+      bundlePath,
+      installationConfiguration: {},
+    });
+    expect(empty.installationConfiguration).toEqual({});
+
+    const envelopeBytes = Buffer.byteLength(JSON.stringify({ payload: "" }));
+    const exact = { payload: "x".repeat(MAX_PLUGIN_CONFIGURATION_BYTES - envelopeBytes) };
+    await expect(
+      installLocalPlugin({
+        configPath: join(directory, "exact", "config.json"),
+        bundlePath,
+        installationConfiguration: exact,
+      }),
+    ).resolves.toMatchObject({ installationConfiguration: exact });
+    await expect(
+      installLocalPlugin({
+        configPath: join(directory, "overflow", "config.json"),
+        bundlePath,
+        installationConfiguration: { payload: `${exact.payload}x` },
+      }),
+    ).rejects.toThrow("exceeds 256 KiB");
+  });
+
   it("rejects installation and Exposure values against their independent schemas", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-invalid-config-"));
     const installationBundle = await bundleFixture(directory, "installation-schema", (bundle) => {
@@ -273,7 +389,7 @@ describe("atomic multi-capability Plugin Bundles", () => {
         type: "object",
         additionalProperties: false,
         required: ["endpoint"],
-        properties: { endpoint: { type: "string", format: "uri" } },
+        properties: { endpoint: { type: "string", pattern: "^https?://" } },
       };
     });
     await expect(
@@ -284,10 +400,8 @@ describe("atomic multi-capability Plugin Bundles", () => {
       }),
     ).rejects.toThrow("installation configuration is invalid");
     await expect(
-      installLocalPlugin({
-        configPath: join(directory, "exposure.json"),
-        bundlePath: fixturePath,
-        exposureConfigurations: { "reference-exposure": { channel: "public" } },
+      installOfficialFixture(join(directory, "exposure.json"), fixturePath, {
+        "reference-exposure": { channel: "public" },
       }),
     ).rejects.toThrow("Exposure configuration is invalid");
   });
@@ -359,7 +473,7 @@ describe("atomic multi-capability Plugin Bundles", () => {
     const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, {
       config,
       stateStore: store,
-      projects: new ProjectCatalog(store),
+      workspaces: new WorkspaceCatalog(store),
     });
 
     await host.activateInstalled();
@@ -400,12 +514,19 @@ describe("atomic multi-capability Plugin Bundles", () => {
       },
       source,
     );
-    const installed = await installLocalPlugin({ configPath, bundlePath });
+    const installed = await installOfficialFixture(configPath, bundlePath, {
+      "first-exposure": {},
+      "failing-exposure": {},
+    });
     const diagnostics: string[] = [];
     const registry = new RuntimeAdapterRegistry([]);
     const host = new ConnectPluginHost(configPath, registry, (_id, error) =>
       diagnostics.push(error instanceof Error ? error.message : String(error)),
     );
+    const unbindClient = await host.bindClientInterface({
+      origin: "http://127.0.0.1:47823",
+      fetch: async () => new Response("unused"),
+    });
     await host.activateInstalled();
 
     expect(host.activePluginIds()).toEqual([]);
@@ -417,6 +538,7 @@ describe("atomic multi-capability Plugin Bundles", () => {
     await expect(listInstalledPlugins(configPath)).resolves.toEqual([
       expect.objectContaining({ pluginId: installed.pluginId, status: "error", error: "second contribution failed" }),
     ]);
+    unbindClient();
   });
 
   it("rejects invalid per-Binding Runtime configuration before invoking Plugin code", async () => {

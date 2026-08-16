@@ -24,11 +24,7 @@ const session = await runtimeAdapters.start(binding, {
   stateDbPath: "/private/tmp/clawchat-connect-workbuddy-interaction-cancellation.sqlite",
   onRuntimeSessionId: async () => undefined,
 });
-const runtimeWorkspace = {
-  projectId: null,
-  workingDirectory: canonicalWorkspace,
-  skipGitRepoCheck: false,
-};
+const runtimeWorkspace = { workspaceRef: "WSDEFALT", workingDirectory: canonicalWorkspace, skipGitRepoCheck: false };
 
 let interactionAccepted = 0;
 const interactions: RuntimeInteractionRequest[] = [];

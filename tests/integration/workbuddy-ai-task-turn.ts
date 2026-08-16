@@ -45,11 +45,7 @@ const session = await runtimeAdapters.start(binding, {
   stateDbPath: "/private/tmp/clawchat-connect-workbuddy-verification.sqlite",
   onRuntimeSessionId: async () => undefined,
 });
-const runtimeWorkspace = {
-  projectId: null,
-  workingDirectory: canonicalWorkspace,
-  skipGitRepoCheck: false,
-};
+const runtimeWorkspace = { workspaceRef: "WSDEFALT", workingDirectory: canonicalWorkspace, skipGitRepoCheck: false };
 const catalogScope = { runtimeThreadId: taskId, workspace: runtimeWorkspace };
 const models = (await runtimeAdapters.listModels(binding, catalogScope)) ?? [];
 const currentTaskModel = models.find((model) => model.isDefault);

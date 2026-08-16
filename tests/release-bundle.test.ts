@@ -3,12 +3,13 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installManagedSkillsFromPackage } from "../scripts/postinstall";
-import { livewareAssetName } from "../src/service/liveware-exposure";
+import { livewareAssetName } from "../src/service/liveware-control";
 import { CONNECT_VERSION } from "../src/service/version";
 
 const PORTABLE_OFFICIAL_PLUGIN_BUNDLES = [
   "clawling.runtime.codex-0.0.0-test.connect-plugin",
   "clawling.runtime.opencode-0.0.0-test.connect-plugin",
+  "clawling.exposure.liveware-0.0.0-test.connect-plugin",
 ] as const;
 const WORKBUDDY_OFFICIAL_PLUGIN_BUNDLE = "clawling.runtime.workbuddy-0.0.0-test.connect-plugin" as const;
 const DARWIN_OFFICIAL_PLUGIN_BUNDLES = [...PORTABLE_OFFICIAL_PLUGIN_BUNDLES, WORKBUDDY_OFFICIAL_PLUGIN_BUNDLE] as const;
@@ -47,7 +48,6 @@ describe("standalone release bundle", () => {
   it("keeps POSIX and native Windows package payloads in parity", async () => {
     const logicalPayload = [
       "clawchat-connect",
-      "liveware",
       "clawchat-connect-client",
       "official-plugins",
       "skills",
@@ -63,6 +63,8 @@ describe("standalone release bundle", () => {
     expect(posixPackager).toContain("darwin-arm64 | darwin-x64");
     expect(posixPackager).toContain("linux-arm64 | linux-x64");
     expect(windowsPackager).not.toContain("clawling.runtime.workbuddy");
+    expect(posixPackager).toContain("clawling.exposure.liveware");
+    expect(windowsPackager).toContain("clawling.exposure.liveware");
   });
 
   it("native Windows packager creates the exact archive-root payload", async () => {
@@ -70,7 +72,6 @@ describe("standalone release bundle", () => {
 
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-native-windows-release-"));
     const connectBinary = join(directory, "clawchat-connect.exe");
-    const livewareBinary = join(directory, "liveware-source.exe");
     const clientDirectory = join(directory, "client");
     const officialPluginsDirectory = join(directory, "official-plugins");
     const archive = join(directory, "clawchat-connect-windows-x64.zip");
@@ -80,7 +81,6 @@ describe("standalone release bundle", () => {
       mkdir(officialPluginsDirectory, { recursive: true }),
     ]);
     await writeFile(connectBinary, "connect executable");
-    await writeFile(livewareBinary, "liveware executable");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
     await writeOfficialPluginFixtures(officialPluginsDirectory, PORTABLE_OFFICIAL_PLUGIN_BUNDLES);
 
@@ -94,7 +94,6 @@ describe("standalone release bundle", () => {
         "scripts/package-windows-release.ps1",
         connectBinary,
         clientDirectory,
-        livewareBinary,
         officialPluginsDirectory,
         archive,
         "win32-x64",
@@ -133,7 +132,6 @@ describe("standalone release bundle", () => {
         "clawchat-connect-client/index.html",
         "clawchat-connect.exe",
         ...PORTABLE_OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
-        "liveware.exe",
         "skills/clawchat-core/SKILL.md",
         "skills/clawchat-core/agents/openai.yaml",
         "skills/clawchat-core/references/tools.md",
@@ -146,7 +144,6 @@ describe("standalone release bundle", () => {
 
     const payloadSources = new Map<string, string>([
       ["clawchat-connect.exe", connectBinary],
-      ["liveware.exe", livewareBinary],
       ["clawchat-connect-client/index.html", join(clientDirectory, "index.html")],
       ...PORTABLE_OFFICIAL_PLUGIN_BUNDLES.map(
         (name) => [`official-plugins/${name}`, join(officialPluginsDirectory, name)] as const,
@@ -166,19 +163,17 @@ describe("standalone release bundle", () => {
     }
   }, 30_000);
 
-  it("packages the Connect executable, Client assets, and pinned Liveware executable together", async () => {
+  it("packages the Connect executable, Client assets, and official Plugin Bundles without a root companion", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-release-"));
     const connectBinary = join(directory, "connect");
-    const livewareBinary = join(directory, "liveware-source");
     const clientDirectory = join(directory, "client");
     const officialPluginsDirectory = join(directory, "official-plugins");
     const archive = join(directory, "clawchat-connect-darwin-arm64.tar.gz");
     await Promise.all([mkdir(clientDirectory), mkdir(officialPluginsDirectory)]);
     await writeFile(connectBinary, "#!/bin/sh\nexit 0\n");
-    await writeFile(livewareBinary, "#!/bin/sh\nexit 0\n");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
     await writeOfficialPluginFixtures(officialPluginsDirectory, DARWIN_OFFICIAL_PLUGIN_BUNDLES);
-    await Promise.all([chmod(connectBinary, 0o755), chmod(livewareBinary, 0o755)]);
+    await chmod(connectBinary, 0o755);
 
     const child = Bun.spawn(
       [
@@ -186,7 +181,6 @@ describe("standalone release bundle", () => {
         "scripts/package-release-archive.sh",
         connectBinary,
         clientDirectory,
-        livewareBinary,
         officialPluginsDirectory,
         archive,
         "darwin-arm64",
@@ -206,7 +200,6 @@ describe("standalone release bundle", () => {
         "clawchat-connect",
         "clawchat-connect-client/",
         "clawchat-connect-client/index.html",
-        "liveware",
         "official-plugins/",
         ...DARWIN_OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
         "skills/",
@@ -230,15 +223,13 @@ describe("standalone release bundle", () => {
   it("requires WorkBuddy only for Darwin archive payloads", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-targeted-plugins-"));
     const connectBinary = join(directory, "connect");
-    const livewareBinary = join(directory, "liveware");
     const clientDirectory = join(directory, "client");
     const officialPluginsDirectory = join(directory, "official-plugins");
     await Promise.all([mkdir(clientDirectory), mkdir(officialPluginsDirectory)]);
     await writeFile(connectBinary, "#!/bin/sh\nexit 0\n");
-    await writeFile(livewareBinary, "#!/bin/sh\nexit 0\n");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
     await writeOfficialPluginFixtures(officialPluginsDirectory, PORTABLE_OFFICIAL_PLUGIN_BUNDLES);
-    await Promise.all([chmod(connectBinary, 0o755), chmod(livewareBinary, 0o755)]);
+    await chmod(connectBinary, 0o755);
 
     const packageFor = async (target: "darwin-x64" | "linux-x64", archive: string): Promise<number> =>
       await Bun.spawn(
@@ -247,7 +238,6 @@ describe("standalone release bundle", () => {
           "scripts/package-release-archive.sh",
           connectBinary,
           clientDirectory,
-          livewareBinary,
           officialPluginsDirectory,
           archive,
           target,
@@ -297,16 +287,14 @@ describe("standalone release bundle", () => {
     expect((await readFile("vendor/liveware/VERSION", "utf8")).trim()).toBe("v0.0.16");
   });
 
-  it("packages a Windows executable, Client assets, and Liveware executable into one ZIP", async () => {
+  it("packages a Windows executable, Client assets, and official Plugin Bundles into one ZIP", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-windows-release-"));
     const connectBinary = join(directory, "clawchat-connect.exe");
-    const livewareBinary = join(directory, "liveware-source.exe");
     const clientDirectory = join(directory, "client");
     const officialPluginsDirectory = join(directory, "official-plugins");
     const archive = join(directory, "clawchat-connect-windows-x64.zip");
     await Promise.all([mkdir(clientDirectory), mkdir(officialPluginsDirectory)]);
     await writeFile(connectBinary, "connect executable");
-    await writeFile(livewareBinary, "liveware executable");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
     await writeOfficialPluginFixtures(officialPluginsDirectory, PORTABLE_OFFICIAL_PLUGIN_BUNDLES);
 
@@ -316,7 +304,6 @@ describe("standalone release bundle", () => {
         "scripts/package-windows-release.sh",
         connectBinary,
         clientDirectory,
-        livewareBinary,
         officialPluginsDirectory,
         archive,
         "win32-x64",
@@ -338,7 +325,6 @@ describe("standalone release bundle", () => {
         "clawchat-connect.exe",
         "official-plugins/",
         ...PORTABLE_OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
-        "liveware.exe",
         "skills/",
         "skills/clawchat-core/",
         "skills/clawchat-core/SKILL.md",
@@ -367,7 +353,9 @@ describe("standalone release bundle", () => {
     expect(installer).toContain("Get-FileHash");
     expect(installer).toContain("Expand-Archive");
     expect(installer).toContain("clawchat-connect.exe");
-    expect(installer).toContain("liveware.exe");
+    expect(installer).toContain('$legacyLivewareTarget = Join-Path $InstallDirectory "liveware.exe"');
+    expect(installer).not.toContain("$livewareSource");
+    expect(installer).not.toContain("$livewareStaging");
     expect(installer).toContain("CHANGELOG.md");
     expect(installer).toContain('service", "stop');
     expect(installer).toContain("$transactionStarted");
@@ -451,12 +439,12 @@ describe("standalone release bundle", () => {
     expect(readmeZh).toContain("在这台电脑上安装 ClawChat Connect 当前 beta 通道版本。");
   });
 
-  it("uses vendored, verified Liveware assets for npm packages and local compiled builds", async () => {
+  it("embeds verified Liveware assets in official Plugin Bundles instead of the npm package root", async () => {
     const packageManifest = JSON.parse(await readFile("package.json", "utf8")) as {
       files: string[];
       scripts: Record<string, string>;
     };
-    expect(packageManifest.files).toContain("vendor/liveware");
+    expect(packageManifest.files).not.toContain("vendor/liveware");
     expect(packageManifest.files).toContain("scripts/postinstall.ts");
     expect(packageManifest.scripts.prepack).toContain("verify-liveware-bundle.ts");
     expect(packageManifest.scripts["build:binary"]).toContain("build-binary.ts");
@@ -468,7 +456,7 @@ describe("standalone release bundle", () => {
     expect(installManagedSkillsFromPackage(join(directory, "dist", "src", "bin.js"))).toBe(0);
   });
 
-  it("installs Connect Client and its Liveware companion as sibling executables", async () => {
+  it("installs the Client and official Plugin Bundles while removing the legacy root companion", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-install-"));
     const sourceDirectory = join(directory, "source");
     const clientDirectory = join(sourceDirectory, "client");
@@ -491,16 +479,16 @@ describe("standalone release bundle", () => {
       mkdir(officialPluginsDirectory, { recursive: true }),
       mkdir(fixtureDirectory, { recursive: true }),
       mkdir(commandDirectory, { recursive: true }),
+      mkdir(installDirectory, { recursive: true }),
     ]);
     const connectBinary = join(sourceDirectory, "clawchat-connect");
-    const livewareBinary = join(sourceDirectory, "liveware");
     await Promise.all([
       writeFile(connectBinary, '#!/bin/sh\n[ "$' + '{1:-}" = --help ] || [ "$' + '{1:-}" = skills ]\n'),
-      writeFile(livewareBinary, '#!/bin/sh\n[ "$' + '{1:-}" = --help ]\n'),
+      writeFile(join(installDirectory, "liveware"), "legacy root companion\n"),
       writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n"),
       writeOfficialPluginFixtures(officialPluginsDirectory, officialPluginBundles, "installed release\n"),
     ]);
-    await Promise.all([chmod(connectBinary, 0o755), chmod(livewareBinary, 0o755)]);
+    await chmod(connectBinary, 0o755);
 
     const packageProcess = Bun.spawn(
       [
@@ -508,7 +496,6 @@ describe("standalone release bundle", () => {
         "scripts/package-release-archive.sh",
         connectBinary,
         clientDirectory,
-        livewareBinary,
         officialPluginsDirectory,
         archive,
         pluginTarget,
@@ -568,7 +555,7 @@ describe("standalone release bundle", () => {
     const [exitCode, stderr] = await Promise.all([installProcess.exited, new Response(installProcess.stderr).text()]);
     expect(exitCode, stderr).toBe(0);
     await expect(readFile(join(installDirectory, "clawchat-connect"), "utf8")).resolves.toContain("--help");
-    await expect(readFile(join(installDirectory, "liveware"), "utf8")).resolves.toContain("--help");
+    expect(await Bun.file(join(installDirectory, "liveware")).exists()).toBe(false);
     await expect(readFile(join(installDirectory, "clawchat-connect-client", "index.html"), "utf8")).resolves.toContain(
       "<!doctype html>",
     );
@@ -621,7 +608,6 @@ describe("standalone release bundle", () => {
         "scripts/package-release-archive.sh",
         connectBinary,
         clientDirectory,
-        livewareBinary,
         officialPluginsDirectory,
         archive,
         pluginTarget,
@@ -687,7 +673,6 @@ describe("standalone release bundle", () => {
         "scripts/package-release-archive.sh",
         connectBinary,
         clientDirectory,
-        livewareBinary,
         officialPluginsDirectory,
         archive,
         pluginTarget,

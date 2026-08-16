@@ -16,22 +16,22 @@ import type { MessageBlockContent } from "../client-contract";
 import type { TranscriptProjection } from "../client-interface/transcript-projection";
 import { defaultConfigPath, getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
-import { synchronizeRuntimeProjects as synchronizeProjects } from "../projects/project-synchronizer";
-import { ProjectCatalog } from "../projects/projects";
+import type {
+  AgentBindingConfig,
+  ConnectConfig,
+  RuntimeSessionRecord,
+  RuntimeWorkspace,
+  WorkspaceRecord,
+} from "../types";
 import {
   createSessionContinuity,
   type SessionContinuity,
   SessionLifecycleError,
   type TurnTarget,
-} from "../projects/session-continuity";
-import { type RuntimeWorkspaceChoice, workspaceView } from "../projects/workspace-catalog";
-import type {
-  AgentBindingConfig,
-  ConnectConfig,
-  ProjectRecord,
-  RuntimeSessionRecord,
-  RuntimeWorkspace,
-} from "../types";
+} from "../workspaces/session-continuity";
+import type { RuntimeWorkspaceChoice } from "../workspaces/workspace-catalog";
+import { synchronizeRuntimeWorkspaces } from "../workspaces/workspace-synchronizer";
+import { WorkspaceCatalog } from "../workspaces/workspaces";
 import type { ConnectExecutionCapabilities } from "./execution-capabilities";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
@@ -55,7 +55,7 @@ export interface ConnectRuntimeOptions {
   configPath?: string;
   stateStore: ConnectStateStore;
   wsClient: ConnectWsClient;
-  projects?: ProjectCatalog;
+  workspaces?: WorkspaceCatalog;
   sessionContinuity?: SessionContinuity;
   execution?: ConnectExecutionCapabilities;
   runtimeAdapters?: RuntimeAdapterRegistry;
@@ -67,7 +67,7 @@ export interface ConnectRuntimeOptions {
 
 export class ConnectRuntime {
   private readonly runtimeAdapters: RuntimeAdapterRegistry;
-  private readonly projects: ProjectCatalog;
+  private readonly workspaces: WorkspaceCatalog;
   private readonly sessionContinuity: SessionContinuity;
   private readonly transcriptProjection?: TranscriptProjection;
   private readonly ownsExecutor: boolean;
@@ -86,8 +86,25 @@ export class ConnectRuntime {
     if (!runtimeAdapters) throw new Error("Runtime Adapter coordination is required");
     this.runtimeAdapters = runtimeAdapters;
     this.transcriptProjection = execution?.transcriptProjection ?? options.transcriptProjection;
-    this.projects = options.projects ?? new ProjectCatalog(options.stateStore);
-    this.sessionContinuity = options.sessionContinuity ?? createSessionContinuity({ stateStore: options.stateStore });
+    this.workspaces = options.workspaces ?? new WorkspaceCatalog(options.stateStore);
+    this.sessionContinuity =
+      options.sessionContinuity ??
+      createSessionContinuity({
+        stateStore: options.stateStore,
+        resolveDefaultWorkspace: async (bindingId) => (await this.workspaces.ensureDefault(bindingId)).workspaceRef,
+        resolveContinuationWorkspace: async (source, bindingId) => {
+          if (source.agentId === bindingId && source.workspaceRef) return source.workspaceRef;
+          const sourceWorkspace = source.workspaceRef
+            ? await this.workspaces.get(source.agentId, source.workspaceRef)
+            : null;
+          const target = sourceWorkspace
+            ? (await this.workspaces.list(bindingId)).find(
+                (workspace) => resolve(workspace.rootPath) === resolve(sourceWorkspace.rootPath),
+              )
+            : null;
+          return target?.workspaceRef ?? (await this.workspaces.ensureDefault(bindingId)).workspaceRef;
+        },
+      });
     const executorOptions = {
       configPath: options.configPath ?? defaultConfigPath(),
       stateDbPath: options.config.stateDbPath,
@@ -406,41 +423,30 @@ export class ConnectRuntime {
     const runtimeSession = selected && "runtimeSessionId" in selected ? selected : null;
     return await this.runtimeAdapters.listModels(binding, {
       runtimeThreadId: runtimeSession?.runtimeSessionId ?? undefined,
-      workspace: runtimeSession ? await this.projects.resolveWorkspace(runtimeSession) : undefined,
+      workspace: runtimeSession ? await this.workspaces.resolveWorkspace(runtimeSession) : undefined,
     });
   }
 
   async listRuntimeWorkspaces(): Promise<RuntimeWorkspaceChoice[]> {
-    const { projects } = await this.synchronizeRuntimeProjects();
-    return projects
-      .flatMap((project) => {
-        const workspace = workspaceView(project.rootPath);
-        return workspace
-          ? [
-              {
-                workspaceId: workspace.id,
-                name: workspace.name,
-                rootPath: project.rootPath,
-                projectId: project.projectId,
-                projectName: project.name,
-              },
-            ]
-          : [];
-      })
+    const { workspaces } = await this.synchronizeRuntimeWorkspaces();
+    return workspaces
+      .map((workspace) => ({
+        workspaceRef: workspace.workspaceRef,
+        name: workspace.name,
+        rootPath: workspace.rootPath,
+      }))
       .sort((left, right) => left.name.localeCompare(right.name) || left.rootPath.localeCompare(right.rootPath));
   }
 
-  async synchronizeRuntimeProjects(): Promise<{
-    projects: ProjectRecord[];
+  async synchronizeRuntimeWorkspaces(): Promise<{
+    workspaces: WorkspaceRecord[];
     failures: string[];
   }> {
     const binding = getAgentBinding(this.options.config, this.options.agentId);
-    return await synchronizeProjects({
+    return await synchronizeRuntimeWorkspaces({
       bindingId: this.options.agentId,
-      runtimeKind: this.runtimeAdapters.familyFor(binding),
-      threads: await this.runtimeAdapters.discoverAllThreads(binding),
-      projects: this.projects,
-      stateStore: this.options.stateStore,
+      snapshot: await this.runtimeAdapters.discoverWorkspaces(binding),
+      workspaces: this.workspaces,
     });
   }
 
@@ -448,12 +454,12 @@ export class ConnectRuntime {
     const intent = await this.options.stateStore.getSessionIntent(chatId, this.options.agentId);
     const current = await this.options.stateStore.getCurrentRuntimeSession(chatId, this.options.agentId);
     if (!intent && !current) return [];
-    if (intent && !intent.projectId) return [];
+    if (intent && !intent.workspaceRef) return [];
     const binding = getAgentBinding(this.options.config, current?.agentId || intent?.agentId || this.options.agentId);
-    const workspace = intent?.projectId
-      ? await this.projects.resolveProjectWorkspace(intent.projectId)
+    const workspace = intent?.workspaceRef
+      ? await this.workspaces.resolveWorkspaceRef(intent.agentId, intent.workspaceRef)
       : current
-        ? await this.projects.resolveWorkspace(current)
+        ? await this.workspaces.resolveWorkspace(current)
         : null;
     if (!workspace) return [];
     const sessions = await this.options.stateStore.listRuntimeSessions(chatId, this.options.agentId);
@@ -499,7 +505,7 @@ export class ConnectRuntime {
     onTurnAccepted?: () => Promise<void>,
   ): Promise<void> {
     const activeAgentId = current.agentId || this.options.agentId;
-    const workspace = await this.projects.resolveWorkspace(current);
+    const workspace = await this.workspaces.resolveWorkspace(current);
     const model = await this.modelFor(current, activeAgentId, workspace);
     const target = await this.sessionContinuity.forSession(current.sessionRef).targetForTurn("clawchat");
     const mode = await resolveOutputVisibility({
@@ -572,7 +578,7 @@ export class ConnectRuntime {
         chatId: message.chatId,
         sessionId: current.sessionId,
         agentId: activeAgentId,
-        projectId: current.projectId ?? "none",
+        workspaceRef: target.workspaceRef,
       },
       outputPolicy: { mode: policy.mode, allowedKinds: allowedRuntimeKinds(policy) },
     })) {
@@ -590,7 +596,7 @@ export class ConnectRuntime {
   ): Promise<void> {
     const current = runtimeSessionFromTurnTarget(target);
     const activeAgentId = target.bindingId || this.options.agentId;
-    const workspace = await this.projects.resolveWorkspace(current);
+    const workspace = await this.workspaces.resolveWorkspace(current);
     const model = await this.modelFor(current, activeAgentId, workspace);
     await this.transcriptProjection?.appendUserMessage({
       sessionRef: current.sessionRef,
@@ -638,7 +644,7 @@ export class ConnectRuntime {
           chatId: current.chatId,
           sessionId: current.sessionId,
           agentId: activeAgentId,
-          projectId: current.projectId ?? "none",
+          workspaceRef: target.workspaceRef,
         },
         outputPolicy: {
           mode: "client-full",
@@ -792,7 +798,7 @@ function runtimeSessionFromTurnTarget(target: TurnTarget): RuntimeSessionRecord 
     sessionRef: target.sessionRef,
     agentId: target.bindingId,
     runtimeSessionId: target.runtimeThreadId,
-    projectId: target.projectId,
+    workspaceRef: target.workspaceRef,
     name: target.name,
     mode: target.mode,
     model: target.model,

@@ -3,11 +3,6 @@ import { isAgentLivewareOperation } from "../agent/agent-liveware";
 import { verifyInstalledSkills } from "../agent/skills";
 import { getConnectTool } from "../agent/tool-catalog";
 import { isIndeterminateToolError } from "../agent/tool-executor";
-import {
-  type BindingScopedClientGatewayHandle,
-  type BindingScopedClientGatewayOptions,
-  startBindingScopedClientGateway,
-} from "../client-interface/binding-scoped-gateway";
 import { resolveClientAssetsPath } from "../client-interface/client-assets";
 import {
   type ClientInterfaceHandle,
@@ -27,14 +22,6 @@ import {
 } from "./binding-runtime";
 import { type BindingRuntimeLifecycle, retireBindingRuntimeSurfaces } from "./binding-runtime-lifecycle";
 import type { ActivatedAgentBinding } from "./connect-durable-modules";
-import {
-  createLivewareExposureDependencies,
-  type LivewareExposureDependencies,
-  type LivewareExposureHandle,
-  resolveLivewareExecutablePath,
-  retireLivewareExposure,
-  startLivewareExposure,
-} from "./liveware-exposure";
 
 interface ClawChatTransportModule {
   readonly activatedBindings: ActivatedAgentBinding[];
@@ -53,10 +40,6 @@ interface ToolRequestWorkerModule {
   stop(): Promise<void>;
 }
 
-interface LivewarePublicationModule {
-  retireBindings(bindingIds: readonly string[]): Promise<void>;
-}
-
 declare module "cordis" {
   interface Context {
     connectTurnSurfaces: ConnectTurnSurfaceCapabilities;
@@ -64,7 +47,6 @@ declare module "cordis" {
     connectClientAssets: ClientAssetsModule;
     connectClientInterface: ClientInterfaceHandle;
     connectToolRequestWorkers: ToolRequestWorkerModule;
-    connectLivewarePublication: LivewarePublicationModule;
   }
 }
 
@@ -80,12 +62,6 @@ export interface ConnectSurfaceDependencies {
   startBindingRuntime?: (options: BindingRuntimeOptions) => Promise<BindingRuntimeHandle>;
   startClientInterface?: (options: ClientInterfaceOptions) => Promise<ClientInterfaceHandle>;
   resolveClientAssetsPath?: () => Promise<string>;
-  livewareDependencies?: LivewareExposureDependencies;
-  startBindingScopedClientGateway?: (
-    options: BindingScopedClientGatewayOptions,
-  ) => Promise<BindingScopedClientGatewayHandle>;
-  startLivewareExposure?: typeof startLivewareExposure;
-  retireLivewareExposure?: typeof retireLivewareExposure;
   verifyInstalledSkills?: () => Promise<void>;
 }
 
@@ -117,7 +93,6 @@ export async function mountMandatorySurfaceModules(
     detachRetirement = () => undefined;
     const order = [
       "connect-tool-request-workers",
-      "connect-liveware-publication",
       "connect-client-interface",
       "connect-clawchat-transports",
       "connect-client-assets",
@@ -175,7 +150,7 @@ export async function mountMandatorySurfaceModules(
     inject: [
       "connectPersistence",
       "connectAgentBindings",
-      "connectProjects",
+      "connectWorkspaces",
       "connectSessionContinuity",
       "connectRuntimeAdapters",
       "connectSessionQueue",
@@ -188,7 +163,7 @@ export async function mountMandatorySurfaceModules(
     apply: async (ctx) => {
       await (dependencies.verifyInstalledSkills ?? verifyInstalledSkills)();
       const { activatedBindings, deviceId } = await ctx.connectAgentBindings.prepareService(options.config);
-      await ctx.connectPersistence.stateStore.expirePendingRuntimeInteractions();
+      await ctx.connectPersistence.state.expirePendingRuntimeInteractions();
       const handles: BindingRuntimeHandle[] = [];
       const closePromises = new WeakMap<BindingRuntimeHandle, Promise<void>>();
       const startRuntime = dependencies.startBindingRuntime ?? startBindingRuntime;
@@ -214,8 +189,8 @@ export async function mountMandatorySurfaceModules(
               config: options.config,
               configPath: options.configPath,
               deviceId,
-              stateStore: ctx.connectPersistence.stateStore,
-              projects: ctx.connectProjects,
+              stateStore: ctx.connectPersistence.state,
+              workspaces: ctx.connectWorkspaces,
               sessionContinuityModule: ctx.connectSessionContinuity,
               execution,
               turnSurfaces: ctx.connectTurnSurfaces,
@@ -273,7 +248,7 @@ export async function mountMandatorySurfaceModules(
     apply: (ctx) => {
       const workers = startToolRequestWorkers(
         ctx.connectClawChatTransports.handles,
-        ctx.connectPersistence.stateStore,
+        ctx.connectPersistence.state,
         options.writeError,
       );
       ctx.provide("connectToolRequestWorkers", workers);
@@ -291,7 +266,7 @@ export async function mountMandatorySurfaceModules(
     name: "connect-client-interface",
     inject: [
       "connectPersistence",
-      "connectProjects",
+      "connectWorkspaces",
       "connectSessionContinuity",
       "connectRuntimeAdapters",
       "connectTranscriptProjection",
@@ -306,17 +281,17 @@ export async function mountMandatorySurfaceModules(
       const clientInterface = await (dependencies.startClientInterface ?? startClientInterface)({
         config: options.config,
         configPath: options.configPath,
-        stateStore: ctx.connectPersistence.stateStore,
+        stateStore: ctx.connectPersistence.state,
         runtimeAdapters: ctx.connectRuntimeAdapters,
         transcriptProjection: ctx.connectTranscriptProjection,
         runtimeInteractions: ctx.connectRuntimeInteractions,
-        projects: ctx.connectProjects,
+        workspaces: ctx.connectWorkspaces,
         sessionContinuityModule: ctx.connectSessionContinuity,
         pluginManager: ctx.connectPluginHost,
         runtimes: ctx.connectClawChatTransports.handles,
         assetsPath: ctx.connectClientAssets.path,
       });
-      const unbindPluginClient = ctx.connectPluginHost.bindClientInterface(clientInterface);
+      const unbindPluginClient = await ctx.connectPluginHost.bindClientInterface(clientInterface);
       ctx.provide("connectClientInterface", clientInterface);
       options.writeOutput(`Connect Client is available at ${clientInterface.origin}.\n`);
       if (options.config.clientHost === "0.0.0.0") {
@@ -335,187 +310,12 @@ export async function mountMandatorySurfaceModules(
     },
   } satisfies Plugin;
 
-  const livewarePublicationPlugin = {
-    name: "connect-liveware-publication",
-    inject: ["connectPersistence", "connectClawChatTransports", "connectClientInterface"],
-    provide: "connectLivewarePublication",
-    apply: async (ctx) => {
-      const store = ctx.connectPersistence.stateStore;
-      const { activatedBindings, deviceId, handles } = ctx.connectClawChatTransports;
-      const publications = new Map<
-        string,
-        {
-          activation: ActivatedAgentBinding["activation"];
-          dependencies: LivewareExposureDependencies;
-          remoteOwned: boolean;
-          exposure?: LivewareExposureHandle;
-          gateway?: BindingScopedClientGatewayHandle;
-        }
-      >();
-      const retirePublication = async (bindingId: string): Promise<void> => {
-        const publication = publications.get(bindingId);
-        if (!publication) {
-          if (await store.getLivewareExposure(bindingId)) {
-            throw new Error(`Liveware Exposure retirement for Agent Binding ${bindingId} is unavailable`);
-          }
-          return;
-        }
-        if (publication.remoteOwned) {
-          await (dependencies.retireLivewareExposure ?? retireLivewareExposure)(
-            { activation: publication.activation, deviceId, stateStore: store },
-            publication.dependencies,
-          );
-          publication.remoteOwned = false;
-        }
-        if (publication.exposure) {
-          await publication.exposure.close();
-          publication.exposure = undefined;
-        }
-        if (publication.gateway) {
-          await publication.gateway.stop();
-          publication.gateway = undefined;
-        }
-        publications.delete(bindingId);
-      };
-      const publicationModule: LivewarePublicationModule = {
-        retireBindings: async (bindingIds) => {
-          for (const bindingId of bindingIds) await retirePublication(bindingId);
-        },
-      };
-      ctx.provide("connectLivewarePublication", publicationModule);
-      const existingExposures = await store.listLivewareExposures();
-      if (options.config.livewareAccessPolicy !== "off" || existingExposures.length > 0) {
-        let livewareDependencies = dependencies.livewareDependencies;
-        if (!livewareDependencies) {
-          try {
-            livewareDependencies = createLivewareExposureDependencies({
-              livewarePath: await resolveLivewareExecutablePath(),
-              clawChatBaseUrl: options.config.baseUrl,
-            });
-          } catch (error) {
-            options.writeError(
-              `Liveware Exposure unavailable; local Connect remains running: ${error instanceof Error ? error.message : String(error)}\n`,
-            );
-          }
-        }
-        if (livewareDependencies) {
-          if (options.config.livewareAccessPolicy === "off") {
-            for (const existingExposure of existingExposures) {
-              const retirementPrincipal = activatedBindings.find(
-                ({ agentId }) => agentId === existingExposure.localAgentId,
-              )?.activation;
-              if (!retirementPrincipal) {
-                options.writeError(
-                  `${existingExposure.localAgentId}: Liveware Exposure cannot be retired because its activation is missing.\n`,
-                );
-                continue;
-              }
-              try {
-                await (dependencies.retireLivewareExposure ?? retireLivewareExposure)(
-                  { activation: retirementPrincipal, deviceId, stateStore: store },
-                  livewareDependencies,
-                );
-                options.writeOutput(`${existingExposure.localAgentId}: Liveware Exposure was retired.\n`);
-              } catch (error) {
-                publications.set(existingExposure.localAgentId, {
-                  activation: retirementPrincipal,
-                  dependencies: livewareDependencies,
-                  remoteOwned: true,
-                });
-                options.writeError(
-                  `${existingExposure.localAgentId}: Liveware Exposure retirement failed; local Connect remains running: ${error instanceof Error ? error.message : String(error)}\n`,
-                );
-              }
-            }
-          } else {
-            for (const existingExposure of existingExposures) {
-              const existingActivation = activatedBindings.find(
-                ({ agentId }) => agentId === existingExposure.localAgentId,
-              )?.activation;
-              if (!existingActivation) continue;
-              publications.set(existingExposure.localAgentId, {
-                activation: existingActivation,
-                dependencies: livewareDependencies,
-                remoteOwned: true,
-              });
-            }
-            for (const { agentId, activation } of activatedBindings.filter(({ agentId }) =>
-              handles.some((handle) => handle.agentId === agentId),
-            )) {
-              let gateway: BindingScopedClientGatewayHandle | null = null;
-              try {
-                gateway = await (dependencies.startBindingScopedClientGateway ?? startBindingScopedClientGateway)({
-                  bindingId: agentId,
-                  upstreamOrigin: ctx.connectClientInterface.origin,
-                });
-                const exposure = await (dependencies.startLivewareExposure ?? startLivewareExposure)(
-                  {
-                    activation,
-                    deviceId,
-                    upstream: gateway.origin,
-                    accessPolicy: options.config.livewareAccessPolicy,
-                    stateStore: store,
-                    writeError: options.writeError,
-                  },
-                  livewareDependencies,
-                );
-                publications.set(agentId, {
-                  activation,
-                  dependencies: livewareDependencies,
-                  remoteOwned: true,
-                  exposure,
-                  gateway,
-                });
-                options.writeOutput(
-                  `${agentId}: Liveware Exposure is available at ${exposure.record.publicUrl} (${exposure.record.accessPolicy}).\n`,
-                );
-              } catch (error) {
-                await gateway?.stop().catch(() => undefined);
-                if (await store.getLivewareExposure(agentId)) {
-                  publications.set(agentId, {
-                    activation,
-                    dependencies: livewareDependencies,
-                    remoteOwned: true,
-                  });
-                }
-                options.writeError(
-                  `${agentId}: Liveware Exposure unavailable; local Connect remains running: ${error instanceof Error ? error.message : String(error)}\n`,
-                );
-              }
-            }
-          }
-        }
-      }
-      return async () => {
-        for (const publication of publications.values()) {
-          if (publication.exposure) {
-            try {
-              await publication.exposure.close();
-              publication.exposure = undefined;
-            } catch (error) {
-              reportDisposalFailure(error);
-            }
-          }
-          if (publication.gateway) {
-            try {
-              await publication.gateway.stop();
-              publication.gateway = undefined;
-            } catch (error) {
-              reportDisposalFailure(error);
-            }
-          }
-        }
-      };
-    },
-  } satisfies Plugin;
-
   try {
     await mount(turnSurfacePlugin);
     await mount(clientAssetsPlugin);
     await mount(clawChatTransportPlugin);
     await mount(toolRequestWorkerPlugin);
     await mount(clientInterfacePlugin);
-    await mount(livewarePublicationPlugin);
     detachRetirement = bindingRuntimeLifecycle.attachRetirement(
       async (bindingIds) =>
         await retireBindingRuntimeSurfaces(bindingIds, [
@@ -526,7 +326,7 @@ export async function mountMandatorySurfaceModules(
               root.connectSessionQueue.retainBindings(retiredBindingIds);
             },
           },
-          root.connectLivewarePublication,
+          root.connectPluginHost,
           root.connectClawChatTransports,
         ]),
     );

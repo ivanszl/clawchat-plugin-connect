@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,10 +22,10 @@ const archivedDiscoveredWorkspace = join(directory, "archived", "discovered-work
 await mkdir(projectDirectory);
 await mkdir(discoveredWorkspace);
 await mkdir(archivedDiscoveredWorkspace, { recursive: true });
-const projectRoot = await realpath(projectDirectory);
-const artifactSpecPath = join(projectRoot, "artifact-preview.md");
+const workspaceRoot = await realpath(projectDirectory);
+const artifactSpecPath = join(workspaceRoot, "artifact-preview.md");
 await Bun.write(artifactSpecPath, "# Mobile Artifact preview\n\n[Open TypeScript](./artifact-preview.ts)\n");
-await Bun.write(join(projectRoot, "artifact-preview.ts"), 'export const mobileArtifact = "ready";\n');
+await Bun.write(join(workspaceRoot, "artifact-preview.ts"), 'export const mobileArtifact = "ready";\n');
 const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ", "23456789", "BCDEFGHJ", "CDEFGHJK", "DEFGHJKM", "EFGHJKMN"];
 const stateStore = createStateStore({
   dbPath: join(directory, "state.sqlite"),
@@ -43,13 +44,21 @@ await stateStore.upsertActivation({
   ownerUserId: "usr_preview_owner",
   conversationId: "preview-conversation",
 });
-await stateStore.insertProject({ projectId: "connect", name: "connect-qa", rootPath: projectRoot });
+await stateStore.insertWorkspace({
+  bindingId: "codex",
+  workspaceRef: "CONNECT1",
+  runtimeIdentityKey: null,
+  source: "runtime",
+  name: "connect-qa",
+  rootPath: workspaceRoot,
+  selectable: true,
+});
 await stateStore.upsertRuntimeSession({
   chatId: "chat-project",
   sessionId: "session-project",
   agentId: "codex",
   runtimeSessionId: "thread-project",
-  projectId: "connect",
+  workspaceRef: "CONNECT1",
   name: "App Server 与 Web Client",
   hasMessages: true,
   isCurrent: true,
@@ -235,7 +244,7 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
         runtimeThreadId: "thread-project",
         name: "App Server 与 Web Client",
         updatedAt: projectThreadUpdatedAt,
-        workingDirectory: projectRoot,
+        workingDirectory: workspaceRoot,
       },
       { runtimeThreadId: "thread-local", name: "Non-Project scratch", updatedAt: Date.now() - 1_000 },
       {
@@ -289,7 +298,7 @@ const previewApproval = runtimeInteractions.request(
     title: "允许 Codex 更新本地 Connect？",
     description: "该命令会替换本机安装的 Connect 并重启服务。",
     command: "install dist/clawchat-connect ~/.local/bin/clawchat-connect",
-    cwd: projectRoot,
+    cwd: workspaceRoot,
     options: [
       { id: "approve-once", label: "仅此次允许" },
       { id: "approve-session", label: "本 Session 允许" },
@@ -329,6 +338,129 @@ const runtime = {
   sessionActivity: async (sessionRef: string) => activityBySessionRef.get(sessionRef) ?? "idle",
 };
 const previewIntegrity = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+function sha256Integrity(content: string): string {
+  return `sha256-${createHash("sha256").update(content).digest("base64")}`;
+}
+
+async function createPreviewClientExtension(): Promise<InstalledPluginLockEntry> {
+  const pluginId = "preview.client-extension";
+  const root = join(directory, pluginId);
+  const host = "export default { activate() {} };\n";
+  const browser = `export async function activate(context) {
+  const Extension = () => context.React.createElement(context.Astryx.Button, {
+    id: "preview-client-extension",
+    label: "Client Extension active",
+    type: "button",
+    onClick: () => context.client.bindingPreferences.update("codex", { displayName: "Extended Codex" }),
+  });
+  context.slots.register("kernel.root.after", Extension);
+  context.effects.setInterval(() => undefined, 60_000);
+  return () => {
+    if (sessionStorage.getItem("preview-client-extension-dispose-failure") !== "1") return;
+    sessionStorage.removeItem("preview-client-extension-dispose-failure");
+    throw new Error("Preview Client Extension disposal failed");
+  };
+}\n`;
+  const manifest: InstalledPluginLockEntry["manifest"] = {
+    manifestVersion: 1,
+    interfaceVersion: "1",
+    pluginId,
+    version: "1.0.0",
+    dependencies: [],
+    installationConfigurationSchema: { type: "object", properties: {}, additionalProperties: false },
+    capabilities: [
+      {
+        id: "client",
+        type: "client-extension",
+        interfaceVersion: "1",
+        configurationSchema: { type: "object", properties: {}, additionalProperties: false },
+        browser: {
+          entry: "browser.mjs",
+          integrity: sha256Integrity(browser),
+          styles: [],
+          slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 10 }],
+        },
+      },
+    ],
+    artifacts: [{ target: "preview-target", entry: "entry.mjs", integrity: sha256Integrity(host) }],
+  };
+  await mkdir(root);
+  await Bun.write(join(root, "entry.mjs"), host);
+  await Bun.write(join(root, "browser.mjs"), browser);
+  await Bun.write(join(root, "connect-plugin.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  return {
+    activationGeneration: 1,
+    pluginId,
+    source: { type: "local", path: join(root, "preview.connect-plugin") },
+    version: manifest.version,
+    target: "preview-target",
+    integrity: manifest.artifacts[0]?.integrity ?? "",
+    activeArtifact: join(root, "entry.mjs"),
+    manifestPath: join(root, "connect-plugin.json"),
+    manifest,
+    installationConfiguration: {},
+    exposureConfigurations: {},
+    officialCapabilityGrants: [],
+    status: "active",
+    error: null,
+    retainedVersions: [],
+  };
+}
+
+async function createPreviewFailingClientExtension(): Promise<InstalledPluginLockEntry> {
+  const pluginId = "preview.failing-client-extension";
+  const root = join(directory, pluginId);
+  const host = "export default { activate() {} };\n";
+  const browser = `export function activate(context) {
+  const FailingExtension = () => { throw new Error("Preview slot render failure"); };
+  context.slots.register("kernel.root.after", FailingExtension);
+}\n`;
+  const manifest: InstalledPluginLockEntry["manifest"] = {
+    manifestVersion: 1,
+    interfaceVersion: "1",
+    pluginId,
+    version: "1.0.0",
+    dependencies: [],
+    installationConfigurationSchema: { type: "object", properties: {}, additionalProperties: false },
+    capabilities: [
+      {
+        id: "client",
+        type: "client-extension",
+        interfaceVersion: "1",
+        configurationSchema: { type: "object", properties: {}, additionalProperties: false },
+        browser: {
+          entry: "browser.mjs",
+          integrity: sha256Integrity(browser),
+          styles: [],
+          slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 5 }],
+        },
+      },
+    ],
+    artifacts: [{ target: "preview-target", entry: "entry.mjs", integrity: sha256Integrity(host) }],
+  };
+  await mkdir(root);
+  await Bun.write(join(root, "entry.mjs"), host);
+  await Bun.write(join(root, "browser.mjs"), browser);
+  await Bun.write(join(root, "connect-plugin.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  return {
+    activationGeneration: 1,
+    pluginId,
+    source: { type: "local", path: join(root, "preview.connect-plugin") },
+    version: manifest.version,
+    target: "preview-target",
+    integrity: manifest.artifacts[0]?.integrity ?? "",
+    activeArtifact: join(root, "entry.mjs"),
+    manifestPath: join(root, "connect-plugin.json"),
+    manifest,
+    installationConfiguration: {},
+    exposureConfigurations: {},
+    officialCapabilityGrants: [],
+    status: "active",
+    error: null,
+    retainedVersions: [],
+  };
+}
+
 function previewPlugin(pluginId: string, status: InstalledPluginLockEntry["status"], error: string | null) {
   const manifest: InstalledPluginLockEntry["manifest"] = {
     manifestVersion: 1,
@@ -371,8 +503,10 @@ function previewPlugin(pluginId: string, status: InstalledPluginLockEntry["statu
     manifest,
     installationConfiguration: { channel: "stable", telemetry: false },
     exposureConfigurations: {},
+    officialCapabilityGrants: [],
   };
   return {
+    activationGeneration: 1,
     pluginId,
     ...version,
     status,
@@ -380,9 +514,13 @@ function previewPlugin(pluginId: string, status: InstalledPluginLockEntry["statu
     retainedVersions: [{ ...version, version: "0.9.0", manifest: { ...manifest, version: "0.9.0" } }],
   } satisfies InstalledPluginLockEntry;
 }
+const previewClientExtension = await createPreviewClientExtension();
+const previewFailingClientExtension = await createPreviewFailingClientExtension();
 const previewPlugins: InstalledPluginLockEntry[] = [
   previewPlugin("preview.healthy", "active", null),
   previewPlugin("preview.failed", "error", "provider registration failed in preview fixture"),
+  previewClientExtension,
+  previewFailingClientExtension,
 ];
 const previewOfficial: OfficialPluginDiscovery = {
   catalogOrigin: "cache",
@@ -392,13 +530,7 @@ const previewOfficial: OfficialPluginDiscovery = {
       pluginId: "preview.official",
       name: "Official Preview Runtime",
       source: "npm:@clawchat/preview-runtime@1.0.0",
-      resolvedSource: {
-        type: "npm",
-        package: "@clawchat/preview-runtime",
-        registry: "https://registry.example.test",
-        version: "1.0.0",
-        tarball: "https://registry.example.test/preview-runtime.tgz",
-      },
+      resolvedSource: null,
       version: "1.0.0",
       target: "preview-target",
       integrity: previewIntegrity,
@@ -406,9 +538,10 @@ const previewOfficial: OfficialPluginDiscovery = {
       compatible: true,
       selected: true,
       selectable: true,
-      probe: { detected: true, compatible: true, version: "preview" },
+      discovery: { detected: true, compatible: true, version: "preview" },
       diagnostic: null,
       manifest: previewPlugin("preview.official", "active", null).manifest,
+      capabilityGrants: [],
       installationConfiguration: { channel: "stable", telemetry: false },
       exposureConfigurations: {},
     },
@@ -456,27 +589,38 @@ const previewPluginManager = {
   update: async (pluginId: string) => {
     const plugin = requirePreviewPlugin(pluginId);
     plugin.version = "2.0.0";
+    plugin.manifest.version = "2.0.0";
+    plugin.activationGeneration += 1;
     return structuredClone(plugin);
   },
-  reinstall: async (pluginId: string) => structuredClone(requirePreviewPlugin(pluginId)),
+  reinstall: async (pluginId: string) => {
+    const plugin = requirePreviewPlugin(pluginId);
+    plugin.activationGeneration += 1;
+    return structuredClone(plugin);
+  },
   enable: async (pluginId: string) => {
     const plugin = requirePreviewPlugin(pluginId);
     plugin.status = "active";
+    plugin.activationGeneration += 1;
     return structuredClone(plugin);
   },
   disable: async (pluginId: string) => {
     const plugin = requirePreviewPlugin(pluginId);
     plugin.status = "disabled";
+    plugin.activationGeneration += 1;
     return structuredClone(plugin);
   },
   select: async (pluginId: string, version: string) => {
     const plugin = requirePreviewPlugin(pluginId);
     plugin.version = version;
+    plugin.manifest.version = version;
+    plugin.activationGeneration += 1;
     return structuredClone(plugin);
   },
   configure: async (pluginId: string, options: { installationConfiguration: Record<string, unknown> }) => {
     const plugin = requirePreviewPlugin(pluginId);
     plugin.installationConfiguration = structuredClone(options.installationConfiguration);
+    plugin.activationGeneration += 1;
     return structuredClone(plugin);
   },
   remove: async (pluginId: string) => {

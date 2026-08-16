@@ -19,12 +19,6 @@ import { currentConnectPluginTarget } from "../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { BindingRuntimeHandle } from "../src/service/binding-runtime";
 import { startConnectService } from "../src/service/connect-service";
-import type {
-  ClawChatLivewarePort,
-  LivewareControlPlanePort,
-  LivewareControlSession,
-  startLivewareExposure as startLivewareExposureDefault,
-} from "../src/service/liveware-exposure";
 import type { ActivationCredentials, ConnectConfig } from "../src/types";
 import { pluginBinding } from "./runtime-adapter-fixture";
 
@@ -41,6 +35,30 @@ function activation(agentId: string, ownerUserId = "owner-1"): ActivationCredent
 }
 
 describe("Connect Service", () => {
+  it("blocks every downstream module when the mandatory persistence provider fails", async () => {
+    const createRuntimeAdapterRegistry = mock(() => new RuntimeAdapterRegistry([]));
+    const persistenceService = {
+      state: {} as never,
+      initialize: async () => {
+        throw new Error("persistence schema validation failed");
+      },
+      close: async () => undefined,
+    };
+
+    await expect(
+      startConnectService(
+        {
+          config: serviceConfig(["codex"]),
+          persistenceService,
+          writeOutput: () => undefined,
+          writeError: () => undefined,
+        },
+        { createRuntimeAdapterRegistry },
+      ),
+    ).rejects.toThrow("persistence schema validation failed");
+    expect(createRuntimeAdapterRegistry).not.toHaveBeenCalled();
+  });
+
   it("rejects startup when the release-managed Agent skills do not match", async () => {
     const config = serviceConfig(["codex"]);
     await expect(
@@ -121,6 +139,7 @@ describe("Connect Service", () => {
     const stopClientInterface = mock(async () => undefined);
     const startClientInterface = mock(async (_options: ClientInterfaceOptions) => ({
       origin: "http://127.0.0.1:47823",
+      fetchPrivateGateway: async () => new Response(null, { status: 204 }),
       retireBindings: async () => undefined,
       stop: stopClientInterface,
     }));
@@ -194,7 +213,6 @@ describe("Connect Service", () => {
     const unrelatedBindingId = "unrelated";
     const config = serviceConfig([removedBindingId, unrelatedBindingId]);
     config.stateDbPath = stateStore.dbPath;
-    config.livewareAccessPolicy = "private";
     config.agents[removedBindingId] = serviceBinding(pluginId);
     config.agents[unrelatedBindingId] = serviceBinding("official.clawchat.codex");
     await saveConfig(config, configPath);
@@ -222,31 +240,12 @@ describe("Connect Service", () => {
     let dependentConfigurationPresentWhenClosed = false;
     let rejectNextDependentClose = true;
     const lifecycleEvents: string[] = [];
-    const exposureCloseCounts = new Map<string, number>();
-    const gatewayStopCounts = new Map<string, number>();
-    const exposureDeviceIds = new Map<string, string>();
     let enqueueRetiredBinding = async (): Promise<void> => {
       throw new Error("retired queue was not created");
     };
     let enqueueUnrelatedBinding = async (): Promise<void> => {
       throw new Error("unrelated queue was not created");
     };
-    const retireLiveware = mock(
-      async (
-        retirement: {
-          activation: ActivationCredentials;
-          deviceId: string;
-        },
-        _dependencies: unknown,
-      ) => {
-        lifecycleEvents.push(`remote-liveware:${retirement.activation.localAgentId}`);
-        expect(retirement.activation.accessToken).toBe(`token-${retirement.activation.localAgentId}`);
-        const exposureDeviceId = exposureDeviceIds.get(retirement.activation.localAgentId);
-        if (!exposureDeviceId) throw new Error("Expected Liveware publication device ownership");
-        expect(retirement.deviceId).toBe(exposureDeviceId);
-        expect(config.agents[retirement.activation.localAgentId]).toBeDefined();
-      },
-    );
     const startBindingRuntime = mock(async (runtimeOptions): Promise<BindingRuntimeHandle> => {
       connected.add(runtimeOptions.agentId);
       const queue = runtimeOptions.execution?.createSessionQueue(runtimeOptions.agentId, {});
@@ -298,47 +297,10 @@ describe("Connect Service", () => {
           signalClientReady(options);
           return {
             origin: "http://127.0.0.1:47823",
+            fetchPrivateGateway: async () => new Response(null, { status: 204 }),
             retireBindings: retireClientBindings,
             stop: async () => undefined,
           };
-        },
-        startBindingScopedClientGateway: async ({ bindingId }) => ({
-          bindingId,
-          origin: `http://127.0.0.1/${bindingId}`,
-          stop: async () => {
-            lifecycleEvents.push(`gateway:${bindingId}`);
-            gatewayStopCounts.set(bindingId, (gatewayStopCounts.get(bindingId) ?? 0) + 1);
-          },
-        }),
-        startLivewareExposure: async ({ activation: exposureActivation, deviceId: exposureDeviceId }) => {
-          exposureDeviceIds.set(exposureActivation.localAgentId, exposureDeviceId);
-          return {
-            record: {
-              ownerUserId: exposureActivation.ownerUserId,
-              localAgentId: exposureActivation.localAgentId,
-              appId: `app-${exposureActivation.localAgentId}`,
-              publicUrl: `https://${exposureActivation.localAgentId}.liveware.example`,
-              accessPolicy: "private",
-            },
-            close: async () => {
-              const bindingId = exposureActivation.localAgentId;
-              lifecycleEvents.push(`agent:${bindingId}`);
-              exposureCloseCounts.set(bindingId, (exposureCloseCounts.get(bindingId) ?? 0) + 1);
-            },
-          };
-        },
-        retireLivewareExposure: retireLiveware,
-        livewareDependencies: {
-          controlPlane: {
-            connect: async () => {
-              throw new Error("composite test must use the injected retirement port");
-            },
-          },
-          clawChat: {
-            list: async () => [],
-            register: async () => undefined,
-            unregister: async () => undefined,
-          },
         },
         verifyInstalledSkills: async () => undefined,
       },
@@ -383,15 +345,6 @@ describe("Connect Service", () => {
       expect(config.agents[removedBindingId]).toBeUndefined();
       expect(config.agents[unrelatedBindingId]).toBeDefined();
       expect(startBindingRuntime).toHaveBeenCalledTimes(2);
-      expect(retireLiveware).toHaveBeenCalledTimes(1);
-      expect(exposureCloseCounts.get(removedBindingId)).toBe(1);
-      expect(gatewayStopCounts.get(removedBindingId)).toBe(1);
-      expect(lifecycleEvents.indexOf(`remote-liveware:${removedBindingId}`)).toBeLessThan(
-        lifecycleEvents.indexOf(`agent:${removedBindingId}`),
-      );
-      expect(lifecycleEvents.indexOf(`agent:${removedBindingId}`)).toBeLessThan(
-        lifecycleEvents.indexOf(`gateway:${removedBindingId}`),
-      );
       expect(lifecycleEvents.indexOf(`client:${removedBindingId}`)).toBeLessThan(
         lifecycleEvents.indexOf(`transport:${removedBindingId}`),
       );
@@ -403,10 +356,6 @@ describe("Connect Service", () => {
     await expect(running).resolves.toEqual({ startedAgentIds: [removedBindingId, unrelatedBindingId] });
     expect(closeCounts.get(removedBindingId)).toBe(2);
     expect(closeCounts.get(unrelatedBindingId)).toBe(1);
-    expect(exposureCloseCounts.get(removedBindingId)).toBe(1);
-    expect(exposureCloseCounts.get(unrelatedBindingId)).toBe(1);
-    expect(gatewayStopCounts.get(removedBindingId)).toBe(1);
-    expect(gatewayStopCounts.get(unrelatedBindingId)).toBe(1);
   });
 
   it("reports disposal failures after awaiting every remaining cleanup", async () => {
@@ -445,6 +394,7 @@ describe("Connect Service", () => {
           }),
           startClientInterface: async () => ({
             origin: "http://127.0.0.1:47823",
+            fetchPrivateGateway: async () => new Response(null, { status: 204 }),
             retireBindings: async () => undefined,
             stop: async () => {
               events.push("client-stop");
@@ -481,6 +431,7 @@ describe("Connect Service", () => {
     });
     const startClientInterface = mock(async () => ({
       origin: "http://127.0.0.1:47823",
+      fetchPrivateGateway: async () => new Response(null, { status: 204 }),
       retireBindings: async () => undefined,
       stop: async () => undefined,
     }));
@@ -510,6 +461,7 @@ describe("Connect Service", () => {
     const errors: string[] = [];
     const startClientInterface = mock(async () => ({
       origin: "http://127.0.0.1:47823",
+      fetchPrivateGateway: async () => new Response(null, { status: 204 }),
       retireBindings: async () => undefined,
       stop: async () => undefined,
     }));
@@ -586,6 +538,7 @@ describe("Connect Service", () => {
         }),
         startClientInterface: async () => ({
           origin: "http://127.0.0.1:47823",
+          fetchPrivateGateway: async () => new Response(null, { status: 204 }),
           retireBindings: async () => undefined,
           stop: async () => undefined,
         }),
@@ -615,209 +568,6 @@ describe("Connect Service", () => {
       await service;
     }
   });
-
-  it("starts Liveware after the Client Interface and closes it before the Client", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-liveware-"));
-    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
-    await stateStore.upsertActivation(activation("codex"));
-    const config = serviceConfig(["codex"]);
-    config.stateDbPath = stateStore.dbPath;
-    config.livewareAccessPolicy = "private";
-    const events: string[] = [];
-    const process = controlledAgentProcess(events);
-    const controlPlane: LivewareControlPlanePort = {
-      connect: async (): Promise<LivewareControlSession> => {
-        events.push("liveware-connect");
-        return {
-          listApps: async () => [],
-          createApp: async (name) => ({
-            appId: "app-0000000000000001",
-            name,
-            publicUrl: "https://app-0000000000000001.apps.example",
-          }),
-          setAccessPolicy: async () => undefined,
-          bindTunnel: async () => "https://app-0000000000000001.apps.example",
-          deleteApp: async () => undefined,
-          startAgent: async () => {
-            events.push("liveware-agent-start");
-            return process;
-          },
-        };
-      },
-    };
-    const clawChat: ClawChatLivewarePort = {
-      list: async () => [],
-      register: async () => undefined,
-      unregister: async () => undefined,
-    };
-
-    await startConnectService(
-      {
-        config,
-        stateStore,
-        waitUntilShutdown: async () => undefined,
-        writeOutput: () => undefined,
-        writeError: () => undefined,
-      },
-      {
-        startBindingRuntime: async () => ({
-          agentId: "codex",
-          websocketUrl: config.websocketUrl,
-          deviceId: "device-1",
-          close: async () => {
-            events.push("binding-close");
-          },
-        }),
-        startClientInterface: async () => {
-          events.push("client-start");
-          return {
-            origin: "http://127.0.0.1:47823",
-            retireBindings: async () => undefined,
-            stop: async () => {
-              events.push("client-stop");
-            },
-          };
-        },
-        startBindingScopedClientGateway: async ({ bindingId }) => ({
-          bindingId,
-          origin: "http://127.0.0.1:48001",
-          stop: async () => undefined,
-        }),
-        livewareDependencies: { controlPlane, clawChat },
-        verifyInstalledSkills: async () => undefined,
-      },
-    );
-
-    expect(events.indexOf("client-start")).toBeLessThan(events.indexOf("liveware-agent-start"));
-    expect(events.indexOf("liveware-agent-stop")).toBeLessThan(events.indexOf("client-stop"));
-  });
-
-  it("starts one Binding-Scoped Client Gateway and Liveware Exposure for each Agent Binding", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-multi-liveware-"));
-    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
-    await stateStore.upsertActivation(activation("personal", "shared-owner"));
-    await stateStore.upsertActivation(activation("work", "shared-owner"));
-    const config = serviceConfig(["personal", "work"]);
-    config.agents.work = pluginBinding();
-    config.stateDbPath = stateStore.dbPath;
-    config.livewareAccessPolicy = "private";
-    const gatewayStops: string[] = [];
-    const exposureStops: string[] = [];
-    const startBindingScopedClientGateway = mock(async ({ bindingId }: { bindingId: string }) => ({
-      bindingId,
-      origin: bindingId === "personal" ? "http://127.0.0.1:48001" : "http://127.0.0.1:48002",
-      stop: async () => {
-        gatewayStops.push(bindingId);
-      },
-    }));
-    const startLivewareExposure = mock(async (input: Parameters<typeof startLivewareExposureDefault>[0]) => ({
-      record: {
-        ownerUserId: input.activation.ownerUserId,
-        localAgentId: input.activation.localAgentId,
-        appId: `app-${input.activation.localAgentId}`,
-        publicUrl: `https://${input.activation.localAgentId}.apps.example`,
-        accessPolicy: input.accessPolicy,
-      },
-      close: async () => {
-        exposureStops.push(input.activation.localAgentId);
-      },
-    }));
-
-    await startConnectService(
-      {
-        config,
-        stateStore,
-        waitUntilShutdown: async () => undefined,
-        writeOutput: () => undefined,
-        writeError: () => undefined,
-      },
-      {
-        startBindingRuntime: async ({ agentId }) => ({
-          agentId,
-          websocketUrl: config.websocketUrl,
-          deviceId: "device-1",
-          close: async () => undefined,
-        }),
-        startClientInterface: async () => ({
-          origin: "http://127.0.0.1:47823",
-          retireBindings: async () => undefined,
-          stop: async () => undefined,
-        }),
-        startBindingScopedClientGateway,
-        startLivewareExposure,
-        livewareDependencies: {
-          controlPlane: { connect: async () => Promise.reject(new Error("not used")) },
-          clawChat: {
-            list: async () => [],
-            register: async () => undefined,
-            unregister: async () => undefined,
-          },
-        },
-        verifyInstalledSkills: async () => undefined,
-      },
-    );
-
-    expect(startBindingScopedClientGateway.mock.calls.map(([input]) => input.bindingId)).toEqual(["personal", "work"]);
-    expect(startLivewareExposure.mock.calls.map(([input]) => [input.activation.localAgentId, input.upstream])).toEqual([
-      ["personal", "http://127.0.0.1:48001"],
-      ["work", "http://127.0.0.1:48002"],
-    ]);
-    expect(exposureStops).toEqual(["personal", "work"]);
-    expect(gatewayStops).toEqual(["personal", "work"]);
-  });
-
-  it("keeps local Connect running when the optional Liveware Exposure cannot start", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-liveware-failure-"));
-    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
-    await stateStore.upsertActivation(activation("codex"));
-    const config = serviceConfig(["codex"]);
-    config.stateDbPath = stateStore.dbPath;
-    config.livewareAccessPolicy = "private";
-    const errors: string[] = [];
-    const result = await startConnectService(
-      {
-        config,
-        stateStore,
-        waitUntilShutdown: async () => undefined,
-        writeOutput: () => undefined,
-        writeError: (message) => errors.push(message),
-      },
-      {
-        startBindingRuntime: async () => ({
-          agentId: "codex",
-          websocketUrl: config.websocketUrl,
-          deviceId: "device-1",
-          close: async () => undefined,
-        }),
-        startClientInterface: async () => ({
-          origin: "http://127.0.0.1:47823",
-          retireBindings: async () => undefined,
-          stop: async () => undefined,
-        }),
-        startBindingScopedClientGateway: async ({ bindingId }) => ({
-          bindingId,
-          origin: "http://127.0.0.1:48001",
-          stop: async () => undefined,
-        }),
-        livewareDependencies: {
-          controlPlane: {
-            connect: async () => {
-              throw new Error("control plane unavailable");
-            },
-          },
-          clawChat: {
-            list: async () => [],
-            register: async () => undefined,
-            unregister: async () => undefined,
-          },
-        },
-        verifyInstalledSkills: async () => undefined,
-      },
-    );
-
-    expect(result).toEqual({ startedAgentIds: ["codex"] });
-    expect(errors.join("")).toContain("local Connect remains running: control plane unavailable");
-  });
 });
 
 function serviceConfig(agentIds: string[]): ConnectConfig {
@@ -829,7 +579,6 @@ function serviceConfig(agentIds: string[]): ConnectConfig {
       serviceBinding(index === 0 ? "official.clawchat.codex" : `test.future-${index}`),
     ]),
   );
-  config.livewareAccessPolicy = "off";
   return config;
 }
 
@@ -878,19 +627,5 @@ export default {
       artifacts: [{ target: currentConnectPluginTarget(), entry: "plugin.mjs", integrity }],
     },
     files: { "plugin.mjs": { encoding: "utf8", content: source } },
-  };
-}
-
-function controlledAgentProcess(events: string[]) {
-  let resolveExit: (exitCode: number) => void = () => undefined;
-  const exited = new Promise<number>((resolve) => {
-    resolveExit = resolve;
-  });
-  return {
-    exited,
-    stop: async () => {
-      events.push("liveware-agent-stop");
-      resolveExit(0);
-    },
   };
 }

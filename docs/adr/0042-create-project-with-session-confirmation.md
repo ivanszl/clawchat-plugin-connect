@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0047
 ---
 
 # Create an inline Project when its Session is confirmed

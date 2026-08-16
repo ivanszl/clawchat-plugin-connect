@@ -1,5 +1,5 @@
 import type { EmbeddedTranscriptBlock, TranscriptBlock } from "../client-contract";
-import type { LivewareExposureRecord, ProjectRecord, RuntimeSessionRecord, SessionIntentRecord } from "../types";
+import type { RuntimeSessionRecord, SessionIntentRecord, WorkspaceRecord } from "../types";
 import type {
   GroupReplyMode,
   GroupSettingsRecord,
@@ -121,17 +121,6 @@ export function groupSettingsRecordFromRow(row: Record<string, unknown>): GroupS
     version: numberValue(row.version),
   };
 }
-export function livewareExposureFromRow(row: Record<string, unknown>): LivewareExposureRecord | null {
-  const accessPolicy = stringValue(row.access_policy);
-  if (accessPolicy !== "private" && accessPolicy !== "public") return null;
-  return {
-    ownerUserId: stringValue(row.owner_user_id),
-    localAgentId: stringValue(row.local_agent_id),
-    appId: stringValue(row.app_id),
-    publicUrl: stringValue(row.public_url),
-    accessPolicy,
-  };
-}
 export function sameTranscriptPayload(stored: TranscriptBlock, input: TranscriptBlockInput): boolean {
   const storedPayload = { ...stored } as Record<string, unknown>;
   const inputPayload = { ...input } as Record<string, unknown>;
@@ -216,11 +205,15 @@ export function connectPromptMatchesRuntimeHistory(connectPrompt: string, runtim
 export function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : Number(value ?? 0) || 0;
 }
-export function projectFromRow(row: Record<string, unknown>): ProjectRecord {
+export function workspaceFromRow(row: Record<string, unknown>): WorkspaceRecord {
   return {
-    projectId: stringValue(row.project_id),
+    bindingId: stringValue(row.binding_id),
+    workspaceRef: stringValue(row.workspace_ref),
+    runtimeIdentityKey: nullableString(row.runtime_identity_key),
+    source: stringValue(row.source) as "default" | "runtime",
     name: stringValue(row.name),
     rootPath: stringValue(row.root_path),
+    selectable: Number(row.selectable) === 1,
     createdAt: numberValue(row.created_at),
     updatedAt: numberValue(row.updated_at),
   };
@@ -243,7 +236,7 @@ export function runtimeSessionFromRow(row: Record<string, unknown>): RuntimeSess
     sessionRef: stringValue(row.session_ref),
     agentId: stringValue(row.agent_id),
     runtimeSessionId: nullableString(row.runtime_session_id),
-    projectId: nullableString(row.project_id),
+    workspaceRef: nullableString(row.workspace_ref),
     name: nullableString(row.name),
     mode: nullableString(row.mode),
     model: nullableString(row.model),
@@ -272,7 +265,7 @@ export function sessionIntentFromRow(row: Record<string, unknown>): SessionInten
   return {
     chatId: stringValue(row.chat_id),
     agentId: stringValue(row.agent_id),
-    projectId: nullableString(row.project_id),
+    workspaceRef: nullableString(row.workspace_ref),
     name: nullableString(row.name),
     mode: nullableString(row.mode),
     model: nullableString(row.model),

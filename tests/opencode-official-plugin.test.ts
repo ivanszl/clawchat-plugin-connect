@@ -7,10 +7,7 @@ import { buildOfficialPlugin } from "../scripts/build-official-plugins";
 import { defaultConfig, saveConfig } from "../src/config";
 import { createAgentBinding } from "../src/plugin/binding";
 import { ConnectPluginHost } from "../src/plugin/host";
-import {
-  probeCompatibleOpenCodeExecutable,
-  requireCompatibleOpenCodeExecutable,
-} from "../src/plugin/official/opencode-compatibility";
+import { requireCompatibleOpenCodeExecutable } from "../src/plugin/official/opencode-compatibility";
 import descriptor from "../src/plugin/official/opencode-descriptor";
 import { createOpenCodeOfficialPluginEntry } from "../src/plugin/official/opencode-entry";
 import {
@@ -32,7 +29,7 @@ import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 const FIXTURE_VERSION = OPENCODE_SDK_VERSION;
 
 describe("official OpenCode Runtime Plugin", () => {
-  it("builds a self-contained target artifact and separately integrity-protected probe", async () => {
+  it("builds a self-contained target artifact", async () => {
     const built = await buildOfficialPlugin(descriptor, { target: "test-target", write: false });
 
     expect(built.bundle.manifest).toMatchObject({
@@ -48,13 +45,11 @@ describe("official OpenCode Runtime Plugin", () => {
       artifacts: [
         { target: "test-target", entry: "artifacts/test-target.mjs", integrity: expect.stringMatching(/^sha256-/u) },
       ],
-      probe: { entry: "probe.mjs", integrity: expect.stringMatching(/^sha256-/u) },
     });
-    expect(Object.keys(built.bundle.files).sort()).toEqual(["artifacts/test-target.mjs", "probe.mjs"]);
+    expect(Object.keys(built.bundle.files)).toEqual(["artifacts/test-target.mjs"]);
     expect(built.bundle.files["artifacts/test-target.mjs"]?.content).not.toMatch(
       /from\s+["'](?:\.\.?\/|@opencode-ai\/sdk)/u,
     );
-    expect(built.bundle.files["probe.mjs"]?.content).not.toContain("opencode-adapter");
   });
 
   it("accepts arbitrary parseable versions while executable and malformed-output failures remain closed", async () => {
@@ -71,58 +66,17 @@ describe("official OpenCode Runtime Plugin", () => {
     const provider = await activateProvider(createOpenCodeOfficialPluginEntry());
 
     for (const candidate of executables) {
-      await expect(
-        probeCompatibleOpenCodeExecutable({
-          platform: process.platform,
-          arch: process.arch,
-          findExecutable: async () => candidate.path,
-        }),
-      ).resolves.toEqual({
-        detected: true,
-        compatible: true,
-        path: candidate.path,
-        version: candidate.version,
-      });
       expect(requireCompatibleOpenCodeExecutable(candidate.path, { PATH: directory })).toEqual(candidate);
-      expect(() => provider.create({ executablePathOverride: candidate.path })).not.toThrow();
+      expect(() =>
+        provider.create({ executablePathOverride: candidate.path }, { activationGeneration: 1 }),
+      ).not.toThrow();
     }
-    await expect(
-      probeCompatibleOpenCodeExecutable({
-        platform: process.platform,
-        arch: process.arch,
-        findExecutable: async () => malformed,
-      }),
-    ).resolves.toMatchObject({
-      detected: true,
-      compatible: false,
-      path: malformed,
-      detail: expect.stringContaining("Failed to read OpenCode version"),
-    });
     expect(() => requireCompatibleOpenCodeExecutable(malformed, { PATH: directory })).toThrow(
       "Failed to read OpenCode version",
     );
-    await expect(
-      probeCompatibleOpenCodeExecutable({
-        platform: process.platform,
-        arch: process.arch,
-        findExecutable: async () => commandFailure,
-      }),
-    ).resolves.toMatchObject({
-      detected: true,
-      compatible: false,
-      path: commandFailure,
-      detail: expect.stringContaining("exited with code 17"),
-    });
     expect(() => requireCompatibleOpenCodeExecutable(commandFailure, { PATH: directory })).toThrow(
       "exited with code 17",
     );
-    await expect(
-      probeCompatibleOpenCodeExecutable({
-        platform: process.platform,
-        arch: process.arch,
-        findExecutable: async () => null,
-      }),
-    ).resolves.toMatchObject({ detected: false, compatible: false });
     expect(() => requireCompatibleOpenCodeExecutable(join(directory, "missing-opencode"), { PATH: directory })).toThrow(
       "could not be started",
     );
@@ -142,8 +96,8 @@ describe("official OpenCode Runtime Plugin", () => {
         runtimeAdapter: { createServer },
       }),
     );
-    const alpha = provider.create({ env: { INSTANCE: "alpha" } });
-    const beta = provider.create({ env: { INSTANCE: "beta" } });
+    const alpha = provider.create({ env: { INSTANCE: "alpha" } }, { activationGeneration: 1 });
+    const beta = provider.create({ env: { INSTANCE: "beta" } }, { activationGeneration: 1 });
 
     await Promise.all([alpha.prepare?.(), beta.prepare?.()]);
     await expect(alpha.discoverAllThreads?.()).resolves.toEqual([
@@ -233,6 +187,7 @@ async function fakeFailingExecutable(directory: string, name: string): Promise<s
 async function activateProvider(entry: ConnectPluginEntry) {
   let provider: ConnectPluginRuntimeProvider | undefined;
   const context: ConnectPluginContext = {
+    activationGeneration: 1,
     interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
     installationConfiguration: {},
     hostCapabilities: {

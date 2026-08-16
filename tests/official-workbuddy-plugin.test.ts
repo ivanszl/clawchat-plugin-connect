@@ -13,15 +13,9 @@ import { createAgentBinding } from "../src/plugin/binding";
 import { ConnectPluginHost } from "../src/plugin/host";
 import codexDescriptor from "../src/plugin/official/codex-descriptor";
 import openCodeDescriptor from "../src/plugin/official/opencode-descriptor";
-import {
-  inspectInstalledDistribution,
-  type OfficialWorkBuddyInspection,
-  probeOfficialWorkBuddyRuntimes,
-} from "../src/plugin/official/workbuddy-compatibility";
 import workBuddyDescriptor from "../src/plugin/official/workbuddy-descriptor";
 import { createWorkBuddyOfficialAdapter } from "../src/plugin/official/workbuddy-entry";
 import {
-  OFFICIAL_WORKBUDDY_DISTRIBUTIONS,
   WORKBUDDY_AI_CAPABILITY_ID,
   WORKBUDDY_CN_CAPABILITY_ID,
   WORKBUDDY_OFFICIAL_PLUGIN_ID,
@@ -31,11 +25,7 @@ import { listInstalledPlugins } from "../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { RuntimeActivity } from "../src/runtime/types";
 import type { WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
-import {
-  WORKBUDDY_AI_COMPATIBILITY,
-  WORKBUDDY_CN_COMPATIBILITY,
-  type WorkBuddyProfile,
-} from "../src/runtime/workbuddy-task-discovery";
+import type { WorkBuddyProfile } from "../src/runtime/workbuddy-task-discovery";
 import type { AdapterHarness } from "./runtime-adapter-conformance";
 import { runtimeAdapterConformance } from "./runtime-adapter-conformance";
 
@@ -56,14 +46,13 @@ for (const profile of ["workbuddy-ai", "workbuddy-cn"] as const) {
 }
 
 describe("official WorkBuddy Runtime Plugin", () => {
-  it("builds a target-specific self-contained Bundle with two strict profile capabilities and a separate probe", async () => {
+  it("builds a target-specific self-contained Bundle with two strict profile capabilities", async () => {
     expect(workBuddyDescriptor.supportedTargets).toEqual(["darwin-arm64", "darwin-x64"]);
     const built = await buildOfficialPlugin(workBuddyDescriptor, { target: "darwin-arm64", write: false });
     expect(built.bundle.manifest).toMatchObject({
       pluginId: WORKBUDDY_OFFICIAL_PLUGIN_ID,
       installationConfigurationSchema: { type: "object", additionalProperties: false },
       artifacts: [{ target: "darwin-arm64", entry: "artifacts/darwin-arm64.mjs" }],
-      probe: { entry: "probe.mjs" },
       capabilities: [
         {
           id: WORKBUDDY_AI_CAPABILITY_ID,
@@ -80,12 +69,8 @@ describe("official WorkBuddy Runtime Plugin", () => {
       ],
     });
     const artifact = built.bundle.files["artifacts/darwin-arm64.mjs"]?.content ?? "";
-    const probe = built.bundle.files["probe.mjs"]?.content ?? "";
     expect(artifact.length).toBeGreaterThan(1_000);
-    expect(probe.length).toBeGreaterThan(500);
     expect(artifact).not.toMatch(/\bfrom\s+["']\.\.?\//u);
-    expect(probe).not.toMatch(/\bfrom\s+["']\.\.?\//u);
-    expect(probe).not.toContain("createWorkBuddyOfficialPluginEntry");
   });
 
   it("publishes WorkBuddy only for Darwin targets while retaining unrestricted official Plugins", async () => {
@@ -129,117 +114,6 @@ describe("official WorkBuddy Runtime Plugin", () => {
         /supportedTargets|target/u,
       );
     }
-  });
-
-  it("accepts arbitrary observed versions while preserving distribution, executable, and metadata failures", async () => {
-    const [ai, mainland] = OFFICIAL_WORKBUDDY_DISTRIBUTIONS;
-    expect(
-      OFFICIAL_WORKBUDDY_DISTRIBUTIONS.map(({ profile, applicationPath, bundleIdentifier, acpVersion }) => ({
-        profile,
-        applicationPath,
-        bundleIdentifier,
-        acpVersion,
-      })),
-    ).toEqual(
-      [WORKBUDDY_AI_COMPATIBILITY, WORKBUDDY_CN_COMPATIBILITY].map(
-        ({ profile, applicationPath, bundleIdentifier, acpVersion }) => ({
-          profile,
-          applicationPath,
-          bundleIdentifier,
-          acpVersion,
-        }),
-      ),
-    );
-
-    const observedVersions = {
-      "workbuddy-ai": { applicationVersion: "2026.8.16", embeddedCodeBuddyVersion: "9.99.1-nightly.4" },
-      "workbuddy-cn": { applicationVersion: "6.0.0-preview.2", embeddedCodeBuddyVersion: "3.7.11" },
-    } as const;
-    const arbitrary = await probeOfficialWorkBuddyRuntimes(
-      { platform: "darwin", arch: "arm64", findExecutable: async () => null },
-      {
-        inspect: async (distribution): Promise<OfficialWorkBuddyInspection> => ({
-          status: "supported",
-          distribution,
-          bundleIdentifier: distribution.bundleIdentifier,
-          ...observedVersions[distribution.profile],
-        }),
-      },
-    );
-    expect(arbitrary).toMatchObject({
-      detected: true,
-      compatible: true,
-      version: "WorkBuddy AI 2026.8.16 + CodeBuddy 9.99.1-nightly.4; WorkBuddy 6.0.0-preview.2 + CodeBuddy 3.7.11",
-    });
-    expect(arbitrary).not.toHaveProperty("path");
-    expect(arbitrary.detail).toContain(
-      "Detected WorkBuddy AI 2026.8.16 + CodeBuddy 9.99.1-nightly.4 at /Applications/WorkBuddy AI.app",
-    );
-    expect(arbitrary.detail).toContain("ACP v1");
-    expect(arbitrary.detail).toContain("verified during Binding activation");
-
-    const oneDistribution = await probeOfficialWorkBuddyRuntimes(
-      { platform: "darwin", arch: "arm64", findExecutable: async () => null },
-      {
-        inspect: async (distribution): Promise<OfficialWorkBuddyInspection> =>
-          distribution.profile === "workbuddy-ai"
-            ? {
-                status: "supported",
-                distribution: ai,
-                bundleIdentifier: ai.bundleIdentifier,
-                applicationVersion: "7.4.3",
-                embeddedCodeBuddyVersion: "4.8.12",
-              }
-            : { status: "missing", distribution: mainland },
-      },
-    );
-    expect(oneDistribution).toMatchObject({
-      detected: true,
-      compatible: true,
-      path: ai.applicationPath,
-      version: "WorkBuddy AI 7.4.3 + CodeBuddy 4.8.12",
-    });
-    expect(oneDistribution.detail).toContain(`WorkBuddy is missing from ${mainland.applicationPath}`);
-
-    const wrongDistribution = await probeOfficialWorkBuddyRuntimes(
-      { platform: "darwin", arch: "arm64", findExecutable: async () => null },
-      {
-        inspect: async (distribution): Promise<OfficialWorkBuddyInspection> => ({
-          status: "unsupported",
-          distribution,
-          bundleIdentifier: "com.example.not-workbuddy",
-          applicationVersion: "99.1.0",
-          embeddedCodeBuddyVersion: "[wrong-distribution]",
-        }),
-      },
-    );
-    expect(wrongDistribution).toMatchObject({ detected: true, compatible: false });
-    expect(wrongDistribution.detail).toContain("Wrong distribution");
-    expect(wrongDistribution.detail).toContain("com.example.not-workbuddy");
-
-    const unreadableExecutable = await probeOfficialWorkBuddyRuntimes(
-      { platform: "darwin", arch: "arm64", findExecutable: async () => null },
-      {
-        inspect: async (distribution): Promise<OfficialWorkBuddyInspection> =>
-          distribution.profile === "workbuddy-ai"
-            ? {
-                status: "unsupported",
-                distribution,
-                error: "ENOENT: Contents/MacOS/Electron",
-              }
-            : { status: "missing", distribution },
-      },
-    );
-    expect(unreadableExecutable).toMatchObject({ detected: true, compatible: false });
-    expect(unreadableExecutable.detail).toContain("executable or diagnostic metadata is unreadable");
-    expect(unreadableExecutable.detail).toContain("Contents/MacOS/Electron");
-
-    await expect(
-      probeOfficialWorkBuddyRuntimes(
-        { platform: "linux", arch: "x64", findExecutable: async () => null },
-        { inspect: inspectInstalledDistribution },
-      ),
-    ).resolves.toMatchObject({ detected: false, compatible: false });
   });
 
   it("keeps profile-owned Adapter state isolated and never confuses direct CodeBuddy Sessions with WorkBuddy Tasks", async () => {
@@ -305,6 +179,7 @@ describe("official WorkBuddy Runtime Plugin", () => {
 
       const directThreadIds: string[] = [];
       const direct = await adapter.start({
+        activationGeneration: 1,
         bindingId: profile,
         chatId: "direct",
         sessionId: "direct",
@@ -323,6 +198,7 @@ describe("official WorkBuddy Runtime Plugin", () => {
 
       const taskThreadIds: string[] = [];
       const task = await adapter.start({
+        activationGeneration: 1,
         bindingId: profile,
         chatId: "task",
         sessionId: "task",

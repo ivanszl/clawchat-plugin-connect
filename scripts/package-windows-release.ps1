@@ -1,7 +1,6 @@
 param(
   [Parameter(Mandatory = $true)][string]$ConnectExecutable,
   [Parameter(Mandatory = $true)][string]$ClientDirectory,
-  [Parameter(Mandatory = $true)][string]$LivewareExecutable,
   [Parameter(Mandatory = $true)][string]$OfficialPluginsDirectory,
   [Parameter(Mandatory = $true)][string]$OutputArchive,
   [Parameter(Mandatory = $true)][ValidateSet("win32-arm64", "win32-x64")][string]$PluginTarget
@@ -30,15 +29,13 @@ if (-not (Test-Path -LiteralPath $ClientDirectory -PathType Container)) {
 if (-not (Test-Path -LiteralPath $ClientEntry -PathType Leaf)) {
   throw "Client entry point does not exist: $ClientEntry"
 }
-if (-not (Test-Path -LiteralPath $LivewareExecutable -PathType Leaf)) {
-  throw "Liveware executable does not exist: $LivewareExecutable"
-}
 if (-not (Test-Path -LiteralPath $OfficialPluginsDirectory -PathType Container)) {
   throw "Official Plugins directory does not exist: $OfficialPluginsDirectory"
 }
 foreach ($OfficialPluginId in @(
   "clawling.runtime.codex",
-  "clawling.runtime.opencode"
+  "clawling.runtime.opencode",
+  "clawling.exposure.liveware"
 )) {
   if (@(Get-ChildItem -LiteralPath $OfficialPluginsDirectory -Filter "$OfficialPluginId-*.connect-plugin" -File).Count -eq 0) {
     throw "Official Plugin Bundle does not exist for ${OfficialPluginId}: $OfficialPluginsDirectory"
@@ -61,7 +58,6 @@ try {
   New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
   Copy-Item -LiteralPath $ConnectExecutable -Destination (Join-Path $PayloadRoot "clawchat-connect.exe")
-  Copy-Item -LiteralPath $LivewareExecutable -Destination (Join-Path $PayloadRoot "liveware.exe")
   Copy-Item -LiteralPath $ClientDirectory -Destination (Join-Path $PayloadRoot "clawchat-connect-client") -Recurse
   Copy-Item -LiteralPath $OfficialPluginsDirectory -Destination (Join-Path $PayloadRoot "official-plugins") -Recurse
   Copy-Item -LiteralPath $SkillsDirectory -Destination (Join-Path $PayloadRoot "skills") -Recurse

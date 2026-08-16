@@ -16,15 +16,19 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import type {
   BindingPreferenceView,
-  ProjectDirectoryRequest,
-  ProjectView,
   SessionCatalogBindingView,
   SessionCatalogEntryView,
+  WorkspaceDirectoryRequest,
+  WorkspaceView,
 } from "../../../../src/client-contract";
-import { catalogQueryOptions, createSession } from "../../client-interface/query-options";
+import { catalogQueryOptions, createSession, workspacesQueryOptions } from "../../client-interface/query-options";
 import { AddIcon, FolderIcon, ThreadIcon } from "../../components/icons";
 import { type ClientTranslator, localizedClientError, useClientTranslator } from "../../i18n/client-i18n";
-import { HostDirectoryPicker, projectDirectoryLabel, projectDirectoryName } from "../projects/HostDirectoryPicker";
+import {
+  HostDirectoryPicker,
+  workspaceDirectoryLabel,
+  workspaceDirectoryName,
+} from "../workspaces/HostDirectoryPicker";
 
 export function SessionNavigation({ onNewSession }: { onNewSession: () => void }) {
   const t = useClientTranslator();
@@ -128,23 +132,21 @@ export function NewSessionDialog({
   isOpen,
   bindings,
   catalogBindings,
-  projects,
   onOpenChange,
   onCreated,
 }: {
   isOpen: boolean;
   bindings: BindingPreferenceView[];
   catalogBindings: SessionCatalogBindingView[];
-  projects: ProjectView[];
   onOpenChange: (open: boolean) => void;
   onCreated: (sessionRef: string) => void;
 }) {
   const t = useClientTranslator();
   const queryClient = useQueryClient();
   const [bindingId, setBindingId] = useState(bindings[0]?.bindingId ?? "");
-  const [workspaceSelection, setWorkspaceSelection] = useState("none");
-  const [pendingProject, setPendingProject] = useState<ProjectDirectoryRequest | null>(null);
-  const [isPickingProject, setIsPickingProject] = useState(false);
+  const [workspaceSelection, setWorkspaceSelection] = useState("");
+  const [pendingWorkspace, setPendingWorkspace] = useState<WorkspaceDirectoryRequest | null>(null);
+  const [isPickingWorkspace, setIsPickingWorkspace] = useState(false);
   const [name, setName] = useState("");
   const [mode, setMode] = useState("default");
   const [model, setModel] = useState("default");
@@ -154,16 +156,23 @@ export function NewSessionDialog({
   }, [bindingId, bindings]);
   useEffect(() => {
     if (isOpen) return;
-    setIsPickingProject(false);
-    setPendingProject(null);
-    setWorkspaceSelection("none");
+    setIsPickingWorkspace(false);
+    setPendingWorkspace(null);
+    setWorkspaceSelection("");
   }, [isOpen]);
   const binding = bindings.find((candidate) => candidate.bindingId === bindingId) ?? bindings[0];
-  const workspaceOptions = newSessionWorkspaceOptions(catalogBindings, bindingId, projects);
-  const projectOptionDescriptions = new Map(
+  const workspaces = useQuery(workspacesQueryOptions(bindingId || null));
+  const workspaceOptions = newSessionWorkspaceOptions(catalogBindings, bindingId, workspaces.data ?? []);
+  const workspaceOptionDescriptions = new Map(
     workspaceOptions.flatMap((option) => (option.description ? [[option.value, option.description]] : [])),
   );
-  if (pendingProject) projectOptionDescriptions.set("pending-project", projectDirectoryLabel(pendingProject));
+  if (pendingWorkspace) workspaceOptionDescriptions.set("pending-workspace", workspaceDirectoryLabel(pendingWorkspace));
+  useEffect(() => {
+    if (pendingWorkspace || workspaceOptions.some((option) => option.value === workspaceSelection)) return;
+    setWorkspaceSelection(
+      workspaces.data?.find((workspace) => workspace.isDefault)?.workspaceRef ?? workspaceOptions[0]?.value ?? "",
+    );
+  }, [pendingWorkspace, workspaceOptions, workspaceSelection, workspaces.data]);
   const defaultModel =
     binding?.modelOptions.find((candidate) => candidate.id === binding.model) ??
     binding?.modelOptions.find((candidate) => candidate.isDefault) ??
@@ -180,11 +189,9 @@ export function NewSessionDialog({
     mutationFn: async () =>
       await createSession({
         bindingId,
-        workspace: pendingProject
-          ? { kind: "new-project", directory: pendingProject }
-          : workspaceSelection === "none"
-            ? { kind: "none" }
-            : { kind: "existing", workspaceId: workspaceSelection },
+        workspace: pendingWorkspace
+          ? { kind: "new", directory: pendingWorkspace }
+          : { kind: "existing", workspaceRef: workspaceSelection },
         name: name.trim() || null,
         mode: mode === "default" ? null : mode,
         model: model === "default" ? null : model,
@@ -200,9 +207,9 @@ export function NewSessionDialog({
     setMode("default");
     setModel("default");
     setReasoningEffort("default");
-    setWorkspaceSelection("none");
-    setPendingProject(null);
-    setIsPickingProject(false);
+    setWorkspaceSelection("");
+    setPendingWorkspace(null);
+    setIsPickingWorkspace(false);
   };
   return (
     <Dialog
@@ -213,23 +220,23 @@ export function NewSessionDialog({
       width={520}
       maxHeight="calc(100dvh - var(--spacing-6))"
     >
-      {isPickingProject ? (
+      {isPickingWorkspace ? (
         <Layout
           header={
             <DialogHeader
               title={t("@connect.newSession.directory.title")}
               subtitle={t("@connect.newSession.directory.description")}
-              onOpenChange={() => setIsPickingProject(false)}
+              onOpenChange={() => setIsPickingWorkspace(false)}
             />
           }
           content={
             <LayoutContent className="new-session-dialog-content">
               <HostDirectoryPicker
-                onCancel={() => setIsPickingProject(false)}
+                onCancel={() => setIsPickingWorkspace(false)}
                 onSelect={(directory) => {
-                  setPendingProject(directory);
-                  setWorkspaceSelection("pending-project");
-                  setIsPickingProject(false);
+                  setPendingWorkspace(directory);
+                  setWorkspaceSelection("pending-workspace");
+                  setIsPickingWorkspace(false);
                 }}
               />
             </LayoutContent>
@@ -265,44 +272,43 @@ export function NewSessionDialog({
                   onChange={changeBinding}
                   width="100%"
                 />
-                <VStack className="project-selector-field" gap={1}>
+                <VStack className="workspace-selector-field" gap={1}>
                   <HStack align="center" justify="between">
-                    <Text type="label">Project</Text>
+                    <Text type="label">{t("@connect.newSession.workspace.label")}</Text>
                     <IconButton
-                      label={t("@connect.newSession.project.add")}
-                      tooltip={t("@connect.newSession.project.add")}
+                      label={t("@connect.newSession.workspace.add")}
+                      tooltip={t("@connect.newSession.workspace.add")}
                       icon={<AddIcon />}
                       size="sm"
                       variant="ghost"
-                      onClick={() => setIsPickingProject(true)}
+                      onClick={() => setIsPickingWorkspace(true)}
                     />
                   </HStack>
                   <Selector
-                    label="Project"
+                    label={t("@connect.newSession.workspace.label")}
                     isLabelHidden
                     options={[
-                      { value: "none", label: t("@connect.newSession.project.nonProject") },
                       ...workspaceOptions.map(({ value, label }) => ({ value, label })),
-                      ...(pendingProject
+                      ...(pendingWorkspace
                         ? [
                             {
-                              value: "pending-project",
-                              label: projectDirectoryName(pendingProject),
+                              value: "pending-workspace",
+                              label: workspaceDirectoryName(pendingWorkspace),
                             },
                           ]
                         : []),
                     ]}
                     renderOption={(option) => (
                       <SelectorOption
-                        className="project-selector-option"
+                        className="workspace-selector-option"
                         label={option.label ?? option.value}
-                        description={projectOptionDescriptions.get(option.value)}
+                        description={workspaceOptionDescriptions.get(option.value)}
                       />
                     )}
                     value={workspaceSelection}
                     onChange={(value) => {
                       setWorkspaceSelection(value);
-                      if (value !== "pending-project") setPendingProject(null);
+                      if (value !== "pending-workspace") setPendingWorkspace(null);
                     }}
                     width="100%"
                   />
@@ -366,7 +372,7 @@ export function NewSessionDialog({
                   label={t("@connect.newSession.create")}
                   variant="primary"
                   isLoading={create.isPending}
-                  isDisabled={!bindingId || nameTooLong}
+                  isDisabled={!bindingId || !workspaceSelection || nameTooLong}
                   onClick={() => create.mutate()}
                 />
               </HStack>
@@ -381,21 +387,21 @@ export function NewSessionDialog({
 function newSessionWorkspaceOptions(
   bindings: SessionCatalogBindingView[],
   bindingId: string,
-  projects: ProjectView[],
+  workspaces: WorkspaceView[],
 ): { value: string; label: string; description?: string }[] {
   const options = new Map<string, { value: string; label: string; description?: string }>();
   for (const entry of bindings.find((binding) => binding.bindingId === bindingId)?.entries ?? []) {
-    if (entry.isArchived || !entry.workspaceId || !entry.workspaceName) continue;
-    options.set(entry.workspaceId, {
-      value: entry.workspaceId,
+    if (entry.isArchived || !entry.workspaceName) continue;
+    options.set(entry.workspaceRef, {
+      value: entry.workspaceRef,
       label: entry.workspaceName,
     });
   }
-  for (const project of projects) {
-    options.set(project.workspaceId, {
-      value: project.workspaceId,
-      label: project.name,
-      description: project.rootPath,
+  for (const workspace of workspaces) {
+    options.set(workspace.workspaceRef, {
+      value: workspace.workspaceRef,
+      label: workspace.name,
+      description: workspace.rootPath,
     });
   }
   return [...options.values()].sort((left, right) => left.label.localeCompare(right.label));
@@ -411,7 +417,7 @@ function navigationItems(
   const needle = search.trim().toLocaleLowerCase();
   const visible = binding.entries.filter((entry) => {
     if (!needle) return true;
-    return [entry.name, entry.workspaceName, entry.projectName, entry.sessionRef].some((value) =>
+    return [entry.name, entry.workspaceName, entry.sessionRef].some((value) =>
       value?.toLocaleLowerCase().includes(needle),
     );
   });
@@ -439,24 +445,18 @@ function groupedItems(
   open: (sessionRef: string) => void,
 ): TreeListItemData[] {
   const workspaces = new Map<string, SessionCatalogEntryView[]>();
-  const nonProject: SessionCatalogEntryView[] = [];
   for (const entry of entries) {
-    if (!entry.workspaceId) {
-      nonProject.push(entry);
-      continue;
-    }
-    const workspaceEntries = workspaces.get(entry.workspaceId) ?? [];
+    const workspaceEntries = workspaces.get(entry.workspaceRef) ?? [];
     workspaceEntries.push(entry);
-    workspaces.set(entry.workspaceId, workspaceEntries);
+    workspaces.set(entry.workspaceRef, workspaceEntries);
   }
-  const workspaceItems: TreeListItemData[] = [...workspaces.entries()].map(([workspaceId, entries]) => ({
-    id: `${prefix}:workspace:${workspaceId}`,
-    label: entries[0]?.workspaceName || t("@connect.navigation.unnamedWorkspace"),
+  return [...workspaces.entries()].map(([workspaceRef, workspaceEntries]) => ({
+    id: `${prefix}:workspace:${workspaceRef}`,
+    label: workspaceEntries[0]?.workspaceName || t("@connect.navigation.unnamedWorkspace"),
     startContent: <FolderIcon />,
-    isExpanded: entries.some((entry) => entry.sessionRef === selectedRef) || Boolean(search),
-    children: entries.map((entry) => sessionItem(entry, selectedRef, t, open)),
+    isExpanded: workspaceEntries.some((entry) => entry.sessionRef === selectedRef) || Boolean(search),
+    children: workspaceEntries.map((entry) => sessionItem(entry, selectedRef, t, open)),
   }));
-  return [...workspaceItems, ...nonProject.map((entry) => sessionItem(entry, selectedRef, t, open))];
 }
 
 function sessionItem(

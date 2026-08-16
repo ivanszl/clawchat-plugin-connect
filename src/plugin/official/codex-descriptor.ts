@@ -39,7 +39,6 @@ const codexDescriptor: OfficialPluginDescriptor = {
     ],
   },
   entrypoint: "src/plugin/official/codex-entry.ts",
-  probeEntrypoint: "src/plugin/official/codex-probe.ts",
 };
 
 export default codexDescriptor;

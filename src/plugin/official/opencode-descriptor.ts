@@ -39,7 +39,6 @@ const descriptor: OfficialPluginDescriptor = {
     ],
   },
   entrypoint: "src/plugin/official/opencode-entry.ts",
-  probeEntrypoint: "src/plugin/official/opencode-probe.ts",
 };
 
 export default descriptor;

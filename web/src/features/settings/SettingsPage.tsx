@@ -18,24 +18,25 @@ import type {
   BindingPreferenceView,
   BootstrapView,
   PluginJsonSchemaView,
-  ProjectDirectoryRequest,
+  WorkspaceDirectoryRequest,
+  WorkspaceView,
 } from "../../../../src/client-contract";
 import {
-  addProject,
+  addWorkspace,
   bootstrapQueryOptions,
   catalogQueryOptions,
   clientKeys,
   pluginAdministrationQueryOptions,
-  projectsQueryOptions,
-  removeProject,
+  removeWorkspace,
   updateBindingPreferences,
   upsertBindingProvider,
+  workspacesQueryOptions,
 } from "../../client-interface/query-options";
 import { localizedClientError, settingsClientErrorKeys, useClientTranslator } from "../../i18n/client-i18n";
-import { HostDirectoryPicker, projectDirectoryLabel } from "../projects/HostDirectoryPicker";
+import { HostDirectoryPicker, workspaceDirectoryLabel } from "../workspaces/HostDirectoryPicker";
 import { JsonSchemaForm, PluginSettings, prepareJsonSchemaConfiguration } from "./PluginSettings";
 
-type ProjectListItem = { workspaceId: string; name: string; rootPath: string };
+type WorkspaceListItem = WorkspaceView;
 type RuntimeCapabilityOption = {
   value: string;
   label: string;
@@ -47,7 +48,6 @@ type RuntimeCapabilityOption = {
 export function SettingsPage() {
   const t = useClientTranslator();
   const bootstrap = useQuery(bootstrapQueryOptions);
-  const projects = useQuery(projectsQueryOptions);
   const plugins = useQuery(pluginAdministrationQueryOptions);
   const runtimeCapabilities = useMemo(
     () =>
@@ -112,11 +112,7 @@ export function SettingsPage() {
                 />
               ))}
               <PluginSettings />
-              <ProjectSettings
-                projects={projects.data ?? []}
-                isLoading={projects.isPending}
-                loadError={projects.error}
-              />
+              <WorkspaceSettings bindings={bootstrap.data.bindings} />
             </VStack>
           </VStack>
         </LayoutContent>
@@ -552,38 +548,32 @@ function updatedInvalidFieldIds(current: Set<string>, fieldId: string, valid: bo
   return next;
 }
 
-function ProjectSettings({
-  projects,
-  isLoading,
-  loadError,
-}: {
-  projects: ProjectListItem[];
-  isLoading: boolean;
-  loadError: Error | null;
-}) {
+function WorkspaceSettings({ bindings }: { bindings: BindingPreferenceView[] }) {
   const t = useClientTranslator();
   const queryClient = useQueryClient();
-  const [directory, setDirectory] = useState<ProjectDirectoryRequest | null>(null);
+  const [bindingId, setBindingId] = useState(bindings[0]?.bindingId ?? "");
+  const workspaces = useQuery(workspacesQueryOptions(bindingId || null));
+  const [directory, setDirectory] = useState<WorkspaceDirectoryRequest | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [removalTarget, setRemovalTarget] = useState<ProjectListItem | null>(null);
-  const [lastRemovedProject, setLastRemovedProject] = useState<ProjectListItem | null>(null);
+  const [removalTarget, setRemovalTarget] = useState<WorkspaceListItem | null>(null);
+  const [lastRemovedWorkspace, setLastRemovedWorkspace] = useState<WorkspaceListItem | null>(null);
   const add = useMutation({
     mutationFn: async () => {
-      if (!directory) throw new Error(t("@connect.settings.projects.selectRequired"));
-      return await addProject(directory);
+      if (!directory) throw new Error(t("@connect.settings.workspaces.selectRequired"));
+      return await addWorkspace(bindingId, directory);
     },
     onSuccess: () => {
       setDirectory(null);
-      setLastRemovedProject(null);
-      void queryClient.invalidateQueries({ queryKey: clientKeys.projects });
+      setLastRemovedWorkspace(null);
+      void queryClient.invalidateQueries({ queryKey: clientKeys.workspaces(bindingId) });
       void queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
     },
   });
   const remove = useMutation({
-    mutationFn: async (project: ProjectListItem) => await removeProject(project.workspaceId),
-    onSuccess: (_data, project) => {
-      setLastRemovedProject(project);
-      void queryClient.invalidateQueries({ queryKey: clientKeys.projects });
+    mutationFn: async (workspace: WorkspaceListItem) => await removeWorkspace(bindingId, workspace.workspaceRef),
+    onSuccess: (_data, workspace) => {
+      setLastRemovedWorkspace(workspace);
+      void queryClient.invalidateQueries({ queryKey: clientKeys.workspaces(bindingId) });
       void queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
     },
     onSettled: () => setRemovalTarget(null),
@@ -594,17 +584,17 @@ function ProjectSettings({
         <VStack gap={4}>
           <HStack gap={4} hAlign="between" align="start" wrap="wrap" as="header">
             <VStack gap={1}>
-              <Heading level={2}>{t("@connect.settings.projects.title")}</Heading>
-              <Text type="supporting">{t("@connect.settings.projects.description")}</Text>
+              <Heading level={2}>{t("@connect.settings.workspaces.title")}</Heading>
+              <Text type="supporting">{t("@connect.settings.workspaces.description")}</Text>
             </VStack>
             <HStack gap={2} wrap="wrap">
               <Button
-                label={t("@connect.settings.projects.chooseDirectory")}
+                label={t("@connect.settings.workspaces.chooseDirectory")}
                 variant="secondary"
                 onClick={() => setPickerOpen(true)}
               />
               <Button
-                label={t(add.isPending ? "@connect.settings.projects.adding" : "@connect.settings.projects.add")}
+                label={t(add.isPending ? "@connect.settings.workspaces.adding" : "@connect.settings.workspaces.add")}
                 variant="primary"
                 isLoading={add.isPending}
                 isDisabled={!directory}
@@ -612,12 +602,27 @@ function ProjectSettings({
               />
             </HStack>
           </HStack>
+          <Selector
+            label={t("@connect.newSession.binding.label")}
+            options={bindings.map((binding) => ({
+              value: binding.bindingId,
+              label: `${binding.displayName} (${binding.bindingId})`,
+            }))}
+            value={bindingId}
+            onChange={(value) => {
+              setBindingId(value);
+              setDirectory(null);
+              setLastRemovedWorkspace(null);
+              setRemovalTarget(null);
+            }}
+            width="100%"
+          />
           {directory ? (
             <Section variant="muted">
               <VStack gap={1}>
-                <Text type="label">{t("@connect.settings.projects.pendingDirectory")}</Text>
+                <Text type="label">{t("@connect.settings.workspaces.pendingDirectory")}</Text>
                 <Text type="code" display="block" wordBreak="break-all">
-                  {projectDirectoryLabel(directory)}
+                  {workspaceDirectoryLabel(directory)}
                 </Text>
               </VStack>
             </Section>
@@ -625,71 +630,73 @@ function ProjectSettings({
           {add.isSuccess ? (
             <Banner
               status="success"
-              title={t("@connect.settings.projects.added")}
-              description={t("@connect.settings.projects.addedDescription", { project: add.data.name })}
+              title={t("@connect.settings.workspaces.added")}
+              description={t("@connect.settings.workspaces.addedDescription", { workspace: add.data.name })}
             />
           ) : null}
           {add.isError ? (
             <Banner
               status="error"
-              title={t("@connect.settings.projects.addFailed")}
+              title={t("@connect.settings.workspaces.addFailed")}
               description={localizedClientError(t, add.error, settingsClientErrorKeys)}
             />
           ) : null}
-          {lastRemovedProject && remove.isSuccess ? (
+          {lastRemovedWorkspace && remove.isSuccess ? (
             <Banner
               status="success"
-              title={t("@connect.settings.projects.removed")}
-              description={t("@connect.settings.projects.removedDescription", {
-                project: lastRemovedProject.name,
+              title={t("@connect.settings.workspaces.removed")}
+              description={t("@connect.settings.workspaces.removedDescription", {
+                workspace: lastRemovedWorkspace.name,
               })}
             />
           ) : null}
           {remove.isError ? (
             <Banner
               status="error"
-              title={t("@connect.settings.projects.removeFailed")}
+              title={t("@connect.settings.workspaces.removeFailed")}
               description={localizedClientError(t, remove.error, settingsClientErrorKeys)}
             />
           ) : null}
-          {loadError ? (
+          {workspaces.error ? (
             <Banner
               status="error"
-              title={t("@connect.settings.projects.loadFailed")}
-              description={localizedClientError(t, loadError, settingsClientErrorKeys)}
+              title={t("@connect.settings.workspaces.loadFailed")}
+              description={localizedClientError(t, workspaces.error, settingsClientErrorKeys)}
             />
           ) : null}
           <List
             density="compact"
             hasDividers
-            header={<Text type="label">{t("@connect.settings.projects.registered")}</Text>}
+            header={<Text type="label">{t("@connect.settings.workspaces.registered")}</Text>}
           >
-            {isLoading ? <ListItem label={t("@connect.settings.projects.loading")} isDisabled /> : null}
-            {!isLoading && projects.length === 0 ? (
-              <ListItem label={t("@connect.settings.projects.empty")} isDisabled />
+            {workspaces.isPending ? <ListItem label={t("@connect.settings.workspaces.loading")} isDisabled /> : null}
+            {!workspaces.isPending && (workspaces.data?.length ?? 0) === 0 ? (
+              <ListItem label={t("@connect.settings.workspaces.empty")} isDisabled />
             ) : null}
-            {projects.map((project) => (
+            {(workspaces.data ?? []).map((workspace) => (
               <ListItem
-                key={project.workspaceId}
-                label={project.name}
+                key={workspace.workspaceRef}
+                label={workspace.name}
                 description={
                   <VStack gap={0.5}>
                     <Text type="code" wordBreak="break-all">
-                      {project.rootPath}
+                      {workspace.rootPath}
                     </Text>
                     <Text type="code" wordBreak="break-all">
-                      {t("@connect.settings.projects.workspaceId", { workspaceId: project.workspaceId })}
+                      {workspace.workspaceRef}
                     </Text>
                   </VStack>
                 }
                 endContent={
-                  <Button
-                    label={t("@connect.settings.projects.removeAccessible", { project: project.name })}
-                    size="sm"
-                    onClick={() => setRemovalTarget(project)}
-                  >
-                    {t("@connect.settings.projects.remove")}
-                  </Button>
+                  workspace.isDefault ? undefined : (
+                    <Button
+                      label={t("@connect.settings.workspaces.removeAccessible", { workspace: workspace.name })}
+                      size="sm"
+                      onClick={() => setRemovalTarget(workspace)}
+                    >
+                      {t("@connect.settings.workspaces.remove")}
+                    </Button>
+                  )
                 }
               />
             ))}
@@ -706,8 +713,8 @@ function ProjectSettings({
         <Layout
           header={
             <DialogHeader
-              title={t("@connect.settings.projects.directoryDialog.title")}
-              subtitle={t("@connect.settings.projects.directoryDialog.description")}
+              title={t("@connect.settings.workspaces.directoryDialog.title")}
+              subtitle={t("@connect.settings.workspaces.directoryDialog.description")}
               onOpenChange={setPickerOpen}
             />
           }
@@ -729,17 +736,17 @@ function ProjectSettings({
         onOpenChange={(isOpen) => {
           if (!isOpen && !remove.isPending) setRemovalTarget(null);
         }}
-        title={t("@connect.settings.projects.removeConfirm.title", { project: removalTarget?.name ?? "" })}
-        description={t("@connect.settings.projects.removeConfirm.description", {
-          project: removalTarget?.name ?? "",
+        title={t("@connect.settings.workspaces.removeConfirm.title", { workspace: removalTarget?.name ?? "" })}
+        description={t("@connect.settings.workspaces.removeConfirm.description", {
+          workspace: removalTarget?.name ?? "",
           path: removalTarget?.rootPath ?? "",
         })}
         actionLabel={t(
           remove.isPending
-            ? "@connect.settings.projects.removeConfirm.removing"
-            : "@connect.settings.projects.removeConfirm.action",
+            ? "@connect.settings.workspaces.removeConfirm.removing"
+            : "@connect.settings.workspaces.removeConfirm.action",
         )}
-        cancelLabel={t("@connect.settings.projects.removeConfirm.cancel")}
+        cancelLabel={t("@connect.settings.workspaces.removeConfirm.cancel")}
         actionVariant="destructive"
         isActionLoading={remove.isPending}
         onAction={() => {

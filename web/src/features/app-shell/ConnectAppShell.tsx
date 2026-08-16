@@ -10,7 +10,6 @@ import { type ReactNode, useState } from "react";
 import {
   bootstrapQueryOptions,
   catalogQueryOptions,
-  projectsQueryOptions,
   refreshSessionCatalog,
 } from "../../client-interface/query-options";
 import { RefreshIcon } from "../../components/icons";
@@ -22,7 +21,6 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
   const t = useClientTranslator();
   const catalog = useQuery(catalogQueryOptions);
   const bootstrap = useQuery(bootstrapQueryOptions);
-  const projects = useQuery(projectsQueryOptions);
   const queryClient = useQueryClient();
   const refresh = useMutation({
     mutationFn: async () => await refreshSessionCatalog(queryClient),
@@ -90,7 +88,6 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
         isOpen={newSessionOpen}
         bindings={bootstrap.data?.bindings ?? []}
         catalogBindings={catalog.data?.bindings ?? []}
-        projects={projects.data ?? []}
         onOpenChange={setNewSessionOpen}
         onCreated={(sessionRef) => {
           setNewSessionOpen(false);

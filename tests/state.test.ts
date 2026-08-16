@@ -113,48 +113,25 @@ describe("state store", () => {
     await reopened.close();
   });
 
-  it("scopes output visibility by Agent Binding and migrates legacy overrides", async () => {
+  it("rejects an output-visibility table that contradicts current schema metadata", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");
     const initial = createStateStore({ dbPath });
-    await initial.upsertActivation({
-      localAgentId: "work",
-      accessToken: "work-token",
-      refreshToken: null,
-      serverAgentId: "work-agent",
-      userId: "work-user",
-      ownerUserId: "owner",
-      conversationId: null,
-    });
-    await initial.upsertActivation({
-      localAgentId: "personal",
-      accessToken: "personal-token",
-      refreshToken: null,
-      serverAgentId: "personal-agent",
-      userId: "personal-user",
-      ownerUserId: "owner",
-      conversationId: null,
-    });
+    await initial.initialize();
     await initial.close();
-    const legacy = new Database(dbPath);
-    legacy.exec(`
+    const corrupted = new Database(dbPath);
+    corrupted.exec(`
       DROP TABLE output_visibility;
       CREATE TABLE output_visibility(
         chat_id TEXT PRIMARY KEY,
         mode TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
-      INSERT INTO output_visibility(chat_id, mode, updated_at) VALUES ('shared-chat', 'full', 1);
     `);
-    legacy.close();
+    corrupted.close();
 
-    const migrated = createStateStore({ dbPath });
-    await expect(migrated.getOutputVisibility("work", "shared-chat")).resolves.toBe("full");
-    await expect(migrated.getOutputVisibility("personal", "shared-chat")).resolves.toBe("full");
-    await migrated.setOutputVisibility("work", "shared-chat", "minimal");
-    await expect(migrated.getOutputVisibility("work", "shared-chat")).resolves.toBe("minimal");
-    await expect(migrated.getOutputVisibility("personal", "shared-chat")).resolves.toBe("full");
-    await migrated.close();
+    const store = createStateStore({ dbPath });
+    await expect(store.initialize()).rejects.toThrow("partial or unsupported Connect SQLite schema");
   });
 
   it("persists Protocol v2 negative acknowledgements on outbound messages", async () => {
@@ -444,67 +421,40 @@ describe("state store", () => {
     await expect(store.getActivationUserId("claude")).resolves.toBe("usr-claude");
     await store.close();
   });
-  it("stores global Projects and associates a Session with at most one Project", async () => {
+  it("stores binding-scoped Workspaces and associates a Session with at most one Workspace", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
-    const project = await store.insertProject({
-      projectId: "project-1",
+    const workspace = await store.insertWorkspace({
+      bindingId: "codex",
+      workspaceRef: "WRKSPC01",
+      runtimeIdentityKey: null,
+      source: "runtime",
       name: "work",
       rootPath: "/repo",
+      selectable: true,
     });
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-1",
       agentId: "codex",
-      projectId: project.projectId,
+      workspaceRef: workspace.workspaceRef,
       isCurrent: true,
     });
     await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
       chatId: "chat-1",
       sessionId: "session-1",
       agentId: "codex",
-      projectId: "project-1",
+      workspaceRef: "WRKSPC01",
     });
-    await expect(store.getProject("work")).resolves.toMatchObject({
-      projectId: "project-1",
+    await expect(store.getWorkspace("codex", "WRKSPC01")).resolves.toMatchObject({
+      bindingId: "codex",
+      workspaceRef: "WRKSPC01",
       rootPath: "/repo",
     });
-    await expect(store.countRuntimeSessionsForProject("project-1")).resolves.toBe(1);
+    await expect(store.countRuntimeSessionsForWorkspace("codex", "WRKSPC01")).resolves.toBe(1);
     await store.close();
   });
-  it("removes persisted Project additional directories from an earlier database", async () => {
-    const dir = await tempDir();
-    const dbPath = join(dir, "state.sqlite");
-    const legacy = new Database(dbPath, { create: true });
-    legacy.exec(`
-      CREATE TABLE projects(
-        project_id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-        root_path TEXT NOT NULL UNIQUE,
-        additional_directories_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      INSERT INTO projects VALUES ('project-legacy', 'legacy', '/repo', '["/shared"]', 1, 1);
-    `);
-    legacy.close();
-
-    const store = createStateStore({ dbPath });
-    await expect(store.getProject("project-legacy")).resolves.toEqual({
-      projectId: "project-legacy",
-      name: "legacy",
-      rootPath: "/repo",
-      createdAt: 1,
-      updatedAt: 1,
-    });
-    await store.close();
-
-    const migrated = new Database(dbPath);
-    const columns = migrated.query<{ name: string }, []>("PRAGMA table_info(projects)").all();
-    expect(columns.map((column) => column.name)).not.toContain("additional_directories_json");
-    migrated.close();
-  });
-  it("scopes current Sessions by Agent Binding while keeping Projects global", async () => {
+  it("scopes current Sessions by Agent Binding", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
     await store.upsertRuntimeSession({ chatId: "chat-1", sessionId: "shared-id", agentId: "work" });
@@ -522,10 +472,14 @@ describe("state store", () => {
   it("keeps a Session Intent mutually exclusive with the current Session", async () => {
     const dir = await tempDir();
     const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
-    const project = await store.insertProject({
-      projectId: "project-1",
+    const project = await store.insertWorkspace({
+      bindingId: "codex",
+      workspaceRef: "WRKSPC01",
+      runtimeIdentityKey: null,
+      source: "runtime",
       name: "work",
       rootPath: "/repo",
+      selectable: true,
     });
     await store.upsertRuntimeSession({
       chatId: "chat-1",
@@ -536,14 +490,14 @@ describe("state store", () => {
     await store.setSessionIntent({
       chatId: "chat-1",
       agentId: "codex",
-      projectId: project.projectId,
+      workspaceRef: project.workspaceRef,
       name: "Planned work",
       mode: "read-only",
     });
 
     await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toBeNull();
     await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
-      projectId: "project-1",
+      workspaceRef: project.workspaceRef,
       name: "Planned work",
       mode: "read-only",
     });
@@ -552,7 +506,7 @@ describe("state store", () => {
       chatId: "chat-1",
       sessionId: "session-after",
       agentId: "codex",
-      projectId: project.projectId,
+      workspaceRef: project.workspaceRef,
       name: "Planned work",
       mode: "read-only",
     });
@@ -573,7 +527,7 @@ describe("state store", () => {
     await store.setSessionIntent({
       chatId: "chat-model",
       agentId: "codex",
-      projectId: null,
+      workspaceRef: null,
       name: "Deep review",
       mode: "workspace-write",
       model: "gpt-5.2-codex",
@@ -588,7 +542,7 @@ describe("state store", () => {
       chatId: "chat-model",
       sessionId: "session-model",
       agentId: "codex",
-      projectId: null,
+      workspaceRef: null,
       name: "Deep review",
       mode: "workspace-write",
       model: "gpt-5.2-codex",
@@ -610,7 +564,7 @@ describe("state store", () => {
     await store.setSessionIntent({
       chatId: "chat-race",
       agentId: "codex",
-      projectId: null,
+      workspaceRef: null,
       name: "Planned",
       mode: "read-only",
       model: "gpt-planned",
@@ -727,7 +681,7 @@ describe("state store", () => {
     await reopened.close();
   });
 
-  it("backfills Session Refs when opening a database created by an earlier version", async () => {
+  it("resets unversioned Session state during the Workspace architecture cutover", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");
     const legacy = new Database(dbPath, { create: true });
@@ -737,14 +691,12 @@ describe("state store", () => {
     legacy.close();
 
     const store = createStateStore({ dbPath });
-    const current = await store.getCurrentRuntimeSession("chat-1", "codex");
-    expect(current).toMatchObject({ name: "Legacy Session", runtimeSessionId: "thread-1" });
-    expect(current?.hasMessages).toBe(true);
-    expect(current?.sessionRef).toMatch(/^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/u);
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toBeNull();
+    await expect(store.listRuntimeSessions("chat-1", "codex")).resolves.toEqual([]);
     await store.close();
   });
 
-  it("migrates the singleton Liveware Exposure without reactivation", async () => {
+  it("drops the obsolete singleton Liveware Exposure table", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");
     const legacy = new Database(dbPath, { create: true });
@@ -755,35 +707,27 @@ describe("state store", () => {
         local_agent_id TEXT NOT NULL,
         app_id TEXT NOT NULL,
         public_url TEXT NOT NULL,
-        access_policy TEXT NOT NULL CHECK(access_policy IN ('private', 'public')),
+        access_policy TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
       INSERT INTO liveware_exposure VALUES (
-        1,
-        'owner-existing',
-        'codex',
-        'app-existing',
-        'https://app-existing.apps.example',
-        'private',
-        1
+        1, 'owner-existing', 'codex', 'app-existing',
+        'https://app-existing.apps.example', 'private', 1
       );
     `);
     legacy.close();
 
     const store = createStateStore({ dbPath });
-    await expect(store.listLivewareExposures()).resolves.toEqual([
-      {
-        ownerUserId: "owner-existing",
-        localAgentId: "codex",
-        appId: "app-existing",
-        publicUrl: "https://app-existing.apps.example",
-        accessPolicy: "private",
-      },
-    ]);
+    await store.initialize();
     await store.close();
+    const migrated = new Database(dbPath);
+    expect(
+      migrated.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'liveware_exposure'").get(),
+    ).toBeNull();
+    migrated.close();
   });
 
-  it("upgrades the pre-Project runtime Session schema without replacing local state", async () => {
+  it("does not retain pre-Workspace Runtime Sessions during cutover", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");
     const legacy = new Database(dbPath, { create: true });
@@ -793,49 +737,23 @@ describe("state store", () => {
     legacy.close();
 
     const store = createStateStore({ dbPath });
-    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
-      name: "Legacy Session",
-      projectId: null,
-      runtimeSessionId: "thread-1",
-    });
-    await store.upsertRuntimeSession({
-      chatId: "chat-1",
-      sessionId: "session-1",
-      agentId: "codex",
-      runtimeSessionId: "thread-1",
-      projectId: null,
-      name: "Migrated Session",
-    });
-    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
-      name: "Migrated Session",
-      projectId: null,
-    });
+    await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toBeNull();
     await store.close();
   });
 
-  it("migrates the current legacy empty Session to an Intent and removes empty history", async () => {
+  it("does not convert pre-Workspace empty Sessions into Intents", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");
     const legacy = new Database(dbPath, { create: true });
     legacy.exec(
-      "CREATE TABLE runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, project_id TEXT, name TEXT, mode TEXT, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id, session_id)); INSERT INTO runtime_sessions VALUES ('chat-1', 'materialized', 'codex', 'thread-1', NULL, 'Existing work', NULL, 0, 1, 1); INSERT INTO runtime_sessions VALUES ('chat-1', 'empty-history', 'codex', NULL, NULL, NULL, NULL, 0, 2, 2); INSERT INTO runtime_sessions VALUES ('chat-1', 'empty-current', 'codex', NULL, NULL, 'Planned work', 'read-only', 1, 3, 3);",
+      "CREATE TABLE runtime_sessions(chat_id TEXT NOT NULL, session_id TEXT NOT NULL, agent_id TEXT NOT NULL, runtime_session_id TEXT, project_id TEXT, name TEXT, mode TEXT, is_current INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(chat_id, agent_id, session_id)); INSERT INTO runtime_sessions VALUES ('chat-1', 'materialized', 'codex', 'thread-1', NULL, 'Existing work', NULL, 0, 1, 1); INSERT INTO runtime_sessions VALUES ('chat-1', 'empty-current', 'codex', NULL, NULL, 'Planned work', 'read-only', 1, 3, 3);",
     );
     legacy.close();
 
     const store = createStateStore({ dbPath });
     await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toBeNull();
-    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
-      name: "Planned work",
-      mode: "read-only",
-      projectId: null,
-    });
-    await expect(store.listRuntimeSessions("chat-1", "codex")).resolves.toEqual([
-      expect.objectContaining({
-        sessionId: "materialized",
-        runtimeSessionId: "thread-1",
-        hasMessages: true,
-      }),
-    ]);
+    await expect(store.getSessionIntent("chat-1", "codex")).resolves.toBeNull();
+    await expect(store.listRuntimeSessions("chat-1", "codex")).resolves.toEqual([]);
     await store.close();
   });
 
@@ -846,7 +764,7 @@ describe("state store", () => {
     await initial.setSessionIntent({
       chatId: "chat-fresh",
       agentId: "codex",
-      projectId: null,
+      workspaceRef: null,
       name: "Fresh empty Session",
     });
     await initial.resolveOrMaterializeRuntimeSession({
@@ -867,15 +785,15 @@ describe("state store", () => {
     await reopened.close();
   });
 
-  it("rolls back every legacy empty Session migration step and retries after an injected failure", async () => {
+  it("rejects a corrupted current Session schema without mutating its rows", async () => {
     const dir = await tempDir();
     const dbPath = join(dir, "state.sqlite");
     const bootstrap = createStateStore({ dbPath });
     await bootstrap.initialize();
     await bootstrap.close();
 
-    const legacy = new Database(dbPath);
-    legacy.exec(`
+    const corrupted = new Database(dbPath);
+    corrupted.exec(`
       DROP TABLE runtime_sessions;
       CREATE TABLE runtime_sessions(
         chat_id TEXT NOT NULL,
@@ -895,48 +813,18 @@ describe("state store", () => {
       INSERT INTO runtime_sessions VALUES (
         'chat-message', 'message-backed', 'codex', NULL, 'Keep me', NULL, 1, 1, 1
       );
-      INSERT INTO clawchat_messages(
-        platform, local_agent_id, kind, direction, event_type, chat_id, message_id, text, created_at
-      ) VALUES (
-        'clawchat-connect', 'codex', 'message', 'inbound', 'message.created',
-        'chat-message', 'message-1', 'hello', 2
-      );
-      CREATE TRIGGER fail_legacy_intent_migration
-      BEFORE INSERT ON session_intents
-      BEGIN
-        SELECT RAISE(ABORT, 'injected legacy migration failure');
-      END;
     `);
-    legacy.close();
+    corrupted.close();
 
-    const interrupted = createStateStore({ dbPath });
-    await expect(interrupted.initialize()).rejects.toThrow("injected legacy migration failure");
+    const store = createStateStore({ dbPath });
+    await expect(store.initialize()).rejects.toThrow(
+      "partial or unsupported Connect SQLite schema: runtime_sessions columns are incomplete",
+    );
     const afterFailure = new Database(dbPath);
-    const columnsAfterFailure = afterFailure
-      .query<{ name: string }, []>("PRAGMA table_info(runtime_sessions)")
-      .all()
-      .map((column) => column.name);
-    expect(columnsAfterFailure).not.toContain("binding_locked");
     expect(
       afterFailure.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM runtime_sessions").get()?.count,
     ).toBe(2);
-    expect(
-      afterFailure.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM session_intents").get()?.count,
-    ).toBe(0);
-    afterFailure.exec("DROP TRIGGER fail_legacy_intent_migration");
     afterFailure.close();
-
-    const retried = createStateStore({ dbPath });
-    await expect(retried.getCurrentRuntimeSession("chat-retry", "codex")).resolves.toBeNull();
-    await expect(retried.getSessionIntent("chat-retry", "codex")).resolves.toMatchObject({
-      name: "Retry me",
-      mode: "read-only",
-    });
-    await expect(retried.getCurrentRuntimeSession("chat-message", "codex")).resolves.toMatchObject({
-      sessionId: "message-backed",
-      hasMessages: true,
-    });
-    await retried.close();
   });
 
   it("keeps transcript projection updates idempotent and rekeys explicit Runtime Activity aliases", async () => {
@@ -1511,6 +1399,49 @@ describe("state store", () => {
     await store.pruneSettledToolRequests("aged", now);
     await expect(store.getToolRequest("aged-settled")).resolves.toBeNull();
     await expect(store.getToolRequest("aged-indeterminate")).resolves.toMatchObject({ state: "indeterminate" });
+    await store.close();
+  });
+  it("enforces Plugin Durable State CAS, scope cleanup, secret rejection, and the exact 1 MiB limit", async () => {
+    const dir = await tempDir();
+    const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+    const bindingState = {
+      pluginId: "test.state",
+      activationGeneration: 1,
+      capabilityId: "runtime",
+      instanceId: "binding-a",
+      lifetime: "binding" as const,
+      scopeKey: "binding-a",
+    };
+    const first = await store.compareAndSwapPluginDurableState(bindingState, null, 1, { phase: "ready" });
+    expect(first).toEqual({ schemaVersion: 1, revision: 1, value: { phase: "ready" } });
+    await expect(store.compareAndSwapPluginDurableState(bindingState, null, 1, { phase: "stale" })).rejects.toThrow(
+      "compare-and-swap conflict",
+    );
+    await expect(
+      store.compareAndSwapPluginDurableState(bindingState, 1, 1, { accessToken: "must-not-persist" }),
+    ).rejects.toThrow("secret-free");
+
+    const installationState = {
+      ...bindingState,
+      instanceId: "installation",
+      lifetime: "installation" as const,
+      scopeKey: "installation",
+    };
+    const envelopeBytes = Buffer.byteLength(JSON.stringify({ payload: "" }));
+    const exact = { payload: "x".repeat(1024 * 1024 - envelopeBytes) };
+    await expect(store.compareAndSwapPluginDurableState(installationState, null, 1, exact)).resolves.toMatchObject({
+      revision: 1,
+      value: exact,
+    });
+    await expect(
+      store.compareAndSwapPluginDurableState({ ...installationState, instanceId: "overflow" }, null, 1, {
+        payload: `${exact.payload}x`,
+      }),
+    ).rejects.toThrow("exceeds 1 MiB");
+
+    await store.deletePluginDurableStateScope("binding", "binding-a");
+    await expect(store.readPluginDurableState(bindingState)).resolves.toBeNull();
+    await expect(store.readPluginDurableState(installationState)).resolves.toMatchObject({ revision: 1 });
     await store.close();
   });
 });

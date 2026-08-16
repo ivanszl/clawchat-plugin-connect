@@ -1,7 +1,6 @@
 import { join } from "node:path";
 
 const connectOutput = join("dist", process.platform === "win32" ? "clawchat-connect.exe" : "clawchat-connect");
-const livewareOutput = join("dist", process.platform === "win32" ? "liveware.exe" : "liveware");
 
 await run([process.execPath, "run", "build:web"]);
 await run([
@@ -13,7 +12,7 @@ await run([
   "--outfile",
   connectOutput,
 ]);
-await run([process.execPath, "scripts/copy-liveware-host.ts", livewareOutput]);
+await run([process.execPath, "run", "build:official-plugins"]);
 
 async function run(command: string[]): Promise<void> {
   const child = Bun.spawn(command, {

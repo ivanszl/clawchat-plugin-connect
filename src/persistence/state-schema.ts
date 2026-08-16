@@ -1,4 +1,3 @@
-import { PLATFORM_ID } from "../types";
 import type { SqliteDb } from "./sqlite";
 import { nullableString, stringValue } from "./state-codecs";
 import type { SessionRefTarget } from "./state-types";
@@ -35,19 +34,23 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
       device_id TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS liveware_exposures(
-      local_agent_id TEXT PRIMARY KEY,
-      owner_user_id TEXT NOT NULL,
-      app_id TEXT NOT NULL UNIQUE,
-      public_url TEXT NOT NULL,
-      access_policy TEXT NOT NULL CHECK(access_policy IN ('private', 'public')),
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS projects(
-      project_id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-      root_path TEXT NOT NULL UNIQUE,
+    CREATE TABLE IF NOT EXISTS workspace_catalog_entries(
+      binding_id TEXT NOT NULL,
+      workspace_ref TEXT NOT NULL COLLATE NOCASE CHECK(length(workspace_ref) = 8),
+      runtime_identity_key TEXT,
+      source TEXT NOT NULL CHECK(source IN ('default', 'runtime')),
+      name TEXT NOT NULL,
+      root_path TEXT NOT NULL,
+      selectable INTEGER NOT NULL CHECK(selectable IN (0, 1)),
       created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(binding_id, workspace_ref),
+      UNIQUE(binding_id, runtime_identity_key),
+      UNIQUE(binding_id, root_path)
+    );
+    CREATE TABLE IF NOT EXISTS workspace_catalog_state(
+      binding_id TEXT PRIMARY KEY,
+      discovery_status TEXT NOT NULL CHECK(discovery_status IN ('complete', 'partial', 'unavailable')),
       updated_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS runtime_sessions(
@@ -55,7 +58,7 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
       session_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
       runtime_session_id TEXT,
-      project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT,
+      workspace_ref TEXT,
       name TEXT,
       mode TEXT,
       model TEXT,
@@ -71,7 +74,7 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
     CREATE TABLE IF NOT EXISTS session_intents(
       chat_id TEXT NOT NULL,
       agent_id TEXT NOT NULL,
-      project_id TEXT REFERENCES projects(project_id) ON DELETE RESTRICT,
+      workspace_ref TEXT,
       name TEXT,
       mode TEXT,
       model TEXT,
@@ -105,15 +108,6 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_session_lifecycle_incomplete
       ON session_lifecycle_operations(state, created_at);
-    CREATE TABLE IF NOT EXISTS runtime_workspace_mappings(
-      binding_id TEXT NOT NULL,
-      runtime_kind TEXT NOT NULL,
-      identity_key TEXT NOT NULL,
-      project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE RESTRICT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY(binding_id, runtime_kind, identity_key)
-    );
     CREATE TABLE IF NOT EXISTS output_visibility(
       local_agent_id TEXT NOT NULL,
       chat_id TEXT NOT NULL,
@@ -277,6 +271,21 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_client_events_created
       ON client_events(created_at);
+    CREATE TABLE IF NOT EXISTS plugin_durable_state(
+      plugin_id TEXT NOT NULL,
+      activation_generation INTEGER NOT NULL CHECK(activation_generation >= 1),
+      capability_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      lifetime TEXT NOT NULL CHECK(lifetime IN ('installation', 'owner', 'binding')),
+      scope_key TEXT NOT NULL,
+      schema_version INTEGER NOT NULL CHECK(schema_version >= 1),
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      state_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(plugin_id, activation_generation, capability_id, instance_id, lifetime, scope_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_plugin_durable_state_scope
+      ON plugin_durable_state(lifetime, scope_key);
     CREATE TABLE IF NOT EXISTS client_event_retention(
       id INTEGER PRIMARY KEY CHECK(id = 1),
       floor_cursor INTEGER NOT NULL
@@ -285,198 +294,71 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
   `);
 }
 
-export async function migrateStateSchema(db: SqliteDb, options: StateSchemaMigrationOptions = {}): Promise<boolean> {
-  const runtimeStatusColumns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_statuses)");
-  if (!runtimeStatusColumns.some((column) => column.name === "runtime_availability"))
-    await db.exec(
-      "ALTER TABLE runtime_statuses ADD COLUMN runtime_availability TEXT CHECK(runtime_availability IN ('available', 'startup-unavailable'))",
+export async function migratePluginDurableStateActivationGeneration(db: SqliteDb): Promise<void> {
+  await db.exec(`
+    DROP INDEX IF EXISTS idx_plugin_durable_state_scope;
+    ALTER TABLE plugin_durable_state RENAME TO plugin_durable_state_without_generation;
+    CREATE TABLE plugin_durable_state(
+      plugin_id TEXT NOT NULL,
+      activation_generation INTEGER NOT NULL CHECK(activation_generation >= 1),
+      capability_id TEXT NOT NULL,
+      instance_id TEXT NOT NULL,
+      lifetime TEXT NOT NULL CHECK(lifetime IN ('installation', 'owner', 'binding')),
+      scope_key TEXT NOT NULL,
+      schema_version INTEGER NOT NULL CHECK(schema_version >= 1),
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      state_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(plugin_id, activation_generation, capability_id, instance_id, lifetime, scope_key)
     );
-  const projectColumns = await db.all<{ name: string }[]>("PRAGMA table_info(projects)");
-  if (projectColumns.some((column) => column.name === "additional_directories_json")) {
-    const affected = await db.get<{ count: number }>(
-      "SELECT COUNT(*) AS count FROM projects WHERE additional_directories_json <> '[]'",
-    );
-    await db.exec("ALTER TABLE projects DROP COLUMN additional_directories_json");
-    if ((affected?.count ?? 0) > 0)
-      console.warn(`Removed Project additional directories from ${affected?.count ?? 0} Project(s).`);
-  }
-  const legacyLivewareTable = await db.get<{ name: string }>(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'liveware_exposure'",
-  );
-  if (legacyLivewareTable) {
-    await db.exec(
-      `INSERT OR IGNORE INTO liveware_exposures(
-         owner_user_id, local_agent_id, app_id, public_url, access_policy, updated_at
-       )
-       SELECT owner_user_id, local_agent_id, app_id, public_url, access_policy, updated_at
-         FROM liveware_exposure`,
-    );
-    await db.exec("DROP TABLE liveware_exposure");
-  }
-  await db.run(
-    `INSERT INTO installation_owner(id, owner_user_id, established_at)
-     SELECT 1, MIN(TRIM(owner_user_id)), MAX(updated_at)
-       FROM activations
-      WHERE platform = ? AND TRIM(owner_user_id) <> ''
-     HAVING COUNT(DISTINCT TRIM(owner_user_id)) = 1
-        AND NOT EXISTS (SELECT 1 FROM installation_owner WHERE id = 1)`,
-    PLATFORM_ID,
-  );
-  const legacyOwnerState = await db.get<{ installation_owner: string | null; owner_count: number }>(
-    `SELECT (SELECT owner_user_id FROM installation_owner WHERE id = 1) AS installation_owner,
-            COUNT(DISTINCT TRIM(owner_user_id)) AS owner_count
-       FROM activations
-      WHERE platform = ? AND TRIM(owner_user_id) <> ''`,
-    PLATFORM_ID,
-  );
-  const hasAmbiguousLegacyOwners =
-    !nullableString(legacyOwnerState?.installation_owner) && (legacyOwnerState?.owner_count ?? 0) > 1;
-  if (hasAmbiguousLegacyOwners && !options.allowAmbiguousLegacyOwnerReset) {
-    throw new Error(AMBIGUOUS_LEGACY_OWNER_DIAGNOSTIC);
-  }
-  const outputVisibilityColumns = await db.all<{ name: string }[]>("PRAGMA table_info(output_visibility)");
-  if (!outputVisibilityColumns.some((column) => column.name === "local_agent_id")) {
-    await db.exec(`
-      ALTER TABLE output_visibility RENAME TO output_visibility_legacy;
-      CREATE TABLE output_visibility(
-        local_agent_id TEXT NOT NULL,
-        chat_id TEXT NOT NULL,
-        mode TEXT NOT NULL,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY(local_agent_id, chat_id)
-      );
-      INSERT INTO output_visibility(local_agent_id, chat_id, mode, updated_at)
-      SELECT activations.local_agent_id, legacy.chat_id, legacy.mode, legacy.updated_at
-        FROM output_visibility_legacy AS legacy
-        CROSS JOIN activations
-       WHERE activations.platform = '${PLATFORM_ID}';
-      DROP TABLE output_visibility_legacy;
-    `);
-  }
-  const columns = await db.all<{ name: string }[]>("PRAGMA table_info(runtime_sessions)");
-  const requiresLegacyEmptySessionMigration = !columns.some((column) => column.name === "binding_locked");
-  const intentColumns = await db.all<{ name: string }[]>("PRAGMA table_info(session_intents)");
-  if (requiresLegacyEmptySessionMigration) {
-    db.transaction((run) => {
-      if (!columns.some((column) => column.name === "project_id"))
-        run("ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT REFERENCES projects(project_id)");
-      if (!columns.some((column) => column.name === "has_messages"))
-        run("ALTER TABLE runtime_sessions ADD COLUMN has_messages INTEGER NOT NULL DEFAULT 0");
-      if (!columns.some((column) => column.name === "model")) run("ALTER TABLE runtime_sessions ADD COLUMN model TEXT");
-      if (!columns.some((column) => column.name === "reasoning_effort"))
-        run("ALTER TABLE runtime_sessions ADD COLUMN reasoning_effort TEXT");
-      if (!columns.some((column) => column.name === "session_options_json"))
-        run("ALTER TABLE runtime_sessions ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
-      if (!intentColumns.some((column) => column.name === "model"))
-        run("ALTER TABLE session_intents ADD COLUMN model TEXT");
-      if (!intentColumns.some((column) => column.name === "reasoning_effort"))
-        run("ALTER TABLE session_intents ADD COLUMN reasoning_effort TEXT");
-      if (!intentColumns.some((column) => column.name === "session_options_json"))
-        run("ALTER TABLE session_intents ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
-      run("ALTER TABLE runtime_sessions ADD COLUMN binding_locked INTEGER NOT NULL DEFAULT 0");
-      run(
-        `UPDATE runtime_sessions AS rs SET has_messages = 1
-          WHERE has_messages = 0
-            AND (
-              runtime_session_id IS NOT NULL
-              OR EXISTS (
-                SELECT 1
-                  FROM clawchat_messages AS message
-                 WHERE message.local_agent_id = rs.agent_id
-                   AND message.chat_id = rs.chat_id
-                   AND message.direction = 'inbound'
-                   AND message.kind = 'message'
-                   AND COALESCE(message.text, '') NOT LIKE '/%'
-                   AND message.created_at >= rs.created_at
-                   AND NOT EXISTS (
-                     SELECT 1
-                       FROM runtime_sessions AS newer
-                      WHERE newer.chat_id = rs.chat_id
-                        AND newer.agent_id = rs.agent_id
-                        AND newer.created_at > rs.created_at
-                        AND newer.created_at <= message.created_at
-                   )
-              )
-            )`,
-      );
-      run("UPDATE runtime_sessions SET binding_locked = 1 WHERE has_messages = 1 OR runtime_session_id IS NOT NULL");
-      run(
-        `INSERT INTO session_intents(
-           chat_id, agent_id, project_id, name, mode, model, reasoning_effort,
-           session_options_json, created_at, updated_at
-         )
-         SELECT chat_id, agent_id, project_id, name, mode, model, reasoning_effort,
-                session_options_json, created_at, updated_at
-           FROM runtime_sessions
-          WHERE is_current = 1 AND has_messages = 0 AND runtime_session_id IS NULL
-         ON CONFLICT(chat_id, agent_id) DO UPDATE SET
-           project_id = excluded.project_id,
-           name = excluded.name,
-           mode = excluded.mode,
-           model = excluded.model,
-           reasoning_effort = excluded.reasoning_effort,
-           session_options_json = excluded.session_options_json,
-           created_at = excluded.created_at,
-           updated_at = excluded.updated_at`,
-      );
-      run("DELETE FROM runtime_sessions WHERE has_messages = 0 AND runtime_session_id IS NULL");
-    });
-  } else {
-    if (!columns.some((column) => column.name === "project_id"))
-      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN project_id TEXT REFERENCES projects(project_id)");
-    if (!columns.some((column) => column.name === "has_messages"))
-      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN has_messages INTEGER NOT NULL DEFAULT 0");
-    if (!columns.some((column) => column.name === "model"))
-      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN model TEXT");
-    if (!columns.some((column) => column.name === "reasoning_effort"))
-      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN reasoning_effort TEXT");
-    if (!columns.some((column) => column.name === "session_options_json"))
-      await db.exec("ALTER TABLE runtime_sessions ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
-    if (!intentColumns.some((column) => column.name === "model"))
-      await db.exec("ALTER TABLE session_intents ADD COLUMN model TEXT");
-    if (!intentColumns.some((column) => column.name === "reasoning_effort"))
-      await db.exec("ALTER TABLE session_intents ADD COLUMN reasoning_effort TEXT");
-    if (!intentColumns.some((column) => column.name === "session_options_json"))
-      await db.exec("ALTER TABLE session_intents ADD COLUMN session_options_json TEXT NOT NULL DEFAULT '{}'");
-  }
-  await db.exec(
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_runtime_sessions_identity ON runtime_sessions(chat_id, agent_id, session_id)",
-  );
-  const messageColumns = await db.all<{ name: string }[]>("PRAGMA table_info(clawchat_messages)");
-  if (!messageColumns.some((column) => column.name === "rejected_at"))
-    await db.exec("ALTER TABLE clawchat_messages ADD COLUMN rejected_at INTEGER");
-  if (!messageColumns.some((column) => column.name === "handled_content_json"))
-    await db.exec("ALTER TABLE clawchat_messages ADD COLUMN handled_content_json TEXT");
-  if (!messageColumns.some((column) => column.name === "handled_at"))
-    await db.exec("ALTER TABLE clawchat_messages ADD COLUMN handled_at INTEGER");
-  if (!messageColumns.some((column) => column.name === "handling_outcome"))
-    await db.exec("ALTER TABLE clawchat_messages ADD COLUMN handling_outcome TEXT");
-  const toolRequestColumns = await db.all<{ name: string }[]>("PRAGMA table_info(tool_requests)");
-  if (!toolRequestColumns.some((column) => column.name === "attempt_count"))
-    await db.exec("ALTER TABLE tool_requests ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
-  if (!toolRequestColumns.some((column) => column.name === "record_input_json")) {
-    await db.exec("ALTER TABLE tool_requests ADD COLUMN record_input_json TEXT");
-    await db.exec("UPDATE tool_requests SET record_input_json = input_json WHERE record_input_json IS NULL");
-  }
-  if (!toolRequestColumns.some((column) => column.name === "result_truncated"))
-    await db.exec("ALTER TABLE tool_requests ADD COLUMN result_truncated INTEGER NOT NULL DEFAULT 0");
-  if (!toolRequestColumns.some((column) => column.name === "error_truncated"))
-    await db.exec("ALTER TABLE tool_requests ADD COLUMN error_truncated INTEGER NOT NULL DEFAULT 0");
-  if (!toolRequestColumns.some((column) => column.name === "session_ref"))
-    await db.exec("ALTER TABLE tool_requests ADD COLUMN session_ref TEXT");
-  if (!toolRequestColumns.some((column) => column.name === "turn_id"))
-    await db.exec("ALTER TABLE tool_requests ADD COLUMN turn_id TEXT");
-  if (!toolRequestColumns.some((column) => column.name === "origin"))
-    await db.exec("ALTER TABLE tool_requests ADD COLUMN origin TEXT");
-  if (!requiresLegacyEmptySessionMigration) {
-    await db.run(
-      `UPDATE runtime_sessions AS rs SET has_messages = 1 WHERE has_messages = 0 AND (runtime_session_id IS NOT NULL OR EXISTS (SELECT 1 FROM clawchat_messages AS message WHERE message.local_agent_id = rs.agent_id AND message.chat_id = rs.chat_id AND message.direction = 'inbound' AND message.kind = 'message' AND COALESCE(message.text, '') NOT LIKE '/%' AND message.created_at >= rs.created_at AND NOT EXISTS (SELECT 1 FROM runtime_sessions AS newer WHERE newer.chat_id = rs.chat_id AND newer.agent_id = rs.agent_id AND newer.created_at > rs.created_at AND newer.created_at <= message.created_at)))`,
-    );
-  }
-  await db.run(
-    "UPDATE runtime_sessions SET binding_locked = 1 WHERE binding_locked = 0 AND (has_messages = 1 OR runtime_session_id IS NOT NULL)",
-  );
-  return hasAmbiguousLegacyOwners;
+    INSERT INTO plugin_durable_state(
+      plugin_id, activation_generation, capability_id, instance_id, lifetime, scope_key,
+      schema_version, revision, state_json, updated_at
+    )
+    SELECT plugin_id, 1, capability_id, instance_id, lifetime, scope_key,
+           schema_version, revision, state_json, updated_at
+      FROM plugin_durable_state_without_generation;
+    DROP TABLE plugin_durable_state_without_generation;
+    CREATE INDEX idx_plugin_durable_state_scope
+      ON plugin_durable_state(lifetime, scope_key);
+  `);
+}
+
+export async function resetStateForWorkspaceCutover(db: SqliteDb): Promise<void> {
+  await db.exec(`
+    DROP TABLE IF EXISTS liveware_exposure;
+    DROP TABLE IF EXISTS liveware_exposures;
+    DROP TABLE IF EXISTS runtime_workspace_mappings;
+    DROP TABLE IF EXISTS runtime_sessions;
+    DROP TABLE IF EXISTS session_intents;
+    DROP TABLE IF EXISTS projects;
+  `);
+  await createStateSchema(db);
+  await db.exec(`
+    DELETE FROM activations;
+    DELETE FROM installation_owner;
+    DELETE FROM workspace_catalog_entries;
+    DELETE FROM workspace_catalog_state;
+    DELETE FROM session_refs;
+    DELETE FROM session_lifecycle_operations;
+    DELETE FROM output_visibility;
+    DELETE FROM group_settings_snapshots;
+    DELETE FROM group_settings;
+    DELETE FROM clawchat_messages;
+    DELETE FROM protocol_delivery_state;
+    DELETE FROM protocol_inbox;
+    DELETE FROM protocol_delivery_quarantine;
+    DELETE FROM protocol_event_dedup;
+    DELETE FROM runtime_statuses;
+    DELETE FROM tool_requests;
+    DELETE FROM client_events;
+    DELETE FROM client_commands;
+    DELETE FROM client_event_retention;
+    INSERT INTO client_event_retention(id, floor_cursor) VALUES (1, 0);
+    DELETE FROM transcript_blocks;
+    DELETE FROM output_visibility;
+    DELETE FROM plugin_durable_state WHERE lifetime <> 'installation';
+  `);
 }
 
 export async function backfillSessionRefs(

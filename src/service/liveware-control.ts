@@ -1,19 +1,18 @@
 import { constants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ConnectStateStore } from "../persistence/state";
-import type { ActivationCredentials, LivewareAccessPolicy, LivewareExposureRecord } from "../types";
+import { OFFICIAL_LIVEWARE_PLUGIN_ID } from "../plugin/official/liveware-manifest";
+import { listInstalledPlugins } from "../plugin/store";
+import type { ActivationCredentials } from "../types";
 
 export const LIVEWARE_APP_NAME = "ClawChat Connect";
 const LIVEWARE_APP_BINDING_SEPARATOR = " · ";
 export const LIVEWARE_APP_SUBTITLE = "Connect Web";
 export const DEFAULT_LIVEWARE_API_URL = "https://api-liveware.clawling.io";
 export const DEFAULT_LIVEWARE_RELAY_URL = "https://tunnel-liveware.clawling.io";
-const LIVEWARE_APP_CONVERGENCE_RETRY_DELAY_MS = 500;
-const LIVEWARE_APP_CONVERGENCE_ATTEMPTS = 5;
 
-type EnabledLivewareAccessPolicy = Exclude<LivewareAccessPolicy, "off">;
+type EnabledLivewareAccessPolicy = "private" | "public";
 
 export interface LivewareApp {
   appId: string;
@@ -29,7 +28,6 @@ export interface LivewareControlSession {
   bindTunnel(appId: string, upstream: string): Promise<string>;
   unbindTunnel?(appId: string): Promise<void>;
   deleteApp(appId: string): Promise<void>;
-  startAgent(): Promise<LivewareAgentProcess>;
 }
 
 export interface LivewareControlPlanePort {
@@ -53,38 +51,9 @@ export interface ClawChatLivewarePort {
   unregister(activation: ActivationCredentials, deviceId: string, livewareId: string): Promise<void>;
 }
 
-export interface PrepareLivewareExposureOptions {
-  activation: ActivationCredentials;
-  deviceId: string;
-  upstream: string;
-  accessPolicy: EnabledLivewareAccessPolicy;
-  stateStore: ConnectStateStore;
-}
-
-export interface RetireLivewareExposureOptions {
-  activation: ActivationCredentials;
-  deviceId: string;
-  stateStore: ConnectStateStore;
-}
-
-export interface LivewareExposureDependencies {
+export interface LivewareControlDependencies {
   controlPlane: LivewareControlPlanePort;
   clawChat: ClawChatLivewarePort;
-  delay?: (milliseconds: number) => Promise<void>;
-}
-
-export interface LivewareAgentProcess {
-  exited: Promise<number>;
-  stop(): Promise<void>;
-}
-
-export interface LivewareExposureHandle {
-  record: LivewareExposureRecord;
-  close(): Promise<void>;
-}
-
-export interface StartLivewareExposureOptions extends PrepareLivewareExposureOptions {
-  writeError?: (message: string) => void;
 }
 
 export interface LivewareProcessResult {
@@ -95,28 +64,24 @@ export interface LivewareProcessResult {
 
 export type RunLivewareProcess = (command: string[], env: Record<string, string>) => Promise<LivewareProcessResult>;
 
-export type SpawnLivewareAgent = (command: string[], env: Record<string, string>) => Promise<LivewareAgentProcess>;
-
-export interface ProductionLivewareExposureOptions {
+export interface ProductionLivewareControlOptions {
   livewarePath: string;
   clawChatBaseUrl: string;
   livewareApiUrl?: string;
   livewareRelayUrl?: string;
   fetchImpl?: typeof fetch;
   runProcess?: RunLivewareProcess;
-  spawnAgent?: SpawnLivewareAgent;
 }
 
-export function createLivewareExposureDependencies(
-  options: ProductionLivewareExposureOptions,
-): LivewareExposureDependencies {
+export function createLivewareControlDependencies(
+  options: ProductionLivewareControlOptions,
+): LivewareControlDependencies {
   const livewarePath = requireText(options.livewarePath, "livewarePath");
   const clawChatBaseUrl = normalizeBaseUrl(options.clawChatBaseUrl, "clawChatBaseUrl");
   const livewareApiUrl = normalizeBaseUrl(options.livewareApiUrl ?? DEFAULT_LIVEWARE_API_URL, "livewareApiUrl");
   const livewareRelayUrl = normalizeBaseUrl(options.livewareRelayUrl ?? DEFAULT_LIVEWARE_RELAY_URL, "livewareRelayUrl");
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const runProcess = options.runProcess ?? runLivewareProcess;
-  const spawnAgent = options.spawnAgent ?? spawnLivewareAgent;
   return {
     controlPlane: new CliLivewareControlPlane({
       livewarePath,
@@ -124,18 +89,27 @@ export function createLivewareExposureDependencies(
       livewareRelayUrl,
       fetchImpl,
       runProcess,
-      spawnAgent,
     }),
     clawChat: new HttpClawChatLiveware({ baseUrl: clawChatBaseUrl, fetchImpl }),
   };
 }
 
-export async function resolveLivewareExecutablePath(): Promise<string> {
+export async function resolveLivewareExecutablePath(configPath?: string): Promise<string> {
   const moduleDirectory = dirname(fileURLToPath(import.meta.url));
   const assetName = livewareAssetName(process.platform, process.arch);
+  let installedCompanion: string | undefined;
+  if (configPath) {
+    const selected = (await listInstalledPlugins(configPath)).find(
+      (plugin) => plugin.pluginId === OFFICIAL_LIVEWARE_PLUGIN_ID && plugin.status === "active",
+    );
+    if (selected) {
+      installedCompanion = join(dirname(selected.manifestPath), "assets", "liveware");
+      await chmod(installedCompanion, 0o700).catch(() => undefined);
+    }
+  }
   const candidates = [
     process.env.CLAWCHAT_CONNECT_LIVEWARE_PATH,
-    join(dirname(resolve(process.execPath)), process.platform === "win32" ? "liveware.exe" : "liveware"),
+    installedCompanion,
     join(moduleDirectory, "..", "vendor", "liveware", assetName),
     join(moduleDirectory, "..", "..", "vendor", "liveware", assetName),
   ].filter((candidate): candidate is string => Boolean(candidate));
@@ -144,11 +118,11 @@ export async function resolveLivewareExecutablePath(): Promise<string> {
       await access(candidate, constants.X_OK);
       return resolve(candidate);
     } catch {
-      // Try the next bundled development or release location.
+      // Try the next installed or development companion.
     }
   }
   throw new Error(
-    `bundled Liveware executable is missing for ${process.platform}/${process.arch}; reinstall ClawChat Connect`,
+    `official Liveware Plugin companion is missing for ${process.platform}/${process.arch}; reinstall ClawChat Connect`,
   );
 }
 
@@ -162,62 +136,6 @@ export function livewareAssetName(platform: NodeJS.Platform, architecture: strin
   return `liveware-${operatingSystem}-${cpu}${platform === "win32" ? ".exe" : ""}`;
 }
 
-export async function prepareLivewareExposure(
-  options: PrepareLivewareExposureOptions,
-  dependencies: LivewareExposureDependencies,
-): Promise<LivewareExposureRecord> {
-  const control = await dependencies.controlPlane.connect(options.activation.accessToken);
-  return await prepareWithControl(options, dependencies.clawChat, control, dependencies.delay ?? defaultDelay);
-}
-
-async function prepareWithControl(
-  options: PrepareLivewareExposureOptions,
-  clawChat: ClawChatLivewarePort,
-  control: LivewareControlSession,
-  delay: (milliseconds: number) => Promise<void>,
-): Promise<LivewareExposureRecord> {
-  const existing = await options.stateStore.getLivewareExposure(options.activation.localAgentId);
-  if (existing && existing.ownerUserId !== options.activation.ownerUserId) {
-    throw new Error(
-      `Liveware Exposure for Agent Binding ${options.activation.localAgentId} belongs to Binding Owner ${existing.ownerUserId}; retire it before preparing owner ${options.activation.ownerUserId}`,
-    );
-  }
-
-  const apps = await control.listApps();
-  const appName = livewareExposureAppName(options.activation.localAgentId);
-  const app =
-    (existing ? apps.find((candidate) => candidate.appId === existing.appId) : undefined) ??
-    apps.find((candidate) => candidate.name === appName) ??
-    (await control.createApp(appName, options.accessPolicy));
-
-  await control.setAccessPolicy(app.appId, options.accessPolicy);
-  const publicUrl = normalizeHttpUrl(
-    await bindTunnelAfterAppConverges(control, app.appId, options.upstream, delay),
-    "Liveware public URL",
-  );
-  const registration: ClawChatLivewareRegistration = {
-    livewareId: app.appId,
-    name: app.name,
-    subtitle: LIVEWARE_APP_SUBTITLE,
-    url: publicUrl,
-  };
-  const registrations = await clawChat.list(options.activation, options.deviceId);
-  const currentRegistration = registrations.find((candidate) => candidate.livewareId === app.appId);
-  if (!currentRegistration || !sameRegistration(currentRegistration, registration)) {
-    await clawChat.register(options.activation, options.deviceId, registration);
-  }
-
-  const record: LivewareExposureRecord = {
-    ownerUserId: options.activation.ownerUserId,
-    localAgentId: options.activation.localAgentId,
-    appId: app.appId,
-    publicUrl,
-    accessPolicy: options.accessPolicy,
-  };
-  await options.stateStore.setLivewareExposure(record);
-  return record;
-}
-
 export function livewareExposureAppName(localAgentId: string): string {
   return `${LIVEWARE_APP_NAME}${LIVEWARE_APP_BINDING_SEPARATOR}${localAgentId}`;
 }
@@ -225,123 +143,12 @@ export function livewareExposureAppName(localAgentId: string): string {
 export function isConnectManagedLivewareAppName(name: string): boolean {
   return name === LIVEWARE_APP_NAME || name.startsWith(`${LIVEWARE_APP_NAME}${LIVEWARE_APP_BINDING_SEPARATOR}`);
 }
-
-export async function startLivewareExposure(
-  options: StartLivewareExposureOptions,
-  dependencies: LivewareExposureDependencies,
-): Promise<LivewareExposureHandle> {
-  const control = await dependencies.controlPlane.connect(options.activation.accessToken);
-  const delay = dependencies.delay ?? defaultDelay;
-  const record = await prepareWithControl(options, dependencies.clawChat, control, delay);
-  let current = await control.startAgent();
-  let closed = false;
-  let closePromise: Promise<void> | undefined;
-  const writeError = options.writeError ?? ((message: string) => process.stderr.write(message));
-  const supervise = (async () => {
-    while (!closed) {
-      const exitCode = await current.exited;
-      if (closed) break;
-      writeError(`Liveware agent exited with code ${exitCode}; restarting.\n`);
-      await delay(2_000);
-      if (closed) break;
-      while (!closed) {
-        try {
-          current = await control.startAgent();
-          break;
-        } catch (error) {
-          writeError(
-            `Liveware agent restart failed: ${error instanceof Error ? error.message : String(error)}; retrying.\n`,
-          );
-          await delay(2_000);
-        }
-      }
-    }
-  })();
-  return {
-    record,
-    close: async () => {
-      if (closePromise) return await closePromise;
-      closed = true;
-      const closing = (async () => {
-        await current.stop();
-        await supervise;
-      })();
-      closePromise = closing;
-      try {
-        await closing;
-      } catch (error) {
-        if (closePromise === closing) closePromise = undefined;
-        throw error;
-      }
-    },
-  };
-}
-
-async function bindTunnelAfterAppConverges(
-  control: LivewareControlSession,
-  appId: string,
-  upstream: string,
-  delay: (milliseconds: number) => Promise<void>,
-): Promise<string> {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await control.bindTunnel(appId, upstream);
-    } catch (error) {
-      if (attempt >= LIVEWARE_APP_CONVERGENCE_ATTEMPTS || !isAppNotFoundError(error)) throw error;
-      await delay(LIVEWARE_APP_CONVERGENCE_RETRY_DELAY_MS);
-    }
-  }
-}
-
-function isAppNotFoundError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /\bapp not found\b/iu.test(message);
-}
-
-async function defaultDelay(milliseconds: number): Promise<void> {
-  await Bun.sleep(milliseconds);
-}
-
-export async function retireLivewareExposure(
-  options: RetireLivewareExposureOptions,
-  dependencies: LivewareExposureDependencies,
-): Promise<void> {
-  const existing = await options.stateStore.getLivewareExposure(options.activation.localAgentId);
-  if (!existing) return;
-  if (existing.ownerUserId !== options.activation.ownerUserId) {
-    throw new Error(
-      `Cannot retire Liveware Exposure for Binding Owner ${existing.ownerUserId} with credentials for ${options.activation.ownerUserId}`,
-    );
-  }
-  await dependencies.clawChat.unregister(options.activation, options.deviceId, existing.appId);
-  const control = await dependencies.controlPlane.connect(options.activation.accessToken);
-  await control.unbindTunnel?.(existing.appId);
-  await control.deleteApp(existing.appId);
-  await options.stateStore.clearLivewareExposure(options.activation.localAgentId);
-}
-
-function sameRegistration(left: ClawChatLivewareRegistration, right: ClawChatLivewareRegistration): boolean {
-  return (
-    left.livewareId === right.livewareId &&
-    left.name === right.name &&
-    left.subtitle === right.subtitle &&
-    left.url === right.url
-  );
-}
-
-function normalizeHttpUrl(value: string, label: string): string {
-  const text = value.trim();
-  if (!/^https?:\/\//iu.test(text)) throw new Error(`${label} must start with http:// or https://`);
-  return new URL(text).toString().replace(/\/$/u, "");
-}
-
 interface CliLivewareControlPlaneOptions {
   livewarePath: string;
   livewareApiUrl: string;
   livewareRelayUrl: string;
   fetchImpl: typeof fetch;
   runProcess: RunLivewareProcess;
-  spawnAgent: SpawnLivewareAgent;
 }
 
 class CliLivewareControlPlane implements LivewareControlPlanePort {
@@ -389,22 +196,6 @@ class CliLivewareControlSession implements LivewareControlSession {
 
   async deleteApp(appId: string): Promise<void> {
     await this.command(["app", "delete", appId]);
-  }
-
-  async startAgent(): Promise<LivewareAgentProcess> {
-    return await this.options.spawnAgent(
-      [
-        this.options.livewarePath,
-        "agent",
-        "--relay-url",
-        this.options.livewareRelayUrl,
-        "--control-url",
-        this.options.livewareApiUrl,
-        "--retry-delay",
-        "2s",
-      ],
-      processEnvironment({ LIVEWARE_TOKEN: this.token }),
-    );
   }
 
   async inspectApp(appId: string): Promise<LivewareApp> {
@@ -513,22 +304,6 @@ async function runLivewareProcess(command: string[], env: Record<string, string>
   return { exitCode, stdout, stderr };
 }
 
-async function spawnLivewareAgent(command: string[], env: Record<string, string>): Promise<LivewareAgentProcess> {
-  const child = Bun.spawn(command, {
-    env,
-    stdin: "ignore",
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  return {
-    exited: child.exited,
-    stop: async () => {
-      if (child.exitCode === null) child.kill();
-      await child.exited;
-    },
-  };
-}
-
 async function readEnvelope(response: Response, label: string): Promise<Record<string, unknown>> {
   let body: unknown;
   try {
@@ -559,6 +334,19 @@ function readLivewareApp(value: unknown): LivewareApp {
 
 function normalizeBaseUrl(value: string, label: string): string {
   return normalizeHttpUrl(value, label);
+}
+
+function normalizeHttpUrl(value: string, label: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${label} must be a valid HTTP(S) URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${label} must use http: or https:`);
+  }
+  return parsed.toString().replace(/\/$/u, "");
 }
 
 function withHttpScheme(value: string): string {

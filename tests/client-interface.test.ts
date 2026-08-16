@@ -8,11 +8,11 @@ import { ConnectConfigMutationCoordinator, defaultConfig, loadConfig } from "../
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { agentBindingIdentity } from "../src/plugin/binding";
 import type { ConnectPluginManagement } from "../src/plugin/host";
-import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
 import type { ConnectRuntimeAdapter, RuntimeModelOption } from "../src/runtime/types";
 import type { BindingRuntimeHandle } from "../src/service/binding-runtime";
+import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 const openHandles: ClientInterfaceHandle[] = [];
@@ -366,7 +366,11 @@ describe("Connect Client Interface", () => {
       runtimeThreadId: "thread-discovered",
       name: "Discovered workspace session",
       updatedAt: 2,
-      workingDirectory: discoveredWorkspaceRoot,
+      workspaceIdentity: {
+        key: discoveredWorkspaceRoot,
+        kind: "persistent" as const,
+        localRoot: discoveredWorkspaceRoot,
+      },
     };
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
@@ -506,6 +510,7 @@ describe("Connect Client Interface", () => {
     const pluginManager = {
       configMutations,
       list: async () => [],
+      listPublishedClientExtensions: async () => [],
       upsertBindingProvider: async (bindingId: string, candidate: (typeof config.agents)[string]) =>
         await configMutations.runExclusive(async (commitConfig) => {
           providerMutationStarted = true;
@@ -539,9 +544,9 @@ describe("Connect Client Interface", () => {
     const document = await localRequest(fetchHandler, handle.origin, "/");
     expect(document.status).toBe(200);
     const contentSecurityPolicy = document.headers.get("content-security-policy") ?? "";
-    expect(contentSecurityPolicy).toContain("script-src 'self'; script-src-attr 'none'");
+    expect(contentSecurityPolicy).toContain("script-src 'self' blob:; script-src-attr 'none'");
     expect(contentSecurityPolicy).toContain("style-src-elem 'self'; style-src-attr 'unsafe-inline'");
-    expect(contentSecurityPolicy).not.toContain("script-src 'self' 'unsafe-inline'");
+    expect(contentSecurityPolicy).not.toContain("script-src 'self' blob: 'unsafe-inline'");
     const bootstrap = await localRequest(fetchHandler, handle.origin, "/client/v1/bootstrap");
     expect(bootstrap.status).toBe(200);
     await expect(bootstrap.json()).resolves.toMatchObject({
@@ -555,6 +560,11 @@ describe("Connect Client Interface", () => {
         },
       ],
       capabilities: { localTurns: true, runtimeInteractions: true },
+      clientExtensions: {
+        hash: expect.any(String),
+        epoch: expect.any(String),
+        extensions: [],
+      },
     });
     const slashSuggestions = await localRequest(
       fetchHandler,
@@ -585,6 +595,23 @@ describe("Connect Client Interface", () => {
         },
       ],
     });
+    const staleClientExtensionMutation = await localRequest(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/bindings/codex/preferences",
+      {
+        method: "PATCH",
+        headers: { origin: handle.origin, "content-type": "application/json" },
+        body: JSON.stringify({
+          requestId: "stale_client_extension_request",
+          clientExtensionEpoch: "sha256-stale",
+          displayName: "Stale Extension",
+        }),
+      },
+    );
+    expect(staleClientExtensionMutation.status).toBe(409);
+    expect(config.agents.codex?.displayName).toBe("Codex");
+
     const invalidBindingModel = await localRequest(
       fetchHandler,
       handle.origin,
@@ -686,36 +713,28 @@ describe("Connect Client Interface", () => {
     });
     const projectRoot = join(directory, "project-root");
     await mkdir(projectRoot);
-    const customNamedProject = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", {
-      method: "POST",
-      headers: { origin: handle.origin, "content-type": "application/json" },
-      body: JSON.stringify({
-        requestId: "project_custom_name_request",
-        name: "connect-qa",
-        directory: { kind: "existing-directory", rootPath: projectRoot },
-      }),
-    });
-    expect(customNamedProject.status).toBe(400);
-    const registeredProject = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", {
+    const registeredProject = await localRequest(fetchHandler, handle.origin, "/client/v1/workspaces", {
       method: "POST",
       headers: { origin: handle.origin, "content-type": "application/json" },
       body: JSON.stringify({
         requestId: "project_add_request",
+        bindingId: "codex",
         directory: { kind: "existing-directory", rootPath: projectRoot },
       }),
     });
     expect(registeredProject.status).toBe(201);
-    const registeredProjectView = (await registeredProject.json()) as { projectId: string; workspaceId: string };
-    const reusedProject = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", {
+    const registeredProjectView = (await registeredProject.json()) as { bindingId: string; workspaceRef: string };
+    const reusedProject = await localRequest(fetchHandler, handle.origin, "/client/v1/workspaces", {
       method: "POST",
       headers: { origin: handle.origin, "content-type": "application/json" },
       body: JSON.stringify({
         requestId: "project_reuse_request",
+        bindingId: "codex",
         directory: { kind: "existing-directory", rootPath: projectRoot },
       }),
     });
     expect(reusedProject.status).toBe(200);
-    await expect(reusedProject.json()).resolves.toMatchObject({ projectId: registeredProjectView.projectId });
+    await expect(reusedProject.json()).resolves.toMatchObject({ workspaceRef: registeredProjectView.workspaceRef });
     await mkdir(join(projectRoot, "visible-directory"));
     await mkdir(join(projectRoot, ".hidden-directory"));
     const directoryListing = await localRequest(
@@ -739,18 +758,17 @@ describe("Connect Client Interface", () => {
         (entry) => entry.name,
       ),
     ).toContain(".hidden-directory");
-    const projects = await localRequest(fetchHandler, handle.origin, "/client/v1/projects");
-    const projectViews = (await projects.json()) as Array<{
-      projectId: string;
-      workspaceId: string;
+    const workspacesResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/workspaces");
+    const workspaceViews = (await workspacesResponse.json()) as Array<{
+      bindingId: string;
+      workspaceRef: string;
       name: string;
       rootPath: string;
     }>;
-    expect(projectViews).toHaveLength(2);
-    expect(projectViews).toContainEqual(
+    expect(workspaceViews).toHaveLength(3);
+    expect(workspaceViews).toContainEqual(
       expect.objectContaining({
-        projectId: registeredProjectView.projectId,
-        workspaceId: registeredProjectView.workspaceId,
+        workspaceRef: registeredProjectView.workspaceRef,
         name: "project-root",
         rootPath: await realpath(projectRoot),
       }),
@@ -758,7 +776,7 @@ describe("Connect Client Interface", () => {
     const removedProject = await localRequest(
       fetchHandler,
       handle.origin,
-      `/client/v1/projects/${registeredProjectView.workspaceId}`,
+      `/client/v1/workspaces/codex/${registeredProjectView.workspaceRef}`,
       {
         method: "DELETE",
         headers: { origin: handle.origin, "content-type": "application/json" },
@@ -767,20 +785,22 @@ describe("Connect Client Interface", () => {
     );
     expect(removedProject.status).toBe(200);
     await expect(removedProject.json()).resolves.toEqual({
-      workspaceId: registeredProjectView.workspaceId,
+      bindingId: "codex",
+      workspaceRef: registeredProjectView.workspaceRef,
       removed: true,
     });
     const sessionProjectRoot = join(directory, "session-project-root");
     await mkdir(sessionProjectRoot);
-    const sessionProjectResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", {
+    const sessionProjectResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/workspaces", {
       method: "POST",
       headers: { origin: handle.origin, "content-type": "application/json" },
       body: JSON.stringify({
         requestId: "session_project_add_request",
+        bindingId: "codex",
         directory: { kind: "existing-directory", rootPath: sessionProjectRoot },
       }),
     });
-    const sessionProject = (await sessionProjectResponse.json()) as { projectId: string; workspaceId: string };
+    const sessionProject = (await sessionProjectResponse.json()) as { bindingId: string; workspaceRef: string };
     const sessionsBeforeInvalidCreate = await store.listAllRuntimeSessions();
     const invalidCreatedSession = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
       method: "POST",
@@ -789,7 +809,7 @@ describe("Connect Client Interface", () => {
         requestId: "session_invalid_create_request",
         prompt: "This must not run",
         bindingId: "codex",
-        workspace: { kind: "existing", workspaceId: sessionProject.workspaceId },
+        workspace: { kind: "existing", workspaceRef: sessionProject.workspaceRef },
         name: "Invalid model",
         mode: "workspace-write",
         model: "missing-model",
@@ -804,7 +824,7 @@ describe("Connect Client Interface", () => {
       body: JSON.stringify({
         requestId: "session_create_request",
         bindingId: "codex",
-        workspace: { kind: "existing", workspaceId: sessionProject.workspaceId },
+        workspace: { kind: "existing", workspaceRef: sessionProject.workspaceRef },
         name: "Planned from Client",
         mode: "workspace-write",
         model: "gpt-deep",
@@ -814,7 +834,7 @@ describe("Connect Client Interface", () => {
     expect(createdSession.status).toBe(201);
     const createdSessionView = (await createdSession.json()) as {
       sessionRef: string;
-      projectId: string;
+      workspaceRef: string;
       mode: string;
       model: string;
       reasoningEffort: string;
@@ -830,7 +850,7 @@ describe("Connect Client Interface", () => {
       };
     };
     expect(createdSessionView).toMatchObject({
-      projectId: sessionProject.projectId,
+      workspaceRef: sessionProject.workspaceRef,
       mode: "workspace-write",
       model: "gpt-deep",
       reasoningEffort: "xhigh",
@@ -846,7 +866,7 @@ describe("Connect Client Interface", () => {
       },
     });
     await expect(store.getRuntimeSessionByRef(createdSessionView.sessionRef)).resolves.toMatchObject({
-      projectId: sessionProject.projectId,
+      workspaceRef: sessionProject.workspaceRef,
       mode: "workspace-write",
       model: "gpt-deep",
       reasoningEffort: "xhigh",
@@ -855,13 +875,13 @@ describe("Connect Client Interface", () => {
     const catalogResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/session-catalog?refresh=1");
     const catalogView = (await catalogResponse.json()) as {
       bindings: Array<{
-        entries: Array<{ sessionRef: string; workspaceId: string | null; workspaceName: string | null }>;
+        entries: Array<{ sessionRef: string; workspaceRef: string | null; workspaceName: string | null }>;
       }>;
     };
     const discoveredWorkspace = catalogView.bindings[0]?.entries.find(
       (entry) => entry.workspaceName === "discovered-workspace",
     );
-    expect(discoveredWorkspace?.workspaceId).toBeTruthy();
+    expect(discoveredWorkspace?.workspaceRef).toBeTruthy();
     if (!discoveredWorkspace) throw new Error("discovered workspace Session was not cataloged");
     await expect(store.getRuntimeSessionByRef(discoveredWorkspace.sessionRef)).resolves.toBeNull();
     const discoveredSpecPath = join(discoveredWorkspaceRoot, "discovered-spec.md");
@@ -879,7 +899,7 @@ describe("Connect Client Interface", () => {
       body: JSON.stringify({
         requestId: "workspace_session_create_request",
         bindingId: "codex",
-        workspace: { kind: "existing", workspaceId: discoveredWorkspace.workspaceId },
+        workspace: { kind: "existing", workspaceRef: discoveredWorkspace.workspaceRef },
         name: "Created in discovered workspace",
         mode: "workspace-write",
         model: null,
@@ -887,9 +907,9 @@ describe("Connect Client Interface", () => {
       }),
     });
     expect(workspaceSession.status).toBe(201);
-    const workspaceSessionView = (await workspaceSession.json()) as { sessionRef: string; projectId: string };
-    const materializedWorkspaceProject = await store.getProject(workspaceSessionView.projectId);
-    expect(materializedWorkspaceProject?.rootPath).toBe(await realpath(discoveredWorkspaceRoot));
+    const workspaceSessionView = (await workspaceSession.json()) as { sessionRef: string; workspaceRef: string };
+    const materializedWorkspace = await store.getWorkspace("codex", workspaceSessionView.workspaceRef);
+    expect(materializedWorkspace?.rootPath).toBe(await realpath(discoveredWorkspaceRoot));
     expect(enqueueClientTurn).not.toHaveBeenCalled();
     const transcript = await localRequest(
       fetchHandler,
@@ -916,7 +936,7 @@ describe("Connect Client Interface", () => {
       ],
     });
 
-    const runtimeWorkspace = await new ProjectCatalog(store).resolveWorkspace(session);
+    const runtimeWorkspace = await new WorkspaceCatalog(store).resolveWorkspace(session);
     const specDirectory = join(runtimeWorkspace.workingDirectory, ".scratch", "example-spec");
     const specPath = join(specDirectory, "spec.md");
     await mkdir(specDirectory, { recursive: true });
@@ -1318,19 +1338,11 @@ describe("Connect Client Interface", () => {
     );
     expect(rejected.status).toBe(403);
 
-    const livewareOrigin = "https://app-connect-test.apps.clawling.io";
-    await store.setLivewareExposure({
-      ownerUserId: "owner-1",
-      localAgentId: "codex",
-      appId: "app-connect-test",
-      publicUrl: livewareOrigin,
-      accessPolicy: "private",
-    });
     const livewareMutation = await localRequest(fetchHandler, handle.origin, "/client/v1/not-found", {
       method: "POST",
-      headers: { origin: livewareOrigin, "sec-fetch-site": "same-origin" },
+      headers: { origin: "https://app-connect-test.apps.clawling.io", "sec-fetch-site": "same-origin" },
     });
-    expect(livewareMutation.status).toBe(404);
+    expect(livewareMutation.status).toBe(403);
 
     const archived = await localRequest(
       fetchHandler,
@@ -1408,6 +1420,9 @@ describe("Connect Client Interface", () => {
     config.stateDbPath = store.dbPath;
     config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     config.defaultAgent = "codex";
+    const workspaceRoot = join(directory, "workspace");
+    await mkdir(workspaceRoot);
+    const workspace = await new WorkspaceCatalog(store).add("codex", workspaceRoot);
     let catalogUnavailable = true;
     const registry = new RuntimeAdapterRegistry([
       fixedRuntimeAdapter({
@@ -1458,14 +1473,10 @@ describe("Connect Client Interface", () => {
     });
     openHandles.push(handle);
     if (!fetchHandler) throw new Error("test Client Interface did not expose a request handler");
-    const inlineProjectRoot = join(directory, "inline-project");
     const request = {
       requestId: "session_retry_request",
       bindingId: "codex",
-      workspace: {
-        kind: "new-project",
-        directory: { kind: "new-directory", parentPath: directory, name: "inline-project" },
-      },
+      workspace: { kind: "existing", workspaceRef: workspace.workspaceRef },
       name: "Retry safely",
       mode: "workspace-write",
       model: null,
@@ -1480,8 +1491,8 @@ describe("Connect Client Interface", () => {
     expect(failed.status).toBe(503);
     expect(enqueueClientTurn).not.toHaveBeenCalled();
     await expect(store.listAllRuntimeSessions()).resolves.toHaveLength(0);
-    await expect(stat(inlineProjectRoot).catch(() => null)).resolves.toBeNull();
-    await expect(store.listProjects()).resolves.toHaveLength(0);
+    expect((await stat(workspaceRoot)).isDirectory()).toBe(true);
+    expect((await store.listWorkspaces("codex")).filter((candidate) => candidate.source === "runtime")).toHaveLength(1);
 
     catalogUnavailable = false;
     const retried = await localRequest(fetchHandler, handle.origin, "/client/v1/sessions", {
@@ -1492,8 +1503,8 @@ describe("Connect Client Interface", () => {
     expect(retried.status).toBe(201);
     expect(enqueueClientTurn).not.toHaveBeenCalled();
     await expect(store.listAllRuntimeSessions()).resolves.toHaveLength(1);
-    expect((await stat(inlineProjectRoot)).isDirectory()).toBe(true);
-    await expect(store.listProjects()).resolves.toHaveLength(1);
+    expect((await stat(workspaceRoot)).isDirectory()).toBe(true);
+    expect((await store.listWorkspaces("codex")).filter((candidate) => candidate.source === "runtime")).toHaveLength(1);
   });
 
   it("serves documents directly and rejects invalid Host headers", async () => {
@@ -1569,6 +1580,11 @@ describe("Connect Client Interface", () => {
     expect(listeningHost).toBe("0.0.0.0");
     expect(handle.origin).toBe(`http://0.0.0.0:${port}`);
 
+    const privateGatewayAdministration = await handle.fetchPrivateGateway(
+      new Request(`${handle.origin}/client/v1/plugins`, { headers: { host: `0.0.0.0:${port}` } }),
+    );
+    expect(privateGatewayAdministration.status).toBe(503);
+
     const lanOrigin = `http://192.168.1.20:${port}`;
     const document = await localRequest(fetchHandler, lanOrigin, "/");
     expect(document.status).toBe(200);
@@ -1591,7 +1607,7 @@ describe("Connect Client Interface", () => {
     expect(hostnameRebinding.status).toBe(400);
   });
 
-  it("restricts a Binding-scoped Client gateway to its Agent Binding while sharing Projects", async () => {
+  it("restricts a Binding-scoped Client gateway and Workspace Catalog to its Agent Binding", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-binding-scope-"));
     const assetsPath = join(directory, "assets");
     await mkdir(assetsPath);
@@ -1602,20 +1618,23 @@ describe("Connect Client Interface", () => {
       sessionRefFactory: () => refs.shift() ?? "NEWREF34",
     });
     openStores.push(store);
-    await store.insertProject({ projectId: "shared-project", name: "Shared Project", rootPath: directory });
-    await store.setLivewareExposure({
-      localAgentId: "personal",
-      ownerUserId: "owner-personal",
-      appId: "app-personal",
-      publicUrl: "https://personal.apps.example",
-      accessPolicy: "private",
+    await store.insertWorkspace({
+      bindingId: "personal",
+      workspaceRef: "PERSONAL",
+      runtimeIdentityKey: null,
+      source: "runtime",
+      name: "Personal Workspace",
+      rootPath: directory,
+      selectable: true,
     });
-    await store.setLivewareExposure({
-      localAgentId: "work",
-      ownerUserId: "owner-work",
-      appId: "app-work",
-      publicUrl: "https://work.apps.example",
-      accessPolicy: "private",
+    await store.insertWorkspace({
+      bindingId: "work",
+      workspaceRef: "WORKSPCE",
+      runtimeIdentityKey: null,
+      source: "runtime",
+      name: "Work Workspace",
+      rootPath: directory,
+      selectable: true,
     });
     await store.upsertRuntimeSession({
       chatId: "personal-chat",
@@ -1623,6 +1642,7 @@ describe("Connect Client Interface", () => {
       agentId: "personal",
       runtimeSessionId: "personal-thread",
       name: "Personal Session",
+      workspaceRef: "PERSONAL",
       hasMessages: true,
     });
     await store.upsertRuntimeSession({
@@ -1631,6 +1651,7 @@ describe("Connect Client Interface", () => {
       agentId: "work",
       runtimeSessionId: "work-thread",
       name: "Work Session",
+      workspaceRef: "WORKSPCE",
       hasMessages: true,
     });
     const adapter: ConnectRuntimeAdapter = {
@@ -1796,7 +1817,7 @@ describe("Connect Client Interface", () => {
       method: "PATCH",
       headers: {
         "x-clawchat-connect-binding-scope": "work",
-        origin: "https://work.apps.example",
+        origin: handle.origin,
         "sec-fetch-site": "same-origin",
         "content-type": "application/json",
       },
@@ -1822,7 +1843,7 @@ describe("Connect Client Interface", () => {
         method: "POST",
         headers: {
           "x-clawchat-connect-binding-scope": "work",
-          origin: "https://work.apps.example",
+          origin: handle.origin,
           "sec-fetch-site": "same-origin",
         },
         body: workSubmissionBody,
@@ -1876,7 +1897,7 @@ describe("Connect Client Interface", () => {
         method: "POST",
         headers: {
           "x-clawchat-connect-binding-scope": "work",
-          origin: "https://work.apps.example",
+          origin: handle.origin,
           "sec-fetch-site": "same-origin",
           "content-type": "application/json",
         },
@@ -1901,8 +1922,12 @@ describe("Connect Client Interface", () => {
     expect(
       eventBody.events.some((event) => event.type === "session.changed" && event.session.bindingId === "work"),
     ).toBe(false);
-    const projectList = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", { headers: scope });
-    await expect(projectList.json()).resolves.toEqual([expect.objectContaining({ projectId: "shared-project" })]);
+    const workspaceListResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/workspaces", {
+      headers: scope,
+    });
+    const workspaceList = (await workspaceListResponse.json()) as Array<{ bindingId: string; workspaceRef: string }>;
+    expect(workspaceList.every(({ bindingId }) => bindingId === "personal")).toBe(true);
+    expect(workspaceList).toContainEqual(expect.objectContaining({ workspaceRef: "PERSONAL" }));
   });
   it("retires a Binding dispatcher while rejecting an in-flight lookup and every late submission", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-binding-retirement-"));

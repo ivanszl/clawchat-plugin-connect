@@ -47,7 +47,6 @@ const descriptor: OfficialPluginDescriptor = {
     ],
   },
   entrypoint: "src/plugin/official/workbuddy-entry.ts",
-  probeEntrypoint: "src/plugin/official/workbuddy-probe.ts",
 };
 
 export default descriptor;

@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import {
-  CONNECT_PLUGIN_BUNDLE_FORMAT,
-  type ConnectPluginBundleV1,
-  type ConnectPluginManifestV1,
-} from "../src/plugin/sdk";
+import { CONNECT_PLUGIN_BUNDLE_FORMAT } from "../src/plugin/sdk";
+import type {
+  ManagedConnectPluginBundleV1,
+  ManagedConnectPluginManifestV1,
+} from "../src/plugin/official-sdk";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -21,11 +21,16 @@ export const OFFICIAL_PLUGIN_TARGETS = [
 
 export type OfficialPluginTarget = (typeof OFFICIAL_PLUGIN_TARGETS)[number];
 
+export interface OfficialPluginAssetDescriptor {
+  readonly entry: string;
+  readonly sources: Readonly<Partial<Record<OfficialPluginTarget, string>>>;
+}
+
 export interface OfficialPluginDescriptor {
   readonly supportedTargets?: readonly OfficialPluginTarget[];
-  readonly manifest: Omit<ConnectPluginManifestV1, "artifacts" | "probe">;
+  readonly manifest: Omit<ManagedConnectPluginManifestV1, "artifacts">;
   readonly entrypoint: string;
-  readonly probeEntrypoint: string;
+  readonly assets?: readonly OfficialPluginAssetDescriptor[];
 }
 
 export interface BuildOfficialPluginOptions {
@@ -39,7 +44,7 @@ export interface BuiltOfficialPlugin {
   readonly target: string;
   readonly filename: string;
   readonly outputPath: string;
-  readonly bundle: ConnectPluginBundleV1;
+  readonly bundle: ManagedConnectPluginBundleV1;
 }
 
 export function officialPluginSupportsTarget(descriptor: OfficialPluginDescriptor, target: string): boolean {
@@ -71,25 +76,29 @@ export async function buildOfficialPlugin(
 ): Promise<BuiltOfficialPlugin> {
   const target = options.target ?? `${process.platform}-${process.arch}`;
   const entry = await bundleModule(descriptor.entrypoint);
-  const probe = await bundleModule(descriptor.probeEntrypoint);
   const entryPath = `artifacts/${target}.mjs`;
-  const probePath = "probe.mjs";
-  const bundle: ConnectPluginBundleV1 = {
+  const files: ManagedConnectPluginBundleV1["files"] = {
+    [entryPath]: { encoding: "utf8", content: entry },
+  };
+  for (const asset of descriptor.assets ?? []) {
+    const source = asset.sources[target as OfficialPluginTarget];
+    if (!source) {
+      throw new Error(
+        `Official Plugin descriptor ${descriptor.manifest.pluginId} has no ${asset.entry} source for target ${target}`,
+      );
+    }
+    const bytes = await readFile(resolve(repositoryRoot, source));
+    files[asset.entry] = { encoding: "base64", content: bytes.toString("base64") };
+  }
+  const bundle: ManagedConnectPluginBundleV1 = {
     format: CONNECT_PLUGIN_BUNDLE_FORMAT,
     manifest: {
       ...structuredClone(descriptor.manifest),
       artifacts: [
         { target, entry: entryPath, integrity: `sha256-${createHash("sha256").update(entry).digest("base64")}` },
       ],
-      probe: {
-        entry: probePath,
-        integrity: `sha256-${createHash("sha256").update(probe).digest("base64")}`,
-      },
     },
-    files: {
-      [entryPath]: { encoding: "utf8", content: entry },
-      [probePath]: { encoding: "utf8", content: probe },
-    },
+    files,
   };
   const filename = `${descriptor.manifest.pluginId.replace(/[^A-Za-z0-9._-]+/gu, "-")}-${descriptor.manifest.version.replace(/[^A-Za-z0-9._-]+/gu, "-")}-${target}.connect-plugin`;
   const outputDirectory = resolve(options.outputDirectory ?? join(repositoryRoot, "dist", "official-plugins"));

@@ -17,6 +17,9 @@ export const en = {
   "@astryx.topNav.heading.dialogLabel": { defaultMessage: "Navigation menu" },
   "@astryx.topNav.landmarkLabel": { defaultMessage: "Top navigation" },
   "@astryx.textInput.clearLabel": { defaultMessage: "Clear {label}" },
+  "@astryx.fileInput.clearLabel": { defaultMessage: "Clear {label}" },
+  "@astryx.fileInput.required": { defaultMessage: "Required" },
+  "@astryx.fileInput.triggerWithFiles": { defaultMessage: "{label}, {fileNames}" },
   "@astryx.dialog.close": { defaultMessage: "Close" },
   "@astryx.selector.placeholder": { defaultMessage: "Select an option" },
   "@astryx.selector.searchPlaceholder": { defaultMessage: "Search options" },
@@ -80,14 +83,14 @@ export const en = {
   "@connect.shell.backToSessions": { defaultMessage: "Back to Sessions" },
   "@connect.home.title": { defaultMessage: "Select a Session" },
   "@connect.home.description": {
-    defaultMessage: "The left side lists every Project and Non-Project Session discoverable by this Agent Binding.",
+    defaultMessage: "The left side lists every Workspace and Session discoverable by this Agent Binding.",
   },
   "@connect.home.note": {
     defaultMessage:
       "Messages originating in Connect Client go only to this Agent Binding and are not synced to ClawChat.",
   },
   "@connect.navigation.search.label": { defaultMessage: "Search Sessions" },
-  "@connect.navigation.search.placeholder": { defaultMessage: "Search Sessions or Projects" },
+  "@connect.navigation.search.placeholder": { defaultMessage: "Search Sessions or Workspaces" },
   "@connect.navigation.newSession": { defaultMessage: "New Session" },
   "@connect.navigation.loading": { defaultMessage: "Loading Sessions" },
   "@connect.navigation.loadFailure": {
@@ -102,7 +105,7 @@ export const en = {
   "@connect.navigation.status.running": { defaultMessage: "Running" },
   "@connect.navigation.status.queued": { defaultMessage: "Queued" },
   "@connect.navigation.status.error": { defaultMessage: "Error" },
-  "@connect.newSession.directory.title": { defaultMessage: "Choose Project directory" },
+  "@connect.newSession.directory.title": { defaultMessage: "Choose Workspace directory" },
   "@connect.newSession.directory.description": { defaultMessage: "Browse the host running Connect Service." },
   "@connect.newSession.title": { defaultMessage: "New Session" },
   "@connect.newSession.description": { defaultMessage: "Choose a workspace and Runtime options together." },
@@ -110,8 +113,8 @@ export const en = {
   "@connect.newSession.name.description": { defaultMessage: "An optional display name for this Session." },
   "@connect.newSession.name.tooLong": { defaultMessage: "Session names may contain at most 200 characters." },
   "@connect.newSession.binding.label": { defaultMessage: "Agent Binding" },
-  "@connect.newSession.project.add": { defaultMessage: "Add Project" },
-  "@connect.newSession.project.nonProject": { defaultMessage: "Non-Project (isolated workspace)" },
+  "@connect.newSession.workspace.label": { defaultMessage: "Workspace" },
+  "@connect.newSession.workspace.add": { defaultMessage: "Add Workspace" },
   "@connect.newSession.mode.label": { defaultMessage: "Mode" },
   "@connect.newSession.mode.default": { defaultMessage: "Default mode" },
   "@connect.newSession.model.label": { defaultMessage: "Model" },
@@ -123,7 +126,6 @@ export const en = {
   "@connect.newSession.cancel": { defaultMessage: "Cancel" },
   "@connect.newSession.create": { defaultMessage: "Create Session" },
   "@connect.session.loading": { defaultMessage: "Opening Session" },
-  "@connect.session.context.nonProject": { defaultMessage: "Non-Project" },
   "@connect.session.loadFailure": { defaultMessage: "Unable to open Session" },
   "@connect.session.archived.badge": { defaultMessage: "Archived" },
   "@connect.session.archived.title": { defaultMessage: "This Session is archived" },
@@ -139,10 +141,10 @@ export const en = {
   "@connect.session.lifecycleFailure": { defaultMessage: "Session action failed" },
   "@connect.session.agent.fixed.title": { defaultMessage: "Agent Binding fixed for this Session" },
   "@connect.session.agent.fixed.acceptedTurn": {
-    defaultMessage: "The first Turn has been accepted. Continue the Project in a new Session to use another Agent.",
+    defaultMessage: "The first Turn has been accepted. Continue the Workspace in a new Session to use another Agent.",
   },
   "@connect.session.agent.fixed.runtimeThread": {
-    defaultMessage: "A Runtime Thread is associated. Continue the Project in a new Session to use another Agent.",
+    defaultMessage: "A Runtime Thread is associated. Continue the Workspace in a new Session to use another Agent.",
   },
   "@connect.session.agent.empty.label": { defaultMessage: "Agent Binding for this empty Session" },
   "@connect.session.agent.empty.description": {
@@ -151,21 +153,21 @@ export const en = {
   "@connect.session.agent.empty.unavailable": { defaultMessage: "No other active Agent Binding is available." },
   "@connect.session.agent.empty.action": { defaultMessage: "Change Agent in this Session" },
   "@connect.session.agent.changeFailure": { defaultMessage: "Unable to change Agent" },
-  "@connect.session.continue.action": { defaultMessage: "Continue Project with another Agent" },
+  "@connect.session.continue.action": { defaultMessage: "Continue Workspace with another Agent" },
   "@connect.session.continue.title": { defaultMessage: "Continue with another Agent" },
   "@connect.session.continue.subtitle": {
-    defaultMessage: "Create a fresh Session in the same Project.",
+    defaultMessage: "Create a fresh Session in the same Workspace.",
   },
   "@connect.session.continue.warning.title": { defaultMessage: "Only workspace files carry forward" },
   "@connect.session.continue.warning.description": {
     defaultMessage:
-      "A new Session and Runtime Thread are created. Conversation history, tool context, hidden reasoning, and memory are not transferred. Workspace files remain through the shared Project, and the original Session stays unchanged.",
+      "A new Session and Runtime Thread are created. Conversation history, tool context, hidden reasoning, and memory are not transferred. Workspace files remain through the shared Workspace, and the original Session stays unchanged.",
   },
   "@connect.session.continue.binding.label": { defaultMessage: "Agent Binding for the new Session" },
   "@connect.session.continue.binding.description": {
     defaultMessage: "Only active Agent Bindings owned by this Connect installation are eligible.",
   },
-  "@connect.session.continue.project": { defaultMessage: "Shared Project: {project}" },
+  "@connect.session.continue.workspace": { defaultMessage: "Shared Workspace: {workspace}" },
   "@connect.session.continue.failure": { defaultMessage: "Unable to create continuation Session" },
   "@connect.session.continue.cancel": { defaultMessage: "Cancel" },
   "@connect.session.continue.confirm": { defaultMessage: "Create fresh Session" },
@@ -204,7 +206,7 @@ export const en = {
   "@connect.hostDirectory.select": { defaultMessage: "Select this directory" },
   "@connect.error.clientWarmingUp": { defaultMessage: "Connect Client is still initializing." },
   "@connect.error.bindingNotFound": { defaultMessage: "The selected Agent Binding is no longer available." },
-  "@connect.error.invalidWorkspace": { defaultMessage: "The selected Project is no longer available." },
+  "@connect.error.invalidWorkspace": { defaultMessage: "The selected Workspace is no longer available." },
   "@connect.error.invalidName": { defaultMessage: "The Session name is invalid." },
   "@connect.error.invalidMode": { defaultMessage: "The selected mode is no longer available." },
   "@connect.error.invalidModel": { defaultMessage: "The selected model is no longer available." },
@@ -220,10 +222,7 @@ export const en = {
     defaultMessage: "This Runtime Adapter does not support that Session action.",
   },
   "@connect.error.sessionBindingLocked": {
-    defaultMessage: "This Session's Agent is fixed. Continue its Project in a new Session instead.",
-  },
-  "@connect.error.sessionProjectRequired": {
-    defaultMessage: "Only Sessions associated with a Project can continue with another Agent.",
+    defaultMessage: "This Session's Agent is fixed. Continue its Workspace in a new Session instead.",
   },
   "@connect.error.bindingNotActive": { defaultMessage: "The selected Agent Binding is not active." },
   "@connect.error.bindingOwnerMismatch": {
@@ -235,7 +234,7 @@ export const en = {
   "@connect.error.directoryAlreadyExists": { defaultMessage: "That host directory already exists." },
   "@connect.error.invalidDirectory": { defaultMessage: "Enter a valid absolute host directory." },
   "@connect.error.invalidDirectoryName": { defaultMessage: "Enter one valid directory name." },
-  "@connect.error.projectConflict": { defaultMessage: "The Project conflicts with an existing workspace." },
+  "@connect.error.workspaceConflict": { defaultMessage: "The Workspace conflicts with an existing workspace." },
   "@connect.error.internal": { defaultMessage: "Connect Client could not complete the request." },
   "@connect.error.withDiagnostic": { defaultMessage: "{message} Diagnostic reference: {diagnosticRef}" },
   "@connect.error.interactionNotFound": { defaultMessage: "This Runtime Interaction is no longer available." },
@@ -247,12 +246,12 @@ export const en = {
   "@connect.settings.title": { defaultMessage: "Connect settings" },
   "@connect.settings.description": {
     defaultMessage:
-      "Manage safe Agent preferences, host Projects, and trusted local Plugins. Runtime launch arguments and approval policy remain controlled by local configuration.",
+      "Manage safe Agent preferences, host Workspaces, and trusted local Plugins. Runtime launch arguments and approval policy remain controlled by local configuration.",
   },
   "@connect.settings.continuity.title": { defaultMessage: "Changing Agents between Sessions" },
   "@connect.settings.continuity.description": {
     defaultMessage:
-      "An empty Session can change Agent until its first Turn is accepted. After that, continuing with another Agent creates a new Session in the same Project. Conversation history, tool context, memory, and the native Runtime Thread are not transferred; workspace files remain and the original Session is unchanged.",
+      "An empty Session can change Agent until its first Turn is accepted. After that, continuing with another Agent creates a new Session in the same Workspace. Conversation history, tool context, memory, and the native Runtime Thread are not transferred; workspace files remain and the original Session is unchanged.",
   },
   "@connect.settings.binding.save": { defaultMessage: "Save settings" },
   "@connect.settings.binding.saving": { defaultMessage: "Saving settings" },
@@ -318,43 +317,44 @@ export const en = {
   "@connect.settings.binding.visibility.minimal": { defaultMessage: "Minimal" },
   "@connect.settings.binding.visibility.normal": { defaultMessage: "Normal" },
   "@connect.settings.binding.visibility.full": { defaultMessage: "Full" },
-  "@connect.settings.projects.title": { defaultMessage: "Projects" },
-  "@connect.settings.projects.description": {
-    defaultMessage: "Project paths stay on the Connect host and are not sent in ClawChat messages.",
+  "@connect.settings.workspaces.title": { defaultMessage: "Workspaces" },
+  "@connect.settings.workspaces.description": {
+    defaultMessage: "Workspace paths stay on the Connect host and are not sent in ClawChat messages.",
   },
-  "@connect.settings.projects.chooseDirectory": { defaultMessage: "Choose directory" },
-  "@connect.settings.projects.add": { defaultMessage: "Add Project" },
-  "@connect.settings.projects.adding": { defaultMessage: "Adding Project" },
-  "@connect.settings.projects.selectRequired": { defaultMessage: "Choose a Project directory first." },
-  "@connect.settings.projects.pendingDirectory": { defaultMessage: "Directory to add" },
-  "@connect.settings.projects.added": { defaultMessage: "Project added" },
-  "@connect.settings.projects.addedDescription": { defaultMessage: "Added {project}." },
-  "@connect.settings.projects.addFailed": { defaultMessage: "Unable to add Project" },
-  "@connect.settings.projects.removed": { defaultMessage: "Project removed" },
-  "@connect.settings.projects.removedDescription": { defaultMessage: "Removed {project}." },
-  "@connect.settings.projects.removeFailed": { defaultMessage: "Unable to remove Project" },
-  "@connect.settings.projects.registered": { defaultMessage: "Registered Projects" },
-  "@connect.settings.projects.loading": { defaultMessage: "Loading Projects" },
-  "@connect.settings.projects.loadFailed": { defaultMessage: "Unable to load Projects" },
-  "@connect.settings.projects.empty": { defaultMessage: "No Projects registered" },
-  "@connect.settings.projects.workspaceId": { defaultMessage: "Workspace ID: {workspaceId}" },
-  "@connect.settings.projects.remove": { defaultMessage: "Remove" },
-  "@connect.settings.projects.removeAccessible": { defaultMessage: "Remove {project}" },
-  "@connect.settings.projects.directoryDialog.title": { defaultMessage: "Choose Project directory" },
-  "@connect.settings.projects.directoryDialog.description": {
+  "@connect.settings.workspaces.chooseDirectory": { defaultMessage: "Choose directory" },
+  "@connect.settings.workspaces.add": { defaultMessage: "Add Workspace" },
+  "@connect.settings.workspaces.adding": { defaultMessage: "Adding Workspace" },
+  "@connect.settings.workspaces.selectRequired": { defaultMessage: "Choose a Workspace directory first." },
+  "@connect.settings.workspaces.pendingDirectory": { defaultMessage: "Directory to add" },
+  "@connect.settings.workspaces.added": { defaultMessage: "Workspace added" },
+  "@connect.settings.workspaces.addedDescription": { defaultMessage: "Added {workspace}." },
+  "@connect.settings.workspaces.addFailed": { defaultMessage: "Unable to add Workspace" },
+  "@connect.settings.workspaces.removed": { defaultMessage: "Workspace removed" },
+  "@connect.settings.workspaces.removedDescription": { defaultMessage: "Removed {workspace}." },
+  "@connect.settings.workspaces.removeFailed": { defaultMessage: "Unable to remove Workspace" },
+  "@connect.settings.workspaces.registered": { defaultMessage: "Registered Workspaces" },
+  "@connect.settings.workspaces.loading": { defaultMessage: "Loading Workspaces" },
+  "@connect.settings.workspaces.loadFailed": { defaultMessage: "Unable to load Workspaces" },
+  "@connect.settings.workspaces.empty": { defaultMessage: "No Workspaces registered" },
+  "@connect.settings.workspaces.workspaceId": { defaultMessage: "Workspace ID: {workspaceId}" },
+  "@connect.settings.workspaces.remove": { defaultMessage: "Remove" },
+  "@connect.settings.workspaces.removeAccessible": { defaultMessage: "Remove {workspace}" },
+  "@connect.settings.workspaces.directoryDialog.title": { defaultMessage: "Choose Workspace directory" },
+  "@connect.settings.workspaces.directoryDialog.description": {
     defaultMessage: "Browse the host running Connect Service.",
   },
-  "@connect.settings.projects.removeConfirm.title": { defaultMessage: "Remove {project}?" },
-  "@connect.settings.projects.removeConfirm.description": {
+  "@connect.settings.workspaces.removeConfirm.title": { defaultMessage: "Remove {workspace}?" },
+  "@connect.settings.workspaces.removeConfirm.description": {
     defaultMessage:
-      "Remove {project} from Connect? The host directory at {path} will not be deleted. This Project cannot be removed while a Session still references it.",
+      "Remove {workspace} from Connect? The host directory at {path} will not be deleted. This Workspace cannot be removed while a Session still references it.",
   },
-  "@connect.settings.projects.removeConfirm.action": { defaultMessage: "Remove Project" },
-  "@connect.settings.projects.removeConfirm.removing": { defaultMessage: "Removing Project" },
-  "@connect.settings.projects.removeConfirm.cancel": { defaultMessage: "Cancel" },
+  "@connect.settings.workspaces.removeConfirm.action": { defaultMessage: "Remove Workspace" },
+  "@connect.settings.workspaces.removeConfirm.removing": { defaultMessage: "Removing Workspace" },
+  "@connect.settings.workspaces.removeConfirm.cancel": { defaultMessage: "Cancel" },
   "@connect.settings.plugins.title": { defaultMessage: "Trusted Plugins" },
   "@connect.settings.plugins.description": {
-    defaultMessage: "Install and manage self-contained Runtime and Exposure Plugins for this Connect installation.",
+    defaultMessage:
+      "Install and manage self-contained Runtime and Client Extension Plugins plus release-verified official Exposures.",
   },
   "@connect.settings.plugins.loading": { defaultMessage: "Loading Plugins" },
   "@connect.settings.plugins.loadFailed": { defaultMessage: "Unable to load Plugins" },
@@ -418,10 +418,10 @@ export const en = {
   "@connect.settings.plugins.upload.required": { defaultMessage: "Choose a Plugin Bundle first." },
   "@connect.settings.plugins.installationConfiguration": { defaultMessage: "Installation configuration" },
   "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "Exposure configurations by capability ID" },
-  "@connect.settings.plugins.trust.title": { defaultMessage: "Trusted local code" },
+  "@connect.settings.plugins.trust.title": { defaultMessage: "Plugins run as trusted code" },
   "@connect.settings.plugins.trust.description": {
     defaultMessage:
-      "Plugins execute as trusted local code with the operating-system authority of the user running Connect Service.",
+      "Host artifacts execute in the Connect process and Client Extension browser artifacts execute as trusted same-origin code. Typed slots, no direct DOM patching, and no route registration are architecture contracts, not a browser sandbox.",
   },
   "@connect.settings.plugins.official.install": { defaultMessage: "Install official Plugin" },
   "@connect.settings.plugins.official.installed": { defaultMessage: "Installed" },
@@ -462,14 +462,14 @@ export const en = {
   "@connect.settings.error.invalidReasoningEffort": {
     defaultMessage: "The selected reasoning effort is not available. Server detail: {detail}",
   },
-  "@connect.settings.error.projectInUse": {
-    defaultMessage: "This Project is still in use. Server detail: {detail}",
+  "@connect.settings.error.workspaceInUse": {
+    defaultMessage: "This Workspace is still in use. Server detail: {detail}",
   },
-  "@connect.settings.error.projectNotFound": {
-    defaultMessage: "This Project is no longer registered. Server detail: {detail}",
+  "@connect.settings.error.workspaceNotFound": {
+    defaultMessage: "This Workspace is no longer registered. Server detail: {detail}",
   },
-  "@connect.settings.error.projectConflict": {
-    defaultMessage: "The Project conflicts with an existing workspace. Server detail: {detail}",
+  "@connect.settings.error.workspaceConflict": {
+    defaultMessage: "The Workspace conflicts with an existing workspace. Server detail: {detail}",
   },
   "@connect.settings.error.directoryNotFound": {
     defaultMessage: "The selected host directory no longer exists. Server detail: {detail}",

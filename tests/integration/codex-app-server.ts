@@ -7,10 +7,10 @@ import { createStateStore } from "../../src/persistence/state";
 import { ConnectPluginHost } from "../../src/plugin/host";
 import codexDescriptor from "../../src/plugin/official/codex-descriptor";
 import { CODEX_CAPABILITY_ID, CODEX_PLUGIN_ID } from "../../src/plugin/official/codex-manifest";
-import { ProjectCatalog } from "../../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import type { ConnectRuntimePrompt } from "../../src/runtime/types";
 import type { AgentBindingConfig } from "../../src/types";
+import { WorkspaceCatalog } from "../../src/workspaces/workspaces";
 
 const executable = process.env.CODEX_INTEGRATION_PATH?.trim() || Bun.which("codex");
 if (!executable) throw new Error("Codex integration requires CODEX_INTEGRATION_PATH or codex in PATH");
@@ -19,12 +19,12 @@ const configPath = join(directory, "config.json");
 const config = defaultConfig();
 config.stateDbPath = join(directory, "state.sqlite");
 const store = createStateStore({ dbPath: config.stateDbPath });
-const projects = new ProjectCatalog(store);
+const workspaces = new WorkspaceCatalog(store);
 const runtimeAdapters = new RuntimeAdapterRegistry([]);
 const host = new ConnectPluginHost(configPath, runtimeAdapters, () => undefined, {
   config,
   stateStore: store,
-  projects,
+  workspaces,
 });
 const target = `${process.platform}-${process.arch}`;
 const built = await buildOfficialPlugin(codexDescriptor, { target, write: false });
@@ -70,7 +70,7 @@ try {
   const inputFor = (model: typeof selected): ConnectRuntimePrompt => ({
     prompt: "Reply with OK only.",
     workspace: {
-      projectId: null,
+      workspaceRef: "WSDEFALT",
       workingDirectory: process.cwd(),
       skipGitRepoCheck: true,
     },

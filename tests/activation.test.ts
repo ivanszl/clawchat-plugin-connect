@@ -18,7 +18,6 @@ describe("activateConnect", () => {
   it("exchanges invite code for a named configured agent and persists credentials", async () => {
     const dir = await tempDir();
     const config = upsertAgentBinding(defaultConfig(), "codex", pluginBinding());
-    config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     const fetchImpl = mock(async (input: string | URL | Request) =>
@@ -72,7 +71,6 @@ describe("activateConnect", () => {
   it("sends stored agent user_id when reactivating the same local agent", async () => {
     const dir = await tempDir();
     const config = upsertAgentBinding(defaultConfig(), "codex", pluginBinding());
-    config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     await store.commitActivationForInstallationOwner({
@@ -107,7 +105,6 @@ describe("activateConnect", () => {
     config.agents.work = {
       ...config.agents.personal,
     };
-    config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     await store.commitActivationForInstallationOwner({
@@ -196,7 +193,6 @@ describe("activateConnect", () => {
   it("rejects assigning an occupied Agent Binding to a different Binding Owner", async () => {
     const dir = await tempDir();
     const config = upsertAgentBinding(defaultConfig(), "personal", pluginBinding());
-    config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     await store.commitActivationForInstallationOwner({
@@ -244,7 +240,6 @@ describe("activateConnect", () => {
     config.agents.work = {
       ...config.agents.personal,
     };
-    config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     await store.commitActivationForInstallationOwner({
@@ -281,7 +276,6 @@ describe("activateConnect", () => {
   it("leaves credentials and Installation Owner unset when Profile synchronization fails", async () => {
     const dir = await tempDir();
     const config = upsertAgentBinding(defaultConfig(), "work", pluginBinding());
-    config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     const fetchImpl = mock(async (input: string | URL | Request) =>
@@ -315,7 +309,6 @@ describe("activateConnect", () => {
   it("rejects incomplete activation responses", async () => {
     const dir = await tempDir();
     const config = upsertAgentBinding(defaultConfig(), "codex", pluginBinding());
-    config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     const fetchImpl = mock(async () => response({ code: 0, data: { agent: {} } })) as unknown as typeof fetch;

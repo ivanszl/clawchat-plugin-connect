@@ -9,7 +9,6 @@ import { TurnSubmission, type TurnSubmissionCapability } from "../src/client-int
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { identifyAgentBinding } from "../src/plugin/binding";
-import { ProjectCatalog } from "../src/projects/projects";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
 import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
 import type {
@@ -21,11 +20,12 @@ import type {
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeStartContext, RuntimeActivity, RuntimeInteractionRequest } from "../src/runtime/types";
 import type { RuntimeWorkspace } from "../src/types";
+import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { fixedRuntimeAdapter, pluginBinding, TEST_RUNTIME_CAPABILITY } from "./runtime-adapter-fixture";
 
 const directory = "/repo";
 const runtimeWorkspace = {
-  projectId: "p",
+  workspaceRef: "p",
   workingDirectory: directory,
   skipGitRepoCheck: true,
 } satisfies RuntimeWorkspace;
@@ -567,7 +567,7 @@ describe("OpenCode Runtime Adapter", () => {
         for await (const _activity of otherSession.prompt({
           prompt: "/grill-with-docs Must not cross workspaces",
           skill: skills?.[0],
-          workspace: { ...runtimeWorkspace, projectId: "project-2", workingDirectory: "/other-repo" },
+          workspace: { ...runtimeWorkspace, workspaceRef: "project-2", workingDirectory: "/other-repo" },
         })) {
           // A Skill discovered for one workspace is not valid in another.
         }
@@ -632,7 +632,7 @@ describe("OpenCode Runtime Adapter", () => {
     const binding = pluginBinding();
 
     const options = await adapter.listSessionOptions?.(binding, {
-      projectId: "p",
+      workspaceRef: "p",
       workingDirectory: directory,
       skipGitRepoCheck: true,
     });
@@ -1094,13 +1094,13 @@ describe("OpenCode Runtime Adapter", () => {
     const config = upsertAgentBinding(defaultConfig(), "open", pluginBinding());
     config.stateDbPath = join(root, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
-    const projects = new ProjectCatalog(store);
-    const project = await projects.add(root);
+    const workspaces = new WorkspaceCatalog(store);
+    const project = await workspaces.add("open", root);
     await store.upsertRuntimeSession({
       chatId: "chat",
       sessionId: "connect-session",
       agentId: "open",
-      projectId: project.projectId,
+      workspaceRef: project.workspaceRef,
       runtimeSessionId: "session-1",
       isCurrent: true,
     });
@@ -1137,7 +1137,7 @@ describe("OpenCode Runtime Adapter", () => {
         },
         sendMessageEnvelope: async () => ({ payload: {} }),
       } as unknown as ConnectWsClient,
-      projects,
+      workspaces,
       runtimeAdapters,
       transcriptProjection,
     });

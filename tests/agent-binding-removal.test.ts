@@ -6,12 +6,13 @@ import { removeAgentBinding } from "../src/account/agent-binding-removal";
 import { FileTurnSubmissionStaging } from "../src/client-interface/turn-submission-staging";
 import { defaultConfig, loadConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
-import { ProjectCatalog } from "../src/projects/projects";
+import { ConnectBindingLivewarePublicationStateStore } from "../src/plugin/official/liveware-publication-state";
 import type { ActivationCredentials } from "../src/types";
+import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { pluginBinding } from "./runtime-adapter-fixture";
 
 describe("Agent Binding removal", () => {
-  it("stops Connect, retires only that Binding's Exposure, and purges its local data", async () => {
+  it("stops Connect, retires only that Binding's Exposure, and purges its catalog data", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-remove-binding-"));
     const configPath = join(directory, "config.json");
     const config = defaultConfig();
@@ -20,17 +21,17 @@ describe("Agent Binding removal", () => {
     config.stateDbPath = join(directory, "state.sqlite");
     await saveConfig(config, configPath);
     const store = createStateStore({ dbPath: config.stateDbPath });
+    const publicationState = new ConnectBindingLivewarePublicationStateStore(store);
     await store.upsertActivation(activation("personal"));
     await store.upsertActivation(activation("work"));
-    await store.setLivewareExposure(exposure("personal"));
-    await store.setLivewareExposure(exposure("work"));
-    await store.insertProject({ projectId: "shared-project", name: "Shared", rootPath: directory });
+    await publicationState.compareAndSwap("personal", null, publication("personal"));
+    await publicationState.compareAndSwap("work", null, publication("work"));
     await store.upsertRuntimeSession({
       chatId: "work-chat",
       sessionId: "work-session",
       agentId: "work",
       runtimeSessionId: "work-thread",
-      projectId: null,
+      workspaceRef: null,
       hasMessages: true,
     });
     await store.upsertRuntimeSession({
@@ -38,15 +39,15 @@ describe("Agent Binding removal", () => {
       sessionId: "personal-session",
       agentId: "personal",
       runtimeSessionId: "personal-thread",
-      projectId: null,
+      workspaceRef: null,
       hasMessages: true,
     });
     const workSession = await store.getCurrentRuntimeSession("work-chat", "work");
     const personalSession = await store.getCurrentRuntimeSession("personal-chat", "personal");
     if (!workSession || !personalSession) throw new Error("test Sessions were not materialized");
-    const projects = new ProjectCatalog(store);
-    const workWorkspace = await projects.resolveWorkspace(workSession);
-    const personalWorkspace = await projects.resolveWorkspace(personalSession);
+    const workspaces = new WorkspaceCatalog(store);
+    const workWorkspace = await workspaces.resolveWorkspace(workSession);
+    const personalWorkspace = await workspaces.resolveWorkspace(personalSession);
     const staging = new FileTurnSubmissionStaging(config.stateDbPath);
     const stagedWork = await staging.stage({
       submissionId: "work-submission",
@@ -94,14 +95,15 @@ describe("Agent Binding removal", () => {
     const startService = mock(async () => {
       actions.push("start");
     });
-    const retireLivewareExposure = mock(async ({ activation: principal }: { activation: ActivationCredentials }) => {
-      actions.push(`retire:${principal.localAgentId}`);
-      await store.clearLivewareExposure(principal.localAgentId);
+    const retireLivewarePublications = mock(async (bindingIds: readonly string[]) => {
+      for (const bindingId of bindingIds) {
+        actions.push(`retire:${bindingId}`);
+      }
     });
 
     await removeAgentBinding(
       { agentId: "work", configPath },
-      { store, getServiceStatus, stopService, startService, retireLivewareExposure },
+      { store, getServiceStatus, stopService, startService, retireLivewarePublications },
     );
 
     expect(actions).toEqual(["status", "stop", "retire:work", "start"]);
@@ -115,20 +117,22 @@ describe("Agent Binding removal", () => {
     await expect(store.listRuntimeSessions("work-chat", "work")).resolves.toEqual([]);
     await expect(store.getToolRequest("work-tool")).resolves.toBeNull();
     await expect(store.getRuntimeStatus("work")).resolves.toBeNull();
-    await expect(store.getLivewareExposure("work")).resolves.toBeNull();
-    await expect(store.getLivewareExposure("personal")).resolves.toMatchObject({ localAgentId: "personal" });
+    await expect(publicationState.read("work")).resolves.toBeNull();
+    await expect(publicationState.read("personal")).resolves.toMatchObject({
+      value: { appId: "app-personal", bindingId: "personal" },
+    });
     await expect(store.getClientCommandOutcome("work-command")).resolves.toEqual({ state: "missing" });
     await expect(store.getClientCommandOutcome("personal-command")).resolves.toMatchObject({ state: "pending" });
     expect((await store.listClientEvents(0)).map(({ event }) => "sessionRef" in event && event.sessionRef)).toEqual([
       personalSession.sessionRef,
     ]);
-    expect(await stat(workWorkspace.workingDirectory).catch(() => null)).toBeNull();
+    expect((await stat(workWorkspace.workingDirectory)).isDirectory()).toBe(true);
     expect((await stat(personalWorkspace.workingDirectory)).isDirectory()).toBe(true);
     await expect(staging.attachment("work-submission", 0)).resolves.toBeNull();
     await expect(staging.attachment("personal-submission", 0)).resolves.toMatchObject({
       sessionRef: personalSession.sessionRef,
     });
-    await expect(store.listProjects()).resolves.toHaveLength(1);
+    await expect(store.listWorkspaces()).resolves.toHaveLength(1);
     await store.close();
   });
 });
@@ -168,12 +172,17 @@ function activation(localAgentId: string): ActivationCredentials {
   };
 }
 
-function exposure(localAgentId: string) {
+function publication(bindingId: string) {
   return {
-    localAgentId,
-    ownerUserId: `owner-${localAgentId}`,
-    appId: `app-${localAgentId}`,
-    publicUrl: `https://${localAgentId}.apps.example`,
-    accessPolicy: "private" as const,
+    bindingId,
+    activationGeneration: 1,
+    desired: "private" as const,
+    status: "active" as const,
+    transition: null,
+    correlationKey: `publication:${bindingId}`,
+    appId: `app-${bindingId}`,
+    publicUrl: `https://${bindingId}.apps.example`,
+    registrationId: `registration-${bindingId}`,
+    diagnostic: null,
   };
 }

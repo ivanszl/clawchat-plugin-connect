@@ -12,10 +12,10 @@ import {
 } from "../src/clawchat/protocol";
 import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
-import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimePrompt } from "../src/runtime/types";
 import { type BindingProtocolEvent, startBindingRuntime } from "../src/service/binding-runtime";
+import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 class MemoryTransport implements Transport {
@@ -93,7 +93,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
         configPath: join(directory, "config.json"),
         deviceId: "device-local",
         stateStore,
-        projects: new ProjectCatalog(stateStore),
+        workspaces: new WorkspaceCatalog(stateStore),
         runtimeAdapters,
         wsTransport: transport,
         verifyInstalledSkills: async () => {
@@ -145,7 +145,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       protocolEventHandlers: {
@@ -218,7 +218,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       verifyInstalledSkills: async () => undefined,
@@ -341,7 +341,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       verifyInstalledSkills: async () => undefined,
@@ -477,7 +477,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       verifyInstalledSkills: async () => undefined,
@@ -567,7 +567,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       clawChatApi: {
@@ -698,7 +698,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       groupIntakeClock: {
@@ -817,7 +817,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       clawChatApi: {
@@ -968,7 +968,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       clawChatApi: {
@@ -1074,7 +1074,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       verifyInstalledSkills: async () => undefined,
@@ -1149,7 +1149,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       protocolEventHandlers: {
@@ -1362,7 +1362,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       verifyInstalledSkills: async () => undefined,
@@ -1546,7 +1546,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       groupIntakeClock: {
@@ -1700,7 +1700,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       clawChatApi: {
@@ -1818,7 +1818,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       verifyInstalledSkills: async () => undefined,
@@ -1953,7 +1953,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       verifyInstalledSkills: async () => undefined,
@@ -2285,7 +2285,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
       stateStore,
-      projects: new ProjectCatalog(stateStore),
+      workspaces: new WorkspaceCatalog(stateStore),
       runtimeAdapters,
       wsTransport: transport,
       protocolEventHandlers: {

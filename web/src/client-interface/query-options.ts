@@ -8,8 +8,6 @@ import type {
   HostDirectoryListingView,
   ManagePluginRequest,
   PluginAdministrationView,
-  ProjectDirectoryRequest,
-  ProjectView,
   RespondToRuntimeInteractionRequest,
   RuntimeInteractionBlock,
   SelectPluginVersionRequest,
@@ -21,6 +19,8 @@ import type {
   TranscriptPageView,
   UpdateBindingPreferencesRequest,
   UpsertBindingProviderRequest,
+  WorkspaceDirectoryRequest,
+  WorkspaceView,
 } from "../../../src/client-contract";
 import { CLIENT_API_PREFIX } from "../../../src/client-contract";
 import { mergeClientViewSnapshot, observeClientTranscriptPage } from "./client-events";
@@ -32,7 +32,7 @@ export const clientKeys = {
   session: (sessionRef: string) => ["client", "session", sessionRef] as const,
   transcript: (sessionRef: string) => ["client", "transcript", sessionRef] as const,
   slashSuggestions: (sessionRef: string) => ["client", "slash-suggestions", sessionRef] as const,
-  projects: ["client", "projects"] as const,
+  workspaces: (bindingId: string) => ["client", "workspaces", bindingId] as const,
   hostDirectories: (path: string | null, showHidden: boolean) =>
     ["client", "host-directories", path, showHidden] as const,
   plugins: ["client", "plugins"] as const,
@@ -87,10 +87,18 @@ export function sessionQueryOptions(sessionRef: string) {
   });
 }
 
-export const projectsQueryOptions = queryOptions({
-  queryKey: clientKeys.projects,
-  queryFn: async () => await clientFetch<ProjectView[]>(`${CLIENT_API_PREFIX}/projects`),
-});
+export function workspacesQueryOptions(bindingId: string | null) {
+  return queryOptions({
+    queryKey: clientKeys.workspaces(bindingId ?? ""),
+    queryFn: async () => {
+      if (!bindingId) return [];
+      return await clientFetch<WorkspaceView[]>(
+        `${CLIENT_API_PREFIX}/workspaces?bindingId=${encodeURIComponent(bindingId)}`,
+      );
+    },
+    enabled: Boolean(bindingId),
+  });
+}
 
 export function transcriptQueryOptions(sessionRef: string) {
   return infiniteQueryOptions({
@@ -212,18 +220,24 @@ export async function hostDirectories(path: string | null, showHidden: boolean):
   );
 }
 
-export async function addProject(directory: ProjectDirectoryRequest): Promise<ProjectView> {
-  return await clientFetch<ProjectView>(`${CLIENT_API_PREFIX}/projects`, {
+export async function addWorkspace(bindingId: string, directory: WorkspaceDirectoryRequest): Promise<WorkspaceView> {
+  return await clientFetch<WorkspaceView>(`${CLIENT_API_PREFIX}/workspaces`, {
     method: "POST",
-    body: JSON.stringify({ requestId: requestId(), directory }),
+    body: JSON.stringify({ requestId: requestId(), bindingId, directory }),
   });
 }
 
-export async function removeProject(workspaceId: string): Promise<{ workspaceId: string; removed: true }> {
-  return await clientFetch(`${CLIENT_API_PREFIX}/projects/${encodeURIComponent(workspaceId)}`, {
-    method: "DELETE",
-    body: JSON.stringify({ requestId: requestId() }),
-  });
+export async function removeWorkspace(
+  bindingId: string,
+  workspaceRef: string,
+): Promise<{ workspaceRef: string; removed: true }> {
+  return await clientFetch(
+    `${CLIENT_API_PREFIX}/workspaces/${encodeURIComponent(bindingId)}/${encodeURIComponent(workspaceRef)}`,
+    {
+      method: "DELETE",
+      body: JSON.stringify({ requestId: requestId() }),
+    },
+  );
 }
 
 export async function updateBindingPreferences(

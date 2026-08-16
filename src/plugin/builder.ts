@@ -4,19 +4,15 @@ import { dirname } from "node:path";
 import { CONNECT_PLUGIN_BUNDLE_FORMAT, type ConnectPluginBundleV1, type ConnectPluginManifestV1 } from "./sdk";
 import { connectPluginBundleFileBytes, parseConnectPluginBundle, verifyConnectPluginIntegrity } from "./store";
 
-/**
- * The author-owned portion of a Plugin manifest. Artifact and probe metadata is
- * generated from the exact files placed in the Bundle.
- */
-export type ConnectPluginAuthorManifestV1 = Omit<ConnectPluginManifestV1, "artifacts" | "probe">;
+/** The author-owned portion of a Plugin manifest. Artifact metadata is generated from the exact entry file. */
+export type ConnectPluginAuthorManifestV1 = Omit<ConnectPluginManifestV1, "artifacts">;
 
 export interface BuildConnectPluginBundleOptions {
   readonly manifest: ConnectPluginAuthorManifestV1;
   readonly target: string;
   readonly artifactPath: string;
   readonly artifactEntry: string;
-  readonly probePath?: string;
-  readonly probeEntry?: string;
+  readonly browserArtifactPaths?: Readonly<Record<string, string>>;
 }
 
 export interface WriteConnectPluginBundleOptions extends BuildConnectPluginBundleOptions {
@@ -31,11 +27,8 @@ export interface WriteConnectPluginBundleOptions extends BuildConnectPluginBundl
 export async function buildConnectPluginBundle(
   options: BuildConnectPluginBundleOptions,
 ): Promise<ConnectPluginBundleV1> {
-  if (Object.hasOwn(options.manifest, "artifacts") || Object.hasOwn(options.manifest, "probe")) {
-    throw new Error("Author manifest must omit generated artifacts and probe fields");
-  }
-  if (Boolean(options.probePath) !== Boolean(options.probeEntry)) {
-    throw new Error("Plugin probePath and probeEntry must be provided together");
+  if (Object.hasOwn(options.manifest, "artifacts")) {
+    throw new Error("Author manifest must omit generated artifact fields");
   }
 
   const artifactBytes = await readFile(options.artifactPath);
@@ -43,15 +36,25 @@ export async function buildConnectPluginBundle(
     [options.artifactEntry]: { encoding: "base64", content: artifactBytes.toString("base64") },
   };
   const artifactIntegrity = sha256Integrity(artifactBytes);
-
-  let probe: ConnectPluginManifestV1["probe"];
-  if (options.probePath && options.probeEntry) {
-    if (options.probeEntry === options.artifactEntry) {
-      throw new Error("Plugin artifactEntry and probeEntry must be different Bundle paths");
+  for (const capability of options.manifest.capabilities) {
+    if (capability.type !== "client-extension") continue;
+    for (const artifact of [
+      { entry: capability.browser.entry, integrity: capability.browser.integrity },
+      ...capability.browser.styles,
+    ]) {
+      const artifactPath = options.browserArtifactPaths?.[artifact.entry];
+      if (!artifactPath) {
+        throw new Error(`Client Extension artifact ${artifact.entry} has no browserArtifactPaths entry`);
+      }
+      const bytes = await readFile(artifactPath);
+      verifyConnectPluginIntegrity(bytes, artifact.integrity, `${options.manifest.pluginId} ${artifact.entry}`);
+      const encoded = { encoding: "base64" as const, content: bytes.toString("base64") };
+      const existing = files[artifact.entry];
+      if (existing && existing.content !== encoded.content) {
+        throw new Error(`Plugin Bundle artifact path ${artifact.entry} has conflicting content`);
+      }
+      files[artifact.entry] = encoded;
     }
-    const probeBytes = await readFile(options.probePath);
-    files[options.probeEntry] = { encoding: "base64", content: probeBytes.toString("base64") };
-    probe = { entry: options.probeEntry, integrity: sha256Integrity(probeBytes) };
   }
 
   const candidate: ConnectPluginBundleV1 = {
@@ -59,7 +62,6 @@ export async function buildConnectPluginBundle(
     manifest: {
       ...options.manifest,
       artifacts: [{ target: options.target, entry: options.artifactEntry, integrity: artifactIntegrity }],
-      ...(probe ? { probe } : {}),
     },
     files,
   };
@@ -71,14 +73,7 @@ export async function buildConnectPluginBundle(
       `${bundle.manifest.pluginId} ${artifact.entry}`,
     );
   }
-  if (bundle.manifest.probe) {
-    verifyConnectPluginIntegrity(
-      connectPluginBundleFileBytes(bundle, bundle.manifest.probe.entry),
-      bundle.manifest.probe.integrity,
-      `${bundle.manifest.pluginId} runtime probe`,
-    );
-  }
-  return bundle;
+  return bundle as ConnectPluginBundleV1;
 }
 
 /** Writes a deterministic JSON representation of a validated Plugin Bundle. */

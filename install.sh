@@ -35,11 +35,11 @@ printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$
 case "$(uname -s)" in
   Darwin)
     os="darwin"
-    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode clawling.runtime.workbuddy"
+    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode clawling.runtime.workbuddy clawling.exposure.liveware"
     ;;
   Linux)
     os="linux"
-    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode"
+    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode clawling.exposure.liveware"
     ;;
   *) fail "unsupported operating system: $(uname -s)" ;;
 esac
@@ -100,7 +100,7 @@ fi
 [ "$actual_checksum" = "$expected_checksum" ] || fail "checksum verification failed for $asset"
 
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" \
-  clawchat-connect clawchat-connect-client official-plugins liveware skills CHANGELOG.md LICENSE
+  clawchat-connect clawchat-connect-client official-plugins skills CHANGELOG.md LICENSE
 [ -f "$tmp_dir/clawchat-connect" ] || fail "release archive does not contain clawchat-connect"
 [ -f "$tmp_dir/clawchat-connect-client/index.html" ] || fail "release archive does not contain Connect Client"
 [ -d "$tmp_dir/official-plugins" ] || fail "release archive does not contain official Plugins"
@@ -111,25 +111,21 @@ for official_plugin_id in $required_official_plugin_ids; do
   done
   [ "$official_plugin_found" = 1 ] || fail "release archive does not contain the ${official_plugin_id} official Plugin Bundle"
 done
-[ -f "$tmp_dir/liveware" ] || fail "release archive does not contain Liveware"
 [ -f "$tmp_dir/skills/manifest.json" ] || fail "release archive does not contain Agent skills"
 [ -f "$tmp_dir/CHANGELOG.md" ] || fail "release archive does not contain the Changelog"
 [ -f "$tmp_dir/LICENSE" ] || fail "release archive does not contain LICENSE"
 
 "$tmp_dir/clawchat-connect" --help >/dev/null
-"$tmp_dir/liveware" --help >/dev/null
 "$tmp_dir/clawchat-connect" skills preflight >/dev/null
 
 mkdir -p "$install_dir" "$tmp_dir/backup"
 connect_staging="$install_dir/.clawchat-connect.new.$$"
-liveware_staging="$install_dir/.liveware.new.$$"
 client_staging="$install_dir/.clawchat-connect-client.new.$$"
 official_plugins_staging="$install_dir/.official-plugins.new.$$"
 skills_staging="$install_dir/.skills.new.$$"
 licenses_staging="$install_dir/.licenses.new.$$"
 cp "$tmp_dir/clawchat-connect" "$connect_staging"
-cp "$tmp_dir/liveware" "$liveware_staging"
-chmod 755 "$connect_staging" "$liveware_staging"
+chmod 755 "$connect_staging"
 cp -R "$tmp_dir/clawchat-connect-client" "$client_staging"
 cp -R "$tmp_dir/official-plugins" "$official_plugins_staging"
 cp -R "$tmp_dir/skills" "$skills_staging"
@@ -172,7 +168,6 @@ mkdir -p "$(dirname "$license_dir")"
 rm -rf "$install_dir/clawchat-connect" "$install_dir/liveware" "$install_dir/clawchat-connect-client" \
   "$install_dir/official-plugins" "$install_dir/skills" "$license_dir"
 mv "$connect_staging" "$install_dir/clawchat-connect"
-mv "$liveware_staging" "$install_dir/liveware"
 mv "$client_staging" "$install_dir/clawchat-connect-client"
 mv "$official_plugins_staging" "$install_dir/official-plugins"
 mv "$skills_staging" "$install_dir/skills"
@@ -181,7 +176,6 @@ mv "$licenses_staging" "$license_dir"
 transaction_committed=1
 
 printf 'Installed clawchat-connect to %s/clawchat-connect\n' "$install_dir"
-printf 'Installed bundled Liveware to %s/liveware\n' "$install_dir"
 printf 'Installed Connect Client assets to %s/clawchat-connect-client\n' "$install_dir"
 printf 'Installed official Plugin Bundles to %s/official-plugins\n' "$install_dir"
 printf 'Installed managed Agent skills to %s/.agents/skills\n' "$HOME"

@@ -9,7 +9,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Folder, HardDrive, House, Link, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { HostDirectoryLocationView, ProjectDirectoryRequest } from "../../../../src/client-contract";
+import type { HostDirectoryLocationView, WorkspaceDirectoryRequest } from "../../../../src/client-contract";
 import { clientKeys, hostDirectories } from "../../client-interface/query-options";
 import { localizedClientError, useClientTranslator } from "../../i18n/client-i18n";
 
@@ -18,7 +18,7 @@ export function HostDirectoryPicker({
   onSelect,
 }: {
   onCancel: () => void;
-  onSelect: (directory: ProjectDirectoryRequest) => void;
+  onSelect: (directory: WorkspaceDirectoryRequest) => void;
 }) {
   const t = useClientTranslator();
   const [path, setPath] = useState<string | null>(null);
@@ -168,7 +168,7 @@ export function HostDirectoryPicker({
   );
 }
 
-export function projectDirectoryLabel(directory: ProjectDirectoryRequest, separator?: string): string {
+export function workspaceDirectoryLabel(directory: WorkspaceDirectoryRequest, separator?: string): string {
   if (directory.kind === "existing-directory") return directory.rootPath;
   const pathSeparator = separator ?? (directory.parentPath.includes("\\") ? "\\" : "/");
   const parent =
@@ -178,7 +178,7 @@ export function projectDirectoryLabel(directory: ProjectDirectoryRequest, separa
   return `${parent}${pathSeparator}${directory.name}`;
 }
 
-export function projectDirectoryName(directory: ProjectDirectoryRequest): string {
+export function workspaceDirectoryName(directory: WorkspaceDirectoryRequest): string {
   if (directory.kind === "new-directory") return directory.name;
   const rootWithoutTrailingSeparators = directory.rootPath.replace(/[\\/]+$/u, "");
   if (!rootWithoutTrailingSeparators || /^[A-Za-z]:$/u.test(rootWithoutTrailingSeparators)) {

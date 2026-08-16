@@ -12,7 +12,8 @@ $observationPath = Join-Path $temporaryDirectory "preflight-observation.txt"
 $asset = "clawchat-connect-windows-$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant() -replace 'x64','x64' -replace 'arm64','arm64').zip"
 $officialPluginBundles = @(
   "clawling.runtime.codex-0.0.0-test-win32.connect-plugin",
-  "clawling.runtime.opencode-0.0.0-test-win32.connect-plugin"
+  "clawling.runtime.opencode-0.0.0-test-win32.connect-plugin",
+  "clawling.exposure.liveware-0.0.0-test-win32.connect-plugin"
 )
 $originalUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $originalProcessPath = $env:PATH
@@ -21,7 +22,6 @@ try {
   New-Item -ItemType Directory -Path $payloadDirectory, $fixtureDirectory, $installDirectory | Out-Null
   & bun build --compile (Join-Path $PSScriptRoot "fixtures\windows-installer-probe.ts") --outfile (Join-Path $payloadDirectory "clawchat-connect.exe")
   if ($LASTEXITCODE -ne 0) { throw "Failed to build Windows installer probe" }
-  Copy-Item -LiteralPath (Join-Path $payloadDirectory "clawchat-connect.exe") -Destination (Join-Path $payloadDirectory "liveware.exe")
   New-Item -ItemType Directory -Path (
     Join-Path $payloadDirectory "clawchat-connect-client"
   ), (Join-Path $payloadDirectory "official-plugins"), (Join-Path $payloadDirectory "skills") | Out-Null
@@ -36,6 +36,8 @@ try {
   $installedBinary = Join-Path $installDirectory "clawchat-connect.exe"
   Copy-Item -LiteralPath (Join-Path $payloadDirectory "clawchat-connect.exe") -Destination $installedBinary
   Add-Content -LiteralPath $installedBinary -Value "old-release-overlay"
+  $legacyLiveware = Join-Path $installDirectory "liveware.exe"
+  Set-Content -LiteralPath $legacyLiveware -Value "legacy root companion"
   $oldHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installedBinary).Hash.ToLowerInvariant()
 
   $fixtureArchivePath = Join-Path $fixtureDirectory $asset
@@ -80,6 +82,9 @@ try {
   $installedBundleNames = @(Get-ChildItem -LiteralPath $installedOfficialPlugins -File -Name | Sort-Object)
   if (Compare-Object -ReferenceObject @($officialPluginBundles | Sort-Object) -DifferenceObject $installedBundleNames) {
     throw "Normal Windows installation did not retain the exact official Plugin Bundles"
+  }
+  if (Test-Path -LiteralPath $legacyLiveware) {
+    throw "Normal Windows installation retained the legacy root companion"
   }
 
   $retiredBundle = "clawling.runtime.retired-0.0.0-test-win32.connect-plugin"

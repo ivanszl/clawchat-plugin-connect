@@ -1,5 +1,6 @@
 export const CLIENT_API_PREFIX = "/client/v1" as const;
 export const PLUGIN_MANAGER_CONFIG_HEADER = "X-ClawChat-Connect-Config-Path" as const;
+export const BINDING_SCOPE_HEADER = "X-ClawChat-Connect-Binding-Scope" as const;
 export const SESSION_REF_PATTERN = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/u;
 export const MAX_PLUGIN_BUNDLE_BYTES = 16 * 1024 * 1024;
 
@@ -33,7 +34,7 @@ export interface PluginCapabilityInstanceView {
 
 export interface PluginCapabilityView {
   id: string;
-  type: "runtime" | "exposure";
+  type: "runtime" | "exposure" | "client-extension";
   family: string | null;
   configurationSchema: PluginJsonSchemaView;
   instances: PluginCapabilityInstanceView[];
@@ -298,10 +299,8 @@ export interface SessionCatalogEntryView {
   entryKind: "session" | "runtime-thread";
   bindingId: string;
   bindingKind: string;
-  projectId: string | null;
-  projectName: string | null;
-  workspaceId: string | null;
-  workspaceName: string | null;
+  workspaceRef: string;
+  workspaceName: string;
   name: string;
   isArchived: boolean;
   status: "idle" | "running" | "queued" | "offline" | "error";
@@ -333,9 +332,8 @@ export interface SessionView {
   bindingKind: string;
   bindingLocked: boolean;
   bindingLockReason: "accepted-turn" | "runtime-thread" | null;
-  projectId: string | null;
-  projectName: string | null;
-  workspaceName: string | null;
+  workspaceRef: string;
+  workspaceName: string;
   name: string;
   isArchived: boolean;
   mode: string | null;
@@ -408,20 +406,21 @@ export interface RuntimeSessionOptionView {
   }>;
 }
 
-export interface ProjectView {
-  projectId: string;
-  workspaceId: string;
+export interface WorkspaceView {
+  bindingId: string;
+  workspaceRef: string;
   name: string;
   rootPath: string;
+  isDefault: boolean;
 }
 
-export type ProjectDirectoryRequest =
+export type WorkspaceDirectoryRequest =
   | { kind: "existing-directory"; rootPath: string }
   | { kind: "new-directory"; parentPath: string; name: string };
 
 export interface HostDirectoryLocationView {
   id: string;
-  kind: "home" | "filesystem-root" | "mounted-volume" | "project" | "runtime-workspace";
+  kind: "home" | "filesystem-root" | "mounted-volume" | "workspace" | "runtime-workspace";
   name: string;
   path: string;
 }
@@ -456,11 +455,40 @@ export interface BindingPreferenceView {
   modeOptions: string[];
 }
 
+export interface ClientExtensionSlotView {
+  id: string;
+  interfaceVersion: "1";
+  priority: number;
+}
+
+export interface ClientExtensionStyleView {
+  href: string;
+  integrity: string;
+}
+
+export interface ClientExtensionView {
+  pluginId: string;
+  capabilityId: string;
+  version: string;
+  activationGeneration: number;
+  entry: string;
+  integrity: string;
+  styles: ClientExtensionStyleView[];
+  slots: ClientExtensionSlotView[];
+}
+
+export interface ClientExtensionGraphView {
+  hash: string;
+  epoch: string;
+  extensions: ClientExtensionView[];
+}
+
 export interface BootstrapView {
   apiVersion: 1;
   eventCursor: number;
   outputVisibility: "minimal" | "normal" | "full";
   bindings: BindingPreferenceView[];
+  clientExtensions: ClientExtensionGraphView;
   capabilities: {
     localTurns: boolean;
     cancellation: boolean;
@@ -541,10 +569,7 @@ export interface ClientMediaAttachment {
 export interface CreateSessionRequest {
   requestId: string;
   bindingId: string;
-  workspace:
-    | { kind: "none" }
-    | { kind: "existing"; workspaceId: string }
-    | { kind: "new-project"; directory: ProjectDirectoryRequest };
+  workspace: { kind: "existing"; workspaceRef: string } | { kind: "new"; directory: WorkspaceDirectoryRequest };
   name: string | null;
   mode: string | null;
   model: string | null;
@@ -586,9 +611,10 @@ export interface UpdateSessionPreferencesRequest {
   sessionOptions?: Record<string, string>;
 }
 
-export interface AddProjectRequest {
+export interface AddWorkspaceRequest {
   requestId: string;
-  directory: ProjectDirectoryRequest;
+  bindingId: string;
+  directory: WorkspaceDirectoryRequest;
 }
 
 export interface SessionArchiveResponse {
@@ -603,6 +629,7 @@ export interface SessionDeleteResponse {
 
 export interface UpdateBindingPreferencesRequest {
   requestId: string;
+  clientExtensionEpoch?: string;
   displayName?: string;
   model?: string | null;
   modelReasoningEffort?: string | null;

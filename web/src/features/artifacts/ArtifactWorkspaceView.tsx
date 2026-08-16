@@ -10,7 +10,7 @@ import {
   classifyWorkspaceArtifact,
   normalizeWorkspaceArtifactHref,
   workspaceArtifactUrl,
-} from "../../../../src/projects/workspace-artifact";
+} from "../../../../src/workspaces/workspace-artifact";
 import { useClientTranslator } from "../../i18n/client-i18n";
 import {
   type ArtifactTab,

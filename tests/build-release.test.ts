@@ -31,16 +31,14 @@ describe("resolveReleaseTarget", () => {
       architecture: "arm64",
       archiveName: "clawchat-connect-darwin-arm64.tar.gz",
       connectExecutable: "clawchat-connect",
-      livewareAsset: "liveware-darwin-arm64",
     });
   });
 
-  test("maps Linux x64 to the amd64 Liveware asset", () => {
+  test("maps Linux x64", () => {
     expect(resolveReleaseTarget("linux", "x64")).toMatchObject({
       platform: "linux",
       architecture: "x64",
       archiveName: "clawchat-connect-linux-x64.tar.gz",
-      livewareAsset: "liveware-linux-amd64",
     });
   });
 
@@ -50,7 +48,6 @@ describe("resolveReleaseTarget", () => {
       architecture: "x64",
       archiveName: "clawchat-connect-windows-x64.zip",
       connectExecutable: "clawchat-connect.exe",
-      livewareExecutable: "liveware.exe",
     });
   });
 
@@ -63,7 +60,6 @@ test("release payload is complete", () => {
   const target = resolveReleaseTarget("darwin", "arm64");
   expect(releasePayload(target).entries).toEqual([
     "clawchat-connect",
-    "liveware",
     "clawchat-connect-client",
     "official-plugins",
     "skills",

@@ -3,8 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { MAX_PLUGIN_BUNDLE_BYTES } from "../src/client-contract";
-import { BINDING_SCOPE_HEADER } from "../src/client-interface/binding-scoped-gateway";
+import { BINDING_SCOPE_HEADER, MAX_PLUGIN_BUNDLE_BYTES } from "../src/client-contract";
 import {
   type ClientHttpServerOptions,
   type ClientHttpServerRequestContext,
@@ -36,9 +35,9 @@ import {
   managedPluginUploadRoot,
   validatePluginConfiguration,
 } from "../src/plugin/store";
-import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { AgentBindingConfig } from "../src/types";
+import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 
 const handles: ClientInterfaceHandle[] = [];
 const stores: ConnectStateStore[] = [];
@@ -139,13 +138,7 @@ describe("Connect Client trusted Plugin administration", () => {
           pluginId: "official.fixture",
           name: "Official Fixture",
           source: "npm:@clawchat/fixture@1.2.0",
-          resolvedSource: {
-            type: "npm",
-            package: "@clawchat/fixture",
-            registry: "https://registry.example.test",
-            version: "1.2.0",
-            tarball: "https://registry.example.test/fixture.tgz",
-          },
+          resolvedSource: null,
           version: "1.2.0",
           target: "test-target",
           integrity: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -153,16 +146,18 @@ describe("Connect Client trusted Plugin administration", () => {
           compatible: true,
           selected: true,
           selectable: true,
-          probe: { detected: true, compatible: true },
+          discovery: { detected: true, compatible: true },
           diagnostic: null,
           installationConfiguration: { channel: "stable" },
           exposureConfigurations: {},
+          capabilityGrants: [],
           manifest: healthy.manifest,
         },
       ],
     };
     const pluginManager = {
       list: mock(async () => installed),
+      listPublishedClientExtensions: mock(async () => installed),
       checkUpdates: mock(async () => ({
         "test.healthy": {
           status: "available" as const,
@@ -248,7 +243,8 @@ describe("Connect Client trusted Plugin administration", () => {
         {
           kind: "available",
           pluginId: "official.fixture",
-          source: { type: "npm", version: "1.2.0" },
+          source: null,
+          sourceReference: "npm:@clawchat/fixture@1.2.0",
           version: "1.2.0",
           capabilities: [{ id: "runtime", configurationSchema: healthy.manifest.capabilities[0]?.configurationSchema }],
           status: "available",
@@ -689,7 +685,7 @@ describe("Connect Client trusted Plugin administration", () => {
     const host = new ConnectPluginHost(configPath, registry, () => undefined, {
       config,
       stateStore: store,
-      projects: new ProjectCatalog(store),
+      workspaces: new WorkspaceCatalog(store),
     });
     let fetchHandler: ClientHttpServerOptions["fetch"] | null = null;
     const handle = await startClientInterface({
@@ -777,7 +773,7 @@ describe("Connect Client trusted Plugin administration", () => {
     await host.close();
   });
 
-  it("keeps Plugin administration on actual loopback and rejects private Binding-scoped Liveware", async () => {
+  it("keeps Plugin administration on actual loopback and hides it from scoped requests", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-plugin-peer-"));
     const configPath = join(directory, "config.json");
     const config = defaultConfig();
@@ -792,13 +788,6 @@ describe("Connect Client trusted Plugin administration", () => {
     const store = createStateStore({ dbPath: config.stateDbPath });
     stores.push(store);
     await store.initialize();
-    await store.setLivewareExposure({
-      ownerUserId: "owner",
-      localAgentId: "private-binding",
-      appId: "private-app",
-      publicUrl: "https://private-liveware.example.test/client",
-      accessPolicy: "private",
-    });
     const registry = new RuntimeAdapterRegistry([
       {
         family: "fixture",
@@ -816,7 +805,11 @@ describe("Connect Client trusted Plugin administration", () => {
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
     const list = mock(async () => []);
     const install = mock(async () => ({ pluginId: "test.private-liveware" }));
-    const pluginManager = { list, install } as unknown as ConnectPluginManagement;
+    const pluginManager = {
+      list,
+      listPublishedClientExtensions: async () => [],
+      install,
+    } as unknown as ConnectPluginManagement;
     let fetchHandler: ClientHttpServerOptions["fetch"] | null = null;
     const handle = await startClientInterface({
       config,
@@ -1053,8 +1046,10 @@ function installedPlugin(
     },
     installationConfiguration: { channel: "stable" },
     exposureConfigurations: {},
+    officialCapabilityGrants: [],
   };
   return {
+    activationGeneration: 1,
     pluginId,
     ...version,
     status,

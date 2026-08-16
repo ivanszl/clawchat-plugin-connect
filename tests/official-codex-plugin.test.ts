@@ -8,7 +8,6 @@ import { buildOfficialPlugin } from "../scripts/build-official-plugins";
 import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { ConnectPluginHost } from "../src/plugin/host";
-import { probeCompatibleCodexExecutable } from "../src/plugin/official/codex-compatibility";
 import codexDescriptor from "../src/plugin/official/codex-descriptor";
 import { createCodexOfficialAdapter } from "../src/plugin/official/codex-entry";
 import {
@@ -17,11 +16,11 @@ import {
   CODEX_PLUGIN_ID,
   CODEX_RUNTIME_FAMILY,
 } from "../src/plugin/official/codex-manifest";
-import { ProjectCatalog } from "../src/projects/projects";
 import type { CodexRuntimeAdapterBinding } from "../src/runtime/codex-adapter";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeAdapter, ConnectRuntimePrompt } from "../src/runtime/types";
 import type { AgentBindingConfig } from "../src/types";
+import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { type AdapterHarness, runtimeAdapterConformance } from "./runtime-adapter-conformance";
 
 const target = `${process.platform}-${process.arch}`;
@@ -36,7 +35,7 @@ const builtCodex = await buildOfficialPlugin(codexDescriptor, { target, write: f
 runtimeAdapterConformance("installed official Codex Plugin", createInstalledCodexHarness);
 
 describe("official Codex Plugin Bundle", () => {
-  it("builds self-contained target and probe artifacts with exact integrity", () => {
+  it("builds a self-contained target artifact with exact integrity", () => {
     expect(builtCodex.bundle.manifest.pluginId).toBe(CODEX_PLUGIN_ID);
     expect(builtCodex.bundle.manifest.capabilities).toEqual([
       expect.objectContaining({ id: CODEX_CAPABILITY_ID, type: "runtime", family: CODEX_RUNTIME_FAMILY }),
@@ -49,12 +48,9 @@ describe("official Codex Plugin Bundle", () => {
     expect(capability.configurationSchema).not.toHaveProperty("properties.model");
     expect(capability.configurationSchema).not.toHaveProperty("properties.modelReasoningEffort");
     const artifact = required(builtCodex.bundle.manifest.artifacts[0], "Codex target artifact");
-    const probe = required(builtCodex.bundle.manifest.probe, "Codex probe artifact");
     const artifactFile = required(builtCodex.bundle.files[artifact.entry], "Codex target artifact file");
-    const probeFile = required(builtCodex.bundle.files[probe.entry], "Codex probe artifact file");
     expect(artifact.target).toBe(target);
     expect(artifact.integrity).toBe(`sha256-${createHash("sha256").update(artifactFile.content).digest("base64")}`);
-    expect(probe.integrity).toBe(`sha256-${createHash("sha256").update(probeFile.content).digest("base64")}`);
     expect(artifactFile.content).not.toContain('from "../../runtime/codex-adapter"');
   });
 
@@ -81,6 +77,7 @@ describe("official Codex Plugin Bundle", () => {
     };
     const official = createCodexOfficialAdapter(adapter, binding);
     const session = await official.start({
+      activationGeneration: 1,
       bindingId: "codex",
       chatId: "chat",
       sessionId: "session",
@@ -88,7 +85,7 @@ describe("official Codex Plugin Bundle", () => {
       onRuntimeThreadId: async () => undefined,
       cacheMedia: async () => "",
     });
-    const workspace = { projectId: null, workingDirectory: "/tmp", skipGitRepoCheck: true };
+    const workspace = { workspaceRef: "WSDEFALT", workingDirectory: "/tmp", skipGitRepoCheck: true };
 
     await Array.fromAsync(
       session.prompt({
@@ -124,26 +121,6 @@ describe("official Codex Plugin Bundle", () => {
     } finally {
       await setup.host.close();
       await setup.store.close();
-    }
-  });
-
-  it("accepts arbitrary parseable installed Codex versions and reports them before selection", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "connect-codex-probe-"));
-    for (const version of ["codex-cli 0.111.0-alpha.14", "codex-cli 99.42.7+future.1"]) {
-      const executable = await versionOnlyExecutable(directory, version);
-      await expect(
-        probeCompatibleCodexExecutable({
-          platform: process.platform,
-          arch: process.arch,
-          findExecutable: async () => executable,
-        }),
-      ).resolves.toEqual({
-        detected: true,
-        compatible: true,
-        version,
-        path: executable,
-        detail: `Detected ${version} at ${executable}; app-server compatibility will be verified during startup`,
-      });
     }
   });
 
@@ -199,62 +176,6 @@ describe("official Codex Plugin Bundle", () => {
       await setup.host.close();
       await setup.store.close();
     }
-  });
-
-  it("fails closed when version inspection is missing, unsuccessful, or malformed", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "connect-codex-probe-failure-"));
-    const failed = join(directory, "failed-codex");
-    const malformed = join(directory, "malformed-codex");
-    const invalidSemver = join(directory, "invalid-semver-codex");
-    await writeFile(failed, "#!/bin/sh\nprintf 'inspection failed\\n' >&2\nexit 42\n", { mode: 0o700 });
-    await writeFile(malformed, "#!/bin/sh\nprintf 'not a Codex version\\n'\n", { mode: 0o700 });
-    await writeFile(invalidSemver, "#!/bin/sh\nprintf 'codex-cli 1.2.3-01\\n'\n", { mode: 0o700 });
-
-    await expect(
-      probeCompatibleCodexExecutable({
-        platform: process.platform,
-        arch: process.arch,
-        findExecutable: async () => null,
-      }),
-    ).resolves.toEqual({ detected: false, compatible: false, detail: "Codex was not found in PATH" });
-    await expect(
-      probeCompatibleCodexExecutable({
-        platform: process.platform,
-        arch: process.arch,
-        findExecutable: async () => failed,
-      }),
-    ).resolves.toMatchObject({
-      detected: true,
-      compatible: false,
-      path: failed,
-      detail: `Failed to inspect Codex executable ${failed}: inspection failed`,
-    });
-    await expect(
-      probeCompatibleCodexExecutable({
-        platform: process.platform,
-        arch: process.arch,
-        findExecutable: async () => malformed,
-      }),
-    ).resolves.toMatchObject({
-      detected: true,
-      compatible: false,
-      version: "not a Codex version",
-      path: malformed,
-      detail: `Malformed Codex version output from ${malformed}: expected codex-cli <semantic version>, received not a Codex version`,
-    });
-    await expect(
-      probeCompatibleCodexExecutable({
-        platform: process.platform,
-        arch: process.arch,
-        findExecutable: async () => invalidSemver,
-      }),
-    ).resolves.toMatchObject({
-      detected: true,
-      compatible: false,
-      version: "codex-cli 1.2.3-01",
-      path: invalidSemver,
-      detail: expect.stringContaining("Malformed Codex version output"),
-    });
   });
 
   it("publishes the Runtime capability before Codex exists and validates when a Binding selects it", async () => {
@@ -373,38 +294,49 @@ async function installedHost() {
   await writeFile(bundlePath, `${JSON.stringify(builtCodex.bundle, null, 2)}\n`);
   const config = defaultConfig();
   const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
-  const projects = new ProjectCatalog(store);
+  const workspaces = new WorkspaceCatalog(store);
   const registry = new RuntimeAdapterRegistry([]);
-  const host = new ConnectPluginHost(configPath, registry, () => undefined, { config, stateStore: store, projects });
-  return { directory, configPath, bundlePath, config, store, projects, registry, host };
+  const host = new ConnectPluginHost(configPath, registry, () => undefined, { config, stateStore: store, workspaces });
+  return { directory, configPath, bundlePath, config, store, workspaces, registry, host };
 }
 
 function pluginBinding(executable: string, directory: string): AgentBindingConfig {
   const runtimeDirectory = resolve(directory);
   mkdirSync(runtimeDirectory, { recursive: true });
+  const wrapper = join(runtimeDirectory, "codex");
+  writeFileSync(
+    wrapper,
+    [
+      "#!/bin/sh",
+      `export CODEX_HOME=${shellQuote(runtimeDirectory)}`,
+      `export CODEX_FAKE_STATE_FILE=${shellQuote(join(runtimeDirectory, "state"))}`,
+      `export CODEX_FAKE_LIFECYCLE_FILE=${shellQuote(join(runtimeDirectory, "lifecycle.log"))}`,
+      `export CODEX_FAKE_CLOSE_FILE=${shellQuote(join(runtimeDirectory, "close.log"))}`,
+      `export CODEX_FAKE_HANG_FILE=${shellQuote(join(runtimeDirectory, "hang"))}`,
+      `export CODEX_FAKE_FAIL_ARCHIVE_FILE=${shellQuote(join(runtimeDirectory, "fail-archive"))}`,
+      `exec ${shellQuote(executable)} "$@"`,
+      "",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
   return {
     runtime: { pluginId: CODEX_PLUGIN_ID, capabilityId: CODEX_CAPABILITY_ID },
     runtimeConfig: {
-      executablePathOverride: executable,
-      env: {
-        CODEX_HOME: runtimeDirectory,
-        CODEX_FAKE_STATE_FILE: join(runtimeDirectory, "state"),
-        CODEX_FAKE_LIFECYCLE_FILE: join(runtimeDirectory, "lifecycle.log"),
-        CODEX_FAKE_CLOSE_FILE: join(runtimeDirectory, "close.log"),
-        CODEX_FAKE_HANG_FILE: join(runtimeDirectory, "hang"),
-        CODEX_FAKE_FAIL_ARCHIVE_FILE: join(runtimeDirectory, "fail-archive"),
-      },
+      executablePathOverride: wrapper,
       sandboxMode: "workspace-write",
       approvalPolicy: "never",
       webSearchMode: "live",
       networkAccessEnabled: true,
       additionalDirectories: [runtimeDirectory],
       outputVisibility: "full",
-      sessionOptions: { mode: "workspace-write" },
     },
     model: "gpt-5-codex",
     modelReasoningEffort: "high",
   };
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 async function versionOnlyExecutable(directory: string, version: string): Promise<string> {

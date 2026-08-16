@@ -14,8 +14,8 @@ const usage = `Usage:
     --target <platform-arch> \\
     --artifact <prebuilt-entry.mjs> \\
     --artifact-entry <bundle/path.mjs> \\
-    --output <plugin.connect-plugin> \\
-    [--probe <prebuilt-probe.mjs> --probe-entry <bundle/path.mjs>]
+    [--browser-artifact <bundle-entry>=<file-path>]... \\
+    --output <plugin.connect-plugin>
 `;
 
 export async function runConnectPluginBuildCli(
@@ -38,8 +38,8 @@ export async function runConnectPluginBuildCli(
       target: options.target,
       artifactPath: options.artifact,
       artifactEntry: options.artifactEntry,
+      browserArtifactPaths: options.browserArtifactPaths,
       outputPath: options.output,
-      ...(options.probe ? { probePath: options.probe, probeEntry: options.probeEntry } : {}),
     });
     writeStdout(`${options.output}\n`);
     return 0;
@@ -54,13 +54,13 @@ interface ParsedOptions {
   target: string;
   artifact: string;
   artifactEntry: string;
+  browserArtifactPaths: Readonly<Record<string, string>>;
   output: string;
-  probe?: string;
-  probeEntry?: string;
 }
 
 function parseOptions(argv: readonly string[]): ParsedOptions {
   const values = new Map<string, string>();
+  const browserArtifactPaths: Record<string, string> = {};
   for (let index = 0; index < argv.length; index += 2) {
     const option = argv[index];
     const value = argv[index + 1];
@@ -68,6 +68,19 @@ function parseOptions(argv: readonly string[]): ParsedOptions {
       throw new Error(`Every build option requires an explicit value\n${usage}`);
     }
     if (knownOptions[option] !== true) throw new Error(`Unknown build option: ${option}`);
+    if (option === "--browser-artifact") {
+      const separator = value.indexOf("=");
+      const entry = value.slice(0, separator).trim();
+      const path = value.slice(separator + 1).trim();
+      if (separator < 1 || !path) {
+        throw new Error("Browser artifact must use <bundle-entry>=<file-path>");
+      }
+      if (browserArtifactPaths[entry]) {
+        throw new Error(`Browser artifact was provided more than once: ${entry}`);
+      }
+      browserArtifactPaths[entry] = path;
+      continue;
+    }
     if (values.has(option)) throw new Error(`Build option was provided more than once: ${option}`);
     values.set(option, value);
   }
@@ -78,16 +91,8 @@ function parseOptions(argv: readonly string[]): ParsedOptions {
     artifact: required(values, "--artifact"),
     artifactEntry: required(values, "--artifact-entry"),
     output: required(values, "--output"),
+    browserArtifactPaths,
   };
-  const probe = values.get("--probe");
-  const probeEntry = values.get("--probe-entry");
-  if (Boolean(probe) !== Boolean(probeEntry)) {
-    throw new Error("--probe and --probe-entry must be provided together");
-  }
-  if (probe && probeEntry) {
-    parsed.probe = probe;
-    parsed.probeEntry = probeEntry;
-  }
   return parsed;
 }
 
@@ -96,9 +101,8 @@ const knownOptions: Readonly<Record<string, true>> = {
   "--target": true,
   "--artifact": true,
   "--artifact-entry": true,
+  "--browser-artifact": true,
   "--output": true,
-  "--probe": true,
-  "--probe-entry": true,
 };
 
 function required(values: ReadonlyMap<string, string>, option: string): string {

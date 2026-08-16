@@ -112,17 +112,31 @@ export interface ProtocolDeliveryQuarantineRecord {
   error: string;
   createdAt: number;
 }
-export interface InsertProjectInput {
-  projectId: string;
+export interface InsertWorkspaceInput {
+  bindingId: string;
+  workspaceRef: string;
+  runtimeIdentityKey: string | null;
+  source: "default" | "runtime";
   name: string;
   rootPath: string;
+  selectable: boolean;
+}
+export interface ReconcileWorkspaceCatalogInput {
+  bindingId: string;
+  status: "complete" | "partial" | "unavailable";
+  identities: readonly {
+    workspaceRef: string;
+    runtimeIdentityKey: string;
+    name: string;
+    rootPath: string | null;
+  }[];
 }
 export interface UpsertRuntimeSessionInput {
   chatId: string;
   sessionId: string;
   agentId: string;
   runtimeSessionId?: string | null;
-  projectId?: string | null;
+  workspaceRef?: string | null;
   name?: string | null;
   mode?: string | null;
   model?: string | null;
@@ -136,7 +150,7 @@ export interface AdoptRuntimeThreadRefInput {
   chatId: string;
   sessionId: string;
   agentId: string;
-  projectId: string | null;
+  workspaceRef: string | null;
   name?: string | null;
   mode?: string | null;
   model?: string | null;
@@ -146,7 +160,7 @@ export interface AdoptRuntimeThreadRefInput {
 export interface SetSessionIntentInput {
   chatId: string;
   agentId: string;
-  projectId: string | null;
+  workspaceRef: string | null;
   name?: string | null;
   mode?: string | null;
   model?: string | null;
@@ -181,15 +195,6 @@ export interface SessionLifecycleOperationRecord {
   bindingId: string;
   runtimeThreadId: string;
   state: SessionLifecycleOperationState;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface RuntimeWorkspaceMappingRecord {
-  bindingId: string;
-  runtimeKind: string;
-  identityKey: string;
-  projectId: string;
   createdAt: number;
   updatedAt: number;
 }

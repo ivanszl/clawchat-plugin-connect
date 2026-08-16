@@ -4,6 +4,7 @@ import { VStack } from "@astryxdesign/core/Stack";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createRootRoute, Outlet, retainSearchParams } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { ClientExtensionKernel } from "../client-extensions/ClientExtensionKernel";
 import { connectClientEvents } from "../client-interface/client-events";
 import { bootstrapQueryOptions } from "../client-interface/query-options";
 import { ConnectAppShell } from "../features/app-shell/ConnectAppShell";
@@ -57,8 +58,10 @@ function ClientRoot() {
     );
   }
   return (
-    <ConnectAppShell>
-      <Outlet />
-    </ConnectAppShell>
+    <ClientExtensionKernel graph={bootstrap.data.clientExtensions}>
+      <ConnectAppShell>
+        <Outlet />
+      </ConnectAppShell>
+    </ClientExtensionKernel>
   );
 }

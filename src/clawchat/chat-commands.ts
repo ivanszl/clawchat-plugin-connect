@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
-import type { ProjectCatalog } from "../projects/projects";
-import { createSessionContinuity, type SessionContinuity } from "../projects/session-continuity";
-import { type RuntimeWorkspaceChoice, workspaceView } from "../projects/workspace-catalog";
 import { requireModel, resolveEffort, resolveModelSelection } from "../runtime/model-selection";
 import type { RuntimeModelOption, SelectableRuntimeThread } from "../runtime/types";
 import { workBuddyRuntimeTargetKind } from "../runtime/workbuddy-runtime-target";
@@ -11,10 +8,13 @@ import type {
   AgentBindingConfig,
   ConnectConfig,
   OutputVisibility,
-  ProjectRecord,
   RuntimeSessionRecord,
   SessionIntentRecord,
+  WorkspaceRecord,
 } from "../types";
+import { createSessionContinuity, type SessionContinuity } from "../workspaces/session-continuity";
+import type { RuntimeWorkspaceChoice } from "../workspaces/workspace-catalog";
+import type { WorkspaceCatalog } from "../workspaces/workspaces";
 import { commandAddressPrefix } from "./message-mapper";
 import type { NormalizedInboundMessage } from "./protocol";
 
@@ -24,7 +24,7 @@ export interface ChatCommandContext {
   ownerUserId: string;
   config: ConnectConfig;
   stateStore: ConnectStateStore;
-  projects: ProjectCatalog;
+  workspaces: WorkspaceCatalog;
   sessionContinuity?: SessionContinuity;
   closeRuntimeSession?: (chatId: string) => Promise<boolean>;
   invalidateRuntimeSession?: (chatId: string) => Promise<boolean>;
@@ -53,7 +53,7 @@ const CONTROL_COMMANDS = new Set([
   "/new",
   "/sessions",
   "/switch",
-  "/project",
+  "/workspace",
   "/mode",
   "/model",
   "/cancel",
@@ -66,7 +66,7 @@ const COMMAND_USAGE = new Map([
   ["/new", "/new [name]"],
   ["/sessions", "/sessions"],
   ["/switch", "/switch <name-or-ref>"],
-  ["/project", "/project [workspace-id|none]"],
+  ["/workspace", "/workspace [workspace-ref]"],
   ["/mode", "/mode [mode|default]"],
   ["/model", "/model [model-id [reasoning-effort]|default]"],
   ["/cancel", "/cancel"],
@@ -82,7 +82,7 @@ function helpText(chatType: NormalizedInboundMessage["chatType"]): string {
     `- \`${prefix}/new [name]\` — prepare a new Session for the next message (Binding Owner only).`,
     `- \`${prefix}/sessions\` — list Sessions in the selected workspace (Binding Owner only).`,
     `- \`${prefix}/switch <name-or-ref>\` — switch or import a Session (Binding Owner only).`,
-    `- \`${prefix}/project [workspace-id|none]\` — inspect or select the next Project (Binding Owner only).`,
+    `- \`${prefix}/workspace [workspace-ref]\` — inspect or select the next Workspace (Binding Owner only).`,
     `- \`${prefix}/model [model-id [reasoning-effort]|default]\` — inspect or select the model (Binding Owner only).`,
     `- \`${prefix}/mode [mode|default]\` — inspect or select the runtime mode (Binding Owner only).`,
     `- \`${prefix}/cancel\` — cancel an active turn when supported (Binding Owner only).`,
@@ -110,10 +110,7 @@ export function requiresOrderedSessionControl(text: string): boolean {
   const [command = "", ...args] = text.trim().split(/\s+/u);
   if (command === "/new") return true;
   if (command === "/switch") return args.length > 0;
-  if (command === "/project") {
-    const legacyAction = args[0]?.toLowerCase();
-    return args.length > 0 && !["add", "list", "use", "current", "clear", "remove"].includes(legacyAction ?? "");
-  }
+  if (command === "/workspace") return args.length === 1;
   if (command === "/model" || command === "/mode") return args.length > 0;
   return false;
 }
@@ -133,7 +130,7 @@ export async function handleChatCommand(ctx: ChatCommandContext): Promise<ChatCo
   if (command === "/new") return await handleNew(ctx, args.join(" "));
   if (command === "/sessions") return await handleList(ctx);
   if (command === "/switch") return await handleSwitch(ctx, args.join(" "));
-  if (command === "/project") return await handleProject(ctx, args);
+  if (command === "/workspace") return await handleWorkspace(ctx, args);
   if (command === "/mode") return await handleMode(ctx, args[0]);
   if (command === "/model") return await handleModel(ctx, args);
   if (command === "/cancel") return await handleCancel(ctx);
@@ -160,7 +157,7 @@ function invalidCommandUsage(message: NormalizedInboundMessage, command: string,
     (["/help", "/status", "/sessions", "/cancel"].includes(command) && args.length === 0) ||
     (command === "/clawchat-output" && args.length === 1 && parseOutputVisibility(args[0]) !== null) ||
     (command === "/switch" && args.length >= 1) ||
-    (command === "/project" && args.length <= 1) ||
+    (command === "/workspace" && args.length <= 1) ||
     (command === "/mode" && args.length <= 1) ||
     (command === "/model" && args.length <= 2 && (args[0]?.toLowerCase() !== "default" || args.length === 1));
   return valid ? null : commandUsage(message.chatType, command);
@@ -181,7 +178,9 @@ async function handleOutput(ctx: ChatCommandContext, rawMode: string | undefined
 async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult> {
   const status = await ctx.stateStore.getRuntimeStatus(ctx.agentId).catch(() => null);
   const selected = await selectedSessionContext(ctx);
-  const project = selected?.projectId ? await ctx.projects.get(selected.projectId) : null;
+  const workspace =
+    (selected?.workspaceRef ? await ctx.workspaces.get(selected.agentId, selected.workspaceRef) : null) ??
+    (await ctx.workspaces.ensureDefault(selected?.agentId ?? ctx.agentId));
   const binding = getAgentBinding(ctx.config, selected?.agentId ?? ctx.agentId);
   const models = (await ctx.listRuntimeModels?.(binding, selected).catch(() => null)) ?? null;
   let modelText = binding.model ?? "runtime default";
@@ -217,7 +216,7 @@ async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult>
             }`,
           ]
         : []),
-      `- project: ${project ? `\`${project.name}\`` : "none (isolated workspace)"}`,
+      `- workspace: \`${workspace.name}\` (\`${workspace.workspaceRef}\`)`,
       `- mode: \`${selected?.mode ?? "runtime default"}\``,
       `- model: \`${modelText}\` · effort \`${effortText}\` (${source})`,
       `- active chats: \`${status?.activeChats ?? 0}\``,
@@ -234,7 +233,7 @@ async function handleNew(ctx: ChatCommandContext, name: string): Promise<ChatCom
   await continuityFor(ctx)
     .inConversation({ chatId: ctx.message.chatId, bindingId: ctx.agentId })
     .planNext({
-      projectId: selected?.projectId ?? null,
+      workspaceRef: selected?.workspaceRef ?? (await ctx.workspaces.ensureDefault(ctx.agentId)).workspaceRef,
       mode: selected?.mode ?? null,
       model: selected?.model ?? null,
       reasoningEffort: selected?.reasoningEffort ?? null,
@@ -256,33 +255,31 @@ async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
   const sessions = sessionsInCurrentWorkspace(
     await ctx.stateStore.listRuntimeSessions(ctx.message.chatId, ctx.agentId),
     intent,
-    ctx.runtimeFamilyFor(binding) === "workbuddy",
   );
   if (sessions.length === 0 && discovered.length === 0) {
     const current = intent ?? (await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId));
-    const project = current?.projectId ? await ctx.projects.get(current.projectId) : null;
+    const workspace = current?.workspaceRef
+      ? await ctx.workspaces.get(current.agentId, current.workspaceRef)
+      : await ctx.workspaces.ensureDefault(ctx.agentId);
     return {
       handled: true,
-      text: `No Sessions in ${project ? `Project \`${project.name}\`` : "the Non-Project workspace"}. Send a message to start one.`,
+      text: `No Sessions in Workspace \`${workspace?.name ?? "unknown"}\`. Send a message to start one.`,
     };
   }
-  const projects = new Map((await ctx.projects.list()).map((project) => [project.projectId, project]));
+  const workspaces = new Map(
+    (await ctx.workspaces.list(ctx.agentId)).map((workspace) => [workspace.workspaceRef, workspace]),
+  );
+  const selectedWorkspaceRef = intent?.workspaceRef ?? sessions[0]?.workspaceRef;
   return {
     handled: true,
     text: [
       "**ClawChat Connect Sessions**",
-      intent?.projectId
-        ? `Workspace: Project \`${(await ctx.projects.get(intent.projectId))?.name ?? "unknown"}\``
-        : intent
-          ? "Workspace: Non-Project (next Session)"
-          : sessions[0]?.projectId
-            ? `Workspace: Project \`${(await ctx.projects.get(sessions[0].projectId))?.name ?? "unknown"}\``
-            : "Workspace: Non-Project",
+      `Workspace: \`${selectedWorkspaceRef ? (workspaces.get(selectedWorkspaceRef)?.name ?? "unknown") : "unknown"}\``,
       "",
       ...sessions.map((session) =>
         formatSession(
           session,
-          session.projectId ? projects.get(session.projectId) : null,
+          session.workspaceRef ? workspaces.get(session.workspaceRef) : null,
           ctx.runtimeFamilyFor(binding) === "workbuddy",
         ),
       ),
@@ -323,12 +320,13 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
       !target.sessionId
     ) {
       const selected = await selectedSessionContext(ctx);
-      if (!selected) return { handled: true, text: "Select a Project before importing a Runtime Thread." };
+      if (!selected?.workspaceRef)
+        return { handled: true, text: "Select a Workspace before importing a Runtime Thread." };
       await closeRuntimeSession(ctx);
       const adopted = await conversationSessions(ctx).adopt({
         sessionRef: target.sessionRef,
         sessionId: randomUUID(),
-        selection: { ...selected, name: selected.name ?? null },
+        selection: { ...selected, workspaceRef: selected.workspaceRef, name: selected.name ?? null },
       });
       return {
         handled: true,
@@ -345,12 +343,12 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
   const thread = threadMatches[0];
   if (!thread) return { handled: true, text: `Unknown Session \`${reference}\`. Use /sessions to see Sessions.` };
   const selected = await selectedSessionContext(ctx);
-  if (!selected) return { handled: true, text: "Select a Project before importing a Runtime Thread." };
+  if (!selected?.workspaceRef) return { handled: true, text: "Select a Workspace before importing a Runtime Thread." };
   await closeRuntimeSession(ctx);
   await conversationSessions(ctx).adopt({
     sessionRef: thread.sessionRef,
     sessionId: randomUUID(),
-    selection: { ...selected, name: thread.name },
+    selection: { ...selected, workspaceRef: selected.workspaceRef, name: thread.name },
   });
   return {
     handled: true,
@@ -358,79 +356,45 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
   };
 }
 
-async function handleProject(ctx: ChatCommandContext, args: string[]): Promise<ChatCommandResult> {
+async function handleWorkspace(ctx: ChatCommandContext, args: string[]): Promise<ChatCommandResult> {
   const reference = args.join(" ").trim();
   try {
+    const workspaces =
+      (await ctx.listRuntimeWorkspaces?.()) ??
+      (await ctx.workspaces.list(ctx.agentId)).map((workspace) => ({
+        workspaceRef: workspace.workspaceRef,
+        name: workspace.name,
+        rootPath: workspace.rootPath,
+      }));
     if (!reference) {
-      const projects = await ctx.projects.list();
-      const workspaces =
-        (await ctx.listRuntimeWorkspaces?.()) ??
-        projects.flatMap((project) => {
-          const workspace = workspaceView(project.rootPath);
-          return workspace
-            ? [
-                {
-                  workspaceId: workspace.id,
-                  name: workspace.name,
-                  rootPath: project.rootPath,
-                  projectId: project.projectId,
-                  projectName: project.name,
-                },
-              ]
-            : [];
-        });
       const selected = await selectedSessionContext(ctx);
-      const current = selected?.projectId ? await ctx.projects.get(selected.projectId) : null;
-      const currentWorkspace = current
-        ? workspaces.find((workspace) => workspace.projectId === current.projectId)
+      const current = selected?.workspaceRef
+        ? workspaces.find((workspace) => workspace.workspaceRef === selected.workspaceRef)
         : null;
       return {
         handled: true,
         text: [
           "**ClawChat Connect Workspaces**",
-          `Current: ${currentWorkspace ? `\`${currentWorkspace.name}\`` : "none (isolated workspace)"}`,
+          `Current: ${current ? `\`${current.name}\` (\`${current.workspaceRef}\`)` : "none"}`,
           "",
           ...(workspaces.length > 0
-            ? workspaces.map((workspace) => `- \`${workspace.name}\` (${workspace.workspaceId}) — Project`)
-            : ["No workspaces discovered."]),
+            ? workspaces.map((workspace) => `- \`${workspace.name}\` (\`${workspace.workspaceRef}\`)`)
+            : ["No Workspaces available."]),
         ].join("\n"),
       };
     }
-    if (["add", "list", "use", "current", "clear", "remove"].includes(args[0]?.toLowerCase() ?? ""))
-      return { handled: true, text: "This Project command was removed. Use `/help` for the supported commands." };
-    const selected = await selectedSessionContext(ctx);
-    let project: ProjectRecord | null = null;
-    let workspaceName: string | null = null;
-    if (reference.toLowerCase() !== "none") {
-      const workspaces =
-        (await ctx.listRuntimeWorkspaces?.()) ??
-        (await ctx.projects.list()).flatMap((candidate) => {
-          const workspace = workspaceView(candidate.rootPath);
-          return workspace
-            ? [
-                {
-                  workspaceId: workspace.id,
-                  name: workspace.name,
-                  rootPath: candidate.rootPath,
-                  projectId: candidate.projectId,
-                  projectName: candidate.name,
-                },
-              ]
-            : [];
-        });
-      const workspace = workspaces.find((candidate) => candidate.workspaceId.toLowerCase() === reference.toLowerCase());
-      if (!workspace) {
-        return {
-          handled: true,
-          text: `Unknown Workspace ID \`${reference}\`. Use /project to see Projects.`,
-        };
-      }
-      project = await ctx.projects.require(workspace.projectId);
-      workspaceName = workspace.name;
+    const workspace = workspaces.find((candidate) => candidate.workspaceRef.toLowerCase() === reference.toLowerCase());
+    if (!workspace) {
+      return {
+        handled: true,
+        text: `Unknown Workspace Ref \`${reference}\`. Use /workspace to see Workspaces.`,
+      };
     }
+    await ctx.workspaces.require(ctx.agentId, workspace.workspaceRef);
+    const selected = await selectedSessionContext(ctx);
     await closeRuntimeSession(ctx);
     await conversationSessions(ctx).planNext({
-      projectId: project?.projectId ?? null,
+      workspaceRef: workspace.workspaceRef,
       name: selected?.name ?? null,
       mode: selected?.mode ?? null,
       model: selected?.model ?? null,
@@ -438,12 +402,13 @@ async function handleProject(ctx: ChatCommandContext, args: string[]): Promise<C
     });
     return {
       handled: true,
-      text: project
-        ? `Selected workspace \`${workspaceName ?? workspaceView(project.rootPath)?.name ?? project.name}\`; the next message will start a Session.`
-        : "Selected an isolated Non-Project workspace; the next message will start a Session.",
+      text: `Selected Workspace \`${workspace.name}\`; the next message will start a Session.`,
     };
   } catch (error) {
-    return { handled: true, text: `Project command failed: ${error instanceof Error ? error.message : String(error)}` };
+    return {
+      handled: true,
+      text: `Workspace command failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
 }
 
@@ -544,16 +509,16 @@ async function handleCancel(ctx: ChatCommandContext): Promise<ChatCommandResult>
 
 function formatSession(
   session: RuntimeSessionRecord,
-  project: ProjectRecord | null | undefined,
+  workspace: WorkspaceRecord | null | undefined,
   describeWorkBuddyTarget = false,
 ): string {
-  const projectText = project ? `Project ${project.name}` : "Non-Project";
+  const workspaceText = workspace ? `Workspace ${workspace.name}` : "Workspace unavailable";
   const targetText = describeWorkBuddyTarget
     ? workBuddyRuntimeTargetKind(session.runtimeSessionId) === "workbuddy-task"
       ? " · WorkBuddy Task · desktop-synchronized"
       : " · CodeBuddy Session · Connect-only"
     : "";
-  return `- ${sessionLabel(session)} · \`${session.sessionRef}\`${session.isCurrent ? " (current)" : ""} — ${projectText}${targetText}`;
+  return `- ${sessionLabel(session)} · \`${session.sessionRef}\`${session.isCurrent ? " (current)" : ""} — ${workspaceText}${targetText}`;
 }
 
 function sessionLabel(session: RuntimeSessionRecord): string {
@@ -567,21 +532,15 @@ function runtimeThreadLabel(thread: SelectableRuntimeThread): string {
 function sessionsInCurrentWorkspace(
   sessions: RuntimeSessionRecord[],
   intent: SessionIntentRecord | null,
-  includeAllNonProjectSessions = false,
 ): RuntimeSessionRecord[] {
   const materialized = sessions.filter((session) => session.hasMessages);
-  if (intent) {
-    if (!intent.projectId) {
-      return includeAllNonProjectSessions ? materialized.filter((session) => !session.projectId) : [];
-    }
-    return materialized.filter((session) => session.projectId === intent.projectId);
+  if (intent?.workspaceRef) {
+    return materialized.filter((session) => session.workspaceRef === intent.workspaceRef);
   }
   const current = materialized.find((session) => session.isCurrent);
   if (!current) return [];
-  if (!current.projectId) {
-    return includeAllNonProjectSessions ? materialized.filter((session) => !session.projectId) : [current];
-  }
-  return materialized.filter((session) => session.projectId === current.projectId);
+  if (!current.workspaceRef) return [current];
+  return materialized.filter((session) => session.workspaceRef === current.workspaceRef);
 }
 
 async function selectedSessionContext(
@@ -642,5 +601,11 @@ function parseOutputVisibility(value: unknown): OutputVisibility | null {
 }
 
 function continuityFor(ctx: ChatCommandContext): SessionContinuity {
-  return ctx.sessionContinuity ?? createSessionContinuity({ stateStore: ctx.stateStore });
+  return (
+    ctx.sessionContinuity ??
+    createSessionContinuity({
+      stateStore: ctx.stateStore,
+      resolveDefaultWorkspace: async (bindingId) => (await ctx.workspaces.ensureDefault(bindingId)).workspaceRef,
+    })
+  );
 }

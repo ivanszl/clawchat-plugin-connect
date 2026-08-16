@@ -5,7 +5,7 @@ import type {
   HostDirectoryEntryView,
   HostDirectoryListingView,
   HostDirectoryLocationView,
-  ProjectDirectoryRequest,
+  WorkspaceDirectoryRequest,
 } from "../client-contract";
 
 export class HostDirectoryError extends Error {
@@ -23,12 +23,12 @@ export class HostDirectoryError extends Error {
 }
 
 export interface HostDirectoryShortcut {
-  kind: "project" | "runtime-workspace";
+  kind: "workspace" | "runtime-workspace";
   name: string;
   path: string;
 }
 
-export interface MaterializedProjectDirectory {
+export interface MaterializedWorkspaceDirectory {
   rootPath: string;
   createdDirectory: boolean;
   rollback(): Promise<void>;
@@ -78,14 +78,14 @@ export async function listHostDirectories(options: {
   };
 }
 
-export async function materializeProjectDirectory(
-  request: ProjectDirectoryRequest,
-): Promise<MaterializedProjectDirectory> {
+export async function materializeWorkspaceDirectory(
+  request: WorkspaceDirectoryRequest,
+): Promise<MaterializedWorkspaceDirectory> {
   if (request.kind === "existing-directory") {
-    const rootPath = await existingDirectory(request.rootPath, "project root");
+    const rootPath = await existingDirectory(request.rootPath, "workspace root");
     return { rootPath, createdDirectory: false, rollback: async () => undefined };
   }
-  const parentPath = await existingDirectory(request.parentPath, "project parent");
+  const parentPath = await existingDirectory(request.parentPath, "workspace parent");
   const name = validDirectoryName(request.name);
   const requestedPath = join(parentPath, name);
   try {

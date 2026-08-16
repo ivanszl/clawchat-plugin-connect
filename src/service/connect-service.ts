@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { defaultConfigPath, loadConfig } from "../config";
-import { type ConnectStateStore, createStateStore } from "../persistence/state";
+import { createSqlitePersistenceService, type PersistenceService } from "../persistence/service";
+import type { ConnectStateStore } from "../persistence/state";
 import { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { ConnectConfig } from "../types";
 import type { BindingProtocolEventHandlers } from "./binding-runtime";
@@ -10,6 +11,7 @@ import type { ConnectSurfaceDependencies } from "./connect-surface-modules";
 export interface ConnectServiceOptions {
   configPath?: string;
   config?: ConnectConfig;
+  persistenceService?: PersistenceService;
   stateStore?: ConnectStateStore;
   waitUntilShutdown?: () => Promise<void>;
   writeOutput?: (message: string) => void;
@@ -31,11 +33,15 @@ export async function startConnectService(
 ): Promise<ConnectServiceResult> {
   const configPath = resolve(options.configPath ?? defaultConfigPath());
   const config = options.config ?? (await loadConfig(configPath));
-  const stateStore = options.stateStore ?? createStateStore({ dbPath: config.stateDbPath });
+  const persistence =
+    options.persistenceService ??
+    (options.stateStore
+      ? persistenceServiceFromStateAdapter(options.stateStore)
+      : createSqlitePersistenceService({ dbPath: config.stateDbPath }));
   const writeOutput = options.writeOutput ?? ((message: string) => process.stdout.write(message));
   const writeError = options.writeError ?? ((message: string) => process.stderr.write(message));
   return await runConnectRootLifecycle({
-    stateStore,
+    persistence,
     config,
     configPath,
     surfaceOptions: {
@@ -55,6 +61,18 @@ export async function startConnectService(
       writeError(`Connect shutdown cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
     },
   });
+}
+
+function persistenceServiceFromStateAdapter(state: ConnectStateStore): PersistenceService {
+  return {
+    state,
+    initialize: async () => {
+      await state.initialize();
+    },
+    close: async () => {
+      await state.close();
+    },
+  };
 }
 
 async function waitForShutdown(): Promise<void> {

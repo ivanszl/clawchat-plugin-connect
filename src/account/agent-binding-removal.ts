@@ -2,14 +2,9 @@ import { resolve } from "node:path";
 import { FileTurnSubmissionStaging } from "../client-interface/turn-submission-staging";
 import { defaultConfigPath, loadConfig, saveConfig } from "../config";
 import { type ConnectStateStore, createStateStore } from "../persistence/state";
-import { ProjectCatalog } from "../projects/projects";
+import { retireOfficialLivewarePublications } from "../plugin/official/liveware-retirement";
 import { manageBackgroundService } from "../service/background-service";
-import {
-  createLivewareExposureDependencies,
-  resolveLivewareExecutablePath,
-  retireLivewareExposure,
-} from "../service/liveware-exposure";
-import type { ActivationCredentials } from "../types";
+import { WorkspaceCatalog } from "../workspaces/workspaces";
 
 export interface RemoveAgentBindingOptions {
   agentId: string;
@@ -26,11 +21,7 @@ export interface RemoveAgentBindingDependencies {
   getServiceStatus?: (configPath: string) => Promise<{ running: boolean }>;
   stopService?: (configPath: string) => Promise<void>;
   startService?: (configPath: string) => Promise<void>;
-  retireLivewareExposure?: (options: {
-    activation: ActivationCredentials;
-    deviceId: string;
-    stateStore: ConnectStateStore;
-  }) => Promise<void>;
+  retireLivewarePublications?: (bindingIds: readonly string[]) => Promise<void>;
 }
 
 export async function removeAgentBinding(
@@ -59,32 +50,20 @@ export async function removeAgentBinding(
       )(configPath);
       serviceStopped = true;
     }
-    const activation = await store.getActivation(agentId);
-    const exposure = await store.getLivewareExposure(agentId);
-    if (exposure) {
-      if (!activation) {
-        throw new Error(
-          `Agent Binding ${agentId} cannot retire Liveware Exposure ${exposure.appId}: its activation is missing`,
-        );
-      }
-      const deviceId = await store.getOrCreateDeviceId();
-      if (dependencies.retireLivewareExposure) {
-        await dependencies.retireLivewareExposure({ activation, deviceId, stateStore: store });
-      } else {
-        await retireLivewareExposure(
-          { activation, deviceId, stateStore: store },
-          createLivewareExposureDependencies({
-            livewarePath: await resolveLivewareExecutablePath(),
-            clawChatBaseUrl: config.baseUrl,
-          }),
-        );
-      }
-    }
+    await (
+      dependencies.retireLivewarePublications ??
+      (async (bindingIds: readonly string[]) =>
+        await retireOfficialLivewarePublications({
+          bindingIds,
+          clawChatBaseUrl: config.baseUrl,
+          stateStore: store,
+        }))
+    )([agentId]);
     const sessionRefs = (await store.listAllRuntimeSessions())
       .filter((session) => session.agentId === agentId)
       .map((session) => session.sessionRef);
     await new FileTurnSubmissionStaging(config.stateDbPath).purgeSessions(sessionRefs);
-    await new ProjectCatalog(store).purgeBindingWorkspaces(agentId);
+    await new WorkspaceCatalog(store).purgeBindingCatalog(agentId);
     await store.purgeAgentBinding(agentId);
     delete config.agents[agentId];
     if (config.defaultAgent === agentId) config.defaultAgent = Object.keys(config.agents)[0] ?? null;

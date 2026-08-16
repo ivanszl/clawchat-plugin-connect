@@ -4,28 +4,55 @@ import { chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "n
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import Ajv2020 from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
+import { MAX_PLUGIN_DURABLE_STATE_BYTES } from "../persistence/state";
 import type { AgentBindingConfig } from "../types";
+import type {
+  ManagedConnectPluginBundleV1,
+  ManagedConnectPluginCapabilityManifest,
+  ManagedConnectPluginHostCapabilityDependency,
+  ManagedConnectPluginManifestV1,
+} from "./official-sdk";
 import {
+  CONNECT_CLIENT_EXTENSION_SLOT_CATALOG,
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_BUNDLE_FORMAT,
   CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_INTERFACE_VERSION,
   CONNECT_PLUGIN_MANIFEST_VERSION,
-  type ConnectHostCapabilityId,
   type ConnectPluginArtifactManifest,
-  type ConnectPluginBundleV1,
-  type ConnectPluginCapabilityManifest,
   type ConnectPluginConfiguration,
-  type ConnectPluginHostCapabilityDependency,
   type ConnectPluginJsonSchema,
-  type ConnectPluginManifestV1,
   type ConnectPluginSource,
 } from "./sdk";
 
 export const CONNECT_PLUGIN_LOCK_FORMAT = "clawchat-connect-plugin-lock-v1" as const;
+export const MAX_PLUGIN_CONFIGURATION_BYTES = 256 * 1024;
+const SUPPORTED_CONFIGURATION_SCHEMA_KEYWORDS = new Set([
+  "type",
+  "properties",
+  "required",
+  "additionalProperties",
+  "items",
+  "enum",
+  "const",
+  "title",
+  "description",
+  "default",
+  "minimum",
+  "maximum",
+  "minLength",
+  "maxLength",
+  "pattern",
+]);
+const SUPPORTED_CONFIGURATION_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean"]);
+const SECRET_CONFIGURATION_PROPERTY = /authorization|credential|password|secret|token|api.?key|access.?key/iu;
 
 export type InstalledPluginStatus = "active" | "disabled" | "error";
+export interface OfficialPluginCapabilityGrant {
+  readonly type: "exposure";
+  readonly capabilityId: string;
+  readonly artifactIntegrity: string;
+}
 
 export interface InstalledPluginVersion {
   source: ConnectPluginSource;
@@ -34,12 +61,14 @@ export interface InstalledPluginVersion {
   integrity: string;
   activeArtifact: string;
   manifestPath: string;
-  manifest: ConnectPluginManifestV1;
+  manifest: ManagedConnectPluginManifestV1;
   installationConfiguration: ConnectPluginConfiguration;
   exposureConfigurations: Readonly<Record<string, ConnectPluginConfiguration>>;
+  officialCapabilityGrants: readonly OfficialPluginCapabilityGrant[];
 }
 
 export interface InstalledPluginLockEntry extends InstalledPluginVersion {
+  activationGeneration: number;
   pluginId: string;
   status: InstalledPluginStatus;
   error: string | null;
@@ -61,10 +90,11 @@ export interface InstallLocalPluginOptions {
 export interface StagePluginBundleOptions {
   configPath: string;
   source: ConnectPluginSource;
-  bundle: ConnectPluginBundleV1;
+  bundle: ManagedConnectPluginBundleV1;
   target?: string;
   installationConfiguration?: Record<string, unknown>;
   exposureConfigurations?: Record<string, unknown>;
+  officialCapabilityGrants?: readonly OfficialPluginCapabilityGrant[];
 }
 
 export interface PluginInstallationPaths {
@@ -116,15 +146,28 @@ export async function stagePluginBundle(options: StagePluginBundleOptions): Prom
     options.installationConfiguration ?? {},
     `Plugin ${bundle.manifest.pluginId} installation configuration`,
   );
+  const officialCapabilityGrants = validateOfficialCapabilityGrants(
+    bundle.manifest,
+    artifact.integrity,
+    options.officialCapabilityGrants ?? [],
+  );
   const exposureConfigurations = validateExposureConfigurations(bundle.manifest, options.exposureConfigurations ?? {});
   const entryBytes = connectPluginBundleFileBytes(bundle, artifact.entry);
   verifyConnectPluginIntegrity(entryBytes, artifact.integrity, `${bundle.manifest.pluginId} ${artifact.entry}`);
-  if (bundle.manifest.probe) {
+  for (const capability of bundle.manifest.capabilities) {
+    if (capability.type !== "client-extension") continue;
     verifyConnectPluginIntegrity(
-      connectPluginBundleFileBytes(bundle, bundle.manifest.probe.entry),
-      bundle.manifest.probe.integrity,
-      `${bundle.manifest.pluginId} runtime probe`,
+      connectPluginBundleFileBytes(bundle, capability.browser.entry),
+      capability.browser.integrity,
+      `${bundle.manifest.pluginId} ${capability.browser.entry}`,
     );
+    for (const style of capability.browser.styles) {
+      verifyConnectPluginIntegrity(
+        connectPluginBundleFileBytes(bundle, style.entry),
+        style.integrity,
+        `${bundle.manifest.pluginId} ${style.entry}`,
+      );
+    }
   }
 
   const paths = pluginInstallationPaths(options.configPath);
@@ -153,8 +196,12 @@ export async function stagePluginBundle(options: StagePluginBundleOptions): Prom
     await rm(stagingRoot, { recursive: true, force: true });
   }
 
+  const selected = (await listInstalledPlugins(options.configPath)).find(
+    (candidate) => candidate.pluginId === bundle.manifest.pluginId,
+  );
   const entry: InstalledPluginLockEntry = {
     pluginId: bundle.manifest.pluginId,
+    activationGeneration: (selected?.activationGeneration ?? 0) + 1,
     source,
     version: bundle.manifest.version,
     target,
@@ -167,6 +214,7 @@ export async function stagePluginBundle(options: StagePluginBundleOptions): Prom
     status: "active",
     error: null,
     retainedVersions: [],
+    officialCapabilityGrants,
   };
   await revalidateInstalledPlugin(entry);
   return {
@@ -228,8 +276,15 @@ export async function commitStagedPlugin(
           (candidate) => !samePluginVersion(candidate, staged.entry),
         )
       : [];
+    const activationGeneration = (existing?.activationGeneration ?? 0) + 1;
+    if (staged.entry.activationGeneration !== activationGeneration) {
+      throw new Error(
+        `Plugin ${staged.entry.pluginId} Activation Generation changed during prepare: expected ${staged.entry.activationGeneration}, next is ${activationGeneration}`,
+      );
+    }
     committed = {
       ...staged.entry,
+      activationGeneration,
       status: "active",
       error: null,
       retainedVersions: retained,
@@ -266,6 +321,7 @@ export async function setInstalledPluginStatus(
   pluginId: string,
   status: InstalledPluginStatus,
   error: unknown = null,
+  activationGeneration?: number,
 ): Promise<InstalledPluginLockEntry> {
   const paths = pluginInstallationPaths(configPath);
   let updated!: InstalledPluginLockEntry;
@@ -276,6 +332,7 @@ export async function setInstalledPluginStatus(
       ...installed,
       status,
       error: error === null ? null : error instanceof Error ? error.message : String(error),
+      activationGeneration: activationGeneration ?? installed.activationGeneration,
     };
     return { ...lockfile, plugins: { ...lockfile.plugins, [pluginId]: updated } };
   });
@@ -302,6 +359,7 @@ export async function updateInstalledPluginConfiguration(
       ...installed,
       installationConfiguration: validatedInstallation,
       exposureConfigurations: validatedExposures,
+      activationGeneration: installed.activationGeneration + 1,
       error: null,
     };
     return { ...lockfile, plugins: { ...lockfile.plugins, [pluginId]: updated } };
@@ -354,6 +412,7 @@ export async function selectInstalledPluginVersion(
     createdArtifact: false,
     entry: {
       pluginId,
+      activationGeneration: installed.activationGeneration + 1,
       ...structuredClone(selected),
       status: "active",
       error: null,
@@ -383,15 +442,6 @@ export async function revalidateInstalledPlugin(entry: InstalledPluginLockEntry)
   const artifactIntegrity = files.find(([path]) => path === artifact.entry)?.[1];
   if (!artifactIntegrity) throw new Error(`Installed Plugin ${entry.pluginId} artifact is missing`);
   verifyConnectPluginIntegrityValue(artifactIntegrity, entry.integrity, `${entry.pluginId} installed artifact`);
-  if (manifest.probe) {
-    const probeIntegrity = files.find(([path]) => path === manifest.probe?.entry)?.[1];
-    if (!probeIntegrity) throw new Error(`Installed Plugin ${entry.pluginId} runtime probe is missing`);
-    verifyConnectPluginIntegrityValue(
-      probeIntegrity,
-      manifest.probe.integrity,
-      `${entry.pluginId} installed runtime probe`,
-    );
-  }
 }
 
 export async function discardStagedPlugin(configPath: string, staged: StagedPlugin): Promise<void> {
@@ -453,7 +503,7 @@ function managedPluginUploadPath(uploadRoot: string, path: string): string | nul
   return candidate;
 }
 
-export async function readConnectPluginBundle(path: string): Promise<ConnectPluginBundleV1> {
+export async function readConnectPluginBundle(path: string): Promise<ManagedConnectPluginBundleV1> {
   try {
     return parseConnectPluginBundle(await readFile(path, "utf8"), path);
   } catch (error) {
@@ -463,7 +513,7 @@ export async function readConnectPluginBundle(path: string): Promise<ConnectPlug
   }
 }
 
-export function parseConnectPluginBundle(value: string | Uint8Array, label = "source"): ConnectPluginBundleV1 {
+export function parseConnectPluginBundle(value: string | Uint8Array, label = "source"): ManagedConnectPluginBundleV1 {
   let parsed: unknown;
   try {
     parsed = JSON.parse(typeof value === "string" ? value : new TextDecoder().decode(value)) as unknown;
@@ -475,7 +525,7 @@ export function parseConnectPluginBundle(value: string | Uint8Array, label = "so
   return validateBundle(parsed);
 }
 
-async function writeStagedBundle(root: string, bundle: ConnectPluginBundleV1): Promise<void> {
+async function writeStagedBundle(root: string, bundle: ManagedConnectPluginBundleV1): Promise<void> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   for (const path of Object.keys(bundle.files).sort()) {
     const outputPath = resolve(root, path);
@@ -490,7 +540,7 @@ async function writeStagedBundle(root: string, bundle: ConnectPluginBundleV1): P
 
 type BundleContentSignature = readonly [path: string, integrity: string];
 
-function* bundleContentSignatures(bundle: ConnectPluginBundleV1): Iterable<BundleContentSignature> {
+function* bundleContentSignatures(bundle: ManagedConnectPluginBundleV1): Iterable<BundleContentSignature> {
   for (const path of Object.keys(bundle.files)) {
     const bytes = connectPluginBundleFileBytes(bundle, path);
     yield [path, `sha256-${createHash("sha256").update(bytes).digest("base64")}`];
@@ -522,7 +572,7 @@ async function readInstalledBundleSignatures(root: string): Promise<BundleConten
 }
 
 function bundleContentDigest(
-  manifest: ConnectPluginManifestV1,
+  manifest: ManagedConnectPluginManifestV1,
   target: string,
   files: Iterable<BundleContentSignature>,
 ): string {
@@ -575,13 +625,13 @@ async function updatePluginLockfile(
   }
 }
 
-function validateBundle(value: unknown): ConnectPluginBundleV1 {
+function validateBundle(value: unknown): ManagedConnectPluginBundleV1 {
   if (!isRecord(value) || value.format !== CONNECT_PLUGIN_BUNDLE_FORMAT || !isRecord(value.manifest)) {
     throw new Error("Unsupported or malformed Connect Plugin Bundle");
   }
   const manifest = validateManifest(value.manifest);
   if (!isRecord(value.files)) throw new Error("Connect Plugin Bundle files are required");
-  const files: ConnectPluginBundleV1["files"] = {};
+  const files: ManagedConnectPluginBundleV1["files"] = {};
   for (const [path, file] of Object.entries(value.files)) {
     requireBundlePath(path);
     if (path === "connect-plugin.json") {
@@ -599,13 +649,10 @@ function validateBundle(value: unknown): ConnectPluginBundleV1 {
   for (const artifact of manifest.artifacts) {
     if (!files[artifact.entry]) throw new Error(`Connect Plugin entry artifact is missing: ${artifact.entry}`);
   }
-  if (manifest.probe && !files[manifest.probe.entry]) {
-    throw new Error(`Connect Plugin probe artifact is missing: ${manifest.probe.entry}`);
-  }
   return { format: CONNECT_PLUGIN_BUNDLE_FORMAT, manifest, files };
 }
 
-function validateManifest(value: Record<string, unknown>): ConnectPluginManifestV1 {
+function validateManifest(value: Record<string, unknown>): ManagedConnectPluginManifestV1 {
   assertOnlyKeys(
     value,
     [
@@ -617,7 +664,6 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
       "installationConfigurationSchema",
       "capabilities",
       "artifacts",
-      "probe",
     ],
     "Connect Plugin manifest",
   );
@@ -635,8 +681,8 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
   );
   if (!Array.isArray(value.dependencies))
     throw new Error(`Plugin ${pluginId} Host Capability dependencies are required`);
-  const dependencyIds = new Set<ConnectHostCapabilityId>();
-  const dependencies = value.dependencies.map((candidate): ConnectPluginHostCapabilityDependency => {
+  const dependencyIds = new Set<ManagedConnectPluginHostCapabilityDependency["id"]>();
+  const dependencies = value.dependencies.map((candidate): ManagedConnectPluginHostCapabilityDependency => {
     if (!isRecord(candidate)) throw new Error(`Plugin ${pluginId} dependency is malformed`);
     if (candidate.type !== "host") {
       throw new Error(
@@ -644,7 +690,11 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
       );
     }
     assertOnlyKeys(candidate, ["type", "id", "interfaceVersion"], `Plugin ${pluginId} Host Capability dependency`);
-    if (candidate.id !== "runtime-provider" && candidate.id !== "exposure-provider") {
+    if (
+      candidate.id !== "runtime-provider" &&
+      candidate.id !== "durable-state" &&
+      candidate.id !== "exposure-provider"
+    ) {
       throw new Error(`Plugin ${pluginId} requests unsupported Host Capability: ${String(candidate.id)}`);
     }
     if (candidate.interfaceVersion !== CONNECT_HOST_CAPABILITY_INTERFACE_VERSION) {
@@ -666,16 +716,18 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
     throw new Error("Connect Plugin must declare at least one capability");
   }
   const capabilityIds = new Set<string>();
-  const capabilities = value.capabilities.map((candidate): ConnectPluginCapabilityManifest => {
+  const capabilities = value.capabilities.map((candidate): ManagedConnectPluginCapabilityManifest => {
     if (!isRecord(candidate)) throw new Error(`Plugin ${pluginId} capability is malformed`);
-    if (candidate.type !== "runtime" && candidate.type !== "exposure") {
+    if (candidate.type !== "runtime" && candidate.type !== "exposure" && candidate.type !== "client-extension") {
       throw new Error(`Plugin ${pluginId} declares unsupported capability type: ${String(candidate.type)}`);
     }
     assertOnlyKeys(
       candidate,
       candidate.type === "runtime"
-        ? ["id", "type", "interfaceVersion", "family", "configurationSchema"]
-        : ["id", "type", "interfaceVersion", "configurationSchema"],
+        ? ["id", "type", "interfaceVersion", "family", "configurationSchema", "durableState"]
+        : candidate.type === "client-extension"
+          ? ["id", "type", "interfaceVersion", "configurationSchema", "browser", "durableState"]
+          : ["id", "type", "interfaceVersion", "configurationSchema", "durableState"],
       `Plugin ${pluginId} ${candidate.type} capability`,
     );
     const id = requireIdentity(candidate.id, "Capability ID");
@@ -686,28 +738,53 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
         `Plugin ${pluginId}/${id} uses unsupported ${candidate.type} capability interface version: ${String(candidate.interfaceVersion)}`,
       );
     }
-    const requiredHostCapability = candidate.type === "runtime" ? "runtime-provider" : "exposure-provider";
-    if (!dependencyIds.has(requiredHostCapability)) {
+    const requiredHostCapability =
+      candidate.type === "runtime"
+        ? "runtime-provider"
+        : candidate.type === "exposure"
+          ? "exposure-provider"
+          : undefined;
+    if (requiredHostCapability && !dependencyIds.has(requiredHostCapability)) {
       throw new Error(`Plugin ${pluginId}/${id} must declare Host Capability ${requiredHostCapability}`);
     }
     const configurationSchema = validateConfigurationSchema(
       candidate.configurationSchema,
       `Plugin ${pluginId}/${id} configuration schema`,
     );
-    return candidate.type === "runtime"
-      ? {
-          id,
-          type: "runtime",
-          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-          family: requireIdentity(candidate.family, "Runtime family"),
-          configurationSchema,
-        }
-      : {
-          id,
-          type: "exposure",
-          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-          configurationSchema,
-        };
+    const durableState =
+      candidate.durableState === undefined
+        ? undefined
+        : validateDurableStateManifest(candidate.durableState, pluginId, id);
+    if (durableState && !dependencyIds.has("durable-state")) {
+      throw new Error(`Plugin ${pluginId}/${id} must declare Host Capability durable-state`);
+    }
+    if (candidate.type === "runtime") {
+      return {
+        id,
+        type: "runtime",
+        interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+        family: requireIdentity(candidate.family, "Runtime family"),
+        configurationSchema,
+        ...(durableState ? { durableState } : {}),
+      };
+    }
+    if (candidate.type === "client-extension") {
+      return {
+        id,
+        type: "client-extension",
+        interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+        configurationSchema,
+        browser: validateClientExtensionBrowserManifest(candidate.browser, pluginId, id),
+        ...(durableState ? { durableState } : {}),
+      };
+    }
+    return {
+      id,
+      type: "exposure",
+      interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+      configurationSchema,
+      ...(durableState ? { durableState } : {}),
+    };
   });
   if (!Array.isArray(value.artifacts) || value.artifacts.length === 0) {
     throw new Error("Connect Plugin must declare at least one target artifact");
@@ -723,15 +800,6 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
     const integrity = requireSha256Integrity(candidate.integrity, "Plugin artifact integrity");
     return { target, entry, integrity };
   });
-  let probe: ConnectPluginManifestV1["probe"];
-  if (value.probe !== undefined) {
-    if (!isRecord(value.probe)) throw new Error(`Plugin ${pluginId} probe is malformed`);
-    assertOnlyKeys(value.probe, ["entry", "integrity"], `Plugin ${pluginId} probe`);
-    probe = {
-      entry: requireBundlePath(value.probe.entry),
-      integrity: requireSha256Integrity(value.probe.integrity, "Plugin probe integrity"),
-    };
-  }
   return {
     manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
     interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
@@ -741,8 +809,98 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
     installationConfigurationSchema,
     capabilities,
     artifacts,
-    ...(probe ? { probe } : {}),
   };
+}
+
+function validateDurableStateManifest(
+  value: unknown,
+  pluginId: string,
+  capabilityId: string,
+): NonNullable<ManagedConnectPluginCapabilityManifest["durableState"]> {
+  const label = `Plugin ${pluginId}/${capabilityId} Durable State`;
+  if (!isRecord(value)) throw new Error(`${label} declaration is malformed`);
+  assertOnlyKeys(value, ["schemaVersion", "lifetime", "schema", "migrations"], label);
+  if (!Number.isSafeInteger(value.schemaVersion) || (value.schemaVersion as number) < 1) {
+    throw new Error(`${label} schemaVersion must be a positive safe integer`);
+  }
+  if (value.lifetime !== "installation" && value.lifetime !== "owner" && value.lifetime !== "binding") {
+    throw new Error(`${label} lifetime must be installation, owner, or binding`);
+  }
+  const schema = validateConfigurationSchema(value.schema, `${label} schema`);
+  if (!Array.isArray(value.migrations)) throw new Error(`${label} migrations must be an array`);
+  const seen = new Set<number>();
+  const migrations = value.migrations.map((candidate) => {
+    if (!isRecord(candidate)) throw new Error(`${label} migration is malformed`);
+    assertOnlyKeys(candidate, ["from", "to"], `${label} migration`);
+    if (
+      !Number.isSafeInteger(candidate.from) ||
+      !Number.isSafeInteger(candidate.to) ||
+      (candidate.from as number) < 1 ||
+      candidate.to !== (candidate.from as number) + 1
+    ) {
+      throw new Error(`${label} migrations must advance one positive schema version`);
+    }
+    if (seen.has(candidate.from as number)) {
+      throw new Error(`${label} declares more than one migration from version ${candidate.from}`);
+    }
+    seen.add(candidate.from as number);
+    return Object.freeze({ from: candidate.from as number, to: candidate.to as number });
+  });
+  return Object.freeze({
+    schemaVersion: value.schemaVersion as number,
+    lifetime: value.lifetime,
+    schema,
+    migrations: Object.freeze(migrations),
+  });
+}
+
+function validateClientExtensionBrowserManifest(
+  value: unknown,
+  pluginId: string,
+  capabilityId: string,
+): Extract<ManagedConnectPluginCapabilityManifest, { type: "client-extension" }>["browser"] {
+  const label = `Plugin ${pluginId}/${capabilityId} browser artifact`;
+  if (!isRecord(value)) throw new Error(`${label} is malformed`);
+  assertOnlyKeys(value, ["entry", "integrity", "styles", "slots"], label);
+  if (!Array.isArray(value.styles)) throw new Error(`${label} styles must be an array`);
+  if (!Array.isArray(value.slots) || value.slots.length === 0) {
+    throw new Error(`${label} must declare at least one typed slot`);
+  }
+  const entry = requireBundlePath(value.entry);
+  const integrity = requireSha256Integrity(value.integrity, `${label} integrity`);
+  const styleEntries = new Set<string>();
+  const styles = value.styles.map((candidate) => {
+    if (!isRecord(candidate)) throw new Error(`${label} style is malformed`);
+    assertOnlyKeys(candidate, ["entry", "integrity"], `${label} style`);
+    const styleEntry = requireBundlePath(candidate.entry);
+    if (styleEntries.has(styleEntry)) throw new Error(`${label} declares duplicate style ${styleEntry}`);
+    styleEntries.add(styleEntry);
+    return {
+      entry: styleEntry,
+      integrity: requireSha256Integrity(candidate.integrity, `${label} style integrity`),
+    };
+  });
+  const slotIds = new Set<string>();
+  const slots = value.slots.map((candidate) => {
+    if (!isRecord(candidate)) throw new Error(`${label} slot is malformed`);
+    assertOnlyKeys(candidate, ["id", "interfaceVersion", "priority"], `${label} slot`);
+    const id = requireIdentity(candidate.id, "Client Extension slot ID");
+    if (!Object.hasOwn(CONNECT_CLIENT_EXTENSION_SLOT_CATALOG, id)) {
+      throw new Error(`${label} declares unsupported Client Extension slot ${id}`);
+    }
+    if (slotIds.has(id)) throw new Error(`${label} declares duplicate slot ${id}`);
+    slotIds.add(id);
+    if (candidate.interfaceVersion !== CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION) {
+      throw new Error(`${label} slot ${id} uses unsupported interface version`);
+    }
+    if (!Number.isSafeInteger(candidate.priority)) throw new Error(`${label} slot ${id} priority must be an integer`);
+    return {
+      id: id as keyof typeof CONNECT_CLIENT_EXTENSION_SLOT_CATALOG,
+      interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+      priority: candidate.priority as number,
+    };
+  });
+  return { entry, integrity, styles, slots };
 }
 
 function requireSha256Integrity(value: unknown, label: string): string {
@@ -753,13 +911,13 @@ function requireSha256Integrity(value: unknown, label: string): string {
   return integrity;
 }
 
-function selectArtifact(manifest: ConnectPluginManifestV1, target: string): ConnectPluginArtifactManifest {
+function selectArtifact(manifest: ManagedConnectPluginManifestV1, target: string): ConnectPluginArtifactManifest {
   const artifact = manifest.artifacts.find((candidate) => candidate.target === target);
   if (!artifact) throw new Error(`Plugin ${manifest.pluginId} does not support Connect target ${target}`);
   return artifact;
 }
 
-export function connectPluginBundleFileBytes(bundle: ConnectPluginBundleV1, path: string): Uint8Array {
+export function connectPluginBundleFileBytes(bundle: ManagedConnectPluginBundleV1, path: string): Uint8Array {
   const file = bundle.files[path];
   if (!file) throw new Error(`Connect Plugin Bundle file is missing: ${path}`);
   return file.encoding === "utf8" ? new TextEncoder().encode(file.content) : Buffer.from(file.content, "base64");
@@ -778,6 +936,9 @@ function validateLockEntry(value: unknown, store: string): InstalledPluginLockEn
   if (!isRecord(value)) throw new Error("Malformed installed Plugin lock entry");
   const pluginId = requireIdentity(value.pluginId, "Installed Plugin ID");
   const active = validateInstalledVersion(value, store, pluginId);
+  if (!Number.isSafeInteger(value.activationGeneration) || (value.activationGeneration as number) < 1) {
+    throw new Error(`Installed Plugin ${pluginId} Activation Generation is malformed`);
+  }
   if (value.status !== "active" && value.status !== "disabled" && value.status !== "error") {
     throw new Error(`Installed Plugin ${pluginId} status is malformed`);
   }
@@ -793,6 +954,7 @@ function validateLockEntry(value: unknown, store: string): InstalledPluginLockEn
   return {
     pluginId,
     ...active,
+    activationGeneration: value.activationGeneration as number,
     status: value.status,
     error: typeof value.error === "string" ? value.error : null,
     retainedVersions: deduplicateVersions(retainedVersions).filter(
@@ -831,6 +993,11 @@ function validateInstalledVersion(value: unknown, store: string, pluginId: strin
   if (typeof value.target !== "string" || typeof value.integrity !== "string") {
     throw new Error(`Installed Plugin ${pluginId} target or integrity is malformed`);
   }
+  const officialCapabilityGrants = validateOfficialCapabilityGrants(
+    manifest,
+    selectedArtifact.integrity,
+    value.officialCapabilityGrants ?? [],
+  );
   return {
     source,
     version: manifest.version,
@@ -841,6 +1008,7 @@ function validateInstalledVersion(value: unknown, store: string, pluginId: strin
     manifest,
     installationConfiguration,
     exposureConfigurations,
+    officialCapabilityGrants,
   };
 }
 
@@ -895,6 +1063,7 @@ function installedVersion(entry: InstalledPluginLockEntry): InstalledPluginVersi
     manifest: entry.manifest,
     installationConfiguration: entry.installationConfiguration,
     exposureConfigurations: entry.exposureConfigurations,
+    officialCapabilityGrants: entry.officialCapabilityGrants,
   };
 }
 
@@ -914,6 +1083,49 @@ export function pluginSourceIdentity(source: ConnectPluginSource): string {
   return `github:${source.apiBase}:${source.repository}`;
 }
 
+function validateOfficialCapabilityGrants(
+  manifest: ManagedConnectPluginManifestV1,
+  artifactIntegrity: string,
+  value: unknown,
+): readonly OfficialPluginCapabilityGrant[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`Plugin ${manifest.pluginId} official capability grants are malformed`);
+  }
+  const grants = value.map((candidate): OfficialPluginCapabilityGrant => {
+    if (!isRecord(candidate) || candidate.type !== "exposure") {
+      throw new Error(`Plugin ${manifest.pluginId} official capability grant is malformed`);
+    }
+    const capabilityId = requireIdentity(
+      candidate.capabilityId,
+      `Plugin ${manifest.pluginId} official capability grant identity`,
+    );
+    if (candidate.artifactIntegrity !== artifactIntegrity) {
+      throw new Error(
+        `Plugin ${manifest.pluginId}/${capabilityId} official capability grant does not match selected artifact integrity`,
+      );
+    }
+    const capability = manifest.capabilities.find(
+      (declared) => declared.id === capabilityId && declared.type === "exposure",
+    );
+    if (!capability) {
+      throw new Error(`Plugin ${manifest.pluginId} official capability grant names no Client Exposure`);
+    }
+    return Object.freeze({ type: "exposure", capabilityId, artifactIntegrity });
+  });
+  const granted = new Set(grants.map((grant) => grant.capabilityId));
+  if (granted.size !== grants.length) {
+    throw new Error(`Plugin ${manifest.pluginId} official capability grants contain a duplicate identity`);
+  }
+  const ungranted = manifest.capabilities
+    .filter((capability) => capability.type === "exposure" && !granted.has(capability.id))
+    .map((capability) => capability.id);
+  if (ungranted.length > 0) {
+    throw new Error(
+      `Plugin ${manifest.pluginId} Client Exposure ${ungranted.join(", ")} requires a release-verified official capability grant`,
+    );
+  }
+  return Object.freeze(grants);
+}
 export type PluginConfigurationValidator = (value: unknown) => ConnectPluginConfiguration;
 
 export function compilePluginConfigurationValidator(
@@ -921,9 +1133,9 @@ export function compilePluginConfigurationValidator(
   label: string,
 ): PluginConfigurationValidator {
   const ajv = new Ajv2020({ allErrors: true, strict: true });
-  addFormats(ajv);
   let validate: ValidateFunction;
   try {
+    validateConfigurationSchemaSubset(schema, label, "$", true);
     if (!ajv.validateSchema(schema)) {
       throw new Error(formatSchemaErrors(ajv.errors));
     }
@@ -937,7 +1149,32 @@ export function compilePluginConfigurationValidator(
     if (!validate(configuration)) {
       throw new Error(`${label} is invalid: ${formatSchemaErrors(validate.errors)}`);
     }
+    assertSerializedJsonSize(configuration, MAX_PLUGIN_CONFIGURATION_BYTES, `${label} exceeds 256 KiB`);
     return configuration;
+  };
+}
+
+export type PluginDurableStateValidator = (value: unknown) => Readonly<Record<string, unknown>>;
+
+export function compilePluginDurableStateValidator(
+  schema: ConnectPluginJsonSchema,
+  label: string,
+): PluginDurableStateValidator {
+  const ajv = new Ajv2020({ allErrors: true, strict: true });
+  let validate: ValidateFunction;
+  try {
+    validateConfigurationSchemaSubset(schema, label, "$", true);
+    if (!ajv.validateSchema(schema)) throw new Error(formatSchemaErrors(ajv.errors));
+    validate = ajv.compile(schema);
+  } catch (error) {
+    throw new Error(`${label} is not a valid JSON Schema: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return (value: unknown) => {
+    if (!isRecord(value)) throw new Error(`${label} must be a JSON object`);
+    const state = structuredClone(value);
+    if (!validate(state)) throw new Error(`${label} is invalid: ${formatSchemaErrors(validate.errors)}`);
+    assertSerializedJsonSize(state, MAX_PLUGIN_DURABLE_STATE_BYTES, `${label} exceeds 1 MiB`);
+    return state;
   };
 }
 
@@ -949,6 +1186,67 @@ export function validatePluginConfiguration(
   return compilePluginConfigurationValidator(schema, label)(value);
 }
 
+function validateConfigurationSchemaSubset(schema: unknown, label: string, path: string, root = false): void {
+  if (!isRecord(schema)) throw new Error(`${label} schema node ${path} must be an object`);
+  const unsupported = Object.keys(schema).filter((keyword) => !SUPPORTED_CONFIGURATION_SCHEMA_KEYWORDS.has(keyword));
+  if (unsupported.length > 0) {
+    throw new Error(`${label} contains unsupported JSON Schema keyword at ${path}: ${unsupported.sort().join(", ")}`);
+  }
+  const schemaType = normalizedSchemaType(schema.type, label, path);
+  if (root && schemaType !== "object") throw new Error(`${label} root type must be object`);
+  if (schemaType === "object") {
+    if (schema.additionalProperties !== false) {
+      throw new Error(`${label} object schema ${path} must declare additionalProperties: false`);
+    }
+    if (schema.properties !== undefined && !isRecord(schema.properties)) {
+      throw new Error(`${label} properties at ${path} must be an object`);
+    }
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    for (const [property, child] of Object.entries(properties)) {
+      if (SECRET_CONFIGURATION_PROPERTY.test(property)) {
+        throw new Error(`${label} must remain secret-free; property ${path}.${property} is authorization-shaped`);
+      }
+      validateConfigurationSchemaSubset(child, label, `${path}.properties.${property}`);
+    }
+  } else if (
+    schema.additionalProperties !== undefined ||
+    schema.properties !== undefined ||
+    schema.required !== undefined
+  ) {
+    throw new Error(`${label} schema node ${path} applies object keywords to ${schemaType}`);
+  }
+  if (schemaType === "array") {
+    if (schema.items === undefined) throw new Error(`${label} array schema ${path} must declare items`);
+    validateConfigurationSchemaSubset(schema.items, label, `${path}.items`);
+  } else if (schema.items !== undefined) {
+    throw new Error(`${label} schema node ${path} applies items to ${schemaType}`);
+  }
+}
+
+function normalizedSchemaType(value: unknown, label: string, path: string): string {
+  if (typeof value === "string" && SUPPORTED_CONFIGURATION_TYPES.has(value)) return value;
+  if (
+    Array.isArray(value) &&
+    value.length === 2 &&
+    value.includes("null") &&
+    value.filter((candidate) => candidate !== "null").length === 1
+  ) {
+    const nonNull = value.find((candidate) => candidate !== "null");
+    if (typeof nonNull === "string" && SUPPORTED_CONFIGURATION_TYPES.has(nonNull)) return nonNull;
+  }
+  throw new Error(`${label} schema node ${path} has unsupported or missing type`);
+}
+
+function assertSerializedJsonSize(value: unknown, maximumBytes: number, message: string): void {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (error) {
+    throw new Error(`${message}: value is not serializable JSON`, { cause: error });
+  }
+  if (Buffer.byteLength(serialized) > maximumBytes) throw new Error(message);
+}
+
 function validateConfigurationSchema(value: unknown, label: string): ConnectPluginJsonSchema {
   if (!isRecord(value)) throw new Error(`${label} must be a JSON Schema object`);
   const schema = structuredClone(value);
@@ -957,7 +1255,7 @@ function validateConfigurationSchema(value: unknown, label: string): ConnectPlug
 }
 
 function validateExposureConfigurations(
-  manifest: ConnectPluginManifestV1,
+  manifest: ManagedConnectPluginManifestV1,
   value: unknown,
 ): Readonly<Record<string, ConnectPluginConfiguration>> {
   if (!isRecord(value)) throw new Error(`Plugin ${manifest.pluginId} Exposure configurations must be a JSON object`);

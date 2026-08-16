@@ -2,6 +2,15 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- Replaced legacy Projects with Binding-scoped Workspace Catalogs and exact Workspace Refs across Sessions, CLI, Client Interface, and Runtime dispatch.
+- Made the generation-fenced Cordis Plugin Platform the sole Runtime and Client Extension path, with authenticated Catalog discovery, strict schema/state contracts, and whole-epoch Client graph replacement.
+- Moved private Connect publication and its platform companion into the release-verified official Liveware Plugin Bundle; release archives no longer install a root companion executable.
+- Enforced one Installation Owner, exact Runtime Plugin capability identities, and Core-only Client Exposure grants for release-verified official Bundles.
+
 ## [0.1.0-beta.7] - 2026-08-06
 
 ### Changed

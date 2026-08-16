@@ -4,7 +4,7 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { identifyAgentBinding, normalizeAgentBinding } from "./plugin/binding";
-import type { AgentBindingConfig, ClientHost, ConnectConfig, LivewareAccessPolicy, OutputVisibility } from "./types";
+import type { AgentBindingConfig, ClientHost, ConnectConfig, OutputVisibility } from "./types";
 
 export const DEFAULT_BASE_URL = "https://app.clawling.com" as const;
 export const DEFAULT_WEBSOCKET_URL = "wss://app.clawling.com/ws" as const;
@@ -12,10 +12,6 @@ export const DEFAULT_MEDIA_UPLOAD_URL = "https://app.clawling.com/media/upload" 
 export const DEFAULT_CLIENT_PORT = 47_823 as const;
 export const DEFAULT_CLIENT_HOST = "127.0.0.1" as const;
 const CLIENT_HOSTS = { "127.0.0.1": true, "0.0.0.0": true } satisfies Record<ClientHost, true>;
-const LIVEWARE_ACCESS_POLICIES = { off: true, private: true, public: true } satisfies Record<
-  LivewareAccessPolicy,
-  true
->;
 
 export function defaultDataDir(): string {
   return join(homedir(), ".clawchat-connect");
@@ -67,13 +63,17 @@ export function defaultConfig(): ConnectConfig {
     agents: {},
     clientHost: DEFAULT_CLIENT_HOST,
     clientPort: DEFAULT_CLIENT_PORT,
-    livewareAccessPolicy: "private",
   };
 }
 
 export function normalizeConfig(raw: unknown): ConnectConfig {
   const fallback = defaultConfig();
   const record = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  if (Object.hasOwn(record, "livewareAccessPolicy")) {
+    throw new Error(
+      "livewareAccessPolicy was removed; configure the official Liveware Plugin exposure capability instead",
+    );
+  }
   const baseUrl = readString(record.baseUrl) || fallback.baseUrl;
   const rawAgents =
     record.agents && typeof record.agents === "object" && !Array.isArray(record.agents)
@@ -108,9 +108,6 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
       record.clientPort <= 65_535
         ? record.clientPort
         : fallback.clientPort,
-    livewareAccessPolicy:
-      readOptionalEnum(record.livewareAccessPolicy, LIVEWARE_ACCESS_POLICIES, "livewareAccessPolicy") ??
-      fallback.livewareAccessPolicy,
     ...(typeof record.maxConcurrentTurns === "number" && Number.isFinite(record.maxConcurrentTurns)
       ? { maxConcurrentTurns: Math.max(1, Math.trunc(record.maxConcurrentTurns)) }
       : {}),

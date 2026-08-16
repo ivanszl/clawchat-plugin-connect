@@ -15,6 +15,7 @@ import type {
   RuntimeSessionOption,
   RuntimeSkillSummary,
   RuntimeThreadSummary,
+  RuntimeWorkspaceSnapshot,
 } from "./types";
 import { RuntimeLifecycleError } from "./types";
 
@@ -24,7 +25,8 @@ export interface RuntimeAdapterDefinition {
   create(binding: AgentBindingConfig): ConnectRuntimeAdapter;
 }
 export interface RuntimeAdapterReplacement {
-  commit(): Promise<void>;
+  revoke(): Promise<void>;
+  publish(): Promise<void>;
   rollback(): Promise<void>;
   unregister(): Promise<void>;
 }
@@ -110,21 +112,24 @@ export class RuntimeAdapterRegistry {
     }
 
     const registration = Symbol("runtime-adapter-replacement");
-    let state: "pending" | "committed" | "rolled-back" | "unregistered" = "pending";
+    let state: "pending" | "revoked" | "published" | "rolled-back" | "unregistered" = "pending";
     return {
-      commit: async () => {
+      revoke: async () => {
         if (state !== "pending") return;
-
+        state = "revoked";
         for (const providerKey of replacementKeys) this.definitions.delete(providerKey);
-        for (const { providerKey, definition } of pending) {
-          this.definitions.set(providerKey, { definition, registration });
-        }
-        state = "committed";
         const previousAdapters = this.takeAdaptersFor(replacementKeys);
-
         const results = await Promise.allSettled(previousAdapters.map(async ({ adapter }) => await adapter.close?.()));
         const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
         if (failure) throw failure.reason;
+      },
+      publish: async () => {
+        if (state === "published") return;
+        if (state !== "revoked") throw new Error("Runtime Adapter replacement must be revoked before publication");
+        for (const { providerKey, definition } of pending) {
+          this.definitions.set(providerKey, { definition, registration });
+        }
+        state = "published";
       },
       rollback: async () => {
         if (state !== "pending") return;
@@ -133,7 +138,7 @@ export class RuntimeAdapterRegistry {
       unregister: async () => {
         if (state === "unregistered" || state === "rolled-back") return;
         if (state === "pending") {
-          throw new Error("Runtime Adapter replacement must be committed or rolled back before unregistering");
+          throw new Error("Runtime Adapter replacement must be revoked or rolled back before unregistering");
         }
         state = "unregistered";
         await this.unregisterRegistration(pendingKeys, registration);
@@ -291,6 +296,22 @@ export class RuntimeAdapterRegistry {
         : undefined,
       options,
     );
+  }
+
+  async discoverWorkspaces(binding: AgentBindingConfig): Promise<RuntimeWorkspaceSnapshot> {
+    const adapter = this.require(binding);
+    if (adapter.discoverWorkspaces) return await adapter.discoverWorkspaces(binding);
+    if (!adapter.discoverAllThreads) return { status: "unavailable", identities: [] };
+    try {
+      const identities = new Map(
+        (await adapter.discoverAllThreads(binding))
+          .flatMap((thread) => (thread.workspaceIdentity ? [thread.workspaceIdentity] : []))
+          .map((identity) => [identity.key, identity] as const),
+      );
+      return { status: "partial", identities: [...identities.values()] };
+    } catch {
+      return { status: "unavailable", identities: [] };
+    }
   }
 
   async discoverThreads(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]> {

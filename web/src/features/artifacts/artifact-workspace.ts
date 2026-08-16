@@ -2,7 +2,7 @@ import {
   classifyWorkspaceArtifact,
   type WorkspaceArtifactKind,
   workspaceArtifactUrl,
-} from "../../../../src/projects/workspace-artifact";
+} from "../../../../src/workspaces/workspace-artifact";
 
 export const MAX_OPEN_ARTIFACTS = 12;
 

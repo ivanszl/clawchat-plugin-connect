@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStateStore } from "../src/persistence/state";
-import { createSessionContinuity } from "../src/projects/session-continuity";
+import { createSessionContinuity } from "../src/workspaces/session-continuity";
 
 it("materializes one Turn Target when concurrent first messages consume a Session Intent", async () => {
   const directory = await mkdtemp(join(tmpdir(), "connect-session-continuity-"));
@@ -16,7 +16,7 @@ it("materializes one Turn Target when concurrent first messages consume a Sessio
   const conversation = continuity.inConversation({ chatId: "chat-race", bindingId: "codex" });
 
   await conversation.planNext({
-    projectId: null,
+    workspaceRef: "WSDEFALT",
     name: "Planned",
     mode: "read-only",
     model: "gpt-planned",
@@ -34,7 +34,7 @@ it("materializes one Turn Target when concurrent first messages consume a Sessio
   expect(first).toMatchObject({
     bindingId: "codex",
     chatId: "chat-race",
-    projectId: null,
+    workspaceRef: "WSDEFALT",
     name: "Planned",
     mode: "read-only",
     model: "gpt-planned",
@@ -62,7 +62,7 @@ it("creates an explicit empty Session from one complete selection", async () => 
   });
 
   const created = await conversation.create({
-    projectId: null,
+    workspaceRef: "WSDEFALT",
     name: "Client work",
     mode: "workspace-write",
     model: "gpt-client",
@@ -72,7 +72,7 @@ it("creates an explicit empty Session from one complete selection", async () => 
   expect(created).toMatchObject({
     bindingId: "codex",
     sessionId: "session-client",
-    projectId: null,
+    workspaceRef: "WSDEFALT",
     name: "Client work",
     mode: "workspace-write",
     model: "gpt-client",
@@ -105,13 +105,7 @@ it("changes an empty Session Binding and fixes the accepted Turn Target atomical
   });
   const created = await continuity
     .inConversation({ chatId: "__connect_client_session__:binding", bindingId: "codex" })
-    .create({
-      projectId: null,
-      name: "Empty",
-      mode: null,
-      model: null,
-      reasoningEffort: null,
-    });
+    .create({ workspaceRef: "WSDEFALT", name: "Empty", mode: null, model: null, reasoningEffort: null });
 
   expect(await continuity.forSession(created.sessionRef).bindingLock()).toBeNull();
   await continuity.forSession(created.sessionRef).changeBinding("opencode");
@@ -132,20 +126,33 @@ it("changes an empty Session Binding and fixes the accepted Turn Target atomical
   await stateStore.close();
 });
 
-it("continues a Project in a fresh Session without moving Runtime identity or history", async () => {
+it("continues a Workspace in a fresh Session without moving Runtime identity or history", async () => {
   const directory = await mkdtemp(join(tmpdir(), "connect-session-continuity-continue-"));
   const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
-  await stateStore.insertProject({
-    projectId: "project-shared",
+  await stateStore.insertWorkspace({
+    bindingId: "codex",
+    workspaceRef: "SHARED01",
+    runtimeIdentityKey: null,
+    source: "runtime",
     name: "Shared",
     rootPath: join(directory, "shared"),
+    selectable: true,
+  });
+  await stateStore.insertWorkspace({
+    bindingId: "opencode",
+    workspaceRef: "SHARED02",
+    runtimeIdentityKey: null,
+    source: "runtime",
+    name: "Shared",
+    rootPath: join(directory, "shared"),
+    selectable: true,
   });
   await stateStore.upsertRuntimeSession({
     chatId: "source-chat",
     sessionId: "source-session",
     agentId: "codex",
     runtimeSessionId: "source-thread",
-    projectId: "project-shared",
+    workspaceRef: "SHARED01",
     name: "Source",
     hasMessages: true,
   });
@@ -154,13 +161,14 @@ it("continues a Project in a fresh Session without moving Runtime identity or hi
     stateStore,
     sessionIdFactory: () => "continuation-session",
     conversationIdFactory: () => "__connect_client_session__:continuation",
+    resolveContinuationWorkspace: async () => "SHARED02",
   });
 
   const continuation = await continuity.forSession(source?.sessionRef ?? "").continueWith("opencode");
 
   expect(continuation).toMatchObject({
     bindingId: "opencode",
-    projectId: "project-shared",
+    workspaceRef: "SHARED02",
     sessionId: "continuation-session",
     runtimeThreadId: null,
     sessionOptions: {},
@@ -186,7 +194,7 @@ it("journals native lifecycle work and reconciles an interrupted local commit", 
     sessionId: "session-lifecycle",
     agentId: "codex",
     runtimeSessionId: "thread-lifecycle",
-    projectId: null,
+    workspaceRef: "WSDEFALT",
     name: "Lifecycle",
     isCurrent: true,
   });
@@ -236,7 +244,7 @@ it("keeps runtime lifecycle coordination claimed through native and local deleti
     sessionId: "session-delete",
     agentId: "codex",
     runtimeSessionId: "thread-delete",
-    projectId: null,
+    workspaceRef: "WSDEFALT",
     name: "Delete",
     isCurrent: true,
   });
@@ -273,48 +281,5 @@ it("keeps runtime lifecycle coordination claimed through native and local deleti
     `release:${session?.sessionRef}`,
   ]);
   expect(await stateStore.getRuntimeSessionByRef(session?.sessionRef ?? "")).toBeNull();
-  await stateStore.close();
-});
-
-it("maps one Runtime Workspace Identity unambiguously while allowing cross-Binding Project reuse", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "connect-session-continuity-workspace-"));
-  const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
-  const firstProject = await stateStore.insertProject({
-    projectId: "project-shared",
-    name: "Shared",
-    rootPath: join(directory, "shared"),
-  });
-  await stateStore.insertProject({
-    projectId: "project-other",
-    name: "Other",
-    rootPath: join(directory, "other"),
-  });
-  const continuity = createSessionContinuity({ stateStore });
-
-  await continuity.associateWorkspace({
-    bindingId: "codex-a",
-    runtimeKind: "codex",
-    identityKey: "native-workspace",
-    projectId: firstProject.projectId,
-  });
-  await continuity.associateWorkspace({
-    bindingId: "codex-b",
-    runtimeKind: "codex",
-    identityKey: "native-workspace",
-    projectId: firstProject.projectId,
-  });
-
-  await expect(
-    continuity.associateWorkspace({
-      bindingId: "codex-a",
-      runtimeKind: "codex",
-      identityKey: "native-workspace",
-      projectId: "project-other",
-    }),
-  ).rejects.toThrow("already mapped");
-  expect(await stateStore.getRuntimeWorkspaceMapping("codex-b", "codex", "native-workspace")).toMatchObject({
-    projectId: "project-shared",
-  });
-
   await stateStore.close();
 });

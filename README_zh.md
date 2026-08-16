@@ -31,25 +31,25 @@ ClawChat Connect 是连接 ClawChat 与本地编程 Agent 运行时的桥梁。A
 | 领域 | Connect 提供的能力 |
 | --- | --- |
 | Runtime Adapter | 连接用户自行安装的 Codex CLI 或 OpenCode，不接管运行时登录、模型供应商、插件和 MCP 配置。 |
-| 持久工作 | 通过稳定的 Connect Session 恢复原生 Runtime Thread，并复用本地 Project。 |
+| 持久工作 | 通过稳定的 Connect Session 恢复原生 Runtime Thread，并使用 Binding-scoped Workspace。 |
 | 跨入口对话 | ClawChat 与 Connect Client 的消息进入同一个 Session 队列；不同 Session 可并发运行。 |
 | 运行时控制 | 动态发现模型与选项，将审批和问题送回发起任务的入口，并支持取消任务。 |
 | Skill 发现 | 在 Connect Client 的 slash picker 中展示运行时支持的 Skill，并把显式选择保留在本次任务中。 |
 | 丰富输入输出 | 接收 ClawChat 图片、音频、文件和视频引用，并按安全规则返回本地图片结果。 |
 | 多 Agent Binding | 每个 Binding 独立保存凭据、Session、Runtime 实例、默认设置、输出可见性和 Liveware 访问。 |
-| 本地优先访问 | 默认使用本机 Client，也可显式开放可信局域网或使用 Binding-scoped Liveware Exposure。 |
+| 本地优先访问 | 默认使用本机 Client，也可显式开放可信局域网或启用官方 Liveware Client Exposure。 |
 | Agent 可调用的 ClawChat 操作 | 另行内置工具和托管 Agent Skill，用于资料、社交、消息、动态和 Liveware 工作流。 |
 
 ### 在 ClawChat 中使用 Connect
 
 - **从对话发起任务：** 私聊中直接发送普通消息；群聊中通过结构化 mention 指定 Agent。
-- **控制当前 Session：** 使用 slash 命令创建、列出和切换 Session，选择本地 Project，查看状态，设置运行时模型与 mode，取消当前任务并控制输出可见性。
+- **控制当前 Session：** 使用 slash 命令创建、列出和切换 Session，选择 Workspace，查看状态，设置运行时模型与 mode，取消当前任务并控制输出可见性。
 - **延续持久运行时工作：** 每个 ClawChat 对话和 Agent Binding 保留独立的当前 Session，原生 Runtime Thread 可继续恢复。
 - **原地处理运行时交互：** 审批和 Agent 问题会返回到发起任务的私聊或群聊。
 - **收发丰富上下文：** ClawChat 图片、音频、文件和视频保持结构化；符合安全规则的本地图片结果会上传到回复中。
-- **不离开 ClawChat 使用 Connect Client：** 每个已激活 Binding 都可通过 private 或 public Liveware App 打开 Binding-scoped Client。
+- **不离开 ClawChat 使用 Connect Client：** 官方 Liveware Plugin 可为每个已激活 Binding 发布一个私有 App；所有 App 都打开同一个安装级 Client。
 
-ClawChat 入口负责对话范围内的工作；Project 注册、Service 管理和其他本机级配置仍在终端或 Connect Client 中完成。
+ClawChat 入口负责对话范围内的工作；Workspace 注册、Service 管理和其他本机级配置仍在终端或 Connect Client 中完成。
 
 ### Runtime 支持
 
@@ -89,7 +89,7 @@ Connect 使用运行时现有的登录状态、配置、模型供应商、插件
 复制以下提示词并发送给你的编程 Agent：
 
 ```text
-在这台电脑上安装 ClawChat Connect 当前 beta 通道版本。开始操作前，先阅读并严格执行 https://github.com/XMethues/clawchat-plugin-connect/blob/main/install.md。若已存在配置，应复用现有配置，不要覆盖；安装并启动系统原生的 Connect Service 及其托管的 Liveware，然后验证 doctor、后台服务状态、Runtime 连接和 Liveware Exposure。仅在需要激活时向我索取 Agent 邀请码，并且不得打印、保存或提交邀请码。持续处理直到 install.md 中的所有成功条件均通过，最后报告安装版本和完整运行状态。
+在这台电脑上安装 ClawChat Connect 当前 beta 通道版本。开始操作前，先阅读并严格执行 https://github.com/XMethues/clawchat-plugin-connect/blob/main/install.md。若已存在配置，应复用现有配置，不要覆盖；安装并启动系统原生的 Connect Service；如需远程 Client 访问，则选择官方 Liveware Plugin；随后验证 doctor、后台服务状态、Runtime 连接和私有 Liveware Publication。仅在需要激活时向我索取 Agent 邀请码，并且不得打印、保存或提交邀请码。
 ```
 
 ### 1. 安装 Connect
@@ -100,7 +100,7 @@ macOS 或 Linux 的独立安装包不需要 Bun 或 Node.js：
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
 ```
 
-独立发行包包含对应平台的 Liveware companion，并会与 `clawchat-connect` 一起安装。安装器会在运行时通过 `release-channel/latest-beta.txt` 解析当前 beta 通道版本；只有需要固定版本时才应显式传入版本号。
+独立发行包把对应平台且固定校验的 Liveware companion 嵌入经发行验证的官方 Liveware Plugin Bundle；安装器只携带该 Bundle，并会删除旧版同级 `liveware` 可执行文件。安装器会在运行时通过 `release-channel/latest-beta.txt` 解析当前 beta 通道版本；只有需要固定版本时才应显式传入版本号。
 
 默认安装目录为 `~/.local/bin`。如果该目录不在 `PATH` 中：
 
@@ -125,7 +125,7 @@ Invoke-WebRequest `
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Windows 安装器会校验发行包的 SHA-256，安装 `clawchat-connect.exe`、`liveware.exe` 和 Client 资源，并把安装目录加入当前用户的持久 `PATH`。
+Windows 安装器会校验发行包的 SHA-256，安装 `clawchat-connect.exe`、Client 资源和官方 Plugin Bundle，删除旧版同级 `liveware.exe`，并把安装目录加入当前用户的持久 `PATH`。
 
 开发者也可以安装 Bun 包：
 
@@ -178,20 +178,20 @@ clawchat-connect activate work YOUR_INVITE_CODE
 
 Connect 只保存激活后返回的凭据，不会保存邀请码，并把 ClawChat Profile 昵称更新为 Binding ID（本例为 `work`）。
 
-一个 Connect 安装可以激活多个 ClawChat 账号，并使用多个 Runtime Plugin 的 capability：
+一个 Connect 安装只有一个 Installation Owner；它可以为同一 ClawChat 账号激活多个 Agent Binding，并使用多个 Runtime Plugin 的 capability：
 
 ```bash
 clawchat-connect plugin setup --non-interactive \
   --select clawling.runtime.codex,clawling.runtime.opencode
 clawchat-connect agent add personal --plugin clawling.runtime.codex --capability codex
-clawchat-connect activate personal PERSONAL_ACCOUNT_INVITE_CODE
+clawchat-connect activate personal PERSONAL_AGENT_INVITE_CODE
 
 clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
-clawchat-connect activate work WORK_ACCOUNT_INVITE_CODE
+clawchat-connect activate work WORK_AGENT_INVITE_CODE
 clawchat-connect service restart
 ```
 
-每个 Binding 独立拥有凭据、Session、Runtime 实例和 Liveware Exposure；Project 属于整个安装，可按需共享。Service 会为每个已激活 Binding 创建或接管一个名为 `ClawChat Connect · <binding-id>` 的 Liveware App。默认访问策略为 `private`，仅该 Binding Owner 可打开。
+每个 Binding 独立拥有凭据、Session、Runtime 实例和 Binding-scoped Workspace Catalog，但所有 Binding 必须属于同一 Installation Owner；不同 Owner 的激活会在不改变现有状态的情况下被拒绝。官方 Liveware Plugin 提供一个安装级 Client Exposure，并为每个已激活 Binding 管理独立的 Liveware Publication；所有 Publication 都连接同一个 Core-owned Shared Client Gateway，且只有 Installation Owner 能打开相应 App。
 
 ### 4. 安装后台服务
 
@@ -210,23 +210,23 @@ clawchat-connect service status
 解释这个仓库的作用，并建议第一项改进。
 ```
 
-如果尚未选择 Project，Connect 会在 `~/.clawchat-connect/workspaces/` 下创建隔离工作区，并自动启动持久 Runtime Session。
+Connect 会使用该 Binding 位于 `~/.clawchat-connect/workspaces/` 下的 Default Workspace，并自动启动持久 Runtime Session。
 
 ## 在代码仓库中工作
 
-Project 路径属于本机管理信息，请通过终端或 Connect Client 注册，不要在 ClawChat 消息中注册：
+Workspace 路径属于本机管理信息，请通过终端或 Connect Client 注册，不要在 ClawChat 消息中注册：
 
 ```bash
-clawchat-connect project add /absolute/path/to/clawchat-plugin-connect
-clawchat-connect project list
+clawchat-connect workspace add codex /absolute/path/to/clawchat-plugin-connect
+clawchat-connect workspace list codex
 ```
 
-Connect Client 可以浏览 Connect Service 主机上的目录、新建文件夹并注册 Project。新建 Session 对话框也支持暂存同一操作，只有确认创建 Session 时才会创建文件夹、Project 和 Session。随后在 ClawChat 中选择 Project 和 Session 选项：
+Connect Client 可以浏览 Connect Service 主机上的目录、新建文件夹，并为所选 Agent Binding 注册 Workspace。新建 Session 对话框也支持暂存同一操作，只有确认创建 Session 时才会创建文件夹、Workspace 和 Session。
 
-目录选择器会向所有能打开 Client 的用户展示主机目录名称和结构，但不会展示文件内容；这也包括 public Liveware Exposure 或可信局域网所允许的用户。
+目录选择器会向所有能打开 Client 的用户展示主机目录名称和结构，但不会展示文件内容；这包括通过私有 Liveware Publication 访问的 Installation Owner，以及可信局域网中的对等端。
 
 ```text
-/project connect
+/workspace ABCDEFGH
 /new 审查认证逻辑
 /mode workspace-write
 /model
@@ -234,15 +234,15 @@ Connect Client 可以浏览 Connect Service 主机上的目录、新建文件夹
 审查认证实现并报告安全问题。
 ```
 
-`/project`、`/new`、`/mode` 和 `/model` 会准备一个 Session Intent。下一条普通消息会以原子方式创建 Session 并启动原生 Runtime Thread。直接发送 `/model` 会列出 Runtime Adapter 提供的模型和推理选项；OpenCode agent、variant 等专属选项也可在 Connect Client 中设置。
+`/workspace`、`/new`、`/mode` 和 `/model` 会准备一个 Session Intent。下一条普通消息会以原子方式创建 Session 并启动原生 Runtime Thread。直接发送 `/model` 会列出 Runtime Adapter 提供的模型和推理选项；OpenCode agent、variant 等专属选项也可在 Connect Client 中设置。
 
-本地 Project 命令：
+本地 Workspace 命令：
 
 | 命令 | 用途 |
 | --- | --- |
-| `clawchat-connect project add <absolute-path>` | 以根目录名称注册 Project。 |
-| `clawchat-connect project list` | 列出 Project 及其本地路径。 |
-| `clawchat-connect project remove <workspace-id>` | 移除未使用的 Project 定义；不会删除文件或 Runtime Thread。 |
+| `clawchat-connect workspace add <binding-id> <absolute-path>` | 在一个 Binding 的 Catalog 中注册以根目录命名的 Workspace。 |
+| `clawchat-connect workspace list <binding-id>` | 列出该 Binding 的 Workspace 及其本地路径。 |
+| `clawchat-connect workspace remove <binding-id> <workspace-ref>` | 移除未使用的 Workspace 定义；不会删除文件或 Runtime Thread。 |
 
 ## Session 与聊天命令
 
@@ -257,13 +257,13 @@ Connect 会为每个 ClawChat 对话和 Agent Binding 保留一个当前 Session
 | `/new [name]` | 为下一条普通消息准备新 Session。 |
 | `/sessions` | 列出所选工作区的 Session 和可用 Runtime Thread。 |
 | `/switch <name-or-ref>` | 恢复 Session 或接管可用 Runtime Thread。 |
-| `/project [workspace-id\|none]` | 查看同步后的 Project、按 Workspace ID 选择，或使用隔离的 Non-Project 工作区。 |
+| `/workspace [workspace-ref]` | 查看同步后的 Workspace、按 Workspace Ref 选择，或恢复 Binding Default Workspace。 |
 | `/model [model-id [reasoning-option]\|default]` | 查看或设置 Session 模型及其第二级选项；`default` 恢复继承。 |
 | `/mode [mode\|default]` | 查看或设置 Runtime Adapter 提供的 mode；Codex 支持 `read-only`、`workspace-write`、`danger-full-access`。 |
 | `/cancel` | 尽可能中断当前运行时任务。 |
 | `/clawchat-output <mode>` | 将 ClawChat 输出设为 `minimal`、`normal` 或 `full`。 |
 
-`/help` 对所有参与者开放；其他控制命令仅限该 Agent Binding 的 Owner。已移除的 `/list`、`/current`、`/clawchat-status` 和 `/project add|list|use|current|clear|remove` 会返回 `/help` 提示，不会转发给编程 Agent。
+`/help` 对所有参与者开放；其他控制命令仅限 Installation Owner。已废弃的控制形式会返回 `/help` 提示，不会转发给编程 Agent。
 
 输出可见性按 Binding 隔离。有效模型按“Session 覆盖值 → Agent Binding 默认值 → Runtime Adapter 默认值”解析；第二级选项对应 Codex reasoning effort 或 OpenCode variant。不可用的已保存选项会明确报错，不会静默替换。
 
@@ -285,7 +285,7 @@ clawchat-connect web --no-open
 
 Connect Client 可以：
 
-- 创建和切换 Session、选择 Project、查看原生 Runtime transcript；
+- 创建和切换 Session、选择 Workspace、查看原生 Runtime transcript；
 - 设置 Runtime Adapter 提供的 model、mode、agent、effort 或 variant；
 - 在 composer 的 slash picker 中发现 Runtime command 与 Skill；
 - 添加受支持的附件、发送后续任务，并把排队中的任务撤回 composer 编辑；
@@ -297,20 +297,14 @@ Connect Client 可以：
 
 ### 通过 Liveware 在 ClawChat 中访问
 
-每个已激活 Binding 都会在自己的 ClawChat 账号中展示独立的 `ClawChat Connect` 入口。本机回环 Client 可以管理全部 Binding；通过 Liveware 打开的 Client 只能读取和修改该 Exposure 所属 Binding 的数据。选择访问策略后重启服务：
+本机回环 Client 和每个私有 Liveware Publication 都会打开同一个安装级 Client。即使两个 Catalog 条目解析到同一文件系统根目录，Workspace 仍按 Binding 隔离。
 
-```bash
-# 仅 Connect Owner（默认）
-clawchat-connect config set livewareAccessPolicy private
+请在 Connect Client 的官方 Liveware Plugin 设置中配置 `liveware` capability：
 
-# 任何能打开此 Liveware App 的已认证 ClawChat 用户
-clawchat-connect config set livewareAccessPolicy public
+- `accessPolicy: "private"` 为每个已激活 Binding 发布仅 Owner 可访问的 App。
+- `accessPolicy: "off"` 停用所有 Binding Liveware Publication，并释放 Shared Client Gateway lease。
 
-# 注销并停用 Liveware Exposure
-clawchat-connect config set livewareAccessPolicy off
-
-clawchat-connect service restart
-```
+初始 Plugin setup 会在可用时预选官方 Liveware 候选项。普通 public Plugin 无法获取 Client Exposure Host Capability；官方 capability 也不支持 public 访问。
 
 删除某个 Binding、它的 Liveware App 与本地历史时，需要显式确认：
 
@@ -318,7 +312,7 @@ clawchat-connect service restart
 clawchat-connect agent remove work --yes
 ```
 
-共享 Project 和其他 Binding 不会被删除。
+删除 Binding 时会清除其 Workspace Catalog 记录，但保留 Workspace 文件内容和其他 Binding。
 
 ### 可信局域网访问
 
@@ -332,7 +326,7 @@ clawchat-connect service restart
 然后打开 `http://<电脑局域网-IP>:47823/`。
 
 > [!WARNING]
-> 局域网模式没有身份验证或 TLS。任何能访问该端口的人都可以枚举主机目录名称与结构、读取 Session、管理 Project 路径与运行时偏好，并提交本地编程 Agent 任务。插件管理仍仅允许实际的回环连接（包括私有回环 Liveware 网关）；转发请求头不能向局域网对等端授予该权限。绝对不要暴露到互联网。
+> 局域网模式没有身份验证或 TLS。任何能访问该端口的人都可以枚举主机目录名称与结构、读取 Session、管理 Workspace 路径与运行时偏好，并提交本地编程 Agent 任务。插件管理仍仅允许实际的回环连接（包括私有回环 Liveware Gateway）；转发请求头不能向局域网对等端授予该权限。绝对不要暴露到互联网。
 
 恢复仅本机访问：
 
@@ -350,7 +344,7 @@ ClawChat 传入的媒体会保留结构化信息：
 - 单个下载上限为 100 MiB；
 - 缓存上限为 512 MiB，文件连续 15 天未访问后过期。
 
-运行时返回本地 Markdown 图片时，只有位于 Project 工作区或 Connect 媒体缓存内，且扩展名与文件签名确认为 PNG、JPEG、GIF 或 WebP，Connect 才会上传到 ClawChat。其他本地路径只作为文本返回。
+运行时返回本地 Markdown 图片时，只有位于已解析 Workspace 根目录或 Connect 媒体缓存内，且扩展名与文件签名确认为 PNG、JPEG、GIF 或 WebP，Connect 才会上传到 ClawChat。其他本地路径只作为文本返回。
 
 ## 配置
 
@@ -364,7 +358,7 @@ clawchat-connect config get agents.work.runtime
 CLI 可修改全局设置和通用 Binding 偏好：
 
 ```bash
-clawchat-connect config set livewareAccessPolicy private
+clawchat-connect config set agents.work.outputVisibility normal
 clawchat-connect config set agents.work.model YOUR_MODEL_ID
 clawchat-connect config set agents.work.modelReasoningEffort high
 clawchat-connect service restart
@@ -377,7 +371,6 @@ clawchat-connect service restart
 
 | 设置 | 可选值 |
 | --- | --- |
-| `livewareAccessPolicy` | `private`（默认）、`public`、`off` |
 | `clientHost` | `127.0.0.1`、`0.0.0.0` |
 | `clientPort` | `1024`–`65535` |
 
@@ -392,7 +385,7 @@ Runtime family 来自 provider metadata，不会持久化在 Binding 中。
 | 命令 | 用途 |
 | --- | --- |
 | `clawchat-connect status [--agent <id>]` | 显示激活、运行时和 Liveware Exposure 状态。 |
-| `clawchat-connect doctor` | 检查基本配置和内置 Liveware。 |
+| `clawchat-connect doctor` | 检查当前配置和已安装的 Connect Agent Skill。 |
 | `clawchat-connect tool list` | 列出 24 个可供 Agent 调用的 ClawChat tool name。 |
 | `clawchat-connect tool describe <name>` | 显示工具的生成输入 Schema。 |
 | `clawchat-connect tool call <name> --input-json <json-or->` | 向运行中的 Service 提交一次至多执行一次的工具请求。 |
@@ -400,7 +393,7 @@ Runtime family 来自 provider metadata，不会持久化在 Binding 中。
 | `clawchat-connect liveware tunnel ...` | 绑定或解绑本地回环服务并同步 ClawChat 注册。 |
 | `clawchat-connect skills install` | 强制修复内置的两份用户级 Agent skill。 |
 | `clawchat-connect agent list` | 列出 Agent Binding。 |
-| `clawchat-connect agent remove <id> --yes` | 删除一个 Binding、其 Liveware Exposure 和 Binding-scoped 本地数据。 |
+| `clawchat-connect agent remove <id> --yes` | 删除一个 Binding、其 Liveware Publication 和 Binding-scoped Connect 记录；保留 Workspace 文件。 |
 | `clawchat-connect service start` | 启动服务。 |
 | `clawchat-connect service stop` | 停止服务但不卸载。 |
 | `clawchat-connect service restart` | 配置变更后重启服务。 |
@@ -432,7 +425,7 @@ clawchat-connect service logs --lines 250
 | 配置 | `~/.clawchat-connect/config.json` |
 | SQLite 状态与凭据 | `~/.clawchat-connect/state.sqlite` |
 | macOS 服务日志 | `~/.clawchat-connect/logs/` |
-| Non-Project 隔离工作区 | `~/.clawchat-connect/workspaces/` |
+| Binding Default Workspace | `~/.clawchat-connect/workspaces/` |
 | 媒体缓存 | `~/.clawchat-connect/media-cache/` |
 | 原生 Runtime Thread | 由运行时管理，例如 Codex 使用 `~/.codex/sessions/` |
 
@@ -470,11 +463,11 @@ OpenCode 能力与原生 Session 生命周期集成测试：
 OPENCODE_EXECUTABLE=/absolute/path/to/opencode bun run test:integration:opencode
 ```
 
-`bun run build:binary` 会生成较轻量的未打包独立构建，并将 Connect 可执行文件及已校验 SHA-256 的当前平台 Liveware 资源写入 `dist/`；Windows 构建使用 `.exe` 名称。
+`bun run build:binary` 会生成较轻量的未打包独立构建，在 `dist/` 中写入 Connect 可执行文件和自包含官方 Plugin Bundle；官方 Liveware Bundle 内含已校验 SHA-256 的当前平台 companion。Windows Connect 构建使用 `.exe` 名称。
 
 `bun run build:release` 会生成当前主机的可分发发行包，并将归档文件、安装器、`CHANGELOG.md` 和 SHA-256 校验和写入 `build/release/`。
 
-匹配 `v*-beta.*` 的标签会运行 [`.github/workflows/release-beta.yml`](./.github/workflows/release-beta.yml)。该工作流校验标签与 `package.json`、运行确定性代码检查、验证全部六个内置 Liveware 资源，并构建 macOS、Linux 和 Windows 的 arm64/x64 二进制。本机已安装产品验收属于可选的任务内测试，不会阻止创建发布标签。所有资源发布后，工作流会更新供默认安装和更新使用的 [`release-channel/latest-beta.txt`](https://github.com/XMethues/clawchat-plugin-connect/blob/release-channel/latest-beta.txt) 指针。
+匹配 `v*-beta.*` 的标签会运行 [`.github/workflows/release-beta.yml`](./.github/workflows/release-beta.yml)。该工作流校验标签与 `package.json`、运行确定性代码检查、验证六个平台 Liveware 输入、构建目标完整的官方 Plugin Bundle，再构建 macOS、Linux 和 Windows 的 arm64/x64 二进制。本机已安装产品验收属于任务内验证，不会由 mock 替代。所有资源发布后，工作流会更新供默认安装和更新使用的 [`release-channel/latest-beta.txt`](https://github.com/XMethues/clawchat-plugin-connect/releases/download/channel-beta/latest-beta.txt)。
 
 贡献代码前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)、[CONTEXT.md](./CONTEXT.md) 和相关 [ADR](./docs/adr/)。
 

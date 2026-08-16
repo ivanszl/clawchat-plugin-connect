@@ -31,12 +31,12 @@ textarea {
   min-height: 0;
 }
 
-.project-selector-field [popover] {
+.workspace-selector-field [popover] {
   width: anchor-size(width);
   max-width: calc(100vw - (var(--spacing-2) * 2));
 }
 
-.project-selector-option {
+.workspace-selector-option {
   width: 100%;
   min-width: 0;
   max-width: 100%;
