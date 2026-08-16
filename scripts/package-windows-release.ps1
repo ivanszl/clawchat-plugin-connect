@@ -3,7 +3,8 @@ param(
   [Parameter(Mandatory = $true)][string]$ClientDirectory,
   [Parameter(Mandatory = $true)][string]$LivewareExecutable,
   [Parameter(Mandatory = $true)][string]$OfficialPluginsDirectory,
-  [Parameter(Mandatory = $true)][string]$OutputArchive
+  [Parameter(Mandatory = $true)][string]$OutputArchive,
+  [Parameter(Mandatory = $true)][ValidateSet("win32-arm64", "win32-x64")][string]$PluginTarget
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,8 +38,7 @@ if (-not (Test-Path -LiteralPath $OfficialPluginsDirectory -PathType Container))
 }
 foreach ($OfficialPluginId in @(
   "clawling.runtime.codex",
-  "clawling.runtime.opencode",
-  "clawling.runtime.workbuddy"
+  "clawling.runtime.opencode"
 )) {
   if (@(Get-ChildItem -LiteralPath $OfficialPluginsDirectory -Filter "$OfficialPluginId-*.connect-plugin" -File).Count -eq 0) {
     throw "Official Plugin Bundle does not exist for ${OfficialPluginId}: $OfficialPluginsDirectory"

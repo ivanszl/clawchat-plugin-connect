@@ -10,7 +10,19 @@ import {
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+export const OFFICIAL_PLUGIN_TARGETS = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-x64",
+  "win32-arm64",
+  "win32-x64",
+] as const;
+
+export type OfficialPluginTarget = (typeof OFFICIAL_PLUGIN_TARGETS)[number];
+
 export interface OfficialPluginDescriptor {
+  readonly supportedTargets?: readonly OfficialPluginTarget[];
   readonly manifest: Omit<ConnectPluginManifestV1, "artifacts" | "probe">;
   readonly entrypoint: string;
   readonly probeEntrypoint: string;
@@ -28,6 +40,29 @@ export interface BuiltOfficialPlugin {
   readonly filename: string;
   readonly outputPath: string;
   readonly bundle: ConnectPluginBundleV1;
+}
+
+export function officialPluginSupportsTarget(descriptor: OfficialPluginDescriptor, target: string): boolean {
+  const supportedTargets = descriptor.supportedTargets;
+  if (supportedTargets === undefined) return true;
+  if (!Array.isArray(supportedTargets) || supportedTargets.length === 0) {
+    throw new Error(
+      `Official Plugin descriptor ${descriptor.manifest.pluginId} supportedTargets must be a non-empty array`,
+    );
+  }
+  const declaredTargets = new Set<string>();
+  for (const candidate of supportedTargets as readonly unknown[]) {
+    if (typeof candidate !== "string" || !OFFICIAL_PLUGIN_TARGETS.includes(candidate as OfficialPluginTarget)) {
+      throw new Error(
+        `Official Plugin descriptor ${descriptor.manifest.pluginId} declares unsupported target ${JSON.stringify(candidate)}`,
+      );
+    }
+    if (declaredTargets.has(candidate)) {
+      throw new Error(`Official Plugin descriptor ${descriptor.manifest.pluginId} declares duplicate target ${candidate}`);
+    }
+    declaredTargets.add(candidate);
+  }
+  return declaredTargets.has(target);
 }
 
 export async function buildOfficialPlugin(
@@ -70,7 +105,11 @@ export async function buildOfficialPlugins(
   descriptors: readonly OfficialPluginDescriptor[],
   options: BuildOfficialPluginOptions = {},
 ): Promise<BuiltOfficialPlugin[]> {
-  return await Promise.all(descriptors.map(async (descriptor) => await buildOfficialPlugin(descriptor, options)));
+  const target = options.target ?? `${process.platform}-${process.arch}`;
+  const supported = descriptors.filter((descriptor) => officialPluginSupportsTarget(descriptor, target));
+  return await Promise.all(
+    supported.map(async (descriptor) => await buildOfficialPlugin(descriptor, { ...options, target })),
+  );
 }
 
 export async function discoverOfficialPluginDescriptors(

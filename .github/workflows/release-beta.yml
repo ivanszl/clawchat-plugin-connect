@@ -153,14 +153,16 @@ jobs:
                 dist/client \
                 "vendor/liveware/${liveware_asset}" \
                 dist/official-plugins \
-                "build/release/clawchat-connect-${platform}-${architecture}.zip"
+                "build/release/clawchat-connect-${platform}-${architecture}.zip" \
+                "${plugin_platform}-${architecture}"
             else
               sh scripts/package-release-archive.sh \
                 "${output}" \
                 dist/client \
                 "vendor/liveware/${liveware_asset}" \
                 dist/official-plugins \
-                "build/release/clawchat-connect-${platform}-${architecture}.tar.gz"
+                "build/release/clawchat-connect-${platform}-${architecture}.tar.gz" \
+                "${plugin_platform}-${architecture}"
             fi
           done <<'TARGETS'
           bun-darwin-arm64 darwin arm64

@@ -1,5 +1,5 @@
 import { isAbsolute, relative, sep } from "node:path";
-import type { ClientErrorView, UpdateBindingPreferencesRequest } from "../client-contract";
+import { CLIENT_API_PREFIX, type ClientErrorView, type UpdateBindingPreferencesRequest } from "../client-contract";
 
 const MAX_JSON_BODY_BYTES = 128 * 1_024;
 const OUTPUT_VISIBILITIES = new Set(["minimal", "normal", "full"]);
@@ -42,6 +42,14 @@ export function jsonResponse(value: unknown, status = 200): Response {
 export function isPathWithin(root: string, candidate: string): boolean {
   const nestedPath = relative(root, candidate);
   return nestedPath === "" || (!nestedPath.startsWith(`..${sep}`) && nestedPath !== ".." && !isAbsolute(nestedPath));
+}
+
+export function isClientAdministrationPath(pathname: string): boolean {
+  return (
+    pathname === `${CLIENT_API_PREFIX}/plugins` ||
+    pathname.startsWith(`${CLIENT_API_PREFIX}/plugins/`) ||
+    /^\/client\/v1\/bindings\/[^/]+\/provider$/u.test(pathname)
+  );
 }
 
 export function snapshotResponse(value: unknown, watermark: number): Response {

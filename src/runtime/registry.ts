@@ -28,6 +28,12 @@ export interface RuntimeAdapterReplacement {
   rollback(): Promise<void>;
   unregister(): Promise<void>;
 }
+export interface PreparedRuntimeAdapter {
+  readonly modes: readonly string[];
+  commit(): Promise<void>;
+  finalize(): Promise<void>;
+  rollback(): Promise<void>;
+}
 
 const RUNTIME_CATALOG_TTL_MS = 30_000;
 
@@ -139,6 +145,62 @@ export class RuntimeAdapterRegistry {
   }
   hasProvider(binding: AgentBindingConfig): boolean {
     return this.definitions.has(this.providerKey(binding.runtime));
+  }
+  async prepareBindingAdapter(bindingId: string, binding: AgentBindingConfig): Promise<PreparedRuntimeAdapter> {
+    const id = bindingId.trim();
+    if (!id || id !== bindingId) throw new Error("Agent Binding ID must be a non-empty exact identity");
+    const providerKey = this.providerKey(binding.runtime);
+    const definition = this.requireDefinition(binding);
+    let adapter: ConnectRuntimeAdapter | undefined;
+    try {
+      const preparedAdapter = this.createAdapter(definition, binding);
+      adapter = preparedAdapter;
+      const modes = [...(preparedAdapter.modesFor?.(binding) ?? preparedAdapter.modes)];
+      let state: "pending" | "staged" | "finalized" | "rolled-back" = "pending";
+      let previous: { providerKey: string; adapter: ConnectRuntimeAdapter } | undefined;
+      return {
+        modes,
+        commit: async () => {
+          if (state !== "pending") return;
+          previous = this.adaptersByBinding.get(id);
+          this.clearBinding(id);
+          this.adaptersByBinding.set(id, { providerKey, adapter: preparedAdapter });
+          try {
+            this.installAdapterSubscriptions(id, preparedAdapter);
+            state = "staged";
+          } catch (error) {
+            this.adaptersByBinding.delete(id);
+            this.clearBinding(id);
+            if (previous) {
+              this.adaptersByBinding.set(id, previous);
+              this.installAdapterSubscriptions(id, previous.adapter);
+            }
+            throw error;
+          }
+        },
+        finalize: async () => {
+          if (state !== "staged") return;
+          state = "finalized";
+          if (previous?.adapter !== preparedAdapter) await previous?.adapter.close?.();
+        },
+        rollback: async () => {
+          if (state === "finalized" || state === "rolled-back") return;
+          if (state === "staged") {
+            this.adaptersByBinding.delete(id);
+            this.clearBinding(id);
+            if (previous) {
+              this.adaptersByBinding.set(id, previous);
+              this.installAdapterSubscriptions(id, previous.adapter);
+            }
+          }
+          state = "rolled-back";
+          await preparedAdapter.close?.();
+        },
+      };
+    } catch (error) {
+      await adapter?.close?.().catch(() => undefined);
+      throw error;
+    }
   }
 
   async start(binding: AgentBindingConfig, context: ConnectRuntimeStartContext): Promise<ConnectRuntimeSession> {
@@ -356,14 +418,18 @@ export class RuntimeAdapterRegistry {
       if (existing.providerKey !== providerKey) throw new Error(`Agent Binding ${bindingId} changed Runtime provider`);
       return existing.adapter;
     }
+    const adapter = this.createAdapter(definition, binding);
+    this.adaptersByBinding.set(bindingId, { providerKey, adapter });
+    this.installAdapterSubscriptions(bindingId, adapter);
+    return adapter;
+  }
+  private createAdapter(definition: RuntimeAdapterDefinition, binding: AgentBindingConfig): ConnectRuntimeAdapter {
     const adapter = definition.create(binding);
     if (adapter.kind !== definition.family) {
       throw new Error(
         `Runtime capability provider ${definition.runtime.pluginId}/${definition.runtime.capabilityId} created family ${adapter.kind}, expected ${definition.family}`,
       );
     }
-    this.adaptersByBinding.set(bindingId, { providerKey, adapter });
-    this.installAdapterSubscriptions(bindingId, adapter);
     return adapter;
   }
 

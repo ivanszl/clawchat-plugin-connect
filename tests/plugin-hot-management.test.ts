@@ -405,19 +405,91 @@ describe("hot Plugin management service", () => {
     await host.install({ source: `local:${sourcePath}` });
     const liveBefore = structuredClone(config);
     const persistedBefore = await readFile(configPath, "utf8");
-    const saveBlocker = `${configPath}.${process.pid}.tmp`;
-    await mkdir(saveBlocker);
+    await rm(configPath);
+    await mkdir(configPath);
 
     await expect(host.remove(pluginId, true)).rejects.toThrow();
 
     expect(config).toEqual(liveBefore);
+    await rm(configPath, { recursive: true });
+    await writeFile(configPath, persistedBefore);
     await expect(readFile(configPath, "utf8")).resolves.toBe(persistedBefore);
     await expect(store.getRuntimeStatus(bindingId)).resolves.toMatchObject({
       runtimeAvailability: "startup-unavailable",
       recentError: "fixture state",
     });
 
-    await rm(saveBlocker, { recursive: true });
+    await host.close();
+    await store.close();
+  });
+
+  it("restores every not-yet-purged dependent Binding after forced removal fails so a retry can finish", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-hot-purge-retry-"));
+    const configPath = join(directory, "config.json");
+    const stateDbPath = join(directory, "state.sqlite");
+    const pluginId = "test.purge-retry";
+    const purgedBindingId = "a-purged-before-failure";
+    const retryBindingId = "z-purge-retry-binding";
+    const config = {
+      ...defaultConfig(),
+      stateDbPath,
+      agents: {
+        [purgedBindingId]: binding(pluginId, purgedBindingId),
+        [retryBindingId]: binding(pluginId, retryBindingId),
+      },
+      defaultAgent: retryBindingId,
+    };
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: stateDbPath });
+    await store.initialize();
+    await store.setRuntimeAvailability(purgedBindingId, "startup-unavailable", "first fixture state");
+    await store.setRuntimeAvailability(retryBindingId, "startup-unavailable", "retry fixture state");
+    const projects = new ProjectCatalog(store);
+    const purgeBindingWorkspaces = projects.purgeBindingWorkspaces.bind(projects);
+    let rejectRetryBindingPurge = true;
+    projects.purgeBindingWorkspaces = async (bindingId) => {
+      if (bindingId === retryBindingId && rejectRetryBindingPurge) {
+        rejectRetryBindingPurge = false;
+        throw new Error("dependent Binding purge failed");
+      }
+      await purgeBindingWorkspaces(bindingId);
+    };
+    const retiredBindings: string[][] = [];
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, {
+      config,
+      stateStore: store,
+      projects,
+      retireRuntimeBindings: async (bindingIds) => {
+        retiredBindings.push([...bindingIds]);
+      },
+    });
+    const sourcePath = await writeBundle(directory, hotBundle(pluginId, "1.0.0"));
+    const installed = await host.install({ source: `local:${sourcePath}` });
+
+    await expect(host.remove(pluginId, true)).rejects.toThrow("dependent Binding purge failed");
+
+    await expect(host.list()).resolves.toEqual([expect.objectContaining({ pluginId, status: "disabled" })]);
+    await expect(readFile(installed.activeArtifact, "utf8")).resolves.toContain("test.purge-retry@1.0.0");
+    expect(config.agents[purgedBindingId]).toBeUndefined();
+    expect(config.agents[retryBindingId]).toEqual(binding(pluginId, retryBindingId));
+    await expect(loadConfig(configPath)).resolves.toMatchObject({
+      agents: { [retryBindingId]: binding(pluginId, retryBindingId) },
+      defaultAgent: retryBindingId,
+    });
+    await expect(store.getRuntimeStatus(purgedBindingId)).resolves.toBeNull();
+    await expect(store.getRuntimeStatus(retryBindingId)).resolves.toMatchObject({
+      runtimeAvailability: "startup-unavailable",
+      recentError: "retry fixture state",
+    });
+
+    await expect(host.remove(pluginId, true)).resolves.toMatchObject({ pluginId });
+
+    expect(retiredBindings).toEqual([[purgedBindingId, retryBindingId], [retryBindingId]]);
+    expect(config.agents[retryBindingId]).toBeUndefined();
+    await expect(loadConfig(configPath)).resolves.toMatchObject({ agents: {}, defaultAgent: null });
+    await expect(store.getRuntimeStatus(retryBindingId)).resolves.toBeNull();
+    await expect(host.list()).resolves.toEqual([]);
+
     await host.close();
     await store.close();
   });

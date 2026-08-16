@@ -6,14 +6,19 @@ import { installManagedSkillsFromPackage } from "../scripts/postinstall";
 import { livewareAssetName } from "../src/service/liveware-exposure";
 import { CONNECT_VERSION } from "../src/service/version";
 
-const OFFICIAL_PLUGIN_BUNDLES = [
+const PORTABLE_OFFICIAL_PLUGIN_BUNDLES = [
   "clawling.runtime.codex-0.0.0-test.connect-plugin",
   "clawling.runtime.opencode-0.0.0-test.connect-plugin",
-  "clawling.runtime.workbuddy-0.0.0-test.connect-plugin",
 ] as const;
+const WORKBUDDY_OFFICIAL_PLUGIN_BUNDLE = "clawling.runtime.workbuddy-0.0.0-test.connect-plugin" as const;
+const DARWIN_OFFICIAL_PLUGIN_BUNDLES = [...PORTABLE_OFFICIAL_PLUGIN_BUNDLES, WORKBUDDY_OFFICIAL_PLUGIN_BUNDLE] as const;
 
-async function writeOfficialPluginFixtures(directory: string, content = "official Plugin Bundle\n"): Promise<void> {
-  await Promise.all(OFFICIAL_PLUGIN_BUNDLES.map(async (name) => await writeFile(join(directory, name), content)));
+async function writeOfficialPluginFixtures(
+  directory: string,
+  bundles: readonly string[],
+  content = "official Plugin Bundle\n",
+): Promise<void> {
+  await Promise.all(bundles.map(async (name) => await writeFile(join(directory, name), content)));
 }
 
 async function listFiles(directory: string, prefix = ""): Promise<string[]> {
@@ -55,6 +60,9 @@ describe("standalone release bundle", () => {
       expect(posixPackager.toLowerCase()).toContain(entry.toLowerCase());
       expect(windowsPackager.toLowerCase()).toContain(entry.toLowerCase());
     }
+    expect(posixPackager).toContain("darwin-arm64 | darwin-x64");
+    expect(posixPackager).toContain("linux-arm64 | linux-x64");
+    expect(windowsPackager).not.toContain("clawling.runtime.workbuddy");
   });
 
   it("native Windows packager creates the exact archive-root payload", async () => {
@@ -74,7 +82,7 @@ describe("standalone release bundle", () => {
     await writeFile(connectBinary, "connect executable");
     await writeFile(livewareBinary, "liveware executable");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
-    await writeOfficialPluginFixtures(officialPluginsDirectory);
+    await writeOfficialPluginFixtures(officialPluginsDirectory, PORTABLE_OFFICIAL_PLUGIN_BUNDLES);
 
     const child = Bun.spawn(
       [
@@ -89,6 +97,7 @@ describe("standalone release bundle", () => {
         livewareBinary,
         officialPluginsDirectory,
         archive,
+        "win32-x64",
       ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
     );
@@ -123,7 +132,7 @@ describe("standalone release bundle", () => {
         "LICENSE",
         "clawchat-connect-client/index.html",
         "clawchat-connect.exe",
-        ...OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
+        ...PORTABLE_OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
         "liveware.exe",
         "skills/clawchat-core/SKILL.md",
         "skills/clawchat-core/agents/openai.yaml",
@@ -139,7 +148,7 @@ describe("standalone release bundle", () => {
       ["clawchat-connect.exe", connectBinary],
       ["liveware.exe", livewareBinary],
       ["clawchat-connect-client/index.html", join(clientDirectory, "index.html")],
-      ...OFFICIAL_PLUGIN_BUNDLES.map(
+      ...PORTABLE_OFFICIAL_PLUGIN_BUNDLES.map(
         (name) => [`official-plugins/${name}`, join(officialPluginsDirectory, name)] as const,
       ),
       ["CHANGELOG.md", "CHANGELOG.md"],
@@ -168,7 +177,7 @@ describe("standalone release bundle", () => {
     await writeFile(connectBinary, "#!/bin/sh\nexit 0\n");
     await writeFile(livewareBinary, "#!/bin/sh\nexit 0\n");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
-    await writeOfficialPluginFixtures(officialPluginsDirectory);
+    await writeOfficialPluginFixtures(officialPluginsDirectory, DARWIN_OFFICIAL_PLUGIN_BUNDLES);
     await Promise.all([chmod(connectBinary, 0o755), chmod(livewareBinary, 0o755)]);
 
     const child = Bun.spawn(
@@ -180,6 +189,7 @@ describe("standalone release bundle", () => {
         livewareBinary,
         officialPluginsDirectory,
         archive,
+        "darwin-arm64",
       ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
     );
@@ -198,7 +208,7 @@ describe("standalone release bundle", () => {
         "clawchat-connect-client/index.html",
         "liveware",
         "official-plugins/",
-        ...OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
+        ...DARWIN_OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
         "skills/",
         "skills/clawchat-core/",
         "skills/clawchat-core/SKILL.md",
@@ -215,6 +225,46 @@ describe("standalone release bundle", () => {
         "skills/manifest.json",
       ].sort(),
     );
+  });
+
+  it("requires WorkBuddy only for Darwin archive payloads", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-targeted-plugins-"));
+    const connectBinary = join(directory, "connect");
+    const livewareBinary = join(directory, "liveware");
+    const clientDirectory = join(directory, "client");
+    const officialPluginsDirectory = join(directory, "official-plugins");
+    await Promise.all([mkdir(clientDirectory), mkdir(officialPluginsDirectory)]);
+    await writeFile(connectBinary, "#!/bin/sh\nexit 0\n");
+    await writeFile(livewareBinary, "#!/bin/sh\nexit 0\n");
+    await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
+    await writeOfficialPluginFixtures(officialPluginsDirectory, PORTABLE_OFFICIAL_PLUGIN_BUNDLES);
+    await Promise.all([chmod(connectBinary, 0o755), chmod(livewareBinary, 0o755)]);
+
+    const packageFor = async (target: "darwin-x64" | "linux-x64", archive: string): Promise<number> =>
+      await Bun.spawn(
+        [
+          "sh",
+          "scripts/package-release-archive.sh",
+          connectBinary,
+          clientDirectory,
+          livewareBinary,
+          officialPluginsDirectory,
+          archive,
+          target,
+        ],
+        { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
+      ).exited;
+
+    const linuxArchive = join(directory, "linux.tar.gz");
+    expect(await packageFor("linux-x64", linuxArchive)).toBe(0);
+    const listing = Bun.spawn(["tar", "-tzf", linuxArchive], { stdout: "pipe", stderr: "pipe" });
+    const linuxEntries = await new Response(listing.stdout).text();
+    expect(await listing.exited).toBe(0);
+    expect(linuxEntries).not.toContain(WORKBUDDY_OFFICIAL_PLUGIN_BUNDLE);
+    expect(await packageFor("darwin-x64", join(directory, "darwin-missing.tar.gz"))).not.toBe(0);
+
+    await writeOfficialPluginFixtures(officialPluginsDirectory, [WORKBUDDY_OFFICIAL_PLUGIN_BUNDLE]);
+    expect(await packageFor("darwin-x64", join(directory, "darwin.tar.gz"))).toBe(0);
   });
 
   it("pins a Liveware release asset for every standalone Connect target", async () => {
@@ -258,7 +308,7 @@ describe("standalone release bundle", () => {
     await writeFile(connectBinary, "connect executable");
     await writeFile(livewareBinary, "liveware executable");
     await writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n");
-    await writeOfficialPluginFixtures(officialPluginsDirectory);
+    await writeOfficialPluginFixtures(officialPluginsDirectory, PORTABLE_OFFICIAL_PLUGIN_BUNDLES);
 
     const child = Bun.spawn(
       [
@@ -269,6 +319,7 @@ describe("standalone release bundle", () => {
         livewareBinary,
         officialPluginsDirectory,
         archive,
+        "win32-x64",
       ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
     );
@@ -286,7 +337,7 @@ describe("standalone release bundle", () => {
         "clawchat-connect-client/index.html",
         "clawchat-connect.exe",
         "official-plugins/",
-        ...OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
+        ...PORTABLE_OFFICIAL_PLUGIN_BUNDLES.map((name) => `official-plugins/${name}`),
         "liveware.exe",
         "skills/",
         "skills/clawchat-core/",
@@ -308,6 +359,9 @@ describe("standalone release bundle", () => {
 
   it("ships a checksum-verifying PowerShell installer and Windows release targets", async () => {
     const installer = await readFile("install.ps1", "utf8");
+    expect(installer).toContain("clawling.runtime.codex");
+    expect(installer).toContain("clawling.runtime.opencode");
+    expect(installer).not.toContain("clawling.runtime.workbuddy");
     expect(installer).toContain("raw.githubusercontent.com/$repository/release-channel/latest-beta.txt");
     expect(installer).not.toContain("api.github.com");
     expect(installer).toContain("Get-FileHash");
@@ -426,6 +480,11 @@ describe("standalone release bundle", () => {
       process.platform === "darwin"
         ? `clawchat-connect-darwin-${process.arch === "arm64" ? "arm64" : "x64"}.tar.gz`
         : `clawchat-connect-linux-${process.arch === "arm64" ? "arm64" : "x64"}.tar.gz`;
+    const pluginTarget = `${process.platform === "darwin" ? "darwin" : "linux"}-${
+      process.arch === "arm64" ? "arm64" : "x64"
+    }`;
+    const officialPluginBundles =
+      process.platform === "darwin" ? DARWIN_OFFICIAL_PLUGIN_BUNDLES : PORTABLE_OFFICIAL_PLUGIN_BUNDLES;
     const archive = join(fixtureDirectory, asset);
     await Promise.all([
       mkdir(clientDirectory, { recursive: true }),
@@ -439,7 +498,7 @@ describe("standalone release bundle", () => {
       writeFile(connectBinary, '#!/bin/sh\n[ "$' + '{1:-}" = --help ] || [ "$' + '{1:-}" = skills ]\n'),
       writeFile(livewareBinary, '#!/bin/sh\n[ "$' + '{1:-}" = --help ]\n'),
       writeFile(join(clientDirectory, "index.html"), "<!doctype html>\n"),
-      writeOfficialPluginFixtures(officialPluginsDirectory, "installed release\n"),
+      writeOfficialPluginFixtures(officialPluginsDirectory, officialPluginBundles, "installed release\n"),
     ]);
     await Promise.all([chmod(connectBinary, 0o755), chmod(livewareBinary, 0o755)]);
 
@@ -452,6 +511,7 @@ describe("standalone release bundle", () => {
         livewareBinary,
         officialPluginsDirectory,
         archive,
+        pluginTarget,
       ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
     );
@@ -514,9 +574,9 @@ describe("standalone release bundle", () => {
     );
     const installedOfficialPluginsDirectory = join(installDirectory, "official-plugins");
     await expect(readdir(installedOfficialPluginsDirectory).then((entries) => entries.sort())).resolves.toEqual(
-      [...OFFICIAL_PLUGIN_BUNDLES].sort(),
+      [...officialPluginBundles].sort(),
     );
-    for (const bundle of OFFICIAL_PLUGIN_BUNDLES) {
+    for (const bundle of officialPluginBundles) {
       await expect(readFile(join(installedOfficialPluginsDirectory, bundle), "utf8")).resolves.toBe(
         "installed release\n",
       );
@@ -564,6 +624,7 @@ describe("standalone release bundle", () => {
         livewareBinary,
         officialPluginsDirectory,
         archive,
+        pluginTarget,
       ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
     );
@@ -603,11 +664,11 @@ describe("standalone release bundle", () => {
     const retiredBundle = "clawling.runtime.retired-0.0.0-test.connect-plugin";
     await writeFile(join(installedOfficialPluginsDirectory, retiredBundle), "retired installed release\n");
     const installedBundleContents = new Map<string, string>();
-    for (const bundle of [...OFFICIAL_PLUGIN_BUNDLES, retiredBundle]) {
+    for (const bundle of [...officialPluginBundles, retiredBundle]) {
       installedBundleContents.set(bundle, await readFile(join(installedOfficialPluginsDirectory, bundle), "utf8"));
     }
 
-    await writeOfficialPluginFixtures(officialPluginsDirectory, "upgrade release\n");
+    await writeOfficialPluginFixtures(officialPluginsDirectory, officialPluginBundles, "upgrade release\n");
     await writeFile(
       connectBinary,
       [
@@ -629,6 +690,7 @@ describe("standalone release bundle", () => {
         livewareBinary,
         officialPluginsDirectory,
         archive,
+        pluginTarget,
       ],
       { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
     );

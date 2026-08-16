@@ -1,82 +1,103 @@
-export default {
+class ReferenceRuntimeAdapter {
+  modes = ["trace"];
+  activities = new Map();
+  closed = false;
+  nextThread = 1;
+
+  constructor(instance, contextKeys) {
+    this.instance = instance;
+    this.contextKeys = contextKeys;
+  }
+
+  async start(startContext) {
+    if (this.closed) throw new Error(`Reference Runtime ${this.instance} is closed`);
+    const runtimeThreadId =
+      startContext.runtimeThreadId ?? `${this.instance}-${startContext.bindingId}-thread-${this.nextThread++}`;
+    if (!startContext.runtimeThreadId) await startContext.onRuntimeThreadId(runtimeThreadId);
+    return {
+      prompt: async function* (input) {
+        await input.onAccepted?.();
+        const activity = {
+          id: `${runtimeThreadId}:assistant:0`,
+          position: "0.0",
+          parentId: null,
+          kind: "assistant",
+          text: `${this.instance}:${input.prompt}`,
+          state: "complete",
+          source: "live",
+          data: { contextKeys: this.contextKeys, instance: this.instance },
+        };
+        this.activities.set(runtimeThreadId, [activity]);
+        yield activity;
+      }.bind(this),
+      async close() {},
+    };
+  }
+
+  async readActivity(runtimeThreadId) {
+    return {
+      activities: this.activities.get(runtimeThreadId) ?? [],
+      completeness: "complete",
+      limitations: [],
+    };
+  }
+
+  async discoverAllThreads() {
+    return [...this.activities.keys()].map((runtimeThreadId) => ({
+      runtimeThreadId,
+      name: `${this.instance} thread`,
+      updatedAt: 1,
+    }));
+  }
+
+  async close() {
+    await Promise.resolve();
+    this.closed = true;
+  }
+}
+
+class ReferenceRuntimeProvider {
+  capabilityId = "reference-runtime";
+  family = "reference";
+
+  constructor(contextKeys) {
+    this.contextKeys = contextKeys;
+  }
+
+  create(configuration) {
+    return new ReferenceRuntimeAdapter(String(configuration.instance ?? "reference"), this.contextKeys);
+  }
+}
+
+class ReferenceExposureProvider {
+  capabilityId = "reference-exposure";
+  defaultChannel = "private";
+
+  async activate(activation) {
+    const { configuration, client } = activation;
+    const effects = (globalThis.__connectReferenceExposureEffects ??= []);
+    effects.push(`activate:${String(configuration.channel ?? this.defaultChannel)}`);
+    globalThis.__connectReferenceExposure = Object.freeze({
+      activationKeys: Object.keys(activation).sort(),
+      activationFrozen: Object.isFrozen(activation),
+      configurationFrozen: Object.isFrozen(configuration),
+      clientKeys: Object.keys(client).sort(),
+      clientFrozen: Object.isFrozen(client),
+      fetch: async (request) => await client.fetch(request),
+    });
+    return () => {
+      effects.push("dispose");
+      Reflect.deleteProperty(globalThis, "__connectReferenceExposure");
+    };
+  }
+}
+
+class ReferencePlugin {
   async activate(context) {
     const contextKeys = Object.keys(context).sort();
-    const runtimeProviders = context.hostCapabilities.get("runtime-provider");
-    const exposureProviders = context.hostCapabilities.get("exposure-provider");
-    runtimeProviders.register({
-      capabilityId: "reference-runtime",
-      family: "reference",
-      create(configuration) {
-        const instance = String(configuration.instance ?? "reference");
-        const activities = new Map();
-        let closed = false;
-        let nextThread = 1;
-        return {
-          modes: ["trace"],
-          async start(startContext) {
-            if (closed) throw new Error(`Reference Runtime ${instance} is closed`);
-            const runtimeThreadId =
-              startContext.runtimeThreadId ?? `${instance}-${startContext.agentId}-thread-${nextThread++}`;
-            if (!startContext.runtimeThreadId) await startContext.onRuntimeThreadId(runtimeThreadId);
-            return {
-              async *prompt(input) {
-                await input.onAccepted?.();
-                const activity = {
-                  id: `${runtimeThreadId}:assistant:0`,
-                  position: "0.0",
-                  parentId: null,
-                  kind: "assistant",
-                  text: `${instance}:${input.prompt}`,
-                  state: "complete",
-                  source: "live",
-                  data: { contextKeys, instance },
-                };
-                activities.set(runtimeThreadId, [activity]);
-                yield activity;
-              },
-              async close() {},
-            };
-          },
-          async readActivity(runtimeThreadId) {
-            return {
-              activities: activities.get(runtimeThreadId) ?? [],
-              completeness: "complete",
-              limitations: [],
-            };
-          },
-          async discoverAllThreads() {
-            return [...activities.keys()].map((runtimeThreadId) => ({
-              runtimeThreadId,
-              name: `${instance} thread`,
-              updatedAt: 1,
-            }));
-          },
-          async close() {
-            await Promise.resolve();
-            closed = true;
-          },
-        };
-      },
-    });
-    exposureProviders.register({
-      capabilityId: "reference-exposure",
-      async activate(activation) {
-        const { configuration, client } = activation;
-        const effects = (globalThis.__connectReferenceExposureEffects ??= []);
-        effects.push(`activate:${String(configuration.channel ?? "private")}`);
-        globalThis.__connectReferenceExposure = Object.freeze({
-          activationKeys: Object.keys(activation).sort(),
-          activationFrozen: Object.isFrozen(activation),
-          configurationFrozen: Object.isFrozen(configuration),
-          clientKeys: Object.keys(client).sort(),
-          clientFrozen: Object.isFrozen(client),
-          fetch: async (request) => await client.fetch(request),
-        });
-        return () => {
-          effects.push("dispose");
-          Reflect.deleteProperty(globalThis, "__connectReferenceExposure");
-        };
-      },
-    });
-  },
-};
+    context.hostCapabilities.get("runtime-provider").register(new ReferenceRuntimeProvider(contextKeys));
+    context.hostCapabilities.get("exposure-provider").register(new ReferenceExposureProvider());
+  }
+}
+
+export default new ReferencePlugin();

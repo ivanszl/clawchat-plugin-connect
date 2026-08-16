@@ -115,8 +115,7 @@ try {
   }
   foreach ($officialPluginId in @(
     "clawling.runtime.codex",
-    "clawling.runtime.opencode",
-    "clawling.runtime.workbuddy"
+    "clawling.runtime.opencode"
   )) {
     $officialPluginBundles = @(Get-ChildItem -LiteralPath $officialPluginsSource -Filter "$officialPluginId-*.connect-plugin" -File)
     if ($officialPluginBundles.Count -eq 0) {

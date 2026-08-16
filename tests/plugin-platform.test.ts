@@ -111,9 +111,10 @@ async function localRequest(
 }
 
 describe("local Runtime Plugin platform", () => {
-  it("installs, activates, dispatches a Client Turn, projects activity, lists dependents, and disposes", async () => {
+  it("runs class-instance Plugin providers through activation, Client Turn start, and disposal", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-platform-"));
     Reflect.deleteProperty(globalThis, "__connectReferenceExposure");
+    Reflect.deleteProperty(globalThis, "__connectReferenceExposureEffects");
     const configPath = join(directory, "config.json");
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const fixturePath = join(import.meta.dir, "fixtures", "reference-runtime.connect-plugin");
@@ -235,6 +236,10 @@ describe("local Runtime Plugin platform", () => {
       clientKeys: ["fetch"],
       clientFrozen: true,
     });
+    expect(Reflect.get(globalThis, "__connectReferenceExposureEffects")).toEqual([
+      "activate:private",
+      "activate:private",
+    ]);
     const exposedBootstrapResponse = await exposure.fetch(
       new Request("https://external-exposure.example/client/v1/bootstrap", {
         headers: {
@@ -334,6 +339,12 @@ describe("local Runtime Plugin platform", () => {
     await expect(service).resolves.toEqual({ startedAgentIds: ["trace-alpha", "trace-beta"] });
     await expect(registry.prepare(getAgentBinding(config, "trace-alpha"))).rejects.toThrow("is not active");
     expect(Reflect.get(globalThis, "__connectReferenceExposure")).toBeUndefined();
+    expect(Reflect.get(globalThis, "__connectReferenceExposureEffects")).toEqual([
+      "activate:private",
+      "activate:private",
+      "dispose",
+      "dispose",
+    ]);
     await removeInstalledPlugin(configPath, firstInstall.pluginId);
     expect((await listInstalledPlugins(configPath)).map((plugin) => plugin.pluginId)).toEqual([secondInstall.pluginId]);
     expect(await loadConfig(configPath)).toMatchObject({

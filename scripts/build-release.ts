@@ -124,6 +124,7 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
   const clientDirectory = join("dist", "client");
   const livewareExecutable = join("dist", target.livewareExecutable);
   const officialPluginsDirectory = join("dist", "official-plugins");
+  const pluginTarget = `${target.platform === "windows" ? "win32" : target.platform}-${target.architecture}`;
   const outputArchive = join("build", "release", target.archiveName);
   const packageCommand =
     target.platform === "windows"
@@ -139,6 +140,7 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
           livewareExecutable,
           officialPluginsDirectory,
           outputArchive,
+          pluginTarget,
         ]
       : [
           "sh",
@@ -148,6 +150,7 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
           livewareExecutable,
           officialPluginsDirectory,
           outputArchive,
+          pluginTarget,
         ];
 
   return [
@@ -166,7 +169,7 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
         process.execPath,
         join("scripts", "build-official-plugins.ts"),
         "--target",
-        `${target.platform === "windows" ? "win32" : target.platform}-${target.architecture}`,
+        pluginTarget,
       ],
     },
     { name: "package release archive", command: packageCommand },

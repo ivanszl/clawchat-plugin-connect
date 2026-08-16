@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/src/plugin/connect-plugin-manifest.schema.json",
+  "title": "ClawChat Connect Plugin author manifest v1",
+  "description": "The author-owned manifest accepted by the public Plugin Bundle builder. The builder generates artifacts and probe metadata from the supplied entry files.",
+  "type": "object",
+  "required": [
+    "manifestVersion",
+    "interfaceVersion",
+    "pluginId",
+    "version",
+    "dependencies",
+    "installationConfigurationSchema",
+    "capabilities"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "interfaceVersion": { "const": "1" },
+    "pluginId": { "$ref": "#/$defs/identity" },
+    "version": { "$ref": "#/$defs/nonBlankText" },
+    "dependencies": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/hostDependency" }
+    },
+    "installationConfigurationSchema": { "type": "object" },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/runtimeCapability" },
+          { "$ref": "#/$defs/exposureCapability" }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "nonBlankText": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "identity": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9._@/-]*[a-z0-9])?$"
+    },
+    "configurationSchema": {
+      "type": "object"
+    },
+    "hostDependency": {
+      "type": "object",
+      "required": ["type", "id", "interfaceVersion"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "host" },
+        "id": { "enum": ["runtime-provider", "exposure-provider"] },
+        "interfaceVersion": { "const": "1" }
+      }
+    },
+    "runtimeCapability": {
+      "type": "object",
+      "required": ["id", "type", "interfaceVersion", "family", "configurationSchema"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/identity" },
+        "type": { "const": "runtime" },
+        "interfaceVersion": { "const": "1" },
+        "family": { "$ref": "#/$defs/identity" },
+        "configurationSchema": { "$ref": "#/$defs/configurationSchema" }
+      }
+    },
+    "exposureCapability": {
+      "type": "object",
+      "required": ["id", "type", "interfaceVersion", "configurationSchema"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/identity" },
+        "type": { "const": "exposure" },
+        "interfaceVersion": { "const": "1" },
+        "configurationSchema": { "$ref": "#/$defs/configurationSchema" }
+      }
+    }
+  }
+}

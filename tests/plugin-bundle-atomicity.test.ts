@@ -131,6 +131,42 @@ describe("atomic multi-capability Plugin Bundles", () => {
     expect(forwarded[0]?.headers.get("host")).toBe("127.0.0.1:47823");
     expect(forwarded[0]?.headers.has(BINDING_SCOPE_HEADER)).toBe(false);
     expect(forwarded[0]?.headers.has(PLUGIN_MANAGER_CONFIG_HEADER)).toBe(false);
+    const administrationRoutes = [
+      ["GET", "/client/v1/plugins/administration"],
+      ["GET", "/client/v1/plugins/official"],
+      ["PUT", "/client/v1/bindings/reference-binding/provider"],
+      ["GET", "/client/v1/plugins"],
+      ["POST", "/client/v1/plugins/upload"],
+      ["POST", "/client/v1/plugins/official/setup"],
+      ["POST", "/client/v1/plugins"],
+      ["POST", "/client/v1/plugins/reference-plugin/update"],
+      ["POST", "/client/v1/plugins/reference-plugin/reinstall"],
+      ["POST", "/client/v1/plugins/reference-plugin/configure"],
+      ["POST", "/client/v1/plugins/reference-plugin/enable"],
+      ["POST", "/client/v1/plugins/reference-plugin/disable"],
+      ["POST", "/client/v1/plugins/reference-plugin/select"],
+      ["DELETE", "/client/v1/plugins/reference-plugin"],
+    ] as const;
+    const exposureOrigins = [undefined, "https://exposure.example", "http://127.0.0.1:47823"] as const;
+    for (const [method, path] of administrationRoutes) {
+      for (const origin of exposureOrigins) {
+        const response = await exposure.fetch(
+          new Request(`https://exposure.example${path}`, {
+            method,
+            ...(origin ? { headers: { Origin: origin } } : {}),
+          }),
+        );
+        expect(response.status).toBe(404);
+        await expect(response.json()).resolves.toEqual({
+          error: {
+            code: "not-found",
+            message: "Client Interface endpoint was not found",
+            retryable: false,
+          },
+        });
+      }
+    }
+    expect(forwarded).toHaveLength(1);
     unbindClient();
     expect(diagnostics).toEqual([]);
     expect(host.activePluginIds()).toEqual([installed.pluginId]);

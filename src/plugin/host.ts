@@ -2,13 +2,14 @@ import { pathToFileURL } from "node:url";
 import type { Context, Plugin } from "cordis";
 import { PLUGIN_MANAGER_CONFIG_HEADER } from "../client-contract";
 import { BINDING_SCOPE_HEADER } from "../client-interface/binding-scoped-gateway";
-import { errorResponse } from "../client-interface/client-http";
+import { errorResponse, isClientAdministrationPath } from "../client-interface/client-http";
 import { FileTurnSubmissionStaging } from "../client-interface/turn-submission-staging";
-import { loadConfig, saveConfig } from "../config";
+import { ConnectConfigMutationCoordinator, type LockedConfigMutation, loadConfig } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
 import type { ProjectCatalog } from "../projects/projects";
 import { cacheRuntimeMedia } from "../runtime/media-cache";
 import {
+  type PreparedRuntimeAdapter,
   type RuntimeAdapterDefinition,
   RuntimeAdapterRegistry,
   type RuntimeAdapterReplacement,
@@ -85,8 +86,19 @@ interface ConnectPluginManagementDependencies {
 }
 
 type PendingProvider =
-  | { type: "runtime"; provider: ConnectPluginRuntimeProvider }
-  | { type: "exposure"; provider: ConnectPluginExposureProvider };
+  | {
+      readonly type: "runtime";
+      readonly runtime: Readonly<RuntimeCapabilityRef>;
+      readonly family: string;
+      readonly implementation: ConnectPluginRuntimeProvider;
+    }
+  | {
+      readonly type: "exposure";
+      readonly capabilityId: string;
+      readonly implementation: ConnectPluginExposureProvider;
+    };
+
+type PendingRuntimeProvider = Extract<PendingProvider, { type: "runtime" }>;
 
 export interface ManagePluginOptions {
   source: string;
@@ -104,6 +116,16 @@ export interface ConfigurePluginOptions {
 export type PluginUpdateCheck =
   | { status: "current" | "available"; version: string; integrity: string; diagnostic: null }
   | { status: "check-failed"; version: null; integrity: null; diagnostic: string };
+export interface UpsertBindingProviderResult {
+  binding: AgentBindingConfig;
+  modes: readonly string[];
+}
+export class RuntimeProviderValidationError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "RuntimeProviderValidationError";
+  }
+}
 
 export const MAX_CONCURRENT_PLUGIN_UPDATE_CHECKS = 4;
 
@@ -130,12 +152,14 @@ export interface ConnectPluginManagement {
   disable(pluginId: string): Promise<InstalledPluginLockEntry>;
   select(pluginId: string, version: string, integrity?: string): Promise<InstalledPluginLockEntry>;
   remove(pluginId: string, force?: boolean): Promise<InstalledPluginLockEntry>;
-  upsertBindingProvider(bindingId: string, binding: AgentBindingConfig): Promise<AgentBindingConfig>;
+  upsertBindingProvider(bindingId: string, binding: AgentBindingConfig): Promise<UpsertBindingProviderResult>;
+  readonly configMutations?: ConnectConfigMutationCoordinator;
 }
 
 export class ConnectPluginHost implements ConnectPluginManagement {
   private readonly active = new Map<string, ActivePlugin>();
-  private operationTail = Promise.resolve();
+  private readonly operationCoordinator: ConnectConfigMutationCoordinator;
+  readonly configMutations: ConnectConfigMutationCoordinator | undefined;
   private readonly officialCandidates = new Map<string, ResolvedOfficialPlugin>();
   private clientExposureTarget: ClientExposureTarget | undefined;
   private readonly clientExposure: ConnectPluginClientExposure = Object.freeze({
@@ -148,7 +172,10 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     private readonly reportActivationFailure: (pluginId: string, error: unknown) => void,
     private readonly management?: ConnectPluginManagementDependencies,
     private readonly sourceOptions: OfficialCatalogOptions = {},
-  ) {}
+  ) {
+    this.operationCoordinator = new ConnectConfigMutationCoordinator(management?.config, configPath);
+    this.configMutations = management ? this.operationCoordinator : undefined;
+  }
 
   bindClientInterface(client: { readonly origin: string; fetch?(request: Request): Promise<Response> }): () => void {
     const fetchClient = client.fetch?.bind(client) ?? (async (request: Request) => await globalThis.fetch(request));
@@ -222,8 +249,8 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     if (validationFailure) throw validationFailure.error;
   }
 
-  async upsertBindingProvider(bindingId: string, binding: AgentBindingConfig): Promise<AgentBindingConfig> {
-    return await this.runExclusive(async () => {
+  async upsertBindingProvider(bindingId: string, binding: AgentBindingConfig): Promise<UpsertBindingProviderResult> {
+    return await this.runExclusive(async (commitConfig) => {
       const management = this.management;
       if (!management) throw new Error("Agent Binding provider mutation requires the running Connect service");
       const id = bindingId.trim();
@@ -246,17 +273,26 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         candidate.runtimeConfig,
         `Agent Binding ${id} Runtime configuration`,
       );
-      if (!this.runtimeAdapters.hasProvider(candidate)) {
-        throw new Error(
-          `Runtime Plugin capability ${candidate.runtime.pluginId}/${candidate.runtime.capabilityId} is not active`,
-        );
+      let prepared: PreparedRuntimeAdapter;
+      try {
+        prepared = await this.runtimeAdapters.prepareBindingAdapter(id, candidate);
+      } catch (error) {
+        throw new RuntimeProviderValidationError(error instanceof Error ? error.message : String(error), error);
       }
-      const nextConfig = structuredClone(management.config);
-      nextConfig.agents[id] = candidate;
-      if (!nextConfig.defaultAgent) nextConfig.defaultAgent = id;
-      await saveConfig(nextConfig, this.configPath);
-      Object.assign(management.config, nextConfig);
-      return structuredClone(candidate);
+      let committedCandidate: AgentBindingConfig;
+      try {
+        committedCandidate = await commitConfig(async (config) => {
+          await prepared.commit();
+          config.agents[id] = candidate;
+          if (!config.defaultAgent) config.defaultAgent = id;
+          return structuredClone(candidate);
+        });
+      } catch (error) {
+        await prepared.rollback().catch(() => undefined);
+        throw error;
+      }
+      await prepared.finalize().catch((error) => this.reportActivationFailure(candidate.runtime.pluginId, error));
+      return { binding: committedCandidate, modes: [...prepared.modes] };
     });
   }
 
@@ -277,7 +313,20 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     return await this.runExclusive(async () => {
       try {
         const resolved = await persistUploadedPluginSource(this.configPath, fileName, bytes, options);
-        return await this.installResolvedWithinQueue(resolved, options);
+        const staged = await stagePluginBundle({
+          configPath: this.configPath,
+          source: resolved.source,
+          bundle: resolved.bundle,
+          target: resolved.target,
+          installationConfiguration: options.installationConfiguration,
+          exposureConfigurations: options.exposureConfigurations,
+        });
+        const alreadyInstalled = (await listInstalledPlugins(this.configPath)).some(
+          (installed) => installed.pluginId === staged.entry.pluginId,
+        );
+        return alreadyInstalled
+          ? await this.switchToStaged(staged, "upload-replace")
+          : await this.installStaged(staged);
       } catch (error) {
         await removeUnreferencedManagedPluginUploads(this.configPath).catch(() => undefined);
         throw error;
@@ -363,7 +412,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
   }
 
   async configure(pluginId: string, options: ConfigurePluginOptions): Promise<InstalledPluginLockEntry> {
-    return await this.runExclusive(async () => {
+    return await this.runExclusive(async (commitConfig) => {
       const installed = await this.requireInstalled(pluginId);
       const installationConfiguration = validatePluginConfiguration(
         installed.manifest.installationConfigurationSchema,
@@ -414,7 +463,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
             installationConfiguration,
             exposureConfigurations,
           );
-          await this.saveRuntimeConfigurations(nextRuntimeConfigurations);
+          await this.saveRuntimeConfigurations(nextRuntimeConfigurations, commitConfig);
           if (!candidate) return configured;
 
           candidate.plugin.installed = configured;
@@ -587,7 +636,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
   }
 
   async remove(pluginId: string, force = false): Promise<InstalledPluginLockEntry> {
-    return await this.runExclusive(async () => {
+    return await this.runExclusive(async (commitConfig) => {
       await this.requireInstalled(pluginId);
       const config = this.management?.config ?? (await loadConfig(this.configPath));
       const dependents = pluginDependents(config, pluginId);
@@ -605,6 +654,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         );
         throw new Error(`Plugin ${pluginId} force removal requires running Agent Binding transport retirement`);
       }
+      const originalConfig = dependents.length > 0 ? structuredClone(config) : config;
       return await this.withBindingQuiescence(dependents, async () => {
         if (dependents.length > 0) {
           const retireRuntimeBindings = this.management?.retireRuntimeBindings;
@@ -625,17 +675,31 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           }
         }
         if (dependents.length > 0) {
-          const management = this.management;
-          if (!management) throw new Error("Binding purge requires running Connect management dependencies");
+          if (!this.management) throw new Error("Binding purge requires running Connect management dependencies");
           await setInstalledPluginStatus(this.configPath, pluginId, "disabled");
-          const nextConfig = structuredClone(management.config);
-          for (const bindingId of dependents) delete nextConfig.agents[bindingId];
-          if (nextConfig.defaultAgent && dependents.includes(nextConfig.defaultAgent)) {
-            nextConfig.defaultAgent = Object.keys(nextConfig.agents)[0] ?? null;
+          await commitConfig((config) => {
+            for (const bindingId of dependents) delete config.agents[bindingId];
+            if (config.defaultAgent && dependents.includes(config.defaultAgent)) {
+              config.defaultAgent = Object.keys(config.agents)[0] ?? null;
+            }
+          });
+          for (const [index, bindingId] of dependents.entries()) {
+            try {
+              await this.purgeDependentBindingState(bindingId);
+            } catch (error) {
+              await commitConfig((config) => {
+                for (const pendingBindingId of dependents.slice(index)) {
+                  config.agents[pendingBindingId] = originalConfig.agents[pendingBindingId];
+                }
+                if (originalConfig.defaultAgent && config.agents[originalConfig.defaultAgent]) {
+                  config.defaultAgent = originalConfig.defaultAgent;
+                } else if (config.defaultAgent && !config.agents[config.defaultAgent]) {
+                  config.defaultAgent = Object.keys(config.agents)[0] ?? null;
+                }
+              });
+              throw error;
+            }
           }
-          await saveConfig(nextConfig, this.configPath);
-          Object.assign(management.config, nextConfig);
-          for (const bindingId of dependents) await this.purgeDependentBindingState(bindingId);
         }
         const removed = await removeInstalledPlugin(this.configPath, pluginId);
         try {
@@ -650,7 +714,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
 
   async close(): Promise<void> {
     this.officialCandidates.clear();
-    await this.operationTail;
+    await this.operationCoordinator.idle();
     this.clientExposureTarget = undefined;
     const active = [...this.active.values()].reverse();
     this.active.clear();
@@ -692,17 +756,17 @@ export class ConnectPluginHost implements ConnectPluginManagement {
 
   private async saveRuntimeConfigurations(
     configurations: Array<[bindingId: string, configuration: Record<string, unknown>]>,
+    commitConfig: LockedConfigMutation,
   ): Promise<void> {
     if (configurations.length === 0) return;
     if (!this.management) throw new Error("Runtime capability configuration requires the running Connect service");
-    const next = structuredClone(this.management.config);
-    for (const [bindingId, configuration] of configurations) {
-      const binding = next.agents[bindingId];
-      if (!binding) throw new Error(`Agent Binding ${bindingId} is no longer available`);
-      binding.runtimeConfig = configuration;
-    }
-    await saveConfig(next, this.configPath);
-    Object.assign(this.management.config, next);
+    await commitConfig((config) => {
+      for (const [bindingId, configuration] of configurations) {
+        const binding = config.agents[bindingId];
+        if (!binding) throw new Error(`Agent Binding ${bindingId} is no longer available`);
+        binding.runtimeConfig = configuration;
+      }
+    });
   }
   private async installResolved(
     resolved: ResolvedPluginSource,
@@ -723,6 +787,10 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       installationConfiguration: options.installationConfiguration,
       exposureConfigurations: options.exposureConfigurations,
     });
+    return await this.installStaged(staged);
+  }
+
+  private async installStaged(staged: StagedPlugin): Promise<InstalledPluginLockEntry> {
     let candidate: ActivatedCandidate | undefined;
     let lockCommitted = false;
     try {
@@ -751,7 +819,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
 
   private async switchToStaged(
     staged: StagedPlugin,
-    operation: "update" | "select",
+    operation: "update" | "upload-replace" | "select",
   ): Promise<InstalledPluginLockEntry> {
     const existing = await this.requireInstalled(staged.entry.pluginId);
     const oldActive = this.active.get(staged.entry.pluginId);
@@ -887,13 +955,8 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     return await this.management.quiesceRuntimeBindings(bindingIds, criticalSection);
   }
 
-  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const running = this.operationTail.then(operation, operation);
-    this.operationTail = running.then(
-      () => undefined,
-      () => undefined,
-    );
-    return await running;
+  private async runExclusive<T>(operation: (commitConfig: LockedConfigMutation) => Promise<T>): Promise<T> {
+    return await this.operationCoordinator.runExclusive(operation);
   }
 
   private async activateCandidate(
@@ -932,16 +995,25 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       if (type === "runtime") {
         const family = typeof providerRecord.family === "string" ? providerRecord.family.trim() : "";
         if (!family) throw new Error(`Plugin ${installed.pluginId} registered a malformed Runtime provider`);
-        pending.set(capabilityId, {
-          type,
-          provider: { ...(provider as ConnectPluginRuntimeProvider), capabilityId, family },
-        });
+        pending.set(
+          capabilityId,
+          Object.freeze({
+            type,
+            runtime: Object.freeze({ pluginId: installed.pluginId, capabilityId }),
+            family,
+            implementation: provider as ConnectPluginRuntimeProvider,
+          }),
+        );
         return;
       }
-      pending.set(capabilityId, {
-        type,
-        provider: { ...(provider as ConnectPluginExposureProvider), capabilityId },
-      });
+      pending.set(
+        capabilityId,
+        Object.freeze({
+          type,
+          capabilityId,
+          implementation: provider as ConnectPluginExposureProvider,
+        }),
+      );
     };
     const runtimeHostCapability: ConnectRuntimeProviderHostCapability = Object.freeze({
       interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
@@ -987,16 +1059,15 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       for (const capability of declared) {
         const registration = pending.get(capability.id);
         if (!registration) throw new Error(`Plugin ${installed.pluginId} did not register capability ${capability.id}`);
-        if (registration.type !== capability.type) {
-          throw new Error(
-            `Plugin ${installed.pluginId}/${capability.id} registered as ${registration.type}, expected ${capability.type}`,
-          );
-        }
         if (capability.type === "runtime") {
-          const provider = registration.provider as ConnectPluginRuntimeProvider;
-          if (provider.family !== capability.family) {
+          if (registration.type !== "runtime") {
             throw new Error(
-              `Plugin ${installed.pluginId}/${capability.id} registered family ${provider.family}, expected ${capability.family}`,
+              `Plugin ${installed.pluginId}/${capability.id} registered as ${registration.type}, expected ${capability.type}`,
+            );
+          }
+          if (registration.family !== capability.family) {
+            throw new Error(
+              `Plugin ${installed.pluginId}/${capability.id} registered family ${registration.family}, expected ${capability.family}`,
             );
           }
           const validateConfiguration = compilePluginConfigurationValidator(
@@ -1004,14 +1075,19 @@ export class ConnectPluginHost implements ConnectPluginManagement {
             `Agent Binding Runtime configuration for ${installed.pluginId}/${capability.id}`,
           );
           runtimeDefinitions.push({
-            family: provider.family,
-            runtime: { pluginId: installed.pluginId, capabilityId: capability.id },
-            create: (binding) => bridgeRuntimeProvider(installed.pluginId, provider, validateConfiguration, binding),
+            family: registration.family,
+            runtime: registration.runtime,
+            create: (binding) => bridgeRuntimeProvider(registration, validateConfiguration, binding),
           });
           continue;
         }
+        if (registration.type !== "exposure") {
+          throw new Error(
+            `Plugin ${installed.pluginId}/${capability.id} registered as ${registration.type}, expected ${capability.type}`,
+          );
+        }
         stagedExposures.push({
-          provider: registration.provider as ConnectPluginExposureProvider,
+          provider: registration.implementation,
           configuration: deepFreeze(structuredClone(installed.exposureConfigurations[capability.id] ?? {})),
         });
       }
@@ -1087,11 +1163,14 @@ export class ConnectPluginHost implements ConnectPluginManagement {
   }
 
   private async fetchClientExposure(request: Request): Promise<Response> {
+    const destination = new URL(request.url);
+    if (isClientAdministrationPath(destination.pathname)) {
+      return errorResponse(404, "not-found", "Client Interface endpoint was not found");
+    }
     const target = this.clientExposureTarget;
     if (!target) {
       return errorResponse(503, "plugin-client-unavailable", "Connect Client is not available yet", true);
     }
-    const destination = new URL(request.url);
     destination.protocol = target.origin.protocol;
     destination.username = target.origin.username;
     destination.password = target.origin.password;
@@ -1128,20 +1207,22 @@ function runtimeRefs(installed: InstalledPluginLockEntry): RuntimeCapabilityRef[
 }
 
 function bridgeRuntimeProvider(
-  pluginId: string,
-  provider: ConnectPluginRuntimeProvider,
+  registration: PendingRuntimeProvider,
   validateConfiguration: PluginConfigurationValidator,
   binding: AgentBindingConfig,
 ): ConnectRuntimeAdapter {
-  if (binding.runtime.pluginId !== pluginId || binding.runtime.capabilityId !== provider.capabilityId) {
-    throw new Error(
-      `Runtime provider ${pluginId}/${provider.capabilityId} received a different Agent Binding provider`,
-    );
+  const {
+    runtime: { pluginId, capabilityId },
+    family,
+    implementation,
+  } = registration;
+  if (binding.runtime.pluginId !== pluginId || binding.runtime.capabilityId !== capabilityId) {
+    throw new Error(`Runtime provider ${pluginId}/${capabilityId} received a different Agent Binding provider`);
   }
   const configuration = deepFreeze(validateConfiguration(binding.runtimeConfig));
-  const adapter = provider.create(configuration);
+  const adapter = implementation.create(configuration);
   const internal: ConnectRuntimeAdapter = {
-    kind: provider.family,
+    kind: family,
     modes: adapter.modes,
     lifecycleCapabilities: adapter.lifecycleCapabilities,
     prepare: adapter.prepare ? async () => await adapter.prepare?.() : undefined,
@@ -1174,7 +1255,7 @@ function bridgeRuntimeProvider(
     readActivity: adapter.readActivity
       ? async (_binding, runtimeThreadId) => {
           const snapshot = await adapter.readActivity?.(runtimeThreadId);
-          if (!snapshot) throw new Error(`Runtime provider ${pluginId}/${provider.capabilityId} returned no activity`);
+          if (!snapshot) throw new Error(`Runtime provider ${pluginId}/${capabilityId} returned no activity`);
           return snapshot;
         }
       : undefined,
@@ -1193,16 +1274,14 @@ function bridgeRuntimeProvider(
       : undefined,
     start: async (_binding, context) =>
       await adapter.start({
-        agentId: context.agentId,
+        bindingId: context.agentId,
         chatId: context.chatId,
         sessionId: context.sessionId,
         runtimeThreadId: context.runtimeSessionId,
         onRuntimeThreadId: context.onRuntimeSessionId,
         cacheMedia: async (media, trustedOrigins) => {
           if (!context.stateDbPath) {
-            throw new Error(
-              `Runtime provider ${pluginId}/${provider.capabilityId} cannot cache media without state storage`,
-            );
+            throw new Error(`Runtime provider ${pluginId}/${capabilityId} cannot cache media without state storage`);
           }
           return await cacheRuntimeMedia(media, context.stateDbPath, { trustedOrigins });
         },

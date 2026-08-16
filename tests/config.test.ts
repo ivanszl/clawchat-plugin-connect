@@ -1,8 +1,15 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { getAgentBinding, loadConfig, normalizeConfig, saveConfig } from "../src/config";
+import { dirname, join } from "node:path";
+import {
+  ConnectConfigMutationCoordinator,
+  defaultConfig,
+  getAgentBinding,
+  loadConfig,
+  normalizeConfig,
+  saveConfig,
+} from "../src/config";
 
 async function tempConfigPath(): Promise<string> {
   return join(await mkdtemp(join(tmpdir(), "clawchat-connect-config-")), "config.json");
@@ -196,5 +203,39 @@ describe("Agent Binding configuration", () => {
     );
     expect(() => normalizeConfig({ clientHost: "toString" })).toThrow("clientHost must be one of: 127.0.0.1, 0.0.0.0");
     expect(() => normalizeConfig({ stateDbPath: "./state.sqlite" })).toThrow("stateDbPath must be an absolute path");
+  });
+
+  it("does not publish a candidate when persistence fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-config-failure-"));
+    const configPath = join(directory, "config-target");
+    await mkdir(configPath);
+    const config = defaultConfig();
+    const originalPort = config.clientPort;
+    const mutations = new ConnectConfigMutationCoordinator(config, configPath);
+
+    await expect(
+      mutations.mutate((candidate) => {
+        candidate.clientPort = originalPort + 1;
+      }),
+    ).rejects.toThrow();
+
+    expect(config.clientPort).toBe(originalPort);
+    expect(await readdir(directory)).toEqual(["config-target"]);
+  });
+
+  it("uses independent temporary files for concurrent direct saves", async () => {
+    const configPath = await tempConfigPath();
+    const directory = dirname(configPath);
+    const candidates = Array.from({ length: 16 }, (_, index) => ({
+      ...defaultConfig(),
+      clientPort: 48_000 + index,
+    }));
+
+    await expect(
+      Promise.all(candidates.map(async (candidate) => await saveConfig(candidate, configPath))),
+    ).resolves.toHaveLength(candidates.length);
+
+    expect(candidates.map((candidate) => candidate.clientPort)).toContain((await loadConfig(configPath)).clientPort);
+    expect(await readdir(directory)).toEqual(["config.json"]);
   });
 });

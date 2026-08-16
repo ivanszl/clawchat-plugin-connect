@@ -197,7 +197,7 @@ export async function installPluginBundle(options: StagePluginBundleOptions): Pr
 export async function commitStagedPlugin(
   configPath: string,
   staged: StagedPlugin,
-  operation: "install" | "update" | "select",
+  operation: "install" | "update" | "upload-replace" | "select",
 ): Promise<InstalledPluginLockEntry> {
   const paths = pluginInstallationPaths(configPath);
   let committed!: InstalledPluginLockEntry;
@@ -208,6 +208,13 @@ export async function commitStagedPlugin(
     }
     if (operation !== "install" && !existing) {
       throw new Error(`Plugin is not installed: ${staged.entry.pluginId}`);
+    }
+    if (
+      operation === "upload-replace" &&
+      (staged.entry.source.type !== "local" ||
+        !managedPluginUploadPath(managedPluginUploadRoot(configPath), staged.entry.source.path))
+    ) {
+      throw new Error(`Plugin ${staged.entry.pluginId} uploaded replacement source is not host-managed`);
     }
     if (
       operation === "update" &&

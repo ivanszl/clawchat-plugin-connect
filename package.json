@@ -17,13 +17,15 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./dist/src/index.js"
-    }
+    },
+    "./plugin-manifest.schema.json": "./src/plugin/connect-plugin-manifest.schema.json"
   },
   "files": [
     "dist/src",
     "dist/client",
     "dist/official-plugins",
     "src",
+    "src/plugin/connect-plugin-manifest.schema.json",
     "README.md",
     "README_zh.md",
     "install.md",
@@ -39,7 +41,7 @@
     "dev:web": "vite --config vite.config.ts",
     "preview:web": "bun run build:web && bun tests/fixtures/client-preview-server.ts",
     "build": "bun run build:service && bun run build:web && bun run build:official-plugins",
-    "build:service": "bun build ./src/bin.ts ./src/index.ts --target=bun --outdir=dist/src --packages=external --sourcemap=linked",
+    "build:service": "bun build ./src/bin.ts ./src/index.ts ./src/plugin/build-cli.ts --target=bun --outdir=dist/src --packages=external --sourcemap=linked",
     "build:web": "vite build --config vite.config.ts",
     "build:official-plugins": "bun scripts/build-official-plugins.ts",
     "build:binary": "bun scripts/build-binary.ts",
@@ -113,6 +115,7 @@
   },
   "license": "MIT",
   "bin": {
-    "clawchat-connect": "./dist/src/bin.js"
+    "clawchat-connect": "./dist/src/bin.js",
+    "clawchat-connect-plugin": "./dist/src/plugin/build-cli.js"
   }
 }

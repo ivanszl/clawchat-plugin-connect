@@ -81,7 +81,7 @@ describe("official Codex Plugin Bundle", () => {
     };
     const official = createCodexOfficialAdapter(adapter, binding);
     const session = await official.start({
-      agentId: "codex",
+      bindingId: "codex",
       chatId: "chat",
       sessionId: "session",
       runtimeThreadId: null,
@@ -257,19 +257,29 @@ describe("official Codex Plugin Bundle", () => {
     });
   });
 
-  it("rejects malformed installation version output before Plugin activation", async () => {
+  it("publishes the Runtime capability before Codex exists and validates when a Binding selects it", async () => {
     const setup = await installedHost();
-    const malformed = join(setup.directory, "malformed-install-codex");
-    await writeFile(malformed, "#!/bin/sh\nprintf 'codex-cli 1.2.3-01\\n'\n", { mode: 0o700 });
+    const deferredExecutable = join(setup.directory, "codex-installed-later");
+    const binding = pluginBinding(deferredExecutable, join(setup.directory, "deferred-binding"));
+    delete binding.runtimeConfig.executablePathOverride;
     try {
       await expect(
         setup.host.install({
           source: setup.bundlePath,
           target,
-          installationConfiguration: { executablePath: malformed },
+          installationConfiguration: { executablePath: deferredExecutable },
         }),
-      ).rejects.toThrow("Malformed Codex version output");
-      expect(setup.host.activePluginIds()).toEqual([]);
+      ).resolves.toMatchObject({ status: "active" });
+      expect(setup.host.activePluginIds()).toEqual([CODEX_PLUGIN_ID]);
+      expect(setup.registry.hasProvider(binding)).toBe(true);
+      expect(setup.registry.familyFor(binding)).toBe(CODEX_RUNTIME_FAMILY);
+
+      expect(() => setup.registry.modesFor(binding)).toThrow(
+        `Failed to inspect configured Codex executable ${deferredExecutable}`,
+      );
+
+      await writeFile(deferredExecutable, "#!/bin/sh\nprintf 'codex-cli 0.111.0-alpha.14\\n'\n", { mode: 0o700 });
+      expect(setup.registry.modesFor(binding)).toEqual(["read-only", "workspace-write", "danger-full-access"]);
     } finally {
       await setup.host.close();
       await setup.store.close();

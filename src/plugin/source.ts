@@ -17,9 +17,10 @@ export const DEFAULT_GITHUB_API = "https://api.github.com";
 export const MAX_PLUGIN_SOURCE_METADATA_BYTES = 4 * 1024 * 1024;
 export const MAX_PLUGIN_SOURCE_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 export const MAX_PLUGIN_SOURCE_ARCHIVE_BYTES = 64 * 1024 * 1024;
-export const MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS = 4;
-export const MAX_GITHUB_SOURCE_RELEASE_CANDIDATES = 4;
-export const MAX_GITHUB_SOURCE_ASSET_ATTEMPTS = 4;
+export const MAX_GITHUB_RELEASE_PAGES = 10;
+export const MAX_GITHUB_RELEASE_METADATA_BYTES = 16 * 1024 * 1024;
+export const MAX_GITHUB_ASSET_ATTEMPTS = 100;
+export const MAX_GITHUB_ASSET_DOWNLOAD_BYTES = 64 * 1024 * 1024;
 const MAX_PLUGIN_SOURCE_ARCHIVE_ENTRIES = 4_096;
 const MAX_NPM_PACKAGE_METADATA_BYTES = 1024 * 1024;
 
@@ -52,6 +53,13 @@ interface GitHubRelease {
   draft: boolean;
   prerelease: boolean;
   assets: GitHubAsset[];
+}
+
+class GitHubSearchBoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GitHubSearchBoundError";
+  }
 }
 
 export async function resolvePluginSource(
@@ -131,12 +139,10 @@ async function resolveNpmSource(
     .filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]))
     .map(([version, value]) => npmVersionMetadata(version, value))
     .filter((value): value is NpmVersionMetadata => value !== null);
-  const candidateAttemptLimit = parsed.version ? 1 : MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS;
-  const candidates = (
-    parsed.version
-      ? versions.filter((candidate) => candidate.version === parsed.version)
-      : stableVersionOrder(versions, metadata)
-  ).slice(0, candidateAttemptLimit);
+  const exactCandidate = parsed.version
+    ? versions.find((candidate) => candidate.version === parsed.version)
+    : undefined;
+  const candidates = parsed.version ? (exactCandidate ? [exactCandidate] : []) : stableVersionOrder(versions, metadata);
   if (candidates.length === 0) {
     throw new Error(
       `npm Plugin ${parsed.package}${parsed.version ? ` has no version ${parsed.version}` : " has no stable versions"}`,
@@ -175,7 +181,7 @@ async function resolveNpmSource(
     }
   }
   throw new Error(
-    `npm Plugin ${parsed.package} has no compatible ${target} Bundle after ${failures.length} of at most ${candidateAttemptLimit} candidate attempts (${failures.join("; ")})`,
+    `npm Plugin ${parsed.package} has no compatible ${target} Bundle after ${failures.length} candidate attempt${failures.length === 1 ? "" : "s"} (${failures.join("; ")})`,
   );
 }
 
@@ -298,8 +304,9 @@ async function resolveGitHubSource(
   const apiBase = new URL(options.githubApiBase ?? DEFAULT_GITHUB_API).toString().replace(/\/$/u, "");
   const fetchSource = options.fetch ?? fetch;
   const headers = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" };
-  let releaseValue: unknown;
+  let releaseValues: unknown[];
   if (parsed.version) {
+    let releaseValue: unknown;
     try {
       releaseValue = await fetchJson(
         fetchSource,
@@ -314,11 +321,16 @@ async function resolveGitHubSource(
         headers,
       );
     }
+    releaseValues = [releaseValue];
   } else {
-    releaseValue = await fetchJson(fetchSource, `${apiBase}/repos/${parsed.repository}/releases?per_page=100`, headers);
+    releaseValues = await fetchGitHubReleasePages(
+      fetchSource,
+      `${apiBase}/repos/${parsed.repository}/releases?per_page=100`,
+      headers,
+      parsed.repository,
+    );
   }
-  const releaseCandidateLimit = parsed.version ? 1 : MAX_GITHUB_SOURCE_RELEASE_CANDIDATES;
-  const releases = (Array.isArray(releaseValue) ? releaseValue : [releaseValue])
+  const releases = releaseValues
     .map(githubRelease)
     .filter((release): release is GitHubRelease => release !== null && !release.draft)
     .filter(
@@ -326,41 +338,74 @@ async function resolveGitHubSource(
     )
     .sort((left, right) =>
       compareSemver(normalizeReleaseVersion(right.tag_name), normalizeReleaseVersion(left.tag_name)),
-    )
-    .slice(0, releaseCandidateLimit);
+    );
   if (releases.length === 0) {
     throw new Error(
       `GitHub Plugin ${parsed.repository}${parsed.version ? ` has no Release ${parsed.version}` : " has no stable Releases"}`,
     );
   }
   const target = options.target ?? currentConnectPluginTarget();
+  const releaseCandidates = releases.map((release) => ({
+    release,
+    assets: release.assets
+      .filter((asset) => asset.name.endsWith(".connect-plugin"))
+      .sort((left, right) => {
+        if (left.name !== right.name) return left.name < right.name ? -1 : 1;
+        if (left.browser_download_url === right.browser_download_url) return 0;
+        return left.browser_download_url < right.browser_download_url ? -1 : 1;
+      }),
+  }));
+  const discoveredAssetCount = releaseCandidates.reduce((total, candidate) => total + candidate.assets.length, 0);
+  const assetAttemptBudget = Math.min(discoveredAssetCount, MAX_GITHUB_ASSET_ATTEMPTS);
   const failures: string[] = [];
   let assetAttempts = 0;
+  let downloadedAssetBytes = 0;
   let releaseAttempts = 0;
-  releaseLoop: for (const release of releases) {
-    if (assetAttempts >= MAX_GITHUB_SOURCE_ASSET_ATTEMPTS) break;
+  for (const { release, assets } of releaseCandidates) {
     releaseAttempts += 1;
-    const assets = release.assets.filter((asset) => asset.name.endsWith(".connect-plugin"));
-    const preferred = assets.filter((asset) => asset.name.includes(target));
-    const candidates = (preferred.length > 0 ? preferred : assets.length === 1 ? assets : []).sort((left, right) => {
-      if (left.name !== right.name) return left.name < right.name ? -1 : 1;
-      if (left.browser_download_url === right.browser_download_url) return 0;
-      return left.browser_download_url < right.browser_download_url ? -1 : 1;
-    });
-    for (const asset of candidates) {
-      if (assetAttempts >= MAX_GITHUB_SOURCE_ASSET_ATTEMPTS) break releaseLoop;
+    for (const asset of assets) {
+      if (assetAttempts >= MAX_GITHUB_ASSET_ATTEMPTS) {
+        throw githubSearchBoundError(
+          parsed.repository,
+          `the ${MAX_GITHUB_ASSET_ATTEMPTS}-asset attempt limit was reached after ${releaseAttempts} Release candidates`,
+        );
+      }
+      if (downloadedAssetBytes >= MAX_GITHUB_ASSET_DOWNLOAD_BYTES) {
+        throw githubSearchBoundError(
+          parsed.repository,
+          `the ${MAX_GITHUB_ASSET_DOWNLOAD_BYTES}-byte aggregate asset download limit was reached after ${assetAttempts} asset attempts`,
+        );
+      }
       assetAttempts += 1;
       try {
         const label = `${parsed.repository} Release ${release.tag_name}/${asset.name}`;
         if (!asset.digest || !/^sha256:[0-9a-fA-F]{64}$/u.test(asset.digest)) {
           throw new Error(`${label} metadata does not provide a valid sha256 digest`);
         }
-        const bytes = await fetchBytes(
-          fetchSource,
-          asset.browser_download_url,
-          { Accept: "application/octet-stream" },
-          MAX_PLUGIN_BUNDLE_BYTES,
-        );
+        const remainingDownloadBytes = MAX_GITHUB_ASSET_DOWNLOAD_BYTES - downloadedAssetBytes;
+        let bytes: Uint8Array;
+        try {
+          bytes = await fetchBytes(
+            fetchSource,
+            asset.browser_download_url,
+            { Accept: "application/octet-stream" },
+            Math.min(MAX_PLUGIN_BUNDLE_BYTES, remainingDownloadBytes),
+            (receivedBytes) => {
+              downloadedAssetBytes += receivedBytes;
+            },
+          );
+        } catch (error) {
+          if (
+            remainingDownloadBytes < MAX_PLUGIN_BUNDLE_BYTES &&
+            errorMessage(error).includes("-byte download limit")
+          ) {
+            throw githubSearchBoundError(
+              parsed.repository,
+              `the ${MAX_GITHUB_ASSET_DOWNLOAD_BYTES}-byte aggregate asset download limit was exhausted during asset attempt ${assetAttempts}`,
+            );
+          }
+          throw error;
+        }
         const actualDigest = createHash("sha256").update(bytes).digest("hex");
         if (asset.digest.toLowerCase() !== `sha256:${actualDigest}`) {
           throw new Error(`${label} sha256 digest mismatch`);
@@ -384,16 +429,96 @@ async function resolveGitHubSource(
           target,
         };
       } catch (error) {
+        if (error instanceof GitHubSearchBoundError) throw error;
         failures.push(`${release.tag_name}/${asset.name}: ${errorMessage(error)}`);
       }
     }
-    if (candidates.length === 0) {
-      failures.push(`${release.tag_name}: no unambiguous versioned .connect-plugin asset`);
+    if (assets.length === 0) {
+      failures.push(`${release.tag_name}: no .connect-plugin assets`);
     }
     if (parsed.version) break;
   }
   throw new Error(
-    `GitHub Plugin ${parsed.repository} has no compatible ${target} Release asset after ${assetAttempts} of at most ${MAX_GITHUB_SOURCE_ASSET_ATTEMPTS} asset attempts across ${releaseAttempts} of at most ${releaseCandidateLimit} Release candidates (${failures.join("; ")})`,
+    `GitHub Plugin ${parsed.repository} has no compatible ${target} Release asset after ${assetAttempts} of ${assetAttemptBudget} bounded asset attempts across ${releaseAttempts} of ${releases.length} Release candidates (${failures.join("; ")})`,
+  );
+}
+
+async function fetchGitHubReleasePages(
+  fetchSource: typeof fetch,
+  initialUrl: string,
+  headers: Record<string, string>,
+  repository: string,
+): Promise<unknown[]> {
+  const releases: unknown[] = [];
+  const visited = new Set<string>();
+  let nextUrl: string | null = initialUrl;
+  let pageCount = 0;
+  let metadataBytes = 0;
+  while (nextUrl) {
+    if (pageCount >= MAX_GITHUB_RELEASE_PAGES) {
+      throw githubSearchBoundError(
+        repository,
+        `the ${MAX_GITHUB_RELEASE_PAGES}-page Release metadata limit was reached while another page remained`,
+      );
+    }
+    if (metadataBytes >= MAX_GITHUB_RELEASE_METADATA_BYTES) {
+      throw githubSearchBoundError(
+        repository,
+        `the ${MAX_GITHUB_RELEASE_METADATA_BYTES}-byte aggregate Release metadata limit was reached while another page remained`,
+      );
+    }
+    if (visited.has(nextUrl)) {
+      throw githubSearchBoundError(repository, `GitHub returned a cyclic Release pagination link for ${nextUrl}`);
+    }
+    visited.add(nextUrl);
+    const response = await fetchSource(nextUrl, { headers });
+    if (!response.ok) throw new Error(`Plugin source request ${nextUrl} failed with HTTP ${response.status}`);
+    const remainingMetadataBytes = MAX_GITHUB_RELEASE_METADATA_BYTES - metadataBytes;
+    let bytes: Uint8Array;
+    try {
+      bytes = await readBoundedResponseBytes(
+        response,
+        `Plugin source response ${nextUrl}`,
+        Math.min(MAX_PLUGIN_SOURCE_METADATA_BYTES, remainingMetadataBytes),
+      );
+    } catch (error) {
+      if (errorMessage(error).includes("-byte download limit")) {
+        throw githubSearchBoundError(
+          repository,
+          `Release metadata exceeded the ${MAX_PLUGIN_SOURCE_METADATA_BYTES}-byte per-page or ${MAX_GITHUB_RELEASE_METADATA_BYTES}-byte aggregate limit on page ${pageCount + 1}`,
+        );
+      }
+      throw error;
+    }
+    metadataBytes += bytes.byteLength;
+    const value = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+    if (!Array.isArray(value)) {
+      throw new Error(`GitHub Plugin ${repository} Release page ${pageCount + 1} was not an array`);
+    }
+    releases.push(...value);
+    pageCount += 1;
+    nextUrl = githubNextLink(response.headers.get("link"), nextUrl);
+  }
+  return releases;
+}
+
+function githubNextLink(linkHeader: string | null, baseUrl: string): string | null {
+  if (!linkHeader) return null;
+  for (const entry of linkHeader.split(/,(?=\s*<)/u)) {
+    const match = entry.match(/^\s*<([^>]+)>(.*)$/u);
+    if (!match?.[1]) continue;
+    const parameters = match[2] ?? "";
+    const relation = parameters.match(/(?:^|;)\s*rel\s*=\s*(?:"([^"]*)"|([^;\s]+))/iu);
+    const relationValue = relation?.[1] ?? relation?.[2];
+    if (!relationValue?.split(/\s+/u).some((value) => value.toLowerCase() === "next")) continue;
+    return new URL(match[1], baseUrl).toString();
+  }
+  return null;
+}
+
+function githubSearchBoundError(repository: string, detail: string): GitHubSearchBoundError {
+  return new GitHubSearchBoundError(
+    `GitHub Plugin ${repository} search bound exhausted before compatibility could be determined: ${detail}`,
   );
 }
 
@@ -480,16 +605,18 @@ async function fetchBytes(
   url: string,
   headers: Record<string, string>,
   maxBytes: number,
+  onBytesReceived?: (byteLength: number) => void,
 ): Promise<Uint8Array> {
   const response = await fetchSource(url, { headers });
   if (!response.ok) throw new Error(`Plugin source request ${url} failed with HTTP ${response.status}`);
-  return await readBoundedResponseBytes(response, `Plugin source response ${url}`, maxBytes);
+  return await readBoundedResponseBytes(response, `Plugin source response ${url}`, maxBytes, onBytesReceived);
 }
 
 export async function readBoundedResponseBytes(
   response: Response,
   label: string,
   maxBytes: number,
+  onBytesReceived?: (byteLength: number) => void,
 ): Promise<Uint8Array> {
   const declaredHeader = response.headers.get("content-length");
   if (declaredHeader !== null) {
@@ -510,6 +637,7 @@ export async function readBoundedResponseBytes(
   for (;;) {
     const chunk = await reader.read();
     if (chunk.done) break;
+    onBytesReceived?.(chunk.value.byteLength);
     received += chunk.value.byteLength;
     if (received > maxBytes) {
       await reader.cancel().catch(() => undefined);

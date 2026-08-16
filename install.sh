@@ -33,8 +33,14 @@ printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$
   fail "invalid release version: ${version}"
 
 case "$(uname -s)" in
-  Darwin) os="darwin" ;;
-  Linux) os="linux" ;;
+  Darwin)
+    os="darwin"
+    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode clawling.runtime.workbuddy"
+    ;;
+  Linux)
+    os="linux"
+    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode"
+    ;;
   *) fail "unsupported operating system: $(uname -s)" ;;
 esac
 
@@ -98,7 +104,7 @@ tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" \
 [ -f "$tmp_dir/clawchat-connect" ] || fail "release archive does not contain clawchat-connect"
 [ -f "$tmp_dir/clawchat-connect-client/index.html" ] || fail "release archive does not contain Connect Client"
 [ -d "$tmp_dir/official-plugins" ] || fail "release archive does not contain official Plugins"
-for official_plugin_id in clawling.runtime.codex clawling.runtime.opencode clawling.runtime.workbuddy; do
+for official_plugin_id in $required_official_plugin_ids; do
   official_plugin_found=0
   for official_plugin_bundle in "$tmp_dir/official-plugins/${official_plugin_id}-"*.connect-plugin; do
     if [ -f "$official_plugin_bundle" ]; then official_plugin_found=1; break; fi

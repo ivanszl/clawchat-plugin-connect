@@ -566,6 +566,43 @@ Invite codes are not persisted. Connect does not expose its ClawChat tools to th
 
 See [docs/architecture.md](docs/architecture.md) for protocol, reliability, and module design details.
 
+## Authoring Plugin Bundles
+
+Install the npm package in a normal TypeScript project, bundle the Plugin entry and optional probe as self-contained
+ESM, then create one target-specific `.connect-plugin` file:
+
+```bash
+clawchat-connect-plugin build \
+  --manifest ./connect-plugin.manifest.json \
+  --target linux-x64 \
+  --artifact ./dist/plugin.mjs \
+  --artifact-entry plugin.mjs \
+  --probe ./dist/probe.mjs \
+  --probe-entry probe.mjs \
+  --output ./dist/example-linux-x64.connect-plugin
+```
+
+The manifest contains the author-owned fields through `capabilities`; the builder generates `artifacts`, `probe`,
+and exact SHA-256 integrity values from the files above. Its machine-readable schema is exported as
+`@clawling/clawchat-plugin-connect/plugin-manifest.schema.json`.
+
+The same supported path is available as an API:
+
+```ts
+import { writeConnectPluginBundle } from "@clawling/clawchat-plugin-connect";
+
+await writeConnectPluginBundle({
+  manifest,
+  target: "linux-x64",
+  artifactPath: "./dist/plugin.mjs",
+  artifactEntry: "plugin.mjs",
+  outputPath: "./dist/example-linux-x64.connect-plugin",
+});
+```
+
+Both paths accept only prebuilt ESM. The output is round-tripped through Connect's production Bundle parser and
+integrity verifier before it is returned or written.
+
 ## Development
 
 Development requires the Bun version pinned in `package.json`:

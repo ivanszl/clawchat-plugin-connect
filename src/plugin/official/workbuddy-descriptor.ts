@@ -15,6 +15,7 @@ import {
 } from "./workbuddy-manifest";
 
 const descriptor: OfficialPluginDescriptor = {
+  supportedTargets: ["darwin-arm64", "darwin-x64"],
   manifest: {
     manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
     interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,

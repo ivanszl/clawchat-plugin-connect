@@ -12,12 +12,11 @@ import { CODEX_CAPABILITY_ID, CODEX_PLUGIN_ID, CODEX_RUNTIME_FAMILY } from "./co
 const codexPluginEntry: ConnectPluginEntry = {
   activate(context) {
     const installationExecutable = optionalString(context.installationConfiguration.executablePath);
-    const installed = requireCompatibleCodexExecutable(installationExecutable, undefined);
     context.hostCapabilities.get("runtime-provider").register({
       capabilityId: CODEX_CAPABILITY_ID,
       family: CODEX_RUNTIME_FAMILY,
       create(configuration) {
-        const binding = codexBinding(configuration, installed.path);
+        const binding = codexBinding(configuration, installationExecutable);
         const configuredExecutable = binding.executablePathOverride ?? binding.codexPathOverride;
         const compatible = requireCompatibleCodexExecutable(configuredExecutable, binding.env);
         binding.executablePathOverride = compatible.path;
@@ -32,7 +31,7 @@ export default codexPluginEntry;
 
 function codexBinding(
   configuration: ConnectPluginConfiguration,
-  installationExecutable: string,
+  installationExecutable: string | undefined,
 ): CodexRuntimeAdapterBinding {
   const executablePathOverride = optionalString(configuration.executablePathOverride);
   const codexPathOverride = optionalString(configuration.codexPathOverride);
@@ -46,7 +45,9 @@ function codexBinding(
       ? { executablePathOverride }
       : codexPathOverride
         ? { codexPathOverride }
-        : { executablePathOverride: installationExecutable }),
+        : installationExecutable
+          ? { executablePathOverride: installationExecutable }
+          : {}),
     ...(env ? { env } : {}),
     ...(optionalString(configuration.displayName) ? { displayName: optionalString(configuration.displayName) } : {}),
     ...(optionalString(configuration.sandboxMode)
@@ -148,7 +149,7 @@ export function createCodexOfficialAdapter(
 
 function internalStartContext(context: ConnectPluginRuntimeStartContext): ConnectRuntimeStartContext {
   return {
-    agentId: context.agentId,
+    agentId: context.bindingId,
     chatId: context.chatId,
     sessionId: context.sessionId,
     runtimeSessionId: context.runtimeThreadId,

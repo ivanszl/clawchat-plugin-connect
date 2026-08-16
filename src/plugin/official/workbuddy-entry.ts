@@ -125,7 +125,7 @@ async function startWithoutHostPaths(
   context: ConnectPluginRuntimeStartContext,
 ) {
   return await adapter.start(binding, {
-    agentId: context.agentId,
+    agentId: context.bindingId,
     chatId: context.chatId,
     sessionId: context.sessionId,
     runtimeSessionId: context.runtimeThreadId,

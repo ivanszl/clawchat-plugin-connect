@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ClientInterfaceHandle, startClientInterface } from "../src/client-interface/server";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
-import { defaultConfig } from "../src/config";
+import { ConnectConfigMutationCoordinator, defaultConfig, loadConfig } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { agentBindingIdentity } from "../src/plugin/binding";
+import type { ConnectPluginManagement } from "../src/plugin/host";
 import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
@@ -302,11 +303,26 @@ describe("Connect Client Interface", () => {
     let isDeleted = false;
     const lifecycleCalls: string[] = [];
     const runtimeBindingIds = new Set<string | undefined>();
+    let blockConcurrentModelList = false;
+    let signalConcurrentModelList: () => void = () => undefined;
+    const concurrentModelListStarted = new Promise<void>((resolve) => {
+      signalConcurrentModelList = resolve;
+    });
+    let releaseConcurrentModelList: () => void = () => undefined;
+    const concurrentModelListReleased = new Promise<void>((resolve) => {
+      releaseConcurrentModelList = resolve;
+    });
+    const runtimeCatalogListeners = new Set<() => void>();
     const listModels = mock(
       async (
         binding: Parameters<NonNullable<ConnectRuntimeAdapter["listModels"]>>[0],
       ): Promise<RuntimeModelOption[]> => {
         runtimeBindingIds.add(agentBindingIdentity(binding));
+        if (blockConcurrentModelList) {
+          blockConcurrentModelList = false;
+          signalConcurrentModelList();
+          await concurrentModelListReleased;
+        }
         return [
           {
             id: "gpt-default",
@@ -357,6 +373,10 @@ describe("Connect Client Interface", () => {
       modes: ["workspace-write"],
       listModels,
       listSessionOptions,
+      onCatalogsChanged: (listener) => {
+        runtimeCatalogListeners.add(listener);
+        return () => runtimeCatalogListeners.delete(listener);
+      },
       listSkills: async (binding) => {
         runtimeBindingIds.add(agentBindingIdentity(binding));
         return [
@@ -480,14 +500,31 @@ describe("Connect Client Interface", () => {
     const runtimeInteractions = new RuntimeInteractionCoordinator(projection);
     const port = 47_891;
     config.clientPort = port;
+    const configPath = join(directory, "config.json");
+    const configMutations = new ConnectConfigMutationCoordinator(config, configPath);
+    let providerMutationStarted = false;
+    const pluginManager = {
+      configMutations,
+      list: async () => [],
+      upsertBindingProvider: async (bindingId: string, candidate: (typeof config.agents)[string]) =>
+        await configMutations.runExclusive(async (commitConfig) => {
+          providerMutationStarted = true;
+          const binding = await commitConfig((latest) => {
+            latest.agents[bindingId] = structuredClone(candidate);
+            return structuredClone(candidate);
+          });
+          return { binding, modes: ["workspace-write"] };
+        }),
+    } as unknown as ConnectPluginManagement;
     let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
     const handle = await startClientInterface({
       config,
-      configPath: join(directory, "config.json"),
+      configPath,
       stateStore: store,
       runtimeAdapters: registry,
       transcriptProjection: projection,
       runtimeInteractions,
+      pluginManager,
       runtimes: [runtime],
       assetsPath,
       port,
@@ -1331,6 +1368,31 @@ describe("Connect Client Interface", () => {
     expect(deleted.status).toBe(200);
     await expect(deleted.json()).resolves.toEqual({ sessionRef: session.sessionRef, deleted: true });
     expect(lifecycleCalls).toEqual(["archive:thread-1", "unarchive:thread-1", "delete:thread-1"]);
+    blockConcurrentModelList = true;
+    for (const listener of runtimeCatalogListeners) listener();
+    const preferenceMutation = localRequest(fetchHandler, handle.origin, "/client/v1/bindings/codex/preferences", {
+      method: "PATCH",
+      headers: { origin: handle.origin, "content-type": "application/json" },
+      body: JSON.stringify({
+        requestId: "concurrent_binding_preference",
+        displayName: "Concurrent preference",
+        model: "gpt-default",
+      }),
+    });
+    await concurrentModelListStarted;
+    const providerBinding = pluginBinding({ instance: "concurrent-provider" }, { displayName: "Concurrent provider" });
+    const providerMutation = pluginManager.upsertBindingProvider("concurrent-provider", providerBinding);
+    expect(providerMutationStarted).toBe(false);
+    releaseConcurrentModelList();
+    const [preferenceResponse, providerResult] = await Promise.all([preferenceMutation, providerMutation]);
+    expect(preferenceResponse.status).toBe(200);
+    expect(providerResult.binding).toEqual(providerBinding);
+    expect(config.agents.codex).toMatchObject({
+      displayName: "Concurrent preference",
+      model: "gpt-default",
+    });
+    expect(config.agents["concurrent-provider"]).toEqual(providerBinding);
+    await expect(loadConfig(configPath)).resolves.toEqual(config);
     expect([...runtimeBindingIds]).toEqual(["codex"]);
     await expect(store.getSessionRefTarget(session.sessionRef)).resolves.toBeNull();
   });

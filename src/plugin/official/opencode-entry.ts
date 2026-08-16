@@ -133,7 +133,7 @@ function bridgeOpenCodeAdapter(
 
 function runtimeStartContext(context: ConnectPluginRuntimeStartContext) {
   return {
-    agentId: context.agentId,
+    agentId: context.bindingId,
     chatId: context.chatId,
     sessionId: context.sessionId,
     runtimeSessionId: context.runtimeThreadId,

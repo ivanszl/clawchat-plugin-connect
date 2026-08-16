@@ -4,7 +4,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientInterfaceOptions } from "../src/client-interface/server";
-import { defaultConfig, getAgentBinding, saveConfig } from "../src/config";
+import { defaultConfig, getAgentBinding, loadConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { ConnectPluginHost } from "../src/plugin/host";
 import {
@@ -201,6 +201,15 @@ describe("Connect Service", () => {
     await stateStore.initialize();
     await stateStore.upsertActivation(activation(removedBindingId));
     await stateStore.upsertActivation(activation(unrelatedBindingId));
+    const purgeAgentBinding = stateStore.purgeAgentBinding.bind(stateStore);
+    let rejectNextDependentPurge = true;
+    stateStore.purgeAgentBinding = async (bindingId) => {
+      if (bindingId === removedBindingId && rejectNextDependentPurge) {
+        rejectNextDependentPurge = false;
+        throw new Error("dependent Binding purge failed");
+      }
+      await purgeAgentBinding(bindingId);
+    };
 
     const bundlePath = join(directory, "force-removal-plugin.json");
     await writeFile(bundlePath, `${JSON.stringify(runtimeBundle(pluginId))}\n`);
@@ -349,13 +358,27 @@ describe("Connect Service", () => {
       await expect(enqueueRetiredBinding()).rejects.toThrow("lifecycle operation");
       await expect(enqueueUnrelatedBinding()).resolves.toBeUndefined();
 
+      await expect(pluginManager.remove(pluginId, true)).rejects.toThrow("dependent Binding purge failed");
+      expect(config.agents[removedBindingId]).toEqual(serviceBinding(pluginId));
+      await expect(loadConfig(configPath)).resolves.toMatchObject({
+        agents: { [removedBindingId]: serviceBinding(pluginId) },
+      });
+      await expect(stateStore.getActivation(removedBindingId)).resolves.toMatchObject({
+        localAgentId: removedBindingId,
+      });
+      await expect(pluginManager.list()).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ pluginId, status: "disabled" })]),
+      );
+
       await expect(pluginManager.remove(pluginId, true)).resolves.toMatchObject({ pluginId });
 
       expect(dependentConfigurationPresentWhenClosed).toBe(true);
       expect(connected).toEqual(new Set([unrelatedBindingId]));
       expect(closeCounts.get(removedBindingId)).toBe(2);
-      expect(retireClientBindings).toHaveBeenCalledTimes(2);
+      expect(retireClientBindings).toHaveBeenCalledTimes(3);
       expect(retireClientBindings).toHaveBeenNthCalledWith(1, [removedBindingId]);
+      expect(retireClientBindings).toHaveBeenNthCalledWith(2, [removedBindingId]);
+      expect(retireClientBindings).toHaveBeenNthCalledWith(3, [removedBindingId]);
       expect(clientOptions.runtimes.map((handle) => handle.agentId)).toEqual([unrelatedBindingId]);
       expect(config.agents[removedBindingId]).toBeUndefined();
       expect(config.agents[unrelatedBindingId]).toBeDefined();

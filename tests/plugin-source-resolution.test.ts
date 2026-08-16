@@ -4,6 +4,7 @@ import { access, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import { MAX_PLUGIN_BUNDLE_BYTES } from "../src/client-contract";
 import { defaultConfig, saveConfig } from "../src/config";
 import {
   CONNECT_PLUGIN_CATALOG_FORMAT,
@@ -24,9 +25,8 @@ import {
   type ConnectPluginBundleV1,
 } from "../src/plugin/sdk";
 import {
-  MAX_GITHUB_SOURCE_ASSET_ATTEMPTS,
-  MAX_GITHUB_SOURCE_RELEASE_CANDIDATES,
-  MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS,
+  MAX_GITHUB_ASSET_ATTEMPTS,
+  MAX_GITHUB_RELEASE_PAGES,
   MAX_PLUGIN_SOURCE_ARCHIVE_BYTES,
   MAX_PLUGIN_SOURCE_DOWNLOAD_BYTES,
   MAX_PLUGIN_SOURCE_METADATA_BYTES,
@@ -247,13 +247,18 @@ describe("Plugin source resolution", () => {
     const bundle = sourceBundle("test.github-digest", "1.0.0", target);
     const bytes = new TextEncoder().encode(JSON.stringify(bundle));
     const expectedDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-    const resolveWithDigest = async (digest?: string, downloadedBytes = bytes) =>
+    const resolveWithDigest = async (digest?: string, downloadedBytes = bytes, declaredLength?: number) =>
       await resolvePluginSource("github:acme/github-digest@v1.0.0", {
         target,
         githubApiBase: "https://api.example.test",
         fetch: (async (input: string | URL | Request) => {
           const url = new URL(input instanceof Request ? input.url : input.toString());
-          if (url.hostname === "assets.example.test") return new Response(downloadedBytes);
+          if (url.hostname === "assets.example.test") {
+            return new Response(
+              downloadedBytes,
+              declaredLength === undefined ? undefined : { headers: { "content-length": String(declaredLength) } },
+            );
+          }
           return json({
             tag_name: "v1.0.0",
             draft: false,
@@ -277,53 +282,166 @@ describe("Plugin source resolution", () => {
     await expect(
       resolveWithDigest(`sha256:${"0".repeat(64)}`, new TextEncoder().encode("not a Plugin Bundle")),
     ).rejects.toThrow("sha256 digest mismatch");
+    const malformedBytes = new TextEncoder().encode("not a Plugin Bundle");
+    await expect(
+      resolveWithDigest(`sha256:${createHash("sha256").update(malformedBytes).digest("hex")}`, malformedBytes),
+    ).rejects.toThrow("is not valid JSON");
+    await expect(resolveWithDigest(expectedDigest, new Uint8Array(), MAX_PLUGIN_BUNDLE_BYTES + 1)).rejects.toThrow(
+      `${MAX_PLUGIN_BUNDLE_BYTES}-byte download limit`,
+    );
   });
 
-  it("bounds unpinned npm downloads and decompressions while preserving latest-first fallback", async () => {
+  it("follows bounded GitHub Release pages and selects a generic filename by its manifest target", async () => {
     const target = "source-test-target";
-    const versions = Array.from({ length: 100 }, (_, index) => `${100 - index}.0.0`);
-    const candidateOrder = ["1.0.0", ...versions.filter((version) => version !== "1.0.0")];
-    const compatibleWithinBudget = candidateOrder[MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS - 1];
-    const compatibleBeyondBudget = candidateOrder[MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS];
-    if (!compatibleWithinBudget || !compatibleBeyondBudget) throw new Error("Invalid npm attempt-budget fixture");
+    const compatibleBundle = sourceBundle("test.github-paginated", "100.0.0", target);
+    const compatibleBytes = new TextEncoder().encode(JSON.stringify(compatibleBundle));
+    const firstPage = Array.from({ length: 101 }, (_, index) => ({
+      tag_name: `v${201 - index}.0.0`,
+      draft: false,
+      prerelease: false,
+      assets: [],
+    }));
+    const secondPage = [
+      {
+        tag_name: "v100.0.0",
+        draft: false,
+        prerelease: false,
+        assets: [
+          {
+            name: "bundle.connect-plugin",
+            browser_download_url: "https://assets.example.test/generic",
+            digest: `sha256:${createHash("sha256").update(compatibleBytes).digest("hex")}`,
+          },
+        ],
+      },
+    ];
+    const metadataRequests: string[] = [];
+    const assetRequests: string[] = [];
+    const fetchSource = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.hostname === "assets.example.test") {
+        assetRequests.push(url.pathname);
+        return new Response(compatibleBytes);
+      }
+      metadataRequests.push(url.toString());
+      if (url.searchParams.get("page") === "2") return json(secondPage);
+      return new Response(JSON.stringify(firstPage), {
+        headers: {
+          Link: `<${url.origin}${url.pathname}?per_page=100&page=2>; rel="next", <${url.origin}${url.pathname}?per_page=100&page=2>; rel="last"`,
+        },
+      });
+    }) as typeof fetch;
+
+    await expect(
+      resolvePluginSource("github:acme/github-paginated", {
+        fetch: fetchSource,
+        githubApiBase: "https://api.example.test",
+        target,
+      }),
+    ).resolves.toMatchObject({
+      source: { type: "github", version: "100.0.0", release: "v100.0.0" },
+      bundle: { manifest: { pluginId: "test.github-paginated" } },
+    });
+    expect(metadataRequests).toHaveLength(2);
+    expect(assetRequests).toEqual(["/generic"]);
+  });
+
+  it("reports bounded GitHub search exhaustion instead of definitive incompatibility", async () => {
+    let metadataRequests = 0;
+    const fetchSource = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      metadataRequests += 1;
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const nextPage = page + 1;
+      return new Response("[]", {
+        headers: {
+          Link: `<${url.origin}${url.pathname}?per_page=100&page=${nextPage}>; rel="next"`,
+        },
+      });
+    }) as typeof fetch;
+
+    await expect(
+      resolvePluginSource("github:acme/github-page-bound", {
+        fetch: fetchSource,
+        githubApiBase: "https://api.example.test",
+        target: "source-test-target",
+      }),
+    ).rejects.toThrow(
+      `search bound exhausted before compatibility could be determined: the ${MAX_GITHUB_RELEASE_PAGES}-page Release metadata limit was reached while another page remained`,
+    );
+    expect(metadataRequests).toBe(MAX_GITHUB_RELEASE_PAGES);
+  });
+
+  it("bounds exhaustive GitHub asset evaluation without issuing unbounded downloads", async () => {
+    let assetRequests = 0;
+    const fetchSource = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.hostname === "assets.example.test") {
+        assetRequests += 1;
+        throw new Error("Asset without integrity must not be downloaded");
+      }
+      return json([
+        {
+          tag_name: "v1.0.0",
+          draft: false,
+          prerelease: false,
+          assets: Array.from({ length: MAX_GITHUB_ASSET_ATTEMPTS + 1 }, (_, index) => ({
+            name: `bundle-${String(index).padStart(3, "0")}.connect-plugin`,
+            browser_download_url: `https://assets.example.test/${index}`,
+          })),
+        },
+      ]);
+    }) as typeof fetch;
+
+    await expect(
+      resolvePluginSource("github:acme/github-asset-bound", {
+        fetch: fetchSource,
+        githubApiBase: "https://api.example.test",
+        target: "source-test-target",
+      }),
+    ).rejects.toThrow(
+      `search bound exhausted before compatibility could be determined: the ${MAX_GITHUB_ASSET_ATTEMPTS}-asset attempt limit was reached`,
+    );
+    expect(assetRequests).toBe(0);
+  });
+
+  it("selects a fifth compatible stable npm Bundle and keeps exact versions to one candidate", async () => {
+    const target = "source-test-target";
+    const versions = ["5.0.0", "4.0.0", "3.0.0", "2.0.0", "1.0.0"];
+    const compatibleVersion = versions[4];
+    if (!compatibleVersion) throw new Error("Invalid npm compatibility fixture");
     const artifacts = new Map<string, Uint8Array>();
-    const metadataFor = (packageName: string, compatibleVersion: string) => ({
-      "dist-tags": { latest: "1.0.0" },
+    const metadata = {
+      "dist-tags": { latest: versions[0] },
       versions: Object.fromEntries(
         versions.map((version) => {
           const bytes = tarball(
-            sourceBundle(`test.${packageName}`, version, version === compatibleVersion ? target : "other-target"),
+            sourceBundle("test.npm-fifth-compatible", version, version === compatibleVersion ? target : "other-target"),
           );
-          artifacts.set(`${packageName}/${version}`, bytes);
+          artifacts.set(version, bytes);
           return [
             version,
             {
               version,
               dist: {
-                tarball: `https://registry.example.test/tarballs/${packageName}/${version}.tgz`,
+                tarball: `https://registry.example.test/tarballs/${version}.tgz`,
                 integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
               },
             },
           ];
         }),
       ),
-    });
-    const metadata: Record<string, unknown> = {
-      "npm-within-budget": metadataFor("npm-within-budget", compatibleWithinBudget),
-      "npm-beyond-budget": metadataFor("npm-beyond-budget", compatibleBeyondBudget),
     };
     const downloads: string[] = [];
     const fetchSource = (async (input: string | URL | Request) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
-      const tarballMatch = url.pathname.match(/^\/tarballs\/([^/]+)\/([^/]+)\.tgz$/u);
-      if (tarballMatch?.[1] && tarballMatch[2]) {
-        downloads.push(`${tarballMatch[1]}/${tarballMatch[2]}`);
-        const bytes = artifacts.get(`${tarballMatch[1]}/${tarballMatch[2]}`);
+      const match = url.pathname.match(/^\/tarballs\/([^/]+)\.tgz$/u);
+      if (match?.[1]) {
+        downloads.push(match[1]);
+        const bytes = artifacts.get(match[1]);
         return bytes ? new Response(new Uint8Array(bytes)) : json({ error: "not found" }, 404);
       }
-      const packageName = url.pathname.slice(1);
-      const value = metadata[packageName];
-      return value ? json(value) : json({ error: "not found" }, 404);
+      return json(metadata);
     }) as typeof fetch;
     const options = {
       fetch: fetchSource,
@@ -331,57 +449,57 @@ describe("Plugin source resolution", () => {
       target,
     };
 
-    await expect(resolvePluginSource("npm:npm-within-budget", options)).resolves.toMatchObject({
-      source: { type: "npm", version: compatibleWithinBudget },
+    await expect(resolvePluginSource("npm:npm-fifth-compatible", options)).resolves.toMatchObject({
+      source: { type: "npm", version: compatibleVersion },
     });
-    expect(downloads.filter((value) => value.startsWith("npm-within-budget/"))).toEqual(
-      candidateOrder.slice(0, MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS).map((version) => `npm-within-budget/${version}`),
-    );
+    expect(downloads).toEqual(versions);
 
-    await expect(resolvePluginSource("npm:npm-beyond-budget", options)).rejects.toThrow(
-      `at most ${MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS} candidate attempts`,
+    downloads.length = 0;
+    await expect(resolvePluginSource("npm:npm-fifth-compatible@3.0.0", options)).rejects.toThrow(
+      "after 1 candidate attempt",
     );
-    const beyondDownloads = downloads.filter((value) => value.startsWith("npm-beyond-budget/"));
-    expect(beyondDownloads).toHaveLength(MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS);
-    expect(beyondDownloads).not.toContain(`npm-beyond-budget/${compatibleBeyondBudget}`);
+    expect(downloads).toEqual(["3.0.0"]);
   });
 
-  it("bounds sorted GitHub Releases and aggregate asset downloads with large metadata", async () => {
+  it("evaluates every discovered GitHub Bundle by its authoritative manifest target", async () => {
     const target = "source-test-target";
-    const releaseVersions = Array.from({ length: 100 }, (_, index) => `${100 - index}.0.0`);
-    const effectiveBudget = Math.min(MAX_GITHUB_SOURCE_RELEASE_CANDIDATES, MAX_GITHUB_SOURCE_ASSET_ATTEMPTS);
-    const compatibleWithinBudget = releaseVersions[effectiveBudget - 1];
-    const compatibleBeyondBudget = releaseVersions[effectiveBudget];
-    if (!compatibleWithinBudget || !compatibleBeyondBudget) {
-      throw new Error("Invalid GitHub attempt-budget fixture");
-    }
+    const versions = ["5.0.0", "4.0.0", "3.0.0", "2.0.0", "1.0.0"];
+    const compatibleVersion = versions[4];
+    if (!compatibleVersion) throw new Error("Invalid GitHub compatibility fixture");
     const assets = new Map<string, Uint8Array>();
-    const releasesFor = (repository: string, compatibleVersion: string) =>
-      [...releaseVersions].reverse().map((version) => {
-        const bytes = new TextEncoder().encode(
-          JSON.stringify(
-            sourceBundle(`test.${repository}`, version, version === compatibleVersion ? target : "other-target"),
+    const releases = [...versions].reverse().map((version) => {
+      const targetBytes = new TextEncoder().encode(
+        JSON.stringify(
+          sourceBundle(
+            "test.github-fifth-compatible",
+            version,
+            version === compatibleVersion ? target : "other-target",
           ),
-        );
-        const assetPath = `${repository}/${version}`;
-        assets.set(assetPath, bytes);
-        return {
-          tag_name: `v${version}`,
-          draft: false,
-          prerelease: false,
-          assets: [
-            {
-              name: `${repository}-${target}.connect-plugin`,
-              browser_download_url: `https://assets.example.test/${assetPath}`,
-              digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-            },
-          ],
-        };
-      });
-    const metadata: Record<string, unknown> = {
-      "github-within-budget": releasesFor("github-within-budget", compatibleWithinBudget),
-      "github-beyond-budget": releasesFor("github-beyond-budget", compatibleBeyondBudget),
-    };
+        ),
+      );
+      const nonTargetBytes = new TextEncoder().encode(
+        JSON.stringify(sourceBundle("test.github-fifth-compatible", version, "linux-x64")),
+      );
+      assets.set(`${version}/target`, targetBytes);
+      assets.set(`${version}/non-target`, nonTargetBytes);
+      return {
+        tag_name: `v${version}`,
+        draft: false,
+        prerelease: false,
+        assets: [
+          {
+            name: "github-fifth-compatible-linux-x64.connect-plugin",
+            browser_download_url: `https://assets.example.test/${version}/non-target`,
+            digest: `sha256:${createHash("sha256").update(nonTargetBytes).digest("hex")}`,
+          },
+          {
+            name: `github-fifth-compatible-${target}.connect-plugin`,
+            browser_download_url: `https://assets.example.test/${version}/target`,
+            digest: `sha256:${createHash("sha256").update(targetBytes).digest("hex")}`,
+          },
+        ],
+      };
+    });
     const downloads: string[] = [];
     const fetchSource = (async (input: string | URL | Request) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
@@ -391,9 +509,12 @@ describe("Plugin source resolution", () => {
         const bytes = assets.get(assetPath);
         return bytes ? new Response(new Uint8Array(bytes)) : json({ error: "not found" }, 404);
       }
-      const match = url.pathname.match(/^\/repos\/acme\/([^/]+)\/releases$/u);
-      const value = match?.[1] ? metadata[match[1]] : undefined;
-      return value ? json(value) : json({ error: "not found" }, 404);
+      const exact = url.pathname.match(/^\/repos\/acme\/github-fifth-compatible\/releases\/tags\/(.+)$/u);
+      if (exact?.[1]) {
+        const tag = decodeURIComponent(exact[1]).replace(/^v/u, "");
+        return json(releases.find((release) => release.tag_name === `v${tag}`) ?? {}, 200);
+      }
+      return json(releases);
     }) as typeof fetch;
     const options = {
       fetch: fetchSource,
@@ -401,63 +522,16 @@ describe("Plugin source resolution", () => {
       target,
     };
 
-    await expect(resolvePluginSource("github:acme/github-within-budget", options)).resolves.toMatchObject({
-      source: { type: "github", version: compatibleWithinBudget },
+    await expect(resolvePluginSource("github:acme/github-fifth-compatible", options)).resolves.toMatchObject({
+      source: { type: "github", version: compatibleVersion, release: `v${compatibleVersion}` },
     });
-    expect(downloads.filter((value) => value.startsWith("github-within-budget/"))).toEqual(
-      releaseVersions.slice(0, effectiveBudget).map((version) => `github-within-budget/${version}`),
+    expect(downloads).toEqual(versions.flatMap((version) => [`${version}/non-target`, `${version}/target`]));
+
+    downloads.length = 0;
+    await expect(resolvePluginSource("github:acme/github-fifth-compatible@3.0.0", options)).rejects.toThrow(
+      "across 1 of 1 Release candidates",
     );
-
-    await expect(resolvePluginSource("github:acme/github-beyond-budget", options)).rejects.toThrow(
-      `at most ${MAX_GITHUB_SOURCE_ASSET_ATTEMPTS} asset attempts`,
-    );
-    const beyondDownloads = downloads.filter((value) => value.startsWith("github-beyond-budget/"));
-    expect(beyondDownloads.length).toBeLessThanOrEqual(MAX_GITHUB_SOURCE_ASSET_ATTEMPTS);
-    expect(beyondDownloads.length).toBeLessThanOrEqual(MAX_GITHUB_SOURCE_RELEASE_CANDIDATES);
-    expect(beyondDownloads).not.toContain(`github-beyond-budget/${compatibleBeyondBudget}`);
-  });
-
-  it("shares one GitHub asset-attempt budget across Releases", async () => {
-    const target = "source-test-target";
-    const assets = new Map<string, Uint8Array>();
-    const release = (version: string, count: number, compatible: boolean) => ({
-      tag_name: `v${version}`,
-      draft: false,
-      prerelease: false,
-      assets: Array.from({ length: count }, (_, index) => {
-        const path = `${version}/${index}`;
-        const bytes = new TextEncoder().encode(
-          JSON.stringify(sourceBundle("test.github-aggregate-budget", version, compatible ? target : "other-target")),
-        );
-        assets.set(path, bytes);
-        return {
-          name: `aggregate-${target}-${String(index).padStart(3, "0")}.connect-plugin`,
-          browser_download_url: `https://assets.example.test/${path}`,
-          digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-        };
-      }),
-    });
-    const downloads: string[] = [];
-    const fetchSource = (async (input: string | URL | Request) => {
-      const url = new URL(input instanceof Request ? input.url : input.toString());
-      if (url.hostname === "assets.example.test") {
-        const path = url.pathname.slice(1);
-        downloads.push(path);
-        const bytes = assets.get(path);
-        return bytes ? new Response(new Uint8Array(bytes)) : json({ error: "not found" }, 404);
-      }
-      return json([release("2.0.0", MAX_GITHUB_SOURCE_ASSET_ATTEMPTS, false), release("1.0.0", 1, true)]);
-    }) as typeof fetch;
-
-    await expect(
-      resolvePluginSource("github:acme/github-aggregate-budget", {
-        fetch: fetchSource,
-        githubApiBase: "https://api.example.test",
-        target,
-      }),
-    ).rejects.toThrow(`at most ${MAX_GITHUB_SOURCE_ASSET_ATTEMPTS} asset attempts`);
-    expect(downloads).toHaveLength(MAX_GITHUB_SOURCE_ASSET_ATTEMPTS);
-    expect(downloads).not.toContain("1.0.0/0");
+    expect(downloads).toEqual(["3.0.0/non-target", "3.0.0/target"]);
   });
 
   it("rejects oversized declared registry metadata before reading it", async () => {

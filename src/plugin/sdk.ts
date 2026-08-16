@@ -136,7 +136,7 @@ export interface ConnectPluginProbeEntry {
  * supplied callback.
  */
 export interface ConnectPluginRuntimeStartContext {
-  agentId: string;
+  bindingId: string;
   chatId: string;
   sessionId: string;
   runtimeThreadId: string | null;

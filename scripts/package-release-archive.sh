@@ -7,6 +7,7 @@ client_directory="${2:?client directory is required}"
 liveware_binary="${3:?liveware binary is required}"
 official_plugins_directory="${4:?official Plugins directory is required}"
 archive="${5:?archive path is required}"
+plugin_target="${6:?official Plugin target is required}"
 script_directory="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 repository_root="$(dirname "$script_directory")"
 staging_directory="$(mktemp -d "${TMPDIR:-/tmp}/clawchat-connect-release.XXXXXX")"
@@ -16,7 +17,19 @@ test -x "$connect_binary"
 test -f "$client_directory/index.html"
 test -x "$liveware_binary"
 test -d "$official_plugins_directory"
-for official_plugin_id in clawling.runtime.codex clawling.runtime.opencode clawling.runtime.workbuddy; do
+case "$plugin_target" in
+  darwin-arm64 | darwin-x64)
+    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode clawling.runtime.workbuddy"
+    ;;
+  linux-arm64 | linux-x64)
+    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode"
+    ;;
+  *)
+    printf 'Unsupported official Plugin target: %s\n' "$plugin_target" >&2
+    exit 1
+    ;;
+esac
+for official_plugin_id in $required_official_plugin_ids; do
   official_plugin_found=0
   for official_plugin_bundle in "$official_plugins_directory/${official_plugin_id}-"*.connect-plugin; do
     if [ -f "$official_plugin_bundle" ]; then official_plugin_found=1; break; fi

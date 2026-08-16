@@ -29,7 +29,7 @@ import {
   type UpdateSessionPreferencesRequest,
   type UpsertBindingProviderRequest,
 } from "../client-contract";
-import { getAgentBinding, saveConfig } from "../config";
+import { ConnectConfigMutationCoordinator, getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
 import { createAgentBinding } from "../plugin/binding";
 import type { OfficialPluginDiscovery } from "../plugin/catalog";
@@ -38,7 +38,9 @@ import type {
   ConnectPluginManagement,
   ManagePluginOptions,
   PluginUpdateCheck,
+  UpsertBindingProviderResult,
 } from "../plugin/host";
+import { RuntimeProviderValidationError } from "../plugin/host";
 import { type InstalledPluginLockEntry, validatePluginConfiguration } from "../plugin/store";
 import {
   HostDirectoryError,
@@ -68,6 +70,7 @@ import {
   commandError,
   errorResponse,
   eventCursor,
+  isClientAdministrationPath,
   isMutation,
   isPathWithin,
   isStringRecord,
@@ -166,6 +169,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   const sessionContinuity =
     options.sessionContinuityModule?.create() ?? createSessionContinuity({ stateStore: options.stateStore });
   const runtimes = new Map(options.runtimes.map((runtime) => [runtime.agentId, runtime]));
+  const configMutations =
+    options.pluginManager?.configMutations ?? new ConnectConfigMutationCoordinator(options.config, options.configPath);
   const retiredBindings = new Set<string>();
   const retiringBindings = new Set<string>();
   const runtimeIsUnavailable = (bindingId: string): boolean =>
@@ -244,10 +249,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       const requestOrigin = allowedRequestOrigin(request, hostname, port);
       if (!requestOrigin) return errorResponse(400, "invalid-host", "Invalid Host header");
       const url = new URL(request.url);
-      const pluginAdministrationPath = isPluginAdministrationPath(url.pathname);
+      const clientAdministrationPath = isClientAdministrationPath(url.pathname);
       if (
         hostname === "0.0.0.0" &&
-        pluginAdministrationPath &&
+        clientAdministrationPath &&
         !isLoopbackAddress(requestServer?.requestIP(request)?.address)
       ) {
         return errorResponse(404, "not-found", "Client Interface endpoint was not found");
@@ -256,11 +261,11 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       if (bindingScope && !options.config.agents[bindingScope]) {
         return errorResponse(404, "binding-not-found", "Agent Binding was not found");
       }
-      if (pluginAdministrationPath && bindingScope) {
+      if (clientAdministrationPath && bindingScope) {
         return errorResponse(404, "not-found", "Client Interface endpoint was not found");
       }
       const pluginManagerConfigPath = request.headers.get(PLUGIN_MANAGER_CONFIG_HEADER);
-      if (pluginManagerConfigPath && pluginAdministrationPath && pluginManagerConfigPath !== options.configPath) {
+      if (pluginManagerConfigPath && clientAdministrationPath && pluginManagerConfigPath !== options.configPath) {
         return errorResponse(
           409,
           "plugin-manager-installation-mismatch",
@@ -1347,7 +1352,14 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               candidate.displayName =
                 body.displayName === undefined ? existing?.displayName : requireDisplayName(body.displayName);
               if (existing?.outputVisibility) candidate.outputVisibility = existing.outputVisibility;
-              const committedCandidate = await pluginManager.upsertBindingProvider(bindingId, candidate);
+              let mutation: UpsertBindingProviderResult;
+              try {
+                mutation = await pluginManager.upsertBindingProvider(bindingId, candidate);
+              } catch (error) {
+                if (!(error instanceof RuntimeProviderValidationError)) throw error;
+                throw new ClientRequestError(409, "runtime-provider-invalid", error.message);
+              }
+              const committedCandidate = mutation.binding;
               catalog.invalidate();
               return {
                 status: 200,
@@ -1363,7 +1375,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   runtimePluginId: pluginId,
                   runtimeCapabilityId: capabilityId,
                   runtimeConfiguration: structuredClone(committedCandidate.runtimeConfig),
-                  modeOptions: [...options.runtimeAdapters.modesFor(committedCandidate)],
+                  modeOptions: [...mutation.modes],
                 },
               };
             },
@@ -1372,9 +1384,9 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
         const preferenceMatch = url.pathname.match(/^\/client\/v1\/bindings\/([^/]+)\/preferences$/u);
         if (preferenceMatch && request.method === "PATCH") {
           const bindingId = decodeURIComponent(preferenceMatch[1] ?? "");
-          const binding = options.config.agents[bindingId];
-          if (!binding) return errorResponse(404, "binding-not-found", "Agent Binding was not found");
-          const runtimeBinding = getAgentBinding(options.config, bindingId);
+          if (!options.config.agents[bindingId]) {
+            return errorResponse(404, "binding-not-found", "Agent Binding was not found");
+          }
           const body = await readJsonBody<UpdateBindingPreferencesRequest>(request);
           if (!validRequestId(body.requestId)) return errorResponse(400, "invalid-request-id", "requestId is required");
           validatePreferencePatch(body);
@@ -1383,77 +1395,87 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             body.requestId,
             "binding.preferences.update",
             bindingId,
-            async () => {
-              let modelUpdate = body.model;
-              let effortUpdate = body.modelReasoningEffort;
-              if (body.model !== undefined || body.modelReasoningEffort !== undefined) {
-                const requestedModel = body.model === undefined ? (binding.model ?? null) : body.model?.trim() || null;
-                const requestedEffort =
-                  body.modelReasoningEffort === undefined
-                    ? body.model === undefined
-                      ? (binding.modelReasoningEffort ?? null)
-                      : null
-                    : body.modelReasoningEffort;
-                if (requestedModel) {
-                  try {
-                    const selectedModel = requireModel(
-                      await options.runtimeAdapters.listModels(runtimeBinding),
-                      requestedModel,
-                    );
-                    resolveEffort(selectedModel, requestedEffort, true);
-                    if (body.model !== undefined) modelUpdate = selectedModel.id;
-                  } catch (error) {
-                    return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
-                  }
-                } else if (requestedEffort) {
-                  try {
-                    const models = await options.runtimeAdapters.listModels(runtimeBinding);
-                    const defaultModel = models?.find((candidate) => candidate.isDefault) ?? models?.[0];
-                    if (!defaultModel)
+            async () =>
+              await configMutations.runExclusive(async (commitConfig) => {
+                const binding = options.config.agents[bindingId];
+                if (!binding) return commandError(404, "binding-not-found", "Agent Binding was not found");
+                const runtimeBinding = getAgentBinding(options.config, bindingId);
+                let modelUpdate = body.model;
+                let effortUpdate = body.modelReasoningEffort;
+                if (body.model !== undefined || body.modelReasoningEffort !== undefined) {
+                  const requestedModel =
+                    body.model === undefined ? (binding.model ?? null) : body.model?.trim() || null;
+                  const requestedEffort =
+                    body.modelReasoningEffort === undefined
+                      ? body.model === undefined
+                        ? (binding.modelReasoningEffort ?? null)
+                        : null
+                      : body.modelReasoningEffort;
+                  if (requestedModel) {
+                    try {
+                      const selectedModel = requireModel(
+                        await options.runtimeAdapters.listModels(runtimeBinding),
+                        requestedModel,
+                      );
+                      resolveEffort(selectedModel, requestedEffort, true);
+                      if (body.model !== undefined) modelUpdate = selectedModel.id;
+                    } catch (error) {
+                      return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
+                    }
+                  } else if (requestedEffort) {
+                    try {
+                      const models = await options.runtimeAdapters.listModels(runtimeBinding);
+                      const defaultModel = models?.find((candidate) => candidate.isDefault) ?? models?.[0];
+                      if (!defaultModel) {
+                        return commandError(
+                          400,
+                          "invalid-reasoning-effort",
+                          "The Runtime Adapter does not advertise a default model",
+                        );
+                      }
+                      resolveEffort(defaultModel, requestedEffort, true);
+                    } catch (error) {
                       return commandError(
                         400,
                         "invalid-reasoning-effort",
-                        "The Runtime Adapter does not advertise a default model",
+                        error instanceof Error ? error.message : String(error),
                       );
-                    resolveEffort(defaultModel, requestedEffort, true);
-                  } catch (error) {
-                    return commandError(
-                      400,
-                      "invalid-reasoning-effort",
-                      error instanceof Error ? error.message : String(error),
-                    );
+                    }
+                  } else {
+                    effortUpdate = null;
                   }
-                } else {
-                  effortUpdate = null;
+                  if (body.model !== undefined && body.modelReasoningEffort === undefined) effortUpdate = null;
                 }
-                if (body.model !== undefined && body.modelReasoningEffort === undefined) effortUpdate = null;
-              }
-              if (body.displayName !== undefined) binding.displayName = requireDisplayName(body.displayName);
-              if (modelUpdate !== undefined) setOptionalString(binding, "model", modelUpdate);
-              if (effortUpdate !== undefined) {
-                if (effortUpdate === null) delete binding.modelReasoningEffort;
-                else
-                  setOptionalString(
-                    binding,
-                    "modelReasoningEffort",
-                    effortUpdate as AgentBindingConfig["modelReasoningEffort"],
-                  );
-              }
-              if (body.outputVisibility !== undefined) binding.outputVisibility = body.outputVisibility;
-              await saveConfig(options.config, options.configPath);
-              catalog.invalidate();
-              return {
-                status: 200,
-                body: {
-                  bindingId,
-                  displayName: binding.displayName || bindingId,
-                  clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
-                  model: binding.model ?? null,
-                  modelReasoningEffort: binding.modelReasoningEffort ?? null,
-                  outputVisibility: bindingOutputVisibility(options.config, bindingId),
-                },
-              };
-            },
+                const committedBinding = await commitConfig((config) => {
+                  const candidate = config.agents[bindingId];
+                  if (!candidate) throw new Error(`Agent Binding ${bindingId} is no longer available`);
+                  if (body.displayName !== undefined) candidate.displayName = requireDisplayName(body.displayName);
+                  if (modelUpdate !== undefined) setOptionalString(candidate, "model", modelUpdate);
+                  if (effortUpdate !== undefined) {
+                    if (effortUpdate === null) delete candidate.modelReasoningEffort;
+                    else
+                      setOptionalString(
+                        candidate,
+                        "modelReasoningEffort",
+                        effortUpdate as AgentBindingConfig["modelReasoningEffort"],
+                      );
+                  }
+                  if (body.outputVisibility !== undefined) candidate.outputVisibility = body.outputVisibility;
+                  return structuredClone(candidate);
+                });
+                catalog.invalidate();
+                return {
+                  status: 200,
+                  body: {
+                    bindingId,
+                    displayName: committedBinding.displayName || bindingId,
+                    clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
+                    model: committedBinding.model ?? null,
+                    modelReasoningEffort: committedBinding.modelReasoningEffort ?? null,
+                    outputVisibility: bindingOutputVisibility(options.config, bindingId),
+                  },
+                };
+              }),
           );
         }
         return errorResponse(404, "not-found", "Client Interface endpoint was not found");
@@ -1772,14 +1794,6 @@ async function requireActiveOwnerBinding(options: ClientInterfaceOptions, bindin
       `Agent Binding ${bindingId} does not belong to the current Installation Owner`,
     );
   }
-}
-
-function isPluginAdministrationPath(pathname: string): boolean {
-  return (
-    pathname === `${CLIENT_API_PREFIX}/plugins` ||
-    pathname.startsWith(`${CLIENT_API_PREFIX}/plugins/`) ||
-    /^\/client\/v1\/bindings\/[^/]+\/provider$/u.test(pathname)
-  );
 }
 
 function isLoopbackAddress(address: string | undefined): boolean {

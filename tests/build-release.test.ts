@@ -88,6 +88,26 @@ test("release phases validate before mutating output and package last", () => {
   ]);
 });
 
+test.each([
+  ["darwin", "arm64", "darwin-arm64"],
+  ["darwin", "x64", "darwin-x64"],
+  ["linux", "arm64", "linux-arm64"],
+  ["linux", "x64", "linux-x64"],
+  ["win32", "arm64", "win32-arm64"],
+  ["win32", "x64", "win32-x64"],
+] as const)("builds the official Plugin payload for %s/%s using target %s", (platform, architecture, pluginTarget) => {
+  const phases = releasePhases(resolveReleaseTarget(platform, architecture));
+  const buildPhase = phases.find((candidate) => candidate.name === "build official Plugins");
+  const packagePhase = phases.find((candidate) => candidate.name === "package release archive");
+  expect(buildPhase?.command).toEqual([
+    process.execPath,
+    join("scripts", "build-official-plugins.ts"),
+    "--target",
+    pluginTarget,
+  ]);
+  expect(packagePhase?.command?.at(-1)).toBe(pluginTarget);
+});
+
 test("checksums cover the archive and copied support files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "connect-release-"));
   const files = ["artifact.tar.gz", "install.sh", "install.ps1", "CHANGELOG.md"];

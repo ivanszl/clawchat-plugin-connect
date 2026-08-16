@@ -1,6 +1,7 @@
 export * from "./account/profile";
 export * from "./config";
 export * from "./persistence/state";
+export * from "./plugin/builder";
 export * from "./plugin/sdk";
 export * from "./projects/projects";
 export * from "./runtime/registry";

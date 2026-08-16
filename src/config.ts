@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { identifyAgentBinding, normalizeAgentBinding } from "./plugin/binding";
@@ -127,12 +128,61 @@ export async function loadConfig(path = defaultConfigPath()): Promise<ConnectCon
 export async function saveConfig(config: ConnectConfig, path = defaultConfigPath()): Promise<string> {
   const normalized = normalizeConfig(config);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const tempPath = `${path}.${process.pid}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
-  await chmod(tempPath, 0o600).catch(() => undefined);
-  await rename(tempPath, path);
-  await chmod(path, 0o600).catch(() => undefined);
-  return path;
+  const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tempPath, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+    await chmod(tempPath, 0o600).catch(() => undefined);
+    await rename(tempPath, path);
+    await chmod(path, 0o600).catch(() => undefined);
+    return path;
+  } finally {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+  }
+}
+
+export type LockedConfigMutation = <T>(mutation: (config: ConnectConfig) => T | Promise<T>) => Promise<T>;
+
+export class ConnectConfigMutationCoordinator {
+  private operationTail = Promise.resolve();
+
+  constructor(
+    private readonly config: ConnectConfig | undefined,
+    private readonly configPath: string,
+  ) {}
+
+  async mutate<T>(mutation: (config: ConnectConfig) => T | Promise<T>): Promise<T> {
+    return await this.runExclusive(async (commit) => await commit(mutation));
+  }
+
+  async runExclusive<T>(operation: (commit: LockedConfigMutation) => Promise<T>): Promise<T> {
+    const running = this.operationTail.then(
+      async () => await operation(async (mutation) => await this.commit(mutation)),
+      async () => await operation(async (mutation) => await this.commit(mutation)),
+    );
+    this.operationTail = running.then(
+      () => undefined,
+      () => undefined,
+    );
+    return await running;
+  }
+
+  async idle(): Promise<void> {
+    await this.operationTail;
+  }
+
+  private async commit<T>(mutation: (config: ConnectConfig) => T | Promise<T>): Promise<T> {
+    const candidate = this.config ? structuredClone(this.config) : await loadConfig(this.configPath);
+    const result = await mutation(candidate);
+    const normalized = normalizeConfig(candidate);
+    await saveConfig(normalized, this.configPath);
+    if (this.config) {
+      for (const key of Object.keys(this.config)) {
+        if (!Object.hasOwn(normalized, key)) Reflect.deleteProperty(this.config, key);
+      }
+      Object.assign(this.config, normalized);
+    }
+    return result;
+  }
 }
 
 export function getAgentBinding(config: ConnectConfig, agentId = config.defaultAgent): AgentBindingConfig {

@@ -2,10 +2,17 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildOfficialPlugin, type OfficialPluginDescriptor } from "../scripts/build-official-plugins";
+import {
+  buildOfficialPlugin,
+  buildOfficialPlugins,
+  type OfficialPluginDescriptor,
+  officialPluginSupportsTarget,
+} from "../scripts/build-official-plugins";
 import { defaultConfig, saveConfig } from "../src/config";
 import { createAgentBinding } from "../src/plugin/binding";
 import { ConnectPluginHost } from "../src/plugin/host";
+import codexDescriptor from "../src/plugin/official/codex-descriptor";
+import openCodeDescriptor from "../src/plugin/official/opencode-descriptor";
 import {
   inspectInstalledDistribution,
   type OfficialWorkBuddyInspection,
@@ -50,6 +57,7 @@ for (const profile of ["workbuddy-ai", "workbuddy-cn"] as const) {
 
 describe("official WorkBuddy Runtime Plugin", () => {
   it("builds a target-specific self-contained Bundle with two strict profile capabilities and a separate probe", async () => {
+    expect(workBuddyDescriptor.supportedTargets).toEqual(["darwin-arm64", "darwin-x64"]);
     const built = await buildOfficialPlugin(workBuddyDescriptor, { target: "darwin-arm64", write: false });
     expect(built.bundle.manifest).toMatchObject({
       pluginId: WORKBUDDY_OFFICIAL_PLUGIN_ID,
@@ -78,6 +86,49 @@ describe("official WorkBuddy Runtime Plugin", () => {
     expect(artifact).not.toMatch(/\bfrom\s+["']\.\.?\//u);
     expect(probe).not.toMatch(/\bfrom\s+["']\.\.?\//u);
     expect(probe).not.toContain("createWorkBuddyOfficialPluginEntry");
+  });
+
+  it("publishes WorkBuddy only for Darwin targets while retaining unrestricted official Plugins", async () => {
+    const descriptors = [codexDescriptor, openCodeDescriptor, workBuddyDescriptor];
+    for (const target of ["darwin-arm64", "darwin-x64"] as const) {
+      expect(
+        descriptors
+          .filter((descriptor) => officialPluginSupportsTarget(descriptor, target))
+          .map((descriptor) => descriptor.manifest.pluginId),
+      ).toEqual([
+        codexDescriptor.manifest.pluginId,
+        openCodeDescriptor.manifest.pluginId,
+        WORKBUDDY_OFFICIAL_PLUGIN_ID,
+      ]);
+    }
+    for (const target of ["linux-arm64", "linux-x64", "win32-arm64", "win32-x64"] as const) {
+      expect(
+        descriptors
+          .filter((descriptor) => officialPluginSupportsTarget(descriptor, target))
+          .map((descriptor) => descriptor.manifest.pluginId),
+      ).toEqual([codexDescriptor.manifest.pluginId, openCodeDescriptor.manifest.pluginId]);
+      await expect(buildOfficialPlugins([workBuddyDescriptor], { target, write: false })).resolves.toEqual([]);
+    }
+
+    const darwinX64 = await buildOfficialPlugins([workBuddyDescriptor], {
+      target: "darwin-x64",
+      write: false,
+    });
+    expect(darwinX64.map(({ bundle }) => bundle.manifest.pluginId)).toEqual([WORKBUDDY_OFFICIAL_PLUGIN_ID]);
+  });
+
+  it("rejects malformed official supported-target declarations before building", async () => {
+    const malformedDescriptors = [
+      { ...workBuddyDescriptor, supportedTargets: [] },
+      { ...workBuddyDescriptor, supportedTargets: ["darwin-arm64", "darwin-arm64"] },
+      { ...workBuddyDescriptor, supportedTargets: ["darwin-riscv64"] },
+    ] as unknown as OfficialPluginDescriptor[];
+
+    for (const malformed of malformedDescriptors) {
+      await expect(buildOfficialPlugins([malformed], { target: "linux-x64", write: false })).rejects.toThrow(
+        /supportedTargets|target/u,
+      );
+    }
   });
 
   it("accepts arbitrary observed versions while preserving distribution, executable, and metadata failures", async () => {
@@ -254,7 +305,7 @@ describe("official WorkBuddy Runtime Plugin", () => {
 
       const directThreadIds: string[] = [];
       const direct = await adapter.start({
-        agentId: profile,
+        bindingId: profile,
         chatId: "direct",
         sessionId: "direct",
         runtimeThreadId: null,
@@ -272,7 +323,7 @@ describe("official WorkBuddy Runtime Plugin", () => {
 
       const taskThreadIds: string[] = [];
       const task = await adapter.start({
-        agentId: profile,
+        bindingId: profile,
         chatId: "task",
         sessionId: "task",
         runtimeThreadId: taskId,

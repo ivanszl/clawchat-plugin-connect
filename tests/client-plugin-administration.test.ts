@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { mkdir, mkdtemp, rename } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { MAX_PLUGIN_BUNDLE_BYTES } from "../src/client-contract";
 import { BINDING_SCOPE_HEADER } from "../src/client-interface/binding-scoped-gateway";
 import {
@@ -11,12 +12,31 @@ import {
   startClientInterface,
 } from "../src/client-interface/server";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
-import { defaultConfig, saveConfig } from "../src/config";
+import { defaultConfig, getAgentBinding, loadConfig, saveConfig } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
 import type { OfficialPluginDiscovery } from "../src/plugin/catalog";
-import type { ConfigurePluginOptions, ConnectPluginManagement, ManagePluginOptions } from "../src/plugin/host";
-import { type InstalledPluginLockEntry, validatePluginConfiguration } from "../src/plugin/store";
+import {
+  type ConfigurePluginOptions,
+  ConnectPluginHost,
+  type ConnectPluginManagement,
+  type ManagePluginOptions,
+} from "../src/plugin/host";
+import {
+  CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+  CONNECT_PLUGIN_BUNDLE_FORMAT,
+  CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+  CONNECT_PLUGIN_INTERFACE_VERSION,
+  CONNECT_PLUGIN_MANIFEST_VERSION,
+  type ConnectPluginBundleV1,
+} from "../src/plugin/sdk";
+import {
+  currentConnectPluginTarget,
+  type InstalledPluginLockEntry,
+  managedPluginUploadRoot,
+  validatePluginConfiguration,
+} from "../src/plugin/store";
+import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { AgentBindingConfig } from "../src/types";
 
@@ -109,7 +129,7 @@ describe("Connect Client trusted Plugin administration", () => {
       if (!nextConfig.defaultAgent) nextConfig.defaultAgent = bindingId;
       await saveConfig(nextConfig, configPath);
       Object.assign(config, nextConfig);
-      return structuredClone(binding);
+      return { binding: structuredClone(binding), modes: ["read-only"] };
     });
     const official: OfficialPluginDiscovery = {
       catalogOrigin: "cache",
@@ -294,6 +314,7 @@ describe("Connect Client trusted Plugin administration", () => {
       runtimePluginId: "test.healthy",
       runtimeCapabilityId: "runtime",
       runtimeConfiguration: { workspace: "project" },
+      modeOptions: ["read-only"],
     });
     expect(config.agents["new-binding"]).toEqual({
       runtime: { pluginId: "test.healthy", capabilityId: "runtime" },
@@ -536,6 +557,226 @@ describe("Connect Client trusted Plugin administration", () => {
     expect(remove).toHaveBeenCalledWith("test.healthy", true);
   });
 
+  it("atomically replaces an uploaded Plugin Bundle and rolls back a failed uploaded candidate", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-plugin-upload-replacement-"));
+    const configPath = join(directory, "config.json");
+    const config = defaultConfig();
+    config.stateDbPath = join(directory, "state.sqlite");
+    config.clientPort = 47_898;
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    stores.push(store);
+    await store.initialize();
+    const registry = new RuntimeAdapterRegistry([]);
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const host = new ConnectPluginHost(configPath, registry, () => undefined);
+    let fetchHandler: ClientHttpServerOptions["fetch"] | null = null;
+    const handle = await startClientInterface({
+      config,
+      configPath,
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      pluginManager: host,
+      runtimes: [],
+      assetsPath: directory,
+      port: config.clientPort,
+      serverFactory: (options) => {
+        fetchHandler = options.fetch;
+        return { stop: async () => undefined };
+      },
+    });
+    handles.push(handle);
+    if (!fetchHandler) throw new Error("Client Interface did not expose its request handler");
+    const pluginId = "test.client-upload-replacement";
+    const binding = createAgentBinding({ pluginId, capabilityId: "runtime", configuration: {} });
+    Reflect.set(globalThis, "__connectClientUploadLog", []);
+
+    const v1Bundle = clientUploadBundle(pluginId, "1.0.0");
+    const v1Response = await uploadPlugin(fetchHandler, handle.origin, "replacement-v1.connect-plugin", v1Bundle);
+    expect(v1Response.status).toBe(201);
+    const v1 = (await v1Response.json()) as InstalledPluginLockEntry;
+    if (v1.source.type !== "local") throw new Error("Expected v1 upload to use a managed local source");
+    expect(v1).toMatchObject({ pluginId, version: "1.0.0", integrity: v1Bundle.manifest.artifacts[0]?.integrity });
+    await registry.prepare(binding);
+
+    const v2Bundle = clientUploadBundle(pluginId, "2.0.0");
+    const v2Response = await uploadPlugin(fetchHandler, handle.origin, "replacement-v2.connect-plugin", v2Bundle);
+    expect(v2Response.status).toBe(201);
+    const v2 = (await v2Response.json()) as InstalledPluginLockEntry;
+    if (v2.source.type !== "local") throw new Error("Expected v2 upload to use a managed local source");
+    expect(v2.source.path).not.toBe(v1.source.path);
+    expect(basename(v2.source.path)).toBe(
+      `${createHash("sha256").update(JSON.stringify(v2Bundle)).digest("hex")}.connect-plugin`,
+    );
+    expect(v2).toMatchObject({
+      pluginId,
+      version: "2.0.0",
+      integrity: v2Bundle.manifest.artifacts[0]?.integrity,
+      status: "active",
+    });
+    expect(v2.retainedVersions).toEqual([
+      expect.objectContaining({
+        version: "1.0.0",
+        integrity: v1.integrity,
+        source: { type: "local", path: v1.source.path },
+      }),
+    ]);
+    await expect(readFile(v2.source.path, "utf8")).resolves.toContain('"version":"2.0.0"');
+    const successfulReplacementLog = Reflect.get(globalThis, "__connectClientUploadLog") as string[];
+    expect(successfulReplacementLog.indexOf("bundle-activate:2.0.0")).toBeLessThan(
+      successfulReplacementLog.indexOf("bundle-dispose:1.0.0"),
+    );
+    await registry.prepare(binding);
+    expect((Reflect.get(globalThis, "__connectClientUploadLog") as string[]).at(-1)).toBe("prepare:2.0.0");
+
+    const v3Response = await uploadPlugin(
+      fetchHandler,
+      handle.origin,
+      "replacement-v3.connect-plugin",
+      clientUploadBundle(pluginId, "3.0.0", true),
+    );
+    expect(v3Response.status).toBe(409);
+    await expect(v3Response.json()).resolves.toMatchObject({
+      error: { code: "plugin-operation-failed", message: "uploaded candidate activation failed" },
+    });
+    await registry.prepare(binding);
+    expect((Reflect.get(globalThis, "__connectClientUploadLog") as string[]).at(-1)).toBe("prepare:2.0.0");
+    await expect(host.list()).resolves.toEqual([
+      expect.objectContaining({
+        pluginId,
+        version: "2.0.0",
+        integrity: v2.integrity,
+        source: { type: "local", path: v2.source.path },
+        status: "active",
+        retainedVersions: [
+          expect.objectContaining({
+            version: "1.0.0",
+            integrity: v1.integrity,
+            source: { type: "local", path: v1.source.path },
+          }),
+        ],
+      }),
+    ]);
+    expect((await readdir(managedPluginUploadRoot(configPath))).sort()).toEqual(
+      [basename(v1.source.path), basename(v2.source.path)].sort(),
+    );
+    const removalResponse = await request(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/plugins/${encodeURIComponent(pluginId)}`,
+      { method: "DELETE" },
+    );
+    expect(removalResponse.status).toBe(200);
+    expect(await readdir(managedPluginUploadRoot(configPath))).toEqual([]);
+
+    await host.close();
+  });
+
+  it("defers Codex provider construction until Binding selection and commits the validated instance", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-deferred-provider-"));
+    const configPath = join(directory, "config.json");
+    const executablePath = join(directory, "codex-installed-later");
+    const config = defaultConfig();
+    config.stateDbPath = join(directory, "state.sqlite");
+    config.clientPort = 47_899;
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    stores.push(store);
+    await store.initialize();
+    const registry = new RuntimeAdapterRegistry([]);
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const host = new ConnectPluginHost(configPath, registry, () => undefined, {
+      config,
+      stateStore: store,
+      projects: new ProjectCatalog(store),
+    });
+    let fetchHandler: ClientHttpServerOptions["fetch"] | null = null;
+    const handle = await startClientInterface({
+      config,
+      configPath,
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      pluginManager: host,
+      runtimes: [],
+      assetsPath: directory,
+      port: config.clientPort,
+      serverFactory: (options) => {
+        fetchHandler = options.fetch;
+        return { stop: async () => undefined };
+      },
+    });
+    handles.push(handle);
+    if (!fetchHandler) throw new Error("Client Interface did not expose its request handler");
+    Reflect.set(globalThis, "__connectDeferredProviderLog", []);
+    const pluginId = "test.deferred-codex";
+    const installed = await uploadPlugin(
+      fetchHandler,
+      handle.origin,
+      "deferred-codex.connect-plugin",
+      deferredCodexBundle(pluginId),
+    );
+    expect(installed.status).toBe(201);
+
+    const requestBody = {
+      requestId: "deferred-codex-selection",
+      pluginId,
+      capabilityId: "runtime",
+      runtimeConfig: { executablePathOverride: executablePath },
+      displayName: "Deferred Codex",
+      createOnly: true,
+    };
+    const liveBefore = structuredClone(config);
+    const persistedBefore = await readFile(configPath, "utf8");
+    const failed = await request(fetchHandler, handle.origin, "/client/v1/bindings/deferred-codex/provider", {
+      method: "PUT",
+      json: requestBody,
+    });
+    expect(failed.status).toBe(409);
+    await expect(failed.json()).resolves.toMatchObject({
+      error: {
+        code: "runtime-provider-invalid",
+        message: `Failed to inspect configured Codex executable ${executablePath}`,
+      },
+    });
+    expect(config).toEqual(liveBefore);
+    await expect(readFile(configPath, "utf8")).resolves.toBe(persistedBefore);
+
+    await writeFile(executablePath, "#!/bin/sh\nprintf 'codex-cli 0.111.0\\n'\n", { mode: 0o700 });
+    const selected = await request(fetchHandler, handle.origin, "/client/v1/bindings/deferred-codex/provider", {
+      method: "PUT",
+      json: requestBody,
+    });
+    expect(selected.status).toBe(200);
+    await expect(selected.json()).resolves.toMatchObject({
+      bindingId: "deferred-codex",
+      displayName: "Deferred Codex",
+      runtimeKind: "codex",
+      runtimeConfiguration: { executablePathOverride: executablePath },
+      modeOptions: ["read-only", "workspace-write"],
+    });
+    expect(Reflect.get(globalThis, "__connectDeferredProviderLog") as string[]).toEqual(["create", "create", "modes"]);
+    expect(registry.modesFor(getAgentBinding(config, "deferred-codex"))).toEqual(["read-only", "workspace-write"]);
+    expect(Reflect.get(globalThis, "__connectDeferredProviderLog") as string[]).toEqual([
+      "create",
+      "create",
+      "modes",
+      "modes",
+    ]);
+    await expect(loadConfig(configPath)).resolves.toMatchObject({
+      defaultAgent: "deferred-codex",
+      agents: {
+        "deferred-codex": {
+          runtime: { pluginId, capabilityId: "runtime" },
+          runtimeConfig: { executablePathOverride: executablePath },
+          displayName: "Deferred Codex",
+        },
+      },
+    });
+    await host.close();
+  });
+
   it("keeps Plugin administration on actual loopback and rejects private Binding-scoped Liveware", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-plugin-peer-"));
     const configPath = join(directory, "config.json");
@@ -651,6 +892,124 @@ describe("Connect Client trusted Plugin administration", () => {
     expect(install).toHaveBeenCalledTimes(0);
   });
 });
+
+function clientUploadBundle(pluginId: string, version: string, failActivation = false): ConnectPluginBundleV1 {
+  const source = `
+const log = globalThis.__connectClientUploadLog ??= [];
+export default {
+  activate(context) {
+    log.push("bundle-activate:${version}");
+    context.hostCapabilities.get("runtime-provider").register({
+      capabilityId: "runtime",
+      family: "client-upload",
+      create() {
+        return {
+          modes: [],
+          async prepare() { log.push("prepare:${version}"); },
+          async start() { throw new Error("not exercised"); }
+        };
+      }
+    });
+    ${failActivation ? 'throw new Error("uploaded candidate activation failed");' : ""}
+    return async () => { log.push("bundle-dispose:${version}"); };
+  }
+};`.trim();
+  const integrity = `sha256-${createHash("sha256").update(source).digest("base64")}`;
+  return {
+    format: CONNECT_PLUGIN_BUNDLE_FORMAT,
+    manifest: {
+      manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
+      interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
+      pluginId,
+      version,
+      dependencies: [
+        { type: "host", id: "runtime-provider", interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION },
+      ],
+      installationConfigurationSchema: { type: "object", additionalProperties: false },
+      capabilities: [
+        {
+          id: "runtime",
+          type: "runtime",
+          family: "client-upload",
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: { type: "object", additionalProperties: false },
+        },
+      ],
+      artifacts: [{ target: currentConnectPluginTarget(), entry: "plugin.mjs", integrity }],
+    },
+    files: { "plugin.mjs": { encoding: "utf8", content: source } },
+  };
+}
+
+function deferredCodexBundle(pluginId: string): ConnectPluginBundleV1 {
+  const source = `
+import { existsSync } from "node:fs";
+const log = globalThis.__connectDeferredProviderLog ??= [];
+export default {
+  activate(context) {
+    context.hostCapabilities.get("runtime-provider").register({
+      capabilityId: "runtime",
+      family: "codex",
+      create(configuration) {
+        log.push("create");
+        const executable = configuration.executablePathOverride;
+        if (!existsSync(executable)) {
+          throw new Error(\`Failed to inspect configured Codex executable \${executable}\`);
+        }
+        return {
+          modes: ["read-only", "workspace-write"],
+          modesFor() {
+            log.push("modes");
+            return ["read-only", "workspace-write"];
+          },
+          async start() { throw new Error("not exercised"); }
+        };
+      }
+    });
+  }
+};`.trim();
+  const integrity = `sha256-${createHash("sha256").update(source).digest("base64")}`;
+  return {
+    format: CONNECT_PLUGIN_BUNDLE_FORMAT,
+    manifest: {
+      manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
+      interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
+      pluginId,
+      version: "1.0.0",
+      dependencies: [
+        { type: "host", id: "runtime-provider", interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION },
+      ],
+      installationConfigurationSchema: { type: "object", additionalProperties: false },
+      capabilities: [
+        {
+          id: "runtime",
+          type: "runtime",
+          family: "codex",
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: {
+            type: "object",
+            properties: { executablePathOverride: { type: "string", minLength: 1 } },
+            required: ["executablePathOverride"],
+            additionalProperties: false,
+          },
+        },
+      ],
+      artifacts: [{ target: currentConnectPluginTarget(), entry: "plugin.mjs", integrity }],
+    },
+    files: { "plugin.mjs": { encoding: "utf8", content: source } },
+  };
+}
+
+async function uploadPlugin(
+  fetchHandler: ClientHttpServerOptions["fetch"],
+  origin: string,
+  fileName: string,
+  bundle: ConnectPluginBundleV1,
+): Promise<Response> {
+  const form = new FormData();
+  form.set("bundle", new File([JSON.stringify(bundle)], fileName));
+  return await request(fetchHandler, origin, "/client/v1/plugins/upload", { method: "POST", body: form });
+}
 
 function installedPlugin(
   pluginId: string,
