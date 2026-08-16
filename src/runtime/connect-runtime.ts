@@ -25,13 +25,12 @@ import {
   type TurnTarget,
 } from "../projects/session-continuity";
 import { type RuntimeWorkspaceChoice, workspaceView } from "../projects/workspace-catalog";
-import {
-  type AgentBindingConfig,
-  type ConnectConfig,
-  type ProjectRecord,
-  type RuntimeSessionRecord,
-  type RuntimeWorkspace,
-  runtimeFamilyFor,
+import type {
+  AgentBindingConfig,
+  ConnectConfig,
+  ProjectRecord,
+  RuntimeSessionRecord,
+  RuntimeWorkspace,
 } from "../types";
 import type { ConnectExecutionCapabilities } from "./execution-capabilities";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
@@ -396,6 +395,10 @@ export class ConnectRuntime {
         selected && "runtimeSessionId" in selected ? (selected.runtimeSessionId ?? undefined) : undefined,
     });
   }
+  runtimeFamilyFor(binding: AgentBindingConfig): string {
+    return this.runtimeAdapters.familyFor(binding);
+  }
+
 
   async listRuntimeModels(
     binding: AgentBindingConfig,
@@ -435,7 +438,7 @@ export class ConnectRuntime {
     const binding = getAgentBinding(this.options.config, this.options.agentId);
     return await synchronizeProjects({
       bindingId: this.options.agentId,
-      runtimeKind: runtimeFamilyFor(binding),
+      runtimeKind: this.runtimeAdapters.familyFor(binding),
       threads: await this.runtimeAdapters.discoverAllThreads(binding),
       projects: this.projects,
       stateStore: this.options.stateStore,
@@ -771,7 +774,7 @@ export class ConnectRuntime {
 
   private async modelFor(current: RuntimeSessionRecord, agentId: string, workspace: RuntimeWorkspace) {
     const binding = getAgentBinding(this.options.config, agentId);
-    if (binding.kind === "opencode") return { model: undefined, reasoningEffort: undefined };
+    if (this.runtimeAdapters.familyFor(binding) === "opencode") return { model: undefined, reasoningEffort: undefined };
     return resolveModelSelection(
       binding,
       current,

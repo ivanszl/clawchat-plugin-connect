@@ -161,31 +161,36 @@ clawchat-connect update
 
 Use `clawchat-connect update --version v0.1.0-beta.7` to install a specific release. The update command preserves the existing configuration and refreshes the native Connect Service. Historical versions remain installable when explicitly specified.
 
-### 2. Create the first Agent Binding
+### 2. Install a Runtime Plugin and create the first Agent Binding
 
-`work` is a local name; choose any short name you want. Select the Runtime Adapter that matches your installed coding agent:
+`work` is a local name; choose any short name you want. Initialize Connect, activate the official Runtime Plugin
+Bundle, then bind the exact Plugin capability:
 
 ```bash
 # Codex
-clawchat-connect init --agent work --kind codex
+clawchat-connect init
+clawchat-connect plugin setup --non-interactive --select clawling.runtime.codex
+clawchat-connect agent add work --plugin clawling.runtime.codex --capability codex
 
-# OpenCode 1.18.13
-clawchat-connect init --agent work --kind opencode
+# OpenCode
+clawchat-connect init
+clawchat-connect plugin setup --non-interactive --select clawling.runtime.opencode
+clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
 ```
 
-If the runtime executable is not available on the service `PATH`, pass its absolute path:
+Runtime-specific settings belong to the selected capability's validated `runtimeConfig`. For example:
 
 ```bash
-clawchat-connect init --agent work --kind codex --runtime-path /absolute/path/to/codex
+clawchat-connect agent add work \
+  --plugin clawling.runtime.codex \
+  --capability codex \
+  --runtime-config-json '{"executablePathOverride":"/absolute/path/to/codex"}'
 ```
 
-`init` creates a new configuration. On an existing installation, use `agent add` to update a Binding instead of running `init` again:
+`init` creates a new Plugin-free configuration. On an existing installation, use `agent add` to create or update a
+Binding after its provider Bundle is installed and active.
 
-```bash
-clawchat-connect agent add work --kind codex --runtime-path /absolute/path/to/codex
-```
-
-`--codex-path` remains available as a compatibility alias for Codex Bindings.
+`plugin setup` uses the running Plugin Manager when available. If Connect Service is stopped, the CLI authenticates and resolves the configured official Catalog directly, performs the same deterministic selection, and installs the selected Bundles without requiring a Service restart first.
 
 ### 3. Activate the Binding
 
@@ -197,13 +202,15 @@ clawchat-connect activate work YOUR_INVITE_CODE
 
 Connect stores the returned credentials, not the invite code, and updates the ClawChat Profile nickname to the Binding ID (`work` in this example).
 
-One Connect installation can activate multiple ClawChat accounts and mix Runtime Adapter kinds:
+One Connect installation can activate multiple ClawChat accounts and use capabilities from several Runtime Plugins:
 
 ```bash
-clawchat-connect agent add personal --kind codex
+clawchat-connect plugin setup --non-interactive \
+  --select clawling.runtime.codex,clawling.runtime.opencode
+clawchat-connect agent add personal --plugin clawling.runtime.codex --capability codex
 clawchat-connect activate personal PERSONAL_ACCOUNT_INVITE_CODE
 
-clawchat-connect agent add work --kind opencode
+clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
 clawchat-connect activate work WORK_ACCOUNT_INVITE_CODE
 clawchat-connect service restart
 ```
@@ -328,6 +335,7 @@ The browser client can:
 - discover runtime commands and Skills from the composer's slash picker;
 - attach supported media, submit follow-up turns, and withdraw a queued turn back into the composer;
 - archive, restore, or permanently delete Sessions when the selected Runtime Adapter supports that action.
+- install trusted Plugin Bundles and create or edit unactivated Agent Bindings by selecting one exact active Runtime Plugin capability and completing its schema-defined configuration.
 
 Browser-originated turns stay local to Connect and are not posted into ClawChat.
 
@@ -404,31 +412,20 @@ The default configuration file is `~/.clawchat-connect/config.json`. Inspect it 
 
 ```bash
 clawchat-connect config get
-clawchat-connect config get agents.work.sandboxMode
+clawchat-connect config get agents.work.runtime
 ```
 
-Common Codex settings can be changed from the CLI:
+Installation-wide and generic Binding preferences can be changed from the CLI:
 
 ```bash
 clawchat-connect config set livewareAccessPolicy private
 clawchat-connect config set agents.work.model YOUR_MODEL_ID
-clawchat-connect config set agents.work.sandboxMode workspace-write
 clawchat-connect config set agents.work.modelReasoningEffort high
-clawchat-connect config set agents.work.approvalPolicy on-request
-clawchat-connect config set agents.work.webSearchMode live
-clawchat-connect config set agents.work.networkAccessEnabled true
 clawchat-connect service restart
 ```
 
-Codex Binding values:
-
-| Setting | Values |
-| --- | --- |
-| `sandboxMode` | `read-only`, `workspace-write`, `danger-full-access` |
-| `modelReasoningEffort` | `minimal`, `low`, `medium`, `high`, `xhigh` |
-| `approvalPolicy` | `never`, `on-request` (default), `untrusted` |
-| `webSearchMode` | `disabled`, `cached`, `live` |
-| `networkAccessEnabled` | `true`, `false` |
+Runtime-specific configuration is validated against the installed capability manifest. Update it through Runtime
+Plugin configuration surfaces or recreate the Binding with `agent add --runtime-config-json`.
 
 Installation-wide values:
 
@@ -438,9 +435,11 @@ Installation-wide values:
 | `clientHost` | `127.0.0.1`, `0.0.0.0` |
 | `clientPort` | `1024`–`65535` |
 
-Every Binding also supports `displayName` and `executablePathOverride`. OpenCode agent, provider-qualified model, and variant defaults live in the Binding's `sessionOptions` object; Connect Client discovers and validates the available values from the running OpenCode instance. Edit JSON directly for `sessionOptions`, `env`, and `additionalDirectories`.
+Every Binding persists an exact `runtime.pluginId` and `runtime.capabilityId`, a capability-owned `runtimeConfig`,
+and generic preferences such as `displayName`, output visibility, model selection, environment, Session options,
+and additional directories. Runtime family is provider metadata and is never persisted on the Binding.
 
-Example with both released Runtime Adapters:
+Example with two official Runtime Plugin capabilities:
 
 ```json
 {
@@ -449,26 +448,32 @@ Example with both released Runtime Adapters:
   "maxPendingPerSession": 20,
   "agents": {
     "work": {
-      "kind": "codex",
+      "runtime": {
+        "pluginId": "clawling.runtime.codex",
+        "capabilityId": "codex"
+      },
+      "runtimeConfig": {
+        "executablePathOverride": "/absolute/path/to/codex",
+        "sandboxMode": "workspace-write",
+        "approvalPolicy": "on-request",
+        "webSearchMode": "live",
+        "networkAccessEnabled": true
+      },
       "displayName": "Work Codex",
-      "codexPathOverride": "/absolute/path/to/codex",
-      "sandboxMode": "workspace-write",
-      "modelReasoningEffort": "high",
-      "approvalPolicy": "on-request",
-      "webSearchMode": "live",
-      "networkAccessEnabled": true,
-      "additionalDirectories": ["/absolute/path/to/shared-library"],
-      "env": {
-        "EXAMPLE_VARIABLE": "value"
-      }
+      "modelReasoningEffort": "high"
     },
     "personal": {
-      "kind": "opencode",
-      "displayName": "Personal OpenCode",
-      "executablePathOverride": "/absolute/path/to/opencode",
-      "sessionOptions": {
-        "agent": "YOUR_OPENCODE_AGENT"
-      }
+      "runtime": {
+        "pluginId": "clawling.runtime.opencode",
+        "capabilityId": "opencode"
+      },
+      "runtimeConfig": {
+        "executablePathOverride": "/absolute/path/to/opencode",
+        "sessionOptions": {
+          "agent": "YOUR_OPENCODE_AGENT"
+        }
+      },
+      "displayName": "Personal OpenCode"
     }
   }
 }
@@ -534,7 +539,7 @@ clawchat-connect service logs --lines 250
 
 Common causes:
 
-- **A runtime cannot start:** run `codex --version` or `opencode --version`, confirm the runtime is authenticated, and inspect the initialization error. Use `agents.<id>.executablePathOverride` when Connect should launch a different executable.
+- **A runtime cannot start:** run `codex --version` or `opencode --version`, confirm the runtime is authenticated, and inspect the initialization error. Set `agents.<id>.runtimeConfig.executablePathOverride` when the selected Runtime Plugin capability should launch a different executable.
 - **A runtime works in a terminal but not in Connect:** reinstall the service so it captures the current `PATH`.
 - **OpenCode reports a version mismatch:** install a supported OpenCode version (`1.18.13` recommended; `1.18.10` retained for compatibility); Connect deliberately refuses unverified versions.
 - **Windows service does not start:** run `clawchat-connect service install` again from a terminal where the configured runtime works, then inspect `clawchat-connect service logs`.

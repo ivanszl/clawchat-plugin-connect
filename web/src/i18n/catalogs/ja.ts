@@ -212,6 +212,47 @@ export const ja = {
   "@connect.settings.binding.saved": { defaultMessage: "設定を保存しました" },
   "@connect.settings.binding.saveFailed": { defaultMessage: "設定を保存できません" },
   "@connect.settings.binding.displayName": { defaultMessage: "表示名" },
+  "@connect.settings.binding.create.title": { defaultMessage: "新しい Agent Binding" },
+  "@connect.settings.binding.create.description": {
+    defaultMessage:
+      "インストール済みで有効な Runtime Plugin のケイパビリティを正確に指定して Agent Binding を作成します。",
+  },
+  "@connect.settings.binding.create.bindingId": { defaultMessage: "Binding ID" },
+  "@connect.settings.binding.create.bindingIdDescription": {
+    defaultMessage: "この固定 ID は Session と Plugin 設定で使用されます。",
+  },
+  "@connect.settings.binding.create.bindingIdRequired": { defaultMessage: "Binding ID を入力してください。" },
+  "@connect.settings.binding.create.create": { defaultMessage: "Binding を作成" },
+  "@connect.settings.binding.create.creating": { defaultMessage: "Binding を作成中" },
+  "@connect.settings.binding.create.created": { defaultMessage: "Agent Binding を作成しました" },
+  "@connect.settings.binding.create.createFailed": { defaultMessage: "Agent Binding を作成できません" },
+  "@connect.settings.binding.provider.title": { defaultMessage: "Runtime プロバイダー" },
+  "@connect.settings.binding.provider.description": {
+    defaultMessage:
+      "Plugin と Runtime ケイパビリティを正確に選択してください。Runtime ファミリーは参考情報としてのみ表示されます。",
+  },
+  "@connect.settings.binding.provider.identity": {
+    defaultMessage: "Plugin {pluginId}・ケイパビリティ {capabilityId}",
+  },
+  "@connect.settings.binding.provider.option": {
+    defaultMessage: "{pluginName}（{pluginId}）・{capabilityId}・ファミリー：{family}",
+  },
+  "@connect.settings.binding.provider.select": { defaultMessage: "Runtime ケイパビリティ（完全一致）" },
+  "@connect.settings.binding.provider.unavailable": {
+    defaultMessage: "インストール済みで有効な Runtime Plugin のケイパビリティはありません。",
+  },
+  "@connect.settings.binding.provider.selectionRequired": {
+    defaultMessage: "Runtime ケイパビリティを正確に選択してください。",
+  },
+  "@connect.settings.binding.provider.configuration": { defaultMessage: "Runtime 設定" },
+  "@connect.settings.binding.provider.configurationInvalid": {
+    defaultMessage: "無効な Runtime 設定を修正してから保存してください。",
+  },
+  "@connect.settings.binding.provider.lockedTitle": { defaultMessage: "Runtime プロバイダーは編集できません" },
+  "@connect.settings.binding.provider.lockedDescription": {
+    defaultMessage:
+      "この Binding は ClawChat で有効化されています。有効化中に Runtime プロバイダーを安全に変更することはできません。",
+  },
   "@connect.settings.binding.model.description": {
     defaultMessage: "デフォルトは Runtime Adapter に従います。Session ごとに上書きできます。",
   },

@@ -35,11 +35,12 @@ Agent Binding ─────┐
 Project (0 or 1) ──┼── Session Intent ── first ordinary message ── Session ── Runtime Thread
                    └───────────────────────────────────────────────┘
 
-Agent Binding.kind ── Runtime Adapter Registry ── Runtime Adapter
+Agent Binding.runtime (pluginId + capabilityId) ── Runtime Adapter Registry ── Runtime Adapter
 ```
 
-- An **Agent Binding** is a locally named association between Connect and one configured coding agent runtime. Its ID has no runtime semantics. Activation synchronizes that ID to the connected ClawChat Profile nickname.
-- A **Runtime Adapter** is a concrete integration for one runtime kind. The first release registers only Codex, while Connect continues to manage multiple Agent Bindings independently of that release scope.
+- An **Agent Binding** is a locally named association between Connect and one exact installed Runtime Plugin capability. Its ID has no runtime semantics, and its persisted provider identity is `pluginId` plus `capabilityId`. Activation synchronizes the Binding ID to the connected ClawChat Profile nickname.
+- A **Runtime Adapter** is one Binding-scoped instance created by that capability provider. Runtime family is provider metadata, and several installed capabilities may advertise the same family.
+- Connect Client lists exact capabilities from active installed Runtime Plugins. Its Plugin-administration mutation can create a Binding or change an inactive Binding's exact provider and schema-validated `runtimeConfig`; an active Binding cannot be rebound in place.
 - A **Project** is a global, reusable Connect workspace with exactly one canonical root on the Connect Service host.
 - A **Session Intent** is the pending Project, mode, model, reasoning effort, and optional name for the next Session. It has no Session Ref or Runtime Thread and is consumed by the first ordinary message.
 - A **Session** owns Connect conversation continuity, is scoped by ClawChat conversation plus Agent Binding, references zero or one Project, may have a human-readable Session Name, and has a stable eight-character Session Ref.
@@ -49,33 +50,32 @@ Agent Binding.kind ── Runtime Adapter Registry ── Runtime Adapter
 
 `/new` and `/project <workspace-id|none>` create or replace a Session Intent, not an empty Session. The first ordinary ClawChat message materializes the intent as a Session. Connect Client may explicitly create an empty Session after choosing its workspace and runtime options. Explicitly adopting a discovered Runtime Thread also creates a Session immediately because the external thread already contains conversation history. No Runtime Thread crosses a Project boundary.
 
-## Direct runtime adapter
+## Runtime Adapter seam
 
 The shared runtime seam lives in `src/runtime/types.ts`:
 
 ```text
-Agent Binding
-      ↓ kind
-RuntimeAdapterRegistry → CodexRuntimeAdapter → private JSONL JSON-RPC client → codex app-server
-                                      └────── versioned rollout fallback
+Installed Runtime Plugin Bundle
+      ↓ exact pluginId + capabilityId
+RuntimeAdapterRegistry → per-Binding Runtime Adapter → private native runtime protocol
 ```
 
-- `src/runtime/released-adapters.ts` is the released-adapter catalog. It owns released kinds, operator metadata,
-  Binding configuration normalization, defaults, validation, and Adapter construction.
-- `src/runtime/registry.ts` selects a constructed Runtime Adapter from the Agent Binding's explicit `kind`.
-- `src/runtime/codex-app-server.ts` owns the pinned `codex-cli 0.145.0` process and stable wire protocol; callers see only the Runtime Adapter interface.
+- `src/plugin/host.ts` activates installed Plugin Bundles and publishes their exact Runtime capability providers.
+- `src/runtime/registry.ts` starts empty, keys providers by `pluginId/capabilityId`, derives Runtime family from provider
+  metadata, and owns one Adapter instance per Agent Binding.
+- Runtime-specific process implementations are private to the official Plugin Bundle entry bridges.
 - `src/runtime/codex-rollout.ts` supplements persisted app-server history with displayable raw tool calls omitted by that API. It is a read-only, pinned-version fallback inside the Codex Adapter and never exposes raw rollout records across the runtime seam.
 - The Codex Runtime Adapter filters child threads from discovery and translates parent `subAgentActivity` items plus
   child history into recursive Runtime Activities.
-- The Connect Service composition root registers and closes one shared Runtime Adapter registry. Binding runtimes close only their own Sessions, so stopping one Binding cannot tear down adapters used by another runtime kind.
-- The first release registers the Codex Runtime Adapter; `ConnectRuntime` has no Codex dependency.
+- The Connect Service composition root creates and closes one initially empty Runtime Adapter registry. Installed Plugin Bundles publish providers before surfaces start. Binding runtimes close only their own Sessions, while Bundle replacement quiesces and replaces every dependent Binding instance.
+- `ConnectRuntime` depends only on the provider-backed Runtime Adapter registry and has no runtime-specific construction path.
 - `ConnectRuntime` owns turn queueing and exposes a narrow lifecycle claim that drains/cancels work and releases the
   in-memory handle. Session Continuity retains lifecycle validation, journaling, native mutation, and local commit.
 - Runtime Adapters may expose a runtime-neutral model catalog. Connect resolves model inheritance as Session → Agent Binding → Runtime default. Reasoning effort resolves independently as strict Session effort → valid Agent Binding effort → the effective model's advertised default. Codex-native `model/list` pagination stays private to the Codex Adapter.
 - ClawChat media fragments remain structured across `ConnectRuntimePrompt`: the Codex Adapter downloads media into the Connect-owned cache, submits images and audio as native local app-server inputs, and submits files and videos as local file mentions. Configured API/media origins are trusted for private self-hosting; other URLs require HTTPS and public DNS answers. Every redirect is revalidated. Downloads are capped at 100 MiB and use path-safe cached names. The cache is bounded to 512 MiB, refreshes access time on reuse, evicts least-recently-used files when full, and expires files after 15 days without access.
 - Adapters receive a resolved `RuntimeWorkspace` and never access SQLite directly. They may discover resumable Runtime Threads scoped to that workspace through the same seam.
 
-Future coding clients should add direct Runtime Adapters behind the same seam rather than changing Agent Binding or `ConnectRuntime` semantics.
+Future coding clients must ship as Runtime Plugin Bundles that contribute Runtime Adapters behind the same seam rather than adding host-owned Adapter construction or changing Agent Binding or `ConnectRuntime` semantics.
 
 ## Connect Client boundary
 
@@ -210,8 +210,8 @@ src/projects/             Project, Workspace, Session continuity, and host-direc
 src/persistence/          SQLite adapter, schema, codecs, Session Refs, and state Interface
 src/service/              CLI, process startup, Binding runtime, Liveware exposure, and updates
 src/runtime/types.ts      Direct Runtime Adapter seam
-src/runtime/registry.ts   Runtime Adapter selection by Binding kind
-src/runtime/*-adapter.ts  Runtime-specific adapters and event mapping
+src/runtime/registry.ts   Exact Plugin capability provider selection
+src/runtime/*-adapter.ts  Runtime-specific implementations used by official Plugin Bundle entries
 src/client-contract/      Browser-safe versioned Client views and intents
 src/client-interface/     HTTP/SSE interface, catalog, transcript projection, and commands
 web/src/                  React/Astryx/TanStack Connect Client

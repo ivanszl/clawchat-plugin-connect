@@ -67,7 +67,9 @@ if [ -f "$config_path" ]; then
     exit 1
   fi
 else
-  "$connect_bin" init --agent "$agent_id" --kind codex
+  "$connect_bin" init
+  "$connect_bin" plugin setup --non-interactive --select clawling.runtime.codex
+  "$connect_bin" agent add "$agent_id" --plugin clawling.runtime.codex --capability codex
 fi
 
 "$connect_bin" activate "$agent_id" "$CLAWCHAT_INVITE_CODE"
@@ -150,7 +152,11 @@ if (Test-Path -LiteralPath $ConfigPath) {
     throw "Config already exists but Agent Binding '$AgentId' is not configured. Set CLAWCHAT_AGENT_ID to an existing Binding or ask the user before changing the config."
   }
 } else {
-  & $Connect init --agent $AgentId --kind codex
+  & $Connect init
+  if ($LASTEXITCODE -ne 0) { throw "Connect initialization failed" }
+  & $Connect plugin setup --non-interactive --select clawling.runtime.codex
+  if ($LASTEXITCODE -ne 0) { throw "Codex Runtime Plugin setup failed" }
+  & $Connect agent add $AgentId --plugin clawling.runtime.codex --capability codex
   if ($LASTEXITCODE -ne 0) { throw "Agent Binding configuration failed" }
 }
 

@@ -20,6 +20,7 @@ import type {
   SlashSuggestionListView,
   TranscriptPageView,
   UpdateBindingPreferencesRequest,
+  UpsertBindingProviderRequest,
 } from "../../../src/client-contract";
 import { CLIENT_API_PREFIX } from "../../../src/client-contract";
 import { mergeClientViewSnapshot, observeClientTranscriptPage } from "./client-events";
@@ -301,4 +302,17 @@ export async function removePlugin(pluginId: string, force: boolean): Promise<vo
     method: "DELETE",
     body: JSON.stringify({}),
   });
+}
+
+export async function upsertBindingProvider(
+  bindingId: string,
+  input: Omit<UpsertBindingProviderRequest, "requestId">,
+): Promise<BindingPreferenceView> {
+  return await clientFetch<BindingPreferenceView>(
+    `${CLIENT_API_PREFIX}/bindings/${encodeURIComponent(bindingId)}/provider`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ requestId: requestId(), ...input }),
+    },
+  );
 }

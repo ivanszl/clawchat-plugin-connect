@@ -446,32 +446,22 @@ export interface BindingPreferenceView {
   displayName: string;
   clawChatUserId: string | null;
   runtimeKind: string;
-  runtimeProfile: string | null;
   outputVisibility: "minimal" | "normal" | "full";
   model: string | null;
   modelReasoningEffort: string | null;
   modelOptions: RuntimeModelOptionView[];
+  runtimePluginId: string;
+  runtimeCapabilityId: string;
+  runtimeConfiguration: Record<string, unknown>;
   modeOptions: string[];
 }
 
-export interface RuntimeAdapterProfileMetadataView {
-  id: string;
-  displayName: string;
-  protocol: { name: string; version: number };
-}
-
-export interface RuntimeAdapterMetadataView {
-  kind: string;
-  displayName: string;
-  profiles: RuntimeAdapterProfileMetadataView[];
-}
 
 export interface BootstrapView {
   apiVersion: 1;
   eventCursor: number;
   outputVisibility: "minimal" | "normal" | "full";
   bindings: BindingPreferenceView[];
-  runtimeAdapters: RuntimeAdapterMetadataView[];
   capabilities: {
     localTurns: boolean;
     cancellation: boolean;
@@ -618,6 +608,15 @@ export interface UpdateBindingPreferencesRequest {
   model?: string | null;
   modelReasoningEffort?: string | null;
   outputVisibility?: "minimal" | "normal" | "full";
+}
+
+export interface UpsertBindingProviderRequest {
+  requestId: string;
+  pluginId: string;
+  capabilityId: string;
+  runtimeConfig: Record<string, unknown>;
+  displayName?: string;
+  createOnly?: boolean;
 }
 
 export function normalizeSessionRef(value: string): string | null {

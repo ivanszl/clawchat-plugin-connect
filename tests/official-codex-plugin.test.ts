@@ -13,7 +13,7 @@ import codexDescriptor from "../src/plugin/official/codex-descriptor";
 import { CODEX_CAPABILITY_ID, CODEX_PLUGIN_ID, CODEX_RUNTIME_FAMILY } from "../src/plugin/official/codex-manifest";
 import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import type { PluginAgentBindingConfig } from "../src/types";
+import type { AgentBindingConfig } from "../src/types";
 import { type AdapterHarness, runtimeAdapterConformance } from "./runtime-adapter-conformance";
 
 const target = `${process.platform}-${process.arch}`;
@@ -282,12 +282,10 @@ async function installedHost() {
   return { directory, configPath, bundlePath, config, store, projects, registry, host };
 }
 
-function pluginBinding(executable: string, directory: string): PluginAgentBindingConfig {
+function pluginBinding(executable: string, directory: string): AgentBindingConfig {
   const runtimeDirectory = resolve(directory);
   mkdirSync(runtimeDirectory, { recursive: true });
   return {
-    kind: "plugin",
-    runtimeFamily: CODEX_RUNTIME_FAMILY,
     runtime: { pluginId: CODEX_PLUGIN_ID, capabilityId: CODEX_CAPABILITY_ID },
     runtimeConfig: {
       executablePathOverride: executable,

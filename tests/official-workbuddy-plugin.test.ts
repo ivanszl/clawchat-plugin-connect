@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildOfficialPlugin, type OfficialPluginDescriptor } from "../scripts/build-official-plugins";
 import { defaultConfig, saveConfig } from "../src/config";
-import { createPluginAgentBinding } from "../src/plugin/binding";
+import { createAgentBinding } from "../src/plugin/binding";
 import { ConnectPluginHost } from "../src/plugin/host";
 import {
   inspectInstalledDistribution,
@@ -327,8 +327,7 @@ describe("official WorkBuddy Runtime Plugin", () => {
       });
       expect(() =>
         registry.lifecycleCapabilities(
-          createPluginAgentBinding({
-            runtimeFamily: WORKBUDDY_OFFICIAL_RUNTIME_FAMILY,
+          createAgentBinding({
             pluginId: WORKBUDDY_OFFICIAL_PLUGIN_ID,
             capabilityId: WORKBUDDY_AI_CAPABILITY_ID,
             configuration: { profile: "workbuddy-cn" },
@@ -342,7 +341,7 @@ describe("official WorkBuddy Runtime Plugin", () => {
         status: "active",
       });
       await expect(host.disable(WORKBUDDY_OFFICIAL_PLUGIN_ID)).resolves.toMatchObject({ status: "disabled" });
-      expect(() => registry.lifecycleCapabilities(aiBinding)).toThrow("no Runtime Adapter registered for provider");
+      expect(() => registry.lifecycleCapabilities(aiBinding)).toThrow("is not active");
       await expect(host.remove(WORKBUDDY_OFFICIAL_PLUGIN_ID)).resolves.toMatchObject({
         pluginId: WORKBUDDY_OFFICIAL_PLUGIN_ID,
       });
@@ -373,8 +372,7 @@ async function installedHarness(profile: WorkBuddyProfile): Promise<AdapterHarne
   const host = new ConnectPluginHost(configPath, registry, () => undefined);
   await host.install({ source: built.outputPath });
   const capabilityId = profile === "workbuddy-ai" ? WORKBUDDY_AI_CAPABILITY_ID : WORKBUDDY_CN_CAPABILITY_ID;
-  const binding = createPluginAgentBinding({
-    runtimeFamily: WORKBUDDY_OFFICIAL_RUNTIME_FAMILY,
+  const binding = createAgentBinding({
     pluginId: fixtureDescriptor.manifest.pluginId,
     capabilityId,
   });
@@ -413,8 +411,7 @@ async function installedHarness(profile: WorkBuddyProfile): Promise<AdapterHarne
 }
 
 function pluginBinding(profile: WorkBuddyProfile) {
-  return createPluginAgentBinding({
-    runtimeFamily: WORKBUDDY_OFFICIAL_RUNTIME_FAMILY,
+  return createAgentBinding({
     pluginId: WORKBUDDY_OFFICIAL_PLUGIN_ID,
     capabilityId: profile === "workbuddy-ai" ? WORKBUDDY_AI_CAPABILITY_ID : WORKBUDDY_CN_CAPABILITY_ID,
   });

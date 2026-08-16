@@ -6,12 +6,13 @@ import {
 } from "../src/clawchat/output-visibility";
 import { defaultConfig } from "../src/config";
 import type { ConnectStateStore } from "../src/persistence/state";
+import { pluginBinding } from "./runtime-adapter-fixture";
 
 describe("output visibility", () => {
   it("uses a Binding-scoped chat override before the Binding default", async () => {
     const config = defaultConfig();
     config.outputVisibility = "minimal";
-    config.agents.work = { kind: "codex", outputVisibility: "normal" };
+    config.agents.work = pluginBinding({}, { outputVisibility: "normal" });
     const store = { getOutputVisibility: mock(async () => "full") } as unknown as ConnectStateStore;
     await expect(resolveOutputVisibility({ config, store, bindingId: "work", chatId: "chat-1" })).resolves.toBe("full");
     expect(store.getOutputVisibility).toHaveBeenCalledWith("work", "chat-1");
@@ -19,7 +20,7 @@ describe("output visibility", () => {
   it("falls back from the Binding default to the installation default", async () => {
     const config = defaultConfig();
     config.outputVisibility = "minimal";
-    config.agents.work = { kind: "codex", outputVisibility: "full" };
+    config.agents.work = pluginBinding({}, { outputVisibility: "full" });
     await expect(resolveOutputVisibility({ config, bindingId: "work", chatId: "chat-1" })).resolves.toBe("full");
     await expect(resolveOutputVisibility({ config, bindingId: "missing", chatId: "chat-1" })).resolves.toBe("minimal");
   });

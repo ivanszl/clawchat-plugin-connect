@@ -14,7 +14,7 @@ import {
 import { type ClientHttpServerOptions, startClientInterface } from "../src/client-interface/server";
 import { defaultConfig, getAgentBinding, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
-import { createPluginAgentBinding } from "../src/plugin/binding";
+import { createAgentBinding } from "../src/plugin/binding";
 import type { ConnectPluginContext } from "../src/plugin/sdk";
 import { installLocalPlugin, listInstalledPlugins, removeInstalledPlugin } from "../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
@@ -118,8 +118,7 @@ describe("local Runtime Plugin platform", () => {
     config = upsertAgentBinding(
       config,
       "trace-alpha",
-      createPluginAgentBinding({
-        runtimeFamily: "reference",
+      createAgentBinding({
         pluginId: firstInstall.pluginId,
         capabilityId: "reference-runtime",
         configuration: { instance: "alpha" },
@@ -128,8 +127,7 @@ describe("local Runtime Plugin platform", () => {
     config = upsertAgentBinding(
       config,
       "trace-beta",
-      createPluginAgentBinding({
-        runtimeFamily: "reference",
+      createAgentBinding({
         pluginId: secondInstall.pluginId,
         capabilityId: "reference-runtime",
         configuration: { instance: "beta" },
@@ -290,15 +288,15 @@ describe("local Runtime Plugin platform", () => {
     releaseService?.();
     await expect(service).resolves.toEqual({ startedAgentIds: ["trace-alpha", "trace-beta"] });
     await expect(registry.prepare(getAgentBinding(config, "trace-alpha"))).rejects.toThrow(
-      "no Runtime Adapter registered for provider",
+      "is not active",
     );
     await removeInstalledPlugin(configPath, firstInstall.pluginId);
     expect((await listInstalledPlugins(configPath)).map((plugin) => plugin.pluginId)).toEqual([secondInstall.pluginId]);
     expect(await loadConfig(configPath)).toMatchObject({
       agents: {
         "trace-alpha": {
-          kind: "plugin",
           runtime: { pluginId: firstInstall.pluginId, capabilityId: "reference-runtime" },
+          runtimeConfig: { instance: "alpha" },
         },
       },
     });

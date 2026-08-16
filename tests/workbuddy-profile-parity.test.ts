@@ -9,7 +9,11 @@ import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { RuntimeActivity } from "../src/runtime/types";
-import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
+import {
+  createWorkBuddyRuntimeAdapter,
+  type WorkBuddyRuntimeAdapterBinding,
+  type WorkBuddyRuntimeSource,
+} from "../src/runtime/workbuddy-adapter";
 import {
   discoverWorkBuddyTask,
   type WorkBuddyDiscoveryObservation,
@@ -25,7 +29,7 @@ import {
   readWorkBuddyTaskRuntimeSelection,
   reconcileWorkBuddyTaskRuntime,
 } from "../src/runtime/workbuddy-task-discovery-macos";
-import type { WorkBuddyAgentBindingConfig } from "../src/types";
+import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 const profiles: [WorkBuddyProfile][] = [["workbuddy-ai"], ["workbuddy-cn"]];
 const taskId = "00000000-0000-4000-8000-000000000001";
@@ -106,7 +110,7 @@ describe.each(profiles)("WorkBuddy profile parity: %s", (profile) => {
     const directory = await mkdtemp(join(tmpdir(), `${profile}-parity-`));
     const workspace = join(directory, "workspace");
     await mkdir(workspace);
-    const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile };
+    const binding: WorkBuddyRuntimeAdapterBinding = { ...pluginBinding(), profile };
     const prompts: string[] = [];
     const history = [activity("native-user", "user", "prior context", "history", "0.1")];
     const runtimeSource: WorkBuddyRuntimeSource = {
@@ -138,7 +142,7 @@ describe.each(profiles)("WorkBuddy profile parity: %s", (profile) => {
       },
     };
     const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
-    const registry = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = profile;

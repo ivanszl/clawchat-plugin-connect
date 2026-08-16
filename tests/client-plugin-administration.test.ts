@@ -13,7 +13,7 @@ import {
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
-import { createPluginAgentBinding } from "../src/plugin/binding";
+import { createAgentBinding } from "../src/plugin/binding";
 import type { OfficialPluginDiscovery } from "../src/plugin/catalog";
 import type { ConfigurePluginOptions, ConnectPluginHost, ManagePluginOptions } from "../src/plugin/host";
 import { type InstalledPluginLockEntry, validatePluginConfiguration } from "../src/plugin/store";
@@ -35,8 +35,7 @@ describe("Connect Client trusted Plugin administration", () => {
     config.stateDbPath = join(directory, "state.sqlite");
     config.clientPort = 47_896;
     config.agents["plugin-binding"] = {
-      ...createPluginAgentBinding({
-        runtimeFamily: "fixture",
+      ...createAgentBinding({
         pluginId: "test.healthy",
         capabilityId: "runtime",
         configuration: { workspace: "isolated" },
@@ -46,9 +45,18 @@ describe("Connect Client trusted Plugin administration", () => {
     const store = createStateStore({ dbPath: config.stateDbPath });
     stores.push(store);
     await store.initialize();
+    await store.upsertActivation({
+      localAgentId: "plugin-binding",
+      accessToken: "fixture-access",
+      refreshToken: null,
+      serverAgentId: "fixture-server-agent",
+      userId: "fixture-agent-user",
+      ownerUserId: "fixture-owner",
+      conversationId: "fixture-conversation",
+    });
     const registry = new RuntimeAdapterRegistry([
       {
-        kind: "fixture",
+        family: "fixture",
         runtime: { pluginId: "test.healthy", capabilityId: "runtime" },
         create: () => ({
           kind: "fixture",
@@ -224,6 +232,88 @@ describe("Connect Client trusted Plugin administration", () => {
         headers: { [BINDING_SCOPE_HEADER]: "plugin-binding" },
       }).then((response) => response.status),
     ).resolves.toBe(404);
+
+    const createdBindingResponse = await request(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/bindings/new-binding/provider",
+      {
+        method: "PUT",
+        json: {
+          requestId: "binding-provider-create",
+          pluginId: "test.healthy",
+          capabilityId: "runtime",
+          runtimeConfig: { workspace: "project" },
+          displayName: "New Binding",
+          createOnly: true,
+        },
+      },
+    );
+    expect(createdBindingResponse.status).toBe(200);
+    await expect(createdBindingResponse.json()).resolves.toMatchObject({
+      bindingId: "new-binding",
+      displayName: "New Binding",
+      runtimePluginId: "test.healthy",
+      runtimeCapabilityId: "runtime",
+      runtimeConfiguration: { workspace: "project" },
+    });
+    expect(config.agents["new-binding"]).toEqual({
+      runtime: { pluginId: "test.healthy", capabilityId: "runtime" },
+      runtimeConfig: { workspace: "project" },
+      displayName: "New Binding",
+    });
+
+    const duplicateBindingResponse = await request(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/bindings/new-binding/provider",
+      {
+        method: "PUT",
+        json: {
+          requestId: "binding-provider-duplicate",
+          pluginId: "test.healthy",
+          capabilityId: "runtime",
+          runtimeConfig: { workspace: "replacement" },
+          createOnly: true,
+        },
+      },
+    );
+    expect(duplicateBindingResponse.status).toBe(409);
+    expect(config.agents["new-binding"]?.runtimeConfig).toEqual({ workspace: "project" });
+
+    const invalidConfigurationResponse = await request(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/bindings/invalid-binding/provider",
+      {
+        method: "PUT",
+        json: {
+          requestId: "binding-provider-invalid",
+          pluginId: "test.healthy",
+          capabilityId: "runtime",
+          runtimeConfig: {},
+        },
+      },
+    );
+    expect(invalidConfigurationResponse.status).toBe(400);
+    expect(config.agents["invalid-binding"]).toBeUndefined();
+
+    const activeBindingResponse = await request(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/bindings/plugin-binding/provider",
+      {
+        method: "PUT",
+        json: {
+          requestId: "binding-provider-active",
+          pluginId: "test.healthy",
+          capabilityId: "runtime",
+          runtimeConfig: { workspace: "changed" },
+        },
+      },
+    );
+    expect(activeBindingResponse.status).toBe(409);
+    expect(config.agents["plugin-binding"]?.runtimeConfig).toEqual({ workspace: "isolated" });
 
     expect(
       (
@@ -407,8 +497,7 @@ describe("Connect Client trusted Plugin administration", () => {
     config.stateDbPath = join(directory, "state.sqlite");
     config.clientHost = "0.0.0.0";
     config.clientPort = 47_897;
-    config.agents["private-binding"] = createPluginAgentBinding({
-      runtimeFamily: "fixture",
+    config.agents["private-binding"] = createAgentBinding({
       pluginId: "test.private-liveware",
       capabilityId: "runtime",
       configuration: {},
@@ -425,7 +514,7 @@ describe("Connect Client trusted Plugin administration", () => {
     });
     const registry = new RuntimeAdapterRegistry([
       {
-        kind: "fixture",
+        family: "fixture",
         runtime: { pluginId: "test.private-liveware", capabilityId: "runtime" },
         create: () => ({
           kind: "fixture",
@@ -469,6 +558,7 @@ describe("Connect Client trusted Plugin administration", () => {
     const remoteRoutes = [
       ["GET", "/client/v1/plugins/administration"],
       ["GET", "/client/v1/plugins/official"],
+      ["PUT", "/client/v1/bindings/private-binding/provider"],
       ["GET", "/client/v1/plugins"],
       ["POST", "/client/v1/plugins/upload"],
       ["POST", "/client/v1/plugins/official/setup"],
@@ -493,7 +583,7 @@ describe("Connect Client trusted Plugin administration", () => {
     }
     expect((await request(fetchHandler, lanOrigin, "/client/v1/bootstrap", {}, remotePeer)).status).toBe(200);
     expect((await request(fetchHandler, lanOrigin, "/client/v1/plugins", {}, loopbackPeer)).status).toBe(200);
-    expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenCalledTimes(2);
 
     const privateLiveware = await request(
       fetchHandler,

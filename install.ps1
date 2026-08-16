@@ -230,7 +230,7 @@ try {
   Write-Host "Installed Connect Client assets to $clientTarget"
   Write-Host "Installed official Plugin Bundles to $officialPluginsTarget"
   Write-Host "Installed managed Agent skills to $HOME\.agents\skills"
-  Write-Host "Run 'clawchat-connect init --agent work --kind codex' to begin."
+  Write-Host "Run 'clawchat-connect init', install a Runtime Plugin with 'clawchat-connect plugin setup', then create a Binding with exact --plugin and --capability IDs."
 } catch {
   if ($transactionStarted -and -not $transactionCommitted) {
     foreach ($entry in $targets) {

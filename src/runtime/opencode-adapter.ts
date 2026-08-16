@@ -16,7 +16,7 @@ import type {
   ToolPart,
 } from "@opencode-ai/sdk/v2/types";
 import { leadingSkillArguments } from "../agent/skill-invocation";
-import type { AgentBindingConfig, OpenCodeAgentBindingConfig, RuntimeWorkspace } from "../types";
+import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 import {
   createOpenCodeServerClient,
   type OpenCodeMessage,
@@ -35,9 +35,14 @@ import type {
   RuntimeSessionOption,
 } from "./types";
 import { runtimeInputIdentity, runtimeInputIdentityContains } from "./types";
+export interface OpenCodeRuntimeAdapterBinding extends AgentBindingConfig {
+  executablePathOverride?: string;
+  env?: Record<string, string>;
+}
+
 
 export interface OpenCodeRuntimeAdapterOptions {
-  createServer?: (binding: OpenCodeAgentBindingConfig) => Promise<OpenCodeServerClient>;
+  createServer?: (binding: OpenCodeRuntimeAdapterBinding) => Promise<OpenCodeServerClient>;
   serverClientOptions?: OpenCodeServerClientOptions;
   eventReconnectDelays?: readonly number[];
 }
@@ -1259,8 +1264,7 @@ function isConnectIsolatedWorkspace(directory: string): boolean {
   return identity.length === 3 && identity.every((segment) => /^[a-f0-9]{24}$/iu.test(segment));
 }
 
-function requireOpenCodeBinding(binding: AgentBindingConfig): OpenCodeAgentBindingConfig {
-  if (binding.kind !== "opencode") throw new Error("OpenCode Runtime Adapter requires an OpenCode Agent Binding");
+function requireOpenCodeBinding(binding: AgentBindingConfig): OpenCodeRuntimeAdapterBinding {
   return binding;
 }
 

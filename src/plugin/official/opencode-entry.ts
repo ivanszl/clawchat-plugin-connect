@@ -1,9 +1,9 @@
 import {
   createOpenCodeRuntimeAdapter,
   type OpenCodeRuntimeAdapter,
+  type OpenCodeRuntimeAdapterBinding,
   type OpenCodeRuntimeAdapterOptions,
 } from "../../runtime/opencode-adapter";
-import type { OpenCodeAgentBindingConfig } from "../../types";
 import type {
   ConnectPluginConfiguration,
   ConnectPluginEntry,
@@ -11,7 +11,11 @@ import type {
   ConnectPluginRuntimeStartContext,
 } from "../sdk";
 import { type CompatibleOpenCodeExecutable, requireCompatibleOpenCodeExecutable } from "./opencode-compatibility";
-import { OPENCODE_OFFICIAL_CAPABILITY_ID, OPENCODE_OFFICIAL_RUNTIME_FAMILY } from "./opencode-manifest";
+import {
+  OPENCODE_OFFICIAL_CAPABILITY_ID,
+  OPENCODE_OFFICIAL_PLUGIN_ID,
+  OPENCODE_OFFICIAL_RUNTIME_FAMILY,
+} from "./opencode-manifest";
 
 interface OpenCodeInstallationConfiguration {
   executablePath?: string;
@@ -53,10 +57,14 @@ export function createOpenCodeOfficialPluginEntry(
 function openCodeBinding(
   installation: OpenCodeInstallationConfiguration,
   configuration: ConnectPluginConfiguration,
-): OpenCodeAgentBindingConfig {
-  const binding = configuration as Omit<OpenCodeAgentBindingConfig, "kind">;
+): OpenCodeRuntimeAdapterBinding {
+  const binding = structuredClone(configuration) as Omit<OpenCodeRuntimeAdapterBinding, "runtime" | "runtimeConfig">;
   return {
-    kind: "opencode",
+    runtime: {
+      pluginId: OPENCODE_OFFICIAL_PLUGIN_ID,
+      capabilityId: OPENCODE_OFFICIAL_CAPABILITY_ID,
+    },
+    runtimeConfig: structuredClone(configuration) as Record<string, unknown>,
     ...(installation.executablePath && !binding.executablePathOverride
       ? { executablePathOverride: installation.executablePath }
       : {}),
@@ -66,7 +74,7 @@ function openCodeBinding(
 
 function bridgeOpenCodeAdapter(
   adapter: OpenCodeRuntimeAdapter,
-  binding: OpenCodeAgentBindingConfig,
+  binding: OpenCodeRuntimeAdapterBinding,
 ): ConnectPluginRuntimeAdapter {
   return {
     modes: adapter.modes,

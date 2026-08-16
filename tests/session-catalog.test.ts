@@ -9,7 +9,7 @@ import { type ConnectStateStore, createStateStore } from "../src/persistence/sta
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
 import { encodeCodeBuddySessionId } from "../src/runtime/workbuddy-runtime-target";
-import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
+import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 const stores: ConnectStateStore[] = [];
 
@@ -39,7 +39,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -51,6 +51,50 @@ describe("Session Catalog workspace grouping", () => {
       bindings: [{ bindingId: "codex", status: "disconnected", entries: [] }],
     });
     expect(discoveryCalls).toBe(0);
+  });
+
+  it("keeps Sessions inspectable and offline when their installed Runtime Plugin is inactive", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-plugin-inactive-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    stores.push(store);
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "plugin-binding",
+      runtimeSessionId: "thread-1",
+      projectId: null,
+      name: "Archived Plugin Session",
+      hasMessages: true,
+      isCurrent: true,
+    });
+    const config = defaultConfig();
+    config.agents = { "plugin-binding": pluginBinding({}, { displayName: "Plugin Binding" }) };
+    const runtimeAdapters = new RuntimeAdapterRegistry([]);
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      runtimeFamily: () => "fixture",
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+
+    const catalogView = await catalog.view();
+    const entry = catalogView.bindings[0]?.entries[0];
+    expect(catalogView.bindings[0]).toMatchObject({
+      bindingId: "plugin-binding",
+      kind: "fixture",
+      status: "disconnected",
+    });
+    expect(entry).toMatchObject({
+      name: "Archived Plugin Session",
+      status: "offline",
+      allowedActions: [],
+    });
+    await expect(catalog.sessionView(entry?.sessionRef ?? "")).resolves.toMatchObject({
+      status: "offline",
+      allowedActions: [],
+      turnSubmissionCapability: { prompt: { allowed: false } },
+    });
   });
 
   it("does not treat a transient ClawChat connection error as Runtime startup unavailability", async () => {
@@ -74,7 +118,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
 
     await new SessionCatalog({
       config,
@@ -106,7 +150,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -149,7 +193,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -190,7 +234,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -235,7 +279,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { desktop: { kind: "workbuddy", displayName: "WorkBuddy", profile: "workbuddy-cn" } };
+    config.agents = { desktop: pluginBinding({ profile: "workbuddy-cn" }, { displayName: "WorkBuddy" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -274,7 +318,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -318,7 +362,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -373,7 +417,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -408,7 +452,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { desktop: { kind: "workbuddy", displayName: "WorkBuddy", profile: "workbuddy-cn" } };
+    config.agents = { desktop: pluginBinding({ profile: "workbuddy-cn" }, { displayName: "WorkBuddy" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -470,7 +514,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -563,7 +607,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,
@@ -649,7 +693,7 @@ describe("Session Catalog workspace grouping", () => {
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
       config,
       stateStore: store,

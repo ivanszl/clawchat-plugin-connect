@@ -1,9 +1,16 @@
 import type { ConnectRuntimeAdapter } from "../../runtime/types";
-import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeAdapterOptions } from "../../runtime/workbuddy-adapter";
+import {
+  createWorkBuddyRuntimeAdapter,
+  type WorkBuddyRuntimeAdapterBinding,
+  type WorkBuddyRuntimeAdapterOptions,
+} from "../../runtime/workbuddy-adapter";
 import type { WorkBuddyProfile } from "../../runtime/workbuddy-task-discovery";
-import type { WorkBuddyAgentBindingConfig } from "../../types";
 import type { ConnectPluginEntry, ConnectPluginRuntimeAdapter, ConnectPluginRuntimeStartContext } from "../sdk";
-import { OFFICIAL_WORKBUDDY_DISTRIBUTIONS, WORKBUDDY_OFFICIAL_RUNTIME_FAMILY } from "./workbuddy-manifest";
+import {
+  OFFICIAL_WORKBUDDY_DISTRIBUTIONS,
+  WORKBUDDY_OFFICIAL_PLUGIN_ID,
+  WORKBUDDY_OFFICIAL_RUNTIME_FAMILY,
+} from "./workbuddy-manifest";
 
 export {
   WORKBUDDY_AI_CAPABILITY_ID,
@@ -32,10 +39,7 @@ export function createWorkBuddyOfficialPluginEntry(
           capabilityId: capability.capabilityId,
           family: WORKBUDDY_OFFICIAL_RUNTIME_FAMILY,
           create() {
-            const binding: WorkBuddyAgentBindingConfig = {
-              kind: "workbuddy",
-              profile: capability.profile,
-            };
+            const binding = workBuddyBinding(capability.profile, capability.capabilityId);
             return bridgeWorkBuddyAdapter(createWorkBuddyRuntimeAdapter(adapterOptions), binding);
           },
         });
@@ -48,13 +52,17 @@ export function createWorkBuddyOfficialAdapter(
   profile: WorkBuddyProfile,
   adapterOptions: WorkBuddyRuntimeAdapterOptions = {},
 ): ConnectPluginRuntimeAdapter {
-  const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile };
-  return bridgeWorkBuddyAdapter(createWorkBuddyRuntimeAdapter(adapterOptions), binding);
+  const capability = CAPABILITIES.find((candidate) => candidate.profile === profile);
+  if (!capability) throw new Error(`Unsupported WorkBuddy profile: ${profile}`);
+  return bridgeWorkBuddyAdapter(
+    createWorkBuddyRuntimeAdapter(adapterOptions),
+    workBuddyBinding(profile, capability.capabilityId),
+  );
 }
 
 function bridgeWorkBuddyAdapter(
   adapter: ConnectRuntimeAdapter,
-  binding: WorkBuddyAgentBindingConfig,
+  binding: WorkBuddyRuntimeAdapterBinding,
 ): ConnectPluginRuntimeAdapter {
   return {
     modes: adapter.modes,
@@ -113,7 +121,7 @@ function bridgeWorkBuddyAdapter(
 
 async function startWithoutHostPaths(
   adapter: ConnectRuntimeAdapter,
-  binding: WorkBuddyAgentBindingConfig,
+  binding: WorkBuddyRuntimeAdapterBinding,
   context: ConnectPluginRuntimeStartContext,
 ) {
   return await adapter.start(binding, {
@@ -125,5 +133,16 @@ async function startWithoutHostPaths(
     cacheMedia: context.cacheMedia,
   });
 }
+function workBuddyBinding(
+  profile: WorkBuddyProfile,
+  capabilityId: (typeof CAPABILITIES)[number]["capabilityId"],
+): WorkBuddyRuntimeAdapterBinding {
+  return {
+    runtime: { pluginId: WORKBUDDY_OFFICIAL_PLUGIN_ID, capabilityId },
+    runtimeConfig: {},
+    profile,
+  };
+}
+
 
 export default createWorkBuddyOfficialPluginEntry();

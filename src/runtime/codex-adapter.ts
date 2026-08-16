@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { replaceLeadingSkill } from "../agent/skill-invocation";
-import type { CodexAgentBindingConfig, CodexApprovalPolicy, CodexSandboxMode, RuntimeWorkspace } from "../types";
+import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 import {
   type CodexAppServerClient,
   type CodexAppServerNotification,
@@ -31,6 +31,22 @@ import type {
   RuntimeTranscriptEntry,
 } from "./types";
 import { runtimeInputIdentity, runtimeInputIdentityContains } from "./types";
+export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
+export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
+export type CodexApprovalPolicy = "never" | "on-request" | "untrusted";
+export type CodexWebSearchMode = "disabled" | "cached" | "live";
+
+export interface CodexRuntimeAdapterBinding extends AgentBindingConfig {
+  executablePathOverride?: string;
+  env?: Record<string, string>;
+  additionalDirectories?: string[];
+  codexPathOverride?: string;
+  sandboxMode?: CodexSandboxMode;
+  modelReasoningEffort?: CodexReasoningEffort;
+  approvalPolicy?: CodexApprovalPolicy;
+  webSearchMode?: CodexWebSearchMode;
+  networkAccessEnabled?: boolean;
+}
 
 interface CodexOutputEvent {
   kind: "final" | "assistant" | "tool" | "progress" | "reasoning" | "control" | "turn";
@@ -43,7 +59,7 @@ interface CodexOutputEvent {
 }
 
 export interface CreateCodexRuntimeAdapterOptions {
-  createAppServer?: (binding: CodexAgentBindingConfig) => Promise<CodexAppServerClient>;
+  createAppServer?: (binding: CodexRuntimeAdapterBinding) => Promise<CodexAppServerClient>;
   cacheMedia?: (media: ConnectRuntimeMedia, stateDbPath: string, trustedOrigins?: readonly string[]) => Promise<string>;
 }
 
@@ -76,7 +92,7 @@ export function createCodexRuntimeAdapter(options: CreateCodexRuntimeAdapterOpti
     for (const listener of skillChangeListeners) listener();
   };
 
-  const clientFor = async (binding: CodexAgentBindingConfig): Promise<CodexAppServerClient> => {
+  const clientFor = async (binding: CodexRuntimeAdapterBinding): Promise<CodexAppServerClient> => {
     if (client) return await client;
     const created = createAppServer(binding)
       .then((appServer) => {
@@ -509,12 +525,11 @@ function codexActivity(
   };
 }
 
-function requireCodexBinding(binding: { kind: string }): CodexAgentBindingConfig {
-  if (binding.kind !== "codex") throw new Error("Codex Runtime Adapter requires a Codex Agent Binding");
-  return binding as CodexAgentBindingConfig;
+function requireCodexBinding(binding: AgentBindingConfig): CodexRuntimeAdapterBinding {
+  return binding as CodexRuntimeAdapterBinding;
 }
 
-function codexHome(binding: CodexAgentBindingConfig): string {
+function codexHome(binding: CodexRuntimeAdapterBinding): string {
   return resolve(binding.env?.CODEX_HOME?.trim() || process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
 }
 
@@ -625,7 +640,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
 
   constructor(
     private readonly client: CodexAppServerClient,
-    private readonly binding: CodexAgentBindingConfig,
+    private readonly binding: CodexRuntimeAdapterBinding,
     private readonly context: ConnectRuntimeStartContext,
     private readonly cacheMedia: (
       media: ConnectRuntimeMedia,
@@ -1227,7 +1242,7 @@ function requestIdKey(value: unknown): string | null {
 }
 
 function threadConfig(
-  binding: CodexAgentBindingConfig,
+  binding: CodexRuntimeAdapterBinding,
   additionalDirectories: string[],
   reasoningEffort?: string,
 ): Record<string, unknown> {

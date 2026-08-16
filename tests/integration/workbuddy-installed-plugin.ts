@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildOfficialPlugin } from "../../scripts/build-official-plugins";
-import { createPluginAgentBinding } from "../../src/plugin/binding";
+import { createAgentBinding } from "../../src/plugin/binding";
 import { ConnectPluginHost } from "../../src/plugin/host";
 import workBuddyDescriptor from "../../src/plugin/official/workbuddy-descriptor";
 import {
@@ -14,10 +14,10 @@ import {
 import { installLocalPlugin } from "../../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import type { WorkBuddyProfile } from "../../src/runtime/workbuddy-task-discovery";
-import type { PluginAgentBindingConfig } from "../../src/types";
+import type { AgentBindingConfig } from "../../src/types";
 
 export interface InstalledWorkBuddyPluginRuntime {
-  readonly binding: PluginAgentBindingConfig;
+  readonly binding: AgentBindingConfig;
   readonly runtimeAdapters: RuntimeAdapterRegistry;
   close(): Promise<void>;
 }
@@ -46,8 +46,7 @@ export async function createInstalledWorkBuddyPluginRuntime(
   }
 
   const capabilityId = profile === "workbuddy-ai" ? WORKBUDDY_AI_CAPABILITY_ID : WORKBUDDY_CN_CAPABILITY_ID;
-  const binding = createPluginAgentBinding({
-    runtimeFamily: WORKBUDDY_OFFICIAL_RUNTIME_FAMILY,
+  const binding = createAgentBinding({
     pluginId: WORKBUDDY_OFFICIAL_PLUGIN_ID,
     capabilityId,
   });

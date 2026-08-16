@@ -1,8 +1,7 @@
 import { resolve } from "node:path";
 import { defaultConfigPath, loadConfig } from "../config";
 import { type ConnectStateStore, createStateStore } from "../persistence/state";
-import type { RuntimeAdapterRegistry } from "../runtime/registry";
-import { createReleasedRuntimeAdapterRegistry } from "../runtime/released-adapters";
+import { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { ConnectConfig } from "../types";
 import type { BindingProtocolEventHandlers } from "./binding-runtime";
 import { runConnectRootLifecycle } from "./connect-root-lifecycle";
@@ -45,7 +44,7 @@ export async function startConnectService(
       writeError,
     },
     surfaceDependencies: dependencies,
-    createRuntimeAdapterRegistry: dependencies.createRuntimeAdapterRegistry ?? createReleasedRuntimeAdapterRegistry,
+    createRuntimeAdapterRegistry: dependencies.createRuntimeAdapterRegistry ?? (() => new RuntimeAdapterRegistry()),
     waitUntilShutdown: options.waitUntilShutdown ?? waitForShutdown,
     reportPluginFailure: (pluginId, error) => {
       writeError(

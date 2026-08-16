@@ -4,6 +4,6 @@ status: accepted
 
 # Own stateful runtime instances per Agent Binding
 
-Runtime Adapter definitions are shared by kind, but every Agent Binding owns an independent stateful adapter instance and runtime process. Binding-specific environment, cached runtime clients, and shutdown lifecycle therefore cannot leak across Bindings of the same kind, and Connect can inject a fixed Binding identity into each runtime process.
+Runtime Adapter providers are shared by exact Plugin capability, but every Agent Binding owns an independent stateful adapter instance and runtime process. Binding-specific Runtime configuration, cached runtime clients, and shutdown lifecycle therefore cannot leak across Bindings that select the same capability. Provider-specific configuration remains inside the Binding's `runtimeConfig`; host-owned Binding identity does not travel through runtime environment configuration.
 
-ADR-0034 removes the former one-Binding-per-kind product constraint. Same-kind Agent Bindings continue to own independent Runtime instances.
+Agent Bindings that select the same exact Runtime Plugin capability continue to own independent Runtime instances.

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildOfficialPlugin } from "../scripts/build-official-plugins";
 import { defaultConfig, saveConfig } from "../src/config";
-import { createPluginAgentBinding } from "../src/plugin/binding";
+import { createAgentBinding } from "../src/plugin/binding";
 import { ConnectPluginHost } from "../src/plugin/host";
 import descriptor from "../src/plugin/official/opencode-descriptor";
 import { OPENCODE_OFFICIAL_CAPABILITY_ID, OPENCODE_OFFICIAL_PLUGIN_ID } from "../src/plugin/official/opencode-manifest";
@@ -24,8 +24,7 @@ runtimeAdapterConformance("installed official OpenCode Plugin", async () => {
   const directory = await mkdtemp(join(tmpdir(), "connect-opencode-installed-conformance-"));
   const configPath = join(directory, "config.json");
   const bundlePath = join(directory, "opencode.connect-plugin");
-  const binding = createPluginAgentBinding({
-    runtimeFamily: "opencode",
+  const binding = createAgentBinding({
     pluginId: OPENCODE_OFFICIAL_PLUGIN_ID,
     capabilityId: OPENCODE_OFFICIAL_CAPABILITY_ID,
     configuration: { env: { CONFORMANCE_INSTANCE: instance } },

@@ -19,7 +19,7 @@ import type {
   RuntimeActivity,
 } from "../src/runtime/types";
 import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
-import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
+import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 function message(text = "hello"): NormalizedInboundMessage {
   return {
@@ -66,7 +66,7 @@ function activity(text: string, outputKind: "final" | "progress" = "final"): Run
 
 async function runtimeFixture() {
   const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-runtime-"));
-  const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+  const config = upsertAgentBinding(defaultConfig(), "codex", pluginBinding());
   config.stateDbPath = join(directory, "state.sqlite");
   const store = createStateStore({ dbPath: config.stateDbPath });
   await store.upsertRuntimeSession({
@@ -106,7 +106,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       if (!current) throw new Error("current Session is missing");
       const taskId = "00000000-0000-4000-8000-000000000001";
       await fixture.store.setRuntimeSessionId(current.chatId, current.agentId, current.sessionId, taskId);
-      fixture.config.agents.codex = { kind: "workbuddy", profile };
+      fixture.config.agents.codex = pluginBinding({ profile });
       const prompts: ConnectRuntimePrompt[] = [];
       let starts = 0;
       let releaseFirst: (() => void) | undefined;
@@ -171,7 +171,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         },
       };
       const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
-      const runtimeAdapters = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+      const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
       const transcriptProjection = new TranscriptProjection({
         stateStore: fixture.store,
         config: fixture.config,
@@ -216,7 +216,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     const fixture = await runtimeFixture();
     const current = await fixture.store.getCurrentRuntimeSession("chat-1", "codex");
     if (!current) throw new Error("current Session is missing");
-    fixture.config.agents.codex = { kind: "workbuddy", profile: "workbuddy-ai" };
+    fixture.config.agents.codex = pluginBinding({ profile: "workbuddy-ai" });
     let nativeStarts = 0;
     const runtimeSource: WorkBuddyRuntimeSource = {
       listTasks: async () => [],
@@ -251,7 +251,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         };
       },
     });
-    const runtimeAdapters = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const transcriptProjection = new TranscriptProjection({
       stateStore: fixture.store,
       config: fixture.config,
@@ -669,11 +669,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
   it("resolves Session model selection before the Agent Binding default", async () => {
     const fixture = await runtimeFixture();
-    fixture.config.agents.codex = {
-      kind: "codex",
-      model: "gpt-binding",
-      modelReasoningEffort: "low",
-    };
+    fixture.config.agents.codex = pluginBinding({}, { model: "gpt-binding", modelReasoningEffort: "low" });
     await fixture.store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-1",
@@ -804,6 +800,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             stateStore: fixture.store,
             projects,
             listRuntimeModels: async () => models,
+            runtimeFamilyFor: () => "codex",
           })
         ).handled,
       true,
@@ -1290,6 +1287,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
             stateStore: fixture.store,
             projects,
             closeRuntimeSession: async (chatId) => await runtime.closeSession(chatId),
+            runtimeFamilyFor: () => "codex",
           })
         ).handled,
       true,
@@ -1383,6 +1381,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
               projects,
               closeRuntimeSession: async (chatId) => await runtime.closeSession(chatId),
               discoverRuntimeThreads: async (chatId) => await runtime.discoverRuntimeThreads(chatId),
+              runtimeFamilyFor: () => "codex",
             })
           ).handled,
         true,

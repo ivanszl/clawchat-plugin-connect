@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { CONNECT_VERSION } from "../service/version";
-import type { CodexAgentBindingConfig } from "../types";
+import type { CodexRuntimeAdapterBinding } from "./codex-adapter";
 
 type RpcId = number | string;
 type JsonObject = Record<string, unknown>;
@@ -168,7 +168,7 @@ export interface CreateCodexAppServerClientOptions {
 }
 
 export async function createCodexAppServerClient(
-  binding: CodexAgentBindingConfig,
+  binding: CodexRuntimeAdapterBinding,
   options: CreateCodexAppServerClientOptions = {},
 ): Promise<CodexAppServerClient> {
   const env = binding.env ? { ...process.env, ...binding.env } : undefined;

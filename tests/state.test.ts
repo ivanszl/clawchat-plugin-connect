@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
+import { pluginBinding } from "./runtime-adapter-fixture";
 
 async function tempDir(): Promise<string> {
   return await mkdtemp(join(tmpdir(), "clawchat-connect-"));
@@ -14,14 +15,14 @@ describe("agent-only config", () => {
   it("writes owner-only JSON config without project or directory config", async () => {
     const dir = await tempDir();
     const path = join(dir, "config.json");
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", pluginBinding());
     await saveConfig(config, path);
     const text = await readFile(path, "utf8");
     expect(text).toContain('"agents"');
     expect(text).not.toMatch(/"defaultProject"|"projects"|"workDir"/u);
     await expect(loadConfig(path)).resolves.toMatchObject({
       defaultAgent: "codex",
-      agents: { codex: { kind: "codex" } },
+      agents: { codex: pluginBinding() },
     });
     expect((await stat(path)).mode & 0o777).toBe(0o600);
   });

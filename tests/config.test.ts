@@ -9,78 +9,97 @@ async function tempConfigPath(): Promise<string> {
 }
 
 describe("Agent Binding configuration", () => {
-  it("defaults Codex Bindings to interactive approvals so Connect Client can surface requests", () => {
-    const config = normalizeConfig({
-      defaultAgent: "codex",
-      agents: { codex: { kind: "codex" } },
-    });
+  const exactRuntime = {
+    pluginId: "clawling.runtime.codex",
+    capabilityId: "runtime",
+  } as const;
 
-    expect(getAgentBinding(config, "codex")).toMatchObject({
-      kind: "codex",
-      approvalPolicy: "on-request",
-      env: { CLAWCHAT_CONNECT_AGENT_ID: "codex" },
-    });
-  });
-
-  it("injects the selected Binding identity after user environment merging", () => {
+  it("persists only an exact Runtime Plugin capability reference", () => {
     const config = normalizeConfig({
       defaultAgent: "work",
       agents: {
         work: {
-          kind: "codex",
-          env: { CLAWCHAT_CONNECT_AGENT_ID: "redirected", CUSTOM: "kept" },
+          runtime: exactRuntime,
+          runtimeConfig: { executablePathOverride: "/opt/codex" },
+          displayName: "Work",
         },
       },
     });
-    expect(getAgentBinding(config, "work").env).toEqual({
-      CLAWCHAT_CONNECT_AGENT_ID: "work",
-      CUSTOM: "kept",
+
+    expect(config.agents.work).toEqual({
+      runtime: exactRuntime,
+      runtimeConfig: { executablePathOverride: "/opt/codex" },
+      displayName: "Work",
     });
+    expect("kind" in config.agents.work!).toBe(false);
+    expect("runtimeFamily" in config.agents.work!).toBe(false);
   });
 
-  it("enables a private Liveware Exposure by default and accepts only off, private, or public", () => {
-    expect(normalizeConfig({}).livewareAccessPolicy).toBe("private");
-    expect(normalizeConfig({ livewareAccessPolicy: "off" }).livewareAccessPolicy).toBe("off");
-    expect(normalizeConfig({ livewareAccessPolicy: "public" }).livewareAccessPolicy).toBe("public");
-    expect(() => normalizeConfig({ livewareAccessPolicy: "allowlist" })).toThrow(
-      "livewareAccessPolicy must be one of: off, private, public",
+  it("rejects both built-in and expanded Plugin Binding compatibility forms", () => {
+    expect(() => normalizeConfig({ agents: { work: { kind: "codex" } } })).toThrow(
+      "Agent Binding work contains unsupported field: kind",
     );
+    expect(() =>
+      normalizeConfig({
+        agents: {
+          work: {
+            kind: "plugin",
+            runtimeFamily: "codex",
+            runtime: exactRuntime,
+            runtimeConfig: {},
+          },
+        },
+      }),
+    ).toThrow("Agent Binding work contains unsupported field: kind, runtimeFamily");
+    expect(() =>
+      normalizeConfig({
+        agents: {
+          work: {
+            runtime: exactRuntime,
+            runtimeConfig: {},
+            executablePathOverride: "/opt/codex",
+            env: { CODEX_HOME: "/tmp/codex-home" },
+          },
+        },
+      }),
+    ).toThrow("Agent Binding work contains unsupported field: executablePathOverride, env");
   });
 
-  it("normalizes and persists a Codex Runtime configuration without making the Binding ID semantic", async () => {
+  it("normalizes generic Binding preferences without interpreting Runtime configuration", async () => {
     const config = normalizeConfig({
       clientHost: "0.0.0.0",
       mediaUploadUrl: "https://media.example/media/upload",
       defaultAgent: "work",
       agents: {
         work: {
-          kind: "codex",
-          codexPathOverride: "/opt/codex",
+          runtime: exactRuntime,
+          runtimeConfig: {
+            model: "gpt-5-codex",
+            sandboxMode: "workspace-write",
+            env: { CODEX_HOME: "/tmp/codex-home" },
+          },
+          displayName: "Local Codex",
+          outputVisibility: "full",
           model: "gpt-5-codex",
-          sandboxMode: "workspace-write",
           modelReasoningEffort: "high",
-          approvalPolicy: "never",
-          webSearchMode: "live",
-          networkAccessEnabled: true,
-          additionalDirectories: ["/tmp/shared"],
-          env: { CODEX_HOME: "/tmp/codex-home" },
+          sessionOptions: { collaborationMode: "default" },
         },
       },
     });
 
-    expect(getAgentBinding(config, "work")).toEqual(
-      expect.objectContaining({
-        kind: "codex",
-        codexPathOverride: "/opt/codex",
+    expect(getAgentBinding(config, "work")).toEqual({
+      runtime: exactRuntime,
+      runtimeConfig: {
         model: "gpt-5-codex",
         sandboxMode: "workspace-write",
-        modelReasoningEffort: "high",
-        approvalPolicy: "never",
-        webSearchMode: "live",
-        networkAccessEnabled: true,
-        additionalDirectories: ["/tmp/shared"],
-      }),
-    );
+        env: { CODEX_HOME: "/tmp/codex-home" },
+      },
+      displayName: "Local Codex",
+      outputVisibility: "full",
+      model: "gpt-5-codex",
+      modelReasoningEffort: "high",
+      sessionOptions: { collaborationMode: "default" },
+    });
     expect(config.clientHost).toBe("0.0.0.0");
     expect(config.mediaUploadUrl).toBe("https://media.example/media/upload");
 
@@ -89,146 +108,77 @@ describe("Agent Binding configuration", () => {
     await expect(loadConfig(path)).resolves.toEqual(config);
   });
 
-  it("normalizes an OpenCode Binding without managing provider credentials", () => {
-    const config = normalizeConfig({
-      defaultAgent: "open",
-      agents: {
-        open: {
-          kind: "opencode",
-          executablePathOverride: "/opt/opencode",
-          displayName: "OpenCode",
-          env: { OPENCODE_CONFIG_DIR: "/tmp/opencode-config" },
-          additionalDirectories: ["/repo/shared", "/repo/shared"],
-          sessionOptions: {
-            agent: "build",
-            model: "anthropic/claude-sonnet-4-5",
-            variant: "high",
-          },
-        },
-      },
-    });
-
-    expect(getAgentBinding(config, "open")).toEqual({
-      kind: "opencode",
-      executablePathOverride: "/opt/opencode",
-      displayName: "OpenCode",
-      env: {
-        CLAWCHAT_CONNECT_AGENT_ID: "open",
-        OPENCODE_CONFIG_DIR: "/tmp/opencode-config",
-      },
-      additionalDirectories: ["/repo/shared"],
-      sessionOptions: {
-        agent: "build",
-        model: "anthropic/claude-sonnet-4-5",
-        variant: "high",
-      },
-    });
-  });
-
-  it("normalizes an explicit WorkBuddy AI profile without accepting ephemeral endpoint configuration", () => {
-    const config = normalizeConfig({
-      defaultAgent: "desktop-task",
-      agents: {
-        "desktop-task": {
-          kind: "workbuddy",
-          profile: "workbuddy-ai",
-          displayName: "Desktop Task",
-        },
-      },
-    });
-
-    expect(getAgentBinding(config, "desktop-task")).toEqual({
-      kind: "workbuddy",
-      profile: "workbuddy-ai",
-      displayName: "Desktop Task",
-      env: { CLAWCHAT_CONNECT_AGENT_ID: "desktop-task" },
-    });
+  it("rejects malformed exact capability identity and configuration", () => {
     expect(() =>
       normalizeConfig({
         agents: {
-          arbitrary: {
-            kind: "workbuddy",
-            profile: "workbuddy-ai",
-            endpoint: "http://127.0.0.1:43129/api/v1/acp",
-            connectionId: "ephemeral-connection",
-            sessionToken: "ephemeral-token",
+          work: {
+            runtime: { pluginId: "Codex Plugin", capabilityId: "runtime" },
+            runtimeConfig: {},
           },
         },
       }),
-    ).toThrow("WorkBuddy Agent Binding field is managed by the selected desktop distribution: endpoint");
+    ).toThrow("Agent Binding work Plugin ID must be a stable lowercase identifier");
+    expect(() =>
+      normalizeConfig({
+        agents: {
+          work: {
+            runtime: { ...exactRuntime, family: "codex" },
+            runtimeConfig: {},
+          },
+        },
+      }),
+    ).toThrow("Agent Binding work Runtime capability reference must contain only pluginId and capabilityId");
+    expect(() =>
+      normalizeConfig({
+        agents: {
+          work: {
+            runtime: exactRuntime,
+            runtimeConfig: [],
+          },
+        },
+      }),
+    ).toThrow("Agent Binding work Runtime capability configuration must be an object");
   });
 
-  it("normalizes an explicit mainland WorkBuddy profile without falling back to WorkBuddy AI", () => {
+  it("allows several Bindings to reference one exact provider independently", () => {
     const config = normalizeConfig({
-      defaultAgent: "mainland-desktop",
       agents: {
-        "mainland-desktop": {
-          kind: "workbuddy",
-          profile: "workbuddy-cn",
-          displayName: "Mainland WorkBuddy",
-        },
+        personal: { runtime: exactRuntime, runtimeConfig: { home: "personal" } },
+        work: { runtime: exactRuntime, runtimeConfig: { home: "work" } },
       },
     });
 
-    expect(getAgentBinding(config, "mainland-desktop")).toEqual({
-      kind: "workbuddy",
-      profile: "workbuddy-cn",
-      displayName: "Mainland WorkBuddy",
-      env: { CLAWCHAT_CONNECT_AGENT_ID: "mainland-desktop" },
-    });
-    expect(() =>
-      normalizeConfig({ agents: { desktop: { kind: "workbuddy", profile: "workbuddy-mainland" } } }),
-    ).toThrow("WorkBuddy profile must be explicitly set to one of: workbuddy-ai, workbuddy-cn");
+    expect(config.agents.personal?.runtime).toEqual(exactRuntime);
+    expect(config.agents.personal?.runtimeConfig).toEqual({ home: "personal" });
+    expect(config.agents.work?.runtime).toEqual(exactRuntime);
+    expect(config.agents.work?.runtimeConfig).toEqual({ home: "work" });
   });
 
-  it.each([
-    ["endpoint", "http://127.0.0.1:43129/api/v1/acp"],
-    ["port", 43_129],
-    ["connectionId", "ephemeral-connection"],
-    ["sessionToken", "ephemeral-session"],
-    ["password", "product-password"],
-    ["authorization", "Bearer product-token"],
-    ["env", { CODEBUDDY_CONFIG_DIR: "/tmp/injected-product-config" }],
-    ["applicationVersion", "latest"],
-  ])("rejects the WorkBuddy-managed configuration field %s", (field, value) => {
-    expect(() =>
-      normalizeConfig({
-        agents: {
-          desktop: { kind: "workbuddy", profile: "workbuddy-ai", [field]: value },
-        },
-      }),
-    ).toThrow(`WorkBuddy Agent Binding field is managed by the selected desktop distribution: ${field}`);
-  });
-
-  it("rejects OpenCode Server controls that Connect owns", () => {
-    expect(() =>
-      normalizeConfig({
-        agents: {
-          open: {
-            kind: "opencode",
-            env: { OPENCODE_SERVER_PASSWORD: "user-selected" },
-          },
-        },
-      }),
-    ).toThrow("OPENCODE_SERVER_PASSWORD is managed by Connect");
+  it("enables a private Liveware Exposure by default and accepts the current policies", () => {
+    expect(normalizeConfig({}).livewareAccessPolicy).toBe("private");
+    expect(normalizeConfig({ livewareAccessPolicy: "off" }).livewareAccessPolicy).toBe("off");
+    expect(normalizeConfig({ livewareAccessPolicy: "public" }).livewareAccessPolicy).toBe("public");
+    expect(() => normalizeConfig({ livewareAccessPolicy: "allowlist" })).toThrow(
+      "livewareAccessPolicy must be one of: off, private, public",
+    );
   });
 
   it("derives a missing media upload endpoint from a custom API base URL", () => {
     const config = normalizeConfig({
       baseUrl: "https://self-hosted.example/connect",
       websocketUrl: "wss://self-hosted.example/ws",
-      agents: { codex: { kind: "codex" } },
+      agents: { work: { runtime: exactRuntime, runtimeConfig: {} } },
     });
-
     expect(config.mediaUploadUrl).toBe("https://self-hosted.example/media/upload");
 
-    const migrated = normalizeConfig({
+    const normalized = normalizeConfig({
       baseUrl: "https://self-hosted.example/connect",
       websocketUrl: "wss://self-hosted.example/ws",
       mediaUploadUrl: "https://app.clawling.com/media/upload",
-      agents: { codex: { kind: "codex" } },
+      agents: { work: { runtime: exactRuntime, runtimeConfig: {} } },
     });
-    expect(migrated.mediaUploadUrl).toBe("https://self-hosted.example/media/upload");
+    expect(normalized.mediaUploadUrl).toBe("https://self-hosted.example/media/upload");
   });
 
   it("uses a Session-named pending-turn limit without accepting the removed conversation setting", () => {
@@ -238,64 +188,13 @@ describe("Agent Binding configuration", () => {
     expect("maxPendingPerChat" in legacy).toBe(false);
   });
 
-  it("rejects legacy agent shapes instead of migrating them", () => {
-    expect(() =>
-      normalizeConfig({
-        defaultAgent: "codex",
-        agents: { codex: { command: "codex" } },
-      }),
-    ).toThrow("Agent Binding codex Runtime kind is not supported in this release: (missing)");
-  });
-
-  it("rejects Runtime kinds without a released Adapter", () => {
-    expect(() =>
-      normalizeConfig({
-        defaultAgent: "other",
-        agents: { other: { kind: "unsupported" } },
-      }),
-    ).toThrow("Agent Binding other Runtime kind is not supported in this release: unsupported");
-  });
-
-  it("allows multiple Agent Bindings to use the same Runtime Adapter kind", () => {
-    const config = normalizeConfig({
-      agents: {
-        personal: { kind: "codex" },
-        work: { kind: "codex" },
-      },
-    });
-
-    expect(Object.keys(config.agents)).toEqual(["personal", "work"]);
-    expect(config.agents.personal?.kind).toBe("codex");
-    expect(config.agents.work?.kind).toBe("codex");
-  });
-
-  it("rejects invalid security options instead of silently broadening access", () => {
+  it("rejects invalid host access and relative state paths", () => {
     expect(() => normalizeConfig({ clientHost: "192.168.1.20" })).toThrow(
       "clientHost must be one of: 127.0.0.1, 0.0.0.0",
     );
-    expect(() =>
-      normalizeConfig({
-        defaultAgent: "codex",
-        agents: { codex: { kind: "codex", sandboxMode: "unsafe" } },
-      }),
-    ).toThrow("sandboxMode must be one of");
-    expect(() =>
-      normalizeConfig({
-        defaultAgent: "codex",
-        agents: { codex: { kind: "codex", approvalPolicy: "always" } },
-      }),
-    ).toThrow("approvalPolicy must be one of");
-  });
-
-  it("rejects legacy fields and relative state paths", () => {
-    expect(() =>
-      normalizeConfig({
-        agents: { codex: { kind: "codex", mode: "read-only" } },
-      }),
-    ).toThrow("legacy agent config field is not supported: mode");
+    expect(() => normalizeConfig({ clientHost: "toString" })).toThrow(
+      "clientHost must be one of: 127.0.0.1, 0.0.0.0",
+    );
     expect(() => normalizeConfig({ stateDbPath: "./state.sqlite" })).toThrow("stateDbPath must be an absolute path");
-    expect(() =>
-      normalizeConfig({ agents: { codex: { kind: "codex", additionalDirectories: ["./shared"] } } }),
-    ).toThrow("additionalDirectories[0] must be an absolute path");
   });
 });

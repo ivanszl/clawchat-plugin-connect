@@ -6,6 +6,7 @@ import { updateAccountProfile } from "../src/account/profile";
 import { createClawChatApiClient } from "../src/clawchat/api-client";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
+import { pluginBinding } from "./runtime-adapter-fixture";
 
 function response(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -97,7 +98,7 @@ describe("ClawChat group settings", () => {
 describe("updateAccountProfile", () => {
   it("updates the activated account with its stored access token", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-profile-"));
-    const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "work", pluginBinding());
     config.stateDbPath = join(directory, "state.sqlite");
     const stateStore = createStateStore({ dbPath: config.stateDbPath });
     await stateStore.setDeviceId("device-local");
@@ -138,7 +139,7 @@ describe("updateAccountProfile", () => {
 
   it("requires an activated Agent Binding and a non-empty patch", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-profile-"));
-    const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "work", pluginBinding());
     config.stateDbPath = join(directory, "state.sqlite");
     const stateStore = createStateStore({ dbPath: config.stateDbPath });
 

@@ -6,11 +6,11 @@ import { defaultConfig } from "../../src/config";
 import { createStateStore } from "../../src/persistence/state";
 import { ConnectPluginHost } from "../../src/plugin/host";
 import codexDescriptor from "../../src/plugin/official/codex-descriptor";
-import { CODEX_CAPABILITY_ID, CODEX_PLUGIN_ID, CODEX_RUNTIME_FAMILY } from "../../src/plugin/official/codex-manifest";
+import { CODEX_CAPABILITY_ID, CODEX_PLUGIN_ID } from "../../src/plugin/official/codex-manifest";
 import { ProjectCatalog } from "../../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import type { ConnectRuntimePrompt } from "../../src/runtime/types";
-import type { PluginAgentBindingConfig } from "../../src/types";
+import type { AgentBindingConfig } from "../../src/types";
 
 const executable = process.env.CODEX_INTEGRATION_PATH?.trim() || Bun.which("codex");
 if (!executable) throw new Error("Codex integration requires CODEX_INTEGRATION_PATH or codex in PATH");
@@ -30,9 +30,7 @@ const target = `${process.platform}-${process.arch}`;
 const built = await buildOfficialPlugin(codexDescriptor, { target, write: false });
 const bundlePath = join(directory, built.filename);
 await writeFile(bundlePath, `${JSON.stringify(built.bundle, null, 2)}\n`);
-const binding: PluginAgentBindingConfig = {
-  kind: "plugin",
-  runtimeFamily: CODEX_RUNTIME_FAMILY,
+const binding: AgentBindingConfig = {
   runtime: { pluginId: CODEX_PLUGIN_ID, capabilityId: CODEX_CAPABILITY_ID },
   runtimeConfig: { executablePathOverride: executable },
 };

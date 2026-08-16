@@ -2,6 +2,7 @@ import { expect, it } from "bun:test";
 import type { TurnTarget } from "../src/projects/session-continuity";
 import { SessionTurnExecutor } from "../src/runtime/session-turn-executor";
 import type { ConnectRuntimeAdapter } from "../src/runtime/types";
+import { pluginBinding } from "./runtime-adapter-fixture";
 
 it("owns one native handle per Session and reports a new Runtime Thread through Session Continuity", async () => {
   const starts: string[] = [];
@@ -48,7 +49,7 @@ it("owns one native handle per Session and reports a new Runtime Thread through 
   const executor = new SessionTurnExecutor({
     configPath: "/tmp/config.json",
     stateDbPath: "/tmp/state.sqlite",
-    bindingFor: () => ({ kind: "codex", displayName: "Fake" }),
+    bindingFor: () => pluginBinding({}, { displayName: "Fake" }),
     start: async (binding, context) => await adapter.start(binding, context),
     attachRuntimeThread: async (sessionRef, runtimeThreadId) => {
       attachments.push(`${sessionRef}:${runtimeThreadId}`);

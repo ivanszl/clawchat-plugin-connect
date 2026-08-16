@@ -13,13 +13,12 @@ import {
   prepareLivewareExposure,
 } from "../src/service/liveware-exposure";
 import type { ActivationCredentials } from "../src/types";
+import { pluginBinding } from "./runtime-adapter-fixture";
 
 describe("Installation Owner activation with Liveware Exposure", () => {
   it("rejects another owner without mutating the existing Liveware Exposure or local state", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-multi-owner-"));
-    const config = upsertAgentBinding(upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" }), "work", {
-      kind: "codex",
-    });
+    const config = upsertAgentBinding(upsertAgentBinding(defaultConfig(), "personal", pluginBinding()), "work", pluginBinding());
     config.stateDbPath = join(directory, "state.sqlite");
     config.livewareAccessPolicy = "private";
     const store = createStateStore({ dbPath: config.stateDbPath });
@@ -89,7 +88,7 @@ describe("Installation Owner activation with Liveware Exposure", () => {
 
   it("does not require Liveware Control Plane access during activation", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-liveware-activation-failure-"));
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", pluginBinding());
     config.stateDbPath = join(directory, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     const fetchImpl = async (input: string | URL | Request) =>

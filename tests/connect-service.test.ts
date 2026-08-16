@@ -14,7 +14,8 @@ import type {
   LivewareControlSession,
   startLivewareExposure as startLivewareExposureDefault,
 } from "../src/service/liveware-exposure";
-import type { ActivationCredentials, AgentBindingConfig, ConnectConfig } from "../src/types";
+import type { ActivationCredentials, ConnectConfig } from "../src/types";
+import { pluginBinding } from "./runtime-adapter-fixture";
 
 function activation(agentId: string, ownerUserId = "owner-1"): ActivationCredentials {
   return {
@@ -86,7 +87,7 @@ describe("Connect Service", () => {
     await stateStore.upsertActivation(activation("codex-work"));
     await stateStore.upsertActivation(activation("codex-review"));
     const config = serviceConfig(["codex-work", "codex-review", "not-activated"]);
-    config.agents["codex-review"] = { kind: "codex" };
+    config.agents["codex-review"] = serviceBinding("official.clawchat.codex");
     config.stateDbPath = stateStore.dbPath;
     const closed: string[] = [];
     let activeStarts = 0;
@@ -116,7 +117,8 @@ describe("Connect Service", () => {
     const createRuntimeAdapterRegistry = () =>
       new RuntimeAdapterRegistry([
         {
-          kind: "codex",
+          runtime: { pluginId: "official.clawchat.codex", capabilityId: "runtime" },
+          family: "codex",
           create: () => ({
             kind: "codex",
             modes: ["read-only"],
@@ -455,7 +457,7 @@ describe("Connect Service", () => {
     await stateStore.upsertActivation(activation("personal", "shared-owner"));
     await stateStore.upsertActivation(activation("work", "shared-owner"));
     const config = serviceConfig(["personal", "work"]);
-    config.agents.work = { kind: "codex" };
+    config.agents.work = pluginBinding();
     config.stateDbPath = stateStore.dbPath;
     config.livewareAccessPolicy = "private";
     const gatewayStops: string[] = [];
@@ -577,15 +579,19 @@ describe("Connect Service", () => {
 
 function serviceConfig(agentIds: string[]): ConnectConfig {
   const config = defaultConfig();
-  config.defaultAgent = agentIds[0] ?? null;
+  config.defaultAgent = agentIds[0] ?? "";
   config.agents = Object.fromEntries(
     agentIds.map((agentId, index) => [
       agentId,
-      { kind: index === 0 ? "codex" : `future-runtime-${index}` } as unknown as AgentBindingConfig,
+      serviceBinding(index === 0 ? "official.clawchat.codex" : `test.future-${index}`),
     ]),
   );
   config.livewareAccessPolicy = "off";
   return config;
+}
+
+function serviceBinding(pluginId: string) {
+  return { ...pluginBinding(), runtime: { pluginId, capabilityId: "runtime" } };
 }
 
 function controlledAgentProcess(events: string[]) {

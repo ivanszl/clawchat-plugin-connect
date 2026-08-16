@@ -2,10 +2,14 @@ import { describe, expect, it } from "bun:test";
 import { createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
 import type { OpenCodeMessage, OpenCodeServerClient } from "../src/runtime/opencode-server";
-import { releasedRuntimeAdapters } from "../src/runtime/released-adapters";
 import { runtimeInputIdentity } from "../src/runtime/types";
-import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
-import { conformantReleasedKinds, runtimeAdapterConformance } from "./runtime-adapter-conformance";
+import {
+  createWorkBuddyRuntimeAdapter,
+  type WorkBuddyRuntimeAdapterBinding,
+  type WorkBuddyRuntimeSource,
+} from "../src/runtime/workbuddy-adapter";
+import { runtimeAdapterConformance } from "./runtime-adapter-conformance";
+import { pluginBinding } from "./runtime-adapter-fixture";
 
 describe("Runtime input identity", () => {
   it("rejects a partially identified ClawChat context", () => {
@@ -112,7 +116,7 @@ runtimeAdapterConformance("reference", () => {
   let pendingReject: ((error: Error) => void) | null = null;
   const lifecycleCalls: string[] = [];
   return {
-    binding: { kind: "codex" },
+    binding: pluginBinding(),
     activateThread: () => {
       state = "active";
     },
@@ -257,7 +261,7 @@ runtimeAdapterConformance(
       },
     };
     return {
-      binding: { kind: "codex", env: { CODEX_HOME: "/tmp/connect-runtime-adapter-conformance" } },
+      binding: { ...pluginBinding(), env: { CODEX_HOME: "/tmp/connect-runtime-adapter-conformance" } },
       activateThread: () => {
         state = "active";
       },
@@ -276,7 +280,7 @@ runtimeAdapterConformance(
       }),
     };
   },
-  "codex",
+  true,
 );
 
 runtimeAdapterConformance(
@@ -363,7 +367,7 @@ runtimeAdapterConformance(
       },
     };
     return {
-      binding: { kind: "opencode" },
+      binding: pluginBinding(),
       activateThread: () => {
         state = "active";
       },
@@ -377,7 +381,7 @@ runtimeAdapterConformance(
       adapter: createOpenCodeRuntimeAdapter({ createServer: async () => client }),
     };
   },
-  "opencode",
+  true,
 );
 
 runtimeAdapterConformance(
@@ -415,7 +419,7 @@ runtimeAdapterConformance(
       },
     };
     return {
-      binding: { kind: "workbuddy", profile: "workbuddy-ai" },
+      binding: { ...pluginBinding(), profile: "workbuddy-ai" } as WorkBuddyRuntimeAdapterBinding,
       activateThread: () => {
         active = true;
       },
@@ -430,15 +434,5 @@ runtimeAdapterConformance(
       adapter: createWorkBuddyRuntimeAdapter({ createSource: () => source }),
     };
   },
-  "workbuddy",
+  true,
 );
-
-describe("released Runtime Adapter conformance gate", () => {
-  it("registers every released Runtime Adapter kind in the shared suite", () => {
-    expect([...conformantReleasedKinds].sort()).toEqual(
-      releasedRuntimeAdapters()
-        .map((adapter) => adapter.kind)
-        .sort(),
-    );
-  });
-});

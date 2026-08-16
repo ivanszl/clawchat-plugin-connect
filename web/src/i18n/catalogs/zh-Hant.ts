@@ -195,6 +195,45 @@ export const zhHant = {
   "@connect.settings.binding.saved": { defaultMessage: "設定已儲存" },
   "@connect.settings.binding.saveFailed": { defaultMessage: "無法儲存設定" },
   "@connect.settings.binding.displayName": { defaultMessage: "顯示名稱" },
+  "@connect.settings.binding.create.title": { defaultMessage: "新增 Agent Binding" },
+  "@connect.settings.binding.create.description": {
+    defaultMessage: "使用已安裝且已啟用的 Runtime Plugin 中的一個精確能力建立 Agent Binding。",
+  },
+  "@connect.settings.binding.create.bindingId": { defaultMessage: "Binding ID" },
+  "@connect.settings.binding.create.bindingIdDescription": {
+    defaultMessage: "Session 和 Plugin 設定會使用此固定 ID。",
+  },
+  "@connect.settings.binding.create.bindingIdRequired": { defaultMessage: "請輸入 Binding ID。" },
+  "@connect.settings.binding.create.create": { defaultMessage: "建立 Binding" },
+  "@connect.settings.binding.create.creating": { defaultMessage: "正在建立 Binding" },
+  "@connect.settings.binding.create.created": { defaultMessage: "Agent Binding 已建立" },
+  "@connect.settings.binding.create.createFailed": { defaultMessage: "無法建立 Agent Binding" },
+  "@connect.settings.binding.provider.title": { defaultMessage: "Runtime 提供者" },
+  "@connect.settings.binding.provider.description": {
+    defaultMessage: "請選擇精確的 Plugin 和 Runtime 能力。Runtime 系列僅作為背景資訊顯示。",
+  },
+  "@connect.settings.binding.provider.identity": {
+    defaultMessage: "Plugin {pluginId} · 能力 {capabilityId}",
+  },
+  "@connect.settings.binding.provider.option": {
+    defaultMessage: "{pluginName}（{pluginId}）· {capabilityId} · 系列：{family}",
+  },
+  "@connect.settings.binding.provider.select": { defaultMessage: "精確 Runtime 能力" },
+  "@connect.settings.binding.provider.unavailable": {
+    defaultMessage: "沒有可用的已安裝且已啟用 Runtime Plugin 能力。",
+  },
+  "@connect.settings.binding.provider.selectionRequired": {
+    defaultMessage: "請選擇精確的 Runtime 能力。",
+  },
+  "@connect.settings.binding.provider.configuration": { defaultMessage: "Runtime 設定" },
+  "@connect.settings.binding.provider.configurationInvalid": {
+    defaultMessage: "請先修正無效的 Runtime 設定再儲存。",
+  },
+  "@connect.settings.binding.provider.lockedTitle": { defaultMessage: "無法編輯 Runtime 提供者" },
+  "@connect.settings.binding.provider.lockedDescription": {
+    defaultMessage:
+      "此 Binding 已在 ClawChat 中啟用。啟用期間無法安全地變更其 Runtime 提供者。",
+  },
   "@connect.settings.binding.model.description": {
     defaultMessage: "預設值會跟隨 Runtime Adapter；Session 仍可個別覆寫。",
   },

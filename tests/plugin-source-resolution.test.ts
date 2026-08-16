@@ -318,6 +318,34 @@ describe("official Plugin Catalog setup", () => {
     ]);
     await host.close();
     await expect(access(join(pluginInstallationPaths(configPath).store, ".official-staging"))).rejects.toThrow();
+    const offlineSetupConfigPath = join(directory, "offline-setup", "config.json");
+    await saveConfig(defaultConfig(), offlineSetupConfigPath);
+    const offlineOutput: string[] = [];
+    await expect(
+      runConnectCli(
+        [
+          "plugin",
+          "setup",
+          "--non-interactive",
+          "--select",
+          "test.detected",
+          "--config",
+          offlineSetupConfigPath,
+        ],
+        {
+          pluginSourceOptions: options,
+          pluginManagementFetch: async () => {
+            throw new TypeError("Plugin Manager Service is offline");
+          },
+          writeStdout: (value) => offlineOutput.push(value),
+          writeStderr: (value) => offlineOutput.push(value),
+        },
+      ),
+    ).resolves.toBe(0);
+    await expect(listInstalledPlugins(offlineSetupConfigPath)).resolves.toEqual([
+      expect.objectContaining({ pluginId: "test.detected", version: "1.0.0", status: "active" }),
+    ]);
+    expect(offlineOutput.join(" ")).toContain("Installed Plugin test.detected@1.0.0");
     server.stop(true);
 
     const cached = await fetchOfficialPluginCatalog(configPath, {

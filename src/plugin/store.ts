@@ -893,7 +893,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function pluginDependents(config: { agents: Record<string, AgentBindingConfig> }, pluginId: string): string[] {
   return Object.entries(config.agents)
-    .filter(([, binding]) => binding.kind === "plugin" && binding.runtime.pluginId === pluginId)
+    .filter(([, binding]) => binding.runtime.pluginId === pluginId)
     .map(([bindingId]) => bindingId)
     .sort();
 }

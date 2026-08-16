@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { activateConnect } from "../src/account/activation";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
+import { pluginBinding } from "./runtime-adapter-fixture";
 
 async function tempDir(): Promise<string> {
   return await mkdtemp(join(tmpdir(), "clawchat-connect-activation-"));
@@ -16,7 +17,7 @@ function response(body: unknown): Response {
 describe("activateConnect", () => {
   it("exchanges invite code for a named configured agent and persists credentials", async () => {
     const dir = await tempDir();
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", pluginBinding());
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
@@ -70,7 +71,7 @@ describe("activateConnect", () => {
   });
   it("sends stored agent user_id when reactivating the same local agent", async () => {
     const dir = await tempDir();
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", pluginBinding());
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
@@ -102,10 +103,9 @@ describe("activateConnect", () => {
   });
   it("rejects a different-owner Agent Binding without changing local state", async () => {
     const dir = await tempDir();
-    const config = upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "personal", pluginBinding());
     config.agents.work = {
       ...config.agents.personal,
-      env: { ...config.agents.personal?.env, CLAWCHAT_CONNECT_AGENT_ID: "work" },
     };
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
@@ -195,7 +195,7 @@ describe("activateConnect", () => {
   });
   it("rejects assigning an occupied Agent Binding to a different Binding Owner", async () => {
     const dir = await tempDir();
-    const config = upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "personal", pluginBinding());
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
@@ -240,10 +240,9 @@ describe("activateConnect", () => {
   });
   it("allows one Binding Owner to activate a second Agent Binding", async () => {
     const dir = await tempDir();
-    const config = upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "personal", pluginBinding());
     config.agents.work = {
       ...config.agents.personal,
-      env: { ...config.agents.personal?.env, CLAWCHAT_CONNECT_AGENT_ID: "work" },
     };
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
@@ -281,7 +280,7 @@ describe("activateConnect", () => {
   });
   it("leaves credentials and Installation Owner unset when Profile synchronization fails", async () => {
     const dir = await tempDir();
-    const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "work", pluginBinding());
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
@@ -315,7 +314,7 @@ describe("activateConnect", () => {
   });
   it("rejects incomplete activation responses", async () => {
     const dir = await tempDir();
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", pluginBinding());
     config.livewareAccessPolicy = "off";
     config.stateDbPath = join(dir, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });

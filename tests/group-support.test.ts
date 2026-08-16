@@ -25,7 +25,7 @@ import {
   runtimeInputIdentityContains,
 } from "../src/runtime/types";
 import { startBindingRuntime } from "../src/service/binding-runtime";
-import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
+import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 class MemoryTransport implements Transport {
   state: TransportState = "closed";
@@ -195,7 +195,7 @@ it("applies a persisted real-time all-message group policy without changing dire
   const config = defaultConfig();
   const clock = new ManualClock(Date.now());
   config.defaultAgent = "work";
-  config.agents = { work: { kind: "codex", displayName: "Work" } };
+  config.agents = { work: pluginBinding({}, { displayName: "Work" }) };
   const prompts: ConnectRuntimePrompt[] = [];
   let acceptedRecoveryIdentity: RuntimeInputIdentity | null = null;
   let refuseRuntimeTurnOnce = true;

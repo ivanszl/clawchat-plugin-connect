@@ -224,6 +224,49 @@ export const es = {
   "@connect.settings.binding.saved": { defaultMessage: "Configuración guardada" },
   "@connect.settings.binding.saveFailed": { defaultMessage: "No se puede guardar la configuración" },
   "@connect.settings.binding.displayName": { defaultMessage: "Nombre visible" },
+  "@connect.settings.binding.create.title": { defaultMessage: "Nuevo Agent Binding" },
+  "@connect.settings.binding.create.description": {
+    defaultMessage:
+      "Crea un Agent Binding con una capacidad exacta de un Runtime Plugin instalado y activo.",
+  },
+  "@connect.settings.binding.create.bindingId": { defaultMessage: "ID del Binding" },
+  "@connect.settings.binding.create.bindingIdDescription": {
+    defaultMessage: "Este ID estable se usa en las Sessions y en la configuración del Plugin.",
+  },
+  "@connect.settings.binding.create.bindingIdRequired": { defaultMessage: "Introduce un ID de Binding." },
+  "@connect.settings.binding.create.create": { defaultMessage: "Crear Binding" },
+  "@connect.settings.binding.create.creating": { defaultMessage: "Creando Binding" },
+  "@connect.settings.binding.create.created": { defaultMessage: "Agent Binding creado" },
+  "@connect.settings.binding.create.createFailed": { defaultMessage: "No se pudo crear el Agent Binding" },
+  "@connect.settings.binding.provider.title": { defaultMessage: "Proveedor de Runtime" },
+  "@connect.settings.binding.provider.description": {
+    defaultMessage:
+      "Selecciona el Plugin y la capacidad de Runtime exactos. La familia de Runtime se muestra solo como contexto.",
+  },
+  "@connect.settings.binding.provider.identity": {
+    defaultMessage: "Plugin {pluginId} · Capacidad {capabilityId}",
+  },
+  "@connect.settings.binding.provider.option": {
+    defaultMessage: "{pluginName} ({pluginId}) · {capabilityId} · Familia: {family}",
+  },
+  "@connect.settings.binding.provider.select": { defaultMessage: "Capacidad exacta de Runtime" },
+  "@connect.settings.binding.provider.unavailable": {
+    defaultMessage: "No hay capacidades de Runtime Plugin instaladas y activas disponibles.",
+  },
+  "@connect.settings.binding.provider.selectionRequired": {
+    defaultMessage: "Elige una capacidad exacta de Runtime.",
+  },
+  "@connect.settings.binding.provider.configuration": { defaultMessage: "Configuración de Runtime" },
+  "@connect.settings.binding.provider.configurationInvalid": {
+    defaultMessage: "Corrige la configuración de Runtime no válida antes de guardar.",
+  },
+  "@connect.settings.binding.provider.lockedTitle": {
+    defaultMessage: "El proveedor de Runtime no se puede editar",
+  },
+  "@connect.settings.binding.provider.lockedDescription": {
+    defaultMessage:
+      "Este Binding está activado en ClawChat. Su proveedor de Runtime no se puede cambiar de forma segura mientras esté activado.",
+  },
   "@connect.settings.binding.model.description": {
     defaultMessage: "El valor predeterminado sigue al Runtime Adapter. Cada Session puede reemplazarlo.",
   },

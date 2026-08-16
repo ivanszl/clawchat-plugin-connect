@@ -211,6 +211,47 @@ export const ko = {
   "@connect.settings.binding.saved": { defaultMessage: "설정 저장됨" },
   "@connect.settings.binding.saveFailed": { defaultMessage: "설정을 저장할 수 없음" },
   "@connect.settings.binding.displayName": { defaultMessage: "표시 이름" },
+  "@connect.settings.binding.create.title": { defaultMessage: "새 Agent Binding" },
+  "@connect.settings.binding.create.description": {
+    defaultMessage:
+      "설치되어 활성 상태인 Runtime Plugin의 정확한 기능 하나를 지정해 Agent Binding을 생성합니다.",
+  },
+  "@connect.settings.binding.create.bindingId": { defaultMessage: "Binding ID" },
+  "@connect.settings.binding.create.bindingIdDescription": {
+    defaultMessage: "이 고정 ID는 Session과 Plugin 구성에서 사용됩니다.",
+  },
+  "@connect.settings.binding.create.bindingIdRequired": { defaultMessage: "Binding ID를 입력하세요." },
+  "@connect.settings.binding.create.create": { defaultMessage: "Binding 생성" },
+  "@connect.settings.binding.create.creating": { defaultMessage: "Binding 생성 중" },
+  "@connect.settings.binding.create.created": { defaultMessage: "Agent Binding이 생성됨" },
+  "@connect.settings.binding.create.createFailed": { defaultMessage: "Agent Binding을 생성할 수 없음" },
+  "@connect.settings.binding.provider.title": { defaultMessage: "Runtime 공급자" },
+  "@connect.settings.binding.provider.description": {
+    defaultMessage:
+      "정확한 Plugin과 Runtime 기능을 선택하세요. Runtime 계열은 참고 정보로만 표시됩니다.",
+  },
+  "@connect.settings.binding.provider.identity": {
+    defaultMessage: "Plugin {pluginId} · 기능 {capabilityId}",
+  },
+  "@connect.settings.binding.provider.option": {
+    defaultMessage: "{pluginName} ({pluginId}) · {capabilityId} · 계열: {family}",
+  },
+  "@connect.settings.binding.provider.select": { defaultMessage: "정확한 Runtime 기능" },
+  "@connect.settings.binding.provider.unavailable": {
+    defaultMessage: "설치되어 활성 상태인 Runtime Plugin 기능이 없습니다.",
+  },
+  "@connect.settings.binding.provider.selectionRequired": {
+    defaultMessage: "정확한 Runtime 기능을 선택하세요.",
+  },
+  "@connect.settings.binding.provider.configuration": { defaultMessage: "Runtime 구성" },
+  "@connect.settings.binding.provider.configurationInvalid": {
+    defaultMessage: "저장하기 전에 잘못된 Runtime 구성을 수정하세요.",
+  },
+  "@connect.settings.binding.provider.lockedTitle": { defaultMessage: "Runtime 공급자를 편집할 수 없음" },
+  "@connect.settings.binding.provider.lockedDescription": {
+    defaultMessage:
+      "이 Binding은 ClawChat에서 활성화되어 있습니다. 활성화된 동안에는 Runtime 공급자를 안전하게 변경할 수 없습니다.",
+  },
   "@connect.settings.binding.model.description": {
     defaultMessage: "기본값은 Runtime Adapter를 따릅니다. 각 Session에서 따로 재정의할 수 있습니다.",
   },

@@ -706,6 +706,7 @@ async function dispatchInboundMessage(
       closeRuntimeSession: (chatId) => params.runtime.closeSession(chatId),
       invalidateRuntimeSession: (chatId) => params.runtime.invalidateSession(chatId),
       cancelRuntimeTurn: (chatId) => params.runtime.cancelTurn(chatId),
+      runtimeFamilyFor: (binding) => params.runtime.runtimeFamilyFor(binding),
       runtimeModesFor: (binding, selected) => params.runtime.runtimeModesFor(binding, selected),
       listRuntimeModels: (binding, selected) => params.runtime.listRuntimeModels(binding, selected),
       discoverRuntimeThreads: (chatId) => params.runtime.discoverRuntimeThreads(chatId),

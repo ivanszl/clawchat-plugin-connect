@@ -22,19 +22,16 @@ export interface AdapterHarness {
   dispose?(): Promise<void>;
 }
 
-export const conformantReleasedKinds = new Set<string>();
-
 export function runtimeAdapterConformance(
   name: string,
   createHarness: () => AdapterHarness | Promise<AdapterHarness>,
-  releasedKind?: string,
+  requiresInputReconciliation = false,
 ): void {
-  if (releasedKind) conformantReleasedKinds.add(releasedKind);
   describe(`${name} Runtime Adapter conformance`, () => {
-    if (releasedKind) {
+    if (requiresInputReconciliation) {
       it("exposes authoritative Runtime input reconciliation", async () => {
         const harness = await createHarness();
-        if (!harness.adapter) throw new Error("Released Runtime conformance requires a direct Adapter harness");
+        if (!harness.adapter) throw new Error("Runtime conformance requires a direct Adapter harness");
         expect(harness.adapter.reconcileInput).toBeInstanceOf(Function);
       });
     }

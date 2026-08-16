@@ -3,7 +3,11 @@ import { EventEmitter } from "node:events";
 import { createServer } from "node:net";
 import { PassThrough } from "node:stream";
 import type { Agent, GlobalEvent, Project, Provider, Session } from "@opencode-ai/sdk/v2/types";
-import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
+import { identifyAgentBinding } from "../src/plugin/binding";
+import {
+  createOpenCodeRuntimeAdapter,
+  type OpenCodeRuntimeAdapterBinding,
+} from "../src/runtime/opencode-adapter";
 import {
   createOpenCodeServerClient,
   type OpenCodeApiClient,
@@ -12,6 +16,11 @@ import {
 } from "../src/runtime/opencode-server";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { CONNECT_VERSION } from "../src/service/version";
+import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
+
+function openCodeBinding(overrides: Partial<OpenCodeRuntimeAdapterBinding> = {}): OpenCodeRuntimeAdapterBinding {
+  return { ...pluginBinding(), ...overrides };
+}
 
 class FakeProcess extends EventEmitter implements OpenCodeServerProcess {
   readonly stderr = new PassThrough();
@@ -231,7 +240,7 @@ describe("OpenCode Server process boundary", () => {
     async (version) => {
       const process = new FakeProcess();
       const client = await createOpenCodeServerClient(
-        { kind: "opencode", executablePathOverride: "/opt/opencode" },
+        openCodeBinding({ executablePathOverride: "/opt/opencode" }),
         {
           readVersion: async () => version,
           allocatePort: async () => 43129,
@@ -255,7 +264,7 @@ describe("OpenCode Server process boundary", () => {
       if (!port) throw new Error("missing compatibility fixture port");
       let compatibilityProcess!: CompatibilityHttpProcess;
       const client = await createOpenCodeServerClient(
-        { kind: "opencode", executablePathOverride: "/opt/opencode" },
+        openCodeBinding({ executablePathOverride: "/opt/opencode" }),
         {
           readVersion: async () => fixture.version,
           allocatePort: async () => port,
@@ -319,16 +328,13 @@ describe("OpenCode Server process boundary", () => {
     const createApi = mock(() => api());
 
     const client = await createOpenCodeServerClient(
-      {
-        kind: "opencode",
-        executablePathOverride: "/opt/opencode",
-        env: {
-          OPENCODE_CONFIG_DIR: "/tmp/open-config",
-          OPENCODE_SERVER_USERNAME: "inherited-user",
-          OPENCODE_SERVER_CORS: "*",
-          OPENCODE_SERVER_MDNS: "true",
-        },
-      },
+      openCodeBinding({ executablePathOverride: "/opt/opencode",
+      env: {
+        OPENCODE_CONFIG_DIR: "/tmp/open-config",
+        OPENCODE_SERVER_USERNAME: "inherited-user",
+        OPENCODE_SERVER_CORS: "*",
+        OPENCODE_SERVER_MDNS: "true",
+      }, }),
       {
         readVersion: async () => "1.18.10",
         allocatePort: async () => 43129,
@@ -364,7 +370,7 @@ describe("OpenCode Server process boundary", () => {
       Array.from({ length: 2 }, async () => {
         const process = new FakeProcess();
         return await createOpenCodeServerClient(
-          { kind: "opencode", executablePathOverride: "/opt/opencode" },
+          openCodeBinding({ executablePathOverride: "/opt/opencode" }),
           {
             readVersion: async () => "1.18.10",
             allocatePort: async () => port++,
@@ -393,7 +399,7 @@ describe("OpenCode Server process boundary", () => {
   it("requires the executable to be available from the override or effective PATH", async () => {
     await expect(
       createOpenCodeServerClient(
-        { kind: "opencode", env: { PATH: "/empty" } },
+        openCodeBinding({ env: { PATH: "/empty" } }),
         {
           findExecutable: () => null,
           readVersion: async () => "1.18.10",
@@ -408,7 +414,7 @@ describe("OpenCode Server process boundary", () => {
   it("fails closed when the installed executable cannot launch its Server", async () => {
     await expect(
       createOpenCodeServerClient(
-        { kind: "opencode", executablePathOverride: "/opt/opencode" },
+        openCodeBinding({ executablePathOverride: "/opt/opencode" }),
         {
           readVersion: async () => "1.18.16",
           allocatePort: async () => 1,
@@ -425,7 +431,7 @@ describe("OpenCode Server process boundary", () => {
     const spawnServer = mock(() => new FakeProcess());
     await expect(
       createOpenCodeServerClient(
-        { kind: "opencode", executablePathOverride: "/opt/opencode" },
+        openCodeBinding({ executablePathOverride: "/opt/opencode" }),
         {
           readVersion: async () => "",
           allocatePort: async () => 1,
@@ -441,7 +447,7 @@ describe("OpenCode Server process boundary", () => {
     const process = new FakeProcess();
     await expect(
       createOpenCodeServerClient(
-        { kind: "opencode", executablePathOverride: "/opt/opencode" },
+        openCodeBinding({ executablePathOverride: "/opt/opencode" }),
         {
           readVersion: async () => "1.18.10",
           allocatePort: async () => 43129,
@@ -462,7 +468,7 @@ describe("OpenCode Server process boundary", () => {
       throw new Error("response shape mismatch: expected an agent array");
     };
     const client = await createOpenCodeServerClient(
-      { kind: "opencode", executablePathOverride: "/opt/opencode" },
+      openCodeBinding({ executablePathOverride: "/opt/opencode" }),
       {
         readVersion: async () => "1.18.10",
         allocatePort: async () => 43129,
@@ -484,7 +490,7 @@ describe("OpenCode Server process boundary", () => {
       throw new Error("not ready");
     };
     const result = createOpenCodeServerClient(
-      { kind: "opencode", executablePathOverride: "/opt/opencode" },
+      openCodeBinding({ executablePathOverride: "/opt/opencode" }),
       {
         readVersion: async () => "1.18.10",
         allocatePort: async () => 43129,
@@ -508,7 +514,7 @@ describe("OpenCode Server process boundary", () => {
     const stalledApi = api();
     stalledApi.health = async () => await new Promise<never>(() => undefined);
     const result = createOpenCodeServerClient(
-      { kind: "opencode", executablePathOverride: "/opt/opencode" },
+      openCodeBinding({ executablePathOverride: "/opt/opencode" }),
       {
         readVersion: async () => "1.18.10",
         allocatePort: async () => 43129,
@@ -540,7 +546,7 @@ describe("OpenCode Server process boundary", () => {
       return { healthy: true, version: "1.18.10" };
     };
     const result = createOpenCodeServerClient(
-      { kind: "opencode", executablePathOverride: "/opt/opencode" },
+      openCodeBinding({ executablePathOverride: "/opt/opencode" }),
       {
         readVersion: async () => "1.18.10",
         allocatePort: async () => 43129,
@@ -588,7 +594,8 @@ describe("OpenCode Server process boundary", () => {
     };
     const registry = new RuntimeAdapterRegistry([
       {
-        kind: "opencode",
+        runtime: pluginBinding().runtime,
+        family: "opencode",
         create: () =>
           createOpenCodeRuntimeAdapter({
             serverClientOptions,
@@ -596,16 +603,14 @@ describe("OpenCode Server process boundary", () => {
           }),
       },
     ]);
-    const firstBinding = {
-      kind: "opencode",
-      executablePathOverride: "/opt/opencode",
-      env: { CLAWCHAT_CONNECT_AGENT_ID: "first" },
-    } as const;
-    const secondBinding = {
-      kind: "opencode",
-      executablePathOverride: "/opt/opencode",
-      env: { CLAWCHAT_CONNECT_AGENT_ID: "second" },
-    } as const;
+    const firstBinding = identifyAgentBinding(
+      openCodeBinding({ executablePathOverride: "/opt/opencode" }),
+      "first",
+    );
+    const secondBinding = identifyAgentBinding(
+      openCodeBinding({ executablePathOverride: "/opt/opencode" }),
+      "second",
+    );
 
     await Promise.all([registry.prepare(firstBinding), registry.prepare(secondBinding)]);
     expect(processes).toHaveLength(2);
@@ -650,7 +655,7 @@ describe("OpenCode Server process boundary", () => {
   it("escalates bounded shutdown from SIGTERM to SIGKILL", async () => {
     const process = new StubbornProcess();
     const client = await createOpenCodeServerClient(
-      { kind: "opencode", executablePathOverride: "/opt/opencode" },
+      openCodeBinding({ executablePathOverride: "/opt/opencode" }),
       {
         readVersion: async () => "1.18.10",
         allocatePort: async () => 43129,

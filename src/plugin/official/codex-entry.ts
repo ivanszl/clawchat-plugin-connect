@@ -1,6 +1,8 @@
-import { createCodexRuntimeAdapter } from "../../runtime/codex-adapter";
+import {
+  createCodexRuntimeAdapter,
+  type CodexRuntimeAdapterBinding,
+} from "../../runtime/codex-adapter";
 import type { ConnectRuntimeAdapter, ConnectRuntimeStartContext } from "../../runtime/types";
-import type { CodexAgentBindingConfig } from "../../types";
 import type {
   ConnectPluginConfiguration,
   ConnectPluginEntry,
@@ -8,7 +10,7 @@ import type {
   ConnectPluginRuntimeStartContext,
 } from "../sdk";
 import { requireCompatibleCodexExecutable } from "./codex-compatibility";
-import { CODEX_CAPABILITY_ID, CODEX_RUNTIME_FAMILY } from "./codex-manifest";
+import { CODEX_CAPABILITY_ID, CODEX_PLUGIN_ID, CODEX_RUNTIME_FAMILY } from "./codex-manifest";
 
 const codexPluginEntry: ConnectPluginEntry = {
   activate(context) {
@@ -34,14 +36,15 @@ export default codexPluginEntry;
 function codexBinding(
   configuration: ConnectPluginConfiguration,
   installationExecutable: string,
-): CodexAgentBindingConfig {
+): CodexRuntimeAdapterBinding {
   const executablePathOverride = optionalString(configuration.executablePathOverride);
   const codexPathOverride = optionalString(configuration.codexPathOverride);
   const env = stringRecord(configuration.env);
   const additionalDirectories = stringArray(configuration.additionalDirectories);
   const sessionOptions = stringRecord(configuration.sessionOptions);
   return {
-    kind: "codex",
+    runtime: { pluginId: CODEX_PLUGIN_ID, capabilityId: CODEX_CAPABILITY_ID },
+    runtimeConfig: structuredClone(configuration) as Record<string, unknown>,
     ...(executablePathOverride
       ? { executablePathOverride }
       : codexPathOverride
@@ -52,22 +55,22 @@ function codexBinding(
     ...(optionalString(configuration.model) ? { model: optionalString(configuration.model) } : {}),
     ...(optionalString(configuration.sandboxMode)
       ? {
-          sandboxMode: optionalString(configuration.sandboxMode) as NonNullable<CodexAgentBindingConfig["sandboxMode"]>,
+          sandboxMode: optionalString(configuration.sandboxMode) as NonNullable<CodexRuntimeAdapterBinding["sandboxMode"]>,
         }
       : {}),
     ...(optionalString(configuration.modelReasoningEffort)
       ? {
           modelReasoningEffort: optionalString(configuration.modelReasoningEffort) as NonNullable<
-            CodexAgentBindingConfig["modelReasoningEffort"]
+            CodexRuntimeAdapterBinding["modelReasoningEffort"]
           >,
         }
       : {}),
     approvalPolicy:
-      (optionalString(configuration.approvalPolicy) as CodexAgentBindingConfig["approvalPolicy"]) ?? "on-request",
+      (optionalString(configuration.approvalPolicy) as CodexRuntimeAdapterBinding["approvalPolicy"]) ?? "on-request",
     ...(optionalString(configuration.webSearchMode)
       ? {
           webSearchMode: optionalString(configuration.webSearchMode) as NonNullable<
-            CodexAgentBindingConfig["webSearchMode"]
+            CodexRuntimeAdapterBinding["webSearchMode"]
           >,
         }
       : {}),
@@ -78,7 +81,7 @@ function codexBinding(
     ...(optionalString(configuration.outputVisibility)
       ? {
           outputVisibility: optionalString(configuration.outputVisibility) as NonNullable<
-            CodexAgentBindingConfig["outputVisibility"]
+            CodexRuntimeAdapterBinding["outputVisibility"]
           >,
         }
       : {}),
@@ -88,7 +91,7 @@ function codexBinding(
 
 function bindCodexAdapter(
   adapter: ConnectRuntimeAdapter,
-  binding: CodexAgentBindingConfig,
+  binding: CodexRuntimeAdapterBinding,
 ): ConnectPluginRuntimeAdapter {
   return {
     modes: adapter.modes,

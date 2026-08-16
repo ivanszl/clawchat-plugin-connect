@@ -5,13 +5,14 @@ import { join } from "node:path";
 import { type ClientInterfaceHandle, startClientInterface } from "../src/client-interface/server";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
+import { agentBindingIdentity } from "../src/plugin/binding";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
 import type { ConnectRuntimeAdapter, RuntimeModelOption } from "../src/runtime/types";
 import type { BindingRuntimeHandle } from "../src/service/binding-runtime";
-import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
+import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 const openHandles: ClientInterfaceHandle[] = [];
 const openStores: ConnectStateStore[] = [];
@@ -39,7 +40,7 @@ describe("Connect Client Interface", () => {
     });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     let publishDiscoveryStarted: () => void = () => undefined;
     const discoveryStarted = new Promise<void>((resolve) => {
       publishDiscoveryStarted = resolve;
@@ -132,7 +133,7 @@ describe("Connect Client Interface", () => {
     });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     let publishDiscoveryStarted: () => void = () => undefined;
     const discoveryStarted = new Promise<void>((resolve) => {
       publishDiscoveryStarted = resolve;
@@ -220,7 +221,7 @@ describe("Connect Client Interface", () => {
     });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const registry = new RuntimeAdapterRegistry([
       fixedRuntimeAdapter({
         kind: "codex",
@@ -305,7 +306,7 @@ describe("Connect Client Interface", () => {
       async (
         binding: Parameters<NonNullable<ConnectRuntimeAdapter["listModels"]>>[0],
       ): Promise<RuntimeModelOption[]> => {
-        runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
+        runtimeBindingIds.add(agentBindingIdentity(binding));
         return [
           {
             id: "gpt-default",
@@ -340,7 +341,7 @@ describe("Connect Client Interface", () => {
     );
     const listSessionOptions = mock(
       async (binding: Parameters<NonNullable<ConnectRuntimeAdapter["listSessionOptions"]>>[0]) => {
-        runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
+        runtimeBindingIds.add(agentBindingIdentity(binding));
         return [];
       },
     );
@@ -357,7 +358,7 @@ describe("Connect Client Interface", () => {
       listModels,
       listSessionOptions,
       listSkills: async (binding) => {
-        runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
+        runtimeBindingIds.add(agentBindingIdentity(binding));
         return [
           {
             id: "codex:grill-with-docs",
@@ -367,7 +368,7 @@ describe("Connect Client Interface", () => {
         ];
       },
       listCommands: async (binding) => {
-        runtimeBindingIds.add(binding.env?.CLAWCHAT_CONNECT_AGENT_ID);
+        runtimeBindingIds.add(agentBindingIdentity(binding));
         return [
           { id: "codex-command:compact", name: "compact", description: "Compact the Session" },
           { id: "codex-command:grill-with-docs", name: "grill-with-docs", description: "Runtime command" },
@@ -445,7 +446,7 @@ describe("Connect Client Interface", () => {
     };
     const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     config.defaultAgent = "codex";
     config.stateDbPath = store.dbPath;
     const enqueueClientTurn = mock(
@@ -514,18 +515,6 @@ describe("Connect Client Interface", () => {
           displayName: "Codex",
           clawChatUserId: "usr_agent_codex",
           runtimeKind: "codex",
-          runtimeProfile: null,
-        },
-      ],
-      runtimeAdapters: [
-        { kind: "codex", profiles: [] },
-        { kind: "opencode", profiles: [] },
-        {
-          kind: "workbuddy",
-          profiles: [
-            { id: "workbuddy-ai", protocol: { name: "ACP", version: 1 } },
-            { id: "workbuddy-cn", protocol: { name: "ACP", version: 1 } },
-          ],
         },
       ],
       capabilities: { localTurns: true, runtimeInteractions: true },
@@ -574,7 +563,7 @@ describe("Connect Client Interface", () => {
       },
     );
     expect(invalidBindingModel.status).toBe(400);
-    expect(config.agents.codex).toMatchObject({ kind: "codex", displayName: "Codex" });
+    expect(config.agents.codex).toMatchObject(pluginBinding({}, { displayName: "Codex" }));
     expect(config.agents.codex.model).toBeUndefined();
 
     const bindingEffortOnly = await localRequest(fetchHandler, handle.origin, "/client/v1/bindings/codex/preferences", {
@@ -1355,7 +1344,7 @@ describe("Connect Client Interface", () => {
     openStores.push(store);
     const config = defaultConfig();
     config.stateDbPath = store.dbPath;
-    config.agents = { codex: { kind: "codex", displayName: "Codex" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     config.defaultAgent = "codex";
     let catalogUnavailable = true;
     const registry = new RuntimeAdapterRegistry([
@@ -1607,11 +1596,11 @@ describe("Connect Client Interface", () => {
         },
       ],
       listSkills: async (binding) => {
-        const bindingId = binding.env?.CLAWCHAT_CONNECT_AGENT_ID ?? "unknown";
+        const bindingId = agentBindingIdentity(binding) ?? "unknown";
         return [{ id: `codex:${bindingId}`, name: `${bindingId}-skill`, description: `${bindingId} only` }];
       },
       discoverAllThreads: async (binding) => {
-        const bindingId = binding.env?.CLAWCHAT_CONNECT_AGENT_ID;
+        const bindingId = agentBindingIdentity(binding);
         return bindingId === "personal"
           ? [{ runtimeThreadId: "personal-thread", name: "Personal Session", updatedAt: 1 }]
           : [{ runtimeThreadId: "work-thread", name: "Work Session", updatedAt: 1 }];
@@ -1621,8 +1610,8 @@ describe("Connect Client Interface", () => {
     const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.agents = {
-      personal: { kind: "codex", outputVisibility: "minimal" },
-      work: { kind: "codex", outputVisibility: "full" },
+      personal: pluginBinding({}, { outputVisibility: "minimal" }),
+      work: pluginBinding({}, { outputVisibility: "full" }),
     };
     config.defaultAgent = "personal";
     config.stateDbPath = store.dbPath;

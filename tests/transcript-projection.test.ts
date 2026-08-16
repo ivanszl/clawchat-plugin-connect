@@ -7,7 +7,7 @@ import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { RuntimeActivity } from "../src/runtime/types";
-import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
+import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 function liveActivity(
   id: string,
@@ -34,7 +34,7 @@ describe("Connect Transcript Projection", () => {
       const session = await store.getCurrentRuntimeSession("chat-subagent-deduplication", "codex");
       if (!session) throw new Error("test Session was not created");
       const config = defaultConfig();
-      config.agents = { codex: { kind: "codex" } };
+      config.agents = { codex: pluginBinding() };
       const inherited = {
         id: "shared-user-message",
         position: "0.1",
@@ -465,7 +465,7 @@ describe("Connect Transcript Projection", () => {
         markdown: "small message",
       });
       const config = defaultConfig();
-      config.agents = { codex: { kind: "codex" } };
+      config.agents = { codex: pluginBinding() };
       const projection = new TranscriptProjection({
         stateStore: store,
         config,
@@ -532,7 +532,7 @@ describe("Connect Transcript Projection", () => {
         markdown: "hello from ClawChat",
       });
       const config = defaultConfig();
-      config.agents = { open: { kind: "opencode" } };
+      config.agents = { open: pluginBinding() };
       const projection = new TranscriptProjection({
         stateStore: store,
         config,
@@ -714,7 +714,7 @@ describe("Connect Transcript Projection", () => {
       const session = await store.getCurrentRuntimeSession("chat-1", "codex");
       if (!session) throw new Error("test Session was not created");
       const config = defaultConfig();
-      config.agents = { codex: { kind: "codex" } };
+      config.agents = { codex: pluginBinding() };
       const runtimeAdapters = new RuntimeAdapterRegistry([
         fixedRuntimeAdapter({
           kind: "codex",
@@ -771,7 +771,7 @@ describe("Connect Transcript Projection", () => {
       const session = await store.getCurrentRuntimeSession("chat-interrupted", "codex");
       if (!session) throw new Error("test Session was not created");
       const config = defaultConfig();
-      config.agents = { codex: { kind: "codex" } };
+      config.agents = { codex: pluginBinding() };
       const runtimeAdapters = new RuntimeAdapterRegistry([
         fixedRuntimeAdapter({
           kind: "codex",
@@ -953,7 +953,7 @@ describe("Connect Transcript Projection", () => {
       const session = await store.getCurrentRuntimeSession("chat-1", "codex");
       if (!session) throw new Error("test Session was not created");
       const config = defaultConfig();
-      config.agents = { codex: { kind: "codex" } };
+      config.agents = { codex: pluginBinding() };
       const runtimeAdapters = new RuntimeAdapterRegistry([
         fixedRuntimeAdapter({
           kind: "codex",
@@ -1086,7 +1086,7 @@ describe("Connect Transcript Projection", () => {
       const session = await store.getCurrentRuntimeSession("chat-1", "codex");
       if (!session) throw new Error("test Session was not created");
       const config = defaultConfig();
-      config.agents = { codex: { kind: "codex" } };
+      config.agents = { codex: pluginBinding() };
       const runtimeAdapters = new RuntimeAdapterRegistry([
         fixedRuntimeAdapter({
           kind: "codex",

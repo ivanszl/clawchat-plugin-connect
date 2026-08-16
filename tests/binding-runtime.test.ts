@@ -16,7 +16,7 @@ import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimePrompt } from "../src/runtime/types";
 import { type BindingProtocolEvent, startBindingRuntime } from "../src/service/binding-runtime";
-import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
+import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 class MemoryTransport implements Transport {
   state: TransportState = "closed";
@@ -65,7 +65,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex" } };
+    config.agents = { codex: pluginBinding() };
     const transport = new MemoryTransport();
     const runtimeAdapters = new RuntimeAdapterRegistry([
       fixedRuntimeAdapter({
@@ -119,7 +119,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const runtimeAdapters = new RuntimeAdapterRegistry([
       fixedRuntimeAdapter({
         kind: "codex",
@@ -184,7 +184,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     let releaseDiscovery: () => void = () => undefined;
     const discoveryGate = new Promise<void>((resolve) => {
       releaseDiscovery = resolve;
@@ -270,7 +270,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const envelope: Envelope = {
       version: "2",
       event: EVENT.MESSAGE_SEND,
@@ -393,7 +393,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const envelope: Envelope = {
       version: "2",
       event: EVENT.MESSAGE_SEND,
@@ -529,7 +529,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     let publishSettingsReadStarted: () => void = () => undefined;
     const settingsReadStarted = new Promise<void>((resolve) => {
       publishSettingsReadStarted = resolve;
@@ -607,7 +607,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const envelope: Envelope = {
       version: "2",
       event: EVENT.MESSAGE_SEND,
@@ -783,7 +783,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     let publishSettingsReadStarted: () => void = () => undefined;
     const settingsReadStarted = new Promise<void>((resolve) => {
       publishSettingsReadStarted = resolve;
@@ -963,7 +963,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       config: {
         ...defaultConfig(),
         defaultAgent: "codex",
-        agents: { codex: { kind: "codex", displayName: "Alice" } },
+        agents: { codex: pluginBinding({}, { displayName: "Alice" }) },
       },
       configPath: join(directory, "config.json"),
       deviceId: "device-local",
@@ -1048,7 +1048,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const runtimeAdapters = new RuntimeAdapterRegistry([
       fixedRuntimeAdapter({
         kind: "codex",
@@ -1118,7 +1118,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const runtimeAdapters = new RuntimeAdapterRegistry([
       fixedRuntimeAdapter({
         kind: "codex",
@@ -1216,7 +1216,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const recoveredEnvelope: Envelope = {
       version: "2",
       event: EVENT.MESSAGE_SEND,
@@ -1446,7 +1446,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const envelope: Envelope = {
       version: "2",
       event: EVENT.MESSAGE_SEND,
@@ -1602,7 +1602,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const envelope = (messageId: string, text: string): Envelope => ({
       version: "2",
       event: EVENT.MESSAGE_SEND,
@@ -1776,7 +1776,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const prompts: ConnectRuntimePrompt[] = [];
     const runtimeAdapters = new RuntimeAdapterRegistry([
       fixedRuntimeAdapter({
@@ -1913,7 +1913,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const prompts: ConnectRuntimePrompt[] = [];
     const runtimeAdapters = new RuntimeAdapterRegistry([
       fixedRuntimeAdapter({
@@ -2257,7 +2257,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const config = defaultConfig();
     config.defaultAgent = "codex";
-    config.agents = { codex: { kind: "codex", displayName: "Alice" } };
+    config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
     const runtimeAdapters = new RuntimeAdapterRegistry([
       fixedRuntimeAdapter({
         kind: "codex",

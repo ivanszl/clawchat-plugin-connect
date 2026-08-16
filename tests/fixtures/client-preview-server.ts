@@ -11,7 +11,7 @@ import type { InstalledPluginLockEntry } from "../../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../../src/runtime/runtime-interaction-coordinator";
 import type { RuntimeActivity, RuntimeTranscriptEntry } from "../../src/runtime/types";
-import { fixedRuntimeAdapter } from "../runtime-adapter-fixture";
+import { fixedRuntimeAdapter, pluginBinding } from "../runtime-adapter-fixture";
 
 const directory = await mkdtemp(join(tmpdir(), "connect-client-preview-"));
 const repositoryRoot = process.cwd();
@@ -278,7 +278,7 @@ const config = defaultConfig();
 config.clientPort = Number(process.env.CONNECT_CLIENT_PREVIEW_PORT ?? 47_893);
 config.stateDbPath = stateStore.dbPath;
 config.defaultAgent = "codex";
-config.agents = { codex: { kind: "codex", displayName: "Codex · Local" } };
+config.agents = { codex: pluginBinding({}, { displayName: "Codex · Local" }) };
 const transcriptProjection = new TranscriptProjection({ stateStore, config, runtimeAdapters });
 const runtimeInteractions = new RuntimeInteractionCoordinator(transcriptProjection);
 const activityBySessionRef = new Map<string, "running" | "queued" | "idle">();

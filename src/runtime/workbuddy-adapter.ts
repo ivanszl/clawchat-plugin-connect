@@ -36,6 +36,10 @@ import {
   workBuddyProfileCompatibility,
 } from "./workbuddy-task-discovery";
 import { createWorkBuddyMacosDiscoverySource, listWorkBuddyTasks } from "./workbuddy-task-discovery-macos";
+export interface WorkBuddyRuntimeAdapterBinding extends AgentBindingConfig {
+  profile: WorkBuddyProfile;
+}
+
 
 export interface WorkBuddyTaskSummary {
   id: string;
@@ -142,8 +146,8 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
     }
   };
   const discoverAllThreads: NonNullable<ConnectRuntimeAdapter["discoverAllThreads"]> = async (binding) => {
-    if (binding.kind !== "workbuddy") throw new Error("WorkBuddy Runtime Adapter requires a WorkBuddy Binding");
-    return (await listTasks(source, binding.profile)).map((task) => ({
+    const profile = requireWorkBuddyProfile(binding);
+    return (await listTasks(source, profile)).map((task) => ({
       runtimeThreadId: task.id,
       name: task.title,
       updatedAt: task.updatedAt,
@@ -364,8 +368,7 @@ function discoveryFailure(profile: WorkBuddyProfile, error: unknown): WorkBuddyD
 }
 
 function requireWorkBuddyProfile(binding: AgentBindingConfig): WorkBuddyProfile {
-  if (binding.kind !== "workbuddy") throw new Error("WorkBuddy Runtime Adapter requires a WorkBuddy Binding");
-  return binding.profile;
+  return (binding as WorkBuddyRuntimeAdapterBinding).profile;
 }
 
 function recoverableSession(

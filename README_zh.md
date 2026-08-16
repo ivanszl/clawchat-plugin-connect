@@ -141,31 +141,32 @@ clawchat-connect update
 
 使用 `clawchat-connect update --version v0.1.0-beta.7` 可安装指定版本。更新命令会保留现有配置并刷新系统原生的 Connect Service；明确指定时，历史版本仍可安装。
 
-### 2. 创建 Agent Binding
+### 2. 安装 Runtime Plugin 并创建 Agent Binding
 
-`work` 是本地名称，可替换为任意简短名称。请选择与已安装编程 Agent 匹配的 Runtime Adapter：
+`work` 是本地名称，可替换为任意简短名称。先初始化 Connect、激活官方 Runtime Plugin Bundle，再绑定精确的 Plugin capability：
 
 ```bash
 # Codex
-clawchat-connect init --agent work --kind codex
+clawchat-connect init
+clawchat-connect plugin setup --non-interactive --select clawling.runtime.codex
+clawchat-connect agent add work --plugin clawling.runtime.codex --capability codex
 
-# OpenCode 1.18.13
-clawchat-connect init --agent work --kind opencode
+# OpenCode
+clawchat-connect init
+clawchat-connect plugin setup --non-interactive --select clawling.runtime.opencode
+clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
 ```
 
-如果系统服务的 `PATH` 中找不到运行时，可传入绝对路径：
+运行时专属设置放在 capability Schema 校验的 `runtimeConfig` 中：
 
 ```bash
-clawchat-connect init --agent work --kind codex --runtime-path /absolute/path/to/codex
+clawchat-connect agent add work \
+  --plugin clawling.runtime.codex \
+  --capability codex \
+  --runtime-config-json '{"executablePathOverride":"/absolute/path/to/codex"}'
 ```
 
-`init` 用于创建新配置。已有安装请使用 `agent add` 更新 Binding：
-
-```bash
-clawchat-connect agent add work --kind codex --runtime-path /absolute/path/to/codex
-```
-
-Codex Binding 仍支持 `--codex-path` 兼容别名。
+`init` 会创建不含 Runtime Plugin 的空配置；已有安装应在 provider Bundle 安装并激活后使用 `agent add`。
 
 ### 3. 激活 Binding
 
@@ -177,13 +178,15 @@ clawchat-connect activate work YOUR_INVITE_CODE
 
 Connect 只保存激活后返回的凭据，不会保存邀请码，并把 ClawChat Profile 昵称更新为 Binding ID（本例为 `work`）。
 
-一个 Connect 安装可以激活多个 ClawChat 账号，也可以混用 Runtime Adapter：
+一个 Connect 安装可以激活多个 ClawChat 账号，并使用多个 Runtime Plugin 的 capability：
 
 ```bash
-clawchat-connect agent add personal --kind codex
+clawchat-connect plugin setup --non-interactive \
+  --select clawling.runtime.codex,clawling.runtime.opencode
+clawchat-connect agent add personal --plugin clawling.runtime.codex --capability codex
 clawchat-connect activate personal PERSONAL_ACCOUNT_INVITE_CODE
 
-clawchat-connect agent add work --kind opencode
+clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
 clawchat-connect activate work WORK_ACCOUNT_INVITE_CODE
 clawchat-connect service restart
 ```
@@ -355,31 +358,20 @@ ClawChat 传入的媒体会保留结构化信息：
 
 ```bash
 clawchat-connect config get
-clawchat-connect config get agents.work.sandboxMode
+clawchat-connect config get agents.work.runtime
 ```
 
-常用 Codex 设置：
+CLI 可修改全局设置和通用 Binding 偏好：
 
 ```bash
 clawchat-connect config set livewareAccessPolicy private
 clawchat-connect config set agents.work.model YOUR_MODEL_ID
-clawchat-connect config set agents.work.sandboxMode workspace-write
 clawchat-connect config set agents.work.modelReasoningEffort high
-clawchat-connect config set agents.work.approvalPolicy on-request
-clawchat-connect config set agents.work.webSearchMode live
-clawchat-connect config set agents.work.networkAccessEnabled true
 clawchat-connect service restart
 ```
 
-Codex Binding 设置：
-
-| 设置 | 可选值 |
-| --- | --- |
-| `sandboxMode` | `read-only`、`workspace-write`、`danger-full-access` |
-| `modelReasoningEffort` | `minimal`、`low`、`medium`、`high`、`xhigh` |
-| `approvalPolicy` | `never`、`on-request`（默认）、`untrusted` |
-| `webSearchMode` | `disabled`、`cached`、`live` |
-| `networkAccessEnabled` | `true`、`false` |
+运行时专属配置根据已安装 capability manifest 校验，应通过 Runtime Plugin 配置界面更新，或使用
+`agent add --runtime-config-json` 重新写入 Binding。
 
 全局设置：
 
@@ -389,7 +381,9 @@ Codex Binding 设置：
 | `clientHost` | `127.0.0.1`、`0.0.0.0` |
 | `clientPort` | `1024`–`65535` |
 
-每个 Binding 还支持 `displayName` 和 `executablePathOverride`。OpenCode 的 agent、带 provider 的模型与 variant 默认值保存在 Binding 的 `sessionOptions` 中；Connect Client 会从运行中的 OpenCode 动态发现并校验可用值。`sessionOptions`、`env` 与 `additionalDirectories` 需直接编辑 JSON。
+每个 Binding 只持久化精确的 `runtime.pluginId`、`runtime.capabilityId`、capability 所有的
+`runtimeConfig`，以及 `displayName`、输出可见性、模型选择、环境变量、Session 选项和附加目录等通用偏好。
+Runtime family 来自 provider metadata，不会持久化在 Binding 中。
 
 修改运行时或端点配置后需要重启服务。完整 JSON 示例与自托管 ClawChat 配置见[英文文档](./README.md#configuration)。
 

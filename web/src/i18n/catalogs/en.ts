@@ -259,6 +259,47 @@ export const en = {
   "@connect.settings.binding.saved": { defaultMessage: "Settings saved" },
   "@connect.settings.binding.saveFailed": { defaultMessage: "Unable to save settings" },
   "@connect.settings.binding.displayName": { defaultMessage: "Display name" },
+  "@connect.settings.binding.create.title": { defaultMessage: "New Agent Binding" },
+  "@connect.settings.binding.create.description": {
+    defaultMessage:
+      "Create an Agent Binding against one exact capability from an active installed Runtime Plugin.",
+  },
+  "@connect.settings.binding.create.bindingId": { defaultMessage: "Binding ID" },
+  "@connect.settings.binding.create.bindingIdDescription": {
+    defaultMessage: "This stable ID is used by Sessions and Plugin configuration.",
+  },
+  "@connect.settings.binding.create.bindingIdRequired": { defaultMessage: "Enter a Binding ID." },
+  "@connect.settings.binding.create.create": { defaultMessage: "Create Binding" },
+  "@connect.settings.binding.create.creating": { defaultMessage: "Creating Binding" },
+  "@connect.settings.binding.create.created": { defaultMessage: "Agent Binding created" },
+  "@connect.settings.binding.create.createFailed": { defaultMessage: "Unable to create Agent Binding" },
+  "@connect.settings.binding.provider.title": { defaultMessage: "Runtime provider" },
+  "@connect.settings.binding.provider.description": {
+    defaultMessage:
+      "Select the exact Plugin and Runtime capability. Runtime family is shown for context only.",
+  },
+  "@connect.settings.binding.provider.identity": {
+    defaultMessage: "Plugin {pluginId} · Capability {capabilityId}",
+  },
+  "@connect.settings.binding.provider.option": {
+    defaultMessage: "{pluginName} ({pluginId}) · {capabilityId} · Family: {family}",
+  },
+  "@connect.settings.binding.provider.select": { defaultMessage: "Exact Runtime capability" },
+  "@connect.settings.binding.provider.unavailable": {
+    defaultMessage: "No active installed Runtime Plugin capabilities are available.",
+  },
+  "@connect.settings.binding.provider.selectionRequired": {
+    defaultMessage: "Choose an exact Runtime capability.",
+  },
+  "@connect.settings.binding.provider.configuration": { defaultMessage: "Runtime configuration" },
+  "@connect.settings.binding.provider.configurationInvalid": {
+    defaultMessage: "Fix the invalid Runtime configuration before saving.",
+  },
+  "@connect.settings.binding.provider.lockedTitle": { defaultMessage: "Runtime provider cannot be edited" },
+  "@connect.settings.binding.provider.lockedDescription": {
+    defaultMessage:
+      "This Binding is activated in ClawChat. Its Runtime provider cannot be changed safely while activated.",
+  },
   "@connect.settings.binding.model.description": {
     defaultMessage: "The default follows the Runtime Adapter. Each Session can still override it.",
   },

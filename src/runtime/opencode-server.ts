@@ -18,7 +18,7 @@ import type {
   TextPartInput,
 } from "@opencode-ai/sdk/v2/types";
 import { CONNECT_VERSION } from "../service/version";
-import type { OpenCodeAgentBindingConfig } from "../types";
+import type { OpenCodeRuntimeAdapterBinding } from "./opencode-adapter";
 import { OPENCODE_SDK_VERSION, parseOpenCodeVersion } from "./opencode-version";
 
 export interface OpenCodeMessage {
@@ -94,7 +94,7 @@ export interface OpenCodeServerClientOptions {
 }
 
 export async function createOpenCodeServerClient(
-  binding: OpenCodeAgentBindingConfig,
+  binding: OpenCodeRuntimeAdapterBinding,
   options: OpenCodeServerClientOptions = {},
 ): Promise<OpenCodeServerClient> {
   const env = { ...process.env, ...(binding.env ?? {}) };

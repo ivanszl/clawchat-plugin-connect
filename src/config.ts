@@ -2,19 +2,16 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { normalizePluginAgentBinding } from "./plugin/binding";
-import { normalizeReleasedAgentBinding } from "./runtime/released-adapters";
+import { identifyAgentBinding, normalizeAgentBinding } from "./plugin/binding";
 import type { AgentBindingConfig, ClientHost, ConnectConfig, LivewareAccessPolicy, OutputVisibility } from "./types";
-
-export { DEFAULT_CODEX_APPROVAL_POLICY } from "./runtime/released-adapters";
 
 export const DEFAULT_BASE_URL = "https://app.clawling.com" as const;
 export const DEFAULT_WEBSOCKET_URL = "wss://app.clawling.com/ws" as const;
 export const DEFAULT_MEDIA_UPLOAD_URL = "https://app.clawling.com/media/upload" as const;
 export const DEFAULT_CLIENT_PORT = 47_823 as const;
 export const DEFAULT_CLIENT_HOST = "127.0.0.1" as const;
-const CLIENT_HOSTS = new Set<ClientHost>(["127.0.0.1", "0.0.0.0"]);
-const LIVEWARE_ACCESS_POLICIES = new Set<LivewareAccessPolicy>(["off", "private", "public"]);
+const CLIENT_HOSTS = { "127.0.0.1": true, "0.0.0.0": true } satisfies Record<ClientHost, true>;
+const LIVEWARE_ACCESS_POLICIES = { off: true, private: true, public: true } satisfies Record<LivewareAccessPolicy, true>;
 
 export function defaultDataDir(): string {
   return join(homedir(), ".clawchat-connect");
@@ -39,22 +36,20 @@ function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function normalizeAgentBinding(agentId: string, raw: unknown): AgentBindingConfig {
-  if (raw && typeof raw === "object" && !Array.isArray(raw) && "kind" in raw && raw.kind === "plugin") {
-    return normalizePluginAgentBinding(agentId, raw);
-  }
-  return normalizeReleasedAgentBinding(agentId, raw);
-}
 
 function requireAbsolutePath(value: string, label: string): string {
   if (!isAbsolute(value)) throw new Error(`${label} must be an absolute path`);
   return value;
 }
 
-function readOptionalEnum<T extends string>(value: unknown, allowed: ReadonlySet<T>, label: string): T | undefined {
+function readOptionalEnum<T extends string>(
+  value: unknown,
+  allowed: Readonly<Record<T, true>>,
+  label: string,
+): T | undefined {
   if (value === undefined) return undefined;
   const text = readString(value) as T;
-  if (!allowed.has(text)) throw new Error(`${label} must be one of: ${[...allowed].join(", ")}`);
+  if (!Object.hasOwn(allowed, text)) throw new Error(`${label} must be one of: ${Object.keys(allowed).join(", ")}`);
   return text;
 }
 
@@ -140,17 +135,13 @@ export async function saveConfig(config: ConnectConfig, path = defaultConfigPath
 
 export function getAgentBinding(config: ConnectConfig, agentId = config.defaultAgent): AgentBindingConfig {
   if (!agentId) {
-    throw new Error("No clawchat-connect agent is configured; run `clawchat-connect agent add <id> --kind codex`.");
+    throw new Error(
+      "No clawchat-connect agent is configured; install a Runtime Plugin, then run `clawchat-connect agent add <id> --plugin <plugin-id> --capability <capability-id>`.",
+    );
   }
   const agent = config.agents[agentId];
   if (!agent) throw new Error(`Unknown clawchat-connect agent: ${agentId}`);
-  return {
-    ...agent,
-    env: {
-      ...(agent.env ?? {}),
-      CLAWCHAT_CONNECT_AGENT_ID: agentId,
-    },
-  };
+  return identifyAgentBinding({ ...agent }, agentId);
 }
 
 export function upsertAgentBinding(config: ConnectConfig, agentId: string, binding: AgentBindingConfig): ConnectConfig {

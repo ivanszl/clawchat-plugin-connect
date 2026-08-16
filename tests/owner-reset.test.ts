@@ -17,6 +17,7 @@ import type {
   LivewareControlSession,
 } from "../src/service/liveware-exposure";
 import type { ActivationCredentials } from "../src/types";
+import { pluginBinding } from "./runtime-adapter-fixture";
 
 const PLUGIN_ID = "test.owner-reset-preserved";
 
@@ -54,8 +55,8 @@ describe("Installation Owner Reset", () => {
     await Bun.write(join(nativeRoot, "thread-and-transcript.json"), '{"thread":"native-1","transcript":["native"]}');
     await Bun.write(join(codingAgentRoot, "runtime"), "installed coding agent");
 
-    let config = upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" });
-    config = upsertAgentBinding(config, "work", { kind: "codex" });
+    let config = upsertAgentBinding(defaultConfig(), "personal", pluginBinding());
+    config = upsertAgentBinding(config, "work", pluginBinding());
     config.stateDbPath = stateDbPath;
     config.clientPort = 49_321;
     config.outputVisibility = "full";
@@ -218,7 +219,7 @@ describe("Installation Owner Reset", () => {
     await expect(Bun.file(activeArtifact).exists()).resolves.toBe(true);
     expect(await readFile(activeArtifact, "utf8")).toBe("export default 'preserved';");
 
-    const nextConfig = upsertAgentBinding(resetConfig, "next", { kind: "codex" });
+    const nextConfig = upsertAgentBinding(resetConfig, "next", pluginBinding());
     const failingFetch = mock(async (input: string | URL | Request) =>
       String(input).endsWith("/v1/agents/connect")
         ? json({
@@ -243,8 +244,8 @@ describe("Installation Owner Reset", () => {
     const stateDbPath = join(directory, "state.sqlite");
     const projectRoot = join(directory, "retained-project");
     await mkdir(projectRoot, { recursive: true });
-    let config = upsertAgentBinding(defaultConfig(), "personal", { kind: "codex" });
-    config = upsertAgentBinding(config, "work", { kind: "codex" });
+    let config = upsertAgentBinding(defaultConfig(), "personal", pluginBinding());
+    config = upsertAgentBinding(config, "work", pluginBinding());
     config.stateDbPath = stateDbPath;
     await saveConfig(config, configPath);
 

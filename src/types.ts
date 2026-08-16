@@ -8,80 +8,17 @@ export type ChatType = "direct" | "group";
 export type ClientHost = "127.0.0.1" | "0.0.0.0";
 export type LivewareAccessPolicy = "off" | "private" | "public";
 
-export type CodexSandboxMode = "read-only" | "workspace-write" | "danger-full-access";
-export type CodexReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
-export type CodexApprovalPolicy = "never" | "on-request" | "untrusted";
-export type CodexWebSearchMode = "disabled" | "cached" | "live";
-
 export interface AgentBindingConfigBase {
-  executablePathOverride?: string;
   outputVisibility?: OutputVisibility;
-  env?: Record<string, string>;
   displayName?: string;
   sessionOptions?: Record<string, string>;
-  additionalDirectories?: string[];
 }
 
-export interface PluginAgentBindingConfig extends AgentBindingConfigBase {
-  kind: "plugin";
-  runtimeFamily: string;
+export interface AgentBindingConfig extends AgentBindingConfigBase {
   runtime: RuntimeCapabilityRef;
   runtimeConfig: Record<string, unknown>;
   model?: string;
   modelReasoningEffort?: string;
-  codexPathOverride?: never;
-  sandboxMode?: never;
-  approvalPolicy?: never;
-  webSearchMode?: never;
-  networkAccessEnabled?: never;
-  profile?: never;
-}
-
-export interface CodexAgentBindingConfig extends AgentBindingConfigBase {
-  kind: "codex";
-  codexPathOverride?: string;
-  model?: string;
-  sandboxMode?: CodexSandboxMode;
-  modelReasoningEffort?: CodexReasoningEffort;
-  approvalPolicy?: CodexApprovalPolicy;
-  webSearchMode?: CodexWebSearchMode;
-  networkAccessEnabled?: boolean;
-}
-
-export interface OpenCodeAgentBindingConfig extends AgentBindingConfigBase {
-  kind: "opencode";
-  codexPathOverride?: never;
-  model?: never;
-  sandboxMode?: never;
-  modelReasoningEffort?: never;
-  approvalPolicy?: never;
-  webSearchMode?: never;
-  networkAccessEnabled?: never;
-}
-
-export interface WorkBuddyAgentBindingConfig extends AgentBindingConfigBase {
-  kind: "workbuddy";
-  profile: "workbuddy-ai" | "workbuddy-cn";
-  executablePathOverride?: never;
-  sessionOptions?: never;
-  additionalDirectories?: never;
-  codexPathOverride?: never;
-  model?: never;
-  sandboxMode?: never;
-  modelReasoningEffort?: never;
-  approvalPolicy?: never;
-  webSearchMode?: never;
-  networkAccessEnabled?: never;
-}
-
-export type AgentBindingConfig =
-  | CodexAgentBindingConfig
-  | OpenCodeAgentBindingConfig
-  | WorkBuddyAgentBindingConfig
-  | PluginAgentBindingConfig;
-
-export function runtimeFamilyFor(binding: AgentBindingConfig): string {
-  return binding.kind === "plugin" ? binding.runtimeFamily : binding.kind;
 }
 
 export interface ConnectConfig {

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Agent, GlobalEvent, Project, Provider, Session } from "@opencode-ai/sdk/v2/types";
 import { buildOfficialPlugin } from "../scripts/build-official-plugins";
 import { defaultConfig, saveConfig } from "../src/config";
-import { createPluginAgentBinding } from "../src/plugin/binding";
+import { createAgentBinding } from "../src/plugin/binding";
 import { ConnectPluginHost } from "../src/plugin/host";
 import {
   probeCompatibleOpenCodeExecutable,
@@ -181,8 +181,7 @@ describe("official OpenCode Runtime Plugin", () => {
       pluginId: OPENCODE_OFFICIAL_PLUGIN_ID,
       status: "active",
     });
-    const exactBinding = createPluginAgentBinding({
-      runtimeFamily: "opencode",
+    const exactBinding = createAgentBinding({
       pluginId: OPENCODE_OFFICIAL_PLUGIN_ID,
       capabilityId: OPENCODE_OFFICIAL_CAPABILITY_ID,
       configuration: { executablePathOverride: join(directory, "missing-opencode") },
@@ -193,7 +192,7 @@ describe("official OpenCode Runtime Plugin", () => {
         ...exactBinding,
         runtime: { ...exactBinding.runtime, capabilityId: "other" },
       }),
-    ).rejects.toThrow("no Runtime Adapter registered for provider");
+    ).rejects.toThrow("is not active");
 
     await writeFile(sourcePath, `${JSON.stringify(v2.bundle)}\n`);
     await expect(host.update(OPENCODE_OFFICIAL_PLUGIN_ID)).resolves.toMatchObject({
@@ -201,7 +200,7 @@ describe("official OpenCode Runtime Plugin", () => {
       status: "active",
     });
     await expect(host.disable(OPENCODE_OFFICIAL_PLUGIN_ID)).resolves.toMatchObject({ status: "disabled" });
-    await expect(registry.prepare(exactBinding)).rejects.toThrow("no Runtime Adapter registered for provider");
+    await expect(registry.prepare(exactBinding)).rejects.toThrow("is not active");
     await expect(host.enable(OPENCODE_OFFICIAL_PLUGIN_ID)).resolves.toMatchObject({ status: "active" });
     await expect(host.remove(OPENCODE_OFFICIAL_PLUGIN_ID)).resolves.toMatchObject({
       pluginId: OPENCODE_OFFICIAL_PLUGIN_ID,

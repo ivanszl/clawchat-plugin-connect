@@ -1,5 +1,6 @@
 import type { RuntimeCapabilityRef } from "../plugin/sdk";
-import { type AgentBindingConfig, type RuntimeWorkspace, runtimeFamilyFor } from "../types";
+import { agentBindingIdentity } from "../plugin/binding";
+import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 import type {
   ConnectRuntimeAdapter,
   ConnectRuntimeSession,
@@ -18,8 +19,8 @@ import type {
 import { RuntimeLifecycleError } from "./types";
 
 export interface RuntimeAdapterDefinition {
-  kind: string;
-  runtime?: RuntimeCapabilityRef;
+  runtime: RuntimeCapabilityRef;
+  family: string;
   create(binding: AgentBindingConfig): ConnectRuntimeAdapter;
 }
 export interface RuntimeAdapterReplacement {
@@ -55,9 +56,10 @@ export class RuntimeAdapterRegistry {
   private readonly commandChangeSubscriptions = new Map<string, () => void>();
   private readonly catalogChangeSubscriptions = new Map<string, () => void>();
 
-  constructor(definitions: readonly RuntimeAdapterDefinition[]) {
-    for (const definition of definitions) this.addDefinition(definition);
+  constructor(definitions: readonly RuntimeAdapterDefinition[] = []) {
+    this.registerAll(definitions);
   }
+
 
   register(definition: RuntimeAdapterDefinition): () => Promise<void> {
     return this.registerAll([definition]);
@@ -69,9 +71,7 @@ export class RuntimeAdapterRegistry {
     for (const { providerKey, definition } of pending) {
       if (this.definitions.has(providerKey) || providerKeys.has(providerKey)) {
         throw new Error(
-          definition.runtime
-            ? `duplicate Runtime Adapter provider: ${providerKey}`
-            : `duplicate Runtime Adapter kind: ${definition.kind}`,
+          `duplicate Runtime capability provider: ${definition.runtime.pluginId}/${definition.runtime.capabilityId}`,
         );
       }
       providerKeys.add(providerKey);
@@ -93,15 +93,14 @@ export class RuntimeAdapterRegistry {
     replacedRuntimeRefs: readonly RuntimeCapabilityRef[],
   ): RuntimeAdapterReplacement {
     const pending = definitions.map((definition) => this.normalizeDefinition(definition));
-    const replacementKeys = new Set(
-      replacedRuntimeRefs.map((runtime) => `plugin:${runtime.pluginId}\0${runtime.capabilityId}`),
-    );
+    const replacementKeys = new Set(replacedRuntimeRefs.map((runtime) => this.providerKey(runtime)));
     const pendingKeys = new Set<string>();
     for (const { providerKey, definition } of pending) {
       if (pendingKeys.has(providerKey) || (this.definitions.has(providerKey) && !replacementKeys.has(providerKey))) {
-        throw new Error(`duplicate Runtime Adapter provider: ${providerKey}`);
+        throw new Error(
+          `duplicate Runtime capability provider: ${definition.runtime.pluginId}/${definition.runtime.capabilityId}`,
+        );
       }
-      if (!definition.runtime) throw new Error("Only Plugin Runtime providers can participate in Bundle replacement");
       pendingKeys.add(providerKey);
     }
 
@@ -136,6 +135,13 @@ export class RuntimeAdapterRegistry {
       },
     };
   }
+  familyFor(binding: AgentBindingConfig): string {
+    return this.requireDefinition(binding).family;
+  }
+  hasProvider(binding: AgentBindingConfig): boolean {
+    return this.definitions.has(this.providerKey(binding.runtime));
+  }
+
 
   async start(binding: AgentBindingConfig, context: ConnectRuntimeStartContext): Promise<ConnectRuntimeSession> {
     return await this.require(binding).start(binding, context);
@@ -273,7 +279,7 @@ export class RuntimeAdapterRegistry {
     if (!operation)
       throw new RuntimeLifecycleError(
         "unsupported",
-        `${runtimeFamilyFor(binding)} Runtime Adapter does not support thread archiving`,
+        `${this.familyFor(binding)} Runtime Adapter does not support thread archiving`,
       );
     if (adapter.discoverArchivedThreads) {
       if ((await adapter.discoverArchivedThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId))
@@ -294,7 +300,7 @@ export class RuntimeAdapterRegistry {
     if (!operation)
       throw new RuntimeLifecycleError(
         "unsupported",
-        `${runtimeFamilyFor(binding)} Runtime Adapter does not support thread restoration`,
+        `${this.familyFor(binding)} Runtime Adapter does not support thread restoration`,
       );
     if (adapter.discoverAllThreads) {
       if ((await adapter.discoverAllThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId))
@@ -315,7 +321,7 @@ export class RuntimeAdapterRegistry {
     if (!operation)
       throw new RuntimeLifecycleError(
         "unsupported",
-        `${runtimeFamilyFor(binding)} Runtime Adapter does not support thread deletion`,
+        `${this.familyFor(binding)} Runtime Adapter does not support thread deletion`,
       );
     if (adapter.discoverAllThreads && adapter.discoverArchivedThreads) {
       const [active, archived] = await Promise.all([
@@ -344,21 +350,8 @@ export class RuntimeAdapterRegistry {
   }
 
   private require(binding: AgentBindingConfig): ConnectRuntimeAdapter {
-    const providerKey = this.providerKey(binding);
-    const registered = this.definitions.get(providerKey);
-    const definition = registered?.definition;
-    const family = runtimeFamilyFor(binding);
-    if (!definition) {
-      if (binding.kind !== "plugin") {
-        throw new Error(`no Runtime Adapter registered for kind: ${binding.kind}`);
-      }
-      throw new Error(
-        `no Runtime Adapter registered for provider: ${binding.runtime.pluginId}/${binding.runtime.capabilityId}`,
-      );
-    }
-    if (definition.kind !== family) {
-      throw new Error(`Runtime provider ${providerKey} advertises ${definition.kind}, not Binding family ${family}`);
-    }
+    const providerKey = this.providerKey(binding.runtime);
+    const definition = this.requireDefinition(binding);
     const bindingId = this.bindingId(binding);
     const existing = this.adaptersByBinding.get(bindingId);
     if (existing) {
@@ -366,12 +359,24 @@ export class RuntimeAdapterRegistry {
       return existing.adapter;
     }
     const adapter = definition.create(binding);
-    if (adapter.kind !== family) {
-      throw new Error(`Runtime Adapter factory for ${providerKey} created ${adapter.kind}, expected ${family}`);
+    if (adapter.kind !== definition.family) {
+      throw new Error(
+        `Runtime capability provider ${definition.runtime.pluginId}/${definition.runtime.capabilityId} created family ${adapter.kind}, expected ${definition.family}`,
+      );
     }
     this.adaptersByBinding.set(bindingId, { providerKey, adapter });
     this.installAdapterSubscriptions(bindingId, adapter);
     return adapter;
+  }
+
+  private requireDefinition(binding: AgentBindingConfig): RuntimeAdapterDefinition {
+    const definition = this.definitions.get(this.providerKey(binding.runtime))?.definition;
+    if (!definition) {
+      throw new Error(
+        `Runtime Plugin capability ${binding.runtime.pluginId}/${binding.runtime.capabilityId} is not active`,
+      );
+    }
+    return definition;
   }
 
   private async listRuntimeCatalog<T>(
@@ -414,8 +419,8 @@ export class RuntimeAdapterRegistry {
   }
 
   private bindingId(binding: AgentBindingConfig): string {
-    const injected = binding.env?.CLAWCHAT_CONNECT_AGENT_ID?.trim();
-    if (injected) return injected;
+    const identified = agentBindingIdentity(binding);
+    if (identified) return identified;
     const existing = this.anonymousBindingIds.get(binding);
     if (existing) return existing;
     const created = `anonymous-${this.nextAnonymousBindingId}`;
@@ -424,40 +429,24 @@ export class RuntimeAdapterRegistry {
     return created;
   }
 
-  private addDefinition(definition: RuntimeAdapterDefinition): string {
-    const normalized = this.normalizeDefinition(definition);
-    if (this.definitions.has(normalized.providerKey)) {
-      throw new Error(
-        normalized.definition.runtime
-          ? `duplicate Runtime Adapter provider: ${normalized.providerKey}`
-          : `duplicate Runtime Adapter kind: ${normalized.definition.kind}`,
-      );
-    }
-    this.definitions.set(normalized.providerKey, {
-      definition: normalized.definition,
-      registration: Symbol("builtin-runtime-adapter"),
-    });
-    return normalized.providerKey;
-  }
-
   private normalizeDefinition(definition: RuntimeAdapterDefinition): {
     providerKey: string;
     definition: RuntimeAdapterDefinition;
   } {
-    const kind = definition.kind.trim();
-    if (!kind) throw new Error("Runtime Adapter family is required");
+    const pluginId = definition.runtime.pluginId.trim();
+    const capabilityId = definition.runtime.capabilityId.trim();
+    const family = definition.family.trim();
+    if (!pluginId || !capabilityId) throw new Error("Runtime capability provider identity is required");
+    if (!family) throw new Error("Runtime capability provider family is required");
+    const runtime = { pluginId, capabilityId };
     return {
-      providerKey: definition.runtime
-        ? `plugin:${definition.runtime.pluginId}\0${definition.runtime.capabilityId}`
-        : `builtin:${kind}`,
-      definition: { ...definition, kind },
+      providerKey: this.providerKey(runtime),
+      definition: { ...definition, runtime, family },
     };
   }
 
-  private providerKey(binding: AgentBindingConfig): string {
-    return binding.kind === "plugin"
-      ? `plugin:${binding.runtime.pluginId}\0${binding.runtime.capabilityId}`
-      : `builtin:${binding.kind}`;
+  private providerKey(runtime: RuntimeCapabilityRef): string {
+    return `${runtime.pluginId}\0${runtime.capabilityId}`;
   }
 
   private installAdapterSubscriptions(bindingId: string, adapter: ConnectRuntimeAdapter): void {

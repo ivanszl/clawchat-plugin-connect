@@ -3,10 +3,13 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPluginAgentBinding } from "../src/plugin/binding";
+import { defaultConfig, saveConfig } from "../src/config";
+import { createStateStore } from "../src/persistence/state";
+import { createAgentBinding } from "../src/plugin/binding";
 import { ConnectPluginHost } from "../src/plugin/host";
 import type { ConnectPluginBundleV1, ConnectPluginManifestV1 } from "../src/plugin/sdk";
 import { installLocalPlugin, listInstalledPlugins } from "../src/plugin/store";
+import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 
 const fixturePath = join(import.meta.dir, "fixtures", "reference-runtime.connect-plugin");
@@ -32,8 +35,7 @@ async function bundleFixture(
 }
 
 function runtimeBinding(pluginId: string, configuration: Record<string, unknown>) {
-  return createPluginAgentBinding({
-    runtimeFamily: "reference",
+  return createAgentBinding({
     pluginId,
     capabilityId: "reference-runtime",
     configuration,
@@ -74,7 +76,7 @@ describe("atomic multi-capability Plugin Bundles", () => {
     await host.close();
     expect(readGlobalEffects("__connectReferenceExposureEffects")).toEqual(["activate:private", "dispose"]);
     await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "gamma" }))).rejects.toThrow(
-      `no Runtime Adapter registered for provider: ${installed.pluginId}/reference-runtime`,
+      `Runtime Plugin capability ${installed.pluginId}/reference-runtime is not active`,
     );
   });
 
@@ -225,6 +227,42 @@ describe("atomic multi-capability Plugin Bundles", () => {
     }
   });
 
+  it("marks dependent Runtime Bindings unavailable when startup activation fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-startup-failure-"));
+    const configPath = join(directory, "config.json");
+    const bundlePath = await bundleFixture(
+      directory,
+      "startup-failure",
+      (bundle) => {
+        bundle.manifest.pluginId = "test.startup-failure";
+        bundle.manifest.dependencies = [bundle.manifest.dependencies[0]!];
+        bundle.manifest.capabilities = [bundle.manifest.capabilities[0]!];
+      },
+      `export default { activate() { throw new Error("startup activation boom"); } };`,
+    );
+    await installLocalPlugin({ configPath, bundlePath });
+    const config = defaultConfig();
+    config.stateDbPath = join(directory, "state.sqlite");
+    config.agents.fixture = runtimeBinding("test.startup-failure", { instance: "fixture" });
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    await store.initialize();
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, {
+      config,
+      stateStore: store,
+      projects: new ProjectCatalog(store),
+    });
+
+    await host.activateInstalled();
+
+    await expect(store.getRuntimeStatus("fixture")).resolves.toMatchObject({
+      runtimeAvailability: "startup-unavailable",
+      recentError: expect.stringContaining("startup activation boom"),
+    });
+    await host.close();
+    await store.close();
+  });
+
   it("rolls back every earlier contribution effect when a later contribution fails", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-rollback-"));
     const configPath = join(directory, "config.json");
@@ -261,7 +299,7 @@ describe("atomic multi-capability Plugin Bundles", () => {
     expect(host.activePluginIds()).toEqual([]);
     expect(readGlobalEffects("__connectAtomicEffects")).toEqual(["activate:first", "dispose:first"]);
     await expect(registry.prepare(runtimeBinding(installed.pluginId, {}))).rejects.toThrow(
-      `no Runtime Adapter registered for provider: ${installed.pluginId}/reference-runtime`,
+      `Runtime Plugin capability ${installed.pluginId}/reference-runtime is not active`,
     );
     expect(diagnostics).toEqual(["second contribution failed"]);
     await expect(listInstalledPlugins(configPath)).resolves.toEqual([

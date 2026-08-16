@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaultConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
-import { createPluginAgentBinding } from "../src/plugin/binding";
+import { createAgentBinding, identifyAgentBinding } from "../src/plugin/binding";
 import { ConnectPluginHost } from "../src/plugin/host";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
@@ -227,15 +227,14 @@ async function writeBundle(directory: string, bundle: ConnectPluginBundleV1): Pr
 }
 
 function binding(pluginId: string, bindingId: string) {
-  return {
-    ...createPluginAgentBinding({
-      runtimeFamily: "hot",
+  return identifyAgentBinding(
+    createAgentBinding({
       pluginId,
       capabilityId: "runtime",
       configuration: {},
     }),
-    env: { CLAWCHAT_CONNECT_AGENT_ID: bindingId },
-  };
+    bindingId,
+  );
 }
 
 describe("hot Plugin management service", () => {
@@ -312,7 +311,7 @@ describe("hot Plugin management service", () => {
 
     await expect(host.disable(pluginId)).resolves.toMatchObject({ version: "2.0.0", status: "disabled" });
     await expect(registry.prepare(config.agents[bindingId]!)).rejects.toThrow(
-      "no Runtime Adapter registered for provider",
+      "is not active",
     );
     await expect(store.getRuntimeStatus(bindingId)).resolves.toMatchObject({
       runtimeAvailability: "startup-unavailable",
@@ -654,7 +653,7 @@ describe("hot Plugin management service", () => {
     const disabledTurn = queue.submit("resumed-disabled", async () => {
       await Array.fromAsync(executor.execute(target, input));
     });
-    await expect(disabledTurn.completion).rejects.toThrow("no Runtime Adapter registered");
+    await expect(disabledTurn.completion).rejects.toThrow("is not active");
 
     let markEnableGateReached: () => void = () => undefined;
     const enableGateReached = new Promise<void>((resolve) => {
@@ -764,7 +763,7 @@ describe("hot Plugin management service", () => {
 
     await expect(host.update(pluginId)).rejects.toThrow("v1 adapter disposal failed");
     expect(host.activePluginIds()).toEqual([]);
-    await expect(registry.prepare(dependent)).rejects.toThrow("no Runtime Adapter registered for provider");
+    await expect(registry.prepare(dependent)).rejects.toThrow("is not active");
     await expect(host.list()).resolves.toEqual([
       expect.objectContaining({
         pluginId,

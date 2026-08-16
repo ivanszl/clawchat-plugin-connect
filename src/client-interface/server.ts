@@ -26,13 +26,15 @@ import {
   type SessionMutationRequest,
   type SessionView,
   type UpdateBindingPreferencesRequest,
+  type UpsertBindingProviderRequest,
   type UpdateSessionPreferencesRequest,
 } from "../client-contract";
 import { getAgentBinding, saveConfig } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
+import { createAgentBinding } from "../plugin/binding";
 import type { OfficialPluginDiscovery } from "../plugin/catalog";
 import type { ConfigurePluginOptions, ConnectPluginHost, ManagePluginOptions, PluginUpdateCheck } from "../plugin/host";
-import type { InstalledPluginLockEntry } from "../plugin/store";
+import { type InstalledPluginLockEntry, validatePluginConfiguration } from "../plugin/store";
 import {
   HostDirectoryError,
   listHostDirectories,
@@ -49,11 +51,10 @@ import { classifyWorkspaceArtifact } from "../projects/workspace-artifact";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
-import { releasedRuntimeAdapters } from "../runtime/released-adapters";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { RuntimeSlashSelection } from "../runtime/types";
 import type { BindingRuntimeHandle } from "../service/binding-runtime";
-import { type AgentBindingConfig, type ConnectConfig, runtimeFamilyFor } from "../types";
+import type { AgentBindingConfig, ConnectConfig } from "../types";
 import { BINDING_SCOPE_HEADER } from "./binding-scoped-gateway";
 import { resolveClientAssetsPath, staticResponse } from "./client-assets";
 import {
@@ -155,6 +156,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   const catalog = new SessionCatalog({
     ...options,
     projects,
+    runtimeFamily: async (binding) =>
+      runtimeFamilyForClient(binding, options.runtimeAdapters, (await options.pluginManager?.list()) ?? []),
     sessionActivity: async (bindingId, sessionRef) =>
       (await runtimes.get(bindingId)?.sessionActivity?.(sessionRef)) ?? "idle",
     activeTurnId: (bindingId, sessionRef) => runtimes.get(bindingId)?.activeClientTurnId?.(sessionRef) ?? null,
@@ -443,32 +446,37 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             return errorResponse(404, "not-found", "Client Interface endpoint was not found");
           }
           if (url.pathname === `${CLIENT_API_PREFIX}/bootstrap` && request.method === "GET") {
+            const installed = (await options.pluginManager?.list()) ?? [];
             const view: BootstrapView = {
               apiVersion: 1,
               eventCursor: await options.stateStore.getClientEventCursor(),
               outputVisibility: bindingScope
                 ? bindingOutputVisibility(options.config, bindingScope)
                 : options.config.outputVisibility,
-              runtimeAdapters: releasedRuntimeAdapters().map((adapter) => ({
-                ...adapter,
-                profiles: adapter.profiles.map((profile) => ({ ...profile })),
-              })),
               bindings: await Promise.all(
                 Object.entries(options.config.agents)
                   .filter(([bindingId]) => requestScope.includesBinding(bindingId))
-                  .map(async ([bindingId, binding]) => ({
-                    bindingId,
-                    displayName: binding.displayName || bindingId,
-                    clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
-                    runtimeKind: runtimeFamilyFor(binding),
-                    runtimeProfile: binding.kind === "workbuddy" ? binding.profile : null,
-                    outputVisibility: bindingOutputVisibility(options.config, bindingId),
-                    model: binding.model ?? null,
-                    modelReasoningEffort: binding.modelReasoningEffort ?? null,
-                    modelOptions:
-                      (await options.runtimeAdapters.listModels(getAgentBinding(options.config, bindingId))) ?? [],
-                    modeOptions: [...options.runtimeAdapters.modesFor(getAgentBinding(options.config, bindingId))],
-                  })),
+                  .map(async ([bindingId, binding]) => {
+                    const active = options.runtimeAdapters.hasProvider(binding);
+                    return {
+                      bindingId,
+                      displayName: binding.displayName || bindingId,
+                      clawChatUserId: await options.stateStore.getActivationUserId(bindingId),
+                      runtimeKind: runtimeFamilyForClient(binding, options.runtimeAdapters, installed),
+                      outputVisibility: bindingOutputVisibility(options.config, bindingId),
+                      model: binding.model ?? null,
+                      modelReasoningEffort: binding.modelReasoningEffort ?? null,
+                      runtimePluginId: binding.runtime.pluginId,
+                      runtimeCapabilityId: binding.runtime.capabilityId,
+                      runtimeConfiguration: structuredClone(binding.runtimeConfig),
+                      modelOptions: active
+                        ? ((await options.runtimeAdapters.listModels(getAgentBinding(options.config, bindingId))) ?? [])
+                        : [],
+                      modeOptions: active
+                        ? [...options.runtimeAdapters.modesFor(getAgentBinding(options.config, bindingId))]
+                        : [],
+                    };
+                  }),
               ),
               capabilities: {
                 localTurns: true,
@@ -1261,6 +1269,122 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               return { status: 200, body: { cancelled, sessionRef } };
             });
           }
+          const providerMatch = url.pathname.match(/^\/client\/v1\/bindings\/([^/]+)\/provider$/u);
+          if (providerMatch && request.method === "PUT") {
+            const bindingId = decodeURIComponent(providerMatch[1] ?? "").trim();
+            if (!bindingId) return errorResponse(400, "invalid-binding-id", "Agent Binding ID is required");
+            const body = await readJsonBody<UpsertBindingProviderRequest>(request);
+            if (!validRequestId(body.requestId))
+              return errorResponse(400, "invalid-request-id", "requestId is required");
+            if (typeof body.pluginId !== "string" || !body.pluginId.trim()) {
+              return errorResponse(400, "invalid-plugin-id", "Plugin ID is required");
+            }
+            if (typeof body.capabilityId !== "string" || !body.capabilityId.trim()) {
+              return errorResponse(400, "invalid-capability-id", "Runtime capability ID is required");
+            }
+            if (!isPlainRecord(body.runtimeConfig)) {
+              return errorResponse(400, "invalid-runtime-configuration", "Runtime configuration must be a JSON object");
+            }
+            if (!options.pluginManager) {
+              return errorResponse(503, "plugin-manager-unavailable", "Plugin management is unavailable");
+            }
+            const pluginId = body.pluginId.trim();
+            const capabilityId = body.capabilityId.trim();
+            const installed = await options.pluginManager.list();
+            const plugin = installed.find((candidate) => candidate.pluginId === pluginId);
+            if (!plugin) return errorResponse(400, "plugin-not-installed", `Plugin ${pluginId} is not installed`);
+            if (plugin.status !== "active") {
+              return errorResponse(
+                409,
+                "plugin-not-active",
+                `Plugin ${pluginId} is not active (status: ${plugin.status})${plugin.error ? `: ${plugin.error}` : ""}`,
+              );
+            }
+            const capability = plugin.manifest.capabilities.find(
+              (candidate) => candidate.id === capabilityId && candidate.type === "runtime",
+            );
+            if (!capability || capability.type !== "runtime") {
+              return errorResponse(
+                400,
+                "runtime-capability-not-found",
+                `Plugin ${pluginId} has no Runtime capability ${capabilityId}`,
+              );
+            }
+            let runtimeConfig: Record<string, unknown>;
+            try {
+              runtimeConfig = validatePluginConfiguration(
+                capability.configurationSchema,
+                body.runtimeConfig,
+                `Agent Binding ${bindingId} Runtime configuration`,
+              );
+            } catch (error) {
+              return errorResponse(
+                400,
+                "invalid-runtime-configuration",
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+            const existing = options.config.agents[bindingId];
+            if (body.createOnly && existing) {
+              return errorResponse(409, "binding-already-exists", `Agent Binding ${bindingId} already exists`);
+            }
+            if (
+              existing &&
+              (runtimes.has(bindingId) || (await options.stateStore.getActivationUserId(bindingId)) !== null)
+            ) {
+              return errorResponse(
+                409,
+                "binding-provider-active",
+                "An activated Agent Binding cannot change Runtime provider or configuration while it remains activated",
+              );
+            }
+            const candidate = createAgentBinding({
+              pluginId,
+              capabilityId,
+              configuration: runtimeConfig,
+            });
+            if (!options.runtimeAdapters.hasProvider(candidate)) {
+              return errorResponse(
+                409,
+                "runtime-capability-inactive",
+                `Runtime Plugin capability ${pluginId}/${capabilityId} is not active`,
+              );
+            }
+            return await idempotentCommand(
+              options.stateStore,
+              body.requestId,
+              "binding.provider.upsert",
+              bindingId,
+              async () => {
+                candidate.displayName =
+                  body.displayName === undefined
+                    ? existing?.displayName
+                    : requireDisplayName(body.displayName);
+                if (existing?.outputVisibility) candidate.outputVisibility = existing.outputVisibility;
+                options.config.agents[bindingId] = candidate;
+                if (!options.config.defaultAgent) options.config.defaultAgent = bindingId;
+                await saveConfig(options.config, options.configPath);
+                catalog.invalidate();
+                return {
+                  status: 200,
+                  body: {
+                    bindingId,
+                    displayName: candidate.displayName || bindingId,
+                    clawChatUserId: null,
+                    runtimeKind: capability.family,
+                    outputVisibility: bindingOutputVisibility(options.config, bindingId),
+                    model: null,
+                    modelReasoningEffort: null,
+                    modelOptions: [],
+                    runtimePluginId: pluginId,
+                    runtimeCapabilityId: capabilityId,
+                    runtimeConfiguration: structuredClone(runtimeConfig),
+                    modeOptions: [...options.runtimeAdapters.modesFor(candidate)],
+                  },
+                };
+              },
+            );
+          }
           const preferenceMatch = url.pathname.match(/^\/client\/v1\/bindings\/([^/]+)\/preferences$/u);
           if (preferenceMatch && request.method === "PATCH") {
             const bindingId = decodeURIComponent(preferenceMatch[1] ?? "");
@@ -1392,6 +1516,19 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     },
   };
 }
+function runtimeFamilyForClient(
+  binding: AgentBindingConfig,
+  runtimeAdapters: RuntimeAdapterRegistry,
+  installed: readonly InstalledPluginLockEntry[],
+): string {
+  if (runtimeAdapters.hasProvider(binding)) return runtimeAdapters.familyFor(binding);
+  const plugin = installed.find((candidate) => candidate.pluginId === binding.runtime.pluginId);
+  const capability = plugin?.manifest.capabilities.find(
+    (candidate) => candidate.id === binding.runtime.capabilityId && candidate.type === "runtime",
+  );
+  return capability?.type === "runtime" ? capability.family : "unavailable";
+}
+
 
 function pluginAdministrationView(
   config: ConnectConfig,
@@ -1401,10 +1538,7 @@ function pluginAdministrationView(
 ): PluginAdministrationView {
   const installed = installedEntries.map((entry): InstalledPluginView => {
     const dependentBindings = Object.entries(config.agents)
-      .filter((candidate): candidate is [string, AgentBindingConfig & { kind: "plugin" }] => {
-        const binding = candidate[1];
-        return binding.kind === "plugin" && binding.runtime.pluginId === entry.pluginId;
-      })
+      .filter(([, binding]) => binding.runtime.pluginId === entry.pluginId)
       .map(([bindingId, binding]) => ({
         bindingId,
         displayName: binding.displayName || bindingId,
@@ -1448,14 +1582,11 @@ function pluginAdministrationView(
           instances:
             capability.type === "runtime"
               ? Object.entries(config.agents)
-                  .filter((candidate): candidate is [string, AgentBindingConfig & { kind: "plugin" }] => {
-                    const binding = candidate[1];
-                    return (
-                      binding.kind === "plugin" &&
+                  .filter(
+                    ([, binding]) =>
                       binding.runtime.pluginId === entry.pluginId &&
-                      binding.runtime.capabilityId === capability.id
-                    );
-                  })
+                      binding.runtime.capabilityId === capability.id,
+                  )
                   .map(([bindingId, binding]) => ({
                     instanceId: bindingId,
                     bindingId,
@@ -1634,7 +1765,11 @@ async function requireActiveOwnerBinding(options: ClientInterfaceOptions, bindin
 }
 
 function isPluginAdministrationPath(pathname: string): boolean {
-  return pathname === `${CLIENT_API_PREFIX}/plugins` || pathname.startsWith(`${CLIENT_API_PREFIX}/plugins/`);
+  return (
+    pathname === `${CLIENT_API_PREFIX}/plugins` ||
+    pathname.startsWith(`${CLIENT_API_PREFIX}/plugins/`) ||
+    /^\/client\/v1\/bindings\/[^/]+\/provider$/u.test(pathname)
+  );
 }
 
 function isLoopbackAddress(address: string | undefined): boolean {

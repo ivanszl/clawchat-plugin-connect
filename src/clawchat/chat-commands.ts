@@ -15,7 +15,6 @@ import type {
   RuntimeSessionRecord,
   SessionIntentRecord,
 } from "../types";
-import { runtimeFamilyFor } from "../types";
 import { commandAddressPrefix } from "./message-mapper";
 import type { NormalizedInboundMessage } from "./protocol";
 
@@ -30,6 +29,7 @@ export interface ChatCommandContext {
   closeRuntimeSession?: (chatId: string) => Promise<boolean>;
   invalidateRuntimeSession?: (chatId: string) => Promise<boolean>;
   cancelRuntimeTurn?: (chatId: string) => Promise<boolean>;
+  runtimeFamilyFor(binding: AgentBindingConfig): string;
   runtimeModesFor?: (
     binding: AgentBindingConfig,
     selected?: RuntimeSessionRecord | SessionIntentRecord | null,
@@ -206,7 +206,7 @@ async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult>
       `- agent: \`${status?.activeAgent ?? ctx.agentId}\``,
       `- websocket: \`${status?.websocketConnected === true ? "connected" : status?.websocketConnected === false ? "disconnected" : "unknown"}\``,
       `- session: ${selected ? `${"sessionRef" in selected ? `\`${selected.sessionRef}\`` : "next Session (not started)"}${selected.name ? ` · ${selected.name}` : ""}` : "none"}`,
-      ...(binding.kind === "workbuddy"
+      ...(ctx.runtimeFamilyFor(binding) === "workbuddy"
         ? [
             `- runtime target: ${
               selected &&
@@ -218,7 +218,7 @@ async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult>
           ]
         : []),
       `- project: ${project ? `\`${project.name}\`` : "none (isolated workspace)"}`,
-      `- mode: \`${selected?.mode ?? binding.sandboxMode ?? "runtime default"}\``,
+      `- mode: \`${selected?.mode ?? "runtime default"}\``,
       `- model: \`${modelText}\` · effort \`${effortText}\` (${source})`,
       `- active chats: \`${status?.activeChats ?? 0}\``,
       `- running turns: \`${status?.globalRunning ?? 0}\``,
@@ -243,7 +243,7 @@ async function handleNew(ctx: ChatCommandContext, name: string): Promise<ChatCom
   return {
     handled: true,
     text:
-      binding.kind === "workbuddy"
+      ctx.runtimeFamilyFor(binding) === "workbuddy"
         ? `The next message will start${name.trim() ? ` CodeBuddy Session \`${name.trim()}\`` : " a new CodeBuddy Session"}. It will not appear in WorkBuddy Desktop; use \`/sessions\` and \`/switch <session-ref>\` for a desktop-synchronized WorkBuddy Task.`
         : `The next message will start${name.trim() ? ` Session \`${name.trim()}\`` : " a new Session"}.`,
   };
@@ -256,7 +256,7 @@ async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
   const sessions = sessionsInCurrentWorkspace(
     await ctx.stateStore.listRuntimeSessions(ctx.message.chatId, ctx.agentId),
     intent,
-    binding.kind === "workbuddy",
+    ctx.runtimeFamilyFor(binding) === "workbuddy",
   );
   if (sessions.length === 0 && discovered.length === 0) {
     const current = intent ?? (await ctx.stateStore.getCurrentRuntimeSession(ctx.message.chatId, ctx.agentId));
@@ -283,13 +283,13 @@ async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
         formatSession(
           session,
           session.projectId ? projects.get(session.projectId) : null,
-          binding.kind === "workbuddy",
+          ctx.runtimeFamilyFor(binding) === "workbuddy",
         ),
       ),
       ...discovered.map(
         (thread) =>
           `- ${runtimeThreadLabel(thread)} · \`${thread.sessionRef}\` (available) — ${
-            binding.kind === "workbuddy" ? "WorkBuddy Task · desktop-synchronized" : "Runtime Thread"
+            ctx.runtimeFamilyFor(binding) === "workbuddy" ? "WorkBuddy Task · desktop-synchronized" : "Runtime Thread"
           }`,
       ),
     ].join("\n"),
@@ -455,12 +455,12 @@ async function handleMode(ctx: ChatCommandContext, mode: string | undefined): Pr
   if (!mode)
     return {
       handled: true,
-      text: `Current mode: \`${intent?.mode ?? current?.mode ?? binding.sandboxMode ?? "runtime default"}\`. Available: ${modes.join(", ") || "none"}.`,
+      text: `Current mode: \`${intent?.mode ?? current?.mode ?? "runtime default"}\`. Available: ${modes.join(", ") || "none"}.`,
     };
   const selectedMode = mode === "default" ? null : mode;
   if (ctx.runtimeModesFor) {
     if (modes.length === 0)
-      return { handled: true, text: `Runtime ${runtimeFamilyFor(binding)} does not support configurable modes.` };
+      return { handled: true, text: `Runtime ${ctx.runtimeFamilyFor(binding)} does not support configurable modes.` };
     if (selectedMode && !modes.includes(selectedMode)) {
       return { handled: true, text: commandUsage(ctx.message.chatType, "/mode") };
     }
@@ -489,14 +489,18 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
   }
 
   const models = (await ctx.listRuntimeModels?.(binding, current ?? intent)) ?? null;
-  if (!models) return { handled: true, text: `Runtime ${runtimeFamilyFor(binding)} does not support model selection.` };
+  if (!models)
+    return {
+      handled: true,
+      text: `Runtime ${ctx.runtimeFamilyFor(binding)} does not support model selection.`,
+    };
 
   if (!modelReference) {
     const effective = resolveModelSelection(binding, selected, models);
     return {
       handled: true,
       text: [
-        `**Available ${runtimeFamilyFor(binding)} models**`,
+        `**Available ${ctx.runtimeFamilyFor(binding)} models**`,
         `Current: \`${effective.model ?? "runtime default"}\`${effective.reasoningEffort ? ` · \`${effective.reasoningEffort}\`` : ""} (${effective.source})`,
         "",
         ...models.map(

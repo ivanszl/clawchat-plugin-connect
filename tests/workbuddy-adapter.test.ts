@@ -6,6 +6,7 @@ import { SessionCatalog } from "../src/client-interface/session-catalog";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
+import { identifyAgentBinding } from "../src/plugin/binding";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type {
   ConnectRuntimePrompt,
@@ -14,11 +15,19 @@ import type {
   RuntimeActivity,
 } from "../src/runtime/types";
 import { WorkBuddyPromptTransportError, type WorkBuddyTaskCatalog } from "../src/runtime/workbuddy-acp-client";
-import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
+import {
+  createWorkBuddyRuntimeAdapter,
+  type WorkBuddyRuntimeAdapterBinding,
+  type WorkBuddyRuntimeSource,
+} from "../src/runtime/workbuddy-adapter";
 import { WorkBuddyDiscoveryError, type WorkBuddyDiscoveryFailureCode } from "../src/runtime/workbuddy-task-discovery";
-import type { WorkBuddyAgentBindingConfig } from "../src/types";
+import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
-const binding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile: "workbuddy-ai" };
+function workBuddyBinding(profile: WorkBuddyRuntimeAdapterBinding["profile"]): WorkBuddyRuntimeAdapterBinding {
+  return { ...pluginBinding(), profile };
+}
+
+const binding = workBuddyBinding("workbuddy-ai");
 const taskId = "00000000-0000-4000-8000-000000000001";
 const workspace = "/private/tmp/workbuddy-adapter-task";
 
@@ -123,7 +132,7 @@ describe("WorkBuddy Runtime Adapter", () => {
         }),
       };
       const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
-      const profileBinding: WorkBuddyAgentBindingConfig = { kind: "workbuddy", profile };
+      const profileBinding = workBuddyBinding(profile);
       const runtimeWorkspace = {
         projectId: null,
         workingDirectory: workspace,
@@ -167,11 +176,11 @@ describe("WorkBuddy Runtime Adapter", () => {
     const adapter = createWorkBuddyRuntimeAdapter({
       createSource: () => ({ ...source(), startTask: async () => attachment }),
     });
-    const registry = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
-    const scopedBinding = {
-      ...binding,
-      env: { CLAWCHAT_CONNECT_AGENT_ID: "desktop-catalog-refresh" },
-    } satisfies WorkBuddyAgentBindingConfig;
+    const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
+    const scopedBinding = identifyAgentBinding(
+      { ...binding },
+      "desktop-catalog-refresh",
+    ) as WorkBuddyRuntimeAdapterBinding;
     const runtimeWorkspace = {
       projectId: null,
       workingDirectory: workspace,
@@ -304,7 +313,7 @@ describe("WorkBuddy Runtime Adapter", () => {
     const directory = await mkdtemp(join(tmpdir(), "workbuddy-adapter-projection-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const adapter = createWorkBuddyRuntimeAdapter({ createSource: source });
-    const registry = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.defaultAgent = "desktop";
     config.agents = { desktop: binding };
@@ -340,7 +349,7 @@ describe("WorkBuddy Runtime Adapter", () => {
     const directory = await mkdtemp(join(tmpdir(), "workbuddy-adapter-live-projection-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const adapter = createWorkBuddyRuntimeAdapter({ createSource: source });
-    const registry = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.defaultAgent = "desktop";
     config.agents = { desktop: binding };
@@ -411,7 +420,7 @@ describe("WorkBuddy Runtime Adapter", () => {
       attachTask: async () => history,
     };
     const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
-    const registry = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.defaultAgent = "arbitrary-binding-id";
     config.agents = { "arbitrary-binding-id": binding };
@@ -448,7 +457,7 @@ describe("WorkBuddy Runtime Adapter", () => {
       attachTask: async () => ({ ...history, catalog: nativeCatalog }),
     };
     const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
-    const registry = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.defaultAgent = "desktop";
     config.agents = { desktop: binding };
@@ -496,7 +505,7 @@ describe("WorkBuddy Runtime Adapter", () => {
       },
     };
     const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
-    const registry = new RuntimeAdapterRegistry([{ kind: "workbuddy", create: () => adapter }]);
+    const registry = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const config = defaultConfig();
     config.defaultAgent = "desktop";
     config.agents = { desktop: binding };

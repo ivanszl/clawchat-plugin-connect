@@ -5,11 +5,11 @@ ClawChat Connect binds ClawChat conversations to local agent runtimes while keep
 ## Language
 
 **Agent Binding**:
-A named association between one ClawChat account and one configured local agent runtime. Multiple Agent Bindings may use the same Runtime Adapter kind, but each owns independent credentials, Sessions, and runtime state.
+A named association between one ClawChat account and one exact installed Runtime Plugin capability. Multiple Agent Bindings may select the same capability, but each owns independent credentials, Sessions, and runtime state.
 _Avoid_: Agent, when referring to the configured association rather than the external agent itself
 
 **Runtime Adapter**:
-A concrete integration that lets Connect start and operate one kind of coding agent runtime. Codex is the first Runtime Adapter, not the definition of Connect or Agent Binding.
+A concrete integration contributed by a Runtime Plugin capability that lets Connect start and operate one coding-agent runtime family. Runtime Adapter remains the internal execution seam; it is not an Agent Binding or a compile-time provider catalog.
 _Avoid_: Agent Binding, Codex, when referring to the adapter role
 
 **Claude Code Runtime**:
@@ -25,11 +25,11 @@ A native conversation created or loaded through the CodeBuddy Runtime. Under a W
 _Avoid_: WorkBuddy Task, WorkBuddy Session, tool Task
 
 **Binding Runtime Instance**:
-The stateful runtime process and adapter state owned by one Agent Binding. Instances of the same Runtime Adapter kind remain isolated even when that kind supports multiple Agent Bindings.
+The stateful runtime process and adapter state owned by one Agent Binding. Instances of the same exact Runtime Plugin capability remain isolated.
 _Avoid_: Runtime Adapter, shared runtime process
 
 **Connect Service**:
-The single host-level Connect process that operates every activated Agent Binding, regardless of Runtime Adapter kind.
+The single host-level Connect process that operates every activated Agent Binding, regardless of selected Runtime Plugin capability.
 _Avoid_: Agent Service, Codex Service, per-agent service
 
 **Binding Owner**:
@@ -266,23 +266,23 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 
 ## Invariants
 
-- Connect binds and manages multiple Agent Bindings independently of any one runtime kind.
-- Multiple Agent Bindings may use the same Runtime Adapter kind.
-- Every Agent Binding owns an independent Binding Runtime Instance. Runtime process, environment, cached client state, and shutdown lifecycle are never shared between Agent Bindings, including Bindings of the same Runtime Adapter kind.
+- Connect binds and manages multiple Agent Bindings independently of any coding-agent runtime family.
+- Multiple Agent Bindings may select the same exact Runtime Plugin capability.
+- Every Agent Binding owns an independent Binding Runtime Instance. Runtime process, provider configuration, cached client state, and shutdown lifecycle are never shared between Agent Bindings, including Bindings that select the same capability.
 - Runtime Skill and Runtime Command discovery and cached summaries remain scoped to one Agent Binding and runtime workspace. Connect never derives them by scanning local instruction files, and the active Runtime Adapter remains authoritative when a selected entry is invoked. A manually typed same-name prefix resolves to a Runtime Command before a Runtime Skill, while an explicit picker selection retains its selected kind.
 - Every activated Agent Binding has exactly one Binding Owner; one Connect installation may operate multiple Binding Owners concurrently.
 - A Binding Owner may own multiple Agent Bindings in one Connect installation.
 - Reactivating a Binding for the same Binding Owner refreshes only that Binding's credentials. Activation for a different owner is rejected while the Binding exists.
 - Removing an Agent Binding retires its Liveware Exposure, deletes its credentials, and purges its database records, Client commands/events, staged Turn Submissions, and isolated Non-Project workspaces before its ID may be reused; unrelated Bindings and installation-global Projects remain intact.
 - A Connect installation has one Connect Service; Agent Bindings and Runtime Adapters do not own background services.
-- Agent Binding IDs are arbitrary; Runtime Adapter selection comes only from the Binding's explicit `kind`.
-- The current release registers Codex, OpenCode, and WorkBuddy Runtime Adapters; released kinds remain product scope, not a domain invariant. WorkBuddy requires an explicit distribution profile and currently releases `workbuddy-ai` and `workbuddy-cn`; distributions remain strictly isolated.
-- Connect defines Project, Session, and Runtime Thread semantics uniformly across Runtime Adapter kinds. Each Runtime Adapter translates its coding agent's native project, workspace, conversation, session, or thread concepts into that Connect model rather than changing the model for its kind.
+- Agent Binding IDs are arbitrary; Runtime provider selection comes only from the Binding's exact `runtime.pluginId` and `runtime.capabilityId`.
+- The Runtime Adapter Registry starts empty. Installed and active Plugin Bundles contribute Codex, OpenCode, WorkBuddy, or third-party Runtime capabilities; Connect has no built-in released Adapter catalog.
+- Connect defines Project, Session, and Runtime Thread semantics uniformly across Runtime Plugin capabilities. Each contributed Runtime Adapter translates its coding agent's native project, workspace, conversation, session, or thread concepts into that Connect model rather than changing the model for its family.
 - Successful activation synchronizes the Agent Binding ID to the connected ClawChat Profile nickname.
 - Projects are global and reusable across Agent Bindings.
-- A Runtime Workspace Identity maps to at most one Project within its Agent Binding and Runtime Adapter kind. One global Project may be reused by Runtime Workspace Identities from multiple Agent Bindings or Runtime Adapter kinds.
+- A Runtime Workspace Identity maps to at most one Project within its Agent Binding and exact Runtime Plugin capability. One global Project may be reused by Runtime Workspace Identities from multiple Agent Bindings or capabilities.
 - Sessions are scoped by ClawChat conversation and Agent Binding.
-- A Session never changes Agent Binding or Runtime Adapter kind. Choosing a different coding agent creates a new Session that may reuse the same Project; Connect does not transfer Runtime Thread context between coding agents.
+- A Session never changes Agent Binding or Runtime Plugin capability. Choosing a different coding agent creates a new Session that may reuse the same Project; Connect does not transfer Runtime Thread context between coding agents.
 - A Session has zero or one Project.
 - A Runtime Thread is associated with at most one Session for an Agent Binding. Connect Client and ClawChat operate that same Session rather than creating separate Session copies for one native thread.
 - A WorkBuddy Agent Binding has two explicit Runtime Thread targets: a namespaced CodeBuddy Session or a stable WorkBuddy Task ID. Both remain selectable in ClawChat and use the ordinary Project model; only the WorkBuddy Task is synchronized with WorkBuddy Desktop.

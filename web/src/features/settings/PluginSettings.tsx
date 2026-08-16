@@ -18,9 +18,6 @@ import { Text } from "@astryxdesign/core/Text";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ValidateFunction } from "ajv";
-import Ajv2020 from "ajv/dist/2020.js";
-import addFormats from "ajv-formats";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
   type AvailablePluginView,
@@ -77,7 +74,6 @@ const PLUGIN_DIAGNOSTIC_MESSAGE = {
   update: "@connect.settings.plugins.diagnostic.update",
 } as const;
 
-const jsonSchemaValidators = new WeakMap<object, ValidateFunction>();
 const STRUCTURED_ROOT_SCHEMA_KEYS: Readonly<Record<string, true>> = {
   $anchor: true,
   $comment: true,
@@ -763,7 +759,7 @@ function CapabilityConfiguration({
   );
 }
 
-function JsonSchemaForm({
+export function JsonSchemaForm({
   schema,
   value,
   onChange,
@@ -1115,7 +1111,7 @@ export function pluginConfigurationRequest(
   return { installationConfiguration: installation, exposureConfigurations, runtimeConfigurations };
 }
 
-function prepareJsonSchemaConfiguration(
+export function prepareJsonSchemaConfiguration(
   schema: PluginJsonSchemaView,
   configuration: Record<string, unknown>,
   prefix: string,
@@ -1163,27 +1159,221 @@ export function isPluginConfigurationValid(
   schema: PluginJsonSchemaView,
   value: unknown,
 ): value is Record<string, unknown> {
-  return isRecord(value) && jsonSchemaValidator(schema)(value);
+  return isRecord(value) && validatesJsonSchema(schema, value, schema, 0);
 }
 
-function jsonSchemaValidator(schema: PluginJsonSchemaView): ValidateFunction {
-  const cached = jsonSchemaValidators.get(schema);
-  if (cached) return cached;
-  const ajv = new Ajv2020({ allErrors: true, strict: true });
-  addFormats(ajv);
-  const validate = ajv.compile(schema);
-  jsonSchemaValidators.set(schema, validate);
-  return validate;
+function validatesJsonSchema(schema: unknown, value: unknown, root: PluginJsonSchemaView, depth: number): boolean {
+  if (schema === true) return true;
+  if (schema === false || !isRecord(schema) || depth > 100) return false;
+  if (typeof schema.$ref === "string") {
+    const resolved = resolveLocalJsonSchemaReference(root, schema.$ref);
+    if (resolved === undefined || !validatesJsonSchema(resolved, value, root, depth + 1)) return false;
+  }
+  if (Array.isArray(schema.allOf) && !schema.allOf.every((entry) => validatesJsonSchema(entry, value, root, depth + 1))) {
+    return false;
+  }
+  if (Array.isArray(schema.anyOf) && !schema.anyOf.some((entry) => validatesJsonSchema(entry, value, root, depth + 1))) {
+    return false;
+  }
+  if (
+    Array.isArray(schema.oneOf) &&
+    schema.oneOf.filter((entry) => validatesJsonSchema(entry, value, root, depth + 1)).length !== 1
+  ) {
+    return false;
+  }
+  if (schema.not !== undefined && validatesJsonSchema(schema.not, value, root, depth + 1)) return false;
+  if (schema.if !== undefined && validatesJsonSchema(schema.if, value, root, depth + 1)) {
+    if (schema.then !== undefined && !validatesJsonSchema(schema.then, value, root, depth + 1)) return false;
+  } else if (schema.else !== undefined && !validatesJsonSchema(schema.else, value, root, depth + 1)) {
+    return false;
+  }
+  if (schema.const !== undefined && !jsonValuesEqual(value, schema.const)) return false;
+  if (Array.isArray(schema.enum) && !schema.enum.some((entry) => jsonValuesEqual(value, entry))) return false;
+  if (!matchesJsonSchemaType(schema.type, value)) return false;
+
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return false;
+    if (typeof schema.minimum === "number" && value < schema.minimum) return false;
+    if (typeof schema.maximum === "number" && value > schema.maximum) return false;
+    if (typeof schema.exclusiveMinimum === "number" && value <= schema.exclusiveMinimum) return false;
+    if (typeof schema.exclusiveMaximum === "number" && value >= schema.exclusiveMaximum) return false;
+    if (
+      typeof schema.multipleOf === "number" &&
+      schema.multipleOf > 0 &&
+      Math.abs(value / schema.multipleOf - Math.round(value / schema.multipleOf)) > Number.EPSILON * 10
+    ) {
+      return false;
+    }
+  }
+  if (typeof value === "string") {
+    const length = [...value].length;
+    if (typeof schema.minLength === "number" && length < schema.minLength) return false;
+    if (typeof schema.maxLength === "number" && length > schema.maxLength) return false;
+    if (typeof schema.pattern === "string") {
+      try {
+        if (!new RegExp(schema.pattern, "u").test(value)) return false;
+      } catch {
+        return false;
+      }
+    }
+    if (typeof schema.format === "string" && !matchesJsonSchemaFormat(schema.format, value)) return false;
+  }
+  if (Array.isArray(value)) {
+    if (typeof schema.minItems === "number" && value.length < schema.minItems) return false;
+    if (typeof schema.maxItems === "number" && value.length > schema.maxItems) return false;
+    if (schema.uniqueItems === true && value.some((entry, index) => value.slice(0, index).some((other) => jsonValuesEqual(entry, other)))) {
+      return false;
+    }
+    const prefixItems = Array.isArray(schema.prefixItems) ? schema.prefixItems : [];
+    if (
+      prefixItems.some(
+        (itemSchema, index) =>
+          index < value.length && !validatesJsonSchema(itemSchema, value[index], root, depth + 1),
+      )
+    ) {
+      return false;
+    }
+    if (schema.items !== undefined) {
+      const remaining = value.slice(prefixItems.length);
+      if (schema.items === false && remaining.length > 0) return false;
+      if (
+        schema.items !== true &&
+        schema.items !== false &&
+        remaining.some((entry) => !validatesJsonSchema(schema.items, entry, root, depth + 1))
+      ) {
+        return false;
+      }
+    }
+    if (schema.contains !== undefined) {
+      const matches = value.filter((entry) => validatesJsonSchema(schema.contains, entry, root, depth + 1)).length;
+      if (matches < (typeof schema.minContains === "number" ? schema.minContains : 1)) return false;
+      if (typeof schema.maxContains === "number" && matches > schema.maxContains) return false;
+    }
+  }
+  if (isRecord(value)) {
+    const entries = Object.entries(value);
+    if (typeof schema.minProperties === "number" && entries.length < schema.minProperties) return false;
+    if (typeof schema.maxProperties === "number" && entries.length > schema.maxProperties) return false;
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    if (required.some((name) => !(name in value))) return false;
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    for (const [name, propertySchema] of Object.entries(properties)) {
+      if (name in value && !validatesJsonSchema(propertySchema, value[name], root, depth + 1)) return false;
+    }
+    const patternProperties = isRecord(schema.patternProperties) ? schema.patternProperties : {};
+    const patterns: Array<[RegExp, unknown]> = [];
+    try {
+      for (const [pattern, propertySchema] of Object.entries(patternProperties)) {
+        patterns.push([new RegExp(pattern, "u"), propertySchema]);
+      }
+    } catch {
+      return false;
+    }
+    for (const [name, entry] of entries) {
+      const matchedPatternSchemas = patterns.filter(([pattern]) => pattern.test(name)).map(([, itemSchema]) => itemSchema);
+      if (matchedPatternSchemas.some((itemSchema) => !validatesJsonSchema(itemSchema, entry, root, depth + 1))) {
+        return false;
+      }
+      if (!(name in properties) && matchedPatternSchemas.length === 0) {
+        if (schema.additionalProperties === false) return false;
+        if (
+          schema.additionalProperties !== undefined &&
+          schema.additionalProperties !== true &&
+          !validatesJsonSchema(schema.additionalProperties, entry, root, depth + 1)
+        ) {
+          return false;
+        }
+      }
+      if (schema.propertyNames !== undefined && !validatesJsonSchema(schema.propertyNames, name, root, depth + 1)) {
+        return false;
+      }
+    }
+    if (isRecord(schema.dependentRequired)) {
+      for (const [name, dependencies] of Object.entries(schema.dependentRequired)) {
+        if (
+          name in value &&
+          Array.isArray(dependencies) &&
+          dependencies.some((dependency) => typeof dependency === "string" && !(dependency in value))
+        ) {
+          return false;
+        }
+      }
+    }
+    if (isRecord(schema.dependentSchemas)) {
+      for (const [name, dependentSchema] of Object.entries(schema.dependentSchemas)) {
+        if (name in value && !validatesJsonSchema(dependentSchema, value, root, depth + 1)) return false;
+      }
+    }
+  }
+  return true;
+}
+
+function matchesJsonSchemaType(type: unknown, value: unknown): boolean {
+  if (type === undefined) return true;
+  const types = Array.isArray(type) ? type : [type];
+  return types.some((candidate) => {
+    if (candidate === "null") return value === null;
+    if (candidate === "array") return Array.isArray(value);
+    if (candidate === "object") return isRecord(value);
+    if (candidate === "integer") return typeof value === "number" && Number.isInteger(value);
+    return typeof value === candidate;
+  });
+}
+
+function matchesJsonSchemaFormat(format: string, value: string): boolean {
+  if (format === "email") return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value);
+  if (format === "hostname") {
+    return value.length <= 253 && value.split(".").every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u.test(label));
+  }
+  if (format === "ipv4") {
+    const parts = value.split(".");
+    return parts.length === 4 && parts.every((part) => /^\d{1,3}$/u.test(part) && Number(part) <= 255);
+  }
+  if (format === "uri" || format === "url") {
+    try {
+      return Boolean(new URL(value).protocol);
+    } catch {
+      return false;
+    }
+  }
+  if (format === "date") return /^\d{4}-\d{2}-\d{2}$/u.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+  if (format === "time") return /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-][0-2]\d:[0-5]\d)$/u.test(value);
+  if (format === "date-time") return !Number.isNaN(Date.parse(value)) && /T/u.test(value);
+  return true;
+}
+
+function resolveLocalJsonSchemaReference(root: PluginJsonSchemaView, reference: string): unknown {
+  if (reference === "#") return root;
+  if (!reference.startsWith("#/")) return undefined;
+  let current: unknown = root;
+  for (const rawSegment of reference.slice(2).split("/")) {
+    if (!isRecord(current)) return undefined;
+    current = current[rawSegment.replaceAll("~1", "/").replaceAll("~0", "~")];
+  }
+  return current;
+}
+
+function jsonValuesEqual(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((entry, index) => jsonValuesEqual(entry, right[index]));
+  }
+  if (isRecord(left) && isRecord(right)) {
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    return (
+      leftKeys.length === rightKeys.length &&
+      leftKeys.every((key) => key in right && jsonValuesEqual(left[key], right[key]))
+    );
+  }
+  return false;
 }
 
 function isJsonSchemaFieldValid(schema: Record<string, unknown>, value: unknown, isRequired: boolean): boolean {
   if (value === undefined) return !isRequired;
-  try {
-    return jsonSchemaValidator(schema)(value);
-  } catch {
-    // Root-relative references are validated by the complete configuration schema.
-    return true;
-  }
+  return validatesJsonSchema(schema, value, schema, 0);
 }
 
 function capabilityInstanceKey(capability: PluginCapabilityView, instanceId: string): string {

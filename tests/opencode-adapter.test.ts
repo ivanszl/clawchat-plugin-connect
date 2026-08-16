@@ -8,6 +8,7 @@ import { TranscriptProjection } from "../src/client-interface/transcript-project
 import { TurnSubmission, type TurnSubmissionCapability } from "../src/client-interface/turn-submission";
 import { defaultConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
+import { identifyAgentBinding } from "../src/plugin/binding";
 import { ProjectCatalog } from "../src/projects/projects";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
 import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
@@ -20,6 +21,7 @@ import type {
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeStartContext, RuntimeActivity, RuntimeInteractionRequest } from "../src/runtime/types";
 import type { RuntimeWorkspace } from "../src/types";
+import { fixedRuntimeAdapter, pluginBinding, TEST_RUNTIME_CAPABILITY } from "./runtime-adapter-fixture";
 
 const directory = "/repo";
 const runtimeWorkspace = {
@@ -429,7 +431,7 @@ describe("OpenCode Runtime Adapter", () => {
       },
     ];
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const binding = { kind: "opencode" as const };
+    const binding = pluginBinding();
 
     await expect(adapter.reconcileInput?.(binding, "session-1", batchIdentity)).resolves.toMatchObject({
       outcome: "accepted",
@@ -524,7 +526,7 @@ describe("OpenCode Runtime Adapter", () => {
   it("discovers user-invocable Skills and runs the selected Skill as a native Session command", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const binding = { kind: "opencode" as const };
+    const binding = pluginBinding();
     const invalidated = mock(() => undefined);
     adapter.onSkillsChanged?.(invalidated);
 
@@ -594,7 +596,7 @@ describe("OpenCode Runtime Adapter", () => {
   it("discovers ordinary runtime commands and invokes a selected command natively", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const binding = { kind: "opencode" as const };
+    const binding = pluginBinding();
 
     const commands = await adapter.listCommands?.(binding, runtimeWorkspace);
     expect(commands).toEqual([
@@ -627,7 +629,7 @@ describe("OpenCode Runtime Adapter", () => {
   it("discovers native capabilities and only top-level Runtime Threads", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const binding = { kind: "opencode" as const };
+    const binding = pluginBinding();
 
     const options = await adapter.listSessionOptions?.(binding, {
       projectId: "p",
@@ -683,7 +685,7 @@ describe("OpenCode Runtime Adapter", () => {
         : [];
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
 
-    const threads = await adapter.discoverAllThreads?.({ kind: "opencode" });
+    const threads = await adapter.discoverAllThreads?.(pluginBinding());
 
     expect(threads).toEqual([expect.objectContaining({ runtimeThreadId: "session-1", workingDirectory: directory })]);
     await adapter.close?.();
@@ -740,7 +742,7 @@ describe("OpenCode Runtime Adapter", () => {
             ]
           : nativeHistory;
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const binding = { kind: "opencode" as const };
+    const binding = pluginBinding();
 
     const first = await adapter.readActivity?.(binding, "session-1");
     const second = await adapter.readActivity?.(binding, "session-1");
@@ -836,7 +838,7 @@ describe("OpenCode Runtime Adapter", () => {
         : [];
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
 
-    const snapshot = await adapter.readActivity?.({ kind: "opencode" }, "session-1");
+    const snapshot = await adapter.readActivity?.(pluginBinding(), "session-1");
 
     expect(
       snapshot?.activities.find((activity) => activity.id.endsWith("subtask-without-native-child-id"))?.children,
@@ -852,7 +854,7 @@ describe("OpenCode Runtime Adapter", () => {
     test.client.deleteSession = async () => false;
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
 
-    await expect(adapter.deleteThread?.({ kind: "opencode" }, "session-1")).rejects.toThrow(
+    await expect(adapter.deleteThread?.(pluginBinding(), "session-1")).rejects.toThrow(
       "OpenCode Session deletion was not confirmed",
     );
     await adapter.close?.();
@@ -881,7 +883,7 @@ describe("OpenCode Runtime Adapter", () => {
         : [];
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
 
-    const snapshot = await adapter.readActivity?.({ kind: "opencode" }, "session-1");
+    const snapshot = await adapter.readActivity?.(pluginBinding(), "session-1");
 
     expect(snapshot?.activities[0]).toMatchObject({
       id: "message-user:snapshot-part",
@@ -897,7 +899,7 @@ describe("OpenCode Runtime Adapter", () => {
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
     let attached: string | null = null;
     const session = await adapter.start(
-      { kind: "opencode" },
+      pluginBinding(),
       startContext({
         runtimeSessionId: null,
         onRuntimeSessionId: async (value) => {
@@ -973,7 +975,7 @@ describe("OpenCode Runtime Adapter", () => {
   it("lets OpenCode generate ordered native message IDs for ordinary prompts", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
 
     for await (const _activity of session.prompt({ prompt: "hello", workspace: runtimeWorkspace })) {
       // Drain the completed native turn.
@@ -1009,7 +1011,7 @@ describe("OpenCode Runtime Adapter", () => {
       } as unknown as GlobalEvent);
     };
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
 
     const activities = [];
     for await (const activity of session.prompt({ prompt: "hello", workspace: runtimeWorkspace })) {
@@ -1071,7 +1073,7 @@ describe("OpenCode Runtime Adapter", () => {
       } as GlobalEvent);
     };
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
 
     const activities = [];
     for await (const activity of session.prompt({ prompt: "which model are you", workspace: runtimeWorkspace })) {
@@ -1089,7 +1091,7 @@ describe("OpenCode Runtime Adapter", () => {
 
   it("keeps an atomically accepted Turn Submission terminal when OpenCode later rejects its MIME", async () => {
     const root = await mkdtemp(join(tmpdir(), "connect-opencode-provider-error-"));
-    const config = upsertAgentBinding(defaultConfig(), "open", { kind: "opencode" });
+    const config = upsertAgentBinding(defaultConfig(), "open", pluginBinding());
     config.stateDbPath = join(root, "state.sqlite");
     const store = createStateStore({ dbPath: config.stateDbPath });
     const projects = new ProjectCatalog(store);
@@ -1122,7 +1124,7 @@ describe("OpenCode Runtime Adapter", () => {
       throw new Error("provider rejected unsupported MIME application/pdf");
     };
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const runtimeAdapters = new RuntimeAdapterRegistry([{ kind: "opencode", create: () => adapter }]);
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
     const transcriptProjection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters });
     const runtime = new ConnectRuntime({
       agentId: "open",
@@ -1215,7 +1217,7 @@ describe("OpenCode Runtime Adapter", () => {
   it("leaves native agent, model, and variant defaults unset", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext({ runtimeSessionId: null }));
+    const session = await adapter.start(pluginBinding(), startContext({ runtimeSessionId: null }));
     for await (const _activity of session.prompt({
       prompt: "inspect",
       workspace: runtimeWorkspace,
@@ -1233,7 +1235,7 @@ describe("OpenCode Runtime Adapter", () => {
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
     const requests: RuntimeInteractionRequest[] = [];
     let deliveryConfirmation: Promise<void> | null = null;
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
 
     const result = session.prompt({
       prompt: "run",
@@ -1295,7 +1297,7 @@ describe("OpenCode Runtime Adapter", () => {
       const requests: RuntimeInteractionRequest[] = [];
       const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
       const session = await adapter.start(
-        { kind: "opencode" },
+        pluginBinding(),
         startContext({
           sessionId: `connect-${testCase.optionId}`,
         }),
@@ -1359,7 +1361,7 @@ describe("OpenCode Runtime Adapter", () => {
       return false;
     };
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
     let deliveryConfirmation: Promise<void> | null = null;
     test.client.promptAsync = async () => {
       test.events.push({
@@ -1410,7 +1412,7 @@ describe("OpenCode Runtime Adapter", () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
     const session = await adapter.start(
-      { kind: "opencode" },
+      pluginBinding(),
       startContext({
         sessionId: "connect-cancel",
       }),
@@ -1471,7 +1473,7 @@ describe("OpenCode Runtime Adapter", () => {
       return false;
     };
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
     let interactionStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       interactionStarted = resolve;
@@ -1565,7 +1567,7 @@ describe("OpenCode Runtime Adapter", () => {
     });
     let interactionAborted = false;
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
     const iterator = session
       .prompt({
         prompt: "run",
@@ -1643,7 +1645,7 @@ describe("OpenCode Runtime Adapter", () => {
       },
     });
     const context = startContext({ sessionId: "connect-restart" });
-    const firstSession = await adapter.start({ kind: "opencode" }, context);
+    const firstSession = await adapter.start(pluginBinding(), context);
     const firstIterator = firstSession
       .prompt({
         prompt: "first",
@@ -1684,26 +1686,18 @@ describe("OpenCode Runtime Adapter", () => {
     ]);
     const definitionRegistry = new RuntimeAdapterRegistry([
       {
-        kind: "opencode",
-        create: () =>
-          createOpenCodeRuntimeAdapter({
-            createServer: async (binding) => {
-              const id = binding.env?.CLAWCHAT_CONNECT_AGENT_ID ?? "";
-              const client = clients.get(id);
-              if (!client) throw new Error(`missing fixture for ${id}`);
-              return client;
-            },
-          }),
+        runtime: TEST_RUNTIME_CAPABILITY,
+        family: "opencode",
+        create: (binding) => {
+          const id = binding.runtimeConfig.fixture;
+          const client = typeof id === "string" ? clients.get(id) : undefined;
+          if (!client) throw new Error(`missing fixture for ${String(id)}`);
+          return createOpenCodeRuntimeAdapter({ createServer: async () => client });
+        },
       },
     ]);
-    const workBinding = {
-      kind: "opencode",
-      env: { CLAWCHAT_CONNECT_AGENT_ID: "work" },
-    } as const;
-    const reviewBinding = {
-      kind: "opencode",
-      env: { CLAWCHAT_CONNECT_AGENT_ID: "review" },
-    } as const;
+    const workBinding = identifyAgentBinding(pluginBinding({ fixture: "work" }), "work");
+    const reviewBinding = identifyAgentBinding(pluginBinding({ fixture: "review" }), "review");
 
     await Promise.all([definitionRegistry.prepare(workBinding), definitionRegistry.prepare(reviewBinding)]);
     expect(work.closes()).toBe(0);
@@ -1716,7 +1710,7 @@ describe("OpenCode Runtime Adapter", () => {
   it("routes structured OpenCode questions and confirms their native answers", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
     let deliveryConfirmation: Promise<void> | null = null;
     test.client.promptAsync = async () => {
       test.events.push({
@@ -1797,7 +1791,7 @@ describe("OpenCode Runtime Adapter", () => {
       return true;
     };
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
     let deliveryConfirmation: Promise<void> | null = null;
     test.client.promptAsync = async () => {
       test.events.push({
@@ -1859,7 +1853,7 @@ describe("OpenCode Runtime Adapter", () => {
       return false;
     };
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
     let deliveryConfirmation: Promise<void> | null = null;
     test.client.promptAsync = async () => {
       test.events.push({
@@ -1924,7 +1918,7 @@ describe("OpenCode Runtime Adapter", () => {
       settlePromptStarted();
     };
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
     const iterator = session
       .prompt({
         prompt: "continue",
@@ -1945,7 +1939,7 @@ describe("OpenCode Runtime Adapter", () => {
   it("fails closed for unavailable saved selections and file permissions outside trusted roots", async () => {
     const test = fixture();
     const adapter = createOpenCodeRuntimeAdapter({ createServer: async () => test.client });
-    const session = await adapter.start({ kind: "opencode" }, startContext());
+    const session = await adapter.start(pluginBinding(), startContext());
 
     await expect(async () => {
       for await (const _activity of session.prompt({

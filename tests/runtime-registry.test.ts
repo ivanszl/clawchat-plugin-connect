@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
-import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import { createReleasedRuntimeAdapterRegistry, releasedRuntimeAdapters } from "../src/runtime/released-adapters";
+import type { RuntimeCapabilityRef } from "../src/plugin/sdk";
+import { RuntimeAdapterRegistry, type RuntimeAdapterDefinition } from "../src/runtime/registry";
 import type { ConnectRuntimeAdapter, ConnectRuntimeSession, RuntimeModelOption } from "../src/runtime/types";
 import type { AgentBindingConfig, RuntimeWorkspace } from "../src/types";
 
@@ -20,21 +20,35 @@ function adapter(kind = "codex"): ConnectRuntimeAdapter {
   };
 }
 
+function runtime(pluginId: string, capabilityId = "runtime"): RuntimeCapabilityRef {
+  return { pluginId, capabilityId };
+}
+
+function definition(
+  exactRuntime: RuntimeCapabilityRef,
+  create: () => ConnectRuntimeAdapter,
+  family = "codex",
+): RuntimeAdapterDefinition {
+  return { runtime: exactRuntime, family, create };
+}
+
+function binding(exactRuntime: RuntimeCapabilityRef): AgentBindingConfig {
+  return { runtime: exactRuntime, runtimeConfig: {} };
+}
+
 describe("RuntimeAdapterRegistry", () => {
   it("owns one Runtime Adapter instance and shutdown lifecycle per Agent Binding", async () => {
     const instances: ConnectRuntimeAdapter[] = [];
+    const exactRuntime = runtime("test.codex");
     const registry = new RuntimeAdapterRegistry([
-      {
-        kind: "codex",
-        create: () => {
-          const instance = adapter();
-          instances.push(instance);
-          return instance;
-        },
-      },
+      definition(exactRuntime, () => {
+        const instance = adapter();
+        instances.push(instance);
+        return instance;
+      }),
     ]);
-    const work = { kind: "codex", env: { CLAWCHAT_CONNECT_AGENT_ID: "work" } } as AgentBindingConfig;
-    const review = { kind: "codex", env: { CLAWCHAT_CONNECT_AGENT_ID: "review" } } as AgentBindingConfig;
+    const work = binding(exactRuntime);
+    const review = binding(exactRuntime);
 
     registry.modesFor(work);
     registry.modesFor(review);
@@ -42,15 +56,19 @@ describe("RuntimeAdapterRegistry", () => {
     expect(instances).toHaveLength(2);
 
     await registry.close();
-    expect(instances.every((instance) => (instance.close as ReturnType<typeof mock>).mock.calls.length === 1)).toBe(
-      true,
-    );
+    for (const instance of instances) expect(instance.close).toHaveBeenCalledTimes(1);
   });
 
-  it("selects a Runtime Adapter from the Agent Binding kind", async () => {
-    const codex = adapter();
-    const registry = new RuntimeAdapterRegistry([{ kind: codex.kind, create: () => codex }]);
-    const binding: AgentBindingConfig = { kind: "codex" };
+  it("selects only the exact Plugin capability while deriving Runtime family from provider metadata", async () => {
+    const first = adapter();
+    const second = adapter();
+    const firstRuntime = runtime("test.codex", "first");
+    const secondRuntime = runtime("test.codex", "second");
+    const registry = new RuntimeAdapterRegistry([
+      definition(firstRuntime, () => first),
+      definition(secondRuntime, () => second),
+    ]);
+    const selected = binding(secondRuntime);
     const context = {
       agentId: "work",
       chatId: "chat-1",
@@ -61,21 +79,49 @@ describe("RuntimeAdapterRegistry", () => {
       onRuntimeSessionId: async () => undefined,
     };
 
-    await expect(registry.prepare(binding)).resolves.toBeUndefined();
-    expect(codex.prepare).toHaveBeenCalledWith(binding);
-    await expect(registry.start(binding, context)).resolves.toBe(session);
-    expect(codex.start).toHaveBeenCalledWith(binding, context);
-    expect(registry.modesFor(binding)).toEqual(["read-only", "workspace-write"]);
-    await expect(registry.listModels(binding)).resolves.toBeNull();
+    expect(registry.familyFor(selected)).toBe("codex");
+    await expect(registry.prepare(selected)).resolves.toBeUndefined();
+    expect(first.prepare).not.toHaveBeenCalled();
+    expect(second.prepare).toHaveBeenCalledWith(selected);
+    await expect(registry.start(selected, context)).resolves.toBe(session);
+    expect(second.start).toHaveBeenCalledWith(selected, context);
+    expect(registry.modesFor(selected)).toEqual(["read-only", "workspace-write"]);
+    await expect(registry.listModels(selected)).resolves.toBeNull();
     await expect(
-      registry.discoverThreads(binding, {
+      registry.discoverThreads(selected, {
         projectId: "project-1",
         workingDirectory: "/repo",
         skipGitRepoCheck: true,
       }),
     ).resolves.toEqual([{ runtimeThreadId: "thread-1", name: "Existing thread", updatedAt: 1 }]);
-    await registry.close();
-    expect(codex.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows capabilities with one Runtime family to coexist", () => {
+    const stable = runtime("vendor.stable");
+    const nightly = runtime("vendor.nightly");
+    const registry = new RuntimeAdapterRegistry([
+      definition(stable, () => adapter()),
+      definition(nightly, () => adapter()),
+    ]);
+
+    expect(registry.familyFor(binding(stable))).toBe("codex");
+    expect(registry.familyFor(binding(nightly))).toBe("codex");
+  });
+
+  it("rejects duplicate or missing exact capability providers with actionable identity", () => {
+    const exactRuntime = runtime("test.codex");
+    expect(
+      () =>
+        new RuntimeAdapterRegistry([
+          definition(exactRuntime, () => adapter()),
+          definition(exactRuntime, () => adapter()),
+        ]),
+    ).toThrow("duplicate Runtime capability provider: test.codex/runtime");
+
+    const registry = new RuntimeAdapterRegistry();
+    expect(() => registry.modesFor(binding(runtime("missing.plugin", "codex")))).toThrow(
+      "Runtime Plugin capability missing.plugin/codex is not active",
+    );
   });
 
   it("caches Skills per Binding workspace and invalidates them on native change notifications", async () => {
@@ -90,22 +136,23 @@ describe("RuntimeAdapterRegistry", () => {
         return unsubscribe;
       },
     } satisfies ConnectRuntimeAdapter;
-    const registry = new RuntimeAdapterRegistry([{ kind: "codex", create: () => codex }]);
-    const binding = { kind: "codex", env: { CLAWCHAT_CONNECT_AGENT_ID: "work" } } as AgentBindingConfig;
+    const exactRuntime = runtime("test.codex");
+    const registry = new RuntimeAdapterRegistry([definition(exactRuntime, () => codex)]);
+    const selected = binding(exactRuntime);
     const workspace: RuntimeWorkspace = {
       projectId: "project-1",
       workingDirectory: "/repo",
       skipGitRepoCheck: true,
     };
 
-    await expect(registry.listSkills(binding, workspace)).resolves.toEqual([
+    await expect(registry.listSkills(selected, workspace)).resolves.toEqual([
       { id: "skill-1", name: "grill-with-docs", description: "Review docs" },
     ]);
-    await registry.listSkills(binding, workspace);
+    await registry.listSkills(selected, workspace);
     expect(listSkills).toHaveBeenCalledTimes(1);
 
     notifySkillsChanged?.();
-    await registry.listSkills(binding, workspace);
+    await registry.listSkills(selected, workspace);
     expect(listSkills).toHaveBeenCalledTimes(2);
 
     await registry.close();
@@ -124,22 +171,23 @@ describe("RuntimeAdapterRegistry", () => {
         return unsubscribe;
       },
     } satisfies ConnectRuntimeAdapter;
-    const registry = new RuntimeAdapterRegistry([{ kind: "opencode", create: () => opencode }]);
-    const binding = { kind: "opencode", env: { CLAWCHAT_CONNECT_AGENT_ID: "work" } } as AgentBindingConfig;
+    const exactRuntime = runtime("test.opencode");
+    const registry = new RuntimeAdapterRegistry([definition(exactRuntime, () => opencode, "opencode")]);
+    const selected = binding(exactRuntime);
     const workspace: RuntimeWorkspace = {
       projectId: "project-1",
       workingDirectory: "/repo",
       skipGitRepoCheck: true,
     };
 
-    await expect(registry.listCommands(binding, workspace)).resolves.toEqual([
+    await expect(registry.listCommands(selected, workspace)).resolves.toEqual([
       { id: "command-1", name: "compact", description: "Compact the Session" },
     ]);
-    await registry.listCommands(binding, workspace);
+    await registry.listCommands(selected, workspace);
     expect(listCommands).toHaveBeenCalledTimes(1);
 
     notifyCommandsChanged?.();
-    await registry.listCommands(binding, workspace);
+    await registry.listCommands(selected, workspace);
     expect(listCommands).toHaveBeenCalledTimes(2);
 
     await registry.close();
@@ -162,18 +210,19 @@ describe("RuntimeAdapterRegistry", () => {
     );
     const listSessionOptions = mock(async () => []);
     const codex = { ...adapter(), listModels, listSessionOptions } satisfies ConnectRuntimeAdapter;
-    const registry = new RuntimeAdapterRegistry([{ kind: "codex", create: () => codex }]);
-    const binding = { kind: "codex", env: { CLAWCHAT_CONNECT_AGENT_ID: "work" } } as AgentBindingConfig;
+    const exactRuntime = runtime("test.codex");
+    const registry = new RuntimeAdapterRegistry([definition(exactRuntime, () => codex)]);
+    const selected = binding(exactRuntime);
     const workspace: RuntimeWorkspace = {
       projectId: "project-1",
       workingDirectory: "/repo",
       skipGitRepoCheck: true,
     };
 
-    await registry.listModels(binding);
-    await registry.listModels(binding);
-    await registry.listSessionOptions(binding, workspace);
-    await registry.listSessionOptions(binding, workspace);
+    await registry.listModels(selected);
+    await registry.listModels(selected);
+    await registry.listSessionOptions(selected, workspace);
+    await registry.listSessionOptions(selected, workspace);
 
     expect(listModels).toHaveBeenCalledTimes(1);
     expect(listSessionOptions).toHaveBeenCalledTimes(1);
@@ -187,69 +236,23 @@ describe("RuntimeAdapterRegistry", () => {
     });
     const listSkills = mock(async () => await pending);
     const codex = { ...adapter(), listSkills } satisfies ConnectRuntimeAdapter;
-    const registry = new RuntimeAdapterRegistry([{ kind: "codex", create: () => codex }]);
-    const binding = { kind: "codex" } as AgentBindingConfig;
+    const exactRuntime = runtime("test.codex");
+    const registry = new RuntimeAdapterRegistry([definition(exactRuntime, () => codex)]);
+    const selected = binding(exactRuntime);
     const workspace: RuntimeWorkspace = {
       projectId: "project-1",
       workingDirectory: "/repo",
       skipGitRepoCheck: true,
     };
 
-    await expect(registry.listSkills(binding, workspace, { existingOnly: true })).resolves.toBeNull();
+    await expect(registry.listSkills(selected, workspace, { existingOnly: true })).resolves.toBeNull();
     expect(listSkills).not.toHaveBeenCalled();
 
-    const discovery = registry.listSkills(binding, workspace);
-    await expect(registry.listSkills(binding, workspace, { existingOnly: true, waitMs: 1 })).resolves.toBeNull();
+    const discovery = registry.listSkills(selected, workspace);
+    await expect(registry.listSkills(selected, workspace, { existingOnly: true, waitMs: 1 })).resolves.toBeNull();
     expect(listSkills).toHaveBeenCalledTimes(1);
     finishDiscovery([{ id: "skill-1", name: "grill-with-docs" }]);
     await discovery;
     await registry.close();
-  });
-
-  it("rejects duplicate and unregistered Runtime Adapter kinds", async () => {
-    expect(
-      () =>
-        new RuntimeAdapterRegistry([
-          { kind: "codex", create: () => adapter() },
-          { kind: "codex", create: () => adapter() },
-        ]),
-    ).toThrow("duplicate Runtime Adapter kind: codex");
-    const registry = new RuntimeAdapterRegistry([{ kind: "codex", create: () => adapter() }]);
-    const unsupported = { kind: "claude" } as unknown as AgentBindingConfig;
-
-    expect(() => registry.modesFor(unsupported)).toThrow("no Runtime Adapter registered for kind: claude");
-  });
-
-  it("constructs released adapters and operator metadata from one catalog", () => {
-    expect(releasedRuntimeAdapters()).toEqual([
-      { kind: "codex", displayName: "Codex", profiles: [] },
-      { kind: "opencode", displayName: "OpenCode", profiles: [] },
-      {
-        kind: "workbuddy",
-        displayName: "WorkBuddy",
-        profiles: [
-          {
-            id: "workbuddy-ai",
-            displayName: "WorkBuddy AI",
-            protocol: { name: "ACP", version: 1 },
-          },
-          {
-            id: "workbuddy-cn",
-            displayName: "WorkBuddy",
-            protocol: { name: "ACP", version: 1 },
-          },
-        ],
-      },
-    ]);
-    expect(createReleasedRuntimeAdapterRegistry().modesFor({ kind: "codex" })).toEqual([
-      "read-only",
-      "workspace-write",
-      "danger-full-access",
-    ]);
-    expect(createReleasedRuntimeAdapterRegistry().lifecycleCapabilities({ kind: "opencode" })).toEqual({
-      archive: false,
-      restore: false,
-      delete: true,
-    });
   });
 });

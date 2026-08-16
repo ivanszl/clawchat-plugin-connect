@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UpdateAccountProfileResult } from "../src/account/profile";
 import {
-  handleChatCommand,
+  handleChatCommand as handleChatCommandImpl,
   isConnectControlMessage,
   requiresOrderedSessionControl,
 } from "../src/clawchat/chat-commands";
+import type { ChatCommandContext } from "../src/clawchat/chat-commands";
 import type { NormalizedInboundMessage } from "../src/clawchat/protocol";
 import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
@@ -20,12 +21,41 @@ import {
   CONNECT_PLUGIN_MANIFEST_VERSION,
   type ConnectPluginBundleV1,
 } from "../src/plugin/sdk";
+import { createAgentBinding } from "../src/plugin/binding";
 import { currentConnectPluginTarget, installPluginBundle, setInstalledPluginStatus } from "../src/plugin/store";
 import { ProjectCatalog } from "../src/projects/projects";
 import { workspaceView } from "../src/projects/workspace-catalog";
 import type { SelectableRuntimeThread } from "../src/runtime/types";
 import { runConnectCli } from "../src/service/cli";
 import { CONNECT_VERSION } from "../src/service/version";
+import type { AgentBindingConfig } from "../src/types";
+
+type TestChatCommandContext = Omit<ChatCommandContext, "runtimeFamilyFor"> &
+  Partial<Pick<ChatCommandContext, "runtimeFamilyFor">>;
+
+function handleChatCommand(context: TestChatCommandContext) {
+  return handleChatCommandImpl({
+    ...context,
+    runtimeFamilyFor: context.runtimeFamilyFor ?? (() => "codex"),
+  });
+}
+
+function testBinding(
+  configuration: Record<string, unknown> = {},
+  preferences: Pick<
+    AgentBindingConfig,
+    "displayName" | "outputVisibility" | "model" | "modelReasoningEffort"
+  > = {},
+): AgentBindingConfig {
+  return {
+    ...createAgentBinding({
+      pluginId: "test.runtime",
+      capabilityId: "runtime",
+      configuration,
+    }),
+    ...preferences,
+  };
+}
 
 async function tempConfig(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "clawchat-connect-cli-"));
@@ -119,97 +149,41 @@ describe("runConnectCli", () => {
     expect(output.stdout).toEqual([`clawchat-connect v${manifest.version}\n`]);
   });
 
-  it("initializes minimal config without unsupported config surfaces", async () => {
+  it("initializes Plugin-free administration config without unsupported surfaces", async () => {
     const path = await tempConfig();
     const output = io();
-    await expect(
-      runConnectCli(["init", "--config", path, "--agent", "codex", "--kind", "codex"], output.deps),
-    ).resolves.toBe(0);
+
+    await expect(runConnectCli(["init", "--config", path], output.deps)).resolves.toBe(0);
+
+    const config = await loadConfig(path);
+    expect(config.agents).toEqual({});
+    expect(config.defaultAgent).toBeNull();
     const text = await readFile(path, "utf8");
-    expect(text).toContain('"defaultAgent": "codex"');
     expect(text).not.toMatch(new RegExp(["pro", "jects"].join(""), "u"));
     expect(text).not.toMatch(new RegExp(["work", "Dir"].join(""), "u"));
   });
 
-  it("requires an explicit runtime kind instead of inferring it from the agent id", async () => {
-    const path = await tempConfig();
-    const output = io();
-    await expect(runConnectCli(["init", "--config", path, "--agent", "codex"], output.deps)).resolves.toBe(1);
-    expect(output.stderr.join("")).toContain("--kind codex, opencode, workbuddy is required");
-  });
-
-  it("adds an explicitly named first-party Codex agent", async () => {
-    const path = await tempConfig();
-    const output = io();
-    await runConnectCli(["init", "--config", path], output.deps);
-    await expect(
-      runConnectCli(
-        ["agent", "add", "work", "--kind", "codex", "--codex-path", "/opt/codex", "--config", path],
-        output.deps,
-      ),
-    ).resolves.toBe(0);
-    await expect(loadConfig(path)).resolves.toMatchObject({
-      agents: { work: { kind: "codex", codexPathOverride: "/opt/codex" } },
-    });
-  });
-
-  it("adds OpenCode with the runtime-neutral executable override", async () => {
-    const path = await tempConfig();
-    const output = io();
-    await runConnectCli(["init", "--config", path], output.deps);
-    await expect(
-      runConnectCli(
-        ["agent", "add", "open", "--kind", "opencode", "--runtime-path", "/opt/opencode", "--config", path],
-        output.deps,
-      ),
-    ).resolves.toBe(0);
-    await expect(loadConfig(path)).resolves.toMatchObject({
-      agents: { open: { kind: "opencode", executablePathOverride: "/opt/opencode" } },
-    });
-  });
-
-  it("adds WorkBuddy only with an explicit distribution profile", async () => {
+  it("rejects the removed kind-only Runtime Binding flags", async () => {
     const path = await tempConfig();
     const output = io();
     await runConnectCli(["init", "--config", path], output.deps);
 
     await expect(
-      runConnectCli(
-        ["agent", "add", "desktop", "--kind", "workbuddy", "--profile", "workbuddy-ai", "--config", path],
-        output.deps,
-      ),
-    ).resolves.toBe(0);
-    await expect(loadConfig(path)).resolves.toMatchObject({
-      agents: { desktop: { kind: "workbuddy", profile: "workbuddy-ai" } },
-    });
-
-    await expect(
-      runConnectCli(
-        ["agent", "add", "mainland", "--kind", "workbuddy", "--profile", "workbuddy-cn", "--config", path],
-        output.deps,
-      ),
-    ).resolves.toBe(0);
-    await expect(loadConfig(path)).resolves.toMatchObject({
-      agents: { mainland: { kind: "workbuddy", profile: "workbuddy-cn" } },
-    });
-
-    await expect(
-      runConnectCli(["agent", "add", "missing-profile", "--kind", "workbuddy", "--config", path], output.deps),
+      runConnectCli(["agent", "add", "work", "--kind", "codex", "--config", path], output.deps),
     ).resolves.toBe(1);
-    expect(output.stderr.join("")).toContain(
-      "WorkBuddy profile must be explicitly set to one of: workbuddy-ai, workbuddy-cn",
-    );
+    expect(output.stderr.join("")).toContain("requires --plugin <plugin-id> and --capability <capability-id>");
+    expect((await loadConfig(path)).agents).toEqual({});
   });
+
 
   it("creates only an exact active Plugin Runtime Binding with schema-valid configuration", async () => {
     const path = await tempConfig();
     const output = io();
-    await saveConfig(upsertAgentBinding(defaultConfig(), "bound", { kind: "codex" }), path);
+    await saveConfig(upsertAgentBinding(defaultConfig(), "bound", testBinding()), path);
     const originalConfig = await readFile(path, "utf8");
     const addPluginBinding = async (options: {
       pluginId?: string;
       capabilityId?: string;
-      family?: string;
       runtimeConfig?: Record<string, unknown>;
     }) =>
       await runConnectCli(
@@ -217,8 +191,6 @@ describe("runConnectCli", () => {
           "agent",
           "add",
           "bound",
-          "--kind",
-          options.family ?? "example",
           "--plugin",
           options.pluginId ?? CLI_PLUGIN_ID,
           "--capability",
@@ -264,10 +236,7 @@ describe("runConnectCli", () => {
       `Plugin ${CLI_PLUGIN_ID} capability exposure-only is not a Runtime capability`,
       { capabilityId: "exposure-only" },
     );
-    await expectRejectedWithoutConfigChange(
-      `Plugin ${CLI_PLUGIN_ID}/exact-runtime Runtime family is example, not requested other`,
-      { family: "other" },
-    );
+    expect(output.stderr.join("")).not.toContain("Runtime family");
     await expectRejectedWithoutConfigChange(`Plugin ${CLI_PLUGIN_ID}/exact-runtime Runtime configuration is invalid`, {
       runtimeConfig: { endpoint: "not a uri", retries: 0 },
     });
@@ -279,8 +248,6 @@ describe("runConnectCli", () => {
       defaultAgent: "bound",
       agents: {
         bound: {
-          kind: "plugin",
-          runtimeFamily: "example",
           runtime: { pluginId: CLI_PLUGIN_ID, capabilityId: "exact-runtime" },
           runtimeConfig: { endpoint: "https://runtime.example", retries: 2 },
         },
@@ -313,19 +280,19 @@ describe("runConnectCli", () => {
     expect(output.stdout.join("")).toContain("Removed Agent Binding work");
   });
 
-  it("rejects agent bindings without an explicit supported runtime kind", async () => {
+  it("rejects Agent Bindings without an exact Plugin Runtime capability", async () => {
     const path = await tempConfig();
     const output = io();
     await runConnectCli(["init", "--config", path], output.deps);
     await expect(runConnectCli(["agent", "add", "claude", "--config", path], output.deps)).resolves.toBe(1);
-    expect(output.stderr.join("")).toContain("--kind codex, opencode, workbuddy is required");
+    expect(output.stderr.join("")).toContain("requires --plugin <plugin-id> and --capability <capability-id>");
   });
 
   it("reads and updates config through the config subcommands", async () => {
     const path = await tempConfig();
     const stateDbPath = `${path}.sqlite`;
     const output = io();
-    await runConnectCli(["init", "--config", path, "--agent", "codex", "--kind", "codex"], output.deps);
+    await runConnectCli(["init", "--config", path], output.deps);
 
     output.stdout.length = 0;
     await expect(
@@ -361,7 +328,7 @@ describe("runConnectCli", () => {
 
   it("reports the configured and active Liveware Exposure", async () => {
     const path = await tempConfig();
-    const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "work", testBinding());
     config.stateDbPath = `${path}.sqlite`;
     await saveConfig(config, path);
     const store = createStateStore({ dbPath: config.stateDbPath });
@@ -380,27 +347,35 @@ describe("runConnectCli", () => {
     expect(output.stdout.join("")).toContain("liveware exposure: https://app-1.apps.example");
   });
 
-  it("reports the selected WorkBuddy Adapter capability and its latest bounded operator diagnostic", async () => {
+  it("reports the selected Plugin Runtime capability and latest bounded operator diagnostic", async () => {
     const path = await tempConfig();
     const config = defaultConfig();
     config.defaultAgent = "desktop";
-    config.agents = { desktop: { kind: "workbuddy", profile: "workbuddy-ai" } };
+    config.agents = {
+      desktop: createAgentBinding({
+        pluginId: CLI_PLUGIN_ID,
+        capabilityId: "exact-runtime",
+        configuration: { endpoint: "https://runtime.example" },
+      }),
+    };
     config.stateDbPath = `${path}.sqlite`;
     await saveConfig(config, path);
+    await installPluginBundle({
+      configPath: path,
+      source: { type: "local", path },
+      bundle: cliPluginBundle(),
+    });
     const store = createStateStore({ dbPath: config.stateDbPath });
-    await store.setRuntimeConnectionStatus(
-      "desktop",
-      false,
-      "WorkBuddy AI is installed but not running; open it before discovering Tasks.",
-    );
+    await store.setRuntimeConnectionStatus("desktop", false, "Runtime temporarily unavailable.");
     await store.close();
     const output = io();
 
     await expect(runConnectCli(["status", "--config", path], output.deps)).resolves.toBe(0);
 
-    expect(output.stdout.join("")).toContain("runtime adapter: workbuddy/workbuddy-ai");
-    expect(output.stdout.join("")).toContain("required capability: WorkBuddy AI / ACP v1");
-    expect(output.stdout.join("")).toContain("recent diagnostic: WorkBuddy AI is installed but not running");
+    expect(output.stdout.join("")).toContain(
+      `runtime capability: example (${CLI_PLUGIN_ID}/exact-runtime)`,
+    );
+    expect(output.stdout.join("")).toContain("recent diagnostic: Runtime temporarily unavailable.");
   });
 
   it("checks the bundled Liveware executable when exposure is enabled", async () => {
@@ -534,7 +509,7 @@ describe("runConnectCli", () => {
   it("manages one native background service for the complete Connect installation", async () => {
     const path = await tempConfig();
     const output = io();
-    await runConnectCli(["init", "--config", path, "--agent", "work", "--kind", "codex"], output.deps);
+    await runConnectCli(["init", "--config", path], output.deps);
     const manageBackgroundService = mock(async () => ({ message: "background ok\n", running: true }));
 
     await expect(
@@ -617,7 +592,7 @@ describe("runConnectCli", () => {
 
   it("exposes tool-name calls through the SQLite request record and returns reused settled results", async () => {
     const path = await tempConfig();
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     config.stateDbPath = `${path}.sqlite`;
     await saveConfig(config, path);
     const store = createStateStore({ dbPath: config.stateDbPath });
@@ -663,7 +638,7 @@ describe("runConnectCli", () => {
 
   it("settles a locally timed-out Tool Request to a terminal state", async () => {
     const path = await tempConfig();
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     config.stateDbPath = `${path}.sqlite`;
     await saveConfig(config, path);
     const output = io();
@@ -701,7 +676,7 @@ describe("runConnectCli", () => {
 
   it("describes tools, reads stdin JSON, and honors explicit, runtime, then default Binding precedence", async () => {
     const path = await tempConfig();
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     config.stateDbPath = `${path}.sqlite`;
     await saveConfig(config, path);
     const store = createStateStore({ dbPath: config.stateDbPath });
@@ -802,7 +777,7 @@ describe("handleChatCommand", () => {
     const context = {
       agentId: "codex",
       ownerUserId: "someone-else",
-      config: upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" }),
+      config: upsertAgentBinding(defaultConfig(), "codex", testBinding()),
       stateStore: {} as ConnectStateStore,
       projects: {} as ProjectCatalog,
     };
@@ -828,7 +803,7 @@ describe("handleChatCommand", () => {
     const context = {
       agentId: "codex",
       ownerUserId: "owner-user",
-      config: upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" }),
+      config: upsertAgentBinding(defaultConfig(), "codex", testBinding()),
       stateStore: {} as ConnectStateStore,
       projects: {} as ProjectCatalog,
     };
@@ -870,7 +845,7 @@ describe("handleChatCommand", () => {
 
   it("persists /clawchat-output overrides", async () => {
     const store = { setOutputVisibility: mock(async () => undefined) } as unknown as ConnectStateStore;
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     await expect(
       handleChatCommand({
         message: message("/clawchat-output full"),
@@ -887,7 +862,7 @@ describe("handleChatCommand", () => {
   it("rejects control commands from users other than the Agent Binding owner", async () => {
     const store = {} as ConnectStateStore;
     const projects = { list: mock(async () => []) } as unknown as ProjectCatalog;
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     const result = await handleChatCommand({
       message: message("/project"),
       agentId: "codex",
@@ -908,7 +883,7 @@ describe("handleChatCommand", () => {
     const projects = new ProjectCatalog(store);
     const project = await projects.add(root);
     const workspaceId = projects.workspaceId(project);
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     const closeRuntimeSession = mock(async () => true);
     const invalidateRuntimeSession = mock(async () => true);
     for (const command of [
@@ -972,7 +947,7 @@ describe("handleChatCommand", () => {
     const projects = new ProjectCatalog(store);
     const project = await projects.add(root);
     const workspaceId = projects.workspaceId(project);
-    const config = upsertAgentBinding(defaultConfig(), "work", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "work", testBinding());
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "before",
@@ -1044,7 +1019,7 @@ describe("handleChatCommand", () => {
     const projects = new ProjectCatalog(store);
     const registered = await projects.add(registeredRoot);
     const discovered = await projects.add(discoveredRoot);
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     const listRuntimeWorkspaces = async () => [
       {
         workspaceId: projects.workspaceId(registered),
@@ -1108,7 +1083,7 @@ describe("handleChatCommand", () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-new-intent-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-existing",
@@ -1143,10 +1118,7 @@ describe("handleChatCommand", () => {
     const projectRoot = join(directory, "repo");
     await mkdir(projectRoot);
     const project = await projects.add(projectRoot);
-    const config = upsertAgentBinding(defaultConfig(), "workbuddy", {
-      kind: "workbuddy",
-      profile: "workbuddy-cn",
-    });
+    const config = upsertAgentBinding(defaultConfig(), "workbuddy", testBinding({ profile: "workbuddy-cn" }));
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-workbuddy-task",
@@ -1164,6 +1136,7 @@ describe("handleChatCommand", () => {
       stateStore: store,
       projects,
       closeRuntimeSession: mock(async () => true),
+      runtimeFamilyFor: () => "workbuddy",
     });
 
     expect(result.text).toContain("CodeBuddy Session `Planned work`");
@@ -1180,6 +1153,7 @@ describe("handleChatCommand", () => {
       config,
       stateStore: store,
       projects,
+      runtimeFamilyFor: () => "workbuddy",
     });
     expect(status.text).toContain("CodeBuddy Session");
     expect(status.text).toContain("not shown in WorkBuddy Desktop");
@@ -1190,7 +1164,7 @@ describe("handleChatCommand", () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-model-command-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex", model: "gpt-default" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding({}, { model: "gpt-default" }));
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-model",
@@ -1253,7 +1227,7 @@ describe("handleChatCommand", () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-model-intent-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     const models = async () => [
       {
         id: "gpt-deep",
@@ -1309,7 +1283,7 @@ describe("handleChatCommand", () => {
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
     const project = await projects.add(root);
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-current",
@@ -1427,7 +1401,7 @@ describe("handleChatCommand", () => {
     });
     const projects = new ProjectCatalog(store);
     const project = await projects.add(root);
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-current",
@@ -1471,7 +1445,7 @@ describe("handleChatCommand", () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-non-project-list-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    const config = upsertAgentBinding(defaultConfig(), "codex", { kind: "codex" });
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding());
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-old",
@@ -1504,10 +1478,7 @@ describe("handleChatCommand", () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-workbuddy-session-list-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const projects = new ProjectCatalog(store);
-    const config = upsertAgentBinding(defaultConfig(), "workbuddy", {
-      kind: "workbuddy",
-      profile: "workbuddy-cn",
-    });
+    const config = upsertAgentBinding(defaultConfig(), "workbuddy", testBinding({ profile: "workbuddy-cn" }));
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-desktop-task",
@@ -1535,6 +1506,7 @@ describe("handleChatCommand", () => {
       config,
       stateStore: store,
       projects,
+      runtimeFamilyFor: () => "workbuddy",
     });
     expect(listed.text).toContain("Connect-only work");
     expect(listed.text).toContain("CodeBuddy Session · Connect-only");
@@ -1549,6 +1521,7 @@ describe("handleChatCommand", () => {
       stateStore: store,
       projects,
       closeRuntimeSession: mock(async () => true),
+      runtimeFamilyFor: () => "workbuddy",
     });
     expect(switched.text).toContain("Switched to Session `Desktop task`");
     await expect(store.getCurrentRuntimeSession("chat-1", "workbuddy")).resolves.toMatchObject({

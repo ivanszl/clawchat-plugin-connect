@@ -1,5 +1,6 @@
-# Limit each Runtime Adapter kind to one Agent Binding
+# Historical: limit one Binding per Runtime family
 
-A Connect installation may configure at most one Agent Binding for each Runtime Adapter kind, so one host can have one Codex Binding, one Claude Binding, one OpenCode Binding, and so on. Supporting multiple ClawChat identities or configuration profiles for the same local runtime kind is outside the model; config loading and CLI mutation must reject duplicate kinds.
+This early restriction is not part of the current model. Agent Bindings reference exact Runtime Plugin capabilities,
+and multiple Bindings or capabilities may share the same advertised Runtime family without collision.
 
-Superseded by ADR-0034.
+Superseded first by ADR-0034 and finally by the exact Plugin capability provider contract.

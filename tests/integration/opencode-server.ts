@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildOfficialPlugin } from "../../scripts/build-official-plugins";
 import { defaultConfig, saveConfig } from "../../src/config";
-import { createPluginAgentBinding } from "../../src/plugin/binding";
+import { createAgentBinding } from "../../src/plugin/binding";
 import { ConnectPluginHost } from "../../src/plugin/host";
 import descriptor from "../../src/plugin/official/opencode-descriptor";
 import {
@@ -17,7 +17,13 @@ const executable = process.env.OPENCODE_EXECUTABLE || Bun.which("opencode");
 if (!executable) throw new Error("Set OPENCODE_EXECUTABLE or add OpenCode to PATH");
 
 const directory = await realpath(await mkdtemp(join(tmpdir(), "clawchat-connect-opencode-integration-")));
-const client = await createOpenCodeServerClient({ kind: "opencode", executablePathOverride: executable });
+const client = await createOpenCodeServerClient({
+  ...createAgentBinding({
+    pluginId: OPENCODE_OFFICIAL_PLUGIN_ID,
+    capabilityId: OPENCODE_OFFICIAL_CAPABILITY_ID,
+  }),
+  executablePathOverride: executable,
+});
 const eventsAbort = new AbortController();
 let createdSessionId: string | null = null;
 const seenEvents: string[] = [];
@@ -73,8 +79,7 @@ try {
   if (eventSessionId !== session.id) throw new Error("OpenCode global event belonged to a different Session");
   const configPath = join(directory, ".connect-integration.json");
   const bundlePath = join(directory, "opencode.connect-plugin");
-  const binding = createPluginAgentBinding({
-    runtimeFamily: "opencode",
+  const binding = createAgentBinding({
     pluginId: OPENCODE_OFFICIAL_PLUGIN_ID,
     capabilityId: OPENCODE_OFFICIAL_CAPABILITY_ID,
     configuration: { executablePathOverride: executable },

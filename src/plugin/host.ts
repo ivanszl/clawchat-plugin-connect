@@ -109,7 +109,8 @@ export class ConnectPluginHost {
   ) {}
 
   async activateInstalled(): Promise<void> {
-    for (const installed of await listInstalledPlugins(this.configPath)) {
+    const installedPlugins = await listInstalledPlugins(this.configPath);
+    for (const installed of installedPlugins) {
       if (installed.status !== "active") continue;
       let activated: ActivatedCandidate | undefined;
       try {
@@ -126,6 +127,7 @@ export class ConnectPluginHost {
         this.reportActivationFailure(installed.pluginId, error);
       }
     }
+    await this.markInactiveRuntimeBindings(await listInstalledPlugins(this.configPath));
   }
 
   activePluginIds(): string[] {
@@ -507,7 +509,7 @@ export class ConnectPluginHost {
     }
     return Object.entries(configurations).map(([bindingId, configuration]) => {
       const binding = this.management?.config.agents[bindingId];
-      if (binding?.kind !== "plugin" || binding.runtime.pluginId !== installed.pluginId) {
+      if (!binding || binding.runtime.pluginId !== installed.pluginId) {
         throw new Error(`Agent Binding ${bindingId} is not a dependent of Plugin ${installed.pluginId}`);
       }
       const capability = installed.manifest.capabilities.find(
@@ -537,13 +539,13 @@ export class ConnectPluginHost {
     const next = structuredClone(this.management.config);
     for (const [bindingId, configuration] of configurations) {
       const binding = next.agents[bindingId];
-      if (binding?.kind !== "plugin") throw new Error(`Agent Binding ${bindingId} is no longer available`);
+      if (!binding) throw new Error(`Agent Binding ${bindingId} is no longer available`);
       binding.runtimeConfig = configuration;
     }
     await saveConfig(next, this.configPath);
     for (const [bindingId, configuration] of configurations) {
       const binding = this.management.config.agents[bindingId];
-      if (binding?.kind === "plugin") binding.runtimeConfig = configuration;
+      if (binding) binding.runtimeConfig = configuration;
     }
   }
   private async installResolved(
@@ -641,7 +643,7 @@ export class ConnectPluginHost {
     const dependentBindingIds = pluginDependents(this.management.config, installed.pluginId);
     for (const bindingId of dependentBindingIds) {
       const binding = this.management.config.agents[bindingId];
-      if (binding?.kind !== "plugin" || binding.runtime.pluginId !== installed.pluginId) {
+      if (!binding || binding.runtime.pluginId !== installed.pluginId) {
         throw new Error(`Agent Binding ${bindingId} is not an exact dependent of Plugin ${installed.pluginId}`);
       }
       const capability = installed.manifest.capabilities.find(
@@ -650,11 +652,6 @@ export class ConnectPluginHost {
       if (!capability || capability.type !== "runtime") {
         throw new Error(
           `Agent Binding ${bindingId} requires missing Runtime capability ${installed.pluginId}/${binding.runtime.capabilityId}`,
-        );
-      }
-      if (capability.family !== binding.runtimeFamily) {
-        throw new Error(
-          `Agent Binding ${bindingId} requires Runtime family ${binding.runtimeFamily}, but ${installed.pluginId}/${capability.id} declares ${capability.family}`,
         );
       }
       validatePluginConfiguration(
@@ -681,6 +678,34 @@ export class ConnectPluginHost {
     await Promise.allSettled(
       dependents.map(async (bindingId) => {
         await this.management?.stateStore.setRuntimeAvailability(bindingId, "startup-unavailable", detail);
+      }),
+    );
+  }
+
+  private async markInactiveRuntimeBindings(installedPlugins: readonly InstalledPluginLockEntry[]): Promise<void> {
+    if (!this.management) return;
+    await Promise.allSettled(
+      Object.entries(this.management.config.agents).map(async ([bindingId, binding]) => {
+        if (this.runtimeAdapters.hasProvider(binding)) return;
+        const installed = installedPlugins.find((candidate) => candidate.pluginId === binding.runtime.pluginId);
+        const capability = installed?.manifest.capabilities.find(
+          (candidate) => candidate.id === binding.runtime.capabilityId && candidate.type === "runtime",
+        );
+        let reason: string;
+        if (!installed) {
+          reason = `Plugin ${binding.runtime.pluginId} is not installed`;
+        } else if (!capability || capability.type !== "runtime") {
+          reason = `Plugin ${installed.pluginId} does not declare this Runtime capability`;
+        } else if (installed.status !== "active") {
+          reason = `Plugin ${installed.pluginId} is ${installed.status}${installed.error ? `: ${installed.error}` : ""}`;
+        } else {
+          reason = `Plugin ${installed.pluginId} failed to activate this Runtime capability`;
+        }
+        await this.management?.stateStore.setRuntimeAvailability(
+          bindingId,
+          "startup-unavailable",
+          `Runtime Plugin capability ${binding.runtime.pluginId}/${binding.runtime.capabilityId} is not active: ${reason}`,
+        );
       }),
     );
   }
@@ -821,7 +846,7 @@ export class ConnectPluginHost {
             `Agent Binding Runtime configuration for ${installed.pluginId}/${capability.id}`,
           );
           runtimeDefinitions.push({
-            kind: provider.family,
+            family: provider.family,
             runtime: { pluginId: installed.pluginId, capabilityId: capability.id },
             create: (binding) => bridgeRuntimeProvider(installed.pluginId, provider, validateConfiguration, binding),
           });
@@ -917,7 +942,6 @@ function bridgeRuntimeProvider(
   binding: AgentBindingConfig,
 ): ConnectRuntimeAdapter {
   if (
-    binding.kind !== "plugin" ||
     binding.runtime.pluginId !== pluginId ||
     binding.runtime.capabilityId !== provider.capabilityId
   ) {

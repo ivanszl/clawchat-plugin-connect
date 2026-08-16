@@ -13,27 +13,76 @@ import { HStack, VStack } from "@astryxdesign/core/Stack";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useState } from "react";
-import type { BindingPreferenceView, BootstrapView, ProjectDirectoryRequest } from "../../../../src/client-contract";
+import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import type {
+  BindingPreferenceView,
+  BootstrapView,
+  PluginJsonSchemaView,
+  ProjectDirectoryRequest,
+} from "../../../../src/client-contract";
 import {
   addProject,
   bootstrapQueryOptions,
   catalogQueryOptions,
   clientKeys,
   projectsQueryOptions,
+  pluginAdministrationQueryOptions,
   removeProject,
   updateBindingPreferences,
+  upsertBindingProvider,
 } from "../../client-interface/query-options";
-import { localizedClientError, settingsClientErrorKeys, useClientTranslator } from "../../i18n/client-i18n";
+import {
+  localizedClientError,
+  settingsClientErrorKeys,
+  useClientTranslator,
+} from "../../i18n/client-i18n";
 import { HostDirectoryPicker, projectDirectoryLabel } from "../projects/HostDirectoryPicker";
-import { PluginSettings } from "./PluginSettings";
+import {
+  JsonSchemaForm,
+  PluginSettings,
+  prepareJsonSchemaConfiguration,
+} from "./PluginSettings";
 
 type ProjectListItem = { workspaceId: string; name: string; rootPath: string };
+type RuntimeCapabilityOption = {
+  value: string;
+  label: string;
+  pluginId: string;
+  capabilityId: string;
+  configurationSchema: PluginJsonSchemaView;
+};
 
 export function SettingsPage() {
   const t = useClientTranslator();
   const bootstrap = useQuery(bootstrapQueryOptions);
   const projects = useQuery(projectsQueryOptions);
+  const plugins = useQuery(pluginAdministrationQueryOptions);
+  const runtimeCapabilities = useMemo(
+    () =>
+      (plugins.data?.installed ?? [])
+        .filter((plugin) => plugin.status === "active")
+        .flatMap((plugin) =>
+          plugin.capabilities
+            .filter((capability) => capability.type === "runtime")
+            .map((capability) => ({
+              value: runtimeCapabilityValue(plugin.pluginId, capability.id),
+              label: t("@connect.settings.binding.provider.option", {
+                pluginName: plugin.name,
+                pluginId: plugin.pluginId,
+                capabilityId: capability.id,
+                family: capability.family ?? t("@connect.settings.plugins.none"),
+              }),
+              pluginId: plugin.pluginId,
+              capabilityId: capability.id,
+              configurationSchema: capability.configurationSchema,
+            })),
+        )
+        .sort(
+          (left, right) =>
+            left.pluginId.localeCompare(right.pluginId) || left.capabilityId.localeCompare(right.capabilityId),
+        ),
+    [plugins.data, t],
+  );
   if (!bootstrap.data) return null;
   return (
     <Layout
@@ -56,8 +105,19 @@ export function SettingsPage() {
               container="section"
             />
             <VStack gap={4}>
+              <NewBindingSettings
+                runtimeCapabilities={runtimeCapabilities}
+                capabilitiesPending={plugins.isPending}
+                capabilitiesError={plugins.error}
+              />
               {bootstrap.data.bindings.map((binding) => (
-                <BindingSettings key={binding.bindingId} binding={binding} />
+                <BindingSettings
+                  key={binding.bindingId}
+                  binding={binding}
+                  runtimeCapabilities={runtimeCapabilities}
+                  capabilitiesPending={plugins.isPending}
+                  capabilitiesError={plugins.error}
+                />
               ))}
               <PluginSettings />
               <ProjectSettings
@@ -73,13 +133,179 @@ export function SettingsPage() {
   );
 }
 
-function BindingSettings({ binding }: { binding: BindingPreferenceView }) {
+type RuntimeCapabilityProps = {
+  runtimeCapabilities: RuntimeCapabilityOption[];
+  capabilitiesPending: boolean;
+  capabilitiesError: Error | null;
+};
+
+function NewBindingSettings({
+  runtimeCapabilities,
+  capabilitiesPending,
+  capabilitiesError,
+}: RuntimeCapabilityProps) {
+  const t = useClientTranslator();
+  const queryClient = useQueryClient();
+  const [bindingId, setBindingId] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [providerValue, setProviderValue] = useState("");
+  const [runtimeConfiguration, setRuntimeConfiguration] = useState<Record<string, unknown>>({});
+  const [invalidConfigurationFieldIds, setInvalidConfigurationFieldIds] = useState(
+    () => new Set(["new-binding-provider-schema"]),
+  );
+  const configurationValid = invalidConfigurationFieldIds.size === 0;
+  const selectedCapability = runtimeCapabilities.find((option) => option.value === providerValue);
+  const trackConfigurationValidity = useCallback((fieldId: string, valid: boolean) => {
+    setInvalidConfigurationFieldIds((current) => updatedInvalidFieldIds(current, fieldId, valid));
+  }, []);
+  const create = useMutation({
+    mutationFn: async () => {
+      const normalizedBindingId = bindingId.trim();
+      if (!normalizedBindingId) throw new Error(t("@connect.settings.binding.create.bindingIdRequired"));
+      if (!selectedCapability) throw new Error(t("@connect.settings.binding.provider.selectionRequired"));
+      if (!configurationValid) throw new Error(t("@connect.settings.binding.provider.configurationInvalid"));
+      return await upsertBindingProvider(normalizedBindingId, {
+        pluginId: selectedCapability.pluginId,
+        capabilityId: selectedCapability.capabilityId,
+        runtimeConfig: runtimeConfiguration,
+        createOnly: true,
+        ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+      });
+    },
+    onSuccess: () => {
+      setBindingId("");
+      setDisplayName("");
+      setProviderValue("");
+      setRuntimeConfiguration({});
+      setInvalidConfigurationFieldIds(new Set(["new-binding-provider-schema"]));
+      void queryClient.invalidateQueries({ queryKey: clientKeys.bootstrap });
+      void queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
+      void queryClient.invalidateQueries({ queryKey: pluginAdministrationQueryOptions.queryKey });
+    },
+  });
+  const selectCapability = (value: string) => {
+    const nextCapability = runtimeCapabilities.find((option) => option.value === value);
+    setProviderValue(value);
+    if (!nextCapability) {
+      setRuntimeConfiguration({});
+      setInvalidConfigurationFieldIds(new Set(["new-binding-provider-schema"]));
+      return;
+    }
+    const prepared = defaultRuntimeConfiguration(nextCapability, "new-binding-provider");
+    setRuntimeConfiguration(prepared.configuration);
+    setInvalidConfigurationFieldIds(prepared.invalidFieldIds);
+  };
+  return (
+    <Card padding={4}>
+      <VStack gap={4}>
+        <VStack gap={1} as="header">
+          <Heading level={2}>{t("@connect.settings.binding.create.title")}</Heading>
+          <Text type="supporting">{t("@connect.settings.binding.create.description")}</Text>
+        </VStack>
+        {capabilitiesError ? (
+          <Banner
+            status="error"
+            title={t("@connect.settings.plugins.loadFailed")}
+            description={localizedClientError(t, capabilitiesError)}
+            container="section"
+          />
+        ) : null}
+        {create.isSuccess ? (
+          <Banner status="success" title={t("@connect.settings.binding.create.created")} container="section" />
+        ) : null}
+        {create.isError ? (
+          <Banner
+            status="error"
+            title={t("@connect.settings.binding.create.createFailed")}
+            description={localizedClientError(t, create.error, settingsClientErrorKeys)}
+            container="section"
+          />
+        ) : null}
+        <VStack gap={4}>
+          <TextInput
+            label={t("@connect.settings.binding.create.bindingId")}
+            description={t("@connect.settings.binding.create.bindingIdDescription")}
+            value={bindingId}
+            onChange={setBindingId}
+            isRequired
+            width="100%"
+          />
+          <TextInput
+            label={t("@connect.settings.binding.displayName")}
+            value={displayName}
+            onChange={setDisplayName}
+            width="100%"
+          />
+          <Selector
+            label={t("@connect.settings.binding.provider.select")}
+            description={t("@connect.settings.binding.provider.description")}
+            options={runtimeCapabilities}
+            value={providerValue || undefined}
+            onChange={selectCapability}
+            isRequired
+            isDisabled={capabilitiesPending || Boolean(capabilitiesError) || runtimeCapabilities.length === 0}
+            disabledMessage={t(
+              runtimeCapabilityUnavailableMessage(capabilitiesPending, Boolean(capabilitiesError)),
+            )}
+            width="100%"
+          />
+          {selectedCapability ? (
+            <VStack gap={2}>
+              <Heading level={3}>{t("@connect.settings.binding.provider.configuration")}</Heading>
+              <JsonSchemaForm
+                key={selectedCapability.value}
+                schema={selectedCapability.configurationSchema}
+                value={runtimeConfiguration}
+                onChange={setRuntimeConfiguration}
+                prefix="new-binding-provider"
+                fallbackLabel={t("@connect.settings.binding.provider.configuration")}
+                onValidityChange={trackConfigurationValidity}
+              />
+            </VStack>
+          ) : null}
+        </VStack>
+        <HStack justify="end">
+          <Button
+            label={t(
+              create.isPending
+                ? "@connect.settings.binding.create.creating"
+                : "@connect.settings.binding.create.create",
+            )}
+            variant="primary"
+            isLoading={create.isPending}
+            isDisabled={!bindingId.trim() || !selectedCapability || !configurationValid}
+            onClick={() => create.mutate()}
+          />
+        </HStack>
+      </VStack>
+    </Card>
+  );
+}
+
+function BindingSettings({
+  binding,
+  runtimeCapabilities,
+  capabilitiesPending,
+  capabilitiesError,
+}: { binding: BindingPreferenceView } & RuntimeCapabilityProps) {
   const t = useClientTranslator();
   const queryClient = useQueryClient();
   const [displayName, setDisplayName] = useState(binding.displayName);
   const [model, setModel] = useState(binding.model ?? "");
   const [effort, setEffort] = useState(binding.modelReasoningEffort ?? "default");
   const [visibility, setVisibility] = useState(binding.outputVisibility);
+  const [providerValue, setProviderValue] = useState(
+    runtimeCapabilityValue(binding.runtimePluginId, binding.runtimeCapabilityId),
+  );
+  const [runtimeConfiguration, setRuntimeConfiguration] = useState(binding.runtimeConfiguration);
+  const [invalidConfigurationFieldIds, setInvalidConfigurationFieldIds] = useState(() => new Set<string>());
+  const configurationValid = invalidConfigurationFieldIds.size === 0;
+  const selectedCapability = runtimeCapabilities.find((option) => option.value === providerValue);
+  const currentCapability = runtimeCapabilities.find(
+    (option) =>
+      option.pluginId === binding.runtimePluginId && option.capabilityId === binding.runtimeCapabilityId,
+  );
+  const runtimeConfigurationRevision = JSON.stringify(binding.runtimeConfiguration);
   const selectedModel =
     binding.modelOptions.find((option) => option.id === model) ??
     binding.modelOptions.find((option) => option.isDefault) ??
@@ -88,12 +314,27 @@ function BindingSettings({ binding }: { binding: BindingPreferenceView }) {
     { value: "default", label: t("@connect.settings.binding.reasoning.default") },
     ...(selectedModel?.supportedReasoningEfforts ?? []).map((value) => ({ value, label: value })),
   ];
+  const trackConfigurationValidity = useCallback((fieldId: string, valid: boolean) => {
+    setInvalidConfigurationFieldIds((current) => updatedInvalidFieldIds(current, fieldId, valid));
+  }, []);
   useEffect(() => {
     setDisplayName(binding.displayName);
     setModel(binding.model ?? "");
     setEffort(binding.modelReasoningEffort ?? "default");
     setVisibility(binding.outputVisibility);
-  }, [binding]);
+    setProviderValue(runtimeCapabilityValue(binding.runtimePluginId, binding.runtimeCapabilityId));
+    setRuntimeConfiguration(binding.runtimeConfiguration);
+    setInvalidConfigurationFieldIds(new Set());
+  }, [
+    binding.bindingId,
+    binding.displayName,
+    binding.model,
+    binding.modelReasoningEffort,
+    binding.outputVisibility,
+    binding.runtimePluginId,
+    binding.runtimeCapabilityId,
+    runtimeConfigurationRevision,
+  ]);
   const save = useMutation({
     mutationFn: async () =>
       await updateBindingPreferences(binding.bindingId, {
@@ -107,6 +348,35 @@ function BindingSettings({ binding }: { binding: BindingPreferenceView }) {
       void queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
     },
   });
+  const saveProvider = useMutation({
+    mutationFn: async () => {
+      if (!selectedCapability) throw new Error(t("@connect.settings.binding.provider.selectionRequired"));
+      if (!configurationValid) throw new Error(t("@connect.settings.binding.provider.configurationInvalid"));
+      return await upsertBindingProvider(binding.bindingId, {
+        pluginId: selectedCapability.pluginId,
+        capabilityId: selectedCapability.capabilityId,
+        runtimeConfig: runtimeConfiguration,
+      });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: clientKeys.bootstrap });
+      void queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
+      void queryClient.invalidateQueries({ queryKey: pluginAdministrationQueryOptions.queryKey });
+    },
+  });
+  const selectCapability = (value: string) => {
+    if (value === providerValue) return;
+    const nextCapability = runtimeCapabilities.find((option) => option.value === value);
+    setProviderValue(value);
+    if (!nextCapability) {
+      setRuntimeConfiguration({});
+      setInvalidConfigurationFieldIds(new Set([`${binding.bindingId}-provider-schema`]));
+      return;
+    }
+    const prepared = defaultRuntimeConfiguration(nextCapability, `${binding.bindingId}-provider`);
+    setRuntimeConfiguration(prepared.configuration);
+    setInvalidConfigurationFieldIds(prepared.invalidFieldIds);
+  };
   return (
     <Card padding={4}>
       <VStack gap={4}>
@@ -190,9 +460,116 @@ function BindingSettings({ binding }: { binding: BindingPreferenceView }) {
             />
           </SettingsField>
         </Grid>
+        <VStack gap={2}>
+          <Heading level={3}>{t("@connect.settings.binding.provider.title")}</Heading>
+          <Text type={currentCapability ? "supporting" : "code"} wordBreak="break-all">
+            {currentCapability
+              ? currentCapability.label
+              : t("@connect.settings.binding.provider.identity", {
+                  pluginId: binding.runtimePluginId,
+                  capabilityId: binding.runtimeCapabilityId,
+                })}
+          </Text>
+        </VStack>
+        {binding.clawChatUserId !== null ? (
+          <Banner
+            status="info"
+            title={t("@connect.settings.binding.provider.lockedTitle")}
+            description={t("@connect.settings.binding.provider.lockedDescription")}
+            container="section"
+          />
+        ) : (
+          <VStack gap={4}>
+            {saveProvider.isSuccess ? (
+              <Banner status="success" title={t("@connect.settings.binding.saved")} container="section" />
+            ) : null}
+            {saveProvider.isError ? (
+              <Banner
+                status="error"
+                title={t("@connect.settings.binding.saveFailed")}
+                description={localizedClientError(t, saveProvider.error, settingsClientErrorKeys)}
+                container="section"
+              />
+            ) : null}
+            <Selector
+              label={t("@connect.settings.binding.provider.select")}
+              description={t("@connect.settings.binding.provider.description")}
+              options={runtimeCapabilities}
+              value={providerValue}
+              onChange={selectCapability}
+              isRequired
+              isDisabled={capabilitiesPending || Boolean(capabilitiesError) || runtimeCapabilities.length === 0}
+              disabledMessage={t(
+                runtimeCapabilityUnavailableMessage(capabilitiesPending, Boolean(capabilitiesError)),
+              )}
+              width="100%"
+            />
+            {selectedCapability ? (
+              <VStack gap={2}>
+                <Heading level={3}>{t("@connect.settings.binding.provider.configuration")}</Heading>
+                <JsonSchemaForm
+                  key={selectedCapability.value}
+                  schema={selectedCapability.configurationSchema}
+                  value={runtimeConfiguration}
+                  onChange={setRuntimeConfiguration}
+                  prefix={`${binding.bindingId}-provider`}
+                  fallbackLabel={t("@connect.settings.binding.provider.configuration")}
+                  onValidityChange={trackConfigurationValidity}
+                />
+              </VStack>
+            ) : null}
+            <HStack justify="end">
+              <Button
+                label={t(
+                  saveProvider.isPending
+                    ? "@connect.settings.binding.saving"
+                    : "@connect.settings.plugins.configure.save",
+                )}
+                variant="secondary"
+                isLoading={saveProvider.isPending}
+                isDisabled={!selectedCapability || !configurationValid}
+                onClick={() => saveProvider.mutate()}
+              />
+            </HStack>
+          </VStack>
+        )}
       </VStack>
     </Card>
   );
+}
+
+function runtimeCapabilityValue(pluginId: string, capabilityId: string): string {
+  return JSON.stringify([pluginId, capabilityId]);
+}
+
+
+function runtimeCapabilityUnavailableMessage(capabilitiesPending: boolean, capabilitiesError: boolean) {
+  if (capabilitiesPending) return "@connect.settings.plugins.loading" as const;
+  if (capabilitiesError) return "@connect.settings.plugins.loadFailed" as const;
+  return "@connect.settings.binding.provider.unavailable" as const;
+}
+
+function defaultRuntimeConfiguration(
+  capability: RuntimeCapabilityOption,
+  prefix: string,
+): { configuration: Record<string, unknown>; invalidFieldIds: Set<string> } {
+  const invalidFieldIds = new Set<string>();
+  const configuration = prepareJsonSchemaConfiguration(
+    capability.configurationSchema,
+    {},
+    prefix,
+    invalidFieldIds,
+  );
+  return { configuration, invalidFieldIds };
+}
+
+function updatedInvalidFieldIds(current: Set<string>, fieldId: string, valid: boolean): Set<string> {
+  const isInvalid = current.has(fieldId);
+  if ((valid && !isInvalid) || (!valid && isInvalid)) return current;
+  const next = new Set(current);
+  if (valid) next.delete(fieldId);
+  else next.add(fieldId);
+  return next;
 }
 
 function ProjectSettings({

@@ -26,13 +26,13 @@ import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { SessionActivity } from "../runtime/session-queue";
 import type { RuntimeLifecycleCapabilities, RuntimeModelOption, RuntimeThreadSummary } from "../runtime/types";
 import { isCodeBuddySessionRuntimeTarget } from "../runtime/workbuddy-runtime-target";
-import {
-  type ConnectConfig,
-  type ProjectRecord,
-  type RuntimeSessionRecord,
-  type RuntimeStatus,
-  type RuntimeWorkspace,
-  runtimeFamilyFor,
+import type {
+  AgentBindingConfig,
+  ConnectConfig,
+  ProjectRecord,
+  RuntimeSessionRecord,
+  RuntimeStatus,
+  RuntimeWorkspace,
 } from "../types";
 import type { TranscriptProjection } from "./transcript-projection";
 
@@ -41,6 +41,7 @@ const CLIENT_CATALOG_CHAT = "__connect_client_catalog__";
 export interface SessionCatalogOptions {
   config: ConnectConfig;
   stateStore: ConnectStateStore;
+  runtimeFamily?: (binding: AgentBindingConfig) => string | Promise<string>;
   runtimeAdapters: RuntimeAdapterRegistry;
   transcriptProjection: TranscriptProjection;
   projects?: ProjectCatalog;
@@ -73,8 +74,12 @@ export class SessionCatalog {
     this.projects = options.projects ?? new ProjectCatalog(options.stateStore);
     const continuityOptions: Omit<SessionContinuityOptions, "stateStore"> = {
       lifecycle: {
-        capabilities: (bindingId) =>
-          options.runtimeAdapters.lifecycleCapabilities(getAgentBinding(options.config, bindingId)),
+        capabilities: (bindingId) => {
+          const binding = getAgentBinding(options.config, bindingId);
+          return options.runtimeAdapters.hasProvider(binding)
+            ? options.runtimeAdapters.lifecycleCapabilities(binding)
+            : { archive: false, restore: false, delete: false };
+        },
         archive: async (bindingId, runtimeThreadId) =>
           await options.runtimeAdapters.archiveThread(getAgentBinding(options.config, bindingId), runtimeThreadId),
         restore: async (bindingId, runtimeThreadId) =>
@@ -115,15 +120,20 @@ export class SessionCatalog {
       bindings: await Promise.all(
         cached.bindings.map(async (binding) => {
           const runtimeStatus = await this.options.stateStore.getRuntimeStatus(binding.bindingId);
+          const providerAvailable = this.options.runtimeAdapters.hasProvider(
+            getAgentBinding(this.options.config, binding.bindingId),
+          );
           return {
             ...binding,
             entries: await Promise.all(
               binding.entries.map(async (entry) => ({
                 ...entry,
-                status: sessionStatus(
-                  runtimeStatus,
-                  (await this.options.sessionActivity?.(binding.bindingId, entry.sessionRef)) ?? "idle",
-                ),
+                status: providerAvailable
+                  ? sessionStatus(
+                      runtimeStatus,
+                      (await this.options.sessionActivity?.(binding.bindingId, entry.sessionRef)) ?? "idle",
+                    )
+                  : "offline",
               })),
             ),
           };
@@ -190,12 +200,14 @@ export class SessionCatalog {
     const runtimeThreadId = session?.runtimeSessionId ?? target?.runtimeSessionId ?? undefined;
     const runtimeWorkspace = session ? await this.projects.resolveWorkspace(session) : undefined;
     const catalogScope = { runtimeThreadId, workspace: runtimeWorkspace };
-    let advertisedModels: Awaited<ReturnType<RuntimeAdapterRegistry["listModels"]>>;
-    try {
-      advertisedModels = await this.options.runtimeAdapters.listModels(binding, catalogScope);
-    } catch (error) {
-      if (binding.kind !== "workbuddy") throw error;
-      advertisedModels = null;
+    const providerAvailable = this.options.runtimeAdapters.hasProvider(binding);
+    let advertisedModels: Awaited<ReturnType<RuntimeAdapterRegistry["listModels"]>> = null;
+    if (providerAvailable) {
+      try {
+        advertisedModels = await this.options.runtimeAdapters.listModels(binding, catalogScope);
+      } catch (error) {
+        if (this.options.runtimeAdapters.familyFor(binding) !== "workbuddy") throw error;
+      }
     }
     const modelOptions = advertisedModels ?? [];
     const selectedSessionOptions = {
@@ -203,7 +215,7 @@ export class SessionCatalog {
       ...(session?.sessionOptions ?? {}),
     };
     let advertisedSessionOptions: Awaited<ReturnType<RuntimeAdapterRegistry["listSessionOptions"]>> = [];
-    if (session && runtimeWorkspace) {
+    if (session && runtimeWorkspace && providerAvailable) {
       try {
         advertisedSessionOptions = await this.options.runtimeAdapters.listSessionOptions(
           binding,
@@ -211,7 +223,7 @@ export class SessionCatalog {
           catalogScope,
         );
       } catch (error) {
-        if (binding.kind !== "workbuddy") throw error;
+        if (this.options.runtimeAdapters.familyFor(binding) !== "workbuddy") throw error;
       }
     }
     const sessionOptionDefinitions = advertisedSessionOptions.map((option) => {
@@ -257,7 +269,9 @@ export class SessionCatalog {
       modelSource = session?.model ? "session" : binding.model ? "binding" : "runtime";
     }
     const pendingInteractions = await this.options.stateStore.listPendingRuntimeInteractions(normalized);
-    const lifecycleCapabilities = this.options.runtimeAdapters.lifecycleCapabilities(binding);
+    const lifecycleCapabilities = providerAvailable
+      ? this.options.runtimeAdapters.lifecycleCapabilities(binding)
+      : { archive: false, restore: false, delete: false };
     const effectiveModelOption =
       modelOptions.find((candidate) => candidate.id === effectiveModel) ??
       modelOptions.find((candidate) => candidate.isDefault) ??
@@ -284,7 +298,7 @@ export class SessionCatalog {
       modelSource,
       modelAvailable,
       modelOptions,
-      status: sessionStatus(runtimeStatus, activity),
+      status: providerAvailable ? sessionStatus(runtimeStatus, activity) : "offline",
       runtimeThreadAvailable,
       activeTurnId: (await this.options.activeTurnId?.(entry.bindingId, normalized)) ?? null,
       queuedTurns: (await this.options.queuedTurns?.(entry.bindingId, normalized)) ?? [],
@@ -292,10 +306,14 @@ export class SessionCatalog {
         this.options.transcriptProjection.completeness(normalized) ??
         (runtimeThreadAvailable ? "partial" : "live-only"),
       pendingInteractions,
-      turnSubmissionCapability: clientTurnSubmissionCapability(effectiveModelOption, modelAvailable),
-      allowedActions: runtimeThreadMissing
-        ? []
-        : sessionActions(entry.isArchived, runtimeThreadAvailable, activity, lifecycleCapabilities),
+      turnSubmissionCapability: clientTurnSubmissionCapability(
+        effectiveModelOption,
+        modelAvailable && providerAvailable,
+      ),
+      allowedActions:
+        providerAvailable && !runtimeThreadMissing
+          ? sessionActions(entry.isArchived, runtimeThreadAvailable, activity, lifecycleCapabilities)
+          : [],
       updatedAt: entry.updatedAt,
     };
   }
@@ -459,15 +477,19 @@ export class SessionCatalog {
     const runtimeRevisionByRef = new Map<string, string>();
 
     for (const [bindingId, binding] of Object.entries(this.options.config.agents)) {
-      const lifecycleCapabilities = this.options.runtimeAdapters.lifecycleCapabilities(binding);
       const status = await this.options.stateStore.getRuntimeStatus(bindingId);
+      const runtimeUnavailable =
+        status?.runtimeAvailability === "startup-unavailable" || !this.options.runtimeAdapters.hasProvider(binding);
+      const lifecycleCapabilities = runtimeUnavailable
+        ? { archive: false, restore: false, delete: false }
+        : this.options.runtimeAdapters.lifecycleCapabilities(binding);
+      const family = runtimeUnavailable
+        ? ((await this.options.runtimeFamily?.(binding)) ?? "unavailable")
+        : this.options.runtimeAdapters.familyFor(binding);
       const managed = sessions.filter((session) => session.agentId === bindingId);
       const managedRuntimeIds = new Set(
         managed.map((session) => session.runtimeSessionId).filter((id): id is string => Boolean(id)),
       );
-      // A failed startup is terminal for this service lifetime. Avoid probing
-      // an uninstalled CLI or stopped desktop app from every catalog request.
-      const runtimeUnavailable = status?.runtimeAvailability === "startup-unavailable";
       const discoveredActive = runtimeUnavailable
         ? []
         : (
@@ -482,7 +504,7 @@ export class SessionCatalog {
         projects = (
           await synchronizeRuntimeProjects({
             bindingId,
-            runtimeKind: runtimeFamilyFor(binding),
+            runtimeKind: family,
             threads: discoveredActive,
             projects: this.projects,
             stateStore: this.options.stateStore,
@@ -505,7 +527,9 @@ export class SessionCatalog {
           const discoveredRuntimeThread = runtimeSessionId ? discoveredById.get(runtimeSessionId) : undefined;
           const runtimeThread =
             discoveredRuntimeThread ??
-            (binding.kind === "workbuddy" && runtimeSessionId && isCodeBuddySessionRuntimeTarget(runtimeSessionId)
+            (family === "workbuddy" &&
+            runtimeSessionId &&
+            isCodeBuddySessionRuntimeTarget(runtimeSessionId)
               ? {
                   runtimeThreadId: runtimeSessionId,
                   name: session.name,
@@ -525,7 +549,7 @@ export class SessionCatalog {
           const activity = (await this.options.sessionActivity?.(bindingId, session.sessionRef)) ?? "idle";
           return managedEntry(
             session,
-            runtimeFamilyFor(binding),
+            family,
             project,
             status,
             activity,
@@ -543,7 +567,7 @@ export class SessionCatalog {
         };
         const mapping = await this.options.stateStore.getRuntimeWorkspaceMapping(
           bindingId,
-          runtimeFamilyFor(binding),
+          family,
           identity.key,
         );
         const project =
@@ -557,7 +581,7 @@ export class SessionCatalog {
         runtimeRevisionByRef.set(sessionRef.toUpperCase(), `${thread.runtimeThreadId}:${thread.updatedAt}`);
         workspaceIdentityByRef.set(sessionRef.toUpperCase(), {
           bindingId,
-          runtimeKind: runtimeFamilyFor(binding),
+          runtimeKind: family,
           identityKey: identity.key,
           kind: identity.kind,
         });
@@ -568,7 +592,7 @@ export class SessionCatalog {
           sessionRef,
           entryKind: "runtime-thread",
           bindingId,
-          bindingKind: runtimeFamilyFor(binding),
+          bindingKind: family,
           projectId: project?.projectId ?? null,
           projectName: project?.name ?? null,
           workspaceId: workspace?.id ?? null,
@@ -589,6 +613,10 @@ export class SessionCatalog {
           entry.pendingInteractionCount = (
             await this.options.stateStore.listPendingRuntimeInteractions(entry.sessionRef)
           ).length;
+          if (runtimeUnavailable) {
+            entry.status = "offline";
+            entry.allowedActions = [];
+          }
         }),
       );
       entries.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
@@ -596,9 +624,9 @@ export class SessionCatalog {
       bindings.push({
         bindingId,
         displayName: binding.displayName || bindingId,
-        kind: runtimeFamilyFor(binding),
+        kind: family,
         status:
-          status?.runtimeAvailability === "startup-unavailable" || status?.websocketConnected === false
+          runtimeUnavailable || status?.runtimeAvailability === "startup-unavailable" || status?.websocketConnected === false
             ? "disconnected"
             : status?.websocketConnected === true
               ? "connected"

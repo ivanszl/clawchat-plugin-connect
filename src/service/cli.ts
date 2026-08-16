@@ -36,9 +36,9 @@ import {
   upsertAgentBinding,
 } from "../config";
 import { type ConnectStateStore, createStateStore, type ToolRequestRecord } from "../persistence/state";
-import { createPluginAgentBinding } from "../plugin/binding";
-import type { OfficialCatalogOptions, OfficialPluginDiscovery } from "../plugin/catalog";
-import { resolvePluginSource } from "../plugin/source";
+import { createAgentBinding } from "../plugin/binding";
+import { discoverOfficialPlugins, type OfficialCatalogOptions, type OfficialPluginDiscovery } from "../plugin/catalog";
+import { resolvePluginSource, type ResolvedPluginSource } from "../plugin/source";
 import {
   type InstalledPluginLockEntry,
   installPluginBundle,
@@ -47,18 +47,11 @@ import {
   validatePluginConfiguration,
 } from "../plugin/store";
 import { ProjectCatalog } from "../projects/projects";
-import { createReleasedAgentBinding, releasedRuntimeAdapters } from "../runtime/released-adapters";
-import {
-  type AgentBindingConfig,
-  type CodexAgentBindingConfig,
-  type CodexApprovalPolicy,
-  type CodexReasoningEffort,
-  type CodexSandboxMode,
-  type CodexWebSearchMode,
-  type ConnectConfig,
-  type LivewareAccessPolicy,
-  type OutputVisibility,
-  runtimeFamilyFor,
+import type {
+  AgentBindingConfig,
+  ConnectConfig,
+  LivewareAccessPolicy,
+  OutputVisibility,
 } from "../types";
 import {
   BACKGROUND_SERVICE_PROCESS_ACTION,
@@ -97,10 +90,6 @@ export interface ConnectCliDeps extends Partial<CliIo> {
 }
 
 interface AgentCliOptions {
-  kind?: string;
-  profile?: string;
-  runtimePath?: string;
-  codexPath?: string;
   plugin?: string;
   capability?: string;
   runtimeConfigJson?: string;
@@ -110,9 +99,8 @@ const HELP_TEXT = `${[
   "clawchat-connect <command>",
   "",
   "Commands:",
-  "  init [--agent <id> --kind codex] [--config <path>]",
-  "  agent add <id> --kind <kind> [--profile <profile>] [--runtime-path <path>] [--config <path>]",
-  "  agent list [--config <path>]",
+  "  init [--agent <id> --plugin <plugin-id> --capability <capability-id>] [--config <path>]",
+  "  agent add <id> --plugin <plugin-id> --capability <capability-id> [--runtime-config-json <object>] [--config <path>]",
   "  agent remove <id> --yes [--config <path>]",
   "  owner reset [--yes-reset-owner] [--config <path>]",
   "  plugin install <local-path|npm:package[@version]|github:owner/repo[@release]> [--installation-config-json <object>] [--exposure-config-json <object>] [--config <path>]",
@@ -212,32 +200,28 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   if (updateResult !== null) return updateResult;
 
   const cli = cac("clawchat-connect");
-  const releasedKinds = releasedRuntimeAdapters()
-    .map((adapter) => adapter.kind)
-    .join(", ");
   let commandRan = false;
   cli
     .command("init", "Create config")
     .option("--config <path>", "Config path")
     .option("--agent <id>", "Agent id")
-    .option("--kind <kind>", `Agent kind: ${releasedKinds}`)
-    .option("--profile <profile>", "Runtime distribution profile")
-    .option("--runtime-path <path>", "Runtime executable override")
-    .option("--codex-path <path>", "Codex executable override")
+    .option("--plugin <plugin-id>", "Installed Runtime Plugin ID")
+    .option("--capability <capability-id>", "Runtime capability ID")
+    .option("--runtime-config-json <object>", "Runtime capability configuration")
     .action(
       async (options: {
         config?: string;
         agent?: string;
-        kind?: string;
-        profile?: string;
-        runtimePath?: string;
-        codexPath?: string;
+        plugin?: string;
+        capability?: string;
+        runtimeConfigJson?: string;
       }) => {
         commandRan = true;
         let config = defaultConfig();
-        if (options.agent || options.kind || options.profile || options.runtimePath || options.codexPath) {
-          if (!options.agent) throw new Error("init requires --agent when agent options are provided");
-          config = upsertAgentBinding(config, options.agent, agentBindingFromCli(options));
+        if (options.agent || options.plugin || options.capability || options.runtimeConfigJson) {
+          if (!options.agent) throw new Error("init requires --agent when Binding options are provided");
+          const configPath = resolve(options.config ?? defaultConfigPath());
+          config = upsertAgentBinding(config, options.agent, await validatedAgentBindingFromCli(options, configPath));
         }
         io.writeStdout(`Wrote config: ${await saveConfig(config, options.config)}\n`);
       },
@@ -246,18 +230,22 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   cli
     .command("agent add <id>", "Add/update agent")
     .option("--config <path>", "Config path")
-    .option("--kind <kind>", `Agent kind: ${releasedKinds}`)
-    .option("--profile <profile>", "Runtime distribution profile")
-    .option("--runtime-path <path>", "Runtime executable override")
-    .option("--codex-path <path>", "Codex executable override")
+    .option("--plugin <plugin-id>", "Installed Runtime Plugin ID")
+    .option("--capability <capability-id>", "Runtime capability ID")
+    .option("--runtime-config-json <object>", "Runtime capability configuration")
     .action(
       async (
         id: string,
-        options: { config?: string; kind?: string; profile?: string; runtimePath?: string; codexPath?: string },
+        options: { config?: string; plugin?: string; capability?: string; runtimeConfigJson?: string },
       ) => {
         commandRan = true;
-        const config = upsertAgentBinding(await loadConfig(options.config), id, agentBindingFromCli(options));
-        io.writeStdout(`Updated agent ${id}: ${await saveConfig(config, options.config)}\n`);
+        const configPath = resolve(options.config ?? defaultConfigPath());
+        const config = upsertAgentBinding(
+          await loadConfig(configPath),
+          id,
+          await validatedAgentBindingFromCli(options, configPath),
+        );
+        io.writeStdout(`Updated agent ${id}: ${await saveConfig(config, configPath)}\n`);
       },
     );
 
@@ -266,9 +254,11 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     .option("--config <path>", "Config path")
     .action(async (options: { config?: string }) => {
       commandRan = true;
-      const config = await loadConfig(options.config);
+      const configPath = resolve(options.config ?? defaultConfigPath());
+      const config = await loadConfig(configPath);
+      const installed = await listInstalledPlugins(configPath);
       const rows = Object.entries(config.agents).map(([id, agent]) =>
-        formatAgentListRow(id, agent, id === config.defaultAgent),
+        formatAgentListRow(id, agent, id === config.defaultAgent, installed),
       );
       io.writeStdout(rows.length ? `${rows.join("\n")}\n` : "No agents configured.\n");
     });
@@ -309,7 +299,16 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       const status = agentId ? await store.getRuntimeStatus(agentId) : null;
       const livewareExposure = agentId ? await store.getLivewareExposure(agentId) : null;
       await store.close();
-      io.writeStdout(formatStatus(config, agentId, activation !== null, status, livewareExposure));
+      io.writeStdout(
+        formatStatus(
+          config,
+          agentId,
+          activation !== null,
+          status,
+          livewareExposure,
+          await listInstalledPlugins(resolve(options.config ?? defaultConfigPath())),
+        ),
+      );
     });
 
   cli
@@ -741,7 +740,50 @@ async function maybeRunPluginCommand(
       return 0;
     }
     if (action === "setup") {
-      const discovery = await request<OfficialPluginDiscovery>("/official");
+      const offlineCandidates = new Map<
+        string,
+        {
+          resolved: ResolvedPluginSource;
+          installationConfiguration: Record<string, unknown>;
+          exposureConfigurations: Record<string, unknown>;
+        }
+      >();
+      let discovery: OfficialPluginDiscovery;
+      let installSelection: (pluginIds: readonly string[]) => Promise<InstalledPluginLockEntry[]>;
+      try {
+        discovery = await request<OfficialPluginDiscovery>("/official");
+        installSelection = async (pluginIds) =>
+          await request<InstalledPluginLockEntry[]>("/official/setup", "POST", { pluginIds });
+      } catch (error) {
+        if (!(error instanceof PluginManagerUnavailableError)) throw error;
+        discovery = await discoverOfficialPlugins(configPath, sourceOptions, (entry, resolved) => {
+          offlineCandidates.set(entry.pluginId, {
+            resolved,
+            installationConfiguration: structuredClone(entry.installationConfiguration ?? {}),
+            exposureConfigurations: structuredClone(entry.exposureConfigurations ?? {}),
+          });
+        });
+        installSelection = async (pluginIds) => {
+          const installed: InstalledPluginLockEntry[] = [];
+          for (const pluginId of pluginIds) {
+            const candidate = offlineCandidates.get(pluginId);
+            if (!candidate) {
+              throw new Error(`Official Plugin ${pluginId} is not in the latest staged discovery`);
+            }
+            installed.push(
+              await installPluginBundle({
+                configPath,
+                source: candidate.resolved.source,
+                bundle: candidate.resolved.bundle,
+                target: candidate.resolved.target,
+                installationConfiguration: candidate.installationConfiguration,
+                exposureConfigurations: candidate.exposureConfigurations,
+              }),
+            );
+          }
+          return installed;
+        };
+      }
       for (const diagnostic of discovery.diagnostics) io.writeStderr(`${diagnostic}\n`);
       if (discovery.candidates.length === 0) {
         io.writeStdout(
@@ -779,9 +821,7 @@ async function maybeRunPluginCommand(
       const available = new Set(discovery.candidates.map((candidate) => candidate.pluginId));
       const unknown = [...selected].filter((pluginId) => !available.has(pluginId));
       if (unknown.length > 0) throw new Error(`Official Plugin selection is not in the Catalog: ${unknown.join(", ")}`);
-      const installed = await request<InstalledPluginLockEntry[]>("/official/setup", "POST", {
-        pluginIds: [...selected],
-      });
+      const installed = await installSelection([...selected]);
       for (const entry of installed) io.writeStdout(formatPluginOperation("Installed", entry));
       if (installed.length === 0) io.writeStdout("No official Plugins selected.\n");
       return 0;
@@ -912,10 +952,6 @@ async function maybeRunNestedAgentCommand(
       if (!id) throw new Error("agent id is required");
       const binding = await validatedAgentBindingFromCli(
         {
-          kind: optionValue(argv, "--kind"),
-          profile: optionValue(argv, "--profile"),
-          runtimePath: optionValue(argv, "--runtime-path"),
-          codexPath: optionValue(argv, "--codex-path"),
           plugin: optionValue(argv, "--plugin"),
           capability: optionValue(argv, "--capability"),
           runtimeConfigJson: optionValue(argv, "--runtime-config-json"),
@@ -928,8 +964,9 @@ async function maybeRunNestedAgentCommand(
     }
     if (action === "list") {
       const config = await loadConfig(configPath);
+      const installed = await listInstalledPlugins(configPath);
       const rows = Object.entries(config.agents).map(([agentId, agent]) =>
-        formatAgentListRow(agentId, agent, agentId === config.defaultAgent),
+        formatAgentListRow(agentId, agent, agentId === config.defaultAgent, installed),
       );
       io.writeStdout(rows.length ? `${rows.join("\n")}\n` : "No agents configured.\n");
       return 0;
@@ -1093,8 +1130,6 @@ function isBackgroundServiceAction(value: string | undefined): value is Backgrou
 
 async function validatedAgentBindingFromCli(options: AgentCliOptions, configPath: string): Promise<AgentBindingConfig> {
   const binding = agentBindingFromCli(options);
-  if (binding.kind !== "plugin") return binding;
-
   const installed = (await listInstalledPlugins(configPath)).find(
     (candidate) => candidate.pluginId === binding.runtime.pluginId,
   );
@@ -1112,11 +1147,6 @@ async function validatedAgentBindingFromCli(options: AgentCliOptions, configPath
       `Plugin ${installed.pluginId} capability ${binding.runtime.capabilityId} is not a Runtime capability`,
     );
   }
-  if (capability.family !== binding.runtimeFamily) {
-    throw new Error(
-      `Plugin ${installed.pluginId}/${capability.id} Runtime family is ${capability.family}, not requested ${binding.runtimeFamily}`,
-    );
-  }
   return {
     ...binding,
     runtimeConfig: validatePluginConfiguration(
@@ -1128,61 +1158,47 @@ async function validatedAgentBindingFromCli(options: AgentCliOptions, configPath
 }
 
 function agentBindingFromCli(options: AgentCliOptions): AgentBindingConfig {
-  if (options.plugin || options.capability || options.runtimeConfigJson) {
-    if (!options.kind?.trim() || !options.plugin?.trim() || !options.capability?.trim()) {
-      throw new Error(
-        "Plugin Agent Binding requires --kind <runtime-family>, --plugin <plugin-id>, and --capability <capability-id>",
-      );
-    }
-    if (options.profile || options.runtimePath || options.codexPath) {
-      throw new Error("Plugin Agent Binding configuration belongs in --runtime-config-json");
-    }
-    let configuration: unknown = {};
-    if (options.runtimeConfigJson) {
-      try {
-        configuration = JSON.parse(options.runtimeConfigJson) as unknown;
-      } catch {
-        throw new Error("--runtime-config-json must be a JSON object");
-      }
-    }
-    if (!configuration || typeof configuration !== "object" || Array.isArray(configuration)) {
+  if (!options.plugin?.trim() || !options.capability?.trim()) {
+    throw new Error("Agent Binding requires --plugin <plugin-id> and --capability <capability-id>");
+  }
+  let configuration: unknown = {};
+  if (options.runtimeConfigJson) {
+    try {
+      configuration = JSON.parse(options.runtimeConfigJson) as unknown;
+    } catch {
       throw new Error("--runtime-config-json must be a JSON object");
     }
-    return createPluginAgentBinding({
-      runtimeFamily: options.kind,
-      pluginId: options.plugin,
-      capabilityId: options.capability,
-      configuration: configuration as Record<string, unknown>,
-    });
   }
-  try {
-    const binding = createReleasedAgentBinding(options.kind, {
-      executablePath: options.runtimePath ?? options.codexPath,
-      profile: options.profile,
-    });
-    if (options.codexPath && !options.runtimePath && binding.kind === "codex") {
-      delete binding.executablePathOverride;
-      binding.codexPathOverride = options.codexPath;
-    }
-    return binding;
-  } catch (error) {
-    const kinds = releasedRuntimeAdapters()
-      .map((adapter) => adapter.kind)
-      .join(", ");
-    if (releasedRuntimeAdapters().some((adapter) => adapter.kind === options.kind?.trim().toLowerCase())) throw error;
-    throw new Error(`--kind ${kinds} is required`);
+  if (!configuration || typeof configuration !== "object" || Array.isArray(configuration)) {
+    throw new Error("--runtime-config-json must be a JSON object");
   }
+  return createAgentBinding({
+    pluginId: options.plugin,
+    capabilityId: options.capability,
+    configuration: configuration as Record<string, unknown>,
+  });
 }
 
-function formatAgentListRow(id: string, binding: AgentBindingConfig, isDefault: boolean): string {
+function formatAgentListRow(
+  id: string,
+  binding: AgentBindingConfig,
+  isDefault: boolean,
+  installed: readonly InstalledPluginLockEntry[],
+): string {
   const selected = isDefault ? " (default)" : "";
-  if (binding.kind === "plugin") {
-    return `- ${id}${selected}: ${binding.runtimeFamily} (${binding.runtime.pluginId}/${binding.runtime.capabilityId})`;
-  }
-  const executablePath =
-    binding.executablePathOverride ?? (binding.kind === "codex" ? binding.codexPathOverride : undefined);
-  const profile = binding.kind === "workbuddy" ? `/${binding.profile}` : "";
-  return `- ${id}${selected}: ${binding.kind}${profile}${executablePath ? ` (${executablePath})` : ""}`;
+  const family = runtimeFamilyFromManifest(binding, installed);
+  return `- ${id}${selected}: ${family} (${binding.runtime.pluginId}/${binding.runtime.capabilityId})`;
+}
+
+function runtimeFamilyFromManifest(
+  binding: AgentBindingConfig,
+  installed: readonly InstalledPluginLockEntry[],
+): string {
+  const plugin = installed.find((candidate) => candidate.pluginId === binding.runtime.pluginId);
+  const capability = plugin?.manifest.capabilities.find(
+    (candidate) => candidate.id === binding.runtime.capabilityId && candidate.type === "runtime",
+  );
+  return capability?.type === "runtime" ? capability.family : "unavailable Runtime capability";
 }
 
 function optionValue(argv: string[], name: string): string | undefined {
@@ -1228,20 +1244,15 @@ function formatStatus(
   activated: boolean,
   status: Awaited<ReturnType<ConnectStateStore["getRuntimeStatus"]>>,
   livewareExposure: Awaited<ReturnType<ConnectStateStore["getLivewareExposure"]>>,
+  installed: readonly InstalledPluginLockEntry[],
 ): string {
   const binding = agentId ? config.agents[agentId] : undefined;
-  const adapterMetadata = binding
-    ? releasedRuntimeAdapters().find((adapter) => adapter.kind === binding.kind)
-    : undefined;
-  const profileId = binding?.kind === "workbuddy" ? binding.profile : null;
-  const profileMetadata = profileId ? adapterMetadata?.profiles.find((profile) => profile.id === profileId) : undefined;
   return `${[
     "ClawChat Connect status",
     `agent: ${agentId ?? "not selected"}`,
-    ...(binding ? [`runtime adapter: ${runtimeFamilyFor(binding)}${profileId ? `/${profileId}` : ""}`] : []),
-    ...(profileMetadata
+    ...(binding
       ? [
-          `required capability: ${profileMetadata.displayName} / ${profileMetadata.protocol.name} v${profileMetadata.protocol.version}`,
+          `runtime capability: ${runtimeFamilyFromManifest(binding, installed)} (${binding.runtime.pluginId}/${binding.runtime.capabilityId})`,
         ]
       : []),
     `configured agents: ${Object.keys(config.agents).length}`,
@@ -1319,47 +1330,17 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
     binding.displayName = value;
     return;
   }
-  if (field === "executablePathOverride") {
-    binding.executablePathOverride = value;
+  if (field === "model") {
+    binding.model = value;
     return;
   }
-  if (binding.kind !== "codex") throw new Error(`Unsupported ${binding.kind} config key: ${key}`);
-  setCodexConfigValue(binding, field, value, key);
+  if (field === "modelReasoningEffort") {
+    binding.modelReasoningEffort = value;
+    return;
+  }
+  throw new Error(`Unsupported Agent Binding config key: ${key}`);
 }
 
-function setCodexConfigValue(binding: CodexAgentBindingConfig, field: string, value: string, key: string): void {
-  if (field === "codexPathOverride") binding.codexPathOverride = value;
-  else if (field === "model") binding.model = value;
-  else if (field === "sandboxMode")
-    binding.sandboxMode = parseCodexEnum<CodexSandboxMode>(
-      value,
-      ["read-only", "workspace-write", "danger-full-access"],
-      field,
-    );
-  else if (field === "modelReasoningEffort")
-    binding.modelReasoningEffort = parseCodexEnum<CodexReasoningEffort>(
-      value,
-      ["minimal", "low", "medium", "high", "xhigh"],
-      field,
-    );
-  else if (field === "approvalPolicy")
-    binding.approvalPolicy = parseCodexEnum<CodexApprovalPolicy>(value, ["never", "on-request", "untrusted"], field);
-  else if (field === "webSearchMode")
-    binding.webSearchMode = parseCodexEnum<CodexWebSearchMode>(value, ["disabled", "cached", "live"], field);
-  else if (field === "networkAccessEnabled") binding.networkAccessEnabled = parseBoolean(value, field);
-  else throw new Error(`Unsupported Codex config key: ${key}`);
-}
-
-function parseCodexEnum<T extends string>(value: string, values: readonly T[], field: string): T {
-  if (values.includes(value as T)) return value as T;
-  throw new Error(`${field} must be one of: ${values.join(", ")}`);
-}
-
-function parseBoolean(value: string, field: string): boolean {
-  if (value === "true") return true;
-  if (value === "false") return false;
-  throw new Error(`${field} must be true or false`);
-}
 
 function parseOutputVisibility(value: string): OutputVisibility {
   const mode = value.trim().toLowerCase();

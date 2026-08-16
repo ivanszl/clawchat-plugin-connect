@@ -25,8 +25,8 @@ Connect rejects every other application, embedded CodeBuddy, or ACP version. Bot
 
   ```bash
   clawchat-connect plugin setup --non-interactive --select clawling.runtime.workbuddy
-  clawchat-connect agent add desktop --kind workbuddy --plugin clawling.runtime.workbuddy --capability workbuddy-ai
-  clawchat-connect agent add mainland --kind workbuddy --plugin clawling.runtime.workbuddy --capability workbuddy-cn
+  clawchat-connect agent add desktop --plugin clawling.runtime.workbuddy --capability workbuddy-ai
+  clawchat-connect agent add mainland --plugin clawling.runtime.workbuddy --capability workbuddy-cn
   ```
 
   The two capability schemas accept no profile override. Selecting `workbuddy-ai` or `workbuddy-cn` fixes the distribution for that Binding, and each Binding creates an independent Runtime Adapter, ACP client, process, catalog cache, and recovery state.

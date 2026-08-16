@@ -8,13 +8,14 @@ import { defaultConfig, loadConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { ProjectCatalog } from "../src/projects/projects";
 import type { ActivationCredentials } from "../src/types";
+import { pluginBinding } from "./runtime-adapter-fixture";
 
 describe("Agent Binding removal", () => {
   it("stops Connect, retires only that Binding's Exposure, and purges its local data", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-remove-binding-"));
     const configPath = join(directory, "config.json");
     const config = defaultConfig();
-    config.agents = { personal: { kind: "codex" }, work: { kind: "codex" } };
+    config.agents = { personal: pluginBinding(), work: pluginBinding() };
     config.defaultAgent = "work";
     config.stateDbPath = join(directory, "state.sqlite");
     await saveConfig(config, configPath);
@@ -106,7 +107,7 @@ describe("Agent Binding removal", () => {
     expect(actions).toEqual(["status", "stop", "retire:work", "start"]);
     await expect(loadConfig(configPath)).resolves.toMatchObject({
       defaultAgent: "personal",
-      agents: { personal: { kind: "codex" } },
+      agents: { personal: pluginBinding() },
     });
     expect((await loadConfig(configPath)).agents.work).toBeUndefined();
     await expect(store.getActivation("work")).resolves.toBeNull();
