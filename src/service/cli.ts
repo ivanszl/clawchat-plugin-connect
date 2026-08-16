@@ -38,7 +38,8 @@ import {
 import { type ConnectStateStore, createStateStore, type ToolRequestRecord } from "../persistence/state";
 import { createAgentBinding } from "../plugin/binding";
 import { discoverOfficialPlugins, type OfficialCatalogOptions, type OfficialPluginDiscovery } from "../plugin/catalog";
-import { resolvePluginSource, type ResolvedPluginSource } from "../plugin/source";
+import { validateInstalledRuntimeBinding } from "../plugin/host";
+import { type ResolvedPluginSource, resolvePluginSource } from "../plugin/source";
 import {
   type InstalledPluginLockEntry,
   installPluginBundle,
@@ -47,12 +48,7 @@ import {
   validatePluginConfiguration,
 } from "../plugin/store";
 import { ProjectCatalog } from "../projects/projects";
-import type {
-  AgentBindingConfig,
-  ConnectConfig,
-  LivewareAccessPolicy,
-  OutputVisibility,
-} from "../types";
+import type { AgentBindingConfig, ConnectConfig, LivewareAccessPolicy, OutputVisibility } from "../types";
 import {
   BACKGROUND_SERVICE_PROCESS_ACTION,
   type BackgroundServiceAction,
@@ -866,7 +862,8 @@ async function maybeRunPluginCommand(
     if (!pluginId || pluginId.startsWith("--")) throw new Error(`plugin ${action ?? "operation"} requires a Plugin ID`);
     let managed: InstalledPluginLockEntry;
     if (action === "update") {
-      const source = argv[3] && !argv[3]!.startsWith("--") ? cliPluginSource(argv[3]!) : undefined;
+      const candidate = argv[3];
+      const source = candidate && !candidate.startsWith("--") ? cliPluginSource(candidate) : undefined;
       managed = await request(`/${encodeURIComponent(pluginId)}/update`, "POST", sourceConfiguration(source));
       io.writeStdout(formatPluginOperation("Updated", managed));
       return 0;
@@ -1147,7 +1144,7 @@ async function validatedAgentBindingFromCli(options: AgentCliOptions, configPath
       `Plugin ${installed.pluginId} capability ${binding.runtime.capabilityId} is not a Runtime capability`,
     );
   }
-  return {
+  const validatedBinding = {
     ...binding,
     runtimeConfig: validatePluginConfiguration(
       capability.configurationSchema,
@@ -1155,6 +1152,8 @@ async function validatedAgentBindingFromCli(options: AgentCliOptions, configPath
       `Plugin ${installed.pluginId}/${capability.id} Runtime configuration`,
     ),
   };
+  await validateInstalledRuntimeBinding(configPath, validatedBinding);
+  return validatedBinding;
 }
 
 function agentBindingFromCli(options: AgentCliOptions): AgentBindingConfig {
@@ -1340,7 +1339,6 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
   }
   throw new Error(`Unsupported Agent Binding config key: ${key}`);
 }
-
 
 function parseOutputVisibility(value: string): OutputVisibility {
   const mode = value.trim().toLowerCase();

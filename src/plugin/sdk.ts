@@ -186,11 +186,25 @@ export interface ConnectPluginRuntimeProvider {
   create(configuration: ConnectPluginConfiguration): ConnectPluginRuntimeAdapter;
 }
 
+/**
+ * The complete public Client facade available to Exposure capabilities.
+ * Requests are forwarded to this Connect installation without revealing its
+ * loopback origin or any mutable Connect service module.
+ */
+export interface ConnectPluginClientExposure {
+  fetch(request: Request): Promise<Response>;
+}
+
+export interface ConnectPluginExposureActivation {
+  readonly configuration: ConnectPluginConfiguration;
+  readonly client: ConnectPluginClientExposure;
+}
+
 export interface ConnectPluginExposureProvider {
   capabilityId: ConnectPluginCapabilityId;
   activate(
-    configuration: ConnectPluginConfiguration,
-  ): void | ConnectPluginDisposer | Promise<void | ConnectPluginDisposer>;
+    activation: ConnectPluginExposureActivation,
+  ): ConnectPluginDisposer | undefined | Promise<ConnectPluginDisposer | undefined>;
 }
 
 export interface ConnectRuntimeProviderHostCapability {
@@ -221,7 +235,9 @@ export interface ConnectPluginContext {
 export type ConnectPluginDisposer = () => void | Promise<void>;
 
 export interface ConnectPluginEntry {
-  activate(context: ConnectPluginContext): void | ConnectPluginDisposer | Promise<void | ConnectPluginDisposer>;
+  activate(
+    context: ConnectPluginContext,
+  ): ConnectPluginDisposer | undefined | Promise<ConnectPluginDisposer | undefined>;
 }
 
 export type { ConnectRuntimePrompt };

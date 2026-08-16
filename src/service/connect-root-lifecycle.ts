@@ -3,6 +3,7 @@ import type { ConnectStateStore } from "../persistence/state";
 import { mountMandatoryPluginHost } from "../plugin/host";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { ConnectConfig } from "../types";
+import { createBindingRuntimeLifecycle } from "./binding-runtime-lifecycle";
 import { mountMandatoryDurableModules } from "./connect-durable-modules";
 import { mountMandatoryExecutionModules } from "./connect-execution-modules";
 import {
@@ -31,6 +32,7 @@ interface ConnectRootLifecycleOptions {
  */
 export async function runConnectRootLifecycle(options: ConnectRootLifecycleOptions): Promise<ConnectSurfaceResult> {
   const root = new Context();
+  const bindingRuntimeLifecycle = createBindingRuntimeLifecycle();
   let disposeSurfaces: (() => Promise<void>) | undefined;
 
   try {
@@ -41,7 +43,13 @@ export async function runConnectRootLifecycle(options: ConnectRootLifecycleOptio
       options.createRuntimeAdapterRegistry,
       options.reportDisposalFailure,
     );
-    await mountMandatoryPluginHost(root, options.configPath, options.config, options.reportPluginFailure);
+    await mountMandatoryPluginHost(
+      root,
+      options.configPath,
+      options.config,
+      options.reportPluginFailure,
+      bindingRuntimeLifecycle.retireBindings,
+    );
     const surfaces = await mountMandatorySurfaceModules(
       root,
       {
@@ -51,6 +59,7 @@ export async function runConnectRootLifecycle(options: ConnectRootLifecycleOptio
       },
       options.surfaceDependencies,
       options.reportDisposalFailure,
+      bindingRuntimeLifecycle,
     );
     disposeSurfaces = surfaces.dispose;
     await options.waitUntilShutdown();

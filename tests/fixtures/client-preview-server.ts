@@ -414,6 +414,12 @@ const previewOfficial: OfficialPluginDiscovery = {
     },
   ],
 };
+function requirePreviewPlugin(pluginId: string) {
+  const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId);
+  if (!plugin) throw new Error(`Preview Plugin ${pluginId} is not installed`);
+  return plugin;
+}
+
 const previewPluginManager = {
   list: async () => structuredClone(previewPlugins),
   checkUpdates: async () => ({
@@ -448,35 +454,35 @@ const previewPluginManager = {
     return [structuredClone(plugin)];
   },
   update: async (pluginId: string) => {
-    const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId)!;
+    const plugin = requirePreviewPlugin(pluginId);
     plugin.version = "2.0.0";
     return structuredClone(plugin);
   },
-  reinstall: async (pluginId: string) => structuredClone(previewPlugins.find((entry) => entry.pluginId === pluginId)!),
+  reinstall: async (pluginId: string) => structuredClone(requirePreviewPlugin(pluginId)),
   enable: async (pluginId: string) => {
-    const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId)!;
+    const plugin = requirePreviewPlugin(pluginId);
     plugin.status = "active";
     return structuredClone(plugin);
   },
   disable: async (pluginId: string) => {
-    const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId)!;
+    const plugin = requirePreviewPlugin(pluginId);
     plugin.status = "disabled";
     return structuredClone(plugin);
   },
   select: async (pluginId: string, version: string) => {
-    const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId)!;
+    const plugin = requirePreviewPlugin(pluginId);
     plugin.version = version;
     return structuredClone(plugin);
   },
   configure: async (pluginId: string, options: { installationConfiguration: Record<string, unknown> }) => {
-    const plugin = previewPlugins.find((entry) => entry.pluginId === pluginId)!;
+    const plugin = requirePreviewPlugin(pluginId);
     plugin.installationConfiguration = structuredClone(options.installationConfiguration);
     return structuredClone(plugin);
   },
   remove: async (pluginId: string) => {
-    const index = previewPlugins.findIndex((entry) => entry.pluginId === pluginId);
-    const [removed] = previewPlugins.splice(index, 1);
-    return structuredClone(removed!);
+    const plugin = requirePreviewPlugin(pluginId);
+    previewPlugins.splice(previewPlugins.indexOf(plugin), 1);
+    return structuredClone(plugin);
   },
 } as unknown as ConnectPluginHost;
 const clientInterface = await startClientInterface({

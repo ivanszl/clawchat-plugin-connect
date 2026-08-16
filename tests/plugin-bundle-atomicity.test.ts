@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PLUGIN_MANAGER_CONFIG_HEADER } from "../src/client-contract";
+import { BINDING_SCOPE_HEADER } from "../src/client-interface/binding-scoped-gateway";
 import { defaultConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
@@ -15,6 +17,10 @@ import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 const fixturePath = join(import.meta.dir, "fixtures", "reference-runtime.connect-plugin");
 
 type MutableBundle = ConnectPluginBundleV1 & { manifest: ConnectPluginManifestV1 };
+function required<T>(value: T | undefined, label: string): T {
+  if (value === undefined) throw new Error(`Expected ${label}`);
+  return value;
+}
 
 async function bundleFixture(
   directory: string,
@@ -46,11 +52,27 @@ function readGlobalEffects(key: string): string[] | undefined {
   return Reflect.get(globalThis, key) as string[] | undefined;
 }
 
+interface ReferenceExposureFixture {
+  readonly activationKeys: string[];
+  readonly activationFrozen: boolean;
+  readonly configurationFrozen: boolean;
+  readonly clientKeys: string[];
+  readonly clientFrozen: boolean;
+  fetch(request: Request): Promise<Response>;
+}
+
+function referenceExposure(): ReferenceExposureFixture {
+  const exposure = Reflect.get(globalThis, "__connectReferenceExposure") as ReferenceExposureFixture | undefined;
+  if (!exposure) throw new Error("Reference Exposure fixture is not active");
+  return exposure;
+}
+
 describe("atomic multi-capability Plugin Bundles", () => {
   it("stores independent Bundle/Exposure/Binding configuration and activates Runtime plus Exposure together", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-multi-"));
     const configPath = join(directory, "config.json");
     Reflect.deleteProperty(globalThis, "__connectReferenceExposureEffects");
+    Reflect.deleteProperty(globalThis, "__connectReferenceExposure");
     const installed = await installLocalPlugin({
       configPath,
       bundlePath: fixturePath,
@@ -70,6 +92,46 @@ describe("atomic multi-capability Plugin Bundles", () => {
     await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "alpha" }))).resolves.toBeUndefined();
     await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "beta" }))).resolves.toBeUndefined();
     expect(readGlobalEffects("__connectReferenceExposureEffects")).toEqual(["activate:private"]);
+    const exposure = referenceExposure();
+    expect(exposure).toMatchObject({
+      activationKeys: ["client", "configuration"],
+      activationFrozen: true,
+      configurationFrozen: true,
+      clientKeys: ["fetch"],
+      clientFrozen: true,
+    });
+    const unavailable = await exposure.fetch(new Request("https://exposure.example/client/v1/bootstrap"));
+    expect(unavailable.status).toBe(503);
+    await expect(unavailable.json()).resolves.toEqual({
+      error: {
+        code: "plugin-client-unavailable",
+        message: "Connect Client is not available yet",
+        retryable: true,
+      },
+    });
+    const forwarded: Request[] = [];
+    const unbindClient = host.bindClientInterface({
+      origin: "http://127.0.0.1:47823",
+      fetch: async (request) => {
+        forwarded.push(request);
+        return new Response("existing Connect Client content");
+      },
+    });
+    const exposed = await exposure.fetch(
+      new Request("https://exposure.example/client/v1/bootstrap?source=plugin", {
+        headers: {
+          [BINDING_SCOPE_HEADER]: "private-binding",
+          [PLUGIN_MANAGER_CONFIG_HEADER]: "/other/connect/config.json",
+        },
+      }),
+    );
+    expect(await exposed.text()).toBe("existing Connect Client content");
+    expect(forwarded).toHaveLength(1);
+    expect(forwarded[0]?.url).toBe("http://127.0.0.1:47823/client/v1/bootstrap?source=plugin");
+    expect(forwarded[0]?.headers.get("host")).toBe("127.0.0.1:47823");
+    expect(forwarded[0]?.headers.has(BINDING_SCOPE_HEADER)).toBe(false);
+    expect(forwarded[0]?.headers.has(PLUGIN_MANAGER_CONFIG_HEADER)).toBe(false);
+    unbindClient();
     expect(diagnostics).toEqual([]);
     expect(host.activePluginIds()).toEqual([installed.pluginId]);
 
@@ -78,6 +140,7 @@ describe("atomic multi-capability Plugin Bundles", () => {
     await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "gamma" }))).rejects.toThrow(
       `Runtime Plugin capability ${installed.pluginId}/reference-runtime is not active`,
     );
+    expect(Reflect.get(globalThis, "__connectReferenceExposure")).toBeUndefined();
   });
 
   it("rejects duplicate Plugin identities without replacing the locked Bundle", async () => {
@@ -98,7 +161,10 @@ describe("atomic multi-capability Plugin Bundles", () => {
   }> = [
     {
       name: "duplicate-capability",
-      mutate: (bundle) => bundle.manifest.capabilities.push(structuredClone(bundle.manifest.capabilities[0]!)),
+      mutate: (bundle) =>
+        bundle.manifest.capabilities.push(
+          structuredClone(required(bundle.manifest.capabilities[0], "fixture Runtime capability")),
+        ),
       message: "Duplicate Plugin capability ID",
     },
     {
@@ -111,7 +177,10 @@ describe("atomic multi-capability Plugin Bundles", () => {
     {
       name: "unsupported-capability",
       mutate: (bundle) => {
-        bundle.manifest.capabilities[0] = { ...bundle.manifest.capabilities[0]!, type: "persistence" } as never;
+        bundle.manifest.capabilities[0] = {
+          ...required(bundle.manifest.capabilities[0], "fixture Runtime capability"),
+          type: "persistence",
+        } as never;
       },
       message: "unsupported capability type",
     },
@@ -125,14 +194,14 @@ describe("atomic multi-capability Plugin Bundles", () => {
     {
       name: "unsupported-capability-interface",
       mutate: (bundle) => {
-        bundle.manifest.capabilities[0]!.interfaceVersion = "2" as never;
+        required(bundle.manifest.capabilities[0], "fixture Runtime capability").interfaceVersion = "2" as never;
       },
       message: "unsupported runtime capability interface version",
     },
     {
       name: "unsupported-host-capability",
       mutate: (bundle) => {
-        bundle.manifest.dependencies[0]!.id = "persistence" as never;
+        required(bundle.manifest.dependencies[0], "fixture Host Capability dependency").id = "persistence" as never;
       },
       message: "unsupported Host Capability",
     },
@@ -208,8 +277,10 @@ describe("atomic multi-capability Plugin Bundles", () => {
         scenario.name,
         (bundle) => {
           bundle.manifest.pluginId = `test.${scenario.name}`;
-          bundle.manifest.dependencies = [bundle.manifest.dependencies[0]!];
-          bundle.manifest.capabilities = [bundle.manifest.capabilities[0]!];
+          bundle.manifest.dependencies = [
+            required(bundle.manifest.dependencies[0], "fixture Host Capability dependency"),
+          ];
+          bundle.manifest.capabilities = [required(bundle.manifest.capabilities[0], "fixture Runtime capability")];
         },
         scenario.source,
       );
@@ -235,8 +306,10 @@ describe("atomic multi-capability Plugin Bundles", () => {
       "startup-failure",
       (bundle) => {
         bundle.manifest.pluginId = "test.startup-failure";
-        bundle.manifest.dependencies = [bundle.manifest.dependencies[0]!];
-        bundle.manifest.capabilities = [bundle.manifest.capabilities[0]!];
+        bundle.manifest.dependencies = [
+          required(bundle.manifest.dependencies[0], "fixture Host Capability dependency"),
+        ];
+        bundle.manifest.capabilities = [required(bundle.manifest.capabilities[0], "fixture Runtime capability")];
       },
       `export default { activate() { throw new Error("startup activation boom"); } };`,
     );
@@ -271,17 +344,20 @@ describe("atomic multi-capability Plugin Bundles", () => {
       const runtime = context.hostCapabilities.get("runtime-provider");
       const exposure = context.hostCapabilities.get("exposure-provider");
       runtime.register({ capabilityId: "reference-runtime", family: "reference", create() { return { modes: [], async start() { throw new Error("unused"); } }; } });
-      exposure.register({ capabilityId: "first-exposure", async activate() { const effects = (globalThis.__connectAtomicEffects ??= []); effects.push("activate:first"); return () => effects.push("dispose:first"); } });
-      exposure.register({ capabilityId: "failing-exposure", async activate() { throw new Error("second contribution failed"); } });
+      exposure.register({ capabilityId: "first-exposure", async activate(activation) { if (!Object.isFrozen(activation)) throw new Error("first activation input was mutable"); const effects = (globalThis.__connectAtomicEffects ??= []); effects.push("activate:first"); return () => effects.push("dispose:first"); } });
+      exposure.register({ capabilityId: "failing-exposure", async activate(activation) { if (!Object.isFrozen(activation)) throw new Error("second activation input was mutable"); throw new Error("second contribution failed"); } });
     } };`;
     const bundlePath = await bundleFixture(
       directory,
       "rollback",
       (bundle) => {
         bundle.manifest.pluginId = "test.atomic-rollback";
-        const exposureSchema = bundle.manifest.capabilities[1]!.configurationSchema;
+        const exposureSchema = required(
+          bundle.manifest.capabilities[1],
+          "fixture Exposure capability",
+        ).configurationSchema;
         bundle.manifest.capabilities = [
-          bundle.manifest.capabilities[0]!,
+          required(bundle.manifest.capabilities[0], "fixture Runtime capability"),
           { id: "first-exposure", type: "exposure", interfaceVersion: "1", configurationSchema: exposureSchema },
           { id: "failing-exposure", type: "exposure", interfaceVersion: "1", configurationSchema: exposureSchema },
         ];
@@ -318,8 +394,10 @@ describe("atomic multi-capability Plugin Bundles", () => {
       "binding-schema",
       (bundle) => {
         bundle.manifest.pluginId = "test.binding-schema";
-        bundle.manifest.dependencies = [bundle.manifest.dependencies[0]!];
-        bundle.manifest.capabilities = [bundle.manifest.capabilities[0]!];
+        bundle.manifest.dependencies = [
+          required(bundle.manifest.dependencies[0], "fixture Host Capability dependency"),
+        ];
+        bundle.manifest.capabilities = [required(bundle.manifest.capabilities[0], "fixture Runtime capability")];
       },
       source,
     );

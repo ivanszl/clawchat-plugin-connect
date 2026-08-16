@@ -40,7 +40,6 @@ export interface WorkBuddyRuntimeAdapterBinding extends AgentBindingConfig {
   profile: WorkBuddyProfile;
 }
 
-
 export interface WorkBuddyTaskSummary {
   id: string;
   title: string | null;

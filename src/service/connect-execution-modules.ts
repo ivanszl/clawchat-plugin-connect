@@ -9,6 +9,7 @@ import type { ConnectConfig } from "../types";
 
 interface SessionQueueModule {
   create(bindingId: string, options: SessionQueueOptions): SessionQueue;
+  retainBindings(bindingIds: readonly string[]): void;
   quiesceBindings<T>(
     bindingIds: readonly string[],
     releaseRuntimeSessions: () => Promise<void>,
@@ -65,8 +66,10 @@ export async function mountMandatoryExecutionModules(
     inject: ["connectPersistence", "connectSessionContinuity"],
     provide: "connectSessionQueue",
     apply: (ctx) => {
+      type GatedQueueRelease = { bindingId: string; release: () => Promise<void> };
       const queuesByBinding = new Map<string, Set<SessionQueue>>();
-      const activeGates = new Map<string, { lateAcquisitions: Array<Promise<() => Promise<void>>> }>();
+      const activeGates = new Map<string, { lateAcquisitions: Array<Promise<GatedQueueRelease>> }>();
+      const retiredBindings = new Set<string>();
       sessionQueues = {
         create: (bindingId, options) => {
           const queue = new SessionQueue(options);
@@ -74,10 +77,22 @@ export async function mountMandatoryExecutionModules(
           queues.add(queue);
           queuesByBinding.set(bindingId, queues);
           const activeGate = activeGates.get(bindingId);
-          if (activeGate) {
-            activeGate.lateAcquisitions.push(queue.acquireBindingQuiescence(`Agent Binding ${bindingId}`));
+          if (activeGate || retiredBindings.has(bindingId)) {
+            const acquisition = queue
+              .acquireBindingQuiescence(`Agent Binding ${bindingId}`)
+              .then((release) => ({ bindingId, release }));
+            if (activeGate) activeGate.lateAcquisitions.push(acquisition);
+            else void acquisition.catch(reportDisposalFailure);
           }
           return queue;
+        },
+        retainBindings: (bindingIds) => {
+          for (const bindingId of new Set(bindingIds)) {
+            if (!activeGates.has(bindingId) && !retiredBindings.has(bindingId)) {
+              throw new Error(`Agent Binding ${bindingId} is not quiescing`);
+            }
+            retiredBindings.add(bindingId);
+          }
         },
         quiesceBindings: async (bindingIds, releaseRuntimeSessions, criticalSection) => {
           const dependentIds = [...new Set(bindingIds)].sort();
@@ -86,15 +101,20 @@ export async function mountMandatoryExecutionModules(
               throw new Error(`Agent Binding ${bindingId} lifecycle operation is already in progress`);
             }
           }
-          const gate = { lateAcquisitions: [] as Array<Promise<() => Promise<void>>> };
+          const gate = { lateAcquisitions: [] as Array<Promise<GatedQueueRelease>> };
           for (const bindingId of dependentIds) activeGates.set(bindingId, gate);
-          const releases: Array<() => Promise<void>> = [];
+          const releases: GatedQueueRelease[] = [];
           let outcome: { ok: true; value: Awaited<ReturnType<typeof criticalSection>> } | { ok: false; error: unknown };
           try {
-            const acquisitions: Array<Promise<() => Promise<void>>> = [];
+            const acquisitions: Array<Promise<GatedQueueRelease>> = [];
             for (const bindingId of dependentIds) {
+              if (retiredBindings.has(bindingId)) continue;
               for (const queue of queuesByBinding.get(bindingId) ?? []) {
-                acquisitions.push(queue.acquireBindingQuiescence(`Agent Binding ${bindingId}`));
+                acquisitions.push(
+                  queue
+                    .acquireBindingQuiescence(`Agent Binding ${bindingId}`)
+                    .then((release) => ({ bindingId, release })),
+                );
               }
             }
             const acquired = await Promise.allSettled(acquisitions);
@@ -118,7 +138,12 @@ export async function mountMandatoryExecutionModules(
           for (const result of lateReleases) {
             if (result.status === "fulfilled") releases.push(result.value);
           }
-          const reopened = await Promise.allSettled(releases.reverse().map(async (release) => await release()));
+          const reopened = await Promise.allSettled(
+            releases
+              .filter(({ bindingId }) => !retiredBindings.has(bindingId))
+              .reverse()
+              .map(async ({ release }) => await release()),
+          );
           const cleanupFailure =
             lateReleases.find((result): result is PromiseRejectedResult => result.status === "rejected") ??
             reopened.find((result): result is PromiseRejectedResult => result.status === "rejected");

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { defaultConfig, saveConfig } from "../src/config";
+import { basename, join } from "node:path";
+import { defaultConfig, loadConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { createAgentBinding, identifyAgentBinding } from "../src/plugin/binding";
-import { ConnectPluginHost } from "../src/plugin/host";
+import { ConnectPluginHost, MAX_CONCURRENT_PLUGIN_UPDATE_CHECKS } from "../src/plugin/host";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_BUNDLE_FORMAT,
@@ -15,7 +15,14 @@ import {
   CONNECT_PLUGIN_MANIFEST_VERSION,
   type ConnectPluginBundleV1,
 } from "../src/plugin/sdk";
-import { currentConnectPluginTarget, pluginInstallationPaths } from "../src/plugin/store";
+import {
+  currentConnectPluginTarget,
+  installPluginBundle,
+  managedPluginUploadRoot,
+  pluginInstallationPaths,
+  revalidateInstalledPlugin,
+  stagePluginBundle,
+} from "../src/plugin/store";
 import { ProjectCatalog } from "../src/projects/projects";
 import type { TurnTarget } from "../src/projects/session-continuity";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
@@ -85,6 +92,62 @@ export default {
     },
     files: { "plugin.mjs": { encoding: "utf8", content: source } },
   };
+}
+
+function assetBundle(pluginId: string, version: string, asset: string, probe = "probe-v1"): ConnectPluginBundleV1 {
+  const source = `
+import { value } from "./asset.mjs";
+export default {
+  activate(context) {
+    context.hostCapabilities.get("exposure-provider").register({
+      capabilityId: "exposure",
+      async activate() {
+        (globalThis.__connectHotAssetLog ??= []).push(value);
+      }
+    });
+  }
+};`.trim();
+  const probeSource = `export default { probe() { return { detected: false, compatible: false, detail: ${JSON.stringify(probe)} }; } };`;
+  const integrity = `sha256-${createHash("sha256").update(source).digest("base64")}`;
+  const probeIntegrity = `sha256-${createHash("sha256").update(probeSource).digest("base64")}`;
+  return {
+    format: CONNECT_PLUGIN_BUNDLE_FORMAT,
+    manifest: {
+      manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
+      interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
+      pluginId,
+      version,
+      dependencies: [
+        { type: "host", id: "exposure-provider", interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION },
+      ],
+      installationConfigurationSchema: { type: "object", additionalProperties: false },
+      capabilities: [
+        {
+          id: "exposure",
+          type: "exposure",
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: { type: "object", additionalProperties: false },
+        },
+      ],
+      artifacts: [{ target: currentConnectPluginTarget(), entry: "plugin.mjs", integrity }],
+      probe: { entry: "probe.mjs", integrity: probeIntegrity },
+    },
+    files: {
+      "plugin.mjs": { encoding: "utf8", content: source },
+      "asset.mjs": { encoding: "utf8", content: `export const value = ${JSON.stringify(asset)};` },
+      "probe.mjs": { encoding: "utf8", content: probeSource },
+    },
+  };
+}
+
+function reverseObjectKeyOrder(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(reverseObjectKeyOrder);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .reverse()
+      .map(([key, child]) => [key, reverseObjectKeyOrder(child)]),
+  );
 }
 interface LifecycleBundleOptions {
   runtimeSchema?: Record<string, unknown>;
@@ -238,6 +301,147 @@ function binding(pluginId: string, bindingId: string) {
 }
 
 describe("hot Plugin management service", () => {
+  it("keys immutable locations by complete canonical Bundle content and revalidates every installed file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-content-identity-"));
+    const configPath = join(directory, "config.json");
+    const source = { type: "local" as const, path: join(directory, "source.connect-plugin") };
+    const original = assetBundle("test.content-identity", "1.0.0", "asset-v1");
+    const reordered = reverseObjectKeyOrder(original) as ConnectPluginBundleV1;
+
+    const first = await stagePluginBundle({ configPath, source, bundle: original });
+    const identical = await stagePluginBundle({ configPath, source, bundle: reordered });
+    expect(identical.artifactRoot).toBe(first.artifactRoot);
+    expect(identical.createdArtifact).toBe(false);
+    await expect(revalidateInstalledPlugin(first.entry)).resolves.toBeUndefined();
+
+    const changedAsset = await stagePluginBundle({
+      configPath,
+      source,
+      bundle: assetBundle("test.content-identity", "1.0.0", "asset-v2"),
+    });
+    const changedProbe = await stagePluginBundle({
+      configPath,
+      source,
+      bundle: assetBundle("test.content-identity", "1.0.0", "asset-v1", "probe-v2"),
+    });
+    expect(changedAsset.artifactRoot).not.toBe(first.artifactRoot);
+    expect(changedProbe.artifactRoot).not.toBe(first.artifactRoot);
+
+    const assetPath = join(first.artifactRoot, "asset.mjs");
+    const originalAsset = await readFile(assetPath);
+    await writeFile(assetPath, "export const value = 'tampered';");
+    await expect(revalidateInstalledPlugin(first.entry)).rejects.toThrow("content changed after installation");
+    await writeFile(assetPath, originalAsset);
+    await expect(revalidateInstalledPlugin(first.entry)).resolves.toBeUndefined();
+    await rm(assetPath);
+    await expect(revalidateInstalledPlugin(first.entry)).rejects.toThrow("content changed after installation");
+  });
+
+  it("serializes concurrent exact Binding provider upserts without dropping either successful change", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-hot-binding-upsert-"));
+    const configPath = join(directory, "config.json");
+    const stateDbPath = join(directory, "state.sqlite");
+    const pluginId = "test.binding-upsert";
+    const config = { ...defaultConfig(), stateDbPath };
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: stateDbPath });
+    await store.initialize();
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, {
+      config,
+      stateStore: store,
+      projects: new ProjectCatalog(store),
+    });
+    const sourcePath = await writeBundle(directory, hotBundle(pluginId, "1.0.0"));
+    await host.install({ source: `local:${sourcePath}` });
+
+    const first = { ...binding(pluginId, "first-binding"), displayName: "First Binding" };
+    const second = { ...binding(pluginId, "second-binding"), displayName: "Second Binding" };
+    await Promise.all([
+      host.upsertBindingProvider("first-binding", first),
+      host.upsertBindingProvider("second-binding", second),
+    ]);
+
+    expect(config.defaultAgent).toBe("first-binding");
+    expect(config.agents).toEqual({
+      "first-binding": first,
+      "second-binding": second,
+    });
+    await expect(loadConfig(configPath)).resolves.toMatchObject({
+      defaultAgent: "first-binding",
+      agents: {
+        "first-binding": first,
+        "second-binding": second,
+      },
+    });
+
+    await host.close();
+    await store.close();
+  });
+
+  it("keeps live, persisted, and Binding state unchanged when forced purge config persistence fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-hot-purge-save-failure-"));
+    const configPath = join(directory, "config.json");
+    const stateDbPath = join(directory, "state.sqlite");
+    const pluginId = "test.purge-save-failure";
+    const bindingId = "purge-save-failure-binding";
+    const dependent = binding(pluginId, bindingId);
+    const config = {
+      ...defaultConfig(),
+      stateDbPath,
+      agents: { [bindingId]: dependent },
+      defaultAgent: bindingId,
+    };
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: stateDbPath });
+    await store.initialize();
+    await store.setRuntimeAvailability(bindingId, "startup-unavailable", "fixture state");
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, {
+      config,
+      stateStore: store,
+      projects: new ProjectCatalog(store),
+      retireRuntimeBindings: async () => undefined,
+    });
+    const sourcePath = await writeBundle(directory, hotBundle(pluginId, "1.0.0"));
+    await host.install({ source: `local:${sourcePath}` });
+    const liveBefore = structuredClone(config);
+    const persistedBefore = await readFile(configPath, "utf8");
+    const saveBlocker = `${configPath}.${process.pid}.tmp`;
+    await mkdir(saveBlocker);
+
+    await expect(host.remove(pluginId, true)).rejects.toThrow();
+
+    expect(config).toEqual(liveBefore);
+    await expect(readFile(configPath, "utf8")).resolves.toBe(persistedBefore);
+    await expect(store.getRuntimeStatus(bindingId)).resolves.toMatchObject({
+      runtimeAvailability: "startup-unavailable",
+      recentError: "fixture state",
+    });
+
+    await rm(saveBlocker, { recursive: true });
+    await host.close();
+    await store.close();
+  });
+
+  it("hot-replaces identical entry bytes when a relative asset changes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-hot-plugin-asset-"));
+    const configPath = join(directory, "config.json");
+    const pluginId = "test.hot-asset";
+    const sourcePath = await writeBundle(directory, assetBundle(pluginId, "1.0.0", "asset-v1"));
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined);
+    Reflect.set(globalThis, "__connectHotAssetLog", []);
+
+    const first = await host.install({ source: `local:${sourcePath}` });
+    await writeFile(sourcePath, `${JSON.stringify(assetBundle(pluginId, "1.0.0", "asset-v2"), null, 2)}\n`);
+    const second = await host.update(pluginId);
+
+    expect(second.activeArtifact).not.toBe(first.activeArtifact);
+    expect(second.integrity).toBe(first.integrity);
+    expect(second.retainedVersions).toEqual([expect.objectContaining({ activeArtifact: first.activeArtifact })]);
+    await expect(readFile(join(second.activeArtifact, "..", "asset.mjs"), "utf8")).resolves.toContain("asset-v2");
+    expect(Reflect.get(globalThis, "__connectHotAssetLog")).toEqual(["asset-v1", "asset-v2"]);
+    await host.close();
+  });
+
   it("switches coherent Bundles, rolls failed candidates back, disables/enables, retains/selects, and force-purges exact Bindings", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-hot-plugin-"));
     const configPath = join(directory, "config.json");
@@ -250,17 +454,28 @@ describe("hot Plugin management service", () => {
       agents: { [bindingId]: binding(pluginId, bindingId) },
       defaultAgent: bindingId,
     };
+    const configuredBinding = config.agents[bindingId];
+    if (!configuredBinding) throw new Error("Expected configured hot Plugin Binding");
     await saveConfig(config, configPath);
     const store = createStateStore({ dbPath: stateDbPath });
     await store.initialize();
     const projects = new ProjectCatalog(store);
     const registry = new RuntimeAdapterRegistry([]);
     const diagnostics: string[] = [];
+    const retiredBindings: string[] = [];
     const host = new ConnectPluginHost(
       configPath,
       registry,
       (_id, error) => diagnostics.push(error instanceof Error ? error.message : String(error)),
-      { config, stateStore: store, projects },
+      {
+        config,
+        stateStore: store,
+        projects,
+        retireRuntimeBindings: async (bindingIds) => {
+          expect(config.agents[bindingId]).toBeDefined();
+          retiredBindings.push(...bindingIds);
+        },
+      },
     );
     Reflect.set(globalThis, "__connectHotPluginLog", []);
 
@@ -277,7 +492,7 @@ describe("hot Plugin management service", () => {
       version: "1.0.0",
       status: "active",
     });
-    await registry.prepare(config.agents[bindingId]!);
+    await registry.prepare(configuredBinding);
     await expect(host.install({ source: `local:${unrelatedPath}` })).resolves.toMatchObject({ status: "active" });
     await registry.prepare(binding("test.unrelated-plugin", "unrelated-binding"));
 
@@ -287,7 +502,7 @@ describe("hot Plugin management service", () => {
       status: "active",
       retainedVersions: [{ version: "1.0.0" }],
     });
-    await registry.prepare(config.agents[bindingId]!);
+    await registry.prepare(configuredBinding);
     expect(Reflect.get(globalThis, "__connectHotPluginLog")).toContain("runtime-close:test.hot-plugin@1.0.0");
 
     await writeFile(sourcePath, `${JSON.stringify(v3, null, 2)}\n`);
@@ -298,27 +513,23 @@ describe("hot Plugin management service", () => {
         expect.objectContaining({ pluginId: "test.unrelated-plugin", version: "1.0.0", status: "active" }),
       ]),
     );
-    await registry.prepare(config.agents[bindingId]!);
+    await registry.prepare(configuredBinding);
     await registry.prepare(binding("test.unrelated-plugin", "unrelated-binding"));
-    const failedSource = v3.files["plugin.mjs"]!.content;
-    const failedRoot = join(
+    const failedVersionRoot = join(
       pluginInstallationPaths(configPath).store,
       createHash("sha256").update(pluginId).digest("hex"),
       encodeURIComponent("3.0.0"),
-      createHash("sha256").update(failedSource).digest("hex"),
     );
-    await expect(access(failedRoot)).rejects.toThrow();
+    await expect(readdir(failedVersionRoot).catch(() => [])).resolves.toEqual([]);
 
     await expect(host.disable(pluginId)).resolves.toMatchObject({ version: "2.0.0", status: "disabled" });
-    await expect(registry.prepare(config.agents[bindingId]!)).rejects.toThrow(
-      "is not active",
-    );
+    await expect(registry.prepare(configuredBinding)).rejects.toThrow("is not active");
     await expect(store.getRuntimeStatus(bindingId)).resolves.toMatchObject({
       runtimeAvailability: "startup-unavailable",
       recentError: expect.stringContaining("disabled"),
     });
     await expect(host.enable(pluginId)).resolves.toMatchObject({ version: "2.0.0", status: "active" });
-    await registry.prepare(config.agents[bindingId]!);
+    await registry.prepare(configuredBinding);
 
     await expect(host.select(pluginId, "1.0.0")).resolves.toMatchObject({
       version: "1.0.0",
@@ -327,6 +538,7 @@ describe("hot Plugin management service", () => {
     });
     await expect(host.remove(pluginId)).rejects.toThrow("required by Agent Bindings");
     await expect(host.remove(pluginId, true)).resolves.toMatchObject({ pluginId, version: "1.0.0" });
+    expect(retiredBindings).toEqual([bindingId]);
     expect(config.agents[bindingId]).toBeUndefined();
     await expect(store.getRuntimeStatus(bindingId)).resolves.toBeNull();
     await expect(host.list()).resolves.toEqual([expect.objectContaining({ pluginId: "test.unrelated-plugin" })]);
@@ -548,10 +760,15 @@ describe("hot Plugin management service", () => {
     let afterRelease: (() => void) | undefined;
     let quiescenceReached: (() => void) | undefined;
     let quiescenceHold: Promise<void> | undefined;
+    const retiredBindings: string[] = [];
     const host = new ConnectPluginHost(configPath, registry, () => undefined, {
       config,
       stateStore: store,
       projects: new ProjectCatalog(store),
+      retireRuntimeBindings: async (bindingIds) => {
+        expect(() => queue.submit("retirement-intake", async () => undefined)).toThrow("lifecycle operation");
+        retiredBindings.push(...bindingIds);
+      },
       quiesceRuntimeBindings: async (bindingIds, criticalSection) => {
         const release = await queue.acquireBindingQuiescence(`Agent Binding ${bindingIds.join(", ")}`);
         try {
@@ -675,6 +892,7 @@ describe("hot Plugin management service", () => {
       await Array.fromAsync(executor.execute(target, input));
     });
     await host.remove(pluginId, true);
+    expect(retiredBindings).toEqual([bindingId]);
     const removeLog = Reflect.get(globalThis, "__connectPluginLifecycleLog") as string[];
     expect(removeLog.lastIndexOf("session-close:2.0.0")).toBeLessThan(removeLog.lastIndexOf("adapter-close:2.0.0"));
     expect(config.agents[bindingId]).toBeUndefined();
@@ -780,5 +998,127 @@ describe("hot Plugin management service", () => {
 
     await host.close();
     await store.close();
+  });
+  it("collects only unreferenced managed uploads after failed installs and final removal", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-managed-plugin-uploads-"));
+    const configPath = join(directory, "config.json");
+    await saveConfig(defaultConfig(), configPath);
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined);
+    Reflect.set(globalThis, "__connectHotPluginLog", []);
+
+    const localBundle = hotBundle("test.unmanaged-local", "1.0.0");
+    const localPath = await writeBundle(directory, localBundle);
+    await host.install({ source: `local:${localPath}` });
+    await host.remove(localBundle.manifest.pluginId);
+    await expect(readFile(localPath, "utf8")).resolves.toContain(localBundle.manifest.pluginId);
+
+    const managedBundle = hotBundle("test.managed-upload", "1.0.0");
+    const installed = await host.installUpload(
+      "managed.connect-plugin",
+      new TextEncoder().encode(JSON.stringify(managedBundle)),
+    );
+    if (installed.source.type !== "local") throw new Error("Expected uploaded Plugin to use a local managed source");
+    const managedPath = installed.source.path;
+    await expect(readFile(managedPath, "utf8")).resolves.toContain(managedBundle.manifest.pluginId);
+
+    const failedBytes = new TextEncoder().encode(JSON.stringify(hotBundle("test.failed-upload", "1.0.0", true)));
+    await expect(host.installUpload("failed.connect-plugin", failedBytes)).rejects.toThrow("candidate exposure failed");
+    await expect(host.installUpload("failed.connect-plugin", failedBytes)).rejects.toThrow("candidate exposure failed");
+    expect(await readdir(managedPluginUploadRoot(configPath))).toEqual([basename(managedPath)]);
+    await expect(readFile(managedPath, "utf8")).resolves.toContain(managedBundle.manifest.pluginId);
+
+    await host.remove(managedBundle.manifest.pluginId);
+    expect(await readdir(managedPluginUploadRoot(configPath))).toEqual([]);
+    await expect(readFile(localPath, "utf8")).resolves.toContain(localBundle.manifest.pluginId);
+    await host.close();
+  });
+
+  it("bounds concurrent update resolvers while returning sorted isolated diagnostics for every Plugin", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-update-concurrency-"));
+    const configPath = join(directory, "config.json");
+    await saveConfig(defaultConfig(), configPath);
+    const target = currentConnectPluginTarget();
+    const pluginIds = Array.from(
+      { length: MAX_CONCURRENT_PLUGIN_UPDATE_CHECKS * 3 + 2 },
+      (_, index) => `test.update-${String(index).padStart(3, "0")}`,
+    );
+    const updatedBundles = new Map<string, Uint8Array>();
+    for (const pluginId of pluginIds) {
+      const repository = `acme/${pluginId.slice("test.".length)}`;
+      await installPluginBundle({
+        configPath,
+        source: {
+          type: "github",
+          repository,
+          apiBase: "https://api.example.test",
+          version: "1.0.0",
+          release: "v1.0.0",
+          asset: `https://assets.example.test/${repository}/v1.connect-plugin`,
+        },
+        bundle: hotBundle(pluginId, "1.0.0"),
+        target,
+        installationConfiguration: {},
+        exposureConfigurations: {},
+      });
+      updatedBundles.set(repository, new TextEncoder().encode(JSON.stringify(hotBundle(pluginId, "2.0.0"))));
+    }
+
+    let activeResolvers = 0;
+    let peakResolvers = 0;
+    let releaseFirstWave: () => void = () => undefined;
+    const firstWave = new Promise<void>((resolve) => {
+      releaseFirstWave = resolve;
+    });
+    const failedRepository = "acme/update-005";
+    const fetchSource = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.hostname === "api.example.test") {
+        const repository = url.pathname.split("/").slice(2, 4).join("/");
+        activeResolvers += 1;
+        peakResolvers = Math.max(peakResolvers, activeResolvers);
+        if (activeResolvers === MAX_CONCURRENT_PLUGIN_UPDATE_CHECKS) releaseFirstWave();
+        await firstWave;
+        activeResolvers -= 1;
+        if (repository === failedRepository) return Response.json({ message: "isolated failure" }, { status: 503 });
+        const bytes = updatedBundles.get(repository);
+        if (!bytes) return Response.json({ message: "unknown repository" }, { status: 404 });
+        return Response.json([
+          {
+            tag_name: "v2.0.0",
+            draft: false,
+            prerelease: false,
+            assets: [
+              {
+                name: `${repository.slice("acme/".length)}-${target}.connect-plugin`,
+                browser_download_url: `https://assets.example.test/${repository}/v2.connect-plugin`,
+                digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+              },
+            ],
+          },
+        ]);
+      }
+      const repository = url.pathname.split("/").slice(1, 3).join("/");
+      const bytes = updatedBundles.get(repository);
+      return bytes ? new Response(new Uint8Array(bytes)) : Response.json({ message: "unknown asset" }, { status: 404 });
+    }) as typeof fetch;
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, undefined, {
+      fetch: fetchSource,
+      githubApiBase: "https://api.example.test",
+    });
+
+    const checks = await host.checkUpdates();
+
+    expect(peakResolvers).toBe(MAX_CONCURRENT_PLUGIN_UPDATE_CHECKS);
+    expect(Object.keys(checks)).toEqual(pluginIds);
+    expect(checks["test.update-005"]).toEqual({
+      status: "check-failed",
+      version: null,
+      integrity: null,
+      diagnostic: expect.stringContaining("HTTP 503"),
+    });
+    for (const pluginId of pluginIds.filter((candidate) => candidate !== "test.update-005")) {
+      expect(checks[pluginId]).toMatchObject({ status: "available", version: "2.0.0", diagnostic: null });
+    }
+    await host.close();
   });
 });

@@ -11,7 +11,10 @@ export const DEFAULT_MEDIA_UPLOAD_URL = "https://app.clawling.com/media/upload" 
 export const DEFAULT_CLIENT_PORT = 47_823 as const;
 export const DEFAULT_CLIENT_HOST = "127.0.0.1" as const;
 const CLIENT_HOSTS = { "127.0.0.1": true, "0.0.0.0": true } satisfies Record<ClientHost, true>;
-const LIVEWARE_ACCESS_POLICIES = { off: true, private: true, public: true } satisfies Record<LivewareAccessPolicy, true>;
+const LIVEWARE_ACCESS_POLICIES = { off: true, private: true, public: true } satisfies Record<
+  LivewareAccessPolicy,
+  true
+>;
 
 export function defaultDataDir(): string {
   return join(homedir(), ".clawchat-connect");
@@ -35,7 +38,6 @@ function isOutputVisibility(value: unknown): value is OutputVisibility {
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
-
 
 function requireAbsolutePath(value: string, label: string): string {
   if (!isAbsolute(value)) throw new Error(`${label} must be an absolute path`);

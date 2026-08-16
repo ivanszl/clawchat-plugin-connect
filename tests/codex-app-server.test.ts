@@ -1,12 +1,12 @@
 import { describe, expect, it, mock } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import type { CodexRuntimeAdapterBinding } from "../src/runtime/codex-adapter";
 import {
   type CodexAppServerNotification,
   type CodexAppServerProcess,
   createCodexAppServerClient,
 } from "../src/runtime/codex-app-server";
-import type { CodexRuntimeAdapterBinding } from "../src/runtime/codex-adapter";
 import { pluginBinding } from "./runtime-adapter-fixture";
 
 function codexBinding(overrides: Partial<CodexRuntimeAdapterBinding>): CodexRuntimeAdapterBinding {
@@ -78,10 +78,10 @@ describe("Codex app-server stdio client", () => {
     const process = new FakeProcess();
     startFakeServer(process, []);
     const spawnAppServer = mock(() => process);
-    const client = await createCodexAppServerClient(
-      codexBinding({ codexPathOverride: "/opt/codex" }),
-      { readVersion: async () => "codex-cli 99.0.0", spawnAppServer },
-    );
+    const client = await createCodexAppServerClient(codexBinding({ codexPathOverride: "/opt/codex" }), {
+      readVersion: async () => "codex-cli 99.0.0",
+      spawnAppServer,
+    });
 
     await expect(client.listThreads({ cwd: "/repo" })).resolves.toEqual({ data: [], nextCursor: null });
     expect(spawnAppServer).toHaveBeenCalledTimes(1);
@@ -91,10 +91,10 @@ describe("Codex app-server stdio client", () => {
   it("rejects an executable that returns no version output", async () => {
     const spawnAppServer = mock(() => new FakeProcess());
     await expect(
-      createCodexAppServerClient(
-        codexBinding({ codexPathOverride: "/opt/codex" }),
-        { readVersion: async () => "", spawnAppServer },
-      ),
+      createCodexAppServerClient(codexBinding({ codexPathOverride: "/opt/codex" }), {
+        readVersion: async () => "",
+        spawnAppServer,
+      }),
     ).rejects.toThrow("Failed to read Codex version: empty output");
     expect(spawnAppServer).not.toHaveBeenCalled();
   });
@@ -103,13 +103,10 @@ describe("Codex app-server stdio client", () => {
     const process = new FakeProcess();
     const received: Array<Record<string, unknown>> = [];
     startFakeServer(process, received);
-    const client = await createCodexAppServerClient(
-      codexBinding({ codexPathOverride: "/opt/codex" }),
-      {
-        readVersion: async () => CODEX_VERSION_FIXTURE,
-        spawnAppServer: () => process,
-      },
-    );
+    const client = await createCodexAppServerClient(codexBinding({ codexPathOverride: "/opt/codex" }), {
+      readVersion: async () => CODEX_VERSION_FIXTURE,
+      spawnAppServer: () => process,
+    });
 
     await expect(client.listThreads({ cwd: "/repo" })).resolves.toEqual({ data: [], nextCursor: null });
     expect(received[0]).toEqual({
@@ -130,10 +127,10 @@ describe("Codex app-server stdio client", () => {
     const process = new FakeProcess();
     const received: Array<Record<string, unknown>> = [];
     startFakeServer(process, received);
-    const client = await createCodexAppServerClient(
-      codexBinding({ codexPathOverride: "/opt/codex" }),
-      { readVersion: async () => CODEX_VERSION_FIXTURE, spawnAppServer: () => process },
-    );
+    const client = await createCodexAppServerClient(codexBinding({ codexPathOverride: "/opt/codex" }), {
+      readVersion: async () => CODEX_VERSION_FIXTURE,
+      spawnAppServer: () => process,
+    });
     const onDelivered = mock(async () => undefined);
     client.onRequest(async (request) => ({
       handled: request.method === "item/commandExecution/requestApproval",
@@ -169,10 +166,10 @@ describe("Codex app-server stdio client", () => {
         if (message.method === "initialize") respond(process, message.id, { userAgent: CODEX_VERSION_FIXTURE });
       }
     });
-    const client = await createCodexAppServerClient(
-      codexBinding({ codexPathOverride: "/opt/codex" }),
-      { readVersion: async () => CODEX_VERSION_FIXTURE, spawnAppServer: () => process },
-    );
+    const client = await createCodexAppServerClient(codexBinding({ codexPathOverride: "/opt/codex" }), {
+      readVersion: async () => CODEX_VERSION_FIXTURE,
+      spawnAppServer: () => process,
+    });
 
     const first = client.listThreads({});
     const second = client.resumeThread({
@@ -199,14 +196,11 @@ describe("Codex app-server stdio client", () => {
     const process = new FakeProcess();
     const received: Array<Record<string, unknown>> = [];
     startFakeServer(process, received);
-    const client = await createCodexAppServerClient(
-      codexBinding({ codexPathOverride: "/opt/codex" }),
-      {
-        readVersion: async () => CODEX_VERSION_FIXTURE,
-        spawnAppServer: () => process,
-        requestTimeoutMs: 10,
-      },
-    );
+    const client = await createCodexAppServerClient(codexBinding({ codexPathOverride: "/opt/codex" }), {
+      readVersion: async () => CODEX_VERSION_FIXTURE,
+      spawnAppServer: () => process,
+      requestTimeoutMs: 10,
+    });
 
     const stalled = client.startThread({
       cwd: "/repo",
@@ -223,14 +217,11 @@ describe("Codex app-server stdio client", () => {
   it("bounds stdin backpressure within the app-server request timeout", async () => {
     const process = new FakeProcess();
     startFakeServer(process, []);
-    const client = await createCodexAppServerClient(
-      codexBinding({ codexPathOverride: "/opt/codex" }),
-      {
-        readVersion: async () => CODEX_VERSION_FIXTURE,
-        spawnAppServer: () => process,
-        requestTimeoutMs: 10,
-      },
-    );
+    const client = await createCodexAppServerClient(codexBinding({ codexPathOverride: "/opt/codex" }), {
+      readVersion: async () => CODEX_VERSION_FIXTURE,
+      spawnAppServer: () => process,
+      requestTimeoutMs: 10,
+    });
     const write = process.stdin.write.bind(process.stdin);
     process.stdin.write = (() => false) as typeof process.stdin.write;
 
@@ -256,10 +247,10 @@ describe("Codex app-server stdio client", () => {
     const process = new FakeProcess();
     const received: Array<Record<string, unknown>> = [];
     startFakeServer(process, received);
-    const client = await createCodexAppServerClient(
-      codexBinding({ codexPathOverride: "/opt/codex" }),
-      { readVersion: async () => CODEX_VERSION_FIXTURE, spawnAppServer: () => process },
-    );
+    const client = await createCodexAppServerClient(codexBinding({ codexPathOverride: "/opt/codex" }), {
+      readVersion: async () => CODEX_VERSION_FIXTURE,
+      spawnAppServer: () => process,
+    });
 
     await expect(client.archiveThread({ threadId: "thread-1" })).resolves.toBeUndefined();
     await expect(client.unarchiveThread({ threadId: "thread-1" })).resolves.toMatchObject({
@@ -278,10 +269,10 @@ describe("Codex app-server stdio client", () => {
     const process = new FakeProcess();
     const received: Array<Record<string, unknown>> = [];
     startFakeServer(process, received);
-    const client = await createCodexAppServerClient(
-      codexBinding({ codexPathOverride: "/opt/codex" }),
-      { readVersion: async () => CODEX_VERSION_FIXTURE, spawnAppServer: () => process },
-    );
+    const client = await createCodexAppServerClient(codexBinding({ codexPathOverride: "/opt/codex" }), {
+      readVersion: async () => CODEX_VERSION_FIXTURE,
+      spawnAppServer: () => process,
+    });
     const notifications: CodexAppServerNotification[] = [];
     client.onNotification((notification) => notifications.push(notification));
     const pending = client.startThread({

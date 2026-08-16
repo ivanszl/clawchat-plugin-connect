@@ -144,5 +144,4 @@ function workBuddyBinding(
   };
 }
 
-
 export default createWorkBuddyOfficialPluginEntry();

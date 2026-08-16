@@ -231,8 +231,7 @@ export const zhHant = {
   },
   "@connect.settings.binding.provider.lockedTitle": { defaultMessage: "無法編輯 Runtime 提供者" },
   "@connect.settings.binding.provider.lockedDescription": {
-    defaultMessage:
-      "此 Binding 已在 ClawChat 中啟用。啟用期間無法安全地變更其 Runtime 提供者。",
+    defaultMessage: "此 Binding 已在 ClawChat 中啟用。啟用期間無法安全地變更其 Runtime 提供者。",
   },
   "@connect.settings.binding.model.description": {
     defaultMessage: "預設值會跟隨 Runtime Adapter；Session 仍可個別覆寫。",

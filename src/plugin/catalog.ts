@@ -11,11 +11,12 @@ import type {
   ConnectPluginSource,
 } from "./sdk";
 import type { PluginSourceResolverOptions, ResolvedPluginSource } from "./source";
-import { resolvePluginSource } from "./source";
+import { readBoundedResponseBytes, resolvePluginSource } from "./source";
 import { connectPluginBundleFileBytes, pluginInstallationPaths, verifyConnectPluginIntegrity } from "./store";
 
 export const CONNECT_PLUGIN_CATALOG_FORMAT = "clawchat-connect-plugin-catalog-v1" as const;
 export const OFFICIAL_PLUGIN_CATALOG_URL = "https://plugins.clawchat.ai/v1/catalog.json";
+export const MAX_OFFICIAL_PLUGIN_CATALOG_BYTES = 4 * 1024 * 1024;
 export const OFFICIAL_PLUGIN_CATALOG_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAvsVHDCNTOmCpScmRqdyHQjI3JfDBKGc+t74UTbkg7Gs=
 -----END PUBLIC KEY-----`;
@@ -83,7 +84,12 @@ export async function fetchOfficialPluginCatalog(
   try {
     const response = await fetchCatalog(url, { headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const catalog = validateAuthenticatedCatalog((await response.json()) as unknown, publicKey);
+    const bytes = await readBoundedResponseBytes(
+      response,
+      `Official Plugin Catalog response ${url}`,
+      MAX_OFFICIAL_PLUGIN_CATALOG_BYTES,
+    );
+    const catalog = validateAuthenticatedCatalog(JSON.parse(new TextDecoder().decode(bytes)) as unknown, publicKey);
     await writeCatalogCache(cachePath, catalog);
     return { catalog, origin: "remote", diagnostics: [] };
   } catch (error) {
@@ -127,7 +133,12 @@ export async function discoverOfficialPlugins(
         );
       }
       await onResolved?.(catalogEntry, resolved);
-      const artifact = resolved.bundle.manifest.artifacts.find((entry) => entry.target === resolved.target)!;
+      const artifact = resolved.bundle.manifest.artifacts.find((entry) => entry.target === resolved.target);
+      if (!artifact) {
+        throw new Error(
+          `Resolved Plugin ${catalogEntry.pluginId}@${resolved.bundle.manifest.version} has no ${resolved.target} artifact`,
+        );
+      }
       const base = {
         pluginId: catalogEntry.pluginId,
         name: catalogEntry.name,

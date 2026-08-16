@@ -270,4 +270,58 @@ describe("Plugin Settings JSON Schema form state", () => {
       runtimeConfigurations: { "binding-1": { workspace: "project" } },
     });
   });
+
+  it("keeps structured local-ref fields and Save enablement aligned with whole-form validation", () => {
+    const schema = {
+      type: "object",
+      $defs: {
+        policy: {
+          type: "object",
+          properties: {
+            rules: {
+              type: "array",
+              minItems: 1,
+              items: { $ref: "#/$defs/rule" },
+            },
+          },
+          required: ["rules"],
+          additionalProperties: false,
+        },
+        rule: {
+          type: "object",
+          properties: { action: { type: "string", enum: ["allow", "deny"] } },
+          required: ["action"],
+          additionalProperties: false,
+        },
+      },
+      properties: {
+        policy: { title: "Policy", $ref: "#/$defs/policy" },
+      },
+      required: ["policy"],
+      additionalProperties: false,
+    };
+    expect(usesStructuredJsonSchemaForm(schema)).toBe(true);
+
+    const validPlugin = pluginWithInstallation(schema, { policy: { rules: [{ action: "allow" }] } });
+    const validForm = createPluginConfigurationForm(validPlugin);
+    expect(isPluginConfigurationFormValid(validPlugin, validForm.installation, validForm.capabilityInstances)).toBe(
+      true,
+    );
+    expect(validForm.invalidFieldIds.size > 0).toBe(false);
+    expect(pluginConfigurationRequest(validPlugin, validForm.installation, validForm.capabilityInstances)).toEqual({
+      installationConfiguration: { policy: { rules: [{ action: "allow" }] } },
+      exposureConfigurations: {},
+      runtimeConfigurations: { "binding-1": { workspace: "project" } },
+    });
+
+    const invalidPlugin = pluginWithInstallation(schema, { policy: { rules: [{ action: "audit" }] } });
+    const invalidForm = createPluginConfigurationForm(invalidPlugin);
+    expect(
+      isPluginConfigurationFormValid(invalidPlugin, invalidForm.installation, invalidForm.capabilityInstances),
+    ).toBe(false);
+    expect(invalidForm.invalidFieldIds).toEqual(
+      new Set(["fixture.settings-installation-policy", "fixture.settings-installation-schema"]),
+    );
+    expect(invalidForm.invalidFieldIds.size > 0).toBe(true);
+  });
 });

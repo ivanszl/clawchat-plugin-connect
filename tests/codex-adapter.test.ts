@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { identifyAgentBinding } from "../src/plugin/binding";
-import { createCodexRuntimeAdapter, type CodexRuntimeAdapterBinding } from "../src/runtime/codex-adapter";
+import { type CodexRuntimeAdapterBinding, createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import type {
   CodexAppServerClient,
   CodexAppServerModel,
@@ -19,7 +19,7 @@ import type {
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeSession, ConnectRuntimeStartContext, RuntimeActivity } from "../src/runtime/types";
 import type { RuntimeWorkspace } from "../src/types";
-import { fixedRuntimeAdapter, pluginBinding, TEST_RUNTIME_CAPABILITY } from "./runtime-adapter-fixture";
+import { pluginBinding, TEST_RUNTIME_CAPABILITY } from "./runtime-adapter-fixture";
 
 const workspace: RuntimeWorkspace = {
   projectId: "project-1",
@@ -1379,7 +1379,10 @@ describe("Codex app-server runtime adapter", () => {
   it("routes approval requests to the active session and cancels them safely", async () => {
     const client = new FakeAppServer();
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
-    const session = await adapter.start({ ...agent, approvalPolicy: "on-request" } as CodexRuntimeAdapterBinding, context());
+    const session = await adapter.start(
+      { ...agent, approvalPolicy: "on-request" } as CodexRuntimeAdapterBinding,
+      context(),
+    );
     const iterator = session.prompt({ prompt: "hello", workspace })[Symbol.asyncIterator]();
     const firstEvent = iterator.next();
     while (client.startTurn.mock.calls.length === 0) await Bun.sleep(0);
@@ -1413,7 +1416,10 @@ describe("Codex app-server runtime adapter", () => {
   it("pauses for the Connect interaction port and maps an approval response", async () => {
     const client = new FakeAppServer();
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
-    const session = await adapter.start({ ...agent, approvalPolicy: "on-request" } as CodexRuntimeAdapterBinding, context());
+    const session = await adapter.start(
+      { ...agent, approvalPolicy: "on-request" } as CodexRuntimeAdapterBinding,
+      context(),
+    );
     const requests: unknown[] = [];
     const iterator = session
       .prompt({

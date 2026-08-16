@@ -4,15 +4,16 @@ import { mkdir, mkdtemp, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UpdateAccountProfileResult } from "../src/account/profile";
+import type { ChatCommandContext } from "../src/clawchat/chat-commands";
 import {
   handleChatCommand as handleChatCommandImpl,
   isConnectControlMessage,
   requiresOrderedSessionControl,
 } from "../src/clawchat/chat-commands";
-import type { ChatCommandContext } from "../src/clawchat/chat-commands";
 import type { NormalizedInboundMessage } from "../src/clawchat/protocol";
 import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
+import { createAgentBinding } from "../src/plugin/binding";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_BUNDLE_FORMAT,
@@ -21,7 +22,6 @@ import {
   CONNECT_PLUGIN_MANIFEST_VERSION,
   type ConnectPluginBundleV1,
 } from "../src/plugin/sdk";
-import { createAgentBinding } from "../src/plugin/binding";
 import { currentConnectPluginTarget, installPluginBundle, setInstalledPluginStatus } from "../src/plugin/store";
 import { ProjectCatalog } from "../src/projects/projects";
 import { workspaceView } from "../src/projects/workspace-catalog";
@@ -42,10 +42,7 @@ function handleChatCommand(context: TestChatCommandContext) {
 
 function testBinding(
   configuration: Record<string, unknown> = {},
-  preferences: Pick<
-    AgentBindingConfig,
-    "displayName" | "outputVisibility" | "model" | "modelReasoningEffort"
-  > = {},
+  preferences: Pick<AgentBindingConfig, "displayName" | "outputVisibility" | "model" | "modelReasoningEffort"> = {},
 ): AgentBindingConfig {
   return {
     ...createAgentBinding({
@@ -77,8 +74,48 @@ function io() {
 
 const CLI_PLUGIN_ID = "example.cli-runtime";
 
-function cliPluginBundle(): ConnectPluginBundleV1 {
-  const source = "export default {};";
+type CliPluginBehavior = "success" | "throw-entry" | "missing-provider" | "create-failure" | "prepare-failure";
+
+function cliPluginBundle(behavior: CliPluginBehavior = "success"): ConnectPluginBundleV1 {
+  const effectsKey = `__connectCliProviderValidation_${behavior.replaceAll("-", "_")}`;
+  const runtimeRegistration =
+    behavior === "missing-provider"
+      ? ""
+      : `
+    context.hostCapabilities.get("runtime-provider").register({
+      capabilityId: "exact-runtime",
+      family: "example",
+      create() {
+        effects.push("create");
+        ${behavior === "create-failure" ? 'throw new Error("provider create failed");' : ""}
+        return {
+          modes: [],
+          async prepare() {
+            effects.push("prepare");
+            ${behavior === "prepare-failure" ? 'throw new Error("provider prepare failed");' : ""}
+          },
+          async start() { throw new Error("not exercised"); },
+          async close() { effects.push("adapter-dispose"); }
+        };
+      }
+    });`;
+  const source = `
+const effects = globalThis[${JSON.stringify(effectsKey)}] = [];
+export default {
+  async activate(context) {
+    effects.push("entry-activate");
+    ${behavior === "throw-entry" ? 'throw new Error("entry activation failed");' : ""}
+    ${runtimeRegistration}
+    context.hostCapabilities.get("exposure-provider").register({
+      capabilityId: "exposure-only",
+      async activate() {
+        effects.push("exposure-activate");
+        return () => effects.push("exposure-dispose");
+      }
+    });
+    return () => effects.push("plugin-dispose");
+  }
+};`;
   const integrity = `sha256-${createHash("sha256").update(source).digest("base64")}`;
   return {
     format: CONNECT_PLUGIN_BUNDLE_FORMAT,
@@ -175,11 +212,10 @@ describe("runConnectCli", () => {
     expect((await loadConfig(path)).agents).toEqual({});
   });
 
-
   it("creates only an exact active Plugin Runtime Binding with schema-valid configuration", async () => {
     const path = await tempConfig();
     const output = io();
-    await saveConfig(upsertAgentBinding(defaultConfig(), "bound", testBinding()), path);
+    await saveConfig(defaultConfig(), path);
     const originalConfig = await readFile(path, "utf8");
     const addPluginBinding = async (options: {
       pluginId?: string;
@@ -253,7 +289,84 @@ describe("runConnectCli", () => {
         },
       },
     });
+    expect(Reflect.get(globalThis, "__connectCliProviderValidation_success")).toEqual([
+      "entry-activate",
+      "exposure-activate",
+      "create",
+      "prepare",
+      "adapter-dispose",
+      "exposure-dispose",
+      "plugin-dispose",
+    ]);
   });
+
+  for (const scenario of [
+    {
+      behavior: "throw-entry",
+      diagnostic: "entry activation failed",
+      effects: ["entry-activate"],
+    },
+    {
+      behavior: "missing-provider",
+      diagnostic: `Plugin ${CLI_PLUGIN_ID} registered 1 providers; manifest declares 2`,
+      effects: ["entry-activate", "plugin-dispose"],
+    },
+    {
+      behavior: "create-failure",
+      diagnostic: "provider create failed",
+      effects: ["entry-activate", "exposure-activate", "create", "exposure-dispose", "plugin-dispose"],
+    },
+    {
+      behavior: "prepare-failure",
+      diagnostic: "provider prepare failed",
+      effects: [
+        "entry-activate",
+        "exposure-activate",
+        "create",
+        "prepare",
+        "adapter-dispose",
+        "exposure-dispose",
+        "plugin-dispose",
+      ],
+    },
+  ] as const) {
+    it(`rejects an active Plugin Bundle with ${scenario.behavior} before changing the Binding`, async () => {
+      const path = await tempConfig();
+      const output = io();
+      await saveConfig(upsertAgentBinding(defaultConfig(), "bound", testBinding()), path);
+      const originalConfig = await readFile(path, "utf8");
+      await installPluginBundle({
+        configPath: path,
+        source: { type: "local", path },
+        bundle: cliPluginBundle(scenario.behavior),
+      });
+
+      await expect(
+        runConnectCli(
+          [
+            "agent",
+            "add",
+            "bound",
+            "--plugin",
+            CLI_PLUGIN_ID,
+            "--capability",
+            "exact-runtime",
+            "--runtime-config-json",
+            JSON.stringify({ endpoint: "https://runtime.example", retries: 2 }),
+            "--config",
+            path,
+          ],
+          output.deps,
+        ),
+      ).resolves.toBe(1);
+
+      expect(output.stderr.join("")).toContain(scenario.diagnostic);
+      await expect(readFile(path, "utf8")).resolves.toBe(originalConfig);
+      expect(
+        Reflect.get(globalThis, `__connectCliProviderValidation_${scenario.behavior.replaceAll("-", "_")}`),
+      ).toEqual(scenario.effects);
+    });
+  }
 
   it("requires explicit confirmation before removing an Agent Binding and its local data", async () => {
     const path = await tempConfig();
@@ -372,9 +485,7 @@ describe("runConnectCli", () => {
 
     await expect(runConnectCli(["status", "--config", path], output.deps)).resolves.toBe(0);
 
-    expect(output.stdout.join("")).toContain(
-      `runtime capability: example (${CLI_PLUGIN_ID}/exact-runtime)`,
-    );
+    expect(output.stdout.join("")).toContain(`runtime capability: example (${CLI_PLUGIN_ID}/exact-runtime)`);
     expect(output.stdout.join("")).toContain("recent diagnostic: Runtime temporarily unavailable.");
   });
 

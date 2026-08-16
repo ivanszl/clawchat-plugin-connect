@@ -18,7 +18,11 @@ import { pluginBinding } from "./runtime-adapter-fixture";
 describe("Installation Owner activation with Liveware Exposure", () => {
   it("rejects another owner without mutating the existing Liveware Exposure or local state", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-multi-owner-"));
-    const config = upsertAgentBinding(upsertAgentBinding(defaultConfig(), "personal", pluginBinding()), "work", pluginBinding());
+    const config = upsertAgentBinding(
+      upsertAgentBinding(defaultConfig(), "personal", pluginBinding()),
+      "work",
+      pluginBinding(),
+    );
     config.stateDbPath = join(directory, "state.sqlite");
     config.livewareAccessPolicy = "private";
     const store = createStateStore({ dbPath: config.stateDbPath });

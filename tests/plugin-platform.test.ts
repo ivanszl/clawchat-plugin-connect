@@ -11,6 +11,8 @@ import {
   type TransportEvents,
   type TransportState,
 } from "../src/clawchat/protocol";
+import { PLUGIN_MANAGER_CONFIG_HEADER } from "../src/client-contract";
+import { BINDING_SCOPE_HEADER } from "../src/client-interface/binding-scoped-gateway";
 import { type ClientHttpServerOptions, startClientInterface } from "../src/client-interface/server";
 import { defaultConfig, getAgentBinding, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
@@ -28,6 +30,21 @@ const PUBLIC_CONTEXT_KEYS: Array<keyof ConnectPluginContext> = [
   "installationConfiguration",
   "interfaceVersion",
 ];
+
+interface ReferenceExposureFixture {
+  readonly activationKeys: string[];
+  readonly activationFrozen: boolean;
+  readonly configurationFrozen: boolean;
+  readonly clientKeys: string[];
+  readonly clientFrozen: boolean;
+  fetch(request: Request): Promise<Response>;
+}
+
+function referenceExposure(): ReferenceExposureFixture {
+  const exposure = Reflect.get(globalThis, "__connectReferenceExposure") as ReferenceExposureFixture | undefined;
+  if (!exposure) throw new Error("Reference Exposure fixture is not active");
+  return exposure;
+}
 
 class MemoryTransport implements Transport {
   state: TransportState = "closed";
@@ -96,6 +113,7 @@ async function localRequest(
 describe("local Runtime Plugin platform", () => {
   it("installs, activates, dispatches a Client Turn, projects activity, lists dependents, and disposes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-platform-"));
+    Reflect.deleteProperty(globalThis, "__connectReferenceExposure");
     const configPath = join(directory, "config.json");
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const fixturePath = join(import.meta.dir, "fixtures", "reference-runtime.connect-plugin");
@@ -145,6 +163,10 @@ describe("local Runtime Plugin platform", () => {
     const runtimeAdaptersReady = new Promise<RuntimeAdapterRegistry>((resolve) => {
       resolveRuntimeAdapters = resolve;
     });
+    let resolveClientBound!: () => void;
+    const clientBoundReady = new Promise<void>((resolve) => {
+      resolveClientBound = resolve;
+    });
     let releaseService: (() => void) | undefined;
     const shutdown = new Promise<void>((resolve) => {
       releaseService = resolve;
@@ -155,7 +177,9 @@ describe("local Runtime Plugin platform", () => {
         configPath,
         stateStore,
         waitUntilShutdown: async () => await shutdown,
-        writeOutput: () => undefined,
+        writeOutput: (message) => {
+          if (message.startsWith("Connect Client is available at ")) resolveClientBound();
+        },
         writeError: (message) => serviceErrors.push(message),
       },
       {
@@ -198,11 +222,32 @@ describe("local Runtime Plugin platform", () => {
     );
 
     const [handler, registry] = await Promise.race([
-      Promise.all([fetchHandlerReady, runtimeAdaptersReady]),
+      Promise.all([fetchHandlerReady, runtimeAdaptersReady, clientBoundReady]),
       service.then(() => {
         throw new Error("Connect Service stopped before the Plugin test surfaces became ready");
       }),
     ]);
+    const exposure = referenceExposure();
+    expect(exposure).toMatchObject({
+      activationKeys: ["client", "configuration"],
+      activationFrozen: true,
+      configurationFrozen: true,
+      clientKeys: ["fetch"],
+      clientFrozen: true,
+    });
+    const exposedBootstrapResponse = await exposure.fetch(
+      new Request("https://external-exposure.example/client/v1/bootstrap", {
+        headers: {
+          [BINDING_SCOPE_HEADER]: "trace-alpha",
+          [PLUGIN_MANAGER_CONFIG_HEADER]: "/unrelated/connect/config.json",
+        },
+      }),
+    );
+    expect(exposedBootstrapResponse.status).toBe(200);
+    const exposedBootstrap = (await exposedBootstrapResponse.json()) as {
+      bindings: Array<{ bindingId: string }>;
+    };
+    expect(exposedBootstrap.bindings.map(({ bindingId }) => bindingId).sort()).toEqual(["trace-alpha", "trace-beta"]);
     expect(registry.modesFor(getAgentBinding(config, "trace-alpha"))).toEqual(["trace"]);
     expect(registry.modesFor(getAgentBinding(config, "trace-beta"))).toEqual(["trace"]);
 
@@ -287,9 +332,8 @@ describe("local Runtime Plugin platform", () => {
 
     releaseService?.();
     await expect(service).resolves.toEqual({ startedAgentIds: ["trace-alpha", "trace-beta"] });
-    await expect(registry.prepare(getAgentBinding(config, "trace-alpha"))).rejects.toThrow(
-      "is not active",
-    );
+    await expect(registry.prepare(getAgentBinding(config, "trace-alpha"))).rejects.toThrow("is not active");
+    expect(Reflect.get(globalThis, "__connectReferenceExposure")).toBeUndefined();
     await removeInstalledPlugin(configPath, firstInstall.pluginId);
     expect((await listInstalledPlugins(configPath)).map((plugin) => plugin.pluginId)).toEqual([secondInstall.pluginId]);
     expect(await loadConfig(configPath)).toMatchObject({

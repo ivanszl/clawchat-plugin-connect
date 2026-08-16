@@ -213,8 +213,7 @@ export const ko = {
   "@connect.settings.binding.displayName": { defaultMessage: "표시 이름" },
   "@connect.settings.binding.create.title": { defaultMessage: "새 Agent Binding" },
   "@connect.settings.binding.create.description": {
-    defaultMessage:
-      "설치되어 활성 상태인 Runtime Plugin의 정확한 기능 하나를 지정해 Agent Binding을 생성합니다.",
+    defaultMessage: "설치되어 활성 상태인 Runtime Plugin의 정확한 기능 하나를 지정해 Agent Binding을 생성합니다.",
   },
   "@connect.settings.binding.create.bindingId": { defaultMessage: "Binding ID" },
   "@connect.settings.binding.create.bindingIdDescription": {
@@ -227,8 +226,7 @@ export const ko = {
   "@connect.settings.binding.create.createFailed": { defaultMessage: "Agent Binding을 생성할 수 없음" },
   "@connect.settings.binding.provider.title": { defaultMessage: "Runtime 공급자" },
   "@connect.settings.binding.provider.description": {
-    defaultMessage:
-      "정확한 Plugin과 Runtime 기능을 선택하세요. Runtime 계열은 참고 정보로만 표시됩니다.",
+    defaultMessage: "정확한 Plugin과 Runtime 기능을 선택하세요. Runtime 계열은 참고 정보로만 표시됩니다.",
   },
   "@connect.settings.binding.provider.identity": {
     defaultMessage: "Plugin {pluginId} · 기능 {capabilityId}",

@@ -40,7 +40,6 @@ export interface OpenCodeRuntimeAdapterBinding extends AgentBindingConfig {
   env?: Record<string, string>;
 }
 
-
 export interface OpenCodeRuntimeAdapterOptions {
   createServer?: (binding: OpenCodeRuntimeAdapterBinding) => Promise<OpenCodeServerClient>;
   serverClientOptions?: OpenCodeServerClientOptions;

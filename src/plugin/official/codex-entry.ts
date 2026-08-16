@@ -1,7 +1,4 @@
-import {
-  createCodexRuntimeAdapter,
-  type CodexRuntimeAdapterBinding,
-} from "../../runtime/codex-adapter";
+import { type CodexRuntimeAdapterBinding, createCodexRuntimeAdapter } from "../../runtime/codex-adapter";
 import type { ConnectRuntimeAdapter, ConnectRuntimeStartContext } from "../../runtime/types";
 import type {
   ConnectPluginConfiguration,
@@ -25,7 +22,7 @@ const codexPluginEntry: ConnectPluginEntry = {
         const compatible = requireCompatibleCodexExecutable(configuredExecutable, binding.env);
         binding.executablePathOverride = compatible.path;
         delete binding.codexPathOverride;
-        return bindCodexAdapter(createCodexRuntimeAdapter(), binding);
+        return createCodexOfficialAdapter(createCodexRuntimeAdapter(), binding);
       },
     });
   },
@@ -52,16 +49,10 @@ function codexBinding(
         : { executablePathOverride: installationExecutable }),
     ...(env ? { env } : {}),
     ...(optionalString(configuration.displayName) ? { displayName: optionalString(configuration.displayName) } : {}),
-    ...(optionalString(configuration.model) ? { model: optionalString(configuration.model) } : {}),
     ...(optionalString(configuration.sandboxMode)
       ? {
-          sandboxMode: optionalString(configuration.sandboxMode) as NonNullable<CodexRuntimeAdapterBinding["sandboxMode"]>,
-        }
-      : {}),
-    ...(optionalString(configuration.modelReasoningEffort)
-      ? {
-          modelReasoningEffort: optionalString(configuration.modelReasoningEffort) as NonNullable<
-            CodexRuntimeAdapterBinding["modelReasoningEffort"]
+          sandboxMode: optionalString(configuration.sandboxMode) as NonNullable<
+            CodexRuntimeAdapterBinding["sandboxMode"]
           >,
         }
       : {}),
@@ -89,7 +80,7 @@ function codexBinding(
   };
 }
 
-function bindCodexAdapter(
+export function createCodexOfficialAdapter(
   adapter: ConnectRuntimeAdapter,
   binding: CodexRuntimeAdapterBinding,
 ): ConnectPluginRuntimeAdapter {
@@ -146,12 +137,7 @@ function bindCodexAdapter(
     start: async (context) => {
       const session = await adapter.start(binding, internalStartContext(context));
       return {
-        prompt: (input) =>
-          session.prompt({
-            ...input,
-            model: input.model ?? binding.model,
-            reasoningEffort: input.reasoningEffort ?? binding.modelReasoningEffort,
-          }),
+        prompt: (input) => session.prompt(input),
         cancel: session.cancel?.bind(session),
         close: session.close.bind(session),
       };

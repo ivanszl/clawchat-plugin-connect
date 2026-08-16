@@ -1,10 +1,21 @@
 import { describe, expect, it, mock } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientInterfaceOptions } from "../src/client-interface/server";
-import { defaultConfig, getAgentBinding } from "../src/config";
+import { defaultConfig, getAgentBinding, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
+import { ConnectPluginHost } from "../src/plugin/host";
+import {
+  CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+  CONNECT_PLUGIN_BUNDLE_FORMAT,
+  CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+  CONNECT_PLUGIN_INTERFACE_VERSION,
+  CONNECT_PLUGIN_MANIFEST_VERSION,
+  type ConnectPluginBundleV1,
+} from "../src/plugin/sdk";
+import { currentConnectPluginTarget } from "../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { BindingRuntimeHandle } from "../src/service/binding-runtime";
 import { startConnectService } from "../src/service/connect-service";
@@ -110,6 +121,7 @@ describe("Connect Service", () => {
     const stopClientInterface = mock(async () => undefined);
     const startClientInterface = mock(async (_options: ClientInterfaceOptions) => ({
       origin: "http://127.0.0.1:47823",
+      retireBindings: async () => undefined,
       stop: stopClientInterface,
     }));
     const closeRuntimeAdapter = mock(async () => undefined);
@@ -173,6 +185,207 @@ describe("Connect Service", () => {
     expect(closeRuntimeAdapter).toHaveBeenCalledTimes(2);
   });
 
+  it("retires only dependent Binding transports before force removal purges them", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-force-removal-"));
+    const configPath = join(directory, "config.json");
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const pluginId = "test.force-removal";
+    const removedBindingId = "removed";
+    const unrelatedBindingId = "unrelated";
+    const config = serviceConfig([removedBindingId, unrelatedBindingId]);
+    config.stateDbPath = stateStore.dbPath;
+    config.livewareAccessPolicy = "private";
+    config.agents[removedBindingId] = serviceBinding(pluginId);
+    config.agents[unrelatedBindingId] = serviceBinding("official.clawchat.codex");
+    await saveConfig(config, configPath);
+    await stateStore.initialize();
+    await stateStore.upsertActivation(activation(removedBindingId));
+    await stateStore.upsertActivation(activation(unrelatedBindingId));
+
+    const bundlePath = join(directory, "force-removal-plugin.json");
+    await writeFile(bundlePath, `${JSON.stringify(runtimeBundle(pluginId))}\n`);
+    const installer = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined);
+    await installer.install({ source: `local:${bundlePath}` });
+    await installer.close();
+
+    const connected = new Set<string>();
+    const closeCounts = new Map<string, number>();
+    let dependentConfigurationPresentWhenClosed = false;
+    let rejectNextDependentClose = true;
+    const lifecycleEvents: string[] = [];
+    const exposureCloseCounts = new Map<string, number>();
+    const gatewayStopCounts = new Map<string, number>();
+    const exposureDeviceIds = new Map<string, string>();
+    let enqueueRetiredBinding = async (): Promise<void> => {
+      throw new Error("retired queue was not created");
+    };
+    let enqueueUnrelatedBinding = async (): Promise<void> => {
+      throw new Error("unrelated queue was not created");
+    };
+    const retireLiveware = mock(
+      async (
+        retirement: {
+          activation: ActivationCredentials;
+          deviceId: string;
+        },
+        _dependencies: unknown,
+      ) => {
+        lifecycleEvents.push(`remote-liveware:${retirement.activation.localAgentId}`);
+        expect(retirement.activation.accessToken).toBe(`token-${retirement.activation.localAgentId}`);
+        const exposureDeviceId = exposureDeviceIds.get(retirement.activation.localAgentId);
+        if (!exposureDeviceId) throw new Error("Expected Liveware publication device ownership");
+        expect(retirement.deviceId).toBe(exposureDeviceId);
+        expect(config.agents[retirement.activation.localAgentId]).toBeDefined();
+      },
+    );
+    const startBindingRuntime = mock(async (runtimeOptions): Promise<BindingRuntimeHandle> => {
+      connected.add(runtimeOptions.agentId);
+      const queue = runtimeOptions.execution?.createSessionQueue(runtimeOptions.agentId, {});
+      if (!queue) throw new Error("Expected Binding Session queue");
+      const enqueue = async () => await queue.enqueue("late-session", async () => undefined);
+      if (runtimeOptions.agentId === removedBindingId) enqueueRetiredBinding = enqueue;
+      else enqueueUnrelatedBinding = enqueue;
+      return {
+        agentId: runtimeOptions.agentId,
+        websocketUrl: config.websocketUrl,
+        deviceId: "device-1",
+        close: async () => {
+          lifecycleEvents.push(`transport:${runtimeOptions.agentId}`);
+          if (runtimeOptions.agentId === removedBindingId) {
+            dependentConfigurationPresentWhenClosed = config.agents[removedBindingId] !== undefined;
+          }
+          closeCounts.set(runtimeOptions.agentId, (closeCounts.get(runtimeOptions.agentId) ?? 0) + 1);
+          if (runtimeOptions.agentId === removedBindingId && rejectNextDependentClose) {
+            rejectNextDependentClose = false;
+            throw new Error("dependent transport close failed");
+          }
+          connected.delete(runtimeOptions.agentId);
+        },
+      };
+    });
+    let signalClientReady: (options: ClientInterfaceOptions) => void = () => undefined;
+    const clientReady = new Promise<ClientInterfaceOptions>((resolve) => {
+      signalClientReady = resolve;
+    });
+    const retireClientBindings = mock(async (bindingIds: readonly string[]) => {
+      lifecycleEvents.push(`client:${bindingIds.join(",")}`);
+    });
+    let finishShutdown: () => void = () => undefined;
+    const shutdown = new Promise<void>((resolve) => {
+      finishShutdown = resolve;
+    });
+    const running = startConnectService(
+      {
+        config,
+        configPath,
+        stateStore,
+        waitUntilShutdown: async () => await shutdown,
+        writeOutput: () => undefined,
+        writeError: () => undefined,
+      },
+      {
+        startBindingRuntime,
+        startClientInterface: async (options) => {
+          signalClientReady(options);
+          return {
+            origin: "http://127.0.0.1:47823",
+            retireBindings: retireClientBindings,
+            stop: async () => undefined,
+          };
+        },
+        startBindingScopedClientGateway: async ({ bindingId }) => ({
+          bindingId,
+          origin: `http://127.0.0.1/${bindingId}`,
+          stop: async () => {
+            lifecycleEvents.push(`gateway:${bindingId}`);
+            gatewayStopCounts.set(bindingId, (gatewayStopCounts.get(bindingId) ?? 0) + 1);
+          },
+        }),
+        startLivewareExposure: async ({ activation: exposureActivation, deviceId: exposureDeviceId }) => {
+          exposureDeviceIds.set(exposureActivation.localAgentId, exposureDeviceId);
+          return {
+            record: {
+              ownerUserId: exposureActivation.ownerUserId,
+              localAgentId: exposureActivation.localAgentId,
+              appId: `app-${exposureActivation.localAgentId}`,
+              publicUrl: `https://${exposureActivation.localAgentId}.liveware.example`,
+              accessPolicy: "private",
+            },
+            close: async () => {
+              const bindingId = exposureActivation.localAgentId;
+              lifecycleEvents.push(`agent:${bindingId}`);
+              exposureCloseCounts.set(bindingId, (exposureCloseCounts.get(bindingId) ?? 0) + 1);
+            },
+          };
+        },
+        retireLivewareExposure: retireLiveware,
+        livewareDependencies: {
+          controlPlane: {
+            connect: async () => {
+              throw new Error("composite test must use the injected retirement port");
+            },
+          },
+          clawChat: {
+            list: async () => [],
+            register: async () => undefined,
+            unregister: async () => undefined,
+          },
+        },
+        verifyInstalledSkills: async () => undefined,
+      },
+    );
+
+    const clientOptions = await clientReady;
+    const pluginManager = clientOptions.pluginManager;
+    if (!pluginManager) throw new Error("Expected running Plugin Host");
+    try {
+      await expect(pluginManager.remove(pluginId)).rejects.toThrow("required by Agent Bindings");
+      expect(connected).toEqual(new Set([removedBindingId, unrelatedBindingId]));
+
+      await expect(pluginManager.remove(pluginId, true)).rejects.toThrow("dependent transport close failed");
+      expect(config.agents[removedBindingId]).toBeDefined();
+      expect(connected).toEqual(new Set([removedBindingId, unrelatedBindingId]));
+      expect(clientOptions.runtimes.map((handle) => handle.agentId)).toEqual([removedBindingId, unrelatedBindingId]);
+      await expect(enqueueRetiredBinding()).rejects.toThrow("lifecycle operation");
+      await expect(enqueueUnrelatedBinding()).resolves.toBeUndefined();
+
+      await expect(pluginManager.remove(pluginId, true)).resolves.toMatchObject({ pluginId });
+
+      expect(dependentConfigurationPresentWhenClosed).toBe(true);
+      expect(connected).toEqual(new Set([unrelatedBindingId]));
+      expect(closeCounts.get(removedBindingId)).toBe(2);
+      expect(retireClientBindings).toHaveBeenCalledTimes(2);
+      expect(retireClientBindings).toHaveBeenNthCalledWith(1, [removedBindingId]);
+      expect(clientOptions.runtimes.map((handle) => handle.agentId)).toEqual([unrelatedBindingId]);
+      expect(config.agents[removedBindingId]).toBeUndefined();
+      expect(config.agents[unrelatedBindingId]).toBeDefined();
+      expect(startBindingRuntime).toHaveBeenCalledTimes(2);
+      expect(retireLiveware).toHaveBeenCalledTimes(1);
+      expect(exposureCloseCounts.get(removedBindingId)).toBe(1);
+      expect(gatewayStopCounts.get(removedBindingId)).toBe(1);
+      expect(lifecycleEvents.indexOf(`remote-liveware:${removedBindingId}`)).toBeLessThan(
+        lifecycleEvents.indexOf(`agent:${removedBindingId}`),
+      );
+      expect(lifecycleEvents.indexOf(`agent:${removedBindingId}`)).toBeLessThan(
+        lifecycleEvents.indexOf(`gateway:${removedBindingId}`),
+      );
+      expect(lifecycleEvents.indexOf(`client:${removedBindingId}`)).toBeLessThan(
+        lifecycleEvents.indexOf(`transport:${removedBindingId}`),
+      );
+    } finally {
+      finishShutdown();
+      await running;
+    }
+
+    await expect(running).resolves.toEqual({ startedAgentIds: [removedBindingId, unrelatedBindingId] });
+    expect(closeCounts.get(removedBindingId)).toBe(2);
+    expect(closeCounts.get(unrelatedBindingId)).toBe(1);
+    expect(exposureCloseCounts.get(removedBindingId)).toBe(1);
+    expect(exposureCloseCounts.get(unrelatedBindingId)).toBe(1);
+    expect(gatewayStopCounts.get(removedBindingId)).toBe(1);
+    expect(gatewayStopCounts.get(unrelatedBindingId)).toBe(1);
+  });
+
   it("reports disposal failures after awaiting every remaining cleanup", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-cleanup-failure-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
@@ -209,6 +422,7 @@ describe("Connect Service", () => {
           }),
           startClientInterface: async () => ({
             origin: "http://127.0.0.1:47823",
+            retireBindings: async () => undefined,
             stop: async () => {
               events.push("client-stop");
               throw new Error("client cleanup failed");
@@ -244,6 +458,7 @@ describe("Connect Service", () => {
     });
     const startClientInterface = mock(async () => ({
       origin: "http://127.0.0.1:47823",
+      retireBindings: async () => undefined,
       stop: async () => undefined,
     }));
 
@@ -272,6 +487,7 @@ describe("Connect Service", () => {
     const errors: string[] = [];
     const startClientInterface = mock(async () => ({
       origin: "http://127.0.0.1:47823",
+      retireBindings: async () => undefined,
       stop: async () => undefined,
     }));
 
@@ -347,6 +563,7 @@ describe("Connect Service", () => {
         }),
         startClientInterface: async () => ({
           origin: "http://127.0.0.1:47823",
+          retireBindings: async () => undefined,
           stop: async () => undefined,
         }),
         verifyInstalledSkills: async () => undefined,
@@ -432,6 +649,7 @@ describe("Connect Service", () => {
           events.push("client-start");
           return {
             origin: "http://127.0.0.1:47823",
+            retireBindings: async () => undefined,
             stop: async () => {
               events.push("client-stop");
             },
@@ -499,6 +717,7 @@ describe("Connect Service", () => {
         }),
         startClientInterface: async () => ({
           origin: "http://127.0.0.1:47823",
+          retireBindings: async () => undefined,
           stop: async () => undefined,
         }),
         startBindingScopedClientGateway,
@@ -549,6 +768,7 @@ describe("Connect Service", () => {
         }),
         startClientInterface: async () => ({
           origin: "http://127.0.0.1:47823",
+          retireBindings: async () => undefined,
           stop: async () => undefined,
         }),
         startBindingScopedClientGateway: async ({ bindingId }) => ({
@@ -592,6 +812,50 @@ function serviceConfig(agentIds: string[]): ConnectConfig {
 
 function serviceBinding(pluginId: string) {
   return { ...pluginBinding(), runtime: { pluginId, capabilityId: "runtime" } };
+}
+
+function runtimeBundle(pluginId: string): ConnectPluginBundleV1 {
+  const source = `
+export default {
+  async activate(context) {
+    context.hostCapabilities.get("runtime-provider").register({
+      capabilityId: "runtime",
+      family: "force-removal-test",
+      create() {
+        return {
+          modes: [],
+          async start() { throw new Error("not exercised"); }
+        };
+      }
+    });
+  }
+};
+`.trim();
+  const integrity = `sha256-${createHash("sha256").update(source).digest("base64")}`;
+  return {
+    format: CONNECT_PLUGIN_BUNDLE_FORMAT,
+    manifest: {
+      manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
+      interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
+      pluginId,
+      version: "1.0.0",
+      dependencies: [
+        { type: "host", id: "runtime-provider", interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION },
+      ],
+      installationConfigurationSchema: { type: "object", additionalProperties: false },
+      capabilities: [
+        {
+          id: "runtime",
+          type: "runtime",
+          family: "force-removal-test",
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: { type: "object", additionalProperties: false },
+        },
+      ],
+      artifacts: [{ target: currentConnectPluginTarget(), entry: "plugin.mjs", integrity }],
+    },
+    files: { "plugin.mjs": { encoding: "utf8", content: source } },
+  };
 }
 
 function controlledAgentProcess(events: string[]) {

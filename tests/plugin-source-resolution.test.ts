@@ -9,6 +9,7 @@ import {
   CONNECT_PLUGIN_CATALOG_FORMAT,
   discoverOfficialPlugins,
   fetchOfficialPluginCatalog,
+  MAX_OFFICIAL_PLUGIN_CATALOG_BYTES,
   type OfficialPluginCatalogV1,
   type OfficialPluginDiscovery,
   officialCatalogSigningPayload,
@@ -22,7 +23,15 @@ import {
   CONNECT_PLUGIN_MANIFEST_VERSION,
   type ConnectPluginBundleV1,
 } from "../src/plugin/sdk";
-import { resolvePluginSource } from "../src/plugin/source";
+import {
+  MAX_GITHUB_SOURCE_ASSET_ATTEMPTS,
+  MAX_GITHUB_SOURCE_RELEASE_CANDIDATES,
+  MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS,
+  MAX_PLUGIN_SOURCE_ARCHIVE_BYTES,
+  MAX_PLUGIN_SOURCE_DOWNLOAD_BYTES,
+  MAX_PLUGIN_SOURCE_METADATA_BYTES,
+  resolvePluginSource,
+} from "../src/plugin/source";
 import {
   commitStagedPlugin,
   installPluginBundle,
@@ -83,7 +92,7 @@ function tarball(bundle: ConnectPluginBundleV1): Uint8Array {
   for (const [path, bytes] of files) {
     const header = new Uint8Array(512);
     header.set(new TextEncoder().encode(path), 0);
-    header.set(new TextEncoder().encode(bytes.length.toString(8).padStart(11, "0") + "\0"), 124);
+    header.set(new TextEncoder().encode(`${bytes.length.toString(8).padStart(11, "0")}\0`), 124);
     header[156] = "0".charCodeAt(0);
     blocks.push(header, bytes, new Uint8Array((512 - (bytes.length % 512)) % 512));
   }
@@ -95,11 +104,29 @@ function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
 }
 
+function signedCatalogFixture(): { catalog: OfficialPluginCatalogV1; publicKey: string } {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const unsigned: Omit<OfficialPluginCatalogV1, "signature"> = {
+    format: CONNECT_PLUGIN_CATALOG_FORMAT,
+    generatedAt: "2026-08-16T00:00:00.000Z",
+    plugins: [],
+  };
+  return {
+    catalog: {
+      ...unsigned,
+      signature: sign(null, officialCatalogSigningPayload(unsigned), privateKey).toString("base64"),
+    },
+    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+  };
+}
+
 describe("Plugin source resolution", () => {
   it("resolves compatible stable and exact npm/GitHub assets, pins them, and rejects source switching", async () => {
     const target = "source-test-target";
     const pluginId = "test.source-plugin";
     const npmV1 = sourceBundle(pluginId, "1.0.0", target);
+    const npmArtifact = npmV1.manifest.artifacts[0];
+    if (!npmArtifact) throw new Error("Expected npm fixture artifact");
     const npmV2Incompatible = sourceBundle(pluginId, "2.0.0", "other-target");
     const npmV1Tarball = tarball(npmV1);
     const npmV2Tarball = tarball(npmV2Incompatible);
@@ -194,7 +221,7 @@ describe("Plugin source resolution", () => {
         source: { type: "npm", package: "source-plugin", version: "1.0.0" },
         version: "1.0.0",
         target,
-        integrity: npmV1.manifest.artifacts[0]!.integrity,
+        integrity: npmArtifact.integrity,
       });
       const switched = await stagePluginBundle({ configPath, ...githubExact });
       await expect(commitStagedPlugin(configPath, switched, "update")).rejects.toThrow("source is immutable");
@@ -250,6 +277,270 @@ describe("Plugin source resolution", () => {
     await expect(
       resolveWithDigest(`sha256:${"0".repeat(64)}`, new TextEncoder().encode("not a Plugin Bundle")),
     ).rejects.toThrow("sha256 digest mismatch");
+  });
+
+  it("bounds unpinned npm downloads and decompressions while preserving latest-first fallback", async () => {
+    const target = "source-test-target";
+    const versions = Array.from({ length: 100 }, (_, index) => `${100 - index}.0.0`);
+    const candidateOrder = ["1.0.0", ...versions.filter((version) => version !== "1.0.0")];
+    const compatibleWithinBudget = candidateOrder[MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS - 1];
+    const compatibleBeyondBudget = candidateOrder[MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS];
+    if (!compatibleWithinBudget || !compatibleBeyondBudget) throw new Error("Invalid npm attempt-budget fixture");
+    const artifacts = new Map<string, Uint8Array>();
+    const metadataFor = (packageName: string, compatibleVersion: string) => ({
+      "dist-tags": { latest: "1.0.0" },
+      versions: Object.fromEntries(
+        versions.map((version) => {
+          const bytes = tarball(
+            sourceBundle(`test.${packageName}`, version, version === compatibleVersion ? target : "other-target"),
+          );
+          artifacts.set(`${packageName}/${version}`, bytes);
+          return [
+            version,
+            {
+              version,
+              dist: {
+                tarball: `https://registry.example.test/tarballs/${packageName}/${version}.tgz`,
+                integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
+              },
+            },
+          ];
+        }),
+      ),
+    });
+    const metadata: Record<string, unknown> = {
+      "npm-within-budget": metadataFor("npm-within-budget", compatibleWithinBudget),
+      "npm-beyond-budget": metadataFor("npm-beyond-budget", compatibleBeyondBudget),
+    };
+    const downloads: string[] = [];
+    const fetchSource = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      const tarballMatch = url.pathname.match(/^\/tarballs\/([^/]+)\/([^/]+)\.tgz$/u);
+      if (tarballMatch?.[1] && tarballMatch[2]) {
+        downloads.push(`${tarballMatch[1]}/${tarballMatch[2]}`);
+        const bytes = artifacts.get(`${tarballMatch[1]}/${tarballMatch[2]}`);
+        return bytes ? new Response(new Uint8Array(bytes)) : json({ error: "not found" }, 404);
+      }
+      const packageName = url.pathname.slice(1);
+      const value = metadata[packageName];
+      return value ? json(value) : json({ error: "not found" }, 404);
+    }) as typeof fetch;
+    const options = {
+      fetch: fetchSource,
+      npmRegistry: "https://registry.example.test",
+      target,
+    };
+
+    await expect(resolvePluginSource("npm:npm-within-budget", options)).resolves.toMatchObject({
+      source: { type: "npm", version: compatibleWithinBudget },
+    });
+    expect(downloads.filter((value) => value.startsWith("npm-within-budget/"))).toEqual(
+      candidateOrder.slice(0, MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS).map((version) => `npm-within-budget/${version}`),
+    );
+
+    await expect(resolvePluginSource("npm:npm-beyond-budget", options)).rejects.toThrow(
+      `at most ${MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS} candidate attempts`,
+    );
+    const beyondDownloads = downloads.filter((value) => value.startsWith("npm-beyond-budget/"));
+    expect(beyondDownloads).toHaveLength(MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS);
+    expect(beyondDownloads).not.toContain(`npm-beyond-budget/${compatibleBeyondBudget}`);
+  });
+
+  it("bounds sorted GitHub Releases and aggregate asset downloads with large metadata", async () => {
+    const target = "source-test-target";
+    const releaseVersions = Array.from({ length: 100 }, (_, index) => `${100 - index}.0.0`);
+    const effectiveBudget = Math.min(MAX_GITHUB_SOURCE_RELEASE_CANDIDATES, MAX_GITHUB_SOURCE_ASSET_ATTEMPTS);
+    const compatibleWithinBudget = releaseVersions[effectiveBudget - 1];
+    const compatibleBeyondBudget = releaseVersions[effectiveBudget];
+    if (!compatibleWithinBudget || !compatibleBeyondBudget) {
+      throw new Error("Invalid GitHub attempt-budget fixture");
+    }
+    const assets = new Map<string, Uint8Array>();
+    const releasesFor = (repository: string, compatibleVersion: string) =>
+      [...releaseVersions].reverse().map((version) => {
+        const bytes = new TextEncoder().encode(
+          JSON.stringify(
+            sourceBundle(`test.${repository}`, version, version === compatibleVersion ? target : "other-target"),
+          ),
+        );
+        const assetPath = `${repository}/${version}`;
+        assets.set(assetPath, bytes);
+        return {
+          tag_name: `v${version}`,
+          draft: false,
+          prerelease: false,
+          assets: [
+            {
+              name: `${repository}-${target}.connect-plugin`,
+              browser_download_url: `https://assets.example.test/${assetPath}`,
+              digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+            },
+          ],
+        };
+      });
+    const metadata: Record<string, unknown> = {
+      "github-within-budget": releasesFor("github-within-budget", compatibleWithinBudget),
+      "github-beyond-budget": releasesFor("github-beyond-budget", compatibleBeyondBudget),
+    };
+    const downloads: string[] = [];
+    const fetchSource = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.hostname === "assets.example.test") {
+        const assetPath = url.pathname.slice(1);
+        downloads.push(assetPath);
+        const bytes = assets.get(assetPath);
+        return bytes ? new Response(new Uint8Array(bytes)) : json({ error: "not found" }, 404);
+      }
+      const match = url.pathname.match(/^\/repos\/acme\/([^/]+)\/releases$/u);
+      const value = match?.[1] ? metadata[match[1]] : undefined;
+      return value ? json(value) : json({ error: "not found" }, 404);
+    }) as typeof fetch;
+    const options = {
+      fetch: fetchSource,
+      githubApiBase: "https://api.example.test",
+      target,
+    };
+
+    await expect(resolvePluginSource("github:acme/github-within-budget", options)).resolves.toMatchObject({
+      source: { type: "github", version: compatibleWithinBudget },
+    });
+    expect(downloads.filter((value) => value.startsWith("github-within-budget/"))).toEqual(
+      releaseVersions.slice(0, effectiveBudget).map((version) => `github-within-budget/${version}`),
+    );
+
+    await expect(resolvePluginSource("github:acme/github-beyond-budget", options)).rejects.toThrow(
+      `at most ${MAX_GITHUB_SOURCE_ASSET_ATTEMPTS} asset attempts`,
+    );
+    const beyondDownloads = downloads.filter((value) => value.startsWith("github-beyond-budget/"));
+    expect(beyondDownloads.length).toBeLessThanOrEqual(MAX_GITHUB_SOURCE_ASSET_ATTEMPTS);
+    expect(beyondDownloads.length).toBeLessThanOrEqual(MAX_GITHUB_SOURCE_RELEASE_CANDIDATES);
+    expect(beyondDownloads).not.toContain(`github-beyond-budget/${compatibleBeyondBudget}`);
+  });
+
+  it("shares one GitHub asset-attempt budget across Releases", async () => {
+    const target = "source-test-target";
+    const assets = new Map<string, Uint8Array>();
+    const release = (version: string, count: number, compatible: boolean) => ({
+      tag_name: `v${version}`,
+      draft: false,
+      prerelease: false,
+      assets: Array.from({ length: count }, (_, index) => {
+        const path = `${version}/${index}`;
+        const bytes = new TextEncoder().encode(
+          JSON.stringify(sourceBundle("test.github-aggregate-budget", version, compatible ? target : "other-target")),
+        );
+        assets.set(path, bytes);
+        return {
+          name: `aggregate-${target}-${String(index).padStart(3, "0")}.connect-plugin`,
+          browser_download_url: `https://assets.example.test/${path}`,
+          digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+        };
+      }),
+    });
+    const downloads: string[] = [];
+    const fetchSource = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.hostname === "assets.example.test") {
+        const path = url.pathname.slice(1);
+        downloads.push(path);
+        const bytes = assets.get(path);
+        return bytes ? new Response(new Uint8Array(bytes)) : json({ error: "not found" }, 404);
+      }
+      return json([release("2.0.0", MAX_GITHUB_SOURCE_ASSET_ATTEMPTS, false), release("1.0.0", 1, true)]);
+    }) as typeof fetch;
+
+    await expect(
+      resolvePluginSource("github:acme/github-aggregate-budget", {
+        fetch: fetchSource,
+        githubApiBase: "https://api.example.test",
+        target,
+      }),
+    ).rejects.toThrow(`at most ${MAX_GITHUB_SOURCE_ASSET_ATTEMPTS} asset attempts`);
+    expect(downloads).toHaveLength(MAX_GITHUB_SOURCE_ASSET_ATTEMPTS);
+    expect(downloads).not.toContain("1.0.0/0");
+  });
+
+  it("rejects oversized declared registry metadata before reading it", async () => {
+    const target = "source-test-target";
+    const fetchSource = (async () =>
+      new Response("{}", {
+        headers: { "content-length": String(MAX_PLUGIN_SOURCE_METADATA_BYTES + 1) },
+      })) as unknown as typeof fetch;
+
+    await expect(
+      resolvePluginSource("npm:declared-limit@1.0.0", {
+        fetch: fetchSource,
+        npmRegistry: "https://registry.example.test",
+        target,
+      }),
+    ).rejects.toThrow(`${MAX_PLUGIN_SOURCE_METADATA_BYTES}-byte download limit`);
+  });
+
+  it("cancels a lengthless remote stream as soon as its observed body exceeds the download limit", async () => {
+    const target = "source-test-target";
+    const chunk = new Uint8Array(1024 * 1024);
+    const chunksSent = MAX_PLUGIN_SOURCE_DOWNLOAD_BYTES / chunk.byteLength + 1;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let index = 0; index < chunksSent; index += 1) controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchSource = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === "/streamed.tgz") return new Response(body);
+      return json({
+        versions: {
+          "1.0.0": {
+            version: "1.0.0",
+            dist: {
+              tarball: "https://registry.example.test/streamed.tgz",
+              integrity: `sha512-${createHash("sha512").update("unreached").digest("base64")}`,
+            },
+          },
+        },
+      });
+    }) as typeof fetch;
+
+    await expect(
+      resolvePluginSource("npm:stream-limit@1.0.0", {
+        fetch: fetchSource,
+        npmRegistry: "https://registry.example.test",
+        target,
+      }),
+    ).rejects.toThrow(`${MAX_PLUGIN_SOURCE_DOWNLOAD_BYTES}-byte download limit`);
+    expect(cancelled).toBe(true);
+  });
+
+  it("rejects gzip output beyond the decompressed archive limit", async () => {
+    const target = "source-test-target";
+    const bomb = gzipSync(new Uint8Array(MAX_PLUGIN_SOURCE_ARCHIVE_BYTES + 1));
+    const fetchSource = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === "/bomb.tgz") return new Response(bomb);
+      return json({
+        versions: {
+          "1.0.0": {
+            version: "1.0.0",
+            dist: {
+              tarball: "https://registry.example.test/bomb.tgz",
+              integrity: `sha512-${createHash("sha512").update(bomb).digest("base64")}`,
+            },
+          },
+        },
+      });
+    }) as typeof fetch;
+
+    await expect(
+      resolvePluginSource("npm:gzip-bomb@1.0.0", {
+        fetch: fetchSource,
+        npmRegistry: "https://registry.example.test",
+        target,
+      }),
+    ).rejects.toThrow(`${MAX_PLUGIN_SOURCE_ARCHIVE_BYTES}-byte decompressed limit`);
   });
 });
 
@@ -323,15 +614,7 @@ describe("official Plugin Catalog setup", () => {
     const offlineOutput: string[] = [];
     await expect(
       runConnectCli(
-        [
-          "plugin",
-          "setup",
-          "--non-interactive",
-          "--select",
-          "test.detected",
-          "--config",
-          offlineSetupConfigPath,
-        ],
+        ["plugin", "setup", "--non-interactive", "--select", "test.detected", "--config", offlineSetupConfigPath],
         {
           pluginSourceOptions: options,
           pluginManagementFetch: async () => {
@@ -408,5 +691,64 @@ describe("official Plugin Catalog setup", () => {
     ).resolves.toBe(0);
     expect(setupSelections).toEqual([["test.undetected"], ["test.undetected"]]);
     expect(output.join(" ")).toContain("[x] test.detected@1.0.0");
+  });
+
+  it("rejects an oversized declared Catalog body before reading and retains the authenticated cache", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-catalog-declared-limit-"));
+    const configPath = join(directory, "config.json");
+    await saveConfig(defaultConfig(), configPath);
+    const { catalog, publicKey } = signedCatalogFixture();
+    const options = {
+      catalogUrl: "https://plugins.example.test/catalog.json",
+      catalogPublicKey: publicKey,
+    };
+    await expect(
+      fetchOfficialPluginCatalog(configPath, {
+        ...options,
+        catalogFetch: async () => json(catalog),
+      }),
+    ).resolves.toMatchObject({ origin: "remote", catalog });
+
+    const oversized = await fetchOfficialPluginCatalog(configPath, {
+      ...options,
+      catalogFetch: async () =>
+        new Response("not valid JSON", {
+          headers: { "content-length": String(MAX_OFFICIAL_PLUGIN_CATALOG_BYTES + 1) },
+        }),
+    });
+
+    expect(oversized).toMatchObject({ origin: "cache", catalog });
+    expect(oversized.diagnostics.join(" ")).toContain(`${MAX_OFFICIAL_PLUGIN_CATALOG_BYTES}-byte download limit`);
+  });
+
+  it("cancels a lengthless Catalog stream when observed bytes cross the limit", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-catalog-stream-limit-"));
+    const configPath = join(directory, "config.json");
+    await saveConfig(defaultConfig(), configPath);
+    const { publicKey } = signedCatalogFixture();
+    const chunk = new Uint8Array(1024 * 1024);
+    let cancelled = false;
+    const result = await fetchOfficialPluginCatalog(configPath, {
+      catalogUrl: "https://plugins.example.test/catalog.json",
+      catalogPublicKey: publicKey,
+      catalogFetch: async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              for (let sent = 0; sent <= MAX_OFFICIAL_PLUGIN_CATALOG_BYTES; sent += chunk.byteLength) {
+                controller.enqueue(chunk);
+              }
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+        ),
+    });
+
+    expect(cancelled).toBe(true);
+    expect(result.catalog).toBeNull();
+    expect(result.origin).toBeNull();
+    expect(result.diagnostics.join(" ")).toContain(`${MAX_OFFICIAL_PLUGIN_CATALOG_BYTES}-byte download limit`);
   });
 });

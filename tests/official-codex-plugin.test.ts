@@ -10,14 +10,27 @@ import { createStateStore } from "../src/persistence/state";
 import { ConnectPluginHost } from "../src/plugin/host";
 import { probeCompatibleCodexExecutable } from "../src/plugin/official/codex-compatibility";
 import codexDescriptor from "../src/plugin/official/codex-descriptor";
-import { CODEX_CAPABILITY_ID, CODEX_PLUGIN_ID, CODEX_RUNTIME_FAMILY } from "../src/plugin/official/codex-manifest";
+import { createCodexOfficialAdapter } from "../src/plugin/official/codex-entry";
+import {
+  CODEX_BINDING_CONFIGURATION_SCHEMA,
+  CODEX_CAPABILITY_ID,
+  CODEX_PLUGIN_ID,
+  CODEX_RUNTIME_FAMILY,
+} from "../src/plugin/official/codex-manifest";
 import { ProjectCatalog } from "../src/projects/projects";
+import type { CodexRuntimeAdapterBinding } from "../src/runtime/codex-adapter";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import type { ConnectRuntimeAdapter, ConnectRuntimePrompt } from "../src/runtime/types";
 import type { AgentBindingConfig } from "../src/types";
 import { type AdapterHarness, runtimeAdapterConformance } from "./runtime-adapter-conformance";
 
 const target = `${process.platform}-${process.arch}`;
 const fakeCodexExecutable = resolve("tests/fixtures/fake-codex-app-server.ts");
+function required<T>(value: T | undefined, label: string): T {
+  if (value === undefined) throw new Error(`Expected ${label}`);
+  return value;
+}
+
 const builtCodex = await buildOfficialPlugin(codexDescriptor, { target, write: false });
 
 runtimeAdapterConformance("installed official Codex Plugin", createInstalledCodexHarness);
@@ -28,16 +41,90 @@ describe("official Codex Plugin Bundle", () => {
     expect(builtCodex.bundle.manifest.capabilities).toEqual([
       expect.objectContaining({ id: CODEX_CAPABILITY_ID, type: "runtime", family: CODEX_RUNTIME_FAMILY }),
     ]);
-    const artifact = builtCodex.bundle.manifest.artifacts[0]!;
-    const probe = builtCodex.bundle.manifest.probe!;
+    const capability = required(
+      builtCodex.bundle.manifest.capabilities.find((candidate) => candidate.id === CODEX_CAPABILITY_ID),
+      "Codex Runtime capability",
+    );
+    expect(capability.configurationSchema).toEqual(CODEX_BINDING_CONFIGURATION_SCHEMA);
+    expect(capability.configurationSchema).not.toHaveProperty("properties.model");
+    expect(capability.configurationSchema).not.toHaveProperty("properties.modelReasoningEffort");
+    const artifact = required(builtCodex.bundle.manifest.artifacts[0], "Codex target artifact");
+    const probe = required(builtCodex.bundle.manifest.probe, "Codex probe artifact");
+    const artifactFile = required(builtCodex.bundle.files[artifact.entry], "Codex target artifact file");
+    const probeFile = required(builtCodex.bundle.files[probe.entry], "Codex probe artifact file");
     expect(artifact.target).toBe(target);
-    expect(artifact.integrity).toBe(
-      `sha256-${createHash("sha256").update(builtCodex.bundle.files[artifact.entry]!.content).digest("base64")}`,
+    expect(artifact.integrity).toBe(`sha256-${createHash("sha256").update(artifactFile.content).digest("base64")}`);
+    expect(probe.integrity).toBe(`sha256-${createHash("sha256").update(probeFile.content).digest("base64")}`);
+    expect(artifactFile.content).not.toContain('from "../../runtime/codex-adapter"');
+  });
+
+  it("forwards only the host-resolved per-Turn model selection", async () => {
+    const prompts: ConnectRuntimePrompt[] = [];
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "codex",
+      modes: [],
+      async start() {
+        return {
+          async *prompt(input) {
+            prompts.push(input);
+            yield* [];
+          },
+          async close() {},
+        };
+      },
+    };
+    const binding: CodexRuntimeAdapterBinding = {
+      runtime: { pluginId: CODEX_PLUGIN_ID, capabilityId: CODEX_CAPABILITY_ID },
+      runtimeConfig: {},
+      model: "binding-default-must-not-leak",
+      modelReasoningEffort: "xhigh",
+    };
+    const official = createCodexOfficialAdapter(adapter, binding);
+    const session = await official.start({
+      agentId: "codex",
+      chatId: "chat",
+      sessionId: "session",
+      runtimeThreadId: null,
+      onRuntimeThreadId: async () => undefined,
+      cacheMedia: async () => "",
+    });
+    const workspace = { projectId: null, workingDirectory: "/tmp", skipGitRepoCheck: true };
+
+    await Array.fromAsync(
+      session.prompt({
+        prompt: "selected",
+        workspace,
+        model: "catalog-selected-model",
+        reasoningEffort: "medium",
+      }),
     );
-    expect(probe.integrity).toBe(
-      `sha256-${createHash("sha256").update(builtCodex.bundle.files[probe.entry]!.content).digest("base64")}`,
-    );
-    expect(builtCodex.bundle.files[artifact.entry]!.content).not.toContain('from "../../runtime/codex-adapter"');
+    await Array.fromAsync(session.prompt({ prompt: "runtime default", workspace }));
+
+    expect(prompts.map(({ model, reasoningEffort }) => ({ model, reasoningEffort }))).toEqual([
+      { model: "catalog-selected-model", reasoningEffort: "medium" },
+      { model: undefined, reasoningEffort: undefined },
+    ]);
+  });
+
+  it("rejects generic model selection in capability Runtime configuration", async () => {
+    const setup = await installedHost();
+    const binding = pluginBinding(fakeCodexExecutable, join(setup.directory, "invalid-selection"));
+    binding.runtimeConfig = {
+      ...binding.runtimeConfig,
+      model: "configuration-must-not-override",
+      modelReasoningEffort: "xhigh",
+    };
+    try {
+      await setup.host.install({
+        source: setup.bundlePath,
+        target,
+        installationConfiguration: { executablePath: fakeCodexExecutable },
+      });
+      await expect(setup.registry.prepare(binding)).rejects.toThrow("Runtime configuration");
+    } finally {
+      await setup.host.close();
+      await setup.store.close();
+    }
   });
 
   it("accepts arbitrary parseable installed Codex versions and reports them before selection", async () => {
@@ -297,9 +384,7 @@ function pluginBinding(executable: string, directory: string): AgentBindingConfi
         CODEX_FAKE_HANG_FILE: join(runtimeDirectory, "hang"),
         CODEX_FAKE_FAIL_ARCHIVE_FILE: join(runtimeDirectory, "fail-archive"),
       },
-      model: "gpt-5-codex",
       sandboxMode: "workspace-write",
-      modelReasoningEffort: "high",
       approvalPolicy: "never",
       webSearchMode: "live",
       networkAccessEnabled: true,
@@ -307,6 +392,8 @@ function pluginBinding(executable: string, directory: string): AgentBindingConfi
       outputVisibility: "full",
       sessionOptions: { mode: "workspace-write" },
     },
+    model: "gpt-5-codex",
+    modelReasoningEffort: "high",
   };
 }
 

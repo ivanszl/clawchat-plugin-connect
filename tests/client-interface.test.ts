@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { type ClientInterfaceHandle, startClientInterface } from "../src/client-interface/server";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig } from "../src/config";
-import { agentBindingIdentity } from "../src/plugin/binding";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
+import { agentBindingIdentity } from "../src/plugin/binding";
 import { ProjectCatalog } from "../src/projects/projects";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
@@ -1841,6 +1841,150 @@ describe("Connect Client Interface", () => {
     ).toBe(false);
     const projectList = await localRequest(fetchHandler, handle.origin, "/client/v1/projects", { headers: scope });
     await expect(projectList.json()).resolves.toEqual([expect.objectContaining({ projectId: "shared-project" })]);
+  });
+  it("retires a Binding dispatcher while rejecting an in-flight lookup and every late submission", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-binding-retirement-"));
+    const assetsPath = join(directory, "assets");
+    await mkdir(assetsPath);
+    await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect retirement</title>");
+    const store = createStateStore({
+      dbPath: join(directory, "state.sqlite"),
+      sessionRefFactory: () => "RETURE42",
+    });
+    openStores.push(store);
+    const config = defaultConfig();
+    config.stateDbPath = store.dbPath;
+    config.agents = {
+      retiring: pluginBinding({}, { displayName: "Retiring" }),
+      unrelated: pluginBinding({}, { displayName: "Unrelated" }),
+    };
+    config.defaultAgent = "retiring";
+    let resolveLookupStarted: () => void = () => undefined;
+    const lookupStarted = new Promise<void>((resolve) => {
+      resolveLookupStarted = resolve;
+    });
+    let releaseLookup: () => void = () => undefined;
+    const lookupGate = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    let blockModelLookup = false;
+    const registry = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: ["workspace-write"],
+        listModels: async () => {
+          if (blockModelLookup) {
+            resolveLookupStarted();
+            await lookupGate;
+          }
+          return [
+            {
+              id: "gpt-default",
+              displayName: "Default model",
+              description: "Runtime default",
+              isDefault: true,
+              defaultReasoningEffort: "medium",
+              supportedReasoningEfforts: ["medium"],
+              inputModalities: ["text"],
+            },
+          ];
+        },
+        start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+      }),
+    ]);
+    const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+    const retiringEnqueue = mock(async (sessionRef: string) => ({ turnId: "retired-turn", sessionRef }));
+    const unrelatedEnqueue = mock(async (sessionRef: string) => ({ turnId: "unrelated-turn", sessionRef }));
+    let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
+    const handle = await startClientInterface({
+      config,
+      configPath: join(directory, "config.json"),
+      stateStore: store,
+      runtimeAdapters: registry,
+      transcriptProjection: projection,
+      runtimes: [
+        {
+          agentId: "retiring",
+          websocketUrl: config.websocketUrl,
+          deviceId: "device-retiring",
+          enqueueClientTurn: retiringEnqueue,
+          close: async () => undefined,
+        },
+        {
+          agentId: "unrelated",
+          websocketUrl: config.websocketUrl,
+          deviceId: "device-unrelated",
+          enqueueClientTurn: unrelatedEnqueue,
+          close: async () => undefined,
+        },
+      ],
+      assetsPath,
+      serverFactory: (options) => {
+        fetchHandler = options.fetch;
+        return { stop: async () => undefined };
+      },
+    });
+    openHandles.push(handle);
+    if (!fetchHandler) throw new Error("test Client Interface did not expose a request handler");
+    await store.upsertRuntimeSession({
+      chatId: "retiring-chat",
+      sessionId: "retiring-session",
+      agentId: "retiring",
+      runtimeSessionId: null,
+      name: "Retiring Session",
+      hasMessages: true,
+      isCurrent: true,
+    });
+    const session = await store.getCurrentRuntimeSession("retiring-chat", "retiring");
+    if (!session) throw new Error("retiring test session was not created");
+    const refreshedCatalog = await localRequest(fetchHandler, handle.origin, "/client/v1/session-catalog?refresh=1");
+    expect(refreshedCatalog.status).toBe(200);
+    blockModelLookup = true;
+    const body = new FormData();
+    body.append("prompt", "must not dispatch");
+    const inFlight = localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/retire_in_flight`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin },
+        body,
+      },
+    );
+    const completedBeforeLookup = await Promise.race([lookupStarted.then(() => null), inFlight]);
+    if (completedBeforeLookup) {
+      throw new Error(`submission completed before lookup gate: ${completedBeforeLookup.status}`);
+    }
+    let retirementSettled = false;
+    const retirement = handle.retireBindings(["retiring"]).finally(() => {
+      retirementSettled = true;
+    });
+    await Promise.resolve();
+    expect(retirementSettled).toBe(false);
+    releaseLookup();
+    await retirement;
+    const rejected = await inFlight;
+    expect(rejected.status).toBe(409);
+    await expect(rejected.json()).resolves.toMatchObject({ error: { code: "submission-cancelled" } });
+    expect(retiringEnqueue).not.toHaveBeenCalled();
+
+    const lateBody = new FormData();
+    lateBody.append("prompt", "still must not dispatch");
+    const late = await localRequest(
+      fetchHandler,
+      handle.origin,
+      `/client/v1/sessions/${session.sessionRef}/turn-submissions/retire_late`,
+      {
+        method: "POST",
+        headers: { origin: handle.origin },
+        body: lateBody,
+      },
+    );
+    expect(late.status).toBe(503);
+    await expect(late.json()).resolves.toMatchObject({ error: { code: "runtime-offline", retryable: true } });
+    expect(retiringEnqueue).not.toHaveBeenCalled();
+    expect(unrelatedEnqueue).not.toHaveBeenCalled();
   });
 });
 

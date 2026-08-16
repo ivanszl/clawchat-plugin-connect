@@ -26,13 +26,15 @@ describe("Agent Binding configuration", () => {
       },
     });
 
-    expect(config.agents.work).toEqual({
+    const binding = config.agents.work;
+    expect(binding).toEqual({
       runtime: exactRuntime,
       runtimeConfig: { executablePathOverride: "/opt/codex" },
       displayName: "Work",
     });
-    expect("kind" in config.agents.work!).toBe(false);
-    expect("runtimeFamily" in config.agents.work!).toBe(false);
+    if (!binding) throw new Error("Expected normalized work Binding");
+    expect("kind" in binding).toBe(false);
+    expect("runtimeFamily" in binding).toBe(false);
   });
 
   it("rejects both built-in and expanded Plugin Binding compatibility forms", () => {
@@ -192,9 +194,7 @@ describe("Agent Binding configuration", () => {
     expect(() => normalizeConfig({ clientHost: "192.168.1.20" })).toThrow(
       "clientHost must be one of: 127.0.0.1, 0.0.0.0",
     );
-    expect(() => normalizeConfig({ clientHost: "toString" })).toThrow(
-      "clientHost must be one of: 127.0.0.1, 0.0.0.0",
-    );
+    expect(() => normalizeConfig({ clientHost: "toString" })).toThrow("clientHost must be one of: 127.0.0.1, 0.0.0.0");
     expect(() => normalizeConfig({ stateDbPath: "./state.sqlite" })).toThrow("stateDbPath must be an absolute path");
   });
 });

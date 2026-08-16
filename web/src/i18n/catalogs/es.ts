@@ -226,8 +226,7 @@ export const es = {
   "@connect.settings.binding.displayName": { defaultMessage: "Nombre visible" },
   "@connect.settings.binding.create.title": { defaultMessage: "Nuevo Agent Binding" },
   "@connect.settings.binding.create.description": {
-    defaultMessage:
-      "Crea un Agent Binding con una capacidad exacta de un Runtime Plugin instalado y activo.",
+    defaultMessage: "Crea un Agent Binding con una capacidad exacta de un Runtime Plugin instalado y activo.",
   },
   "@connect.settings.binding.create.bindingId": { defaultMessage: "ID del Binding" },
   "@connect.settings.binding.create.bindingIdDescription": {

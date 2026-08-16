@@ -527,9 +527,7 @@ export class SessionCatalog {
           const discoveredRuntimeThread = runtimeSessionId ? discoveredById.get(runtimeSessionId) : undefined;
           const runtimeThread =
             discoveredRuntimeThread ??
-            (family === "workbuddy" &&
-            runtimeSessionId &&
-            isCodeBuddySessionRuntimeTarget(runtimeSessionId)
+            (family === "workbuddy" && runtimeSessionId && isCodeBuddySessionRuntimeTarget(runtimeSessionId)
               ? {
                   runtimeThreadId: runtimeSessionId,
                   name: session.name,
@@ -547,15 +545,7 @@ export class SessionCatalog {
           const workingDirectory = runtimeThread?.workingDirectory ?? null;
           if (workingDirectory) workingDirectoryByRef.set(session.sessionRef.toUpperCase(), workingDirectory);
           const activity = (await this.options.sessionActivity?.(bindingId, session.sessionRef)) ?? "idle";
-          return managedEntry(
-            session,
-            family,
-            project,
-            status,
-            activity,
-            lifecycleCapabilities,
-            runtimeThread,
-          );
+          return managedEntry(session, family, project, status, activity, lifecycleCapabilities, runtimeThread);
         }),
       );
       for (const thread of discovered) {
@@ -565,11 +555,7 @@ export class SessionCatalog {
           kind: thread.workspaceKind ?? ("persistent" as const),
           localRoot: thread.workingDirectory ?? null,
         };
-        const mapping = await this.options.stateStore.getRuntimeWorkspaceMapping(
-          bindingId,
-          family,
-          identity.key,
-        );
+        const mapping = await this.options.stateStore.getRuntimeWorkspaceMapping(bindingId, family, identity.key);
         const project =
           projectById.get(mapping?.projectId ?? "") ??
           (identity.localRoot ? findProjectForWorkspace(projects, identity.localRoot) : null);
@@ -626,7 +612,9 @@ export class SessionCatalog {
         displayName: binding.displayName || bindingId,
         kind: family,
         status:
-          runtimeUnavailable || status?.runtimeAvailability === "startup-unavailable" || status?.websocketConnected === false
+          runtimeUnavailable ||
+          status?.runtimeAvailability === "startup-unavailable" ||
+          status?.websocketConnected === false
             ? "disconnected"
             : status?.websocketConnected === true
               ? "connected"

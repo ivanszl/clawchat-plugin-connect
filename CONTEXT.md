@@ -24,6 +24,10 @@ _Avoid_: WorkBuddy Runtime, WorkBuddy Task
 A native conversation created or loaded through the CodeBuddy Runtime. Under a WorkBuddy Agent Binding it is Connect-owned, selectable and resumable in ClawChat, and may share a Project with a WorkBuddy Task, but it is not visible or synchronized in WorkBuddy Desktop.
 _Avoid_: WorkBuddy Task, WorkBuddy Session, tool Task
 
+**DeepSeek Harness Runtime**:
+A user-installed DeepSeek Harness (DSH) coding-agent runtime whose native Sessions and full plugin ecosystem can be operated through an Agent Binding. DSH plugins (tools, skills, workflows, MCP servers, subagents) are installed and owned inside the DSH runtime itself, never through Connect's plugin platform; installing Node.js and DSH is the user's decision, and Connect only integrates when the runtime is present.
+_Avoid_: DSH plugin host, DSH Plugin Bundle, when referring to the runtime family
+
 **Binding Runtime Instance**:
 The stateful runtime process and adapter state owned by one Agent Binding. Instances of the same exact Runtime Plugin capability remain isolated.
 _Avoid_: Runtime Adapter, shared runtime process

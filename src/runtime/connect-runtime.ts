@@ -399,7 +399,6 @@ export class ConnectRuntime {
     return this.runtimeAdapters.familyFor(binding);
   }
 
-
   async listRuntimeModels(
     binding: AgentBindingConfig,
     selected?: RuntimeSessionRecord | import("../types").SessionIntentRecord | null,

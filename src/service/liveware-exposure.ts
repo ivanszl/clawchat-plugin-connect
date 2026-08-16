@@ -235,6 +235,7 @@ export async function startLivewareExposure(
   const record = await prepareWithControl(options, dependencies.clawChat, control, delay);
   let current = await control.startAgent();
   let closed = false;
+  let closePromise: Promise<void> | undefined;
   const writeError = options.writeError ?? ((message: string) => process.stderr.write(message));
   const supervise = (async () => {
     while (!closed) {
@@ -259,10 +260,19 @@ export async function startLivewareExposure(
   return {
     record,
     close: async () => {
-      if (closed) return;
+      if (closePromise) return await closePromise;
       closed = true;
-      await current.stop();
-      await supervise;
+      const closing = (async () => {
+        await current.stop();
+        await supervise;
+      })();
+      closePromise = closing;
+      try {
+        await closing;
+      } catch (error) {
+        if (closePromise === closing) closePromise = undefined;
+        throw error;
+      }
     },
   };
 }

@@ -25,6 +25,7 @@ import {
   type BindingRuntimeOptions,
   startBindingRuntime,
 } from "./binding-runtime";
+import { type BindingRuntimeLifecycle, retireBindingRuntimeSurfaces } from "./binding-runtime-lifecycle";
 import type { ActivatedAgentBinding } from "./connect-durable-modules";
 import {
   createLivewareExposureDependencies,
@@ -39,6 +40,7 @@ interface ClawChatTransportModule {
   readonly activatedBindings: ActivatedAgentBinding[];
   readonly deviceId: string;
   readonly handles: BindingRuntimeHandle[];
+  retireBindings(bindingIds: readonly string[]): Promise<void>;
 }
 
 interface ClientAssetsModule {
@@ -47,6 +49,12 @@ interface ClientAssetsModule {
 
 interface ToolRequestWorkerModule {
   readonly active: true;
+  retireBindings(bindingIds: readonly string[]): Promise<void>;
+  stop(): Promise<void>;
+}
+
+interface LivewarePublicationModule {
+  retireBindings(bindingIds: readonly string[]): Promise<void>;
 }
 
 declare module "cordis" {
@@ -56,6 +64,7 @@ declare module "cordis" {
     connectClientAssets: ClientAssetsModule;
     connectClientInterface: ClientInterfaceHandle;
     connectToolRequestWorkers: ToolRequestWorkerModule;
+    connectLivewarePublication: LivewarePublicationModule;
   }
 }
 
@@ -94,6 +103,7 @@ export async function mountMandatorySurfaceModules(
   options: ConnectSurfaceOptions,
   dependencies: ConnectSurfaceDependencies,
   reportDisposalFailure: (error: unknown) => void,
+  bindingRuntimeLifecycle: BindingRuntimeLifecycle,
 ): Promise<MountedConnectSurfaceModules> {
   const disposers = new Map<string, () => Promise<void>>();
   const mount = async (plugin: Plugin & { name: string }): Promise<void> => {
@@ -101,7 +111,10 @@ export async function mountMandatorySurfaceModules(
     await fiber;
     disposers.set(plugin.name, fiber.dispose);
   };
+  let detachRetirement: () => void = () => undefined;
   const dispose = async (): Promise<void> => {
+    detachRetirement();
+    detachRetirement = () => undefined;
     const order = [
       "connect-tool-request-workers",
       "connect-liveware-publication",
@@ -177,6 +190,7 @@ export async function mountMandatorySurfaceModules(
       const { activatedBindings, deviceId } = await ctx.connectAgentBindings.prepareService(options.config);
       await ctx.connectPersistence.stateStore.expirePendingRuntimeInteractions();
       const handles: BindingRuntimeHandle[] = [];
+      const closePromises = new WeakMap<BindingRuntimeHandle, Promise<void>>();
       const startRuntime = dependencies.startBindingRuntime ?? startBindingRuntime;
       const execution: ConnectExecutionCapabilities = {
         runtimeAdapters: ctx.connectRuntimeAdapters,
@@ -226,16 +240,27 @@ export async function mountMandatorySurfaceModules(
             "Connect started with no usable Agent Bindings; unavailable runtimes will remain disconnected.\n",
           );
         }
-        const transports = { activatedBindings, deviceId, handles };
+        const transports: ClawChatTransportModule = {
+          activatedBindings,
+          deviceId,
+          handles,
+          retireBindings: async (bindingIds) => {
+            const retiringIds = new Set(bindingIds);
+            const results = await closeBindingRuntimeHandles(handles, closePromises, (handle) =>
+              retiringIds.has(handle.agentId),
+            );
+            throwRetirementFailures(results, "Agent Binding transport retirement failed");
+          },
+        };
         ctx.provide("connectClawChatTransports", transports);
         return async () => {
-          const results = await Promise.allSettled(handles.map(async (handle) => await handle.close()));
+          const results = await closeBindingRuntimeHandles(handles, closePromises, () => true);
           for (const result of results) {
             if (result.status === "rejected") reportDisposalFailure(result.reason);
           }
         };
       } catch (error) {
-        await Promise.allSettled(handles.map(async (handle) => await handle.close()));
+        await closeBindingRuntimeHandles(handles, closePromises, () => true);
         throw error;
       }
     },
@@ -246,15 +271,15 @@ export async function mountMandatorySurfaceModules(
     inject: ["connectPersistence", "connectClawChatTransports"],
     provide: "connectToolRequestWorkers",
     apply: (ctx) => {
-      const stop = startToolRequestWorkers(
+      const workers = startToolRequestWorkers(
         ctx.connectClawChatTransports.handles,
         ctx.connectPersistence.stateStore,
         options.writeError,
       );
-      ctx.provide("connectToolRequestWorkers", { active: true });
+      ctx.provide("connectToolRequestWorkers", workers);
       return async () => {
         try {
-          await stop();
+          await workers.stop();
         } catch (error) {
           reportDisposalFailure(error);
         }
@@ -291,6 +316,7 @@ export async function mountMandatorySurfaceModules(
         runtimes: ctx.connectClawChatTransports.handles,
         assetsPath: ctx.connectClientAssets.path,
       });
+      const unbindPluginClient = ctx.connectPluginHost.bindClientInterface(clientInterface);
       ctx.provide("connectClientInterface", clientInterface);
       options.writeOutput(`Connect Client is available at ${clientInterface.origin}.\n`);
       if (options.config.clientHost === "0.0.0.0") {
@@ -299,6 +325,7 @@ export async function mountMandatorySurfaceModules(
         );
       }
       return async () => {
+        unbindPluginClient();
         try {
           await clientInterface.stop();
         } catch (error) {
@@ -311,11 +338,51 @@ export async function mountMandatorySurfaceModules(
   const livewarePublicationPlugin = {
     name: "connect-liveware-publication",
     inject: ["connectPersistence", "connectClawChatTransports", "connectClientInterface"],
+    provide: "connectLivewarePublication",
     apply: async (ctx) => {
       const store = ctx.connectPersistence.stateStore;
       const { activatedBindings, deviceId, handles } = ctx.connectClawChatTransports;
-      const exposures: LivewareExposureHandle[] = [];
-      const gateways: BindingScopedClientGatewayHandle[] = [];
+      const publications = new Map<
+        string,
+        {
+          activation: ActivatedAgentBinding["activation"];
+          dependencies: LivewareExposureDependencies;
+          remoteOwned: boolean;
+          exposure?: LivewareExposureHandle;
+          gateway?: BindingScopedClientGatewayHandle;
+        }
+      >();
+      const retirePublication = async (bindingId: string): Promise<void> => {
+        const publication = publications.get(bindingId);
+        if (!publication) {
+          if (await store.getLivewareExposure(bindingId)) {
+            throw new Error(`Liveware Exposure retirement for Agent Binding ${bindingId} is unavailable`);
+          }
+          return;
+        }
+        if (publication.remoteOwned) {
+          await (dependencies.retireLivewareExposure ?? retireLivewareExposure)(
+            { activation: publication.activation, deviceId, stateStore: store },
+            publication.dependencies,
+          );
+          publication.remoteOwned = false;
+        }
+        if (publication.exposure) {
+          await publication.exposure.close();
+          publication.exposure = undefined;
+        }
+        if (publication.gateway) {
+          await publication.gateway.stop();
+          publication.gateway = undefined;
+        }
+        publications.delete(bindingId);
+      };
+      const publicationModule: LivewarePublicationModule = {
+        retireBindings: async (bindingIds) => {
+          for (const bindingId of bindingIds) await retirePublication(bindingId);
+        },
+      };
+      ctx.provide("connectLivewarePublication", publicationModule);
       const existingExposures = await store.listLivewareExposures();
       if (options.config.livewareAccessPolicy !== "off" || existingExposures.length > 0) {
         let livewareDependencies = dependencies.livewareDependencies;
@@ -350,12 +417,28 @@ export async function mountMandatorySurfaceModules(
                 );
                 options.writeOutput(`${existingExposure.localAgentId}: Liveware Exposure was retired.\n`);
               } catch (error) {
+                publications.set(existingExposure.localAgentId, {
+                  activation: retirementPrincipal,
+                  dependencies: livewareDependencies,
+                  remoteOwned: true,
+                });
                 options.writeError(
                   `${existingExposure.localAgentId}: Liveware Exposure retirement failed; local Connect remains running: ${error instanceof Error ? error.message : String(error)}\n`,
                 );
               }
             }
           } else {
+            for (const existingExposure of existingExposures) {
+              const existingActivation = activatedBindings.find(
+                ({ agentId }) => agentId === existingExposure.localAgentId,
+              )?.activation;
+              if (!existingActivation) continue;
+              publications.set(existingExposure.localAgentId, {
+                activation: existingActivation,
+                dependencies: livewareDependencies,
+                remoteOwned: true,
+              });
+            }
             for (const { agentId, activation } of activatedBindings.filter(({ agentId }) =>
               handles.some((handle) => handle.agentId === agentId),
             )) {
@@ -376,13 +459,25 @@ export async function mountMandatorySurfaceModules(
                   },
                   livewareDependencies,
                 );
-                gateways.push(gateway);
-                exposures.push(exposure);
+                publications.set(agentId, {
+                  activation,
+                  dependencies: livewareDependencies,
+                  remoteOwned: true,
+                  exposure,
+                  gateway,
+                });
                 options.writeOutput(
                   `${agentId}: Liveware Exposure is available at ${exposure.record.publicUrl} (${exposure.record.accessPolicy}).\n`,
                 );
               } catch (error) {
                 await gateway?.stop().catch(() => undefined);
+                if (await store.getLivewareExposure(agentId)) {
+                  publications.set(agentId, {
+                    activation,
+                    dependencies: livewareDependencies,
+                    remoteOwned: true,
+                  });
+                }
                 options.writeError(
                   `${agentId}: Liveware Exposure unavailable; local Connect remains running: ${error instanceof Error ? error.message : String(error)}\n`,
                 );
@@ -392,11 +487,23 @@ export async function mountMandatorySurfaceModules(
         }
       }
       return async () => {
-        for (const result of await Promise.allSettled(exposures.map(async (exposure) => await exposure.close()))) {
-          if (result.status === "rejected") reportDisposalFailure(result.reason);
-        }
-        for (const result of await Promise.allSettled(gateways.map(async (gateway) => await gateway.stop()))) {
-          if (result.status === "rejected") reportDisposalFailure(result.reason);
+        for (const publication of publications.values()) {
+          if (publication.exposure) {
+            try {
+              await publication.exposure.close();
+              publication.exposure = undefined;
+            } catch (error) {
+              reportDisposalFailure(error);
+            }
+          }
+          if (publication.gateway) {
+            try {
+              await publication.gateway.stop();
+              publication.gateway = undefined;
+            } catch (error) {
+              reportDisposalFailure(error);
+            }
+          }
         }
       };
     },
@@ -409,6 +516,20 @@ export async function mountMandatorySurfaceModules(
     await mount(toolRequestWorkerPlugin);
     await mount(clientInterfacePlugin);
     await mount(livewarePublicationPlugin);
+    detachRetirement = bindingRuntimeLifecycle.attachRetirement(
+      async (bindingIds) =>
+        await retireBindingRuntimeSurfaces(bindingIds, [
+          root.connectToolRequestWorkers,
+          root.connectClientInterface,
+          {
+            retireBindings: async (retiredBindingIds) => {
+              root.connectSessionQueue.retainBindings(retiredBindingIds);
+            },
+          },
+          root.connectLivewarePublication,
+          root.connectClawChatTransports,
+        ]),
+    );
     return {
       result: {
         startedAgentIds: root.connectClawChatTransports.handles.map((handle) => handle.agentId),
@@ -421,83 +542,143 @@ export async function mountMandatorySurfaceModules(
   }
 }
 
+async function closeBindingRuntimeHandles(
+  handles: BindingRuntimeHandle[],
+  closePromises: WeakMap<BindingRuntimeHandle, Promise<void>>,
+  shouldClose: (handle: BindingRuntimeHandle) => boolean,
+): Promise<PromiseSettledResult<void>[]> {
+  const owned = handles.filter(shouldClose);
+  const results = await Promise.allSettled(
+    owned.map((handle) => {
+      const existing = closePromises.get(handle);
+      if (existing) return existing;
+      const closing = Promise.resolve().then(async () => await handle.close());
+      closePromises.set(handle, closing);
+      return closing;
+    }),
+  );
+  results.forEach((result, index) => {
+    const handle = owned[index];
+    if (!handle) return;
+    if (result.status === "rejected") {
+      closePromises.delete(handle);
+      return;
+    }
+    const ownedIndex = handles.indexOf(handle);
+    if (ownedIndex >= 0) handles.splice(ownedIndex, 1);
+  });
+  return results;
+}
+function throwRetirementFailures(results: readonly PromiseSettledResult<void>[], message: string): void {
+  const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, message);
+}
+
 function startToolRequestWorkers(
   handles: BindingRuntimeHandle[],
   store: ConnectStateStore,
   writeError: (message: string) => void,
-): () => Promise<void> {
-  let stopping = false;
-  const workers = handles.map(async (handle) => {
-    while (!stopping) {
-      try {
-        await store.markInterruptedToolRequestsIndeterminate(handle.agentId);
-        break;
-      } catch (error) {
-        writeError(
-          `${handle.agentId}: Tool Request worker recovery failed; retrying: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-        await Bun.sleep(100);
-      }
+): ToolRequestWorkerModule {
+  const workers = new Map<
+    string,
+    {
+      stopping: boolean;
+      completion: Promise<void>;
     }
-    while (!stopping) {
-      let request: ToolRequestRecord | null = null;
-      try {
-        request = await store.claimNextToolRequest(handle.agentId);
-        if (!request) {
-          await Bun.sleep(100);
-          continue;
-        }
-        const tool = getConnectTool(request.toolName);
-        const timeoutMs = tool?.timeoutMs ?? (isAgentLivewareOperation(request.toolName) ? 120_000 : null);
-        if (!timeoutMs || !handle.executeTool) {
-          await store.settleToolRequest(request.requestId, {
-            state: "failed",
-            error: `unsupported tool ${request.toolName}`,
-          });
-          continue;
-        }
-        const remainingMs = Math.max(1, Math.min(timeoutMs, request.expiresAt - Date.now()));
-        let timer: Timer | undefined;
-        let outcome: { state: "succeeded"; result: unknown } | { state: "failed" | "indeterminate"; error: string };
+  >();
+  for (const handle of handles) {
+    const worker = { stopping: false, completion: Promise.resolve() };
+    worker.completion = (async () => {
+      while (!worker.stopping) {
         try {
-          const result = await Promise.race([
-            handle.executeTool(request.toolName, request.input),
-            new Promise<never>((_, reject) => {
-              timer = setTimeout(() => reject(new ToolExecutionTimeout()), remainingMs);
-            }),
-          ]);
-          outcome = { state: "succeeded", result };
+          await store.markInterruptedToolRequestsIndeterminate(handle.agentId);
+          break;
+        } catch (error) {
+          writeError(
+            `${handle.agentId}: Tool Request worker recovery failed; retrying: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+          await Bun.sleep(100);
+        }
+      }
+      while (!worker.stopping) {
+        let request: ToolRequestRecord | null = null;
+        try {
+          request = await store.claimNextToolRequest(handle.agentId);
+          if (!request) {
+            await Bun.sleep(100);
+            continue;
+          }
+          const tool = getConnectTool(request.toolName);
+          const timeoutMs = tool?.timeoutMs ?? (isAgentLivewareOperation(request.toolName) ? 120_000 : null);
+          if (!timeoutMs || !handle.executeTool) {
+            await store.settleToolRequest(request.requestId, {
+              state: "failed",
+              error: `unsupported tool ${request.toolName}`,
+            });
+            continue;
+          }
+          const remainingMs = Math.max(1, Math.min(timeoutMs, request.expiresAt - Date.now()));
+          let timer: Timer | undefined;
+          let outcome: { state: "succeeded"; result: unknown } | { state: "failed" | "indeterminate"; error: string };
+          try {
+            const result = await Promise.race([
+              handle.executeTool(request.toolName, request.input),
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new ToolExecutionTimeout()), remainingMs);
+              }),
+            ]);
+            outcome = { state: "succeeded", result };
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            outcome = { state: toolFailureState(error), error: detail };
+            writeError(`${handle.agentId}: tool ${request.toolName} failed: ${detail}\n`);
+          } finally {
+            clearTimeout(timer);
+          }
+          await store.settleToolRequest(request.requestId, outcome);
+          await store.pruneSettledToolRequests(handle.agentId);
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
-          outcome = { state: toolFailureState(error), error: detail };
-          writeError(`${handle.agentId}: tool ${request.toolName} failed: ${detail}\n`);
-        } finally {
-          clearTimeout(timer);
-        }
-        await store.settleToolRequest(request.requestId, outcome);
-        await store.pruneSettledToolRequests(handle.agentId);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        writeError(`${handle.agentId}: Tool Request worker failed; retrying: ${detail}\n`);
-        if (request) {
-          try {
-            await store.settleToolRequest(request.requestId, {
-              state: "indeterminate",
-              error: `Tool Request worker failed after claiming this request: ${detail}`,
-            });
-          } catch (settlementError) {
-            writeError(
-              `${handle.agentId}: Tool Request worker could not settle ${request.requestId} indeterminate: ${settlementError instanceof Error ? settlementError.message : String(settlementError)}\n`,
-            );
+          writeError(`${handle.agentId}: Tool Request worker failed; retrying: ${detail}\n`);
+          if (request) {
+            try {
+              await store.settleToolRequest(request.requestId, {
+                state: "indeterminate",
+                error: `Tool Request worker failed after claiming this request: ${detail}`,
+              });
+            } catch (settlementError) {
+              writeError(
+                `${handle.agentId}: Tool Request worker could not settle ${request.requestId} indeterminate: ${settlementError instanceof Error ? settlementError.message : String(settlementError)}\n`,
+              );
+            }
           }
+          if (!worker.stopping) await Bun.sleep(100);
         }
-        if (!stopping) await Bun.sleep(100);
       }
-    }
-  });
-  return async () => {
-    stopping = true;
-    await Promise.allSettled(workers);
+    })();
+    workers.set(handle.agentId, worker);
+  }
+
+  const retireBindings = async (bindingIds: readonly string[]): Promise<void> => {
+    const retiring = [...new Set(bindingIds)]
+      .map((bindingId) => ({ bindingId, worker: workers.get(bindingId) }))
+      .filter((entry): entry is { bindingId: string; worker: { stopping: boolean; completion: Promise<void> } } =>
+        Boolean(entry.worker),
+      );
+    for (const { worker } of retiring) worker.stopping = true;
+    const results = await Promise.allSettled(retiring.map(async ({ worker }) => await worker.completion));
+    results.forEach((result, index) => {
+      if (result.status !== "fulfilled") return;
+      const retired = retiring[index];
+      if (retired && workers.get(retired.bindingId) === retired.worker) workers.delete(retired.bindingId);
+    });
+    throwRetirementFailures(results, "Tool Request worker retirement failed");
+  };
+  return {
+    active: true,
+    retireBindings,
+    stop: async () => await retireBindings([...workers.keys()]),
   };
 }
 

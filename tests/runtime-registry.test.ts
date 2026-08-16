@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { RuntimeCapabilityRef } from "../src/plugin/sdk";
-import { RuntimeAdapterRegistry, type RuntimeAdapterDefinition } from "../src/runtime/registry";
+import { type RuntimeAdapterDefinition, RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { ConnectRuntimeAdapter, ConnectRuntimeSession, RuntimeModelOption } from "../src/runtime/types";
 import type { AgentBindingConfig, RuntimeWorkspace } from "../src/types";
 

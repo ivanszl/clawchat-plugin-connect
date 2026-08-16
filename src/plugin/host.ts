@@ -1,24 +1,32 @@
 import { pathToFileURL } from "node:url";
 import type { Context, Plugin } from "cordis";
+import { PLUGIN_MANAGER_CONFIG_HEADER } from "../client-contract";
+import { BINDING_SCOPE_HEADER } from "../client-interface/binding-scoped-gateway";
+import { errorResponse } from "../client-interface/client-http";
 import { FileTurnSubmissionStaging } from "../client-interface/turn-submission-staging";
 import { loadConfig, saveConfig } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
 import type { ProjectCatalog } from "../projects/projects";
 import { cacheRuntimeMedia } from "../runtime/media-cache";
-import type { RuntimeAdapterDefinition, RuntimeAdapterRegistry, RuntimeAdapterReplacement } from "../runtime/registry";
+import {
+  type RuntimeAdapterDefinition,
+  RuntimeAdapterRegistry,
+  type RuntimeAdapterReplacement,
+} from "../runtime/registry";
 import type { ConnectRuntimeAdapter } from "../runtime/types";
 import type { AgentBindingConfig, ConnectConfig } from "../types";
+import { normalizeAgentBinding } from "./binding";
 import { discoverOfficialPlugins, type OfficialCatalogOptions, type OfficialPluginDiscovery } from "./catalog";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_INTERFACE_VERSION,
   type ConnectExposureProviderHostCapability,
+  type ConnectPluginClientExposure,
   type ConnectPluginContext,
   type ConnectPluginDisposer,
   type ConnectPluginEntry,
   type ConnectPluginExposureProvider,
   type ConnectPluginHostCapabilities,
-  type ConnectPluginRuntimeAdapter,
   type ConnectPluginRuntimeProvider,
   type ConnectRuntimeProviderHostCapability,
   type RuntimeCapabilityRef,
@@ -41,6 +49,7 @@ import {
   recordInstalledPluginError,
   removeInstalledPlugin,
   removePluginArtifacts,
+  removeUnreferencedManagedPluginUploads,
   revalidateInstalledPlugin,
   type StagedPlugin,
   selectInstalledPluginVersion,
@@ -72,6 +81,7 @@ interface ConnectPluginManagementDependencies {
   stateStore: ConnectStateStore;
   projects: ProjectCatalog;
   quiesceRuntimeBindings?<T>(bindingIds: readonly string[], criticalSection: () => Promise<T>): Promise<T>;
+  retireRuntimeBindings?(bindingIds: readonly string[]): Promise<void>;
 }
 
 type PendingProvider =
@@ -95,10 +105,42 @@ export type PluginUpdateCheck =
   | { status: "current" | "available"; version: string; integrity: string; diagnostic: null }
   | { status: "check-failed"; version: null; integrity: null; diagnostic: string };
 
-export class ConnectPluginHost {
+export const MAX_CONCURRENT_PLUGIN_UPDATE_CHECKS = 4;
+
+interface ClientExposureTarget {
+  readonly origin: URL;
+  fetch(request: Request): Promise<Response>;
+}
+
+export interface ConnectPluginManagement {
+  list(): Promise<InstalledPluginLockEntry[]>;
+  checkUpdates(): Promise<Record<string, PluginUpdateCheck>>;
+  discoverOfficial(): Promise<OfficialPluginDiscovery>;
+  install(options: ManagePluginOptions): Promise<InstalledPluginLockEntry>;
+  installUpload(
+    fileName: string,
+    bytes: Uint8Array,
+    options?: Omit<ManagePluginOptions, "source">,
+  ): Promise<InstalledPluginLockEntry>;
+  installOfficial(pluginIds: readonly string[]): Promise<InstalledPluginLockEntry[]>;
+  update(pluginId: string, options?: Partial<ManagePluginOptions>): Promise<InstalledPluginLockEntry>;
+  reinstall(pluginId: string): Promise<InstalledPluginLockEntry>;
+  configure(pluginId: string, options: ConfigurePluginOptions): Promise<InstalledPluginLockEntry>;
+  enable(pluginId: string): Promise<InstalledPluginLockEntry>;
+  disable(pluginId: string): Promise<InstalledPluginLockEntry>;
+  select(pluginId: string, version: string, integrity?: string): Promise<InstalledPluginLockEntry>;
+  remove(pluginId: string, force?: boolean): Promise<InstalledPluginLockEntry>;
+  upsertBindingProvider(bindingId: string, binding: AgentBindingConfig): Promise<AgentBindingConfig>;
+}
+
+export class ConnectPluginHost implements ConnectPluginManagement {
   private readonly active = new Map<string, ActivePlugin>();
   private operationTail = Promise.resolve();
   private readonly officialCandidates = new Map<string, ResolvedOfficialPlugin>();
+  private clientExposureTarget: ClientExposureTarget | undefined;
+  private readonly clientExposure: ConnectPluginClientExposure = Object.freeze({
+    fetch: async (request: Request) => await this.fetchClientExposure(request),
+  });
 
   constructor(
     private readonly configPath: string,
@@ -107,6 +149,18 @@ export class ConnectPluginHost {
     private readonly management?: ConnectPluginManagementDependencies,
     private readonly sourceOptions: OfficialCatalogOptions = {},
   ) {}
+
+  bindClientInterface(client: { readonly origin: string; fetch?(request: Request): Promise<Response> }): () => void {
+    const fetchClient = client.fetch?.bind(client) ?? (async (request: Request) => await globalThis.fetch(request));
+    const target: ClientExposureTarget = Object.freeze({
+      origin: new URL(client.origin),
+      fetch: fetchClient,
+    });
+    this.clientExposureTarget = target;
+    return () => {
+      if (this.clientExposureTarget === target) this.clientExposureTarget = undefined;
+    };
+  }
 
   async activateInstalled(): Promise<void> {
     const installedPlugins = await listInstalledPlugins(this.configPath);
@@ -134,6 +188,78 @@ export class ConnectPluginHost {
     return [...this.active.keys()].sort();
   }
 
+  async validateRuntimeBinding(binding: AgentBindingConfig): Promise<void> {
+    const installed = await this.requireInstalled(binding.runtime.pluginId);
+    if (installed.status !== "active") {
+      const diagnostic = installed.error ? `: ${installed.error}` : "";
+      throw new Error(`Plugin ${installed.pluginId} is not active (status: ${installed.status})${diagnostic}`);
+    }
+    const capability = installed.manifest.capabilities.find(
+      (candidate) => candidate.id === binding.runtime.capabilityId,
+    );
+    if (capability?.type !== "runtime") {
+      throw new Error(
+        `Plugin ${installed.pluginId} does not declare Runtime capability ${binding.runtime.capabilityId}`,
+      );
+    }
+
+    let validationFailure: { error: unknown } | null = null;
+    let activated: ActivatedCandidate | undefined;
+    try {
+      await revalidateInstalledPlugin(installed);
+      activated = await this.activateCandidate(installed);
+      await activated.activateContributions();
+      await activated.publishRuntime();
+      await this.runtimeAdapters.prepare(binding);
+    } catch (error) {
+      validationFailure = { error };
+    }
+    try {
+      await activated?.plugin.dispose();
+    } catch (error) {
+      if (!validationFailure) throw error;
+    }
+    if (validationFailure) throw validationFailure.error;
+  }
+
+  async upsertBindingProvider(bindingId: string, binding: AgentBindingConfig): Promise<AgentBindingConfig> {
+    return await this.runExclusive(async () => {
+      const management = this.management;
+      if (!management) throw new Error("Agent Binding provider mutation requires the running Connect service");
+      const id = bindingId.trim();
+      if (!id || id !== bindingId) throw new Error("Agent Binding ID must be a non-empty exact identity");
+      const candidate = normalizeAgentBinding(id, binding);
+      const installed = await this.requireInstalled(candidate.runtime.pluginId);
+      if (installed.status !== "active") {
+        throw new Error(`Plugin ${installed.pluginId} is not active (status: ${installed.status})`);
+      }
+      const capability = installed.manifest.capabilities.find(
+        (entry) => entry.id === candidate.runtime.capabilityId && entry.type === "runtime",
+      );
+      if (capability?.type !== "runtime") {
+        throw new Error(
+          `Plugin ${installed.pluginId} does not declare Runtime capability ${candidate.runtime.capabilityId}`,
+        );
+      }
+      candidate.runtimeConfig = validatePluginConfiguration(
+        capability.configurationSchema,
+        candidate.runtimeConfig,
+        `Agent Binding ${id} Runtime configuration`,
+      );
+      if (!this.runtimeAdapters.hasProvider(candidate)) {
+        throw new Error(
+          `Runtime Plugin capability ${candidate.runtime.pluginId}/${candidate.runtime.capabilityId} is not active`,
+        );
+      }
+      const nextConfig = structuredClone(management.config);
+      nextConfig.agents[id] = candidate;
+      if (!nextConfig.defaultAgent) nextConfig.defaultAgent = id;
+      await saveConfig(nextConfig, this.configPath);
+      Object.assign(management.config, nextConfig);
+      return structuredClone(candidate);
+    });
+  }
+
   async list(): Promise<InstalledPluginLockEntry[]> {
     return await listInstalledPlugins(this.configPath);
   }
@@ -148,8 +274,15 @@ export class ConnectPluginHost {
     bytes: Uint8Array,
     options: Omit<ManagePluginOptions, "source"> = {},
   ): Promise<InstalledPluginLockEntry> {
-    const resolved = await persistUploadedPluginSource(this.configPath, fileName, bytes, options);
-    return await this.installResolved(resolved, options);
+    return await this.runExclusive(async () => {
+      try {
+        const resolved = await persistUploadedPluginSource(this.configPath, fileName, bytes, options);
+        return await this.installResolvedWithinQueue(resolved, options);
+      } catch (error) {
+        await removeUnreferencedManagedPluginUploads(this.configPath).catch(() => undefined);
+        throw error;
+      }
+    });
   }
 
   async reinstall(pluginId: string): Promise<InstalledPluginLockEntry> {
@@ -183,41 +316,50 @@ export class ConnectPluginHost {
 
   async checkUpdates(): Promise<Record<string, PluginUpdateCheck>> {
     const installed = await this.list();
-    return Object.fromEntries(
-      await Promise.all(
-        installed.map(async (entry) => {
-          try {
-            const resolverOptions: OfficialCatalogOptions = { ...this.sourceOptions, target: entry.target };
-            if (entry.source.type === "npm") resolverOptions.npmRegistry = entry.source.registry;
-            if (entry.source.type === "github") resolverOptions.githubApiBase = entry.source.apiBase;
-            const resolved = await resolvePluginSource(updateReferenceForSource(entry.source), resolverOptions);
-            const artifact = resolved.bundle.manifest.artifacts.find((candidate) => candidate.target === entry.target);
-            if (!artifact) throw new Error(`Resolved Plugin does not support target ${entry.target}`);
-            if (pluginSourceIdentity(resolved.source) !== pluginSourceIdentity(entry.source)) {
-              throw new Error("Update discovery resolved a different Plugin source");
-            }
-            const status =
-              resolved.bundle.manifest.version === entry.version && artifact.integrity === entry.integrity
-                ? "current"
-                : "available";
-            return [
-              entry.pluginId,
-              { status, version: resolved.bundle.manifest.version, integrity: artifact.integrity, diagnostic: null },
-            ] as const;
-          } catch (error) {
-            return [
-              entry.pluginId,
-              {
-                status: "check-failed",
-                version: null,
-                integrity: null,
-                diagnostic: error instanceof Error ? error.message : String(error),
-              },
-            ] as const;
+    const checks = new Array<readonly [string, PluginUpdateCheck]>(installed.length);
+    let nextIndex = 0;
+    const checkNext = async (): Promise<void> => {
+      for (;;) {
+        const index = nextIndex;
+        if (index >= installed.length) return;
+        nextIndex += 1;
+        const entry = installed[index];
+        if (!entry) return;
+        try {
+          const resolverOptions: OfficialCatalogOptions = { ...this.sourceOptions, target: entry.target };
+          if (entry.source.type === "npm") resolverOptions.npmRegistry = entry.source.registry;
+          if (entry.source.type === "github") resolverOptions.githubApiBase = entry.source.apiBase;
+          const resolved = await resolvePluginSource(updateReferenceForSource(entry.source), resolverOptions);
+          const artifact = resolved.bundle.manifest.artifacts.find((candidate) => candidate.target === entry.target);
+          if (!artifact) throw new Error(`Resolved Plugin does not support target ${entry.target}`);
+          if (pluginSourceIdentity(resolved.source) !== pluginSourceIdentity(entry.source)) {
+            throw new Error("Update discovery resolved a different Plugin source");
           }
-        }),
-      ),
+          const status =
+            resolved.bundle.manifest.version === entry.version && artifact.integrity === entry.integrity
+              ? "current"
+              : "available";
+          checks[index] = [
+            entry.pluginId,
+            { status, version: resolved.bundle.manifest.version, integrity: artifact.integrity, diagnostic: null },
+          ];
+        } catch (error) {
+          checks[index] = [
+            entry.pluginId,
+            {
+              status: "check-failed",
+              version: null,
+              integrity: null,
+              diagnostic: error instanceof Error ? error.message : String(error),
+            },
+          ];
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(installed.length, MAX_CONCURRENT_PLUGIN_UPDATE_CHECKS) }, () => checkNext()),
     );
+    return Object.fromEntries(checks);
   }
 
   async configure(pluginId: string, options: ConfigurePluginOptions): Promise<InstalledPluginLockEntry> {
@@ -423,13 +565,14 @@ export class ConnectPluginHost {
       try {
         await revalidateInstalledPlugin(installed);
         const dependentBindingIds = this.validateDependentBindings(installed);
-        candidate = await this.activateCandidate(installed);
+        const activated = await this.activateCandidate(installed);
+        candidate = activated;
         return await this.withBindingQuiescence(dependentBindingIds, async () => {
-          await candidate!.activateContributions();
+          await activated.activateContributions();
           const enabled = await setInstalledPluginStatus(this.configPath, pluginId, "active");
-          candidate!.plugin.installed = enabled;
-          await candidate!.publishRuntime();
-          this.active.set(pluginId, candidate!.plugin);
+          activated.plugin.installed = enabled;
+          await activated.publishRuntime();
+          this.active.set(pluginId, activated.plugin);
           return enabled;
         });
       } catch (error) {
@@ -445,7 +588,7 @@ export class ConnectPluginHost {
 
   async remove(pluginId: string, force = false): Promise<InstalledPluginLockEntry> {
     return await this.runExclusive(async () => {
-      const installed = await this.requireInstalled(pluginId);
+      await this.requireInstalled(pluginId);
       const config = this.management?.config ?? (await loadConfig(this.configPath));
       const dependents = pluginDependents(config, pluginId);
       if (dependents.length > 0 && !force) {
@@ -453,16 +596,21 @@ export class ConnectPluginHost {
           `Plugin ${pluginId} is required by Agent Bindings: ${dependents.join(", ")}; retry with force to purge them`,
         );
       }
-      if (dependents.length > 0 && !this.management) {
+      if (dependents.length > 0 && !this.management?.retireRuntimeBindings) {
         await setInstalledPluginStatus(
           this.configPath,
           pluginId,
           "disabled",
           "Force removal is unavailable outside the running Connect service",
         );
-        throw new Error(`Plugin ${pluginId} force removal requires the running Connect service`);
+        throw new Error(`Plugin ${pluginId} force removal requires running Agent Binding transport retirement`);
       }
       return await this.withBindingQuiescence(dependents, async () => {
+        if (dependents.length > 0) {
+          const retireRuntimeBindings = this.management?.retireRuntimeBindings;
+          if (!retireRuntimeBindings) throw new Error("Agent Binding transport retirement is unavailable");
+          await retireRuntimeBindings(dependents);
+        }
         const active = this.active.get(pluginId);
         if (active) {
           try {
@@ -477,14 +625,24 @@ export class ConnectPluginHost {
           }
         }
         if (dependents.length > 0) {
+          const management = this.management;
+          if (!management) throw new Error("Binding purge requires running Connect management dependencies");
           await setInstalledPluginStatus(this.configPath, pluginId, "disabled");
-          for (const bindingId of dependents) {
-            await this.purgeDependentBinding(bindingId);
-            await saveConfig(this.management!.config, this.configPath);
+          const nextConfig = structuredClone(management.config);
+          for (const bindingId of dependents) delete nextConfig.agents[bindingId];
+          if (nextConfig.defaultAgent && dependents.includes(nextConfig.defaultAgent)) {
+            nextConfig.defaultAgent = Object.keys(nextConfig.agents)[0] ?? null;
           }
+          await saveConfig(nextConfig, this.configPath);
+          Object.assign(management.config, nextConfig);
+          for (const bindingId of dependents) await this.purgeDependentBindingState(bindingId);
         }
         const removed = await removeInstalledPlugin(this.configPath, pluginId);
-        await removePluginArtifacts(this.configPath, pluginId);
+        try {
+          await removePluginArtifacts(this.configPath, pluginId);
+        } finally {
+          await removeUnreferencedManagedPluginUploads(this.configPath);
+        }
         return removed;
       });
     });
@@ -493,6 +651,7 @@ export class ConnectPluginHost {
   async close(): Promise<void> {
     this.officialCandidates.clear();
     await this.operationTail;
+    this.clientExposureTarget = undefined;
     const active = [...this.active.values()].reverse();
     this.active.clear();
     const results = await Promise.allSettled(active.map(async (plugin) => await plugin.dispose()));
@@ -515,7 +674,7 @@ export class ConnectPluginHost {
       const capability = installed.manifest.capabilities.find(
         (candidate) => candidate.type === "runtime" && candidate.id === binding.runtime.capabilityId,
       );
-      if (!capability || capability.type !== "runtime") {
+      if (capability?.type !== "runtime") {
         throw new Error(
           `Plugin ${installed.pluginId} does not declare Runtime capability ${binding.runtime.capabilityId}`,
         );
@@ -543,49 +702,51 @@ export class ConnectPluginHost {
       binding.runtimeConfig = configuration;
     }
     await saveConfig(next, this.configPath);
-    for (const [bindingId, configuration] of configurations) {
-      const binding = this.management.config.agents[bindingId];
-      if (binding) binding.runtimeConfig = configuration;
-    }
+    Object.assign(this.management.config, next);
   }
   private async installResolved(
     resolved: ResolvedPluginSource,
     options: Pick<ManagePluginOptions, "installationConfiguration" | "exposureConfigurations">,
   ): Promise<InstalledPluginLockEntry> {
-    return await this.runExclusive(async () => {
-      const staged = await stagePluginBundle({
-        configPath: this.configPath,
-        source: resolved.source,
-        bundle: resolved.bundle,
-        target: resolved.target,
-        installationConfiguration: options.installationConfiguration,
-        exposureConfigurations: options.exposureConfigurations,
-      });
-      let candidate: ActivatedCandidate | undefined;
-      let lockCommitted = false;
-      try {
-        this.validateDependentBindings(staged.entry);
-        candidate = await this.activateCandidate(staged.entry, []);
-        await candidate.activateContributions();
-        const installed = await commitStagedPlugin(this.configPath, staged, "install");
-        lockCommitted = true;
-        candidate.plugin.installed = installed;
-        await candidate.publishRuntime();
-        this.active.set(installed.pluginId, candidate.plugin);
-        return installed;
-      } catch (error) {
-        if (lockCommitted) {
-          await candidate?.plugin.dispose().catch(() => undefined);
-          await recordInstalledPluginError(this.configPath, staged.entry.pluginId, error).catch(() => undefined);
-          await this.markDependentBindingsUnavailable(staged.entry.pluginId, error);
-        } else {
-          await candidate?.plugin.dispose().catch(() => undefined);
-          await discardStagedPlugin(this.configPath, staged).catch(() => undefined);
-        }
-        this.reportActivationFailure(staged.entry.pluginId, error);
-        throw error;
-      }
+    return await this.runExclusive(async () => await this.installResolvedWithinQueue(resolved, options));
+  }
+
+  private async installResolvedWithinQueue(
+    resolved: ResolvedPluginSource,
+    options: Pick<ManagePluginOptions, "installationConfiguration" | "exposureConfigurations">,
+  ): Promise<InstalledPluginLockEntry> {
+    const staged = await stagePluginBundle({
+      configPath: this.configPath,
+      source: resolved.source,
+      bundle: resolved.bundle,
+      target: resolved.target,
+      installationConfiguration: options.installationConfiguration,
+      exposureConfigurations: options.exposureConfigurations,
     });
+    let candidate: ActivatedCandidate | undefined;
+    let lockCommitted = false;
+    try {
+      this.validateDependentBindings(staged.entry);
+      candidate = await this.activateCandidate(staged.entry, []);
+      await candidate.activateContributions();
+      const installed = await commitStagedPlugin(this.configPath, staged, "install");
+      lockCommitted = true;
+      candidate.plugin.installed = installed;
+      await candidate.publishRuntime();
+      this.active.set(installed.pluginId, candidate.plugin);
+      return installed;
+    } catch (error) {
+      if (lockCommitted) {
+        await candidate?.plugin.dispose().catch(() => undefined);
+        await recordInstalledPluginError(this.configPath, staged.entry.pluginId, error).catch(() => undefined);
+        await this.markDependentBindingsUnavailable(staged.entry.pluginId, error);
+      } else {
+        await candidate?.plugin.dispose().catch(() => undefined);
+        await discardStagedPlugin(this.configPath, staged).catch(() => undefined);
+      }
+      this.reportActivationFailure(staged.entry.pluginId, error);
+      throw error;
+    }
   }
 
   private async switchToStaged(
@@ -599,16 +760,17 @@ export class ConnectPluginHost {
     let candidate: ActivatedCandidate | undefined;
     let lockCommitted = false;
     try {
-      candidate = await this.activateCandidate(staged.entry, replacedRuntimeRefs);
+      const activated = await this.activateCandidate(staged.entry, replacedRuntimeRefs);
+      candidate = activated;
       return await this.withBindingQuiescence(dependentBindingIds, async () => {
-        await candidate!.activateContributions();
+        await activated.activateContributions();
         const installed = await commitStagedPlugin(this.configPath, staged, operation);
         lockCommitted = true;
-        candidate!.plugin.installed = installed;
-        await candidate!.publishRuntime();
+        activated.plugin.installed = installed;
+        await activated.publishRuntime();
         this.active.delete(installed.pluginId);
         await oldActive?.dispose();
-        this.active.set(installed.pluginId, candidate!.plugin);
+        this.active.set(installed.pluginId, activated.plugin);
         return installed;
       });
     } catch (error) {
@@ -649,7 +811,7 @@ export class ConnectPluginHost {
       const capability = installed.manifest.capabilities.find(
         (candidate) => candidate.id === binding.runtime.capabilityId,
       );
-      if (!capability || capability.type !== "runtime") {
+      if (capability?.type !== "runtime") {
         throw new Error(
           `Agent Binding ${bindingId} requires missing Runtime capability ${installed.pluginId}/${binding.runtime.capabilityId}`,
         );
@@ -694,7 +856,7 @@ export class ConnectPluginHost {
         let reason: string;
         if (!installed) {
           reason = `Plugin ${binding.runtime.pluginId} is not installed`;
-        } else if (!capability || capability.type !== "runtime") {
+        } else if (capability?.type !== "runtime") {
           reason = `Plugin ${installed.pluginId} does not declare this Runtime capability`;
         } else if (installed.status !== "active") {
           reason = `Plugin ${installed.pluginId} is ${installed.status}${installed.error ? `: ${installed.error}` : ""}`;
@@ -710,7 +872,7 @@ export class ConnectPluginHost {
     );
   }
 
-  private async purgeDependentBinding(bindingId: string): Promise<void> {
+  private async purgeDependentBindingState(bindingId: string): Promise<void> {
     if (!this.management) throw new Error("Binding purge requires running Connect management dependencies");
     const sessionRefs = (await this.management.stateStore.listAllRuntimeSessions())
       .filter((session) => session.agentId === bindingId)
@@ -718,10 +880,6 @@ export class ConnectPluginHost {
     await new FileTurnSubmissionStaging(this.management.config.stateDbPath).purgeSessions(sessionRefs);
     await this.management.projects.purgeBindingWorkspaces(bindingId);
     await this.management.stateStore.purgeAgentBinding(bindingId);
-    delete this.management.config.agents[bindingId];
-    if (this.management.config.defaultAgent === bindingId) {
-      this.management.config.defaultAgent = Object.keys(this.management.config.agents)[0] ?? null;
-    }
   }
 
   private async withBindingQuiescence<T>(bindingIds: readonly string[], criticalSection: () => Promise<T>): Promise<T> {
@@ -900,7 +1058,7 @@ export class ConnectPluginHost {
         state = "activating";
         try {
           for (const { provider, configuration } of stagedExposures) {
-            const disposer = await provider.activate(configuration);
+            const disposer = await provider.activate(Object.freeze({ configuration, client: this.clientExposure }));
             if (typeof disposer === "function") exposureDisposers.push(disposer);
           }
           state = "activated";
@@ -927,6 +1085,40 @@ export class ConnectPluginHost {
       },
     };
   }
+
+  private async fetchClientExposure(request: Request): Promise<Response> {
+    const target = this.clientExposureTarget;
+    if (!target) {
+      return errorResponse(503, "plugin-client-unavailable", "Connect Client is not available yet", true);
+    }
+    const destination = new URL(request.url);
+    destination.protocol = target.origin.protocol;
+    destination.username = target.origin.username;
+    destination.password = target.origin.password;
+    destination.host = target.origin.host;
+    const forwarded = new Request(destination, request);
+    forwarded.headers.set("host", target.origin.host);
+    forwarded.headers.delete(BINDING_SCOPE_HEADER);
+    forwarded.headers.delete(PLUGIN_MANAGER_CONFIG_HEADER);
+    return await target.fetch(forwarded);
+  }
+}
+
+export async function validateInstalledRuntimeBinding(configPath: string, binding: AgentBindingConfig): Promise<void> {
+  const runtimeAdapters = new RuntimeAdapterRegistry([]);
+  const host = new ConnectPluginHost(configPath, runtimeAdapters, () => undefined);
+  let validationFailure: { error: unknown } | null = null;
+  try {
+    await host.validateRuntimeBinding(binding);
+  } catch (error) {
+    validationFailure = { error };
+  }
+  try {
+    await runtimeAdapters.close();
+  } catch (error) {
+    if (!validationFailure) throw error;
+  }
+  if (validationFailure) throw validationFailure.error;
 }
 
 function runtimeRefs(installed: InstalledPluginLockEntry): RuntimeCapabilityRef[] {
@@ -941,10 +1133,7 @@ function bridgeRuntimeProvider(
   validateConfiguration: PluginConfigurationValidator,
   binding: AgentBindingConfig,
 ): ConnectRuntimeAdapter {
-  if (
-    binding.runtime.pluginId !== pluginId ||
-    binding.runtime.capabilityId !== provider.capabilityId
-  ) {
+  if (binding.runtime.pluginId !== pluginId || binding.runtime.capabilityId !== provider.capabilityId) {
     throw new Error(
       `Runtime provider ${pluginId}/${provider.capabilityId} received a different Agent Binding provider`,
     );
@@ -1041,6 +1230,7 @@ export async function mountMandatoryPluginHost(
   configPath: string,
   config: ConnectConfig,
   reportFailure: (pluginId: string, error: unknown) => void,
+  retireRuntimeBindings: (bindingIds: readonly string[]) => Promise<void>,
 ): Promise<ConnectPluginHost> {
   let host!: ConnectPluginHost;
   const pluginHostModule = {
@@ -1058,6 +1248,7 @@ export async function mountMandatoryPluginHost(
         config,
         stateStore: ctx.connectPersistence.stateStore,
         projects: ctx.connectProjects,
+        retireRuntimeBindings,
         quiesceRuntimeBindings: async (bindingIds, criticalSection) =>
           await ctx.connectSessionQueue.quiesceBindings(
             bindingIds,

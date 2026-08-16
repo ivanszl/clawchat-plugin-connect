@@ -261,8 +261,7 @@ export const en = {
   "@connect.settings.binding.displayName": { defaultMessage: "Display name" },
   "@connect.settings.binding.create.title": { defaultMessage: "New Agent Binding" },
   "@connect.settings.binding.create.description": {
-    defaultMessage:
-      "Create an Agent Binding against one exact capability from an active installed Runtime Plugin.",
+    defaultMessage: "Create an Agent Binding against one exact capability from an active installed Runtime Plugin.",
   },
   "@connect.settings.binding.create.bindingId": { defaultMessage: "Binding ID" },
   "@connect.settings.binding.create.bindingIdDescription": {
@@ -275,8 +274,7 @@ export const en = {
   "@connect.settings.binding.create.createFailed": { defaultMessage: "Unable to create Agent Binding" },
   "@connect.settings.binding.provider.title": { defaultMessage: "Runtime provider" },
   "@connect.settings.binding.provider.description": {
-    defaultMessage:
-      "Select the exact Plugin and Runtime capability. Runtime family is shown for context only.",
+    defaultMessage: "Select the exact Plugin and Runtime capability. Runtime family is shown for context only.",
   },
   "@connect.settings.binding.provider.identity": {
     defaultMessage: "Plugin {pluginId} · Capability {capabilityId}",

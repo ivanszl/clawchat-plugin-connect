@@ -1,18 +1,27 @@
-import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
+import { MAX_PLUGIN_BUNDLE_BYTES } from "../client-contract";
 import type { ConnectPluginBundleV1, ConnectPluginSource } from "./sdk";
 import {
   currentConnectPluginTarget,
+  managedPluginUploadRoot,
   parseConnectPluginBundle,
-  pluginInstallationPaths,
   readConnectPluginBundle,
 } from "./store";
 
 export { pluginSourceIdentity } from "./store";
 export const DEFAULT_NPM_REGISTRY = "https://registry.npmjs.org";
 export const DEFAULT_GITHUB_API = "https://api.github.com";
+export const MAX_PLUGIN_SOURCE_METADATA_BYTES = 4 * 1024 * 1024;
+export const MAX_PLUGIN_SOURCE_DOWNLOAD_BYTES = 32 * 1024 * 1024;
+export const MAX_PLUGIN_SOURCE_ARCHIVE_BYTES = 64 * 1024 * 1024;
+export const MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS = 4;
+export const MAX_GITHUB_SOURCE_RELEASE_CANDIDATES = 4;
+export const MAX_GITHUB_SOURCE_ASSET_ATTEMPTS = 4;
+const MAX_PLUGIN_SOURCE_ARCHIVE_ENTRIES = 4_096;
+const MAX_NPM_PACKAGE_METADATA_BYTES = 1024 * 1024;
 
 export interface PluginSourceResolverOptions {
   fetch?: typeof fetch;
@@ -70,11 +79,21 @@ export async function persistUploadedPluginSource(
   const bundle = parseConnectPluginBundle(bytes, fileName);
   const target = options.target ?? currentConnectPluginTarget();
   requireTarget(bundle, target, `uploaded Bundle ${fileName}`);
-  const uploadRoot = resolve(pluginInstallationPaths(configPath).root, "plugin-uploads");
+  const uploadRoot = managedPluginUploadRoot(configPath);
   const digest = createHash("sha256").update(bytes).digest("hex");
   const path = resolve(uploadRoot, `${digest}.connect-plugin`);
   await mkdir(uploadRoot, { recursive: true, mode: 0o700 });
-  await writeFile(path, bytes, { mode: 0o600 });
+  const rootDetails = await lstat(uploadRoot);
+  if (!rootDetails.isDirectory() || rootDetails.isSymbolicLink()) {
+    throw new Error(`Managed Plugin upload root is not a directory: ${uploadRoot}`);
+  }
+  const temporary = resolve(uploadRoot, `.${digest}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
   return { source: { type: "local", path }, bundle, target };
 }
 
@@ -112,9 +131,12 @@ async function resolveNpmSource(
     .filter((entry): entry is [string, Record<string, unknown>] => isRecord(entry[1]))
     .map(([version, value]) => npmVersionMetadata(version, value))
     .filter((value): value is NpmVersionMetadata => value !== null);
-  const candidates = parsed.version
-    ? versions.filter((candidate) => candidate.version === parsed.version)
-    : stableVersionOrder(versions, metadata);
+  const candidateAttemptLimit = parsed.version ? 1 : MAX_NPM_SOURCE_CANDIDATE_ATTEMPTS;
+  const candidates = (
+    parsed.version
+      ? versions.filter((candidate) => candidate.version === parsed.version)
+      : stableVersionOrder(versions, metadata)
+  ).slice(0, candidateAttemptLimit);
   if (candidates.length === 0) {
     throw new Error(
       `npm Plugin ${parsed.package}${parsed.version ? ` has no version ${parsed.version}` : " has no stable versions"}`,
@@ -124,7 +146,12 @@ async function resolveNpmSource(
   const failures: string[] = [];
   for (const candidate of candidates) {
     try {
-      const tarball = await fetchBytes(fetchSource, candidate.dist.tarball, { Accept: "application/octet-stream" });
+      const tarball = await fetchBytes(
+        fetchSource,
+        candidate.dist.tarball,
+        { Accept: "application/octet-stream" },
+        MAX_PLUGIN_SOURCE_DOWNLOAD_BYTES,
+      );
       verifyDistributionIntegrity(tarball, candidate.dist, `${parsed.package}@${candidate.version} tarball`);
       const bundle = bundleFromNpmTarball(tarball, `${parsed.package}@${candidate.version}`);
       if (bundle.manifest.version !== candidate.version) {
@@ -147,7 +174,9 @@ async function resolveNpmSource(
       if (parsed.version) break;
     }
   }
-  throw new Error(`npm Plugin ${parsed.package} has no compatible ${target} Bundle (${failures.join("; ")})`);
+  throw new Error(
+    `npm Plugin ${parsed.package} has no compatible ${target} Bundle after ${failures.length} of at most ${candidateAttemptLimit} candidate attempts (${failures.join("; ")})`,
+  );
 }
 
 function npmVersionMetadata(version: string, value: Record<string, unknown>): NpmVersionMetadata | null {
@@ -178,7 +207,7 @@ function stableVersionOrder(versions: NpmVersionMetadata[], metadata: Record<str
 }
 
 function bundleFromNpmTarball(bytes: Uint8Array, label: string): ConnectPluginBundleV1 {
-  const archive = bytes[0] === 0x1f && bytes[1] === 0x8b ? new Uint8Array(gunzipSync(bytes)) : bytes;
+  const archive = decompressNpmTarball(bytes, label);
   const files = readTarFiles(archive);
   let declaredPath: string | undefined;
   const packageJson = files.get("package/package.json") ?? files.get("package.json");
@@ -203,11 +232,36 @@ function bundleFromNpmTarball(bytes: Uint8Array, label: string): ConnectPluginBu
   return parseConnectPluginBundle(selected[1], `${label} tarball:${selected[0]}`);
 }
 
+function decompressNpmTarball(bytes: Uint8Array, label: string): Uint8Array {
+  if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) {
+    if (bytes.byteLength > MAX_PLUGIN_SOURCE_ARCHIVE_BYTES) {
+      throw new Error(`${label} archive exceeds the ${MAX_PLUGIN_SOURCE_ARCHIVE_BYTES}-byte decompressed limit`);
+    }
+    return bytes;
+  }
+  try {
+    return gunzipSync(bytes, { maxOutputLength: MAX_PLUGIN_SOURCE_ARCHIVE_BYTES });
+  } catch (error) {
+    throw new Error(
+      `${label} gzip archive is invalid or exceeds the ${MAX_PLUGIN_SOURCE_ARCHIVE_BYTES}-byte decompressed limit`,
+      { cause: error },
+    );
+  }
+}
+
 function readTarFiles(archive: Uint8Array): Map<string, Uint8Array> {
+  if (archive.byteLength > MAX_PLUGIN_SOURCE_ARCHIVE_BYTES) {
+    throw new Error(`npm tarball exceeds the ${MAX_PLUGIN_SOURCE_ARCHIVE_BYTES}-byte decompressed limit`);
+  }
   const files = new Map<string, Uint8Array>();
+  let entries = 0;
   for (let offset = 0; offset + 512 <= archive.length; ) {
     const header = archive.subarray(offset, offset + 512);
     if (header.every((byte) => byte === 0)) break;
+    entries += 1;
+    if (entries > MAX_PLUGIN_SOURCE_ARCHIVE_ENTRIES) {
+      throw new Error(`npm tarball exceeds the ${MAX_PLUGIN_SOURCE_ARCHIVE_ENTRIES}-entry limit`);
+    }
     const name = tarText(header.subarray(0, 100));
     const prefix = tarText(header.subarray(345, 500));
     const path = prefix ? `${prefix}/${name}` : name;
@@ -216,10 +270,16 @@ function readTarFiles(archive: Uint8Array): Map<string, Uint8Array> {
     if (!Number.isSafeInteger(size) || size < 0 || !path || path.startsWith("/") || path.split("/").includes("..")) {
       throw new Error("npm tarball contains a malformed entry");
     }
+    if (path.endsWith(".connect-plugin") && size > MAX_PLUGIN_BUNDLE_BYTES) {
+      throw new Error(`npm tarball Bundle exceeds the ${MAX_PLUGIN_BUNDLE_BYTES}-byte limit`);
+    }
+    if ((path === "package/package.json" || path === "package.json") && size > MAX_NPM_PACKAGE_METADATA_BYTES) {
+      throw new Error(`npm tarball package metadata exceeds the ${MAX_NPM_PACKAGE_METADATA_BYTES}-byte limit`);
+    }
     const start = offset + 512;
     const end = start + size;
     if (end > archive.length) throw new Error("npm tarball entry exceeds archive bounds");
-    if (header[156] === 0 || header[156] === 48) files.set(path, archive.slice(start, end));
+    if (header[156] === 0 || header[156] === 48) files.set(path, archive.subarray(start, end));
     offset = start + Math.ceil(size / 512) * 512;
   }
   return files;
@@ -257,6 +317,7 @@ async function resolveGitHubSource(
   } else {
     releaseValue = await fetchJson(fetchSource, `${apiBase}/repos/${parsed.repository}/releases?per_page=100`, headers);
   }
+  const releaseCandidateLimit = parsed.version ? 1 : MAX_GITHUB_SOURCE_RELEASE_CANDIDATES;
   const releases = (Array.isArray(releaseValue) ? releaseValue : [releaseValue])
     .map(githubRelease)
     .filter((release): release is GitHubRelease => release !== null && !release.draft)
@@ -265,7 +326,8 @@ async function resolveGitHubSource(
     )
     .sort((left, right) =>
       compareSemver(normalizeReleaseVersion(right.tag_name), normalizeReleaseVersion(left.tag_name)),
-    );
+    )
+    .slice(0, releaseCandidateLimit);
   if (releases.length === 0) {
     throw new Error(
       `GitHub Plugin ${parsed.repository}${parsed.version ? ` has no Release ${parsed.version}` : " has no stable Releases"}`,
@@ -273,17 +335,32 @@ async function resolveGitHubSource(
   }
   const target = options.target ?? currentConnectPluginTarget();
   const failures: string[] = [];
-  for (const release of releases) {
+  let assetAttempts = 0;
+  let releaseAttempts = 0;
+  releaseLoop: for (const release of releases) {
+    if (assetAttempts >= MAX_GITHUB_SOURCE_ASSET_ATTEMPTS) break;
+    releaseAttempts += 1;
     const assets = release.assets.filter((asset) => asset.name.endsWith(".connect-plugin"));
     const preferred = assets.filter((asset) => asset.name.includes(target));
-    const candidates = preferred.length > 0 ? preferred : assets.length === 1 ? assets : [];
+    const candidates = (preferred.length > 0 ? preferred : assets.length === 1 ? assets : []).sort((left, right) => {
+      if (left.name !== right.name) return left.name < right.name ? -1 : 1;
+      if (left.browser_download_url === right.browser_download_url) return 0;
+      return left.browser_download_url < right.browser_download_url ? -1 : 1;
+    });
     for (const asset of candidates) {
+      if (assetAttempts >= MAX_GITHUB_SOURCE_ASSET_ATTEMPTS) break releaseLoop;
+      assetAttempts += 1;
       try {
         const label = `${parsed.repository} Release ${release.tag_name}/${asset.name}`;
         if (!asset.digest || !/^sha256:[0-9a-fA-F]{64}$/u.test(asset.digest)) {
           throw new Error(`${label} metadata does not provide a valid sha256 digest`);
         }
-        const bytes = await fetchBytes(fetchSource, asset.browser_download_url, { Accept: "application/octet-stream" });
+        const bytes = await fetchBytes(
+          fetchSource,
+          asset.browser_download_url,
+          { Accept: "application/octet-stream" },
+          MAX_PLUGIN_BUNDLE_BYTES,
+        );
         const actualDigest = createHash("sha256").update(bytes).digest("hex");
         if (asset.digest.toLowerCase() !== `sha256:${actualDigest}`) {
           throw new Error(`${label} sha256 digest mismatch`);
@@ -316,7 +393,7 @@ async function resolveGitHubSource(
     if (parsed.version) break;
   }
   throw new Error(
-    `GitHub Plugin ${parsed.repository} has no compatible ${target} Release asset (${failures.join("; ")})`,
+    `GitHub Plugin ${parsed.repository} has no compatible ${target} Release asset after ${assetAttempts} of at most ${MAX_GITHUB_SOURCE_ASSET_ATTEMPTS} asset attempts across ${releaseAttempts} of at most ${releaseCandidateLimit} Release candidates (${failures.join("; ")})`,
   );
 }
 
@@ -324,7 +401,11 @@ function githubReference(reference: string): { repository: string; version?: str
   let value = reference.startsWith("github:") ? reference.slice(7) : reference.replace(/^https:\/\/github\.com\//u, "");
   value = value.replace(/\/$/u, "");
   const release = value.match(/^([^/]+\/[^/]+)\/releases\/tag\/(.+)$/u);
-  if (release) return { repository: release[1]!, version: decodeURIComponent(release[2]!) };
+  const releaseRepository = release?.[1];
+  const releaseVersion = release?.[2];
+  if (releaseRepository && releaseVersion) {
+    return { repository: releaseRepository, version: decodeURIComponent(releaseVersion) };
+  }
   const separator = value.lastIndexOf("@");
   const repository = (separator > 0 ? value.slice(0, separator) : value).replace(/\.git$/u, "");
   const version = separator > 0 ? value.slice(separator + 1) : undefined;
@@ -390,19 +471,60 @@ function compareSemver(left: string, right: string): number {
 }
 
 async function fetchJson(fetchSource: typeof fetch, url: string, headers: Record<string, string>): Promise<unknown> {
-  const response = await fetchSource(url, { headers });
-  if (!response.ok) throw new Error(`Plugin source request ${url} failed with HTTP ${response.status}`);
-  return (await response.json()) as unknown;
+  const bytes = await fetchBytes(fetchSource, url, headers, MAX_PLUGIN_SOURCE_METADATA_BYTES);
+  return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
 }
 
 async function fetchBytes(
   fetchSource: typeof fetch,
   url: string,
   headers: Record<string, string>,
+  maxBytes: number,
 ): Promise<Uint8Array> {
   const response = await fetchSource(url, { headers });
   if (!response.ok) throw new Error(`Plugin source request ${url} failed with HTTP ${response.status}`);
-  return new Uint8Array(await response.arrayBuffer());
+  return await readBoundedResponseBytes(response, `Plugin source response ${url}`, maxBytes);
+}
+
+export async function readBoundedResponseBytes(
+  response: Response,
+  label: string,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  const declaredHeader = response.headers.get("content-length");
+  if (declaredHeader !== null) {
+    const declaredLength = Number(declaredHeader);
+    if (!Number.isSafeInteger(declaredLength) || declaredLength < 0) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`${label} declared an invalid body length`);
+    }
+    if (declaredLength > maxBytes) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`${label} exceeds the ${maxBytes}-byte download limit`);
+    }
+  }
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    received += chunk.value.byteLength;
+    if (received > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(`${label} exceeds the ${maxBytes}-byte download limit`);
+    }
+    chunks.push(chunk.value);
+  }
+  if (chunks.length === 1) return chunks[0] ?? new Uint8Array();
+  const bytes = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 function errorMessage(error: unknown): string {

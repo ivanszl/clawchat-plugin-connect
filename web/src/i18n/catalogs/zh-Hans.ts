@@ -231,8 +231,7 @@ export const zhHans = {
   },
   "@connect.settings.binding.provider.lockedTitle": { defaultMessage: "无法编辑 Runtime 提供程序" },
   "@connect.settings.binding.provider.lockedDescription": {
-    defaultMessage:
-      "此 Binding 已在 ClawChat 中激活。激活期间无法安全地更改其 Runtime 提供程序。",
+    defaultMessage: "此 Binding 已在 ClawChat 中激活。激活期间无法安全地更改其 Runtime 提供程序。",
   },
   "@connect.settings.binding.model.description": {
     defaultMessage: "默认值会跟随 Runtime Adapter；Session 仍可单独覆盖。",

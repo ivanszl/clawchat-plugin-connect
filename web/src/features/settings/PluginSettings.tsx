@@ -787,6 +787,7 @@ export function JsonSchemaForm({
         label={fallbackLabel}
         description={typeof schema.description === "string" ? schema.description : undefined}
         schema={schema}
+        rootSchema={schema}
         value={value}
         isRequired
         onChange={(next) => {
@@ -805,6 +806,7 @@ export function JsonSchemaForm({
           fieldId={`${prefix}-${name}`}
           name={name}
           schema={property}
+          rootSchema={schema}
           value={value[name]}
           isRequired={required.has(name)}
           onChange={(next) => {
@@ -827,6 +829,7 @@ function JsonSchemaField({
   fieldId,
   name,
   schema,
+  rootSchema,
   value,
   isRequired,
   onChange,
@@ -835,6 +838,7 @@ function JsonSchemaField({
   fieldId: string;
   name: string;
   schema: Record<string, unknown>;
+  rootSchema: PluginJsonSchemaView;
   value: unknown;
   isRequired: boolean;
   onChange: (value: unknown) => void;
@@ -842,7 +846,7 @@ function JsonSchemaField({
 }) {
   const label = typeof schema.title === "string" ? schema.title : name;
   const description = typeof schema.description === "string" ? schema.description : undefined;
-  const isValid = isJsonSchemaFieldValid(schema, value, isRequired);
+  const isValid = isJsonSchemaFieldValid(schema, value, isRequired, rootSchema);
   useEffect(() => onValidityChange?.(fieldId, isValid), [fieldId, isValid, onValidityChange]);
   if (schema.type === "boolean") {
     return (
@@ -887,6 +891,7 @@ function JsonSchemaField({
       label={label}
       description={description}
       schema={schema}
+      rootSchema={rootSchema}
       value={value}
       isRequired={isRequired}
       onChange={onChange}
@@ -899,6 +904,7 @@ function JsonValueInput({
   label,
   description,
   schema,
+  rootSchema,
   value,
   isRequired,
   onChange,
@@ -908,6 +914,7 @@ function JsonValueInput({
   label: string;
   description?: string;
   schema: Record<string, unknown>;
+  rootSchema: PluginJsonSchemaView;
   value: unknown;
   isRequired: boolean;
   onChange: (value: unknown) => void;
@@ -918,7 +925,8 @@ function JsonValueInput({
   const [raw, setRaw] = useState(value === undefined ? "" : (JSON.stringify(value, null, 2) ?? ""));
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setRaw(value === undefined ? "" : (JSON.stringify(value, null, 2) ?? "")), [value]);
-  const isValueValid = validateValue ?? ((candidate: unknown) => isJsonSchemaFieldValid(schema, candidate, isRequired));
+  const isValueValid =
+    validateValue ?? ((candidate: unknown) => isJsonSchemaFieldValid(schema, candidate, isRequired, rootSchema));
   return (
     <TextArea
       label={label}
@@ -1127,7 +1135,7 @@ export function prepareJsonSchemaConfiguration(
       fieldValue = structuredClone(property.default);
       prepared[name] = fieldValue;
     }
-    if (!isJsonSchemaFieldValid(property, fieldValue, required.has(name))) {
+    if (!isJsonSchemaFieldValid(property, fieldValue, required.has(name), schema)) {
       invalidFieldIds.add(`${prefix}-${name}`);
     }
   }
@@ -1169,10 +1177,16 @@ function validatesJsonSchema(schema: unknown, value: unknown, root: PluginJsonSc
     const resolved = resolveLocalJsonSchemaReference(root, schema.$ref);
     if (resolved === undefined || !validatesJsonSchema(resolved, value, root, depth + 1)) return false;
   }
-  if (Array.isArray(schema.allOf) && !schema.allOf.every((entry) => validatesJsonSchema(entry, value, root, depth + 1))) {
+  if (
+    Array.isArray(schema.allOf) &&
+    !schema.allOf.every((entry) => validatesJsonSchema(entry, value, root, depth + 1))
+  ) {
     return false;
   }
-  if (Array.isArray(schema.anyOf) && !schema.anyOf.some((entry) => validatesJsonSchema(entry, value, root, depth + 1))) {
+  if (
+    Array.isArray(schema.anyOf) &&
+    !schema.anyOf.some((entry) => validatesJsonSchema(entry, value, root, depth + 1))
+  ) {
     return false;
   }
   if (
@@ -1221,14 +1235,16 @@ function validatesJsonSchema(schema: unknown, value: unknown, root: PluginJsonSc
   if (Array.isArray(value)) {
     if (typeof schema.minItems === "number" && value.length < schema.minItems) return false;
     if (typeof schema.maxItems === "number" && value.length > schema.maxItems) return false;
-    if (schema.uniqueItems === true && value.some((entry, index) => value.slice(0, index).some((other) => jsonValuesEqual(entry, other)))) {
+    if (
+      schema.uniqueItems === true &&
+      value.some((entry, index) => value.slice(0, index).some((other) => jsonValuesEqual(entry, other)))
+    ) {
       return false;
     }
     const prefixItems = Array.isArray(schema.prefixItems) ? schema.prefixItems : [];
     if (
       prefixItems.some(
-        (itemSchema, index) =>
-          index < value.length && !validatesJsonSchema(itemSchema, value[index], root, depth + 1),
+        (itemSchema, index) => index < value.length && !validatesJsonSchema(itemSchema, value[index], root, depth + 1),
       )
     ) {
       return false;
@@ -1272,7 +1288,9 @@ function validatesJsonSchema(schema: unknown, value: unknown, root: PluginJsonSc
       return false;
     }
     for (const [name, entry] of entries) {
-      const matchedPatternSchemas = patterns.filter(([pattern]) => pattern.test(name)).map(([, itemSchema]) => itemSchema);
+      const matchedPatternSchemas = patterns
+        .filter(([pattern]) => pattern.test(name))
+        .map(([, itemSchema]) => itemSchema);
       if (matchedPatternSchemas.some((itemSchema) => !validatesJsonSchema(itemSchema, entry, root, depth + 1))) {
         return false;
       }
@@ -1325,7 +1343,10 @@ function matchesJsonSchemaType(type: unknown, value: unknown): boolean {
 function matchesJsonSchemaFormat(format: string, value: string): boolean {
   if (format === "email") return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value);
   if (format === "hostname") {
-    return value.length <= 253 && value.split(".").every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u.test(label));
+    return (
+      value.length <= 253 &&
+      value.split(".").every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/u.test(label))
+    );
   }
   if (format === "ipv4") {
     const parts = value.split(".");
@@ -1371,9 +1392,14 @@ function jsonValuesEqual(left: unknown, right: unknown): boolean {
   return false;
 }
 
-function isJsonSchemaFieldValid(schema: Record<string, unknown>, value: unknown, isRequired: boolean): boolean {
+function isJsonSchemaFieldValid(
+  schema: Record<string, unknown>,
+  value: unknown,
+  isRequired: boolean,
+  rootSchema: PluginJsonSchemaView,
+): boolean {
   if (value === undefined) return !isRequired;
-  return validatesJsonSchema(schema, value, schema, 0);
+  return validatesJsonSchema(schema, value, rootSchema, 0);
 }
 
 function capabilityInstanceKey(capability: PluginCapabilityView, instanceId: string): string {

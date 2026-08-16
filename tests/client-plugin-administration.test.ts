@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_PLUGIN_BUNDLE_BYTES } from "../src/client-contract";
@@ -11,13 +11,14 @@ import {
   startClientInterface,
 } from "../src/client-interface/server";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
-import { defaultConfig } from "../src/config";
+import { defaultConfig, saveConfig } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
 import type { OfficialPluginDiscovery } from "../src/plugin/catalog";
-import type { ConfigurePluginOptions, ConnectPluginHost, ManagePluginOptions } from "../src/plugin/host";
+import type { ConfigurePluginOptions, ConnectPluginManagement, ManagePluginOptions } from "../src/plugin/host";
 import { type InstalledPluginLockEntry, validatePluginConfiguration } from "../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import type { AgentBindingConfig } from "../src/types";
 
 const handles: ClientInterfaceHandle[] = [];
 const stores: ConnectStateStore[] = [];
@@ -31,6 +32,7 @@ describe("Connect Client trusted Plugin administration", () => {
   it("projects complete DTOs and exercises only explicit installation-level commands", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-plugins-"));
     const configPath = join(directory, "config.json");
+    await mkdir(configPath);
     const config = defaultConfig();
     config.stateDbPath = join(directory, "state.sqlite");
     config.clientPort = 47_896;
@@ -87,7 +89,8 @@ describe("Connect Client trusted Plugin administration", () => {
         options.installationConfiguration,
         "Client installation configuration",
       );
-      const runtimeCapability = healthy.manifest.capabilities[0]!;
+      const runtimeCapability = healthy.manifest.capabilities[0];
+      if (!runtimeCapability) throw new Error("Expected healthy Runtime capability fixture");
       for (const [bindingId, configuration] of Object.entries(options.runtimeConfigurations)) {
         validatePluginConfiguration(
           runtimeCapability.configurationSchema,
@@ -100,6 +103,14 @@ describe("Connect Client trusted Plugin administration", () => {
     const disable = mock(async (_pluginId: string) => healthy);
     const select = mock(async (_pluginId: string, _version: string, _integrity?: string) => healthy);
     const remove = mock(async (_pluginId: string, _force?: boolean) => healthy);
+    const upsertBindingProvider = mock(async (bindingId: string, binding: AgentBindingConfig) => {
+      const nextConfig = structuredClone(config);
+      nextConfig.agents[bindingId] = binding;
+      if (!nextConfig.defaultAgent) nextConfig.defaultAgent = bindingId;
+      await saveConfig(nextConfig, configPath);
+      Object.assign(config, nextConfig);
+      return structuredClone(binding);
+    });
     const official: OfficialPluginDiscovery = {
       catalogOrigin: "cache",
       diagnostics: ["Official Plugin Catalog is using the last authenticated cache"],
@@ -157,7 +168,8 @@ describe("Connect Client trusted Plugin administration", () => {
       select,
       remove,
       configure,
-    } as unknown as ConnectPluginHost;
+      upsertBindingProvider,
+    } as unknown as ConnectPluginManagement;
     let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
     const handle = await startClientInterface({
       config,
@@ -232,6 +244,32 @@ describe("Connect Client trusted Plugin administration", () => {
         headers: { [BINDING_SCOPE_HEADER]: "plugin-binding" },
       }).then((response) => response.status),
     ).resolves.toBe(404);
+    const configBeforeSaveFailure = structuredClone(config);
+    const bootstrapBeforeSaveFailure = await request(fetchHandler, handle.origin, "/client/v1/bootstrap").then(
+      async (response) => await response.json(),
+    );
+    const failedBindingResponse = await request(
+      fetchHandler,
+      handle.origin,
+      "/client/v1/bindings/failed-binding/provider",
+      {
+        method: "PUT",
+        json: {
+          requestId: "binding-provider-save-failure",
+          pluginId: "test.healthy",
+          capabilityId: "runtime",
+          runtimeConfig: { workspace: "unsaved" },
+          displayName: "Unsaved Binding",
+          createOnly: true,
+        },
+      },
+    );
+    expect(failedBindingResponse.status).toBe(500);
+    expect(config).toEqual(configBeforeSaveFailure);
+    await expect(
+      request(fetchHandler, handle.origin, "/client/v1/bootstrap").then(async (response) => await response.json()),
+    ).resolves.toEqual(bootstrapBeforeSaveFailure);
+    await rename(configPath, `${configPath}.save-blocker`);
 
     const createdBindingResponse = await request(
       fetchHandler,
@@ -262,6 +300,14 @@ describe("Connect Client trusted Plugin administration", () => {
       runtimeConfig: { workspace: "project" },
       displayName: "New Binding",
     });
+    expect(upsertBindingProvider).toHaveBeenCalledWith(
+      "new-binding",
+      expect.objectContaining({
+        runtime: { pluginId: "test.healthy", capabilityId: "runtime" },
+        runtimeConfig: { workspace: "project" },
+        displayName: "New Binding",
+      }),
+    );
 
     const duplicateBindingResponse = await request(
       fetchHandler,
@@ -490,7 +536,7 @@ describe("Connect Client trusted Plugin administration", () => {
     expect(remove).toHaveBeenCalledWith("test.healthy", true);
   });
 
-  it("keeps Plugin administration on actual loopback and private Liveware peers in trusted-LAN mode", async () => {
+  it("keeps Plugin administration on actual loopback and rejects private Binding-scoped Liveware", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-plugin-peer-"));
     const configPath = join(directory, "config.json");
     const config = defaultConfig();
@@ -529,7 +575,7 @@ describe("Connect Client trusted Plugin administration", () => {
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
     const list = mock(async () => []);
     const install = mock(async () => ({ pluginId: "test.private-liveware" }));
-    const pluginManager = { list, install } as unknown as ConnectPluginHost;
+    const pluginManager = { list, install } as unknown as ConnectPluginManagement;
     let fetchHandler: ClientHttpServerOptions["fetch"] | null = null;
     const handle = await startClientInterface({
       config,
@@ -555,7 +601,7 @@ describe("Connect Client trusted Plugin administration", () => {
     const loopbackPeer: ClientHttpServerRequestContext = {
       requestIP: () => ({ address: "127.0.0.1" }),
     };
-    const remoteRoutes = [
+    const administrationRoutes = [
       ["GET", "/client/v1/plugins/administration"],
       ["GET", "/client/v1/plugins/official"],
       ["PUT", "/client/v1/bindings/private-binding/provider"],
@@ -571,7 +617,7 @@ describe("Connect Client trusted Plugin administration", () => {
       ["POST", "/client/v1/plugins/test.plugin/select"],
       ["DELETE", "/client/v1/plugins/test.plugin"],
     ] as const;
-    for (const [method, path] of remoteRoutes) {
+    for (const [method, path] of administrationRoutes) {
       const response = await request(
         fetchHandler,
         lanOrigin,
@@ -585,38 +631,24 @@ describe("Connect Client trusted Plugin administration", () => {
     expect((await request(fetchHandler, lanOrigin, "/client/v1/plugins", {}, loopbackPeer)).status).toBe(200);
     expect(list).toHaveBeenCalledTimes(2);
 
-    const privateLiveware = await request(
-      fetchHandler,
-      lanOrigin,
-      "/client/v1/plugins",
-      {
-        method: "POST",
-        headers: {
-          origin: "https://private-liveware.example.test",
-          [BINDING_SCOPE_HEADER]: "private-binding",
+    for (const [method, path] of administrationRoutes) {
+      const response = await request(
+        fetchHandler,
+        lanOrigin,
+        path,
+        {
+          ...(method === "GET" ? {} : { method, json: {} }),
+          headers: {
+            origin: "https://private-liveware.example.test",
+            [BINDING_SCOPE_HEADER]: "private-binding",
+          },
         },
-        json: { source: "npm:@clawchat/private-liveware-plugin@1.0.0" },
-      },
-      loopbackPeer,
-    );
-    expect(privateLiveware.status).toBe(201);
-    expect(install).toHaveBeenCalledWith({ source: "npm:@clawchat/private-liveware-plugin@1.0.0" });
-
-    await store.setLivewareExposure({
-      ownerUserId: "owner",
-      localAgentId: "private-binding",
-      appId: "private-app",
-      publicUrl: "https://public-liveware.example.test/client",
-      accessPolicy: "public",
-    });
-    const publicLiveware = await request(
-      fetchHandler,
-      lanOrigin,
-      "/client/v1/plugins",
-      { headers: { [BINDING_SCOPE_HEADER]: "private-binding" } },
-      loopbackPeer,
-    );
-    expect(publicLiveware.status).toBe(404);
+        loopbackPeer,
+      );
+      expect(response.status).toBe(404);
+    }
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(install).toHaveBeenCalledTimes(0);
   });
 });
 

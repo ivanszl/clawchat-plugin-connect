@@ -25,23 +25,15 @@ import {
   bootstrapQueryOptions,
   catalogQueryOptions,
   clientKeys,
-  projectsQueryOptions,
   pluginAdministrationQueryOptions,
+  projectsQueryOptions,
   removeProject,
   updateBindingPreferences,
   upsertBindingProvider,
 } from "../../client-interface/query-options";
-import {
-  localizedClientError,
-  settingsClientErrorKeys,
-  useClientTranslator,
-} from "../../i18n/client-i18n";
+import { localizedClientError, settingsClientErrorKeys, useClientTranslator } from "../../i18n/client-i18n";
 import { HostDirectoryPicker, projectDirectoryLabel } from "../projects/HostDirectoryPicker";
-import {
-  JsonSchemaForm,
-  PluginSettings,
-  prepareJsonSchemaConfiguration,
-} from "./PluginSettings";
+import { JsonSchemaForm, PluginSettings, prepareJsonSchemaConfiguration } from "./PluginSettings";
 
 type ProjectListItem = { workspaceId: string; name: string; rootPath: string };
 type RuntimeCapabilityOption = {
@@ -139,11 +131,7 @@ type RuntimeCapabilityProps = {
   capabilitiesError: Error | null;
 };
 
-function NewBindingSettings({
-  runtimeCapabilities,
-  capabilitiesPending,
-  capabilitiesError,
-}: RuntimeCapabilityProps) {
+function NewBindingSettings({ runtimeCapabilities, capabilitiesPending, capabilitiesError }: RuntimeCapabilityProps) {
   const t = useClientTranslator();
   const queryClient = useQueryClient();
   const [bindingId, setBindingId] = useState("");
@@ -222,33 +210,33 @@ function NewBindingSettings({
           />
         ) : null}
         <VStack gap={4}>
-          <TextInput
-            label={t("@connect.settings.binding.create.bindingId")}
-            description={t("@connect.settings.binding.create.bindingIdDescription")}
-            value={bindingId}
-            onChange={setBindingId}
-            isRequired
-            width="100%"
-          />
+          <SettingsField description={t("@connect.settings.binding.create.bindingIdDescription")}>
+            <TextInput
+              label={t("@connect.settings.binding.create.bindingId")}
+              value={bindingId}
+              onChange={setBindingId}
+              isRequired
+              width="100%"
+            />
+          </SettingsField>
           <TextInput
             label={t("@connect.settings.binding.displayName")}
             value={displayName}
             onChange={setDisplayName}
             width="100%"
           />
-          <Selector
-            label={t("@connect.settings.binding.provider.select")}
-            description={t("@connect.settings.binding.provider.description")}
-            options={runtimeCapabilities}
-            value={providerValue || undefined}
-            onChange={selectCapability}
-            isRequired
-            isDisabled={capabilitiesPending || Boolean(capabilitiesError) || runtimeCapabilities.length === 0}
-            disabledMessage={t(
-              runtimeCapabilityUnavailableMessage(capabilitiesPending, Boolean(capabilitiesError)),
-            )}
-            width="100%"
-          />
+          <SettingsField description={t("@connect.settings.binding.provider.description")}>
+            <Selector
+              label={t("@connect.settings.binding.provider.select")}
+              options={runtimeCapabilities}
+              value={providerValue || undefined}
+              onChange={selectCapability}
+              isRequired
+              isDisabled={capabilitiesPending || Boolean(capabilitiesError) || runtimeCapabilities.length === 0}
+              disabledMessage={t(runtimeCapabilityUnavailableMessage(capabilitiesPending, Boolean(capabilitiesError)))}
+              width="100%"
+            />
+          </SettingsField>
           {selectedCapability ? (
             <VStack gap={2}>
               <Heading level={3}>{t("@connect.settings.binding.provider.configuration")}</Heading>
@@ -302,10 +290,8 @@ function BindingSettings({
   const configurationValid = invalidConfigurationFieldIds.size === 0;
   const selectedCapability = runtimeCapabilities.find((option) => option.value === providerValue);
   const currentCapability = runtimeCapabilities.find(
-    (option) =>
-      option.pluginId === binding.runtimePluginId && option.capabilityId === binding.runtimeCapabilityId,
+    (option) => option.pluginId === binding.runtimePluginId && option.capabilityId === binding.runtimeCapabilityId,
   );
-  const runtimeConfigurationRevision = JSON.stringify(binding.runtimeConfiguration);
   const selectedModel =
     binding.modelOptions.find((option) => option.id === model) ??
     binding.modelOptions.find((option) => option.isDefault) ??
@@ -326,14 +312,13 @@ function BindingSettings({
     setRuntimeConfiguration(binding.runtimeConfiguration);
     setInvalidConfigurationFieldIds(new Set());
   }, [
-    binding.bindingId,
     binding.displayName,
     binding.model,
     binding.modelReasoningEffort,
     binding.outputVisibility,
     binding.runtimePluginId,
     binding.runtimeCapabilityId,
-    runtimeConfigurationRevision,
+    binding.runtimeConfiguration,
   ]);
   const save = useMutation({
     mutationFn: async () =>
@@ -491,19 +476,20 @@ function BindingSettings({
                 container="section"
               />
             ) : null}
-            <Selector
-              label={t("@connect.settings.binding.provider.select")}
-              description={t("@connect.settings.binding.provider.description")}
-              options={runtimeCapabilities}
-              value={providerValue}
-              onChange={selectCapability}
-              isRequired
-              isDisabled={capabilitiesPending || Boolean(capabilitiesError) || runtimeCapabilities.length === 0}
-              disabledMessage={t(
-                runtimeCapabilityUnavailableMessage(capabilitiesPending, Boolean(capabilitiesError)),
-              )}
-              width="100%"
-            />
+            <SettingsField description={t("@connect.settings.binding.provider.description")}>
+              <Selector
+                label={t("@connect.settings.binding.provider.select")}
+                options={runtimeCapabilities}
+                value={providerValue}
+                onChange={selectCapability}
+                isRequired
+                isDisabled={capabilitiesPending || Boolean(capabilitiesError) || runtimeCapabilities.length === 0}
+                disabledMessage={t(
+                  runtimeCapabilityUnavailableMessage(capabilitiesPending, Boolean(capabilitiesError)),
+                )}
+                width="100%"
+              />
+            </SettingsField>
             {selectedCapability ? (
               <VStack gap={2}>
                 <Heading level={3}>{t("@connect.settings.binding.provider.configuration")}</Heading>
@@ -542,7 +528,6 @@ function runtimeCapabilityValue(pluginId: string, capabilityId: string): string 
   return JSON.stringify([pluginId, capabilityId]);
 }
 
-
 function runtimeCapabilityUnavailableMessage(capabilitiesPending: boolean, capabilitiesError: boolean) {
   if (capabilitiesPending) return "@connect.settings.plugins.loading" as const;
   if (capabilitiesError) return "@connect.settings.plugins.loadFailed" as const;
@@ -554,12 +539,7 @@ function defaultRuntimeConfiguration(
   prefix: string,
 ): { configuration: Record<string, unknown>; invalidFieldIds: Set<string> } {
   const invalidFieldIds = new Set<string>();
-  const configuration = prepareJsonSchemaConfiguration(
-    capability.configurationSchema,
-    {},
-    prefix,
-    invalidFieldIds,
-  );
+  const configuration = prepareJsonSchemaConfiguration(capability.configurationSchema, {}, prefix, invalidFieldIds);
   return { configuration, invalidFieldIds };
 }
 

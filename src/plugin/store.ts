@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ErrorObject, ValidateFunction } from "ajv";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
@@ -102,7 +102,8 @@ export async function stageLocalPlugin(options: InstallLocalPluginOptions): Prom
 }
 
 export async function stagePluginBundle(options: StagePluginBundleOptions): Promise<StagedPlugin> {
-  const { source, bundle } = options;
+  const source = options.source;
+  const bundle = validateBundle(options.bundle);
   if (source.type !== "local" && source.version !== bundle.manifest.version) {
     throw new Error(
       `Resolved ${source.type} source version ${source.version} does not match Bundle version ${bundle.manifest.version}`,
@@ -130,7 +131,7 @@ export async function stagePluginBundle(options: StagePluginBundleOptions): Prom
   await mkdir(paths.store, { recursive: true, mode: 0o700 });
   const identitySegment = createHash("sha256").update(bundle.manifest.pluginId).digest("hex");
   const versionSegment = encodeURIComponent(bundle.manifest.version);
-  const artifactSegment = createHash("sha256").update(entryBytes).digest("hex");
+  const artifactSegment = bundleContentDigest(bundle.manifest, target, bundleContentSignatures(bundle));
   const installedRoot = resolve(paths.store, identitySegment, versionSegment, artifactSegment);
   assertWithin(paths.store, installedRoot, "Plugin artifact");
   const stagingRoot = resolve(paths.store, ".staging", randomUUID());
@@ -152,26 +153,26 @@ export async function stagePluginBundle(options: StagePluginBundleOptions): Prom
     await rm(stagingRoot, { recursive: true, force: true });
   }
 
-  const installedBytes = new Uint8Array(await readFile(activeArtifact));
-  verifyConnectPluginIntegrity(installedBytes, artifact.integrity, `${bundle.manifest.pluginId} installed artifact`);
+  const entry: InstalledPluginLockEntry = {
+    pluginId: bundle.manifest.pluginId,
+    source,
+    version: bundle.manifest.version,
+    target,
+    integrity: artifact.integrity,
+    activeArtifact,
+    manifestPath,
+    manifest: structuredClone(bundle.manifest),
+    installationConfiguration,
+    exposureConfigurations,
+    status: "active",
+    error: null,
+    retainedVersions: [],
+  };
+  await revalidateInstalledPlugin(entry);
   return {
     artifactRoot: installedRoot,
     createdArtifact,
-    entry: {
-      pluginId: bundle.manifest.pluginId,
-      source,
-      version: bundle.manifest.version,
-      target,
-      integrity: artifact.integrity,
-      activeArtifact,
-      manifestPath,
-      manifest: structuredClone(bundle.manifest),
-      installationConfiguration,
-      exposureConfigurations,
-      status: "active",
-      error: null,
-      retainedVersions: [],
-    },
+    entry,
   };
 }
 export async function installLocalPlugin(options: InstallLocalPluginOptions): Promise<InstalledPluginLockEntry> {
@@ -355,14 +356,35 @@ export async function selectInstalledPluginVersion(
 }
 
 export async function revalidateInstalledPlugin(entry: InstalledPluginLockEntry): Promise<void> {
+  const installedRoot = dirname(entry.manifestPath);
   const manifestValue = JSON.parse(await readFile(entry.manifestPath, "utf8")) as unknown;
   if (!isRecord(manifestValue)) throw new Error(`Installed Plugin ${entry.pluginId} manifest is malformed`);
   const manifest = validateManifest(manifestValue);
-  if (manifest.pluginId !== entry.pluginId || manifest.version !== entry.version) {
+  if (
+    manifest.pluginId !== entry.pluginId ||
+    manifest.version !== entry.version ||
+    canonicalJson(manifest) !== canonicalJson(entry.manifest)
+  ) {
     throw new Error(`Installed Plugin ${entry.pluginId} manifest changed after installation`);
   }
-  const bytes = new Uint8Array(await readFile(entry.activeArtifact));
-  verifyConnectPluginIntegrity(bytes, entry.integrity, `${entry.pluginId} installed artifact`);
+  const files = await readInstalledBundleSignatures(installedRoot);
+  const contentDigest = bundleContentDigest(manifest, entry.target, files);
+  if (contentDigest !== basename(installedRoot)) {
+    throw new Error(`Installed Plugin ${entry.pluginId} content changed after installation`);
+  }
+  const artifact = selectArtifact(manifest, entry.target);
+  const artifactIntegrity = files.find(([path]) => path === artifact.entry)?.[1];
+  if (!artifactIntegrity) throw new Error(`Installed Plugin ${entry.pluginId} artifact is missing`);
+  verifyConnectPluginIntegrityValue(artifactIntegrity, entry.integrity, `${entry.pluginId} installed artifact`);
+  if (manifest.probe) {
+    const probeIntegrity = files.find(([path]) => path === manifest.probe?.entry)?.[1];
+    if (!probeIntegrity) throw new Error(`Installed Plugin ${entry.pluginId} runtime probe is missing`);
+    verifyConnectPluginIntegrityValue(
+      probeIntegrity,
+      manifest.probe.integrity,
+      `${entry.pluginId} installed runtime probe`,
+    );
+  }
 }
 
 export async function discardStagedPlugin(configPath: string, staged: StagedPlugin): Promise<void> {
@@ -382,6 +404,46 @@ export async function removePluginArtifacts(configPath: string, pluginId: string
   const identityRoot = resolve(paths.store, identitySegment);
   assertWithin(paths.store, identityRoot, "Plugin artifact");
   await rm(identityRoot, { recursive: true, force: true });
+}
+export function managedPluginUploadRoot(configPath: string): string {
+  return resolve(pluginInstallationPaths(configPath).root, "plugin-uploads");
+}
+
+export async function removeUnreferencedManagedPluginUploads(configPath: string): Promise<void> {
+  const uploadRoot = managedPluginUploadRoot(configPath);
+  const rootDetails = await lstat(uploadRoot).catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!rootDetails) return;
+  if (!rootDetails.isDirectory() || rootDetails.isSymbolicLink()) {
+    throw new Error(`Managed Plugin upload root is not a directory: ${uploadRoot}`);
+  }
+  const referenced = new Set<string>();
+  for (const entry of await listInstalledPlugins(configPath)) {
+    for (const version of [entry, ...entry.retainedVersions]) {
+      if (version.source.type !== "local") continue;
+      const managedPath = managedPluginUploadPath(uploadRoot, version.source.path);
+      if (managedPath) referenced.add(managedPath);
+    }
+  }
+  const entries = await readdir(uploadRoot, { withFileTypes: true }).catch((error: unknown) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^[0-9a-f]{64}\.connect-plugin$/u.test(entry.name)) continue;
+    const path = managedPluginUploadPath(uploadRoot, resolve(uploadRoot, entry.name));
+    if (path && !referenced.has(path)) await rm(path, { force: true });
+  }
+}
+
+function managedPluginUploadPath(uploadRoot: string, path: string): string | null {
+  const candidate = resolve(path);
+  const child = relative(uploadRoot, candidate);
+  if (child !== basename(candidate) || !/^[0-9a-f]{64}\.connect-plugin$/u.test(child)) return null;
+  assertWithin(uploadRoot, candidate, "Managed Plugin upload");
+  return candidate;
 }
 
 export async function readConnectPluginBundle(path: string): Promise<ConnectPluginBundleV1> {
@@ -408,7 +470,7 @@ export function parseConnectPluginBundle(value: string | Uint8Array, label = "so
 
 async function writeStagedBundle(root: string, bundle: ConnectPluginBundleV1): Promise<void> {
   await mkdir(root, { recursive: true, mode: 0o700 });
-  for (const [path, file] of Object.entries(bundle.files)) {
+  for (const path of Object.keys(bundle.files).sort()) {
     const outputPath = resolve(root, path);
     assertWithin(root, outputPath, "Bundle file");
     await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 });
@@ -417,6 +479,67 @@ async function writeStagedBundle(root: string, bundle: ConnectPluginBundleV1): P
   await writeFile(resolve(root, "connect-plugin.json"), `${JSON.stringify(bundle.manifest, null, 2)}\n`, {
     mode: 0o600,
   });
+}
+
+type BundleContentSignature = readonly [path: string, integrity: string];
+
+function* bundleContentSignatures(bundle: ConnectPluginBundleV1): Iterable<BundleContentSignature> {
+  for (const path of Object.keys(bundle.files)) {
+    const bytes = connectPluginBundleFileBytes(bundle, path);
+    yield [path, `sha256-${createHash("sha256").update(bytes).digest("base64")}`];
+  }
+}
+
+async function readInstalledBundleSignatures(root: string): Promise<BundleContentSignature[]> {
+  const files: BundleContentSignature[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolutePath = resolve(directory, entry.name);
+      assertWithin(root, absolutePath, "Installed Bundle file");
+      if (entry.isDirectory()) {
+        await visit(absolutePath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        throw new Error(`Installed Bundle contains unsupported file: ${relative(root, absolutePath)}`);
+      }
+      const path = relative(root, absolutePath).split(sep).join("/");
+      if (path === "connect-plugin.json") continue;
+      const bytes = await readFile(absolutePath);
+      files.push([path, `sha256-${createHash("sha256").update(bytes).digest("base64")}`]);
+    }
+  };
+  await visit(root);
+  return files;
+}
+
+function bundleContentDigest(
+  manifest: ConnectPluginManifestV1,
+  target: string,
+  files: Iterable<BundleContentSignature>,
+): string {
+  const content = [...files].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  return createHash("sha256")
+    .update(canonicalJson({ manifest, target, files: content }))
+    .digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value) as string;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("Bundle metadata must contain only finite JSON numbers");
+    return JSON.stringify(value) as string;
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  throw new Error(`Bundle metadata contains unsupported JSON value: ${String(value)}`);
 }
 
 async function readPluginLockfile(path: string): Promise<ConnectPluginLockfileV1> {
@@ -454,6 +577,9 @@ function validateBundle(value: unknown): ConnectPluginBundleV1 {
   const files: ConnectPluginBundleV1["files"] = {};
   for (const [path, file] of Object.entries(value.files)) {
     requireBundlePath(path);
+    if (path === "connect-plugin.json") {
+      throw new Error("Connect Plugin Bundle file path is reserved: connect-plugin.json");
+    }
     if (
       !isRecord(file) ||
       (file.encoding !== "utf8" && file.encoding !== "base64") ||
@@ -629,13 +755,15 @@ function selectArtifact(manifest: ConnectPluginManifestV1, target: string): Conn
 export function connectPluginBundleFileBytes(bundle: ConnectPluginBundleV1, path: string): Uint8Array {
   const file = bundle.files[path];
   if (!file) throw new Error(`Connect Plugin Bundle file is missing: ${path}`);
-  return file.encoding === "utf8"
-    ? new TextEncoder().encode(file.content)
-    : Uint8Array.from(Buffer.from(file.content, "base64"));
+  return file.encoding === "utf8" ? new TextEncoder().encode(file.content) : Buffer.from(file.content, "base64");
 }
 
 export function verifyConnectPluginIntegrity(bytes: Uint8Array, expected: string, label: string): void {
   const actual = `sha256-${createHash("sha256").update(bytes).digest("base64")}`;
+  verifyConnectPluginIntegrityValue(actual, expected, label);
+}
+
+function verifyConnectPluginIntegrityValue(actual: string, expected: string, label: string): void {
   if (actual !== expected) throw new Error(`${label} integrity mismatch: expected ${expected}, received ${actual}`);
 }
 

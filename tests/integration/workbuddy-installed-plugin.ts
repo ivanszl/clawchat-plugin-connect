@@ -9,7 +9,6 @@ import {
   WORKBUDDY_AI_CAPABILITY_ID,
   WORKBUDDY_CN_CAPABILITY_ID,
   WORKBUDDY_OFFICIAL_PLUGIN_ID,
-  WORKBUDDY_OFFICIAL_RUNTIME_FAMILY,
 } from "../../src/plugin/official/workbuddy-manifest";
 import { installLocalPlugin } from "../../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";

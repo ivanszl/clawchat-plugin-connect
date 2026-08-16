@@ -60,10 +60,22 @@ export default {
     });
     exposureProviders.register({
       capabilityId: "reference-exposure",
-      async activate(configuration) {
+      async activate(activation) {
+        const { configuration, client } = activation;
         const effects = (globalThis.__connectReferenceExposureEffects ??= []);
         effects.push(`activate:${String(configuration.channel ?? "private")}`);
-        return () => effects.push("dispose");
+        globalThis.__connectReferenceExposure = Object.freeze({
+          activationKeys: Object.keys(activation).sort(),
+          activationFrozen: Object.isFrozen(activation),
+          configurationFrozen: Object.isFrozen(configuration),
+          clientKeys: Object.keys(client).sort(),
+          clientFrozen: Object.isFrozen(client),
+          fetch: async (request) => await client.fetch(request),
+        });
+        return () => {
+          effects.push("dispose");
+          Reflect.deleteProperty(globalThis, "__connectReferenceExposure");
+        };
       },
     });
   },

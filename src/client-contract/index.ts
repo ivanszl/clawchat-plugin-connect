@@ -456,7 +456,6 @@ export interface BindingPreferenceView {
   modeOptions: string[];
 }
 
-
 export interface BootstrapView {
   apiVersion: 1;
   eventCursor: number;

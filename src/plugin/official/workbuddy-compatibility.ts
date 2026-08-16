@@ -50,10 +50,11 @@ export async function probeOfficialWorkBuddyRuntimes(
       inspection.status === "supported",
   );
   const detected = inspections.filter((inspection) => inspection.status !== "missing");
+  const soleSupported = supported.length === 1 ? supported[0] : undefined;
   return {
     detected: detected.length > 0,
     compatible: supported.length > 0,
-    ...(supported.length === 1 ? { path: supported[0]!.distribution.applicationPath } : {}),
+    ...(soleSupported ? { path: soleSupported.distribution.applicationPath } : {}),
     ...(supported.length > 0 ? { version: supported.map(observedVersionLabel).join("; ") } : {}),
     detail: inspections.map(inspectionDetail).join(" "),
   };

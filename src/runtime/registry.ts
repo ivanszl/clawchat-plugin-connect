@@ -1,5 +1,5 @@
-import type { RuntimeCapabilityRef } from "../plugin/sdk";
 import { agentBindingIdentity } from "../plugin/binding";
+import type { RuntimeCapabilityRef } from "../plugin/sdk";
 import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
 import type {
   ConnectRuntimeAdapter,
@@ -59,7 +59,6 @@ export class RuntimeAdapterRegistry {
   constructor(definitions: readonly RuntimeAdapterDefinition[] = []) {
     this.registerAll(definitions);
   }
-
 
   register(definition: RuntimeAdapterDefinition): () => Promise<void> {
     return this.registerAll([definition]);
@@ -141,7 +140,6 @@ export class RuntimeAdapterRegistry {
   hasProvider(binding: AgentBindingConfig): boolean {
     return this.definitions.has(this.providerKey(binding.runtime));
   }
-
 
   async start(binding: AgentBindingConfig, context: ConnectRuntimeStartContext): Promise<ConnectRuntimeSession> {
     return await this.require(binding).start(binding, context);
