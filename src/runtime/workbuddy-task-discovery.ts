@@ -8,8 +8,6 @@ export interface WorkBuddyProfileCompatibility {
   displayName: string;
   applicationPath: string;
   bundleIdentifier: string;
-  applicationVersion: string;
-  embeddedCodeBuddyVersion: string;
   configDirectory: string;
   endpointSessionPrefix: string | null;
   sidecarVersion: number;
@@ -21,8 +19,6 @@ export const WORKBUDDY_AI_COMPATIBILITY = {
   displayName: "WorkBuddy AI",
   applicationPath: "/Applications/WorkBuddy AI.app",
   bundleIdentifier: "com.workbuddy.workbuddy-ai",
-  applicationVersion: "5.2.7",
-  embeddedCodeBuddyVersion: "2.106.4",
   configDirectory: join(homedir(), ".workbuddy-ai"),
   endpointSessionPrefix: null,
   sidecarVersion: 1,
@@ -34,8 +30,6 @@ export const WORKBUDDY_CN_COMPATIBILITY = {
   displayName: "WorkBuddy",
   applicationPath: "/Applications/WorkBuddy.app",
   bundleIdentifier: "com.workbuddy.workbuddy",
-  applicationVersion: "5.3.8",
-  embeddedCodeBuddyVersion: "2.115.0",
   configDirectory: join(homedir(), ".workbuddy"),
   endpointSessionPrefix: "__workbuddy_cli_host__-",
   sidecarVersion: 3,
@@ -239,11 +233,9 @@ async function verifyWorkBuddyTask(
   }
   const application = observation.application;
   if (!application) {
-    throw failure(
-      "application-absent",
-      `${product} is not installed at the selected application path; install ${product} ${compatibility.applicationVersion}.`,
-      { selectedProfile: input.profile },
-    );
+    throw failure("application-absent", `${product} is not installed at ${compatibility.applicationPath}.`, {
+      selectedProfile: input.profile,
+    });
   }
   if (
     application.path !== compatibility.applicationPath ||
@@ -257,16 +249,15 @@ async function verifyWorkBuddyTask(
     });
   }
   if (
-    application.version !== compatibility.applicationVersion ||
-    application.embeddedCodeBuddyVersion !== compatibility.embeddedCodeBuddyVersion
+    typeof application.version !== "string" ||
+    !application.version.trim() ||
+    typeof application.embeddedCodeBuddyVersion !== "string" ||
+    !application.embeddedCodeBuddyVersion.trim()
   ) {
-    throw failure("incompatible-version", `The installed ${product} compatibility tuple is unsupported.`, {
+    throw failure("discovery-failed", `The installed ${product} version metadata is unreadable.`, {
       selectedProfile: input.profile,
       detectedApplicationVersion: application.version,
       detectedEmbeddedCodeBuddyVersion: application.embeddedCodeBuddyVersion,
-      supportedApplicationVersion: compatibility.applicationVersion,
-      supportedEmbeddedCodeBuddyVersion: compatibility.embeddedCodeBuddyVersion,
-      supportedAcpVersion: compatibility.acpVersion,
     });
   }
   const applicationProcess = observation.applicationProcess;

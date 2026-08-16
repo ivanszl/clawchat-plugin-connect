@@ -231,15 +231,11 @@ describe("RuntimeAdapterRegistry", () => {
           {
             id: "workbuddy-ai",
             displayName: "WorkBuddy AI",
-            applicationVersion: "5.2.7",
-            embeddedRuntime: { name: "CodeBuddy", version: "2.106.4" },
             protocol: { name: "ACP", version: 1 },
           },
           {
             id: "workbuddy-cn",
             displayName: "WorkBuddy",
-            applicationVersion: "5.3.8",
-            embeddedRuntime: { name: "CodeBuddy", version: "2.115.0" },
             protocol: { name: "ACP", version: 1 },
           },
         ],

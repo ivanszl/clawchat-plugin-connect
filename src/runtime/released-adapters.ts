@@ -31,8 +31,6 @@ export interface ReleasedRuntimeAdapterMetadata {
 export interface ReleasedRuntimeAdapterProfileMetadata {
   id: string;
   displayName: string;
-  applicationVersion: string;
-  embeddedRuntime: { name: string; version: string };
   protocol: { name: string; version: number };
 }
 
@@ -200,8 +198,6 @@ function releasedWorkBuddyProfile(
   return {
     id: compatibility.profile,
     displayName: compatibility.displayName,
-    applicationVersion: compatibility.applicationVersion,
-    embeddedRuntime: { name: "CodeBuddy", version: compatibility.embeddedCodeBuddyVersion },
     protocol: { name: "ACP", version: compatibility.acpVersion },
   };
 }

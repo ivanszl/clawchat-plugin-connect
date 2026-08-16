@@ -113,8 +113,13 @@ try {
   if (!pluginThreads.some((thread) => thread.runtimeThreadId === session.id))
     throw new Error("Official OpenCode Plugin did not discover the native Session");
   const activity = await within(registry.readActivity(binding, session.id), "Plugin native Session activity");
-  if (activity.completeness !== "complete" || activity.activities.length !== 0)
-    throw new Error("Official OpenCode Plugin did not preserve the empty native transcript");
+  if (
+    activity.completeness !== "partial" ||
+    activity.limitations.length !== 1 ||
+    activity.limitations[0] !== "correlation" ||
+    activity.activities.length !== 0
+  )
+    throw new Error("Official OpenCode Plugin did not preserve the empty native transcript and its correlation limit");
   await within(registry.deleteThread(binding, session.id), "Plugin native Session deletion");
   if ((await within(client.listSessions(directory), "post-Plugin Session listing")).some(({ id }) => id === session.id))
     throw new Error("Official OpenCode Plugin did not delete the native Session");

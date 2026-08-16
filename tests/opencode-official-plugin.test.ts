@@ -29,7 +29,7 @@ import type { OpenCodeServerClient } from "../src/runtime/opencode-server";
 import { OPENCODE_SDK_VERSION } from "../src/runtime/opencode-version";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 
-const SUPPORTED_VERSION = OPENCODE_SDK_VERSION;
+const FIXTURE_VERSION = OPENCODE_SDK_VERSION;
 
 describe("official OpenCode Runtime Plugin", () => {
   it("builds a self-contained target artifact and separately integrity-protected probe", async () => {
@@ -57,25 +57,65 @@ describe("official OpenCode Runtime Plugin", () => {
     expect(built.bundle.files["probe.mjs"]?.content).not.toContain("opencode-adapter");
   });
 
-  it("detects only exact supported installed versions and never falls back from a configured executable", async () => {
+  it("accepts arbitrary parseable versions while executable and malformed-output failures remain closed", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-opencode-probe-"));
-    const supported = await fakeExecutable(directory, "supported", SUPPORTED_VERSION);
-    const unsupported = await fakeExecutable(directory, "unsupported", "1.19.0");
+    const versions = ["1.18.16", "7.42.3", "2.0.0-beta.3+darwin.arm64"] as const;
+    const executables = await Promise.all(
+      versions.map(async (version) => ({
+        version,
+        path: await fakeExecutable(directory, `opencode-${version}`, version),
+      })),
+    );
+    const malformed = await fakeExecutable(directory, "malformed", "OpenCode development build");
+    const commandFailure = await fakeFailingExecutable(directory, "command-failure");
+    const provider = await activateProvider(createOpenCodeOfficialPluginEntry());
 
+    for (const candidate of executables) {
+      await expect(
+        probeCompatibleOpenCodeExecutable({
+          platform: process.platform,
+          arch: process.arch,
+          findExecutable: async () => candidate.path,
+        }),
+      ).resolves.toEqual({
+        detected: true,
+        compatible: true,
+        path: candidate.path,
+        version: candidate.version,
+      });
+      expect(requireCompatibleOpenCodeExecutable(candidate.path, { PATH: directory })).toEqual(candidate);
+      expect(() => provider.create({ executablePathOverride: candidate.path })).not.toThrow();
+    }
     await expect(
       probeCompatibleOpenCodeExecutable({
         platform: process.platform,
         arch: process.arch,
-        findExecutable: async () => supported,
+        findExecutable: async () => malformed,
       }),
-    ).resolves.toMatchObject({ detected: true, compatible: true, path: supported, version: SUPPORTED_VERSION });
+    ).resolves.toMatchObject({
+      detected: true,
+      compatible: false,
+      path: malformed,
+      detail: expect.stringContaining("Failed to read OpenCode version"),
+    });
+    expect(() => requireCompatibleOpenCodeExecutable(malformed, { PATH: directory })).toThrow(
+      "Failed to read OpenCode version",
+    );
     await expect(
       probeCompatibleOpenCodeExecutable({
         platform: process.platform,
         arch: process.arch,
-        findExecutable: async () => unsupported,
+        findExecutable: async () => commandFailure,
       }),
-    ).resolves.toMatchObject({ detected: true, compatible: false, path: unsupported, version: "1.19.0" });
+    ).resolves.toMatchObject({
+      detected: true,
+      compatible: false,
+      path: commandFailure,
+      detail: expect.stringContaining("exited with code 17"),
+    });
+    expect(() => requireCompatibleOpenCodeExecutable(commandFailure, { PATH: directory })).toThrow(
+      "exited with code 17",
+    );
     await expect(
       probeCompatibleOpenCodeExecutable({
         platform: process.platform,
@@ -83,10 +123,6 @@ describe("official OpenCode Runtime Plugin", () => {
         findExecutable: async () => null,
       }),
     ).resolves.toMatchObject({ detected: false, compatible: false });
-
-    expect(() => requireCompatibleOpenCodeExecutable(unsupported, { PATH: directory })).toThrow(
-      "Unsupported OpenCode 1.19.0",
-    );
     expect(() => requireCompatibleOpenCodeExecutable(join(directory, "missing-opencode"), { PATH: directory })).toThrow(
       "could not be started",
     );
@@ -102,7 +138,7 @@ describe("official OpenCode Runtime Plugin", () => {
     });
     const provider = await activateProvider(
       createOpenCodeOfficialPluginEntry({
-        requireExecutable: () => ({ path: "/opt/opencode", version: SUPPORTED_VERSION }),
+        requireExecutable: () => ({ path: "/opt/opencode", version: FIXTURE_VERSION }),
         runtimeAdapter: { createServer },
       }),
     );
@@ -184,6 +220,17 @@ async function fakeExecutable(directory: string, name: string, version: string):
   return path;
 }
 
+async function fakeFailingExecutable(directory: string, name: string): Promise<string> {
+  const path = join(directory, process.platform === "win32" ? `${name}.cmd` : name);
+  const source =
+    process.platform === "win32"
+      ? "@echo off\r\necho probe failed 1>&2\r\nexit /b 17\r\n"
+      : "#!/bin/sh\nprintf 'probe failed\\n' >&2\nexit 17\n";
+  await writeFile(path, source);
+  if (process.platform !== "win32") await chmod(path, 0o700);
+  return path;
+}
+
 async function activateProvider(entry: ConnectPluginEntry) {
   let provider: ConnectPluginRuntimeProvider | undefined;
   const context: ConnectPluginContext = {
@@ -210,13 +257,13 @@ function fakeOpenCodeClient(instance: string, closes: Map<string, number>): Open
     projectID: `${instance}-project`,
     directory: `/repo/${instance}`,
     title: instance,
-    version: SUPPORTED_VERSION,
+    version: FIXTURE_VERSION,
     time: { created: 1, updated: 1 },
   };
   return {
-    version: SUPPORTED_VERSION,
+    version: FIXTURE_VERSION,
     async health() {
-      return { healthy: true, version: SUPPORTED_VERSION };
+      return { healthy: true, version: FIXTURE_VERSION };
     },
     async listProjects(): Promise<Project[]> {
       return [];

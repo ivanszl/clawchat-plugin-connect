@@ -22,8 +22,8 @@ function observation(): WorkBuddyDiscoveryObservation {
     application: {
       path: applicationPath,
       bundleIdentifier: "com.workbuddy.workbuddy-ai",
-      version: "5.2.7",
-      embeddedCodeBuddyVersion: "2.106.4",
+      version: "2026.8.16",
+      embeddedCodeBuddyVersion: "9.99.1-nightly.4",
     },
     applicationProcess: { pid: 100, parentPid: 1, executablePath: `${applicationPath}/Contents/MacOS/Electron` },
     task: { id: taskId, workspace, transcriptIdentityMatches: true, replayFingerprint: nativeReplayFingerprint },
@@ -75,15 +75,15 @@ async function failureCode(discoverySource: WorkBuddyTaskDiscoverySource, expect
 }
 
 describe("WorkBuddy Task discovery contract", () => {
-  it("discovers the pinned WorkBuddy AI Task through verified WorkBuddy-owned state", async () => {
+  it("reports arbitrary observed WorkBuddy AI and CodeBuddy versions after verified WorkBuddy-owned discovery", async () => {
     await expect(
       discoverWorkBuddyTask({ profile: "workbuddy-ai", taskId, expectedWorkspace: workspace }, source()),
     ).resolves.toEqual({
       profile: "workbuddy-ai",
       application: {
         path: applicationPath,
-        version: "5.2.7",
-        embeddedCodeBuddyVersion: "2.106.4",
+        version: "2026.8.16",
+        embeddedCodeBuddyVersion: "9.99.1-nightly.4",
         processId: 100,
       },
       task: { id: taskId, workspace },
@@ -245,20 +245,42 @@ describe("WorkBuddy Task discovery contract", () => {
       },
     ],
     [
-      "incompatible-version",
+      "discovery-failed",
       (value: WorkBuddyDiscoveryObservation): void => {
-        if (value.application) value.application.version = "5.2.8";
+        if (value.application) value.application.version = "";
       },
     ],
     [
-      "incompatible-version",
+      "discovery-failed",
       (value: WorkBuddyDiscoveryObservation): void => {
-        if (value.application) value.application.embeddedCodeBuddyVersion = "2.106.5";
+        if (value.application) value.application.embeddedCodeBuddyVersion = " ";
       },
     ],
   ] as const)("returns %s for an incompatible application state", async (code, mutate) => {
     expect(await failureCode(source(mutate))).toBe(code);
   });
+
+  it.each([
+    ["6.0.0", "3.0.0"],
+    ["2027.1-beta.5", "10.2.0-canary.3"],
+  ])(
+    "accepts application %s with observed CodeBuddy %s when identity and endpoint checks pass",
+    async (version, codeBuddy) => {
+      await expect(
+        discoverWorkBuddyTask(
+          { profile: "workbuddy-ai", taskId, expectedWorkspace: workspace },
+          source((value) => {
+            if (!value.application) return;
+            value.application.version = version;
+            value.application.embeddedCodeBuddyVersion = codeBuddy;
+          }),
+        ),
+      ).resolves.toMatchObject({
+        application: { version, embeddedCodeBuddyVersion: codeBuddy },
+        task: { id: taskId },
+      });
+    },
+  );
 
   it.each([
     [

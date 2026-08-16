@@ -457,8 +457,6 @@ export interface BindingPreferenceView {
 export interface RuntimeAdapterProfileMetadataView {
   id: string;
   displayName: string;
-  applicationVersion: string;
-  embeddedRuntime: { name: string; version: string };
   protocol: { name: string; version: number };
 }
 

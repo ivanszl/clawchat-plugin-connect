@@ -21,8 +21,6 @@ export interface OfficialWorkBuddyDistribution {
   readonly displayName: string;
   readonly applicationPath: string;
   readonly bundleIdentifier: string;
-  readonly applicationVersion: string;
-  readonly embeddedCodeBuddyVersion: string;
   readonly acpVersion: 1;
 }
 
@@ -33,8 +31,6 @@ export const OFFICIAL_WORKBUDDY_DISTRIBUTIONS = [
     displayName: "WorkBuddy AI",
     applicationPath: "/Applications/WorkBuddy AI.app",
     bundleIdentifier: "com.workbuddy.workbuddy-ai",
-    applicationVersion: "5.2.7",
-    embeddedCodeBuddyVersion: "2.106.4",
     acpVersion: 1,
   },
   {
@@ -43,8 +39,6 @@ export const OFFICIAL_WORKBUDDY_DISTRIBUTIONS = [
     displayName: "WorkBuddy",
     applicationPath: "/Applications/WorkBuddy.app",
     bundleIdentifier: "com.workbuddy.workbuddy",
-    applicationVersion: "5.3.8",
-    embeddedCodeBuddyVersion: "2.115.0",
     acpVersion: 1,
   },
 ] as const satisfies readonly OfficialWorkBuddyDistribution[];

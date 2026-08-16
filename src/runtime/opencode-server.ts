@@ -19,12 +19,7 @@ import type {
 } from "@opencode-ai/sdk/v2/types";
 import { CONNECT_VERSION } from "../service/version";
 import type { OpenCodeAgentBindingConfig } from "../types";
-import {
-  isSupportedOpenCodeVersion,
-  OPENCODE_SDK_VERSION,
-  parseOpenCodeVersion,
-  SUPPORTED_OPENCODE_VERSIONS,
-} from "./opencode-version";
+import { OPENCODE_SDK_VERSION, parseOpenCodeVersion } from "./opencode-version";
 
 export interface OpenCodeMessage {
   info: Message;
@@ -113,11 +108,6 @@ export async function createOpenCodeServerClient(
   }
   const rawVersion = await (options.readVersion ?? readOpenCodeVersion)(executable, env);
   const version = parseOpenCodeVersion(rawVersion);
-  if (!isSupportedOpenCodeVersion(version)) {
-    throw new Error(
-      `OpenCode compatibility failure for executable version: Connect ${CONNECT_VERSION}, @opencode-ai/sdk ${OPENCODE_SDK_VERSION}, OpenCode ${version}; supported OpenCode versions: ${SUPPORTED_OPENCODE_VERSIONS.join(", ")}`,
-    );
-  }
 
   const port = await (options.allocatePort ?? allocateLoopbackPort)();
   const password = options.password?.() ?? randomBytes(32).toString("hex");

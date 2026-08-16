@@ -226,21 +226,24 @@ function api(version = "1.18.10"): OpenCodeApiClient {
 }
 
 describe("OpenCode Server process boundary", () => {
-  it("accepts the currently supported OpenCode 1.18.13 executable", async () => {
-    const process = new FakeProcess();
-    const client = await createOpenCodeServerClient(
-      { kind: "opencode", executablePathOverride: "/opt/opencode" },
-      {
-        readVersion: async () => "1.18.13",
-        allocatePort: async () => 43129,
-        spawnServer: () => process,
-        createApi: () => api("1.18.13"),
-      },
-    );
+  it.each(["1.18.16", "7.42.3", "2.0.0-beta.3+darwin.arm64"])(
+    "starts arbitrary parseable OpenCode %s and retains the observed version for diagnostics",
+    async (version) => {
+      const process = new FakeProcess();
+      const client = await createOpenCodeServerClient(
+        { kind: "opencode", executablePathOverride: "/opt/opencode" },
+        {
+          readVersion: async () => version,
+          allocatePort: async () => 43129,
+          spawnServer: () => process,
+          createApi: () => api(version),
+        },
+      );
 
-    expect(client.version).toBe("1.18.13");
-    await client.close();
-  });
+      expect(client.version).toBe(version);
+      await client.close();
+    },
+  );
 
   it.each(["1.18.10", "1.18.13"])(
     "accepts the generated OpenCode %s SDK compatibility fixture through the official client",
@@ -402,22 +405,20 @@ describe("OpenCode Server process boundary", () => {
     ).rejects.toThrow("OpenCode executable was not found in PATH");
   });
 
-  it("rejects an executable outside the tested SDK compatibility matrix before spawn", async () => {
-    const spawnServer = mock(() => new FakeProcess());
+  it("fails closed when the installed executable cannot launch its Server", async () => {
     await expect(
       createOpenCodeServerClient(
         { kind: "opencode", executablePathOverride: "/opt/opencode" },
         {
-          readVersion: async () => "1.19.0",
+          readVersion: async () => "1.18.16",
           allocatePort: async () => 1,
-          spawnServer,
-          createApi: () => api("1.19.0"),
+          spawnServer: () => {
+            throw new Error("OpenCode Server launch failed");
+          },
+          createApi: () => api("1.18.16"),
         },
       ),
-    ).rejects.toThrow(
-      `OpenCode compatibility failure for executable version: Connect ${CONNECT_VERSION}, @opencode-ai/sdk 1.18.13, OpenCode 1.19.0`,
-    );
-    expect(spawnServer).not.toHaveBeenCalled();
+    ).rejects.toThrow("OpenCode Server launch failed");
   });
 
   it("rejects empty executable version output before spawning a Server", async () => {

@@ -1,15 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
-import {
-  isSupportedOpenCodeVersion,
-  parseOpenCodeVersion,
-  SUPPORTED_OPENCODE_VERSIONS,
-  type SupportedOpenCodeVersion,
-} from "../../runtime/opencode-version";
+import { parseOpenCodeVersion } from "../../runtime/opencode-version";
 import type { ConnectPluginRuntimeProbeContext, ConnectPluginRuntimeProbeResult } from "../sdk";
 
 export interface CompatibleOpenCodeExecutable {
   readonly path: string;
-  readonly version: SupportedOpenCodeVersion;
+  readonly version: string;
 }
 
 export function requireCompatibleOpenCodeExecutable(
@@ -23,7 +18,7 @@ export function requireCompatibleOpenCodeExecutable(
   const executable = configuredExecutable ?? Bun.which("opencode", { PATH: env?.PATH ?? process.env.PATH });
   if (!executable) {
     throw new Error(
-      "OpenCode executable was not found in PATH; install a supported OpenCode CLI or configure executablePathOverride",
+      "OpenCode executable was not found in PATH; install OpenCode CLI or configure executablePathOverride",
     );
   }
   const result = spawnSync(executable, ["--version"], {
@@ -39,9 +34,6 @@ export function requireCompatibleOpenCodeExecutable(
     );
   }
   const version = parseOpenCodeVersion(result.stdout);
-  if (!isSupportedOpenCodeVersion(version)) {
-    throw new Error(`Unsupported OpenCode ${version}; supported versions: ${SUPPORTED_OPENCODE_VERSIONS.join(", ")}`);
-  }
   return { path: executable, version };
 }
 
@@ -97,15 +89,11 @@ export async function probeCompatibleOpenCodeExecutable(
 
   try {
     const version = parseOpenCodeVersion(stdout);
-    const compatible = isSupportedOpenCodeVersion(version);
     return {
       detected: true,
-      compatible,
+      compatible: true,
       path: executable,
       version,
-      ...(!compatible
-        ? { detail: `Unsupported OpenCode ${version}; supported versions: ${SUPPORTED_OPENCODE_VERSIONS.join(", ")}` }
-        : {}),
     };
   } catch (error) {
     return {

@@ -80,32 +80,54 @@ describe("official WorkBuddy Runtime Plugin", () => {
     expect(probe).not.toContain("createWorkBuddyOfficialPluginEntry");
   });
 
-  it("reports only exact pinned tuples and distinguishes missing from unsupported distributions", async () => {
+  it("accepts arbitrary observed versions while preserving distribution, executable, and metadata failures", async () => {
     const [ai, mainland] = OFFICIAL_WORKBUDDY_DISTRIBUTIONS;
     expect(
-      OFFICIAL_WORKBUDDY_DISTRIBUTIONS.map(
-        ({ profile, applicationPath, bundleIdentifier, applicationVersion, embeddedCodeBuddyVersion, acpVersion }) => ({
-          profile,
-          applicationPath,
-          bundleIdentifier,
-          applicationVersion,
-          embeddedCodeBuddyVersion,
-          acpVersion,
-        }),
-      ),
+      OFFICIAL_WORKBUDDY_DISTRIBUTIONS.map(({ profile, applicationPath, bundleIdentifier, acpVersion }) => ({
+        profile,
+        applicationPath,
+        bundleIdentifier,
+        acpVersion,
+      })),
     ).toEqual(
       [WORKBUDDY_AI_COMPATIBILITY, WORKBUDDY_CN_COMPATIBILITY].map(
-        ({ profile, applicationPath, bundleIdentifier, applicationVersion, embeddedCodeBuddyVersion, acpVersion }) => ({
+        ({ profile, applicationPath, bundleIdentifier, acpVersion }) => ({
           profile,
           applicationPath,
           bundleIdentifier,
-          applicationVersion,
-          embeddedCodeBuddyVersion,
           acpVersion,
         }),
       ),
     );
-    const exact = await probeOfficialWorkBuddyRuntimes(
+
+    const observedVersions = {
+      "workbuddy-ai": { applicationVersion: "2026.8.16", embeddedCodeBuddyVersion: "9.99.1-nightly.4" },
+      "workbuddy-cn": { applicationVersion: "6.0.0-preview.2", embeddedCodeBuddyVersion: "3.7.11" },
+    } as const;
+    const arbitrary = await probeOfficialWorkBuddyRuntimes(
+      { platform: "darwin", arch: "arm64", findExecutable: async () => null },
+      {
+        inspect: async (distribution): Promise<OfficialWorkBuddyInspection> => ({
+          status: "supported",
+          distribution,
+          bundleIdentifier: distribution.bundleIdentifier,
+          ...observedVersions[distribution.profile],
+        }),
+      },
+    );
+    expect(arbitrary).toMatchObject({
+      detected: true,
+      compatible: true,
+      version: "WorkBuddy AI 2026.8.16 + CodeBuddy 9.99.1-nightly.4; WorkBuddy 6.0.0-preview.2 + CodeBuddy 3.7.11",
+    });
+    expect(arbitrary).not.toHaveProperty("path");
+    expect(arbitrary.detail).toContain(
+      "Detected WorkBuddy AI 2026.8.16 + CodeBuddy 9.99.1-nightly.4 at /Applications/WorkBuddy AI.app",
+    );
+    expect(arbitrary.detail).toContain("ACP v1");
+    expect(arbitrary.detail).toContain("verified during Binding activation");
+
+    const oneDistribution = await probeOfficialWorkBuddyRuntimes(
       { platform: "darwin", arch: "arm64", findExecutable: async () => null },
       {
         inspect: async (distribution): Promise<OfficialWorkBuddyInspection> =>
@@ -114,36 +136,52 @@ describe("official WorkBuddy Runtime Plugin", () => {
                 status: "supported",
                 distribution: ai,
                 bundleIdentifier: ai.bundleIdentifier,
-                applicationVersion: ai.applicationVersion,
-                embeddedCodeBuddyVersion: ai.embeddedCodeBuddyVersion,
+                applicationVersion: "7.4.3",
+                embeddedCodeBuddyVersion: "4.8.12",
               }
             : { status: "missing", distribution: mainland },
       },
     );
-    expect(exact).toMatchObject({
+    expect(oneDistribution).toMatchObject({
       detected: true,
       compatible: true,
       path: ai.applicationPath,
-      version: "WorkBuddy AI 5.2.7 + CodeBuddy 2.106.4 + ACP v1",
+      version: "WorkBuddy AI 7.4.3 + CodeBuddy 4.8.12",
     });
-    expect(exact.detail).toContain("Detected exact WorkBuddy AI 5.2.7 + CodeBuddy 2.106.4 + ACP v1");
-    expect(exact.detail).toContain("WorkBuddy 5.3.8 + CodeBuddy 2.115.0 + ACP v1 is missing");
+    expect(oneDistribution.detail).toContain(`WorkBuddy is missing from ${mainland.applicationPath}`);
 
-    const unsupported = await probeOfficialWorkBuddyRuntimes(
+    const wrongDistribution = await probeOfficialWorkBuddyRuntimes(
       { platform: "darwin", arch: "arm64", findExecutable: async () => null },
       {
         inspect: async (distribution): Promise<OfficialWorkBuddyInspection> => ({
           status: "unsupported",
           distribution,
-          bundleIdentifier: distribution.bundleIdentifier,
-          applicationVersion: `${distribution.applicationVersion}-other`,
-          embeddedCodeBuddyVersion: distribution.embeddedCodeBuddyVersion,
+          bundleIdentifier: "com.example.not-workbuddy",
+          applicationVersion: "99.1.0",
+          embeddedCodeBuddyVersion: "[wrong-distribution]",
         }),
       },
     );
-    expect(unsupported).toMatchObject({ detected: true, compatible: false });
-    expect(unsupported.detail).toContain("Unsupported workbuddy-ai tuple");
-    expect(unsupported.detail).toContain("Unsupported workbuddy-cn tuple");
+    expect(wrongDistribution).toMatchObject({ detected: true, compatible: false });
+    expect(wrongDistribution.detail).toContain("Wrong distribution");
+    expect(wrongDistribution.detail).toContain("com.example.not-workbuddy");
+
+    const unreadableExecutable = await probeOfficialWorkBuddyRuntimes(
+      { platform: "darwin", arch: "arm64", findExecutable: async () => null },
+      {
+        inspect: async (distribution): Promise<OfficialWorkBuddyInspection> =>
+          distribution.profile === "workbuddy-ai"
+            ? {
+                status: "unsupported",
+                distribution,
+                error: "ENOENT: Contents/MacOS/Electron",
+              }
+            : { status: "missing", distribution },
+      },
+    );
+    expect(unreadableExecutable).toMatchObject({ detected: true, compatible: false });
+    expect(unreadableExecutable.detail).toContain("executable or diagnostic metadata is unreadable");
+    expect(unreadableExecutable.detail).toContain("Contents/MacOS/Electron");
 
     await expect(
       probeOfficialWorkBuddyRuntimes(

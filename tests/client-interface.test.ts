@@ -523,8 +523,8 @@ describe("Connect Client Interface", () => {
         {
           kind: "workbuddy",
           profiles: [
-            { id: "workbuddy-ai", applicationVersion: "5.2.7" },
-            { id: "workbuddy-cn", applicationVersion: "5.3.8" },
+            { id: "workbuddy-ai", protocol: { name: "ACP", version: 1 } },
+            { id: "workbuddy-cn", protocol: { name: "ACP", version: 1 } },
           ],
         },
       ],

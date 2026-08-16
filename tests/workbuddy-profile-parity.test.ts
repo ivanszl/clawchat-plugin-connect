@@ -30,9 +30,11 @@ import type { WorkBuddyAgentBindingConfig } from "../src/types";
 const profiles: [WorkBuddyProfile][] = [["workbuddy-ai"], ["workbuddy-cn"]];
 const taskId = "00000000-0000-4000-8000-000000000001";
 const port = "43129";
+const fixtureApplicationVersion = "2026.8.16";
+const fixtureCodeBuddyVersion = "9.99.1-nightly.4";
 
 describe.each(profiles)("WorkBuddy profile parity: %s", (profile) => {
-  it("uses the profile-specific compatibility tuple and rejects the other installed distribution", async () => {
+  it("uses profile-specific application identity and rejects the other installed distribution", async () => {
     const compatibility = workBuddyProfileCompatibility(profile);
     const source = discoverySource(profile);
 
@@ -42,8 +44,8 @@ describe.each(profiles)("WorkBuddy profile parity: %s", (profile) => {
       profile,
       application: {
         path: compatibility.applicationPath,
-        version: compatibility.applicationVersion,
-        embeddedCodeBuddyVersion: compatibility.embeddedCodeBuddyVersion,
+        version: fixtureApplicationVersion,
+        embeddedCodeBuddyVersion: fixtureCodeBuddyVersion,
       },
       task: { id: taskId, workspace: compatibility.configDirectory },
       endpoint: `http://127.0.0.1:${port}/api/v1/acp`,
@@ -58,28 +60,33 @@ describe.each(profiles)("WorkBuddy profile parity: %s", (profile) => {
     ).rejects.toMatchObject({ code: "wrong-distribution", details: { selectedProfile: otherProfile } });
   });
 
-  it("fails with profile-specific compatibility details for any mismatched pinned version", async () => {
-    const compatibility = workBuddyProfileCompatibility(profile);
-    const source = discoverySource(profile);
-    const inspect = source.inspect;
-    source.inspect = async (input) => {
-      const value = await inspect(input);
-      if (value.application) value.application.embeddedCodeBuddyVersion = "unsupported";
-      return value;
-    };
+  it.each([
+    ["6.0.0", "3.0.0"],
+    ["2028.4-rc.1", "11.0.0-nightly.7"],
+  ])(
+    "accepts application %s with observed CodeBuddy %s when profile and protocol checks pass",
+    async (applicationVersion, embeddedCodeBuddyVersion) => {
+      const compatibility = workBuddyProfileCompatibility(profile);
+      const source = discoverySource(profile);
+      const inspect = source.inspect;
+      source.inspect = async (input) => {
+        const value = await inspect(input);
+        if (value.application) {
+          value.application.version = applicationVersion;
+          value.application.embeddedCodeBuddyVersion = embeddedCodeBuddyVersion;
+        }
+        return value;
+      };
 
-    await expect(
-      discoverWorkBuddyTask({ profile, taskId, expectedWorkspace: compatibility.configDirectory }, source),
-    ).rejects.toMatchObject({
-      code: "incompatible-version",
-      details: {
-        selectedProfile: profile,
-        supportedApplicationVersion: compatibility.applicationVersion,
-        supportedEmbeddedCodeBuddyVersion: compatibility.embeddedCodeBuddyVersion,
-        supportedAcpVersion: 1,
-      },
-    });
-  });
+      await expect(
+        discoverWorkBuddyTask({ profile, taskId, expectedWorkspace: compatibility.configDirectory }, source),
+      ).resolves.toMatchObject({
+        profile,
+        application: { version: applicationVersion, embeddedCodeBuddyVersion },
+        task: { id: taskId },
+      });
+    },
+  );
 
   it("does not allow a profile-specific macOS source to inspect the other distribution", async () => {
     const otherProfile = profile === "workbuddy-ai" ? "workbuddy-cn" : "workbuddy-ai";
@@ -239,6 +246,7 @@ it("builds the production mainland Task runtime request from the native Task sel
       commandTimeoutMs: 5_000,
     },
     "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+    "6.0.0-preview.2",
     "test-gateway-secret",
   );
 
@@ -251,6 +259,7 @@ it("builds the production mainland Task runtime request from the native Task sel
       CODEBUDDY_CONFIG_DIR: "/Users/test/.workbuddy",
       CODEBUDDY_GATEWAY_PASSWORD: "test-gateway-secret",
       WORKBUDDY_APP_PATH: "/Applications/WorkBuddy.app",
+      WORKBUDDY_APP_VERSION: "6.0.0-preview.2",
     },
   });
   expect(request.args.slice(request.args.indexOf("--session-id"), request.args.indexOf("--session-id") + 2)).toEqual([
@@ -345,6 +354,7 @@ it("replaces an existing Task runtime before applying a changed catalog model", 
       commandTimeoutMs: 5_000,
     },
     "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+    "6.0.0-preview.2",
     "test-gateway-secret",
   );
   const calls: Array<{ method: string; params: unknown }> = [];
@@ -401,8 +411,8 @@ function discoverySource(profile: WorkBuddyProfile): WorkBuddyTaskDiscoverySourc
     application: {
       path: compatibility.applicationPath,
       bundleIdentifier: compatibility.bundleIdentifier,
-      version: compatibility.applicationVersion,
-      embeddedCodeBuddyVersion: compatibility.embeddedCodeBuddyVersion,
+      version: fixtureApplicationVersion,
+      embeddedCodeBuddyVersion: fixtureCodeBuddyVersion,
     },
     applicationProcess,
     task: {

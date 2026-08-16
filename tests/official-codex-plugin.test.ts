@@ -40,20 +40,24 @@ describe("official Codex Plugin Bundle", () => {
     expect(builtCodex.bundle.files[artifact.entry]!.content).not.toContain('from "../../runtime/codex-adapter"');
   });
 
-  it("reports exact installed Codex compatibility before selection", async () => {
-    await expect(
-      probeCompatibleCodexExecutable({
-        platform: process.platform,
-        arch: process.arch,
-        findExecutable: async () => fakeCodexExecutable,
-      }),
-    ).resolves.toEqual({
-      detected: true,
-      compatible: true,
-      version: "codex-cli 0.145.0",
-      path: fakeCodexExecutable,
-      detail: `Detected supported codex-cli 0.145.0 at ${fakeCodexExecutable}`,
-    });
+  it("accepts arbitrary parseable installed Codex versions and reports them before selection", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-codex-probe-"));
+    for (const version of ["codex-cli 0.111.0-alpha.14", "codex-cli 99.42.7+future.1"]) {
+      const executable = await versionOnlyExecutable(directory, version);
+      await expect(
+        probeCompatibleCodexExecutable({
+          platform: process.platform,
+          arch: process.arch,
+          findExecutable: async () => executable,
+        }),
+      ).resolves.toEqual({
+        detected: true,
+        compatible: true,
+        version,
+        path: executable,
+        detail: `Detected ${version} at ${executable}; app-server compatibility will be verified during startup`,
+      });
+    }
   });
 
   it("executes authoritative input reconciliation through the installed provider", async () => {
@@ -92,18 +96,92 @@ describe("official Codex Plugin Bundle", () => {
     }
   });
 
-  it("rejects unsupported installation executables before Plugin activation", async () => {
+  it("activates the Plugin with this machine's parseable alpha version", async () => {
     const setup = await installedHost();
-    const unsupported = join(setup.directory, "unsupported-install-codex");
-    await writeFile(unsupported, "#!/bin/sh\nprintf 'codex-cli 99.0.0\\n'\n", { mode: 0o700 });
+    const executable = await versionOnlyExecutable(setup.directory, "codex-cli 0.111.0-alpha.14");
     try {
       await expect(
         setup.host.install({
           source: setup.bundlePath,
           target,
-          installationConfiguration: { executablePath: unsupported },
+          installationConfiguration: { executablePath: executable },
         }),
-      ).rejects.toThrow("expected exactly codex-cli 0.145.0");
+      ).resolves.toMatchObject({ status: "active" });
+      expect(setup.host.activePluginIds()).toEqual([CODEX_PLUGIN_ID]);
+    } finally {
+      await setup.host.close();
+      await setup.store.close();
+    }
+  });
+
+  it("fails closed when version inspection is missing, unsuccessful, or malformed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-codex-probe-failure-"));
+    const failed = join(directory, "failed-codex");
+    const malformed = join(directory, "malformed-codex");
+    const invalidSemver = join(directory, "invalid-semver-codex");
+    await writeFile(failed, "#!/bin/sh\nprintf 'inspection failed\\n' >&2\nexit 42\n", { mode: 0o700 });
+    await writeFile(malformed, "#!/bin/sh\nprintf 'not a Codex version\\n'\n", { mode: 0o700 });
+    await writeFile(invalidSemver, "#!/bin/sh\nprintf 'codex-cli 1.2.3-01\\n'\n", { mode: 0o700 });
+
+    await expect(
+      probeCompatibleCodexExecutable({
+        platform: process.platform,
+        arch: process.arch,
+        findExecutable: async () => null,
+      }),
+    ).resolves.toEqual({ detected: false, compatible: false, detail: "Codex was not found in PATH" });
+    await expect(
+      probeCompatibleCodexExecutable({
+        platform: process.platform,
+        arch: process.arch,
+        findExecutable: async () => failed,
+      }),
+    ).resolves.toMatchObject({
+      detected: true,
+      compatible: false,
+      path: failed,
+      detail: `Failed to inspect Codex executable ${failed}: inspection failed`,
+    });
+    await expect(
+      probeCompatibleCodexExecutable({
+        platform: process.platform,
+        arch: process.arch,
+        findExecutable: async () => malformed,
+      }),
+    ).resolves.toMatchObject({
+      detected: true,
+      compatible: false,
+      version: "not a Codex version",
+      path: malformed,
+      detail: `Malformed Codex version output from ${malformed}: expected codex-cli <semantic version>, received not a Codex version`,
+    });
+    await expect(
+      probeCompatibleCodexExecutable({
+        platform: process.platform,
+        arch: process.arch,
+        findExecutable: async () => invalidSemver,
+      }),
+    ).resolves.toMatchObject({
+      detected: true,
+      compatible: false,
+      version: "codex-cli 1.2.3-01",
+      path: invalidSemver,
+      detail: expect.stringContaining("Malformed Codex version output"),
+    });
+  });
+
+  it("rejects malformed installation version output before Plugin activation", async () => {
+    const setup = await installedHost();
+    const malformed = join(setup.directory, "malformed-install-codex");
+    await writeFile(malformed, "#!/bin/sh\nprintf 'codex-cli 1.2.3-01\\n'\n", { mode: 0o700 });
+    try {
+      await expect(
+        setup.host.install({
+          source: setup.bundlePath,
+          target,
+          installationConfiguration: { executablePath: malformed },
+        }),
+      ).rejects.toThrow("Malformed Codex version output");
       expect(setup.host.activePluginIds()).toEqual([]);
     } finally {
       await setup.host.close();
@@ -111,18 +189,17 @@ describe("official Codex Plugin Bundle", () => {
     }
   });
 
-  it("fails closed for unsupported and missing Binding executables", async () => {
+  it("defers parseable Binding compatibility to app-server startup and fails real protocol errors", async () => {
     const setup = await installedHost();
-    const unsupported = join(setup.directory, "unsupported-codex");
-    await writeFile(unsupported, "#!/bin/sh\nprintf 'codex-cli 99.0.0\\n'\n", { mode: 0o700 });
+    const versionOnly = await versionOnlyExecutable(setup.directory, "codex-cli 0.111.0-alpha.14");
     try {
       await setup.host.install({
         source: setup.bundlePath,
         target,
         installationConfiguration: { executablePath: fakeCodexExecutable },
       });
-      await expect(setup.registry.listModels(pluginBinding(unsupported, setup.directory))).rejects.toThrow(
-        "expected exactly codex-cli 0.145.0",
+      await expect(setup.registry.listModels(pluginBinding(versionOnly, setup.directory))).rejects.toThrow(
+        "Invalid JSON from Codex app-server",
       );
       await expect(
         setup.registry.listModels(pluginBinding(join(setup.directory, "missing"), setup.directory)),
@@ -233,6 +310,12 @@ function pluginBinding(executable: string, directory: string): PluginAgentBindin
       sessionOptions: { mode: "workspace-write" },
     },
   };
+}
+
+async function versionOnlyExecutable(directory: string, version: string): Promise<string> {
+  const executable = join(directory, `codex-${version.replaceAll(/[^0-9A-Za-z]+/gu, "-")}`);
+  await writeFile(executable, `#!/bin/sh\nprintf '${version}\\n'\n`, { mode: 0o700 });
+  return executable;
 }
 
 function lineCount(path: string): number {

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { constants } from "node:fs";
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ConnectPluginRuntimeProbeContext, ConnectPluginRuntimeProbeResult } from "../sdk";
@@ -7,7 +8,14 @@ import { OFFICIAL_WORKBUDDY_DISTRIBUTIONS, type OfficialWorkBuddyDistribution } 
 export type OfficialWorkBuddyInspection =
   | { readonly status: "missing"; readonly distribution: OfficialWorkBuddyDistribution }
   | {
-      readonly status: "supported" | "unsupported";
+      readonly status: "supported";
+      readonly distribution: OfficialWorkBuddyDistribution;
+      readonly bundleIdentifier: string;
+      readonly applicationVersion: string;
+      readonly embeddedCodeBuddyVersion: string;
+    }
+  | {
+      readonly status: "unsupported";
       readonly distribution: OfficialWorkBuddyDistribution;
       readonly bundleIdentifier: string;
       readonly applicationVersion: string;
@@ -37,15 +45,16 @@ export async function probeOfficialWorkBuddyRuntimes(
 
   const inspect = options.inspect ?? inspectInstalledDistribution;
   const inspections = await Promise.all(OFFICIAL_WORKBUDDY_DISTRIBUTIONS.map(inspect));
-  const supported = inspections.filter((inspection) => inspection.status === "supported");
+  const supported = inspections.filter(
+    (inspection): inspection is Extract<OfficialWorkBuddyInspection, { readonly status: "supported" }> =>
+      inspection.status === "supported",
+  );
   const detected = inspections.filter((inspection) => inspection.status !== "missing");
   return {
     detected: detected.length > 0,
     compatible: supported.length > 0,
     ...(supported.length === 1 ? { path: supported[0]!.distribution.applicationPath } : {}),
-    ...(supported.length > 0
-      ? { version: supported.map((inspection) => tupleLabel(inspection.distribution)).join("; ") }
-      : {}),
+    ...(supported.length > 0 ? { version: supported.map(observedVersionLabel).join("; ") } : {}),
     detail: inspections.map(inspectionDetail).join(" "),
   };
 }
@@ -62,22 +71,27 @@ export async function inspectInstalledDistribution(
 
   try {
     const plistPath = join(distribution.applicationPath, "Contents", "Info.plist");
+    const executablePath = join(distribution.applicationPath, "Contents", "MacOS", "Electron");
     const [bundleIdentifier, applicationVersion] = await Promise.all([
       readPlistValue(plistPath, "CFBundleIdentifier"),
       readPlistValue(plistPath, "CFBundleShortVersionString"),
+      access(executablePath, constants.X_OK),
     ]);
     const embeddedCodeBuddyVersion =
       bundleIdentifier === distribution.bundleIdentifier
         ? await readEmbeddedCodeBuddyVersion(distribution.applicationPath)
         : "[wrong-distribution]";
-    const status =
-      bundleIdentifier === distribution.bundleIdentifier &&
-      applicationVersion === distribution.applicationVersion &&
-      embeddedCodeBuddyVersion === distribution.embeddedCodeBuddyVersion
-        ? "supported"
-        : "unsupported";
+    if (bundleIdentifier !== distribution.bundleIdentifier) {
+      return {
+        status: "unsupported",
+        distribution,
+        bundleIdentifier,
+        applicationVersion,
+        embeddedCodeBuddyVersion,
+      };
+    }
     return {
-      status,
+      status: "supported",
       distribution,
       bundleIdentifier,
       applicationVersion,
@@ -89,21 +103,22 @@ export async function inspectInstalledDistribution(
 }
 
 function inspectionDetail(inspection: OfficialWorkBuddyInspection): string {
-  const supported = tupleLabel(inspection.distribution);
   if (inspection.status === "missing") {
-    return `${supported} is missing from ${inspection.distribution.applicationPath}.`;
+    return `${inspection.distribution.displayName} is missing from ${inspection.distribution.applicationPath}.`;
   }
   if ("error" in inspection) {
-    return `${inspection.distribution.displayName} is installed at ${inspection.distribution.applicationPath} but its compatibility tuple is unreadable (${inspection.error}); supported tuple is ${supported}.`;
+    return `${inspection.distribution.displayName} is installed at ${inspection.distribution.applicationPath} but its executable or diagnostic metadata is unreadable (${inspection.error}).`;
   }
   if (inspection.status === "supported") {
-    return `Detected exact ${supported} at ${inspection.distribution.applicationPath}; ACP v1 remains fail-closed and is verified before Binding activation.`;
+    return `Detected ${observedVersionLabel(inspection)} at ${inspection.distribution.applicationPath}; the executable is present, while ACP v${inspection.distribution.acpVersion}, endpoint ownership, Task identity, transcript identity, and required capabilities remain fail-closed and are verified during Binding activation.`;
   }
-  return `Unsupported ${inspection.distribution.profile} tuple at ${inspection.distribution.applicationPath}: detected bundle ${inspection.bundleIdentifier}, application ${inspection.applicationVersion}, CodeBuddy ${inspection.embeddedCodeBuddyVersion}; supported tuple is ${supported}.`;
+  return `Wrong distribution at ${inspection.distribution.applicationPath}: detected bundle ${inspection.bundleIdentifier}, application ${inspection.applicationVersion}, CodeBuddy ${inspection.embeddedCodeBuddyVersion}; expected bundle ${inspection.distribution.bundleIdentifier} for ${inspection.distribution.profile}.`;
 }
 
-function tupleLabel(distribution: OfficialWorkBuddyDistribution): string {
-  return `${distribution.displayName} ${distribution.applicationVersion} + CodeBuddy ${distribution.embeddedCodeBuddyVersion} + ACP v${distribution.acpVersion}`;
+function observedVersionLabel(
+  inspection: Extract<OfficialWorkBuddyInspection, { readonly bundleIdentifier: string }>,
+): string {
+  return `${inspection.distribution.displayName} ${inspection.applicationVersion} + CodeBuddy ${inspection.embeddedCodeBuddyVersion}`;
 }
 
 async function readEmbeddedCodeBuddyVersion(applicationPath: string): Promise<string> {
@@ -114,7 +129,7 @@ async function readEmbeddedCodeBuddyVersion(applicationPath: string): Promise<st
   if (typeof version !== "string" || !version.trim()) {
     throw new Error("embedded CodeBuddy manifest has no version");
   }
-  return version;
+  return version.trim();
 }
 
 async function readPlistValue(path: string, key: string): Promise<string> {
@@ -135,7 +150,9 @@ async function readPlistValue(path: string, key: string): Promise<string> {
       readStream(child.stderr),
     ]);
     if (code !== 0) throw new Error(stderr.trim() || `plutil exited with status ${String(code)}`);
-    return stdout.trim();
+    const value = stdout.trim();
+    if (!value) throw new Error(`WorkBuddy Info.plist ${key} is empty`);
+    return value;
   } finally {
     clearTimeout(timeout);
   }

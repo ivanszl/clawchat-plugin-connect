@@ -1241,7 +1241,7 @@ function formatStatus(
     ...(binding ? [`runtime adapter: ${runtimeFamilyFor(binding)}${profileId ? `/${profileId}` : ""}`] : []),
     ...(profileMetadata
       ? [
-          `supported tuple: ${profileMetadata.displayName} ${profileMetadata.applicationVersion} / ${profileMetadata.embeddedRuntime.name} ${profileMetadata.embeddedRuntime.version} / ${profileMetadata.protocol.name} v${profileMetadata.protocol.version}`,
+          `required capability: ${profileMetadata.displayName} / ${profileMetadata.protocol.name} v${profileMetadata.protocol.version}`,
         ]
       : []),
     `configured agents: ${Object.keys(config.agents).length}`,

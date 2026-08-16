@@ -82,7 +82,7 @@ export async function listWorkBuddyTasks(
   if (!application) {
     throw new WorkBuddyDiscoveryError(
       "application-absent",
-      `${compatibility.displayName} is not installed at the selected application path; install ${compatibility.displayName} ${compatibility.applicationVersion}.`,
+      `${compatibility.displayName} is not installed at ${compatibility.applicationPath}.`,
       { selectedProfile: profile },
     );
   }
@@ -93,23 +93,6 @@ export async function listWorkBuddyTasks(
       {
         selectedProfile: profile,
         detectedBundleIdentifier: application.bundleIdentifier,
-      },
-    );
-  }
-  if (
-    application.version !== compatibility.applicationVersion ||
-    application.embeddedCodeBuddyVersion !== compatibility.embeddedCodeBuddyVersion
-  ) {
-    throw new WorkBuddyDiscoveryError(
-      "incompatible-version",
-      `The installed ${compatibility.displayName} tuple is unsupported for profile ${profile}.`,
-      {
-        selectedProfile: profile,
-        detectedApplicationVersion: application.version,
-        detectedEmbeddedCodeBuddyVersion: application.embeddedCodeBuddyVersion,
-        supportedApplicationVersion: compatibility.applicationVersion,
-        supportedEmbeddedCodeBuddyVersion: compatibility.embeddedCodeBuddyVersion,
-        supportedAcpVersion: compatibility.acpVersion,
       },
     );
   }
@@ -326,7 +309,7 @@ async function inspectWorkBuddyApplication(
     };
   }
   const [embeddedCodeBuddyVersion, processes] = await Promise.all([
-    readEmbeddedCodeBuddyVersion(applicationPath).catch(() => "[unreadable]"),
+    readEmbeddedCodeBuddyVersion(applicationPath),
     readProcesses(commandTimeoutMs),
   ]);
   const application = { path: applicationPath, bundleIdentifier, version, embeddedCodeBuddyVersion };
@@ -350,9 +333,11 @@ function emptyObservation(): WorkBuddyDiscoveryObservation {
 }
 
 async function readPlistValue(path: string, key: string, timeoutMs: number): Promise<string> {
-  return (
+  const value = (
     await runCommand("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", path], timeoutMs, "WorkBuddy Info.plist")
   ).trim();
+  if (!value) throw new Error(`WorkBuddy Info.plist ${key} is empty`);
+  return value;
 }
 
 async function readEmbeddedCodeBuddyVersion(applicationPath: string): Promise<string> {
@@ -360,8 +345,10 @@ async function readEmbeddedCodeBuddyVersion(applicationPath: string): Promise<st
     await readFile(join(applicationPath, "Contents", "Resources", "app.asar.unpacked", "cli", "package.json"), "utf8"),
   ) as { publishConfig?: { customPackage?: { version?: unknown } } };
   const version = manifest.publishConfig?.customPackage?.version;
-  if (typeof version !== "string") throw new Error("WorkBuddy embedded CodeBuddy manifest has no pinned version");
-  return version;
+  if (typeof version !== "string" || !version.trim()) {
+    throw new Error("WorkBuddy embedded CodeBuddy manifest has no version");
+  }
+  return version.trim();
 }
 
 async function readTask(
@@ -574,7 +561,12 @@ async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Pr
       { selectedProfile: "workbuddy-cn" },
     );
   }
-  const request = buildWorkBuddyTaskRuntimeRequest(input, cliPath);
+  const applicationVersion = await readPlistValue(
+    join(input.applicationPath, "Contents", "Info.plist"),
+    "CFBundleShortVersionString",
+    input.commandTimeoutMs,
+  );
+  const request = buildWorkBuddyTaskRuntimeRequest(input, cliPath, applicationVersion);
   await reconcileWorkBuddyTaskRuntime(
     request,
     input.commandTimeoutMs,
@@ -608,6 +600,7 @@ export async function reconcileWorkBuddyTaskRuntime(
 export function buildWorkBuddyTaskRuntimeRequest(
   input: WorkBuddyTaskRuntimeInput,
   cliPath: string,
+  applicationVersion: string,
   gatewaySecret = randomBytes(32).toString("base64url"),
 ): WorkBuddyTaskRuntimeRequest {
   const resourcesPath = join(input.applicationPath, "Contents", "Resources");
@@ -669,7 +662,7 @@ export function buildWorkBuddyTaskRuntimeRequest(
       CODEBUDDY_HOST_CAPABILITIES: "elicitation.form,weixinpay.interception",
       ACC_PRODUCT_CONFIG_PATH: join(cliRoot, "product.json"),
       WORKBUDDY_APP_PATH: input.applicationPath,
-      WORKBUDDY_APP_VERSION: workBuddyProfileCompatibility("workbuddy-cn").applicationVersion,
+      WORKBUDDY_APP_VERSION: applicationVersion,
       WORKBUDDY_IS_PACKAGED: "true",
       WORKBUDDY_NODE_ENV: "production",
       WORKBUDDY_RESOURCES_PATH: resourcesPath,
