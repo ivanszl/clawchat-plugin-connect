@@ -308,16 +308,14 @@ function SessionAgentControls({ view, bindings }: { view: SessionView; bindings:
   return (
     <VStack gap={2}>
       {view.bindingLocked ? (
-        <Banner
-          status="info"
-          title={t("@connect.session.agent.fixed.title")}
-          description={t(
-            view.bindingLockReason === "runtime-thread"
-              ? "@connect.session.agent.fixed.runtimeThread"
-              : "@connect.session.agent.fixed.acceptedTurn",
-          )}
-          container="section"
-        />
+        view.bindingLockReason === "accepted-turn" ? (
+          <Banner
+            status="info"
+            title={t("@connect.session.agent.fixed.title")}
+            description={t("@connect.session.agent.fixed.acceptedTurn")}
+            container="section"
+          />
+        ) : null
       ) : (
         <VStack gap={2}>
           <Selector

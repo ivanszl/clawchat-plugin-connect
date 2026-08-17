@@ -102,6 +102,32 @@ describe("WorkspaceCatalog", () => {
     await store.close();
   });
 
+  it("keeps valid Runtime Workspaces when one discovered root no longer exists", async () => {
+    const { directory, store, workspaces } = await fixture();
+    const availableRoot = join(directory, "available");
+    await mkdir(availableRoot);
+
+    const synchronized = await synchronizeRuntimeWorkspaces({
+      bindingId: "codex",
+      workspaces,
+      snapshot: {
+        status: "complete",
+        identities: [
+          { key: "available", kind: "persistent", localRoot: availableRoot },
+          { key: "missing", kind: "persistent", localRoot: join(directory, "missing") },
+        ],
+      },
+    });
+
+    expect(synchronized.failures).toEqual([expect.stringContaining("does not exist")]);
+    expect(synchronized.workspaces).toEqual([
+      expect.objectContaining({ source: "default", bindingId: "codex" }),
+      expect.objectContaining({ runtimeIdentityKey: "available", rootPath: await realpath(availableRoot) }),
+    ]);
+
+    await store.close();
+  });
+
   it("resolves a Session without a selection to the binding default Workspace", async () => {
     const { directory, store, workspaces } = await fixture();
     const selectedRoot = join(directory, "selected");

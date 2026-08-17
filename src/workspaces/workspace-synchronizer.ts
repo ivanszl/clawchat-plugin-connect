@@ -13,10 +13,7 @@ export async function synchronizeRuntimeWorkspaces(input: {
   workspaces: WorkspaceCatalog;
 }): Promise<RuntimeWorkspaceSynchronizationResult> {
   try {
-    return {
-      workspaces: await input.workspaces.reconcile(input.bindingId, input.snapshot),
-      failures: [],
-    };
+    return await input.workspaces.reconcile(input.bindingId, input.snapshot);
   } catch (error) {
     return {
       workspaces: await input.workspaces.list(input.bindingId),

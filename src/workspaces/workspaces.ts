@@ -100,9 +100,12 @@ export class WorkspaceCatalog {
     return (await this.stateStore.listWorkspaces()).map(workspaceViewRecord);
   }
 
-  async reconcile(bindingId: string, snapshot: RuntimeWorkspaceSnapshot): Promise<WorkspaceRecord[]> {
+  async reconcile(
+    bindingId: string,
+    snapshot: RuntimeWorkspaceSnapshot,
+  ): Promise<{ workspaces: WorkspaceRecord[]; failures: string[] }> {
     await this.ensureDefault(bindingId);
-    const identities = await Promise.all(
+    const discovered = await Promise.allSettled(
       snapshot.identities
         .filter(
           (identity): identity is typeof identity & { localRoot: string } =>
@@ -115,12 +118,18 @@ export class WorkspaceCatalog {
           workspaceRef: this.workspaceRefFactory(),
         })),
     );
+    const failures = discovered.flatMap((result) =>
+      result.status === "rejected"
+        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+        : [],
+    );
+    const identities = discovered.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
     await this.stateStore.reconcileWorkspaceCatalog({
       bindingId: requireText(bindingId, "Agent Binding ID"),
-      status: snapshot.status,
+      status: failures.length > 0 ? "partial" : snapshot.status,
       identities,
     });
-    return await this.list(bindingId);
+    return { workspaces: await this.list(bindingId), failures };
   }
 
   async findForWorkspace(bindingId: string, rootPath: string): Promise<WorkspaceRecord | null> {

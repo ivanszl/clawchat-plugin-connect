@@ -360,6 +360,18 @@ describe("Session Catalog workspace grouping", () => {
     await Promise.all([mkdir(firstWorkspace, { recursive: true }), mkdir(secondWorkspace, { recursive: true })]);
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     stores.push(store);
+    await store.reconcileWorkspaceCatalog({
+      bindingId: "codex",
+      status: "partial",
+      identities: [
+        {
+          runtimeIdentityKey: firstWorkspace,
+          rootPath: await realpath(firstWorkspace),
+          name: "f",
+          workspaceRef: "STALE001",
+        },
+      ],
+    });
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
@@ -397,7 +409,7 @@ describe("Session Catalog workspace grouping", () => {
 
     const adopted = await catalog.adopt(entries[0]?.sessionRef ?? "");
     expect(adopted?.workspaceRef).toEqual(expect.any(String));
-    await expect(store.listWorkspaces("codex")).resolves.toHaveLength(1);
+    await expect(store.listWorkspaces("codex")).resolves.toHaveLength(2);
     expect((await catalog.view()).bindings[0]?.entries[0]).toMatchObject({
       sessionRef: entries[0]?.sessionRef,
       workspaceRef: expect.any(String),

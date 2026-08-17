@@ -560,9 +560,6 @@ export const zhHans = {
   "@connect.session.agent.fixed.acceptedTurn": {
     defaultMessage: "第一个 Turn 已被接受。若要使用其他 Agent，请在同一 Workspace 中创建新的 Session。",
   },
-  "@connect.session.agent.fixed.runtimeThread": {
-    defaultMessage: "已关联 Runtime Thread。若要使用其他 Agent，请在同一 Workspace 中创建新的 Session。",
-  },
   "@connect.session.agent.empty.label": { defaultMessage: "此空 Session 的 Agent Binding" },
   "@connect.session.agent.empty.description": { defaultMessage: "第一个 Turn 被接受前，可以原地更改 Agent。" },
   "@connect.session.agent.empty.unavailable": { defaultMessage: "没有其他已激活的 Agent Binding。" },

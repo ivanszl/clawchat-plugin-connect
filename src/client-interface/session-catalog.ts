@@ -541,11 +541,13 @@ export class SessionCatalog {
           localRoot: thread.workingDirectory ?? null,
         };
         const workspace =
-          workspaces.find((candidate) => candidate.runtimeIdentityKey === identity.key) ??
-          (identity.localRoot
-            ? workspaces.find((candidate) => resolve(candidate.rootPath) === resolve(identity.localRoot as string))
-            : null) ??
-          defaultWorkspace;
+          identity.kind === "transient"
+            ? defaultWorkspace
+            : (workspaces.find((candidate) => candidate.runtimeIdentityKey === identity.key) ??
+              (identity.localRoot
+                ? workspaces.find((candidate) => resolve(candidate.rootPath) === resolve(identity.localRoot as string))
+                : null) ??
+              defaultWorkspace);
         const sessionRef = await this.options.stateStore.getOrCreateSessionRef({
           chatId: CLIENT_CATALOG_CHAT,
           agentId: bindingId,

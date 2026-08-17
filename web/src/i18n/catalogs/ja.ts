@@ -620,9 +620,6 @@ export const ja = {
   "@connect.session.agent.fixed.acceptedTurn": {
     defaultMessage: "The first Turn has been accepted. Continue the Workspace in a new Session to use another Agent.",
   },
-  "@connect.session.agent.fixed.runtimeThread": {
-    defaultMessage: "A Runtime Thread is associated. Continue the Workspace in a new Session to use another Agent.",
-  },
   "@connect.session.agent.empty.label": { defaultMessage: "Agent Binding for this empty Session" },
   "@connect.session.agent.empty.description": {
     defaultMessage: "You can change Agent in place until the first Turn is accepted.",

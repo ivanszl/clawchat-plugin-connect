@@ -103,7 +103,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: codexDescriptor,
     name: "Codex",
-    artifactIntegrity: "sha256-u1XynRHzio92lPc1Am4K3SONYxEhBy0+lV1TNPwh+aM=",
+    artifactIntegrity: "sha256-oVPqU29N7c1bvTyrykkbHHngxTVFvN9KaPf1dWdSNWI=",
     classification: "runtime",
     discovery: {
       executableNames: ["codex"],

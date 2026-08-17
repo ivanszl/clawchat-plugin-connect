@@ -583,7 +583,7 @@ function isTransientWorkspace(thread: CodexAppServerThread): boolean {
 }
 
 function isCodexAppScratchWorkspace(thread: CodexAppServerThread): boolean {
-  if (thread.source !== "vscode" || thread.gitInfo !== null) return false;
+  if (thread.gitInfo !== null) return false;
   const workspace = resolve(thread.cwd);
   const dateDirectory = dirname(workspace);
   const codexDirectory = dirname(dateDirectory);

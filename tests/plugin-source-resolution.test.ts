@@ -678,7 +678,7 @@ describe("bundled official Plugin setup", () => {
     expect(loaded.entries).toEqual([
       expect.objectContaining({
         pluginId: "clawling.runtime.codex",
-        integrity: "sha256-u1XynRHzio92lPc1Am4K3SONYxEhBy0+lV1TNPwh+aM=",
+        integrity: "sha256-oVPqU29N7c1bvTyrykkbHHngxTVFvN9KaPf1dWdSNWI=",
       }),
     ]);
     const candidate = loaded.entries[0];

@@ -724,6 +724,13 @@ describe("Codex app-server runtime adapter", () => {
           gitInfo: null,
           updatedAt: 30,
         }),
+        thread("thread-subagent-scratch", {
+          name: "Scratch sub-agent",
+          cwd: "/Users/test/Documents/Codex/2026-07-24/sub-agent",
+          source: { subAgent: { other: "guardian" } },
+          gitInfo: null,
+          updatedAt: 25,
+        }),
         thread("thread-folder", {
           name: "Folder task",
           cwd: "/Users/test/account",
@@ -768,6 +775,18 @@ describe("Codex app-server runtime adapter", () => {
           key: "/Users/test/Documents/Codex/2026-07-24/f",
           kind: "transient",
           localRoot: "/Users/test/Documents/Codex/2026-07-24/f",
+        },
+      },
+      {
+        runtimeThreadId: "thread-subagent-scratch",
+        name: "Scratch sub-agent",
+        updatedAt: 25_000,
+        workingDirectory: "/Users/test/Documents/Codex/2026-07-24/sub-agent",
+        workspaceKind: "transient",
+        workspaceIdentity: {
+          key: "/Users/test/Documents/Codex/2026-07-24/sub-agent",
+          kind: "transient",
+          localRoot: "/Users/test/Documents/Codex/2026-07-24/sub-agent",
         },
       },
       {
