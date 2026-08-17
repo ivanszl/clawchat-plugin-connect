@@ -704,7 +704,7 @@ describe("bundled official Plugin setup", () => {
       ...base,
       findExecutable: async (command) => executable(command),
       runDiscoveryCommand: async ({ executable: path }) => ({
-        stdout: path.endsWith("codex") ? "codex-cli 1.2.3" : "opencode 1.18.13",
+        stdout: path.endsWith("codex") ? "codex-cli 1.2.3" : "opencode 7.42.3",
       }),
     });
     expect(

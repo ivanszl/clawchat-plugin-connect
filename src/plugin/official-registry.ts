@@ -4,6 +4,7 @@ import { access, readFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { OfficialPluginDescriptor } from "../../scripts/build-official-plugins";
+import { OPENCODE_SEMANTIC_VERSION_PATTERN } from "../runtime/opencode-version";
 import codexDescriptor from "./official/codex-descriptor";
 import livewareDescriptor from "./official/liveware-descriptor";
 import opencodeDescriptor from "./official/opencode-descriptor";
@@ -118,12 +119,12 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: opencodeDescriptor,
     name: "OpenCode",
-    artifactIntegrity: "sha256-7FDbKLc/mO+p+f1ebAupyGEi5PiVFVZIXjHl5cvklMo=",
+    artifactIntegrity: "sha256-UNYonWIa/uwM85ZFWu1p9e7E9U9oaT7seroHkLxnvWk=",
     discovery: {
       executableNames: ["opencode"],
       versionCommand: {
         argv: ["--version"],
-        outputPattern: "^(?:opencode\\s+)?(?<version>1\\.18\\.(?:10|13))$",
+        outputPattern: `^(?:opencode\\s+)?(?<version>${OPENCODE_SEMANTIC_VERSION_PATTERN})$`,
         timeoutMs: 5_000,
         maxOutputBytes: 4_096,
       },

@@ -13,7 +13,7 @@ A concrete integration contributed by a Runtime Plugin capability that lets Conn
 _Avoid_: Agent Binding, Codex, when referring to the adapter role
 
 **Runtime Discovery Rule**:
-A release-bundled declarative executable lookup and bounded version-command rule from the built-in official Plugin registry that Core evaluates before importing or installing a candidate Runtime Plugin. It reports host presence and compatibility but does not install, select, activate, or execute Plugin code.
+A release-bundled declarative executable lookup and bounded version-command rule from the built-in official Plugin registry that Core evaluates before importing or installing a candidate Runtime Plugin. It reports host presence and executable identity but does not constrain Code Agent runtime version numbers, install, select, activate, or execute Plugin code. ACP, sidecar, and other interface versions remain separate protocol compatibility contracts.
 _Avoid_: Runtime Probe, Plugin probe, Runtime health check, startup authorization
 
 **Claude Code Runtime**:
