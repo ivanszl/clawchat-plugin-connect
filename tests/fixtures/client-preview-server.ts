@@ -6,8 +6,8 @@ import { startClientInterface } from "../../src/client-interface/server";
 import { TranscriptProjection } from "../../src/client-interface/transcript-projection";
 import { defaultConfig } from "../../src/config";
 import { createStateStore } from "../../src/persistence/state";
-import type { OfficialPluginDiscovery } from "../../src/plugin/catalog";
 import type { ConnectPluginHost, ManagePluginOptions } from "../../src/plugin/host";
+import type { OfficialPluginDiscovery } from "../../src/plugin/official-registry";
 import type { InstalledPluginLockEntry } from "../../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../../src/runtime/runtime-interaction-coordinator";
@@ -400,7 +400,6 @@ async function createPreviewClientExtension(): Promise<InstalledPluginLockEntry>
     manifest,
     installationConfiguration: {},
     exposureConfigurations: {},
-    officialCapabilityGrants: [],
     status: "active",
     error: null,
     retainedVersions: [],
@@ -454,7 +453,6 @@ async function createPreviewFailingClientExtension(): Promise<InstalledPluginLoc
     manifest,
     installationConfiguration: {},
     exposureConfigurations: {},
-    officialCapabilityGrants: [],
     status: "active",
     error: null,
     retainedVersions: [],
@@ -503,7 +501,6 @@ function previewPlugin(pluginId: string, status: InstalledPluginLockEntry["statu
     manifest,
     installationConfiguration: { channel: "stable", telemetry: false },
     exposureConfigurations: {},
-    officialCapabilityGrants: [],
   };
   return {
     activationGeneration: 1,
@@ -523,8 +520,8 @@ const previewPlugins: InstalledPluginLockEntry[] = [
   previewFailingClientExtension,
 ];
 const previewOfficial: OfficialPluginDiscovery = {
-  catalogOrigin: "cache",
-  diagnostics: ["Preview fixture uses an authenticated cached Catalog"],
+  officialSource: "bundled",
+  diagnostics: ["Preview fixture uses bundled official Plugins"],
   candidates: [
     {
       pluginId: "preview.official",
@@ -541,7 +538,6 @@ const previewOfficial: OfficialPluginDiscovery = {
       discovery: { detected: true, compatible: true, version: "preview" },
       diagnostic: null,
       manifest: previewPlugin("preview.official", "active", null).manifest,
-      capabilityGrants: [],
       installationConfiguration: { channel: "stable", telemetry: false },
       exposureConfigurations: {},
     },

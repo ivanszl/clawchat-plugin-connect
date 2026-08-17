@@ -21,6 +21,12 @@ export const OFFICIAL_PLUGIN_TARGETS = [
 
 export type OfficialPluginTarget = (typeof OFFICIAL_PLUGIN_TARGETS)[number];
 
+export function officialPluginBuildTargets(target: string | undefined, allTargets: boolean): readonly string[] {
+  if (target && allTargets) throw new Error("--target and --all-targets cannot be used together");
+  if (allTargets) return OFFICIAL_PLUGIN_TARGETS;
+  return [target ?? `${process.platform}-${process.arch}`];
+}
+
 export interface OfficialPluginAssetDescriptor {
   readonly entry: string;
   readonly sources: Readonly<Partial<Record<OfficialPluginTarget, string>>>;
@@ -161,9 +167,12 @@ if (import.meta.main) {
   const outputIndex = process.argv.indexOf("--output");
   const target = targetIndex >= 0 ? process.argv[targetIndex + 1] : undefined;
   const outputDirectory = outputIndex >= 0 ? process.argv[outputIndex + 1] : undefined;
+  const allTargets = process.argv.includes("--all-targets");
   if (targetIndex >= 0 && !target) throw new Error("--target requires a value");
   if (outputIndex >= 0 && !outputDirectory) throw new Error("--output requires a value");
   const descriptors = await discoverOfficialPluginDescriptors();
-  const built = await buildOfficialPlugins(descriptors, { target, outputDirectory });
-  for (const plugin of built) console.log(plugin.outputPath);
+  for (const selectedTarget of officialPluginBuildTargets(target, allTargets)) {
+    const built = await buildOfficialPlugins(descriptors, { target: selectedTarget, outputDirectory });
+    for (const plugin of built) console.log(plugin.outputPath);
+  }
 }

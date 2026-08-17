@@ -31,6 +31,7 @@
       "items": {
         "oneOf": [
           { "$ref": "#/$defs/runtimeCapability" },
+          { "$ref": "#/$defs/exposureCapability" },
           { "$ref": "#/$defs/clientExtensionCapability" }
         ]
       }
@@ -54,7 +55,7 @@
       "additionalProperties": false,
       "properties": {
         "type": { "const": "host" },
-        "id": { "enum": ["runtime-provider", "durable-state"] },
+        "id": { "enum": ["runtime-provider", "exposure-provider", "durable-state"] },
         "interfaceVersion": { "const": "1" }
       }
     },
@@ -71,6 +72,18 @@
         "durableState": { "$ref": "#/$defs/durableState" }
       }
     },
+    "exposureCapability": {
+      "type": "object",
+      "required": ["id", "type", "interfaceVersion", "configurationSchema"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/identity" },
+        "type": { "const": "exposure" },
+        "interfaceVersion": { "const": "1" },
+        "configurationSchema": { "$ref": "#/$defs/configurationSchema" },
+        "durableState": { "$ref": "#/$defs/exposureDurableState" }
+      }
+    },
     "clientExtensionCapability": {
       "type": "object",
       "required": ["id", "type", "interfaceVersion", "configurationSchema", "browser"],
@@ -80,8 +93,7 @@
         "type": { "const": "client-extension" },
         "interfaceVersion": { "const": "1" },
         "configurationSchema": { "$ref": "#/$defs/configurationSchema" },
-        "browser": { "$ref": "#/$defs/clientExtensionBrowser" },
-        "durableState": { "$ref": "#/$defs/durableState" }
+        "browser": { "$ref": "#/$defs/clientExtensionBrowser" }
       }
     },
     "durableState": {
@@ -105,6 +117,17 @@
           }
         }
       }
+    },
+    "exposureDurableState": {
+      "allOf": [
+        { "$ref": "#/$defs/durableState" },
+        {
+          "type": "object",
+          "properties": {
+            "lifetime": { "enum": ["installation", "owner"] }
+          }
+        }
+      ]
     },
     "clientExtensionBrowser": {
       "type": "object",

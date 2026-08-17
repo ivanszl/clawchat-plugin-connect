@@ -130,6 +130,7 @@ export function ClientExtensionKernel({ graph, children }: { graph: ClientExtens
           window.location.reload();
           return;
         }
+        if (activeGraph.current === replaced) activeGraph.current = null;
       }
       registry.replace(graph.epoch);
       try {
@@ -244,6 +245,7 @@ async function activateExtension(
   const declaredSlots = new Map(extension.slots.map((slot) => [slot.id, slot]));
   const context: ConnectPluginClientExtensionContext = Object.freeze({
     epoch,
+    configuration: Object.freeze(structuredClone(extension.configuration)),
     Astryx,
     React,
     slots: Object.freeze({

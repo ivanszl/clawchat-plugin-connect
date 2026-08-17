@@ -304,7 +304,7 @@ Connect Client 可以：
 - `accessPolicy: "private"` 为每个已激活 Binding 发布仅 Owner 可访问的 App。
 - `accessPolicy: "off"` 停用所有 Binding Liveware Publication，并释放 Shared Client Gateway lease。
 
-初始 Plugin setup 会在可用时预选官方 Liveware 候选项。普通 public Plugin 无法获取 Client Exposure Host Capability；官方 capability 也不支持 public 访问。
+官方 Liveware 候选项随发行包提供，可在 Plugin setup 中手动选择。任何受信任的 Plugin 都可声明 Client Exposure，并仅获得由 Core 中介且带 Activation Generation 防护的 Client fetch facade；完整性固定的官方 Liveware 实现还会获得内部 publication 服务。Liveware 的 public 访问仍不受支持。
 
 删除某个 Binding、它的 Liveware App 与本地历史时，需要显式确认：
 

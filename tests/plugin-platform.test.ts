@@ -19,7 +19,6 @@ import { createAgentBinding } from "../src/plugin/binding";
 import type { ConnectPluginContext } from "../src/plugin/sdk";
 import {
   commitStagedPlugin,
-  currentConnectPluginTarget,
   listInstalledPlugins,
   readConnectPluginBundle,
   removeInstalledPlugin,
@@ -119,20 +118,11 @@ async function localRequest(
 
 async function installOfficialFixture(configPath: string, bundlePath: string) {
   const bundle = await readConnectPluginBundle(bundlePath);
-  const artifact = bundle.manifest.artifacts.find(({ target }) => target === currentConnectPluginTarget());
-  if (!artifact) throw new Error(`Fixture ${bundle.manifest.pluginId} has no current target artifact`);
   const staged = await stagePluginBundle({
     configPath,
     source: { type: "local", path: bundlePath },
     bundle,
     exposureConfigurations: { "reference-exposure": { channel: "private" } },
-    officialCapabilityGrants: [
-      {
-        capabilityId: "reference-exposure",
-        type: "exposure",
-        artifactIntegrity: artifact.integrity,
-      },
-    ],
   });
   return await commitStagedPlugin(configPath, staged, "install");
 }

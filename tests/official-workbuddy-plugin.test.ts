@@ -5,7 +5,9 @@ import { join } from "node:path";
 import {
   buildOfficialPlugin,
   buildOfficialPlugins,
+  OFFICIAL_PLUGIN_TARGETS,
   type OfficialPluginDescriptor,
+  officialPluginBuildTargets,
   officialPluginSupportsTarget,
 } from "../scripts/build-official-plugins";
 import { defaultConfig, saveConfig } from "../src/config";
@@ -114,6 +116,11 @@ describe("official WorkBuddy Runtime Plugin", () => {
         /supportedTargets|target/u,
       );
     }
+  });
+
+  it("expands npm packaging across every supported official Plugin target", () => {
+    expect(officialPluginBuildTargets(undefined, true)).toEqual(OFFICIAL_PLUGIN_TARGETS);
+    expect(officialPluginBuildTargets("linux-x64", false)).toEqual(["linux-x64"]);
   });
 
   it("keeps profile-owned Adapter state isolated and never confuses direct CodeBuddy Sessions with WorkBuddy Tasks", async () => {

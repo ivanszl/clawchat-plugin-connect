@@ -187,6 +187,7 @@ describe("Installation Owner Reset", () => {
             retireLivewarePublications: async (bindingIds) =>
               await retireOfficialLivewarePublications({
                 bindingIds,
+                configPath,
                 clawChatBaseUrl: "https://clawchat.test",
                 stateStore: store,
                 dependencies: external,

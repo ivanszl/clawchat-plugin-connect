@@ -21,6 +21,8 @@ import {
   CONNECT_PLUGIN_MANIFEST_VERSION,
   type ConnectPluginArtifactManifest,
   type ConnectPluginConfiguration,
+  type ConnectPluginDurableStateManifest,
+  type ConnectPluginExposureDurableStateManifest,
   type ConnectPluginJsonSchema,
   type ConnectPluginSource,
 } from "./sdk";
@@ -48,11 +50,6 @@ const SUPPORTED_CONFIGURATION_TYPES = new Set(["object", "array", "string", "num
 const SECRET_CONFIGURATION_PROPERTY = /authorization|credential|password|secret|token|api.?key|access.?key/iu;
 
 export type InstalledPluginStatus = "active" | "disabled" | "error";
-export interface OfficialPluginCapabilityGrant {
-  readonly type: "exposure";
-  readonly capabilityId: string;
-  readonly artifactIntegrity: string;
-}
 
 export interface InstalledPluginVersion {
   source: ConnectPluginSource;
@@ -64,7 +61,6 @@ export interface InstalledPluginVersion {
   manifest: ManagedConnectPluginManifestV1;
   installationConfiguration: ConnectPluginConfiguration;
   exposureConfigurations: Readonly<Record<string, ConnectPluginConfiguration>>;
-  officialCapabilityGrants: readonly OfficialPluginCapabilityGrant[];
 }
 
 export interface InstalledPluginLockEntry extends InstalledPluginVersion {
@@ -94,7 +90,6 @@ export interface StagePluginBundleOptions {
   target?: string;
   installationConfiguration?: Record<string, unknown>;
   exposureConfigurations?: Record<string, unknown>;
-  officialCapabilityGrants?: readonly OfficialPluginCapabilityGrant[];
 }
 
 export interface PluginInstallationPaths {
@@ -145,11 +140,6 @@ export async function stagePluginBundle(options: StagePluginBundleOptions): Prom
     bundle.manifest.installationConfigurationSchema,
     options.installationConfiguration ?? {},
     `Plugin ${bundle.manifest.pluginId} installation configuration`,
-  );
-  const officialCapabilityGrants = validateOfficialCapabilityGrants(
-    bundle.manifest,
-    artifact.integrity,
-    options.officialCapabilityGrants ?? [],
   );
   const exposureConfigurations = validateExposureConfigurations(bundle.manifest, options.exposureConfigurations ?? {});
   const entryBytes = connectPluginBundleFileBytes(bundle, artifact.entry);
@@ -214,7 +204,6 @@ export async function stagePluginBundle(options: StagePluginBundleOptions): Prom
     status: "active",
     error: null,
     retainedVersions: [],
-    officialCapabilityGrants,
   };
   await revalidateInstalledPlugin(entry);
   return {
@@ -365,6 +354,24 @@ export async function updateInstalledPluginConfiguration(
     return { ...lockfile, plugins: { ...lockfile.plugins, [pluginId]: updated } };
   });
   return validateLockEntry(updated, paths.store);
+}
+
+export async function restoreInstalledPluginConfiguration(
+  configPath: string,
+  previous: InstalledPluginLockEntry,
+): Promise<void> {
+  const paths = pluginInstallationPaths(configPath);
+  await updatePluginLockfile(paths.lockfile, (lockfile) => {
+    const current = lockfile.plugins[previous.pluginId];
+    if (!current) throw new Error(`Plugin is not installed: ${previous.pluginId}`);
+    return {
+      ...lockfile,
+      plugins: {
+        ...lockfile.plugins,
+        [previous.pluginId]: previous,
+      },
+    };
+  });
 }
 
 export async function recordInstalledPluginError(
@@ -755,6 +762,12 @@ function validateManifest(value: Record<string, unknown>): ManagedConnectPluginM
       candidate.durableState === undefined
         ? undefined
         : validateDurableStateManifest(candidate.durableState, pluginId, id);
+    if (candidate.type === "exposure" && durableState?.lifetime === "binding") {
+      throw new Error(`Plugin ${pluginId}/${id} Exposure Durable State cannot use Agent Binding lifetime`);
+    }
+    if (candidate.type === "client-extension" && durableState) {
+      throw new Error(`Plugin ${pluginId}/${id} Client Extension cannot declare Host Durable State`);
+    }
     if (durableState && !dependencyIds.has("durable-state")) {
       throw new Error(`Plugin ${pluginId}/${id} must declare Host Capability durable-state`);
     }
@@ -783,7 +796,7 @@ function validateManifest(value: Record<string, unknown>): ManagedConnectPluginM
       type: "exposure",
       interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
       configurationSchema,
-      ...(durableState ? { durableState } : {}),
+      ...(durableState ? { durableState: durableState as ConnectPluginExposureDurableStateManifest } : {}),
     };
   });
   if (!Array.isArray(value.artifacts) || value.artifacts.length === 0) {
@@ -816,7 +829,7 @@ function validateDurableStateManifest(
   value: unknown,
   pluginId: string,
   capabilityId: string,
-): NonNullable<ManagedConnectPluginCapabilityManifest["durableState"]> {
+): ConnectPluginDurableStateManifest {
   const label = `Plugin ${pluginId}/${capabilityId} Durable State`;
   if (!isRecord(value)) throw new Error(`${label} declaration is malformed`);
   assertOnlyKeys(value, ["schemaVersion", "lifetime", "schema", "migrations"], label);
@@ -993,11 +1006,6 @@ function validateInstalledVersion(value: unknown, store: string, pluginId: strin
   if (typeof value.target !== "string" || typeof value.integrity !== "string") {
     throw new Error(`Installed Plugin ${pluginId} target or integrity is malformed`);
   }
-  const officialCapabilityGrants = validateOfficialCapabilityGrants(
-    manifest,
-    selectedArtifact.integrity,
-    value.officialCapabilityGrants ?? [],
-  );
   return {
     source,
     version: manifest.version,
@@ -1008,7 +1016,6 @@ function validateInstalledVersion(value: unknown, store: string, pluginId: strin
     manifest,
     installationConfiguration,
     exposureConfigurations,
-    officialCapabilityGrants,
   };
 }
 
@@ -1063,7 +1070,6 @@ function installedVersion(entry: InstalledPluginLockEntry): InstalledPluginVersi
     manifest: entry.manifest,
     installationConfiguration: entry.installationConfiguration,
     exposureConfigurations: entry.exposureConfigurations,
-    officialCapabilityGrants: entry.officialCapabilityGrants,
   };
 }
 
@@ -1083,49 +1089,6 @@ export function pluginSourceIdentity(source: ConnectPluginSource): string {
   return `github:${source.apiBase}:${source.repository}`;
 }
 
-function validateOfficialCapabilityGrants(
-  manifest: ManagedConnectPluginManifestV1,
-  artifactIntegrity: string,
-  value: unknown,
-): readonly OfficialPluginCapabilityGrant[] {
-  if (!Array.isArray(value)) {
-    throw new Error(`Plugin ${manifest.pluginId} official capability grants are malformed`);
-  }
-  const grants = value.map((candidate): OfficialPluginCapabilityGrant => {
-    if (!isRecord(candidate) || candidate.type !== "exposure") {
-      throw new Error(`Plugin ${manifest.pluginId} official capability grant is malformed`);
-    }
-    const capabilityId = requireIdentity(
-      candidate.capabilityId,
-      `Plugin ${manifest.pluginId} official capability grant identity`,
-    );
-    if (candidate.artifactIntegrity !== artifactIntegrity) {
-      throw new Error(
-        `Plugin ${manifest.pluginId}/${capabilityId} official capability grant does not match selected artifact integrity`,
-      );
-    }
-    const capability = manifest.capabilities.find(
-      (declared) => declared.id === capabilityId && declared.type === "exposure",
-    );
-    if (!capability) {
-      throw new Error(`Plugin ${manifest.pluginId} official capability grant names no Client Exposure`);
-    }
-    return Object.freeze({ type: "exposure", capabilityId, artifactIntegrity });
-  });
-  const granted = new Set(grants.map((grant) => grant.capabilityId));
-  if (granted.size !== grants.length) {
-    throw new Error(`Plugin ${manifest.pluginId} official capability grants contain a duplicate identity`);
-  }
-  const ungranted = manifest.capabilities
-    .filter((capability) => capability.type === "exposure" && !granted.has(capability.id))
-    .map((capability) => capability.id);
-  if (ungranted.length > 0) {
-    throw new Error(
-      `Plugin ${manifest.pluginId} Client Exposure ${ungranted.join(", ")} requires a release-verified official capability grant`,
-    );
-  }
-  return Object.freeze(grants);
-}
 export type PluginConfigurationValidator = (value: unknown) => ConnectPluginConfiguration;
 
 export function compilePluginConfigurationValidator(
@@ -1258,21 +1221,23 @@ function validateExposureConfigurations(
   manifest: ManagedConnectPluginManifestV1,
   value: unknown,
 ): Readonly<Record<string, ConnectPluginConfiguration>> {
-  if (!isRecord(value)) throw new Error(`Plugin ${manifest.pluginId} Exposure configurations must be a JSON object`);
-  const exposures = manifest.capabilities.filter((capability) => capability.type === "exposure");
-  const declared = new Set(exposures.map((capability) => capability.id));
+  if (!isRecord(value)) throw new Error(`Plugin ${manifest.pluginId} capability configurations must be a JSON object`);
+  const capabilities = manifest.capabilities.filter(
+    (capability) => capability.type === "exposure" || capability.type === "client-extension",
+  );
+  const declared = new Set(capabilities.map((capability) => capability.id));
   for (const capabilityId of Object.keys(value)) {
     if (!declared.has(capabilityId)) {
-      throw new Error(`Plugin ${manifest.pluginId} has no Exposure capability ${capabilityId}`);
+      throw new Error(`Plugin ${manifest.pluginId} has no installation-scoped capability ${capabilityId}`);
     }
   }
   return Object.fromEntries(
-    exposures.map((capability) => [
+    capabilities.map((capability) => [
       capability.id,
       validatePluginConfiguration(
         capability.configurationSchema,
         value[capability.id] ?? {},
-        `Plugin ${manifest.pluginId}/${capability.id} Exposure configuration`,
+        `Plugin ${manifest.pluginId}/${capability.id} ${capability.type === "exposure" ? "Exposure" : "Client Extension"} configuration`,
       ),
     ]),
   );

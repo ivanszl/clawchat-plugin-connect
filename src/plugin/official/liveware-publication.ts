@@ -90,6 +90,7 @@ export interface BindingLivewarePublicationTarget {
 
 export class BindingLivewarePublicationLifecycle {
   private readonly operations = new Map<string, Promise<unknown>>();
+  private readonly reconciled = new Set<string>();
   private accepting = true;
 
   constructor(private readonly options: BindingLivewarePublicationLifecycleOptions) {
@@ -179,6 +180,7 @@ export class BindingLivewarePublicationLifecycle {
         transition: null,
         diagnostic: null,
       });
+      this.reconciled.delete(target.bindingId);
       return record.value;
     } catch (error) {
       await this.commit(record, {
@@ -195,7 +197,8 @@ export class BindingLivewarePublicationLifecycle {
     if (record.value.status === "retiring" || record.value.desired === "retired") {
       throw new Error(`Binding Liveware Publication ${target.bindingId} is retiring and cannot be reprovisioned`);
     }
-    if (record.value.status === "active") return record.value;
+    if (record.value.status === "active" && this.reconciled.has(target.bindingId)) return record.value;
+    const rebind = record.value.status === "active";
 
     record = await this.commit(record, {
       ...record.value,
@@ -251,7 +254,7 @@ export class BindingLivewarePublicationLifecycle {
       throw error;
     }
     let publicUrl = inspected.publicUrl;
-    if (!publicUrl) {
+    if (rebind || !publicUrl) {
       try {
         await this.assertAuthority(target.bindingId);
         publicUrl = await control.bindTunnel(app.appId, this.options.upstream);
@@ -302,6 +305,7 @@ export class BindingLivewarePublicationLifecycle {
       registrationId: app.appId,
       diagnostic: null,
     });
+    this.reconciled.add(target.bindingId);
     return record.value;
   }
 
@@ -315,10 +319,6 @@ export class BindingLivewarePublicationLifecycle {
       return await this.options.state.compareAndSwap(bindingId, existing.revision, {
         ...existing.value,
         activationGeneration: this.options.activationGeneration,
-        desired: "private",
-        status: existing.value.status === "retired" ? "provisioning" : existing.value.status,
-        transition: null,
-        diagnostic: null,
       });
     }
     return await this.options.state.compareAndSwap(bindingId, null, {

@@ -27,19 +27,24 @@ import {
 import type { AgentBindingConfig, ConnectConfig } from "../types";
 import type { WorkspaceCatalog } from "../workspaces/workspaces";
 import { agentBindingIdentity, normalizeAgentBinding } from "./binding";
-import {
-  discoverOfficialPlugins,
-  type OfficialCatalogOptions,
-  type OfficialPluginCatalogEntry,
-  type OfficialPluginDiscovery,
-} from "./catalog";
 import type {
   OfficialLivewareExposureServices,
   OfficialLivewareGatewayLease,
   OfficialLivewareManagedDisposer,
 } from "./official/liveware-entry";
-import { OFFICIAL_LIVEWARE_CAPABILITY_ID } from "./official/liveware-manifest";
-import { ConnectBindingLivewarePublicationStateStore } from "./official/liveware-publication-state";
+import { OFFICIAL_LIVEWARE_CAPABILITY_ID, OFFICIAL_LIVEWARE_PLUGIN_ID } from "./official/liveware-manifest";
+import {
+  ConnectBindingLivewarePublicationStateStore,
+  LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
+  validateBindingLivewarePublicationState,
+} from "./official/liveware-publication-state";
+import {
+  type BundledOfficialPluginEntry,
+  discoverOfficialPlugins,
+  isBundledOfficialPluginInstallation,
+  type OfficialPluginDiscovery,
+  type OfficialPluginDiscoveryOptions,
+} from "./official-registry";
 import type {
   ConnectExposureProviderHostCapability,
   ConnectPluginClientExposure,
@@ -81,6 +86,7 @@ import {
   removeInstalledPlugin,
   removePluginArtifacts,
   removeUnreferencedManagedPluginUploads,
+  restoreInstalledPluginConfiguration,
   revalidateInstalledPlugin,
   type StagedPlugin,
   selectInstalledPluginVersion,
@@ -96,6 +102,7 @@ interface ActivePlugin {
   retireManagedResources(): Promise<void>;
   activateClientExposures(): Promise<void>;
   retireBindings(bindingIds: readonly string[]): Promise<void>;
+  fenceDurableState(): Promise<() => void>;
 }
 
 interface ActivatedCandidate {
@@ -104,15 +111,18 @@ interface ActivatedCandidate {
   startContributions(): Promise<void>;
   publishRuntime(): Promise<void>;
   readonly durableStateMigrations: readonly PluginDurableStateMigrationCommit[];
-}
-interface ResolvedOfficialPlugin {
-  entry: OfficialPluginCatalogEntry;
+  refreshDurableStateMigrations(): Promise<void>;
 }
 
-interface ResolvedPluginInstallOptions
-  extends Pick<ManagePluginOptions, "installationConfiguration" | "exposureConfigurations"> {
-  officialCapabilityGrants?: OfficialPluginCatalogEntry["capabilityGrants"];
+interface DurableStateGenerationGate {
+  run<T>(operation: () => Promise<T>): Promise<T>;
+  fence(): Promise<() => void>;
 }
+interface ResolvedOfficialPlugin {
+  entry: BundledOfficialPluginEntry;
+}
+
+type ResolvedPluginInstallOptions = Pick<ManagePluginOptions, "installationConfiguration" | "exposureConfigurations">;
 
 interface ConnectPluginManagementDependencies {
   config: ConnectConfig;
@@ -144,10 +154,7 @@ export interface ManagePluginOptions {
   installationConfiguration?: Record<string, unknown>;
   exposureConfigurations?: Record<string, unknown>;
 }
-type CoreManagePluginOptions = ManagePluginOptions & {
-  /** Authenticated Catalog metadata; never accepted from HTTP or public Bundle sources. */
-  officialCapabilityGrants?: OfficialPluginCatalogEntry["capabilityGrants"];
-};
+type CoreManagePluginOptions = ManagePluginOptions;
 
 export interface ConfigurePluginOptions {
   installationConfiguration: Record<string, unknown>;
@@ -218,7 +225,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     private readonly runtimeAdapters: RuntimeAdapterRegistry,
     private readonly reportActivationFailure: (pluginId: string, error: unknown) => void,
     private readonly management?: ConnectPluginManagementDependencies,
-    private readonly sourceOptions: OfficialCatalogOptions = {},
+    private readonly sourceOptions: OfficialPluginDiscoveryOptions = {},
   ) {
     this.operationCoordinator = new ConnectConfigMutationCoordinator(management?.config, configPath);
     this.configMutations = management ? this.operationCoordinator : undefined;
@@ -237,11 +244,16 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       fetchPrivateGateway,
     });
     this.clientExposureTarget = target;
-    try {
-      for (const plugin of this.active.values()) await plugin.activateClientExposures();
-    } catch (error) {
-      if (this.clientExposureTarget === target) this.clientExposureTarget = undefined;
-      throw error;
+    for (const [pluginId, plugin] of [...this.active]) {
+      try {
+        await plugin.activateClientExposures();
+      } catch (error) {
+        this.active.delete(pluginId);
+        await plugin.dispose().catch(() => undefined);
+        await recordInstalledPluginError(this.configPath, pluginId, error).catch(() => undefined);
+        await this.markDependentBindingsUnavailable(pluginId, error).catch(() => undefined);
+        this.reportActivationFailure(pluginId, error);
+      }
     }
     return () => {
       if (this.clientExposureTarget === target) this.clientExposureTarget = undefined;
@@ -412,7 +424,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
   async reinstall(pluginId: string): Promise<InstalledPluginLockEntry> {
     return await this.runExclusive(async () => {
       const installed = await this.requireInstalled(pluginId);
-      const resolverOptions: OfficialCatalogOptions = { ...this.sourceOptions, target: installed.target };
+      const resolverOptions: OfficialPluginDiscoveryOptions = { ...this.sourceOptions, target: installed.target };
       if (installed.source.type === "npm") resolverOptions.npmRegistry = installed.source.registry;
       if (installed.source.type === "github") resolverOptions.githubApiBase = installed.source.apiBase;
       const reference =
@@ -429,7 +441,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         target: installed.target,
         installationConfiguration: installed.installationConfiguration,
         exposureConfigurations: installed.exposureConfigurations,
-        officialCapabilityGrants: installed.officialCapabilityGrants,
       });
       if (staged.entry.pluginId !== pluginId || staged.entry.version !== installed.version) {
         await discardStagedPlugin(this.configPath, staged).catch(() => undefined);
@@ -451,7 +462,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         const entry = installed[index];
         if (!entry) return;
         try {
-          const resolverOptions: OfficialCatalogOptions = { ...this.sourceOptions, target: entry.target };
+          const resolverOptions: OfficialPluginDiscoveryOptions = { ...this.sourceOptions, target: entry.target };
           if (entry.source.type === "npm") resolverOptions.npmRegistry = entry.source.registry;
           if (entry.source.type === "github") resolverOptions.githubApiBase = entry.source.apiBase;
           const resolved = await resolvePluginSource(updateReferenceForSource(entry.source), resolverOptions);
@@ -527,16 +538,20 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       );
       const oldActive = this.active.get(pluginId);
       let candidate: ActivatedCandidate | undefined;
+      let restoreOldDurableState: (() => void) | undefined;
       let configurationCommitted = false;
       let configured!: InstalledPluginLockEntry;
       try {
-        candidate = await this.activateCandidate(
+        const activatedCandidate = await this.activateCandidate(
           configuredCandidate,
           oldActive ? runtimeRefs(installed) : undefined,
           installed.activationGeneration,
         );
-        await this.commitDurableStateMigrations(candidate);
+        candidate = activatedCandidate;
         return await this.withBindingQuiescence(dependentBindingIds, async () => {
+          restoreOldDurableState = await oldActive?.fenceDurableState();
+          await activatedCandidate.refreshDurableStateMigrations();
+          await this.commitDurableStateMigrations(activatedCandidate);
           configured = await updateInstalledPluginConfiguration(
             this.configPath,
             pluginId,
@@ -544,21 +559,26 @@ export class ConnectPluginHost implements ConnectPluginManagement {
             exposureConfigurations,
           );
           configurationCommitted = true;
-          await this.saveRuntimeConfigurations(nextRuntimeConfigurations, commitConfig);
-          if (!candidate) return configured;
+          try {
+            await this.saveRuntimeConfigurations(nextRuntimeConfigurations, commitConfig);
+          } catch (error) {
+            await restoreInstalledPluginConfiguration(this.configPath, installed);
+            configurationCommitted = false;
+            throw error;
+          }
           if (installed.status !== "active") {
-            candidate.plugin.installed = configured;
-            await candidate.plugin.dispose();
+            activatedCandidate.plugin.installed = configured;
+            await activatedCandidate.plugin.dispose();
             return configured;
           }
 
-          candidate.plugin.installed = configured;
-          await candidate.revokeRuntime();
+          activatedCandidate.plugin.installed = configured;
+          await activatedCandidate.revokeRuntime();
           this.active.delete(pluginId);
           await oldActive?.dispose();
-          await candidate.startContributions();
-          await candidate.publishRuntime();
-          this.active.set(pluginId, candidate.plugin);
+          await activatedCandidate.startContributions();
+          await activatedCandidate.publishRuntime();
+          this.active.set(pluginId, activatedCandidate.plugin);
           return configured;
         });
       } catch (error) {
@@ -567,6 +587,10 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           await oldActive?.dispose().catch(() => undefined);
         }
         await candidate?.plugin.dispose().catch(() => undefined);
+        if (!configurationCommitted && candidate) {
+          await this.discardDurableStateMigrations(candidate).catch(() => undefined);
+        }
+        if (!configurationCommitted) restoreOldDurableState?.();
         if (configurationCommitted) await this.markDependentBindingsUnavailable(pluginId, error);
         await recordInstalledPluginError(
           this.configPath,
@@ -583,7 +607,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
   async update(pluginId: string, options: Partial<CoreManagePluginOptions> = {}): Promise<InstalledPluginLockEntry> {
     return await this.runExclusive(async () => {
       const installed = await this.requireInstalled(pluginId);
-      const resolverOptions: OfficialCatalogOptions = {
+      const resolverOptions: OfficialPluginDiscoveryOptions = {
         ...this.sourceOptions,
         target: options.target ?? installed.target,
       };
@@ -605,7 +629,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         target: resolved.target,
         installationConfiguration: options.installationConfiguration ?? installed.installationConfiguration,
         exposureConfigurations: options.exposureConfigurations ?? installed.exposureConfigurations,
-        officialCapabilityGrants: options.officialCapabilityGrants ?? installed.officialCapabilityGrants,
       });
       if (staged.entry.pluginId !== pluginId) {
         await discardStagedPlugin(this.configPath, staged).catch(() => undefined);
@@ -624,7 +647,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
   }
   async discoverOfficial(): Promise<OfficialPluginDiscovery> {
     this.officialCandidates.clear();
-    return await discoverOfficialPlugins(this.configPath, this.sourceOptions, (entry) => {
+    return await discoverOfficialPlugins(this.sourceOptions, (entry) => {
       this.officialCandidates.set(entry.pluginId, { entry });
     });
   }
@@ -653,14 +676,13 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           artifact?.integrity !== entry.integrity
         ) {
           throw new Error(
-            `Official Plugin ${entry.pluginId} resolved artifact does not match its authenticated Catalog lock`,
+            `Official Plugin ${entry.pluginId} resolved artifact does not match its bundled registry lock`,
           );
         }
         installed.push(
           await this.installResolved(resolved, {
             installationConfiguration: entry.installationConfiguration,
             exposureConfigurations: entry.exposureConfigurations,
-            officialCapabilityGrants: entry.capabilityGrants,
           }),
         );
       }
@@ -702,16 +724,19 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       const selected: InstalledPluginLockEntry = {
         ...installed,
         activationGeneration: installed.activationGeneration + 1,
+        status: "active",
+        error: null,
       };
       let candidate: ActivatedCandidate | undefined;
       let generationCommitted = false;
       try {
         await revalidateInstalledPlugin(selected);
         const dependentBindingIds = this.validateDependentBindings(selected);
-        const activated = await this.activateCandidate(selected, undefined, installed.activationGeneration);
+        const activated = await this.activateCandidate(selected, undefined, installed.activationGeneration, true);
         candidate = activated;
-        await this.commitDurableStateMigrations(activated);
         return await this.withBindingQuiescence(dependentBindingIds, async () => {
+          await activated.refreshDurableStateMigrations();
+          await this.commitDurableStateMigrations(activated);
           const enabled = await setInstalledPluginStatus(
             this.configPath,
             pluginId,
@@ -720,7 +745,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
             selected.activationGeneration,
           );
           generationCommitted = true;
-          activated.plugin.installed = enabled;
           await activated.revokeRuntime();
           await activated.startContributions();
           await activated.publishRuntime();
@@ -730,6 +754,9 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       } catch (error) {
         this.active.delete(pluginId);
         await candidate?.plugin.dispose().catch(() => undefined);
+        if (!generationCommitted && candidate) {
+          await this.discardDurableStateMigrations(candidate).catch(() => undefined);
+        }
         await recordInstalledPluginError(this.configPath, pluginId, error, !generationCommitted).catch(() => undefined);
         await this.markDependentBindingsUnavailable(pluginId, error);
         this.reportActivationFailure(pluginId, error);
@@ -895,7 +922,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       target: resolved.target,
       installationConfiguration: options.installationConfiguration,
       exposureConfigurations: options.exposureConfigurations,
-      officialCapabilityGrants: options.officialCapabilityGrants,
     });
     return await this.installStaged(staged);
   }
@@ -906,6 +932,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     try {
       this.validateDependentBindings(staged.entry);
       candidate = await this.activateCandidate(staged.entry, [], null);
+      await candidate.refreshDurableStateMigrations();
       await this.commitDurableStateMigrations(candidate);
       const installed = await commitStagedPlugin(this.configPath, staged, "install");
       lockCommitted = true;
@@ -921,6 +948,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         await recordInstalledPluginError(this.configPath, staged.entry.pluginId, error).catch(() => undefined);
         await this.markDependentBindingsUnavailable(staged.entry.pluginId, error);
       } else {
+        if (candidate) await this.discardDurableStateMigrations(candidate).catch(() => undefined);
         await discardStagedPlugin(this.configPath, staged).catch(() => undefined);
       }
       this.reportActivationFailure(staged.entry.pluginId, error);
@@ -938,11 +966,14 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     const dependentBindingIds = this.validateDependentBindings(staged.entry);
     let candidate: ActivatedCandidate | undefined;
     let lockCommitted = false;
+    let restoreOldDurableState: (() => void) | undefined;
     try {
       const activated = await this.activateCandidate(staged.entry, replacedRuntimeRefs, existing.activationGeneration);
-      await this.commitDurableStateMigrations(activated);
       candidate = activated;
       return await this.withBindingQuiescence(dependentBindingIds, async () => {
+        restoreOldDurableState = await oldActive?.fenceDurableState();
+        await activated.refreshDurableStateMigrations();
+        await this.commitDurableStateMigrations(activated);
         const installed = await commitStagedPlugin(this.configPath, staged, operation);
         lockCommitted = true;
         activated.plugin.installed = installed;
@@ -966,6 +997,8 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       }
 
       await candidate?.plugin.dispose().catch(() => undefined);
+      if (candidate) await this.discardDurableStateMigrations(candidate).catch(() => undefined);
+      restoreOldDurableState?.();
       await discardStagedPlugin(this.configPath, staged).catch(() => undefined);
       await recordInstalledPluginError(
         this.configPath,
@@ -1077,12 +1110,21 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       throw new Error("Plugin Durable State migration requires running Connect management dependencies");
     await this.management.stateStore.commitPluginDurableStateMigrations(candidate.durableStateMigrations);
   }
+  private async discardDurableStateMigrations(candidate: ActivatedCandidate): Promise<void> {
+    if (candidate.durableStateMigrations.length === 0 || !this.management) return;
+    await Promise.all(
+      candidate.durableStateMigrations.map(
+        async ({ namespace }) => await this.management?.stateStore.deletePluginDurableStateNamespace(namespace),
+      ),
+    );
+  }
 
   private createRuntimeDurableState(
     installed: InstalledPluginLockEntry,
     capabilityId: string,
     declaration: ConnectPluginDurableStateManifest | undefined,
     binding: AgentBindingConfig,
+    durableStateGate: DurableStateGenerationGate,
   ): ConnectPluginDurableState | undefined {
     if (!declaration) return undefined;
     const bindingId = agentBindingIdentity(binding);
@@ -1091,26 +1133,66 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         `Plugin ${installed.pluginId}/${capabilityId} Durable State requires an identified Agent Binding`,
       );
     }
-    const validateState = compilePluginDurableStateValidator(
-      declaration.schema,
-      `Plugin ${installed.pluginId}/${capabilityId} Durable State`,
-    );
-    const namespace = async (): Promise<PluginDurableStateNamespace> => {
-      const scopeKey =
+    return this.createCapabilityDurableState(
+      installed,
+      capabilityId,
+      declaration,
+      bindingId,
+      async () =>
         declaration.lifetime === "installation"
           ? "installation"
           : declaration.lifetime === "binding"
             ? bindingId
-            : await this.requireInstallationOwner(installed.pluginId, capabilityId);
-      return {
-        pluginId: installed.pluginId,
-        activationGeneration: installed.activationGeneration,
-        capabilityId,
-        instanceId: bindingId,
-        lifetime: declaration.lifetime,
-        scopeKey,
-      };
-    };
+            : await this.requireInstallationOwner(installed.pluginId, capabilityId),
+      durableStateGate,
+    );
+  }
+
+  private createExposureDurableState(
+    installed: InstalledPluginLockEntry,
+    capabilityId: string,
+    declaration: ConnectPluginDurableStateManifest | undefined,
+    durableStateGate: DurableStateGenerationGate,
+  ): ConnectPluginDurableState | undefined {
+    if (!declaration) return undefined;
+    if (declaration.lifetime === "binding") {
+      throw new Error(
+        `Plugin ${installed.pluginId}/${capabilityId} Exposure Durable State cannot use Agent Binding lifetime`,
+      );
+    }
+    return this.createCapabilityDurableState(
+      installed,
+      capabilityId,
+      declaration,
+      "exposure",
+      async () =>
+        declaration.lifetime === "installation"
+          ? "installation"
+          : await this.requireInstallationOwner(installed.pluginId, capabilityId),
+      durableStateGate,
+    );
+  }
+
+  private createCapabilityDurableState(
+    installed: InstalledPluginLockEntry,
+    capabilityId: string,
+    declaration: ConnectPluginDurableStateManifest,
+    instanceId: string,
+    scopeKey: () => Promise<string>,
+    durableStateGate: DurableStateGenerationGate,
+  ): ConnectPluginDurableState {
+    const validateState = compilePluginDurableStateValidator(
+      declaration.schema,
+      `Plugin ${installed.pluginId}/${capabilityId} Durable State`,
+    );
+    const namespace = async (): Promise<PluginDurableStateNamespace> => ({
+      pluginId: installed.pluginId,
+      activationGeneration: installed.activationGeneration,
+      capabilityId,
+      instanceId,
+      lifetime: declaration.lifetime,
+      scopeKey: await scopeKey(),
+    });
     const assertGeneration = async (): Promise<ConnectStateStore> => {
       const selected = await this.requireInstalled(installed.pluginId);
       if (selected.status !== "active" || selected.activationGeneration !== installed.activationGeneration) {
@@ -1122,38 +1204,40 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       return this.management.stateStore;
     };
     return Object.freeze({
-      read: async (): Promise<ConnectPluginDurableStateRecord | null> => {
-        const store = await assertGeneration();
-        const record = await store.readPluginDurableState(await namespace());
-        if (!record) return null;
-        if (record.schemaVersion !== declaration.schemaVersion) {
-          throw new Error(
-            `Plugin ${installed.pluginId}/${capabilityId} Durable State schema ${record.schemaVersion} is not selected schema ${declaration.schemaVersion}`,
-          );
-        }
-        return Object.freeze({
-          schemaVersion: record.schemaVersion,
-          revision: record.revision,
-          value: deepFreeze(validateState(record.value)),
-        });
-      },
+      read: async (): Promise<ConnectPluginDurableStateRecord | null> =>
+        await durableStateGate.run(async () => {
+          const store = await assertGeneration();
+          const record = await store.readPluginDurableState(await namespace());
+          if (!record) return null;
+          if (record.schemaVersion !== declaration.schemaVersion) {
+            throw new Error(
+              `Plugin ${installed.pluginId}/${capabilityId} Durable State schema ${record.schemaVersion} is not selected schema ${declaration.schemaVersion}`,
+            );
+          }
+          return Object.freeze({
+            schemaVersion: record.schemaVersion,
+            revision: record.revision,
+            value: deepFreeze(validateState(record.value)),
+          });
+        }),
       compareAndSwap: async (
         expectedRevision: number | null,
         value: Readonly<Record<string, unknown>>,
-      ): Promise<ConnectPluginDurableStateRecord> => {
-        const store = await assertGeneration();
-        const record = await store.compareAndSwapPluginDurableState(
-          await namespace(),
-          expectedRevision,
-          declaration.schemaVersion,
-          validateState(value),
-        );
-        return Object.freeze({
-          schemaVersion: record.schemaVersion,
-          revision: record.revision,
-          value: deepFreeze(validateState(record.value)),
-        });
-      },
+      ): Promise<ConnectPluginDurableStateRecord> =>
+        await durableStateGate.run(async () => {
+          const store = await assertGeneration();
+          const record = await store.compareAndSwapPluginDurableState(
+            await namespace(),
+            expectedRevision,
+            declaration.schemaVersion,
+            validateState(value),
+          );
+          return Object.freeze({
+            schemaVersion: record.schemaVersion,
+            revision: record.revision,
+            value: deepFreeze(validateState(record.value)),
+          });
+        }),
     });
   }
 
@@ -1170,7 +1254,10 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     installed: InstalledPluginLockEntry,
     entry: ManagedConnectPluginEntry,
     sourceActivationGeneration: number | null,
+    bundledOfficialInstallation: boolean,
+    reactivateRetiredLiveware: boolean,
   ): Promise<PluginDurableStateMigrationCommit[]> {
+    if (sourceActivationGeneration === installed.activationGeneration) return [];
     if (!this.management || sourceActivationGeneration === null) return [];
     const snapshots = await this.management.stateStore.listPluginDurableState(
       installed.pluginId,
@@ -1180,8 +1267,47 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     const migrations: PluginDurableStateMigrationCommit[] = [];
     for (const snapshot of snapshots) {
       const capability = capabilities.get(snapshot.namespace.capabilityId);
-      const declaration = capability?.durableState;
-      if (!declaration) continue;
+      const declaration = capability && "durableState" in capability ? capability.durableState : undefined;
+      if (
+        !declaration &&
+        bundledOfficialInstallation &&
+        installed.pluginId === OFFICIAL_LIVEWARE_PLUGIN_ID &&
+        snapshot.namespace.capabilityId === OFFICIAL_LIVEWARE_CAPABILITY_ID &&
+        snapshot.namespace.lifetime === "binding"
+      ) {
+        const publication = validateBindingLivewarePublicationState(
+          snapshot.record.value,
+          snapshot.namespace.instanceId,
+        );
+        migrations.push({
+          namespace: {
+            ...snapshot.namespace,
+            activationGeneration: installed.activationGeneration,
+          },
+          revision: snapshot.record.revision,
+          schemaVersion: LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
+          value: reactivateRetiredLiveware
+            ? {
+                ...publication,
+                activationGeneration: installed.activationGeneration,
+                desired: "private",
+                status: publication.status === "retired" ? "provisioning" : publication.status,
+                transition: null,
+                diagnostic: null,
+              }
+            : {
+                ...publication,
+                activationGeneration: installed.activationGeneration,
+              },
+        });
+        continue;
+      }
+      if (!capability || !declaration) continue;
+      if (snapshot.namespace.lifetime !== declaration.lifetime) {
+        throw new Error(
+          `Plugin ${installed.pluginId}/${capability.id} cannot change Durable State lifetime from ${snapshot.namespace.lifetime} to ${declaration.lifetime}`,
+        );
+      }
       const validateState = compilePluginDurableStateValidator(
         declaration.schema,
         `Plugin ${installed.pluginId}/${capability.id} Durable State`,
@@ -1236,7 +1362,9 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     installed: InstalledPluginLockEntry,
     replacedRuntimeRefs?: readonly RuntimeCapabilityRef[],
     durableStateSourceGeneration: number | null = installed.activationGeneration,
+    reactivateRetiredLiveware = false,
   ): Promise<ActivatedCandidate> {
+    const bundledOfficialInstallation = await isBundledOfficialPluginInstallation(installed);
     // Plugin artifact paths are runtime-selected and version-distinct, so static imports cannot represent this boundary.
     const namespace: unknown = await import(pathToFileURL(installed.activeArtifact).href);
     if (!namespace || typeof namespace !== "object" || !("default" in namespace)) {
@@ -1247,10 +1375,15 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       throw new Error(`Plugin ${installed.pluginId} default export does not implement activate(context)`);
     }
     const pluginEntry = entry as ManagedConnectPluginEntry;
-    const durableStateMigrations = await this.prepareDurableStateMigrations(
+    const durableStateGate = createDurableStateGenerationGate(
+      `Plugin ${installed.pluginId} rejected stale Activation Generation ${installed.activationGeneration}`,
+    );
+    let durableStateMigrations = await this.prepareDurableStateMigrations(
       installed,
       pluginEntry,
       durableStateSourceGeneration,
+      bundledOfficialInstallation,
+      reactivateRetiredLiveware,
     );
     const declaredHostCapabilities = new Set(installed.manifest.dependencies.map((dependency) => dependency.id));
     const pending = new Map<string, PendingProvider>();
@@ -1328,6 +1461,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       capabilityId: string;
       provider: ConnectPluginExposureProvider;
       configuration: Readonly<Record<string, unknown>>;
+      durableState?: ConnectPluginDurableState;
     }> = [];
     const exposureDisposers: ConnectPluginDisposer[] = [];
     const managedRetirements: Array<() => Promise<void>> = [];
@@ -1375,6 +1509,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
                 capability.id,
                 capability.durableState,
                 binding,
+                durableStateGate,
               );
               return bridgeRuntimeProvider(
                 registration,
@@ -1398,6 +1533,12 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           capabilityId: capability.id,
           provider: registration.implementation,
           configuration: deepFreeze(structuredClone(installed.exposureConfigurations[capability.id] ?? {})),
+          durableState: this.createExposureDurableState(
+            installed,
+            capability.id,
+            capability.durableState,
+            durableStateGate,
+          ),
         });
       }
       replacement = this.runtimeAdapters.replaceAll(runtimeDefinitions, replacedRuntimeRefs ?? []);
@@ -1447,13 +1588,16 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         const officialLiveware = this.officialLivewareServices(
           installed,
           staged.capabilityId,
+          bundledOfficialInstallation,
           assertActivationLifecycle,
+          durableStateGate,
         );
         const disposer = await staged.provider.activate(
           Object.freeze({
             activationGeneration: installed.activationGeneration,
             configuration: staged.configuration,
             client: clientExposure,
+            ...(staged.durableState ? { durableState: staged.durableState } : {}),
             ...(officialLiveware ? { officialLiveware } : {}),
           }),
         );
@@ -1472,6 +1616,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       dispose: async () => {
         if (state === "disposed") return;
         state = "disposed";
+        await durableStateGate.fence();
         const results: PromiseSettledResult<void>[] = [];
         if (replacement) {
           results.push(...(await Promise.allSettled([replacement.rollback()])));
@@ -1490,6 +1635,19 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       retireBindings: async (bindingIds) => {
         for (const retire of managedBindingRetirements.toReversed()) await retire(bindingIds);
       },
+      fenceDurableState: async () => {
+        const previousState = state;
+        state = "fencing";
+        const restoreGate = await durableStateGate.fence();
+        state = "fenced";
+        let restored = false;
+        return () => {
+          if (restored) return;
+          restored = true;
+          restoreGate();
+          state = previousState;
+        };
+      },
       activateClientExposures: async () => {
         if (state !== "started" && state !== "published") {
           throw new Error(
@@ -1501,7 +1659,18 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     };
     return {
       plugin,
-      durableStateMigrations,
+      get durableStateMigrations() {
+        return durableStateMigrations;
+      },
+      refreshDurableStateMigrations: async () => {
+        durableStateMigrations = await this.prepareDurableStateMigrations(
+          installed,
+          pluginEntry,
+          durableStateSourceGeneration,
+          bundledOfficialInstallation,
+          reactivateRetiredLiveware,
+        );
+      },
       revokeRuntime: async () => {
         if (state === "fenced" || state === "started" || state === "published") return;
         if (state !== "prepared") {
@@ -1550,12 +1719,18 @@ export class ConnectPluginHost implements ConnectPluginManagement {
   private officialLivewareServices(
     installed: InstalledPluginLockEntry,
     capabilityId: string,
+    bundledOfficialInstallation: boolean,
     assertActivationLifecycle: () => void,
+    durableStateGate: DurableStateGenerationGate,
   ): OfficialLivewareExposureServices | undefined {
-    const granted = installed.officialCapabilityGrants.some(
-      (grant) => grant.type === "exposure" && grant.capabilityId === capabilityId,
-    );
-    if (!granted || capabilityId !== OFFICIAL_LIVEWARE_CAPABILITY_ID || !this.management) return undefined;
+    if (
+      installed.pluginId !== OFFICIAL_LIVEWARE_PLUGIN_ID ||
+      capabilityId !== OFFICIAL_LIVEWARE_CAPABILITY_ID ||
+      !bundledOfficialInstallation ||
+      !this.management
+    ) {
+      return undefined;
+    }
     const management = this.management;
     const dependencies = async (): Promise<LivewareControlDependencies> => {
       if (management.livewareDependencies) return management.livewareDependencies;
@@ -1594,6 +1769,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         management.stateStore,
         assertGeneration,
         installed.activationGeneration,
+        async (operation) => await durableStateGate.run(operation),
       ),
       controlPlane: {
         connect: async (bindingId) => {
@@ -1834,6 +2010,33 @@ function bridgeRuntimeProvider(
     close: adapter.close ? async () => await adapter.close?.() : undefined,
   };
   return internal;
+}
+
+function createDurableStateGenerationGate(staleGenerationMessage: string): DurableStateGenerationGate {
+  let accepting = true;
+  const pending = new Set<Promise<unknown>>();
+  return {
+    run: async <T>(operation: () => Promise<T>): Promise<T> => {
+      if (!accepting) throw new Error(staleGenerationMessage);
+      const work = Promise.resolve().then(operation);
+      pending.add(work);
+      try {
+        return await work;
+      } finally {
+        pending.delete(work);
+      }
+    },
+    fence: async (): Promise<() => void> => {
+      accepting = false;
+      await Promise.allSettled([...pending]);
+      let restored = false;
+      return () => {
+        if (restored) return;
+        restored = true;
+        accepting = true;
+      };
+    },
+  };
 }
 
 function deepFreeze<T>(value: T): T {

@@ -14,13 +14,13 @@ import { TranscriptProjection } from "../src/client-interface/transcript-project
 import { defaultConfig, getAgentBinding, loadConfig, saveConfig } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
-import type { OfficialPluginDiscovery } from "../src/plugin/catalog";
 import {
   type ConfigurePluginOptions,
   ConnectPluginHost,
   type ConnectPluginManagement,
   type ManagePluginOptions,
 } from "../src/plugin/host";
+import type { OfficialPluginDiscovery } from "../src/plugin/official-registry";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_BUNDLE_FORMAT,
@@ -131,8 +131,8 @@ describe("Connect Client trusted Plugin administration", () => {
       return { binding: structuredClone(binding), modes: ["read-only"] };
     });
     const official: OfficialPluginDiscovery = {
-      catalogOrigin: "cache",
-      diagnostics: ["Official Plugin Catalog is using the last authenticated cache"],
+      officialSource: "bundled",
+      diagnostics: ["Bundled official Plugin fixture"],
       candidates: [
         {
           pluginId: "official.fixture",
@@ -150,7 +150,6 @@ describe("Connect Client trusted Plugin administration", () => {
           diagnostic: null,
           installationConfiguration: { channel: "stable" },
           exposureConfigurations: {},
-          capabilityGrants: [],
           manifest: healthy.manifest,
         },
       ],
@@ -251,7 +250,7 @@ describe("Connect Client trusted Plugin administration", () => {
           updateAvailability: { status: "not-installed" },
         },
       ],
-      catalogOrigin: "cache",
+      officialSource: "bundled",
     });
     expect(update).toHaveBeenCalledTimes(0);
 
@@ -1046,7 +1045,6 @@ function installedPlugin(
     },
     installationConfiguration: { channel: "stable" },
     exposureConfigurations: {},
-    officialCapabilityGrants: [],
   };
   return {
     activationGeneration: 1,

@@ -161,26 +161,12 @@ function reverseObjectKeyOrder(value: unknown): unknown {
       .map(([key, child]) => [key, reverseObjectKeyOrder(child)]),
   );
 }
-function officialCapabilityGrants(bundle: ManagedConnectPluginBundleV1) {
-  const artifact = bundle.manifest.artifacts.find(({ target }) => target === currentConnectPluginTarget());
-  if (!artifact) throw new Error(`Bundle ${bundle.manifest.pluginId} has no current target artifact`);
-  return bundle.manifest.capabilities
-    .filter(({ type }) => type === "exposure")
-    .map(({ id }) => ({ type: "exposure" as const, capabilityId: id, artifactIntegrity: artifact.integrity }));
-}
 
 async function installOfficialBundle(host: ConnectPluginHost, sourcePath: string) {
-  const bundle = JSON.parse(await readFile(sourcePath, "utf8")) as ManagedConnectPluginBundleV1;
-  return await host.install({
-    source: `local:${sourcePath}`,
-    officialCapabilityGrants: officialCapabilityGrants(bundle),
-  });
+  return await host.install({ source: `local:${sourcePath}` });
 }
-async function updateOfficialBundle(host: ConnectPluginHost, pluginId: string, sourcePath: string) {
-  const bundle = JSON.parse(await readFile(sourcePath, "utf8")) as ManagedConnectPluginBundleV1;
-  return await host.update(pluginId, {
-    officialCapabilityGrants: officialCapabilityGrants(bundle),
-  });
+async function updateOfficialBundle(host: ConnectPluginHost, pluginId: string, _sourcePath: string) {
+  return await host.update(pluginId);
 }
 interface LifecycleBundleOptions {
   runtimeSchema?: Record<string, unknown>;
@@ -326,6 +312,7 @@ function durableStateBundle(
   version: string,
   schemaVersion: 1 | 2,
   migrationFailure = false,
+  lifetime: "binding" | "installation" = "binding",
 ): ManagedConnectPluginBundleV1 {
   const source = `
 export default {
@@ -386,7 +373,7 @@ export default {
           configurationSchema: { type: "object", additionalProperties: false },
           durableState: {
             schemaVersion,
-            lifetime: "binding",
+            lifetime,
             schema: stateSchema,
             migrations: schemaVersion === 1 ? [] : [{ from: 1, to: 2 }],
           },
@@ -608,17 +595,14 @@ export default {
     }
   });
 
-  it("retains authenticated official capability grants when an update resolves the same artifact", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "connect-official-grant-update-"));
-    const pluginId = "test.official-grant-update";
-    const bundle = hotBundle(pluginId, "1.0.0");
-    const sourcePath = await writeBundle(directory, bundle);
+  it("updates a Plugin that declares Client Exposure without privileged metadata", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-exposure-update-"));
+    const pluginId = "test.exposure-update";
+    const sourcePath = await writeBundle(directory, hotBundle(pluginId, "1.0.0"));
     const host = new ConnectPluginHost(join(directory, "config.json"), new RuntimeAdapterRegistry([]), () => undefined);
-    const installed = await installOfficialBundle(host, sourcePath);
+    await installOfficialBundle(host, sourcePath);
 
-    const updated = await host.update(pluginId);
-
-    expect(updated.officialCapabilityGrants).toEqual(installed.officialCapabilityGrants);
+    await expect(host.update(pluginId)).resolves.toMatchObject({ pluginId, version: "1.0.0", status: "active" });
     await host.close();
   });
 
@@ -701,6 +685,54 @@ export default {
     await store.close();
   });
 
+  it("rejects changing Durable State lifetime across selected generations", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-durable-state-lifetime-"));
+    const configPath = join(directory, "config.json");
+    const stateDbPath = join(directory, "state.sqlite");
+    const pluginId = "test.durable-state-lifetime";
+    const bindingId = "stateful-binding";
+    const agentBinding = binding(pluginId, bindingId);
+    const config = {
+      ...defaultConfig(),
+      stateDbPath,
+      agents: { [bindingId]: agentBinding },
+      defaultAgent: bindingId,
+    };
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: stateDbPath });
+    const runtimeAdapters = new RuntimeAdapterRegistry([]);
+    const host = new ConnectPluginHost(configPath, runtimeAdapters, () => undefined, {
+      config,
+      stateStore: store,
+      workspaces: new WorkspaceCatalog(store),
+    });
+    const sourcePath = join(directory, "stateful.connect-plugin");
+    await writeFile(sourcePath, `${JSON.stringify(durableStateBundle(pluginId, "1.0.0", 1), null, 2)}\n`);
+    await host.install({ source: `local:${sourcePath}` });
+    await runtimeAdapters.prepare(agentBinding);
+    const state = (
+      globalThis as typeof globalThis & {
+        __connectDurableStateTest: {
+          compareAndSwap(revision: number | null, value: Record<string, unknown>): Promise<unknown>;
+        };
+      }
+    ).__connectDurableStateTest;
+    await state.compareAndSwap(null, { count: 1 });
+    await writeFile(
+      sourcePath,
+      `${JSON.stringify(durableStateBundle(pluginId, "2.0.0", 2, false, "installation"), null, 2)}\n`,
+    );
+
+    await expect(host.update(pluginId)).rejects.toThrow(
+      "cannot change Durable State lifetime from binding to installation",
+    );
+    await expect(host.list()).resolves.toEqual([
+      expect.objectContaining({ pluginId, version: "1.0.0", activationGeneration: 1, status: "active" }),
+    ]);
+    await host.close();
+    await store.close();
+  });
+
   it("rejects an old-generation Client Exposure callback after update commit", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-exposure-generation-"));
     const configPath = join(directory, "config.json");
@@ -749,6 +781,36 @@ export default {
     unbindClient();
     await host.close();
     Reflect.deleteProperty(globalThis, "__connectPluginExposureClients");
+  });
+
+  it("keeps the Client Interface bound when delayed Exposure activation fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-client-exposure-isolation-"));
+    const configPath = join(directory, "config.json");
+    const pluginId = "test.client-exposure-isolation";
+    const sourcePath = await writeBundle(directory, lifecycleBundle(pluginId, "1.0.0", { exposureFailure: true }));
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined);
+    await installOfficialBundle(host, sourcePath);
+    await expect(host.list()).resolves.toEqual([
+      expect.objectContaining({ pluginId, status: "active", activationGeneration: 1 }),
+    ]);
+
+    const binding = host.bindClientInterface({
+      origin: "http://127.0.0.1:47823",
+      fetch: async () => new Response(null, { status: 204 }),
+    });
+    await expect(binding).resolves.toBeFunction();
+    const unbind = await binding;
+    expect(host.activePluginIds()).toEqual([]);
+    await expect(host.list()).resolves.toEqual([
+      expect.objectContaining({
+        pluginId,
+        status: "error",
+        error: "candidate exposure activation failed",
+      }),
+    ]);
+
+    unbind();
+    await host.close();
   });
 
   it("keeps the selected generation and original Durable State when candidate migration fails", async () => {
@@ -859,11 +921,143 @@ export default {
         status: "active",
       }),
     ]);
-    await expect(state.read()).resolves.toMatchObject({
-      schemaVersion: 1,
-      revision: 1,
-      value: { count: 9 },
+    expect(await store.listPluginDurableState(pluginId, 1)).toEqual([
+      expect.objectContaining({
+        record: expect.objectContaining({
+          schemaVersion: 1,
+          revision: 1,
+          value: { count: 9 },
+        }),
+      }),
+    ]);
+    await host.close();
+    await store.close();
+  });
+
+  it("captures the final source revision after quiescing the old generation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-durable-state-quiescence-"));
+    const configPath = join(directory, "config.json");
+    const stateDbPath = join(directory, "state.sqlite");
+    const pluginId = "test.durable-state-quiescence";
+    const bindingId = "stateful-binding";
+    const agentBinding = binding(pluginId, bindingId);
+    const config = {
+      ...defaultConfig(),
+      stateDbPath,
+      agents: { [bindingId]: agentBinding },
+      defaultAgent: bindingId,
+    };
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: stateDbPath });
+    await store.initialize();
+    const runtimeAdapters = new RuntimeAdapterRegistry([]);
+    let updateStarted = false;
+    let writeFinalSourceRevision: () => Promise<void> = async () => undefined;
+    const host = new ConnectPluginHost(configPath, runtimeAdapters, () => undefined, {
+      config,
+      stateStore: store,
+      workspaces: new WorkspaceCatalog(store),
+      quiesceRuntimeBindings: async (_bindingIds, criticalSection) => {
+        if (updateStarted) await writeFinalSourceRevision();
+        return await criticalSection();
+      },
     });
+    const sourcePath = join(directory, "stateful.connect-plugin");
+    await writeFile(sourcePath, `${JSON.stringify(durableStateBundle(pluginId, "1.0.0", 1), null, 2)}\n`);
+    await host.install({ source: `local:${sourcePath}` });
+    await runtimeAdapters.prepare(agentBinding);
+    const state = (
+      globalThis as typeof globalThis & {
+        __connectDurableStateTest: {
+          read(): Promise<{ schemaVersion: number; revision: number; value: unknown } | null>;
+          compareAndSwap(revision: number | null, value: Record<string, unknown>): Promise<unknown>;
+        };
+      }
+    ).__connectDurableStateTest;
+    await state.compareAndSwap(null, { count: 1 });
+    writeFinalSourceRevision = async () => {
+      await state.compareAndSwap(1, { count: 2 });
+    };
+    await writeFile(sourcePath, `${JSON.stringify(durableStateBundle(pluginId, "2.0.0", 2), null, 2)}\n`);
+
+    updateStarted = true;
+    await host.update(pluginId);
+
+    expect(await store.listPluginDurableState(pluginId, 2)).toEqual([
+      expect.objectContaining({
+        record: expect.objectContaining({
+          schemaVersion: 2,
+          revision: 3,
+          value: { count: 2, label: "migrated" },
+        }),
+      }),
+    ]);
+    await host.close();
+    await store.close();
+  });
+  it("does not persist candidate Durable State when the selected lock commit fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-durable-state-lock-failure-"));
+    const configPath = join(directory, "config.json");
+    const stateDbPath = join(directory, "state.sqlite");
+    const pluginId = "test.durable-state-lock-failure";
+    const bindingId = "stateful-binding";
+    const agentBinding = binding(pluginId, bindingId);
+    const config = {
+      ...defaultConfig(),
+      stateDbPath,
+      agents: { [bindingId]: agentBinding },
+      defaultAgent: bindingId,
+    };
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: stateDbPath });
+    await store.initialize();
+    const runtimeAdapters = new RuntimeAdapterRegistry([]);
+    const lockfile = pluginInstallationPaths(configPath).lockfile;
+    let sabotageCommit = false;
+    let originalLockfile: string | undefined;
+    const host = new ConnectPluginHost(configPath, runtimeAdapters, () => undefined, {
+      config,
+      stateStore: store,
+      workspaces: new WorkspaceCatalog(store),
+      quiesceRuntimeBindings: async (_bindingIds, criticalSection) => {
+        if (!sabotageCommit) return await criticalSection();
+        expect(await store.listPluginDurableState(pluginId, 2)).toHaveLength(1);
+        originalLockfile = await readFile(lockfile, "utf8");
+        await rm(lockfile);
+        await mkdir(lockfile);
+        return await criticalSection();
+      },
+    });
+    const sourcePath = join(directory, "stateful.connect-plugin");
+    await writeFile(sourcePath, `${JSON.stringify(durableStateBundle(pluginId, "1.0.0", 1), null, 2)}\n`);
+    await host.install({ source: `local:${sourcePath}` });
+    await runtimeAdapters.prepare(agentBinding);
+    const state = (
+      globalThis as typeof globalThis & {
+        __connectDurableStateTest: {
+          compareAndSwap(revision: number | null, value: Record<string, unknown>): Promise<unknown>;
+        };
+      }
+    ).__connectDurableStateTest;
+    await state.compareAndSwap(null, { count: 11 });
+    await writeFile(sourcePath, `${JSON.stringify(durableStateBundle(pluginId, "2.0.0", 2), null, 2)}\n`);
+
+    sabotageCommit = true;
+    try {
+      await expect(host.update(pluginId)).rejects.toThrow();
+    } finally {
+      if (originalLockfile !== undefined) {
+        await rm(lockfile, { recursive: true });
+        await writeFile(lockfile, originalLockfile);
+      }
+    }
+
+    expect(
+      (await store.listPluginDurableState(pluginId)).map(({ namespace }) => namespace.activationGeneration),
+    ).toEqual([1]);
+    await expect(host.list()).resolves.toEqual([
+      expect.objectContaining({ pluginId, version: "1.0.0", activationGeneration: 1, status: "active" }),
+    ]);
     await host.close();
     await store.close();
   });

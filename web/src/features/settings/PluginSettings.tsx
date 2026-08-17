@@ -1113,7 +1113,8 @@ export function pluginConfigurationRequest(
       const configuration = capabilityInstances[capabilityInstanceKey(capability, instance.instanceId)] ?? {};
       if (capability.type === "runtime" && instance.bindingId)
         runtimeConfigurations[instance.bindingId] = configuration;
-      if (capability.type === "exposure") exposureConfigurations[capability.id] = configuration;
+      if (capability.type === "exposure" || capability.type === "client-extension")
+        exposureConfigurations[capability.id] = configuration;
     }
   }
   return { installationConfiguration: installation, exposureConfigurations, runtimeConfigurations };

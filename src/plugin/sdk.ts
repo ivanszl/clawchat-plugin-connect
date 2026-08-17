@@ -42,6 +42,10 @@ export interface ConnectPluginDurableStateManifest {
   readonly migrations: readonly { readonly from: number; readonly to: number }[];
 }
 
+export interface ConnectPluginExposureDurableStateManifest extends Omit<ConnectPluginDurableStateManifest, "lifetime"> {
+  readonly lifetime: Exclude<ConnectPluginDurableStateLifetime, "binding">;
+}
+
 export interface ConnectPluginDurableStateRecord {
   readonly schemaVersion: number;
   readonly revision: number;
@@ -73,6 +77,12 @@ export interface ConnectPluginRuntimeCapabilityManifest extends ConnectPluginCap
   family: string;
 }
 
+export interface ConnectPluginExposureCapabilityManifest
+  extends Omit<ConnectPluginCapabilityManifestBase, "durableState"> {
+  type: "exposure";
+  durableState?: ConnectPluginExposureDurableStateManifest;
+}
+
 export interface ConnectPluginClientExtensionSlotManifest {
   id: ConnectPluginClientExtensionSlotId;
   interfaceVersion: typeof CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION;
@@ -91,16 +101,18 @@ export interface ConnectPluginClientExtensionBrowserManifest {
   slots: ConnectPluginClientExtensionSlotManifest[];
 }
 
-export interface ConnectPluginClientExtensionCapabilityManifest extends ConnectPluginCapabilityManifestBase {
+export interface ConnectPluginClientExtensionCapabilityManifest
+  extends Omit<ConnectPluginCapabilityManifestBase, "durableState"> {
   type: "client-extension";
   browser: ConnectPluginClientExtensionBrowserManifest;
 }
 
 export type ConnectPluginCapabilityManifest =
   | ConnectPluginRuntimeCapabilityManifest
+  | ConnectPluginExposureCapabilityManifest
   | ConnectPluginClientExtensionCapabilityManifest;
 
-export type ConnectHostCapabilityId = "runtime-provider" | "durable-state";
+export type ConnectHostCapabilityId = "runtime-provider" | "exposure-provider" | "durable-state";
 
 export interface ConnectPluginHostCapabilityDependency {
   type: "host";
@@ -232,6 +244,29 @@ export interface ConnectRuntimeProviderHostCapability {
 export interface ConnectDurableStateHostCapability {
   readonly interfaceVersion: typeof CONNECT_HOST_CAPABILITY_INTERFACE_VERSION;
 }
+
+export interface ConnectPluginClientExposure {
+  fetch(request: Request): Promise<Response>;
+}
+
+export interface ConnectPluginExposureActivation {
+  readonly activationGeneration: number;
+  readonly configuration: ConnectPluginConfiguration;
+  readonly client: ConnectPluginClientExposure;
+  readonly durableState?: ConnectPluginDurableState;
+}
+
+export interface ConnectPluginExposureProvider {
+  readonly capabilityId: ConnectPluginCapabilityId;
+  activate(
+    activation: ConnectPluginExposureActivation,
+  ): ConnectPluginDisposer | undefined | Promise<ConnectPluginDisposer | undefined>;
+}
+
+export interface ConnectExposureProviderHostCapability {
+  readonly interfaceVersion: typeof CONNECT_HOST_CAPABILITY_INTERFACE_VERSION;
+  register(provider: ConnectPluginExposureProvider): void;
+}
 export type ConnectPluginClientExtensionComponent = React.ComponentType;
 
 export interface ConnectPluginClientExtensionServices {
@@ -245,6 +280,7 @@ export interface ConnectPluginClientExtensionServices {
 
 export interface ConnectPluginClientExtensionContext {
   readonly epoch: string;
+  readonly configuration: ConnectPluginConfiguration;
   readonly React: typeof React;
   readonly Astryx: typeof Astryx;
   readonly slots: {
@@ -269,12 +305,13 @@ export interface ConnectPluginClientExtensionEntry {
 
 export interface ConnectPluginHostCapabilities {
   get(id: "runtime-provider"): ConnectRuntimeProviderHostCapability;
+  get(id: "exposure-provider"): ConnectExposureProviderHostCapability;
   get(id: "durable-state"): ConnectDurableStateHostCapability;
 }
 
 /**
  * The complete public host facade. It exposes immutable Bundle configuration
- * and only manifest-declared Runtime registration and Durable State capabilities.
+ * and only manifest-declared provider registration and Durable State capabilities.
  */
 export interface ConnectPluginContext {
   readonly activationGeneration: number;

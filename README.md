@@ -190,7 +190,7 @@ clawchat-connect agent add work \
 `init` creates a new Plugin-free configuration. On an existing installation, use `agent add` to create or update a
 Binding after its provider Bundle is installed and active.
 
-`plugin setup` uses the running Plugin Manager when available. If Connect Service is stopped, the CLI authenticates and resolves the configured official Catalog directly, performs the same deterministic selection, and installs the selected Bundles without requiring a Service restart first.
+`plugin setup` uses the running Plugin Manager when available. If Connect Service is stopped, the CLI reads the release-bundled official Plugin registry and installs the selected local Bundles without network Catalog authentication or a Service restart.
 
 ### 3. Activate the Binding
 
@@ -350,7 +350,7 @@ Set the official Liveware Plugin's `liveware` capability configuration in Connec
 - `accessPolicy: "private"` publishes one owner-only App per activated Binding.
 - `accessPolicy: "off"` retires every Binding Liveware Publication and releases its Shared Client Gateway lease.
 
-The initial Plugin setup preselects the official Liveware candidate when available. Arbitrary public Plugins cannot acquire the Client Exposure Host Capability, and the official capability does not support public access.
+The initial Plugin setup preselects the official Liveware candidate when available. Installed local, npm, GitHub, and official Plugins may contribute Client Exposure through the same trusted in-process Plugin model. The Host keeps gateway policy, raw credentials, and Plugin administration outside that narrow capability; the official Liveware capability supports private access only.
 
 To remove a Binding, its Liveware App and local history, stop using its ID and confirm the destructive command:
 

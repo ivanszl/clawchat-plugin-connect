@@ -31,10 +31,12 @@ class FakeProcess extends EventEmitter implements CodexAppServerProcess {
     return true;
   }
 
-  exit(code: number | null, signal: NodeJS.Signals | null = null): void {
+  exit(code: number | null, signal: NodeJS.Signals | null = null, bufferedStdout = ""): void {
     if (this.exitCode !== null) return;
     this.exitCode = code ?? 1;
     this.emit("exit", code, signal);
+    this.stdout.end(bufferedStdout);
+    this.stderr.end();
   }
 }
 
@@ -265,6 +267,27 @@ describe("Codex app-server stdio client", () => {
     await client.close();
   });
 
+  it("reports buffered protocol errors before the child exit status", async () => {
+    const process = new FakeProcess();
+    const received: Array<Record<string, unknown>> = [];
+    startFakeServer(process, received);
+    const client = await createCodexAppServerClient(codexBinding({ codexPathOverride: "/opt/codex" }), {
+      readVersion: async () => CODEX_VERSION_FIXTURE,
+      spawnAppServer: () => process,
+    });
+    const pending = client.startThread({
+      cwd: "/repo",
+      approvalPolicy: "never",
+      sandbox: "workspace-write",
+    });
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (received.some(({ method }) => method === "thread/start")) break;
+      await Bun.sleep(1);
+    }
+
+    process.exit(0, null, "not-json\n");
+    await expect(pending).rejects.toThrow("Invalid JSON from Codex app-server");
+  });
   it("rejects pending calls and publishes an exit notification when the child dies", async () => {
     const process = new FakeProcess();
     const received: Array<Record<string, unknown>> = [];

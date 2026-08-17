@@ -324,15 +324,14 @@ export const es = {
   "@connect.settings.workspaces.removeConfirm.cancel": { defaultMessage: "Cancelar" },
   "@connect.settings.plugins.title": { defaultMessage: "Plugins de confianza" },
   "@connect.settings.plugins.description": {
-    defaultMessage:
-      "Instala y administra Plugins autocontenidos de Runtime y Client Extension, además de Exposures oficiales verificados por la versión.",
+    defaultMessage: "Instala y administra Plugins de confianza de Runtime, Client Exposure y Client Extension.",
   },
   "@connect.settings.plugins.loading": { defaultMessage: "Cargando Plugins" },
   "@connect.settings.plugins.loadFailed": { defaultMessage: "No se pudieron cargar los Plugins" },
   "@connect.settings.plugins.actionFailed": { defaultMessage: "Falló la acción del Plugin" },
   "@connect.settings.plugins.installed": { defaultMessage: "Plugins instalados" },
   "@connect.settings.plugins.installedEmpty": { defaultMessage: "No hay Plugins instalados" },
-  "@connect.settings.plugins.available": { defaultMessage: "Catálogo oficial" },
+  "@connect.settings.plugins.available": { defaultMessage: "Plugins oficiales incluidos" },
   "@connect.settings.plugins.availableEmpty": { defaultMessage: "No hay Plugins oficiales disponibles" },
   "@connect.settings.plugins.actions": { defaultMessage: "Acciones del Plugin" },
   "@connect.settings.plugins.source": { defaultMessage: "Origen" },

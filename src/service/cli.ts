@@ -37,13 +37,13 @@ import {
 } from "../config";
 import { type ConnectStateStore, createStateStore, type ToolRequestRecord } from "../persistence/state";
 import { createAgentBinding } from "../plugin/binding";
-import {
-  discoverOfficialPlugins,
-  type OfficialCatalogOptions,
-  type OfficialPluginCatalogEntry,
-  type OfficialPluginDiscovery,
-} from "../plugin/catalog";
 import { validateInstalledRuntimeBinding } from "../plugin/host";
+import {
+  type BundledOfficialPluginEntry,
+  discoverOfficialPlugins,
+  type OfficialPluginDiscovery,
+  type OfficialPluginDiscoveryOptions,
+} from "../plugin/official-registry";
 import { resolvePluginSource } from "../plugin/source";
 import {
   type InstalledPluginLockEntry,
@@ -81,7 +81,7 @@ export interface ConnectCliDeps extends Partial<CliIo> {
   openUrl?: (url: string) => Promise<void>;
   updateConnect?: typeof updateConnectDefault;
   pluginManagementFetch?: PluginManagementFetch;
-  pluginSourceOptions?: OfficialCatalogOptions;
+  pluginSourceOptions?: OfficialPluginDiscoveryOptions;
   createStateStore?: typeof createStateStore;
   readStdin?: () => Promise<string>;
   toolRequestWaitMs?: number;
@@ -653,7 +653,7 @@ async function maybeRunPluginCommand(
   io: CliIo,
   fetchPluginManager: PluginManagementFetch,
   readStdin: () => Promise<string>,
-  sourceOptions: OfficialCatalogOptions = {},
+  sourceOptions: OfficialPluginDiscoveryOptions = {},
 ): Promise<number | null> {
   if (argv[0] !== "plugin") return null;
   const action = argv[1];
@@ -728,7 +728,7 @@ async function maybeRunPluginCommand(
       return 0;
     }
     if (action === "setup") {
-      const offlineCandidates = new Map<string, OfficialPluginCatalogEntry>();
+      const offlineCandidates = new Map<string, BundledOfficialPluginEntry>();
       let discovery: OfficialPluginDiscovery;
       let installSelection: (pluginIds: readonly string[]) => Promise<InstalledPluginLockEntry[]>;
       try {
@@ -737,7 +737,7 @@ async function maybeRunPluginCommand(
           await request<InstalledPluginLockEntry[]>("/official/setup", "POST", { pluginIds });
       } catch (error) {
         if (!(error instanceof PluginManagerUnavailableError)) throw error;
-        discovery = await discoverOfficialPlugins(configPath, sourceOptions, (entry) => {
+        discovery = await discoverOfficialPlugins(sourceOptions, (entry) => {
           offlineCandidates.set(entry.pluginId, entry);
         });
         installSelection = async (pluginIds) => {
@@ -759,7 +759,7 @@ async function maybeRunPluginCommand(
               artifact?.integrity !== candidate.integrity
             ) {
               throw new Error(
-                `Official Plugin ${candidate.pluginId} resolved artifact does not match its authenticated Catalog lock`,
+                `Official Plugin ${candidate.pluginId} resolved artifact does not match its bundled registry lock`,
               );
             }
             installed.push(
@@ -770,7 +770,6 @@ async function maybeRunPluginCommand(
                 target: resolved.target,
                 installationConfiguration: candidate.installationConfiguration,
                 exposureConfigurations: candidate.exposureConfigurations,
-                officialCapabilityGrants: candidate.capabilityGrants,
               }),
             );
           }
@@ -813,7 +812,9 @@ async function maybeRunPluginCommand(
       for (const pluginId of commaSeparatedPluginIds(optionValue(argv, "--deselect") ?? "")) selected.delete(pluginId);
       const available = new Set(discovery.candidates.map((candidate) => candidate.pluginId));
       const unknown = [...selected].filter((pluginId) => !available.has(pluginId));
-      if (unknown.length > 0) throw new Error(`Official Plugin selection is not in the Catalog: ${unknown.join(", ")}`);
+      if (unknown.length > 0) {
+        throw new Error(`Official Plugin selection is not in the bundled registry: ${unknown.join(", ")}`);
+      }
       const installed = await installSelection([...selected]);
       for (const entry of installed) io.writeStdout(formatPluginOperation("Installed", entry));
       if (installed.length === 0) io.writeStdout("No official Plugins selected.\n");

@@ -39,7 +39,11 @@ function extensionBundle(version: string, priority: number): ConnectPluginBundle
           id: "client",
           type: "client-extension",
           interfaceVersion: "1",
-          configurationSchema: emptySchema,
+          configurationSchema: {
+            type: "object",
+            properties: { label: { type: "string" } },
+            additionalProperties: false,
+          },
           browser: {
             entry: "browser.js",
             integrity: integrity(browser),
@@ -71,7 +75,11 @@ describe("Client Extension graph epochs", () => {
     const bundlePath = join(directory, "extension.connect-plugin");
     await writeFile(bundlePath, `${JSON.stringify(extensionBundle("1.0.0", 20), null, 2)}\n`);
 
-    const first = await installLocalPlugin({ configPath, bundlePath });
+    const first = await installLocalPlugin({
+      configPath,
+      bundlePath,
+      exposureConfigurations: { client: { label: "Configured" } },
+    });
     const firstGraph = deriveClientExtensionGraph([first]);
     expect(firstGraph.extensions).toEqual([
       {
@@ -79,6 +87,7 @@ describe("Client Extension graph epochs", () => {
         capabilityId: "client",
         version: "1.0.0",
         activationGeneration: 1,
+        configuration: { label: "Configured" },
         entry: "/client/v1/plugin-artifacts/fixture.client-extension/1/client/browser.js",
         integrity: browserManifest(extensionBundle("1.0.0", 20)).integrity,
         styles: [
@@ -137,7 +146,6 @@ describe("Client Extension graph epochs", () => {
         manifest: low.manifest,
         installationConfiguration: {},
         exposureConfigurations: {},
-        officialCapabilityGrants: [],
         status: "active" as const,
         error: null,
         retainedVersions: [],
@@ -154,7 +162,6 @@ describe("Client Extension graph epochs", () => {
         manifest: high.manifest,
         installationConfiguration: {},
         exposureConfigurations: {},
-        officialCapabilityGrants: [],
         status: "active" as const,
         error: null,
         retainedVersions: [],

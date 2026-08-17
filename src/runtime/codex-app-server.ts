@@ -244,6 +244,7 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
   private readonly requestHandlers = new Set<CodexAppServerRequestHandler>();
   private readonly lines: ReadlineInterface;
   private readonly exited: Promise<void>;
+  private readonly outputDrained: Promise<void>;
   private stderrTail = "";
   private closed = false;
   private terminalError: Error | null = null;
@@ -254,6 +255,9 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
     private readonly requestTimeoutMs = 10_000,
   ) {
     this.lines = createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY });
+    this.outputDrained = new Promise((resolve) => {
+      this.lines.once("close", resolve);
+    });
     this.lines.on("line", (line) => {
       void this.handleLine(line);
     });
@@ -263,24 +267,28 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
     });
     this.exited = new Promise((resolve) => {
       child.once("exit", (code, signal) => {
-        const suffix = this.stderrTail.trim();
-        const reason = this.closed
-          ? new Error("Codex app-server closed")
-          : new Error(
-              `Codex app-server exited (${code === null ? signal : `code ${code}`})${suffix ? `: ${suffix}` : ""}`,
-            );
-        this.terminalError = reason;
-        this.rejectPending(reason);
-        if (!this.closed) {
-          for (const listener of this.notificationListeners) {
-            listener({ method: "$transport/exited", params: { message: reason.message } });
+        void this.outputDrained.then(() => {
+          const suffix = this.stderrTail.trim();
+          const exitReason = this.closed
+            ? new Error("Codex app-server closed")
+            : new Error(
+                `Codex app-server exited (${code === null ? signal : `code ${code}`})${suffix ? `: ${suffix}` : ""}`,
+              );
+          const reason = this.terminalError ?? exitReason;
+          this.terminalError = reason;
+          this.rejectPending(reason);
+          if (!this.closed) {
+            for (const listener of this.notificationListeners) {
+              listener({ method: "$transport/exited", params: { message: reason.message } });
+            }
           }
-        }
-        resolve();
+          resolve();
+        });
       });
       child.once("error", (error) => {
         this.terminalError = new Error(`Codex app-server process error: ${error.message}`, { cause: error });
         this.rejectPending(this.terminalError);
+        resolve();
       });
     });
   }
@@ -511,6 +519,7 @@ class StdioCodexAppServerClient implements CodexAppServerClient {
 
   private failProtocol(message: string): void {
     const error = new Error(message);
+    this.terminalError = error;
     this.rejectPending(error);
     if (!this.closed) this.child.kill("SIGTERM");
   }

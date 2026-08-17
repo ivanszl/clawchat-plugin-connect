@@ -33,7 +33,6 @@ import {
 import { ConnectConfigMutationCoordinator, getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
 import { createAgentBinding } from "../plugin/binding";
-import type { OfficialPluginDiscovery } from "../plugin/catalog";
 import {
   assertCurrentClientExtensionEpoch,
   deriveClientExtensionGraph,
@@ -47,6 +46,7 @@ import type {
   UpsertBindingProviderResult,
 } from "../plugin/host";
 import { RuntimeProviderValidationError } from "../plugin/host";
+import type { OfficialPluginDiscovery } from "../plugin/official-registry";
 import {
   type InstalledPluginLockEntry,
   validatePluginConfiguration,
@@ -1831,7 +1831,7 @@ function pluginAdministrationView(
       selected: candidate.selected,
       diagnostics: candidate.diagnostic ? [pluginDiagnostic(candidate.diagnostic, "probe")] : [],
     })),
-    catalogOrigin: official.catalogOrigin,
+    officialSource: official.officialSource,
     diagnostics: official.diagnostics.map((message) => pluginDiagnostic(message, "probe")),
   };
 }
@@ -2169,6 +2169,7 @@ async function idempotentCommand(
   try {
     const result = await execute();
     await store.completeClientCommand(requestId, result.status, result.body);
+
     return jsonResponse(result.body, result.status);
   } catch (error) {
     if (!options.preserveClaimOnError) await store.abandonClientCommand(requestId).catch(() => undefined);

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildOfficialPlugin } from "../scripts/build-official-plugins";
-import { defaultConfig } from "../src/config";
+import { defaultConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { ConnectPluginHost } from "../src/plugin/host";
 import livewareDescriptor from "../src/plugin/official/liveware-descriptor";
@@ -24,6 +24,7 @@ import {
   type LivewarePublicationRegistrationPort,
 } from "../src/plugin/official/liveware-publication";
 import { ConnectBindingLivewarePublicationStateStore } from "../src/plugin/official/liveware-publication-state";
+import { retireOfficialLivewarePublications } from "../src/plugin/official/liveware-retirement";
 import type {
   ConnectPluginExposureActivation,
   ConnectPluginExposureProvider,
@@ -140,6 +141,24 @@ class FakePublicationRemote
 }
 
 describe("official Liveware Binding publication lifecycle", () => {
+  it("skips offline retirement when selected Bindings have no publication state", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-liveware-empty-retirement-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    try {
+      await expect(
+        retireOfficialLivewarePublications({
+          bindingIds: ["without-publication"],
+          clawChatBaseUrl: "https://clawchat.test",
+          configPath: join(directory, "config.json"),
+          stateStore,
+        }),
+      ).resolves.toBeUndefined();
+    } finally {
+      await stateStore.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("embeds the target Liveware companion in the release-verified official Bundle", async () => {
     const built = await buildOfficialPlugin(livewareDescriptor, {
       target: `${process.platform}-${process.arch}`,
@@ -160,19 +179,10 @@ describe("official Liveware Binding publication lifecycle", () => {
         target: `${process.platform}-${process.arch}`,
         write: false,
       });
-      const artifact = built.bundle.manifest.artifacts[0];
-      if (!artifact) throw new Error("official Liveware Bundle has no artifact");
       await installPluginBundle({
         configPath,
         source: { type: "local", path: directory },
         bundle: built.bundle,
-        officialCapabilityGrants: [
-          {
-            type: "exposure",
-            capabilityId: "liveware",
-            artifactIntegrity: artifact.integrity,
-          },
-        ],
       });
       const selected = (await listInstalledPlugins(configPath)).find(
         (plugin) => plugin.pluginId === OFFICIAL_LIVEWARE_PLUGIN_ID,
@@ -185,6 +195,67 @@ describe("official Liveware Binding publication lifecycle", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("preserves retirement intent when the official Bundle restarts or advances generation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-liveware-retirement-state-"));
+    const configPath = join(directory, "config.json");
+    const config = defaultConfig();
+    config.stateDbPath = join(directory, "state.sqlite");
+    config.agents = {};
+    await saveConfig(config, configPath);
+    const stateStore = createStateStore({ dbPath: config.stateDbPath });
+    await stateStore.initialize();
+    const built = await buildOfficialPlugin(livewareDescriptor, {
+      target: `${process.platform}-${process.arch}`,
+      write: false,
+    });
+    const bundlePath = join(directory, "liveware.connect-plugin");
+    await writeFile(bundlePath, `${JSON.stringify(built.bundle)}\n`);
+    const installed = await installPluginBundle({
+      configPath,
+      source: { type: "local", path: bundlePath },
+      bundle: built.bundle,
+    });
+    const retiring = {
+      bindingId: "retiring-binding",
+      activationGeneration: installed.activationGeneration,
+      desired: "retired" as const,
+      status: "retiring" as const,
+      transition: "delete-app" as const,
+      correlationKey: "ClawChat Connect · retiring-binding",
+      appId: "app-retiring",
+      publicUrl: "https://app-retiring.liveware.example",
+      registrationId: null,
+      diagnostic: "remote App deletion failed",
+    };
+    const generationOne = new ConnectBindingLivewarePublicationStateStore(
+      stateStore,
+      async () => undefined,
+      installed.activationGeneration,
+    );
+    await generationOne.compareAndSwap(retiring.bindingId, null, retiring);
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, {
+      config,
+      stateStore,
+      workspaces: new WorkspaceCatalog(stateStore),
+    });
+
+    await host.activateInstalled();
+    await expect(generationOne.read(retiring.bindingId)).resolves.toMatchObject({ value: retiring });
+    const reinstalled = await host.reinstall(OFFICIAL_LIVEWARE_PLUGIN_ID);
+    const generationTwo = new ConnectBindingLivewarePublicationStateStore(
+      stateStore,
+      async () => undefined,
+      reinstalled.activationGeneration,
+    );
+    await expect(generationTwo.read(retiring.bindingId)).resolves.toMatchObject({
+      value: { ...retiring, activationGeneration: reinstalled.activationGeneration },
+    });
+
+    await host.close();
+    await stateStore.close();
+    await rm(directory, { recursive: true, force: true });
   });
   it("provisions one private App, tunnel, and launcher for one Agent Binding", async () => {
     const state = new MemoryPublicationStateStore();
@@ -556,6 +627,7 @@ describe("official Liveware Binding publication lifecycle", () => {
         appId: "app-1",
       });
       expect(remote.calls.filter((call) => call.startsWith("app:create:"))).toHaveLength(1);
+      expect(remote.calls.filter((call) => call.startsWith("tunnel:bind:"))).toHaveLength(2);
       await restartedDatabase.close();
     } finally {
       await rm(directory, { recursive: true, force: true });
@@ -584,6 +656,7 @@ describe("official Liveware Binding publication lifecycle", () => {
       hostCapabilities,
     });
     let gatewayReleases = 0;
+    let gatewayAcquisitions = 0;
     const bindingTargets = [
       { bindingId: "official-a", deviceId: "device-official" },
       { bindingId: "official-b", deviceId: "device-official" },
@@ -597,8 +670,9 @@ describe("official Liveware Binding publication lifecycle", () => {
       registrations: remote,
       async acquireGateway(activationGeneration) {
         if (activationGeneration !== 12) throw new Error("off policy must not acquire the gateway");
+        gatewayAcquisitions += 1;
         return {
-          upstream: "http://127.0.0.1:47890",
+          upstream: `http://127.0.0.1:${47889 + gatewayAcquisitions}`,
           async release() {
             gatewayReleases += 1;
           },
@@ -616,7 +690,7 @@ describe("official Liveware Binding publication lifecycle", () => {
       officialLiveware,
     } as ConnectPluginExposureActivation & { officialLiveware: OfficialLivewareExposureServices };
 
-    const dispose = await provider?.activate(activation);
+    let dispose = await provider?.activate(activation);
 
     expect(provider?.capabilityId).toBe("liveware");
     expect(remote.apps.map((app) => app.name)).toEqual([
@@ -624,6 +698,11 @@ describe("official Liveware Binding publication lifecycle", () => {
       "ClawChat Connect · official-b",
     ]);
     expect(remote.registrations).toHaveLength(2);
+    await dispose?.();
+    expect(gatewayReleases).toBe(1);
+    dispose = await provider?.activate(activation);
+    expect(gatewayAcquisitions).toBe(2);
+    expect(remote.calls.filter((call) => call.endsWith(":http://127.0.0.1:47891"))).toHaveLength(2);
     remote.afterCreate = () => {
       remote.afterCreate = undefined;
       throw new Error("simulated lost App-create response");
@@ -643,12 +722,22 @@ describe("official Liveware Binding publication lifecycle", () => {
     const managed = dispose as typeof dispose & { retireBindings(bindingIds: readonly string[]): Promise<void> };
     await managed.retireBindings(["official-a", "official-c"]);
     expect(remote.apps.map((app) => app.name)).toEqual(["ClawChat Connect · official-b"]);
-    expect(gatewayReleases).toBe(0);
+    expect(gatewayReleases).toBe(1);
+    bindingTargets.splice(0);
     await managed.retireBindings(["official-b"]);
     expect(remote.apps).toHaveLength(0);
-    expect(gatewayReleases).toBe(1);
+    expect(gatewayReleases).toBe(2);
+    state.records.delete("official-b");
+    bindingTargets.push({ bindingId: "official-b", deviceId: "device-official" });
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+      if ((await state.read("official-b"))?.value.status === "active") break;
+      await Bun.sleep(5);
+    }
+    expect((await state.read("official-b"))?.value).toMatchObject({ status: "active" });
+    expect(remote.apps.map((app) => app.name)).toEqual(["ClawChat Connect · official-b"]);
+    expect(gatewayAcquisitions).toBe(3);
     await dispose?.();
-    expect(gatewayReleases).toBe(1);
+    expect(gatewayReleases).toBe(3);
 
     const retire = await provider?.activate({
       ...activation,
@@ -657,12 +746,12 @@ describe("official Liveware Binding publication lifecycle", () => {
     });
     expect(remote.apps).toHaveLength(0);
     expect(remote.registrations).toHaveLength(0);
-    expect((await state.read("official-a"))?.value).toMatchObject({
+    expect((await state.read("official-b"))?.value).toMatchObject({
       activationGeneration: 13,
       status: "retired",
     });
     await retire?.();
-    expect(gatewayReleases).toBe(1);
+    expect(gatewayReleases).toBe(3);
   });
 
   it("activates the installed official Bundle with Core-held Binding credentials and one shared gateway", async () => {
@@ -739,13 +828,21 @@ describe("official Liveware Binding publication lifecycle", () => {
     const forwarded = {
       origin: null as string | null,
       bindingScope: null as string | null,
+      surface: null as "client" | "private" | null,
     };
     await host.bindClientInterface({
       origin: "http://127.0.0.1:49777",
       async fetch(request) {
         forwarded.origin = request.headers.get("origin");
         forwarded.bindingScope = request.headers.get("x-clawchat-connect-binding-scope");
+        forwarded.surface = "client";
         return new Response("shared-client");
+      },
+      async fetchPrivateGateway(request) {
+        forwarded.origin = request.headers.get("origin");
+        forwarded.bindingScope = request.headers.get("x-clawchat-connect-binding-scope");
+        forwarded.surface = "private";
+        return new Response("private-client");
       },
     });
     try {
@@ -756,18 +853,19 @@ describe("official Liveware Binding publication lifecycle", () => {
         source: bundlePath,
         target: artifact.target,
         exposureConfigurations: { liveware: { accessPolicy: "private" } },
-        officialCapabilityGrants: [
-          {
-            type: "exposure",
-            capabilityId: "liveware",
-            artifactIntegrity: artifact.integrity,
-          },
-        ],
       });
 
       expect(tokens.sort()).toEqual(["token-a", "token-b"]);
+      expect(await new ConnectBindingLivewarePublicationStateStore(stateStore).read("binding-a")).toMatchObject({
+        value: { activationGeneration: 1, status: "active" },
+      });
+      await host.reinstall(OFFICIAL_LIVEWARE_PLUGIN_ID);
+      expect(await new ConnectBindingLivewarePublicationStateStore(stateStore).read("binding-a")).toMatchObject({
+        value: { activationGeneration: 2, status: "active" },
+      });
+      expect(tokens.sort()).toEqual(["token-a", "token-a", "token-b", "token-b"]);
       expect(remote.apps).toHaveLength(2);
-      const gatewayCall = remote.calls.find((call) => call.startsWith("tunnel:bind:"));
+      const gatewayCall = remote.calls.findLast((call) => call.startsWith("tunnel:bind:"));
       const upstream = gatewayCall?.slice(gatewayCall.lastIndexOf(":http") + 1);
       if (!upstream) throw new Error("official Liveware Bundle did not bind the Shared Client Gateway");
       const response = await fetch(new URL("/client", upstream), {
@@ -776,12 +874,14 @@ describe("official Liveware Binding publication lifecycle", () => {
           "x-clawchat-connect-binding-scope": "spoofed",
         },
       });
-      expect(await response.text()).toBe("shared-client");
+      expect(await response.text()).toBe("private-client");
       expect(forwarded.origin).toBe("http://127.0.0.1:49777");
       expect(forwarded.bindingScope).toBeNull();
-      await expect(
-        fetch(new URL("/client/v1/plugins", upstream)).then(async (result) => await result.text()),
-      ).resolves.toBe("shared-client");
+      expect(forwarded.surface).toBe("private");
+      const reserved = await fetch(new URL("/client/v1/plugins", upstream));
+      expect(reserved.status).toBe(200);
+      expect(await reserved.text()).toBe("private-client");
+      expect(forwarded.surface).toBe("private");
       await host.disable(OFFICIAL_LIVEWARE_PLUGIN_ID);
       expect(remote.apps).toHaveLength(0);
       expect(await new ConnectBindingLivewarePublicationStateStore(stateStore).read("binding-a")).toMatchObject({

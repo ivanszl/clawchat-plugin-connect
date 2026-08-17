@@ -93,6 +93,7 @@ export async function resetInstallationOwner(
       (async (retiredBindingIds: readonly string[]) =>
         await retireOfficialLivewarePublications({
           bindingIds: retiredBindingIds,
+          configPath,
           clawChatBaseUrl: config.baseUrl,
           stateStore: store,
         }))

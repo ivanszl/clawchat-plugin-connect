@@ -1,21 +1,18 @@
 import { describe, expect, it } from "bun:test";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { access, mkdtemp, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
+import {
+  buildOfficialPlugin,
+  buildOfficialPlugins,
+  discoverOfficialPluginDescriptors,
+} from "../scripts/build-official-plugins";
 import { MAX_PLUGIN_BUNDLE_BYTES } from "../src/client-contract";
 import { defaultConfig, saveConfig } from "../src/config";
-import {
-  CONNECT_PLUGIN_CATALOG_FORMAT,
-  discoverOfficialPlugins,
-  fetchOfficialPluginCatalog,
-  MAX_OFFICIAL_PLUGIN_CATALOG_BYTES,
-  type OfficialPluginCatalogV1,
-  type OfficialPluginDiscovery,
-  officialCatalogSigningPayload,
-} from "../src/plugin/catalog";
-import { ConnectPluginHost } from "../src/plugin/host";
+import codexDescriptor from "../src/plugin/official/codex-descriptor";
+import { discoverOfficialPlugins, loadBundledOfficialPlugins } from "../src/plugin/official-registry";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_BUNDLE_FORMAT,
@@ -32,14 +29,7 @@ import {
   MAX_PLUGIN_SOURCE_METADATA_BYTES,
   resolvePluginSource,
 } from "../src/plugin/source";
-import {
-  commitStagedPlugin,
-  installPluginBundle,
-  listInstalledPlugins,
-  pluginInstallationPaths,
-  stagePluginBundle,
-} from "../src/plugin/store";
-import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import { commitStagedPlugin, installPluginBundle, listInstalledPlugins, stagePluginBundle } from "../src/plugin/store";
 import { runConnectCli } from "../src/service/cli";
 
 function sri(source: string | Uint8Array): string {
@@ -100,22 +90,6 @@ function tarball(bundle: ConnectPluginBundleV1): Uint8Array {
 
 function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
-}
-
-function signedCatalogFixture(): { catalog: OfficialPluginCatalogV1; publicKey: string } {
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const unsigned: Omit<OfficialPluginCatalogV1, "signature"> = {
-    format: CONNECT_PLUGIN_CATALOG_FORMAT,
-    generatedAt: "2026-08-16T00:00:00.000Z",
-    plugins: [],
-  };
-  return {
-    catalog: {
-      ...unsigned,
-      signature: sign(null, officialCatalogSigningPayload(unsigned), privateKey).toString("base64"),
-    },
-    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
-  };
 }
 
 describe("Plugin source resolution", () => {
@@ -616,254 +590,185 @@ describe("Plugin source resolution", () => {
   });
 });
 
-describe("official Plugin Catalog setup", () => {
-  it("authenticates declarative discovery, isolates failures, avoids unselected downloads, and supports setup", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-catalog-"));
+describe("bundled official Plugin setup", () => {
+  it("discovers and installs the packaged official Bundle without network access", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-bundled-official-"));
     const configPath = join(directory, "config.json");
+    const officialPluginsDirectory = join(directory, "official-plugins");
     await saveConfig(defaultConfig(), configPath);
-    const target = "catalog-test-target";
-    const detectedBundle = sourceBundle("test.detected", "1.0.0", target);
-    const detectedPath = join(directory, "test.detected.connect-plugin");
-    await writeFile(detectedPath, JSON.stringify(detectedBundle));
-    const detectedIntegrity = detectedBundle.manifest.artifacts[0]?.integrity;
-    if (!detectedIntegrity) throw new Error("Expected detected fixture integrity");
-    const rule = (command: string, outputPattern = "^tool (?<version>1\\.0\\.0)$", timeoutMs = 50) => ({
-      executableNames: [command],
-      versionCommand: {
-        argv: ["--version"],
-        outputPattern,
-        timeoutMs,
-        maxOutputBytes: 128,
-      },
+    await buildOfficialPlugin(codexDescriptor, {
+      target: `${process.platform}-${process.arch}`,
+      outputDirectory: officialPluginsDirectory,
     });
-    const catalogEntries: OfficialPluginCatalogV1["plugins"] = [
-      {
-        pluginId: "test.detected",
-        name: "test.detected",
-        source: `local:${detectedPath}`,
-        version: "1.0.0",
-        target,
-        integrity: detectedIntegrity,
-        discovery: rule("detected"),
-      },
-      {
-        pluginId: "test.undetected",
-        name: "test.undetected",
-        source: `local:${join(directory, "must-not-download-undetected.connect-plugin")}`,
-        version: "1.0.0",
-        target,
-        integrity: detectedIntegrity,
-        discovery: rule("missing"),
-      },
-      ...(["timeout", "overflow", "malformed", "incompatible", "failed"] as const).map((kind) => ({
-        pluginId: `test.${kind}`,
-        name: `test.${kind}`,
-        source: `local:${join(directory, `must-not-download-${kind}.connect-plugin`)}`,
-        version: "1.0.0",
-        target,
-        integrity: detectedIntegrity,
-        discovery: rule(
-          kind,
-          kind === "incompatible" ? "^tool (?<version>1\\.0\\.0)$" : undefined,
-          kind === "timeout" ? 5 : 50,
-        ),
-      })),
-    ];
-    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-    const unsigned: Omit<OfficialPluginCatalogV1, "signature"> = {
-      format: CONNECT_PLUGIN_CATALOG_FORMAT,
-      generatedAt: "2026-08-16T00:00:00.000Z",
-      plugins: catalogEntries,
-    };
-    const catalog: OfficialPluginCatalogV1 = {
-      ...unsigned,
-      signature: sign(null, officialCatalogSigningPayload(unsigned), privateKey).toString("base64"),
-    };
-    const server = Bun.serve({ port: 0, fetch: () => json(catalog) });
-    const catalogUrl = new URL("/catalog.json", server.url).toString();
-    const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
+
     const options = {
-      target,
-      catalogUrl,
-      catalogPublicKey: publicKeyPem,
-      findExecutable: async (command: string) => (command === "missing" ? null : `/fake/bin/${command}`),
-      runDiscoveryCommand: async ({ executable }: { executable: string }) => {
-        const command = executable.split("/").at(-1);
-        if (command === "timeout") return await new Promise<{ stdout: string }>(() => undefined);
-        if (command === "overflow") return { stdout: "x".repeat(129) };
-        if (command === "malformed") return { stdout: "not a version" };
-        if (command === "incompatible") return { stdout: "tool 2.0.0" };
-        if (command === "failed") throw new Error("isolated discovery boom");
-        return { stdout: "tool 1.0.0" };
-      },
-    };
-    const remote = await discoverOfficialPlugins(configPath, options);
-    expect(remote.diagnostics).toEqual([]);
-    expect(remote.catalogOrigin).toBe("remote");
-    expect(remote.candidates).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ pluginId: "test.detected", detected: true, compatible: true, selected: true }),
-        expect.objectContaining({ pluginId: "test.undetected", detected: false, selected: false, selectable: true }),
-        expect.objectContaining({ pluginId: "test.timeout", diagnostic: expect.stringContaining("timed out") }),
-        expect.objectContaining({ pluginId: "test.overflow", diagnostic: expect.stringContaining("128-byte") }),
-        expect.objectContaining({ pluginId: "test.malformed", compatible: false }),
-        expect.objectContaining({ pluginId: "test.incompatible", compatible: false }),
-        expect.objectContaining({
-          pluginId: "test.failed",
-          diagnostic: expect.stringContaining("isolated discovery boom"),
-        }),
-      ]),
-    );
-    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, undefined, options);
-    const managedDiscovery = await host.discoverOfficial();
-    expect(managedDiscovery.candidates.find((candidate) => candidate.pluginId === "test.detected")?.selected).toBe(
-      true,
-    );
-    await expect(host.installOfficial(["test.detected"])).resolves.toEqual([
-      expect.objectContaining({ pluginId: "test.detected", version: "1.0.0", status: "active" }),
-    ]);
-    await host.close();
-    await expect(access(join(pluginInstallationPaths(configPath).store, ".official-staging"))).rejects.toThrow();
-    const offlineSetupConfigPath = join(directory, "offline-setup", "config.json");
-    await saveConfig(defaultConfig(), offlineSetupConfigPath);
-    const offlineOutput: string[] = [];
-    const offlineCode = await runConnectCli(
-      ["plugin", "setup", "--non-interactive", "--select", "test.detected", "--config", offlineSetupConfigPath],
-      {
-        pluginSourceOptions: options,
-        pluginManagementFetch: async () => {
-          throw new TypeError("Plugin Manager Service is offline");
+      officialPluginsDirectory,
+      findExecutable: async (command: string) => (command === "codex" ? "/fake/bin/codex" : null),
+      runDiscoveryCommand: async () => ({ stdout: "codex-cli 1.2.3" }),
+      fetch: Object.assign(
+        async () => {
+          throw new Error("network must not be used");
         },
-        writeStdout: (value) => offlineOutput.push(value),
-        writeStderr: (value) => offlineOutput.push(value),
-      },
-    );
-    expect(offlineOutput.join(" ")).toContain("Installed Plugin test.detected@1.0.0");
-    expect(offlineCode).toBe(0);
-    await expect(listInstalledPlugins(offlineSetupConfigPath)).resolves.toEqual([
-      expect.objectContaining({ pluginId: "test.detected", version: "1.0.0", status: "active" }),
-    ]);
-    expect(offlineOutput.join(" ")).toContain("Installed Plugin test.detected@1.0.0");
-    server.stop(true);
-
-    const cached = await fetchOfficialPluginCatalog(configPath, {
-      ...options,
-      catalogFetch: async () => {
-        throw new Error("catalog offline");
-      },
-    });
-    expect(cached.origin).toBe("cache");
-    expect(cached.diagnostics.join(" ")).toContain("continuing with the last authenticated Catalog cache");
-    const unavailableConfigPath = join(directory, "no-cache", "config.json");
-    const unavailable = await fetchOfficialPluginCatalog(unavailableConfigPath, {
-      ...options,
-      catalogFetch: async () => {
-        throw new Error("catalog offline");
-      },
-    });
-    expect(unavailable.catalog).toBeNull();
-    expect(unavailable.diagnostics.join(" ")).toContain("Direct npm, GitHub, and local installation remain available");
-
-    const discovery: OfficialPluginDiscovery = remote;
-    const setupSelections: string[][] = [];
-    const cliFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-      if (path.endsWith("/plugins/official")) return json(discovery);
-      if (path.endsWith("/plugins/official/setup")) {
-        setupSelections.push((JSON.parse(String(init?.body)) as { pluginIds: string[] }).pluginIds);
-        return json([]);
-      }
-      return json({ error: { message: "unexpected route" } }, 404);
+        { preconnect: fetch.preconnect },
+      ),
     };
-    const output: string[] = [];
-    await expect(
-      runConnectCli(["plugin", "setup", "--config", configPath], {
-        pluginManagementFetch: cliFetch,
-        readStdin: async () => "test.undetected\n",
-        writeStdout: (value) => output.push(value),
-        writeStderr: (value) => output.push(value),
+    const discovery = await discoverOfficialPlugins(options);
+    expect(discovery.officialSource).toBe("bundled");
+    expect(discovery.diagnostics).toEqual([]);
+    expect(discovery.candidates).toEqual([
+      expect.objectContaining({
+        pluginId: "clawling.runtime.codex",
+        detected: true,
+        compatible: true,
+        selected: true,
       }),
-    ).resolves.toBe(0);
+    ]);
+    const stdout: string[] = [];
+    const stderr: string[] = [];
     await expect(
       runConnectCli(
-        [
-          "plugin",
-          "setup",
-          "--non-interactive",
-          "--select",
-          "test.detected,test.undetected",
-          "--deselect",
-          "test.detected",
-          "--config",
-          configPath,
-        ],
+        ["plugin", "setup", "--non-interactive", "--select", "clawling.runtime.codex", "--config", configPath],
         {
-          pluginManagementFetch: cliFetch,
-          writeStdout: (value) => output.push(value),
-          writeStderr: (value) => output.push(value),
+          pluginSourceOptions: options,
+          writeStdout: (value) => stdout.push(value),
+          writeStderr: (value) => stderr.push(value),
         },
       ),
     ).resolves.toBe(0);
-    expect(setupSelections).toEqual([["test.undetected"], ["test.undetected"]]);
-    expect(output.join(" ")).toContain("[x] test.detected@1.0.0");
+    expect(stderr).toEqual([]);
+    expect(stdout.join("")).toContain("Installed Plugin clawling.runtime.codex");
+    await expect(listInstalledPlugins(configPath)).resolves.toEqual([
+      expect.objectContaining({ pluginId: "clawling.runtime.codex", status: "active" }),
+    ]);
   });
 
-  it("rejects an oversized declared Catalog body before reading and retains the authenticated cache", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-catalog-declared-limit-"));
-    const configPath = join(directory, "config.json");
-    await saveConfig(defaultConfig(), configPath);
-    const { catalog, publicKey } = signedCatalogFixture();
-    const options = {
-      catalogUrl: "https://plugins.example.test/catalog.json",
-      catalogPublicKey: publicKey,
+  it("rejects a self-consistent bundled file whose entry bytes are not release-pinned", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-bundled-official-pin-"));
+    const built = await buildOfficialPlugin(codexDescriptor, {
+      target: `${process.platform}-${process.arch}`,
+      outputDirectory: directory,
+    });
+    const bundle = JSON.parse(await readFile(built.outputPath, "utf8")) as ConnectPluginBundleV1;
+    const artifact = bundle.manifest.artifacts[0];
+    const entry = artifact?.entry;
+    if (!entry) throw new Error("official Codex fixture has no entry");
+    const original = bundle.files[entry];
+    if (original?.encoding !== "utf8") throw new Error("official Codex entry is not text");
+    const substituted = `${original.content}\n// substituted`;
+    bundle.files[entry] = { encoding: "utf8", content: substituted };
+    bundle.manifest.artifacts[0] = {
+      ...artifact,
+      integrity: sri(substituted),
     };
-    await expect(
-      fetchOfficialPluginCatalog(configPath, {
-        ...options,
-        catalogFetch: async () => json(catalog),
+    await writeFile(built.outputPath, `${JSON.stringify(bundle, null, 2)}\n`);
+
+    const loaded = await loadBundledOfficialPlugins({
+      officialPluginsDirectory: directory,
+      target: `${process.platform}-${process.arch}`,
+    });
+    expect(loaded.entries).toEqual([]);
+    expect(loaded.diagnostics.join("\n")).toContain("does not match the release-pinned integrity");
+  });
+
+  it("isolates bounded discovery failures and preselects every compatible official Runtime", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-bundled-official-rules-"));
+    const target = "darwin-arm64";
+    const descriptors = await discoverOfficialPluginDescriptors();
+    await buildOfficialPlugins(descriptors, { target, outputDirectory: directory });
+    const base = { officialPluginsDirectory: directory, target };
+    const executable = (command: string) => {
+      if (command === "codex") return "/fake/bin/codex";
+      if (command === "opencode") return "/fake/bin/opencode";
+      if (command === "/Applications/WorkBuddy AI.app") return command;
+      return null;
+    };
+
+    const detected = await discoverOfficialPlugins({
+      ...base,
+      findExecutable: async (command) => executable(command),
+      runDiscoveryCommand: async ({ executable: path }) => ({
+        stdout: path.endsWith("codex") ? "codex-cli 1.2.3" : "opencode 1.18.13",
       }),
-    ).resolves.toMatchObject({ origin: "remote", catalog });
-
-    const oversized = await fetchOfficialPluginCatalog(configPath, {
-      ...options,
-      catalogFetch: async () =>
-        new Response("not valid JSON", {
-          headers: { "content-length": String(MAX_OFFICIAL_PLUGIN_CATALOG_BYTES + 1) },
-        }),
+    });
+    expect(
+      detected.candidates
+        .filter((candidate) => candidate.selected)
+        .map((candidate) => candidate.pluginId)
+        .sort(),
+    ).toEqual(["clawling.runtime.codex", "clawling.runtime.opencode", "clawling.runtime.workbuddy"]);
+    expect(detected.candidates.find((candidate) => candidate.pluginId === "clawling.exposure.liveware")).toMatchObject({
+      detected: false,
+      selected: false,
+      selectable: true,
     });
 
-    expect(oversized).toMatchObject({ origin: "cache", catalog });
-    expect(oversized.diagnostics.join(" ")).toContain(`${MAX_OFFICIAL_PLUGIN_CATALOG_BYTES}-byte download limit`);
+    const missed = await discoverOfficialPlugins({
+      ...base,
+      findExecutable: async () => null,
+    });
+    expect(
+      missed.candidates
+        .filter((candidate) => candidate.discovery !== null)
+        .every((candidate) => !candidate.detected && !candidate.selected),
+    ).toBe(true);
+
+    const malformed = await discoverOfficialPlugins({
+      ...base,
+      findExecutable: async (command) => executable(command),
+      runDiscoveryCommand: async () => ({ stdout: "not-a-compatible-version" }),
+    });
+    expect(
+      malformed.candidates
+        .filter((candidate) => candidate.pluginId !== "clawling.runtime.workbuddy" && candidate.discovery !== null)
+        .every((candidate) => candidate.detected && !candidate.compatible && !candidate.selected),
+    ).toBe(true);
+
+    const overflow = await discoverOfficialPlugins({
+      ...base,
+      findExecutable: async (command) => executable(command),
+      runDiscoveryCommand: async () => ({ stdout: "x".repeat(4_097) }),
+    });
+    expect(
+      overflow.candidates
+        .filter((candidate) => candidate.pluginId !== "clawling.runtime.workbuddy" && candidate.discovery !== null)
+        .every((candidate) => candidate.diagnostic?.includes("output limit")),
+    ).toBe(true);
+
+    const isolated = await discoverOfficialPlugins({
+      ...base,
+      findExecutable: async (command) => executable(command),
+      runDiscoveryCommand: async ({ executable: path }) => {
+        if (path.endsWith("codex")) throw new Error("isolated Codex failure");
+        return { stdout: "1.18.10" };
+      },
+    });
+    expect(isolated.candidates.find((candidate) => candidate.pluginId === "clawling.runtime.codex")).toMatchObject({
+      selected: false,
+      diagnostic: expect.stringContaining("isolated Codex failure"),
+    });
+    expect(isolated.candidates.find((candidate) => candidate.pluginId === "clawling.runtime.opencode")).toMatchObject({
+      compatible: true,
+      selected: true,
+    });
   });
 
-  it("cancels a lengthless Catalog stream when observed bytes cross the limit", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-catalog-stream-limit-"));
-    const configPath = join(directory, "config.json");
-    await saveConfig(defaultConfig(), configPath);
-    const { publicKey } = signedCatalogFixture();
-    const chunk = new Uint8Array(1024 * 1024);
-    let cancelled = false;
-    const result = await fetchOfficialPluginCatalog(configPath, {
-      catalogUrl: "https://plugins.example.test/catalog.json",
-      catalogPublicKey: publicKey,
-      catalogFetch: async () =>
-        new Response(
-          new ReadableStream<Uint8Array>({
-            start(controller) {
-              for (let sent = 0; sent <= MAX_OFFICIAL_PLUGIN_CATALOG_BYTES; sent += chunk.byteLength) {
-                controller.enqueue(chunk);
-              }
-            },
-            cancel() {
-              cancelled = true;
-            },
-          }),
-        ),
+  it("times out one official discovery command without aborting later candidates", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-bundled-official-timeout-"));
+    const target = `${process.platform}-${process.arch}`;
+    await buildOfficialPlugin(codexDescriptor, { target, outputDirectory: directory });
+    const discovery = await discoverOfficialPlugins({
+      officialPluginsDirectory: directory,
+      target,
+      findExecutable: async () => "/fake/bin/codex",
+      runDiscoveryCommand: async () => await Promise.withResolvers<{ readonly stdout: string }>().promise,
     });
 
-    expect(cancelled).toBe(true);
-    expect(result.catalog).toBeNull();
-    expect(result.origin).toBeNull();
-    expect(result.diagnostics.join(" ")).toContain(`${MAX_OFFICIAL_PLUGIN_CATALOG_BYTES}-byte download limit`);
-  });
+    expect(discovery.candidates).toEqual([
+      expect.objectContaining({
+        pluginId: "clawling.runtime.codex",
+        selected: false,
+        diagnostic: expect.stringContaining("timed out"),
+      }),
+    ]);
+  }, 7_000);
 });

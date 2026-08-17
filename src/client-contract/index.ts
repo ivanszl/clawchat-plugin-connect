@@ -95,7 +95,7 @@ export interface AvailablePluginView {
 export interface PluginAdministrationView {
   installed: InstalledPluginView[];
   available: AvailablePluginView[];
-  catalogOrigin: "remote" | "cache" | null;
+  officialSource: "bundled" | null;
   diagnostics: PluginDiagnosticView[];
 }
 
@@ -471,6 +471,7 @@ export interface ClientExtensionView {
   capabilityId: string;
   version: string;
   activationGeneration: number;
+  configuration: Record<string, unknown>;
   entry: string;
   integrity: string;
   styles: ClientExtensionStyleView[];

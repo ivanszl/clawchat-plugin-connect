@@ -157,15 +157,10 @@ export default {
   };
 }
 async function installCliPlugin(configPath: string, bundle = cliPluginBundle()) {
-  const artifact = bundle.manifest.artifacts.find((candidate) => candidate.target === currentConnectPluginTarget());
-  if (!artifact) throw new Error("CLI Plugin fixture has no current-target artifact");
   return await installPluginBundle({
     configPath,
     source: { type: "local", path: configPath },
     bundle,
-    officialCapabilityGrants: [
-      { type: "exposure", capabilityId: "exposure-only", artifactIntegrity: artifact.integrity },
-    ],
   });
 }
 

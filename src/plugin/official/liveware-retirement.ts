@@ -16,6 +16,7 @@ import { ConnectBindingLivewarePublicationStateStore } from "./liveware-publicat
 
 export interface RetireOfficialLivewarePublicationsOptions {
   readonly bindingIds: readonly string[];
+  readonly configPath: string;
   readonly clawChatBaseUrl: string;
   readonly stateStore: ConnectStateStore;
   readonly dependencies?: LivewareControlDependencies;
@@ -25,20 +26,24 @@ export async function retireOfficialLivewarePublications(
   options: RetireOfficialLivewarePublicationsOptions,
 ): Promise<void> {
   const state = new ConnectBindingLivewarePublicationStateStore(options.stateStore);
+  const pending = [];
+  for (const bindingId of options.bindingIds) {
+    const record = await state.read(bindingId);
+    if (record && record.value.status !== "retired") pending.push({ bindingId, record });
+  }
+  if (pending.length === 0) return;
   const activations = new Map(
     (await options.stateStore.listActivations()).map((activation) => [activation.localAgentId, activation]),
   );
   const dependencies =
     options.dependencies ??
     createLivewareControlDependencies({
-      livewarePath: await resolveLivewareExecutablePath(),
+      livewarePath: await resolveLivewareExecutablePath(options.configPath),
       clawChatBaseUrl: options.clawChatBaseUrl,
     });
   const deviceId = await options.stateStore.getOrCreateDeviceId();
 
-  for (const bindingId of options.bindingIds) {
-    const record = await state.read(bindingId);
-    if (!record || record.value.status === "retired") continue;
+  for (const { bindingId, record } of pending) {
     const activation = activations.get(bindingId);
     if (!activation) {
       throw new Error(`Binding Liveware Publication ${bindingId} cannot be retired because its activation is missing`);

@@ -55,6 +55,7 @@ export async function removeAgentBinding(
       (async (bindingIds: readonly string[]) =>
         await retireOfficialLivewarePublications({
           bindingIds,
+          configPath,
           clawChatBaseUrl: config.baseUrl,
           stateStore: store,
         }))

@@ -309,15 +309,14 @@ export const ja = {
   "@connect.settings.workspaces.removeConfirm.cancel": { defaultMessage: "キャンセル" },
   "@connect.settings.plugins.title": { defaultMessage: "信頼済みプラグイン" },
   "@connect.settings.plugins.description": {
-    defaultMessage:
-      "自己完結型の Runtime／Client Extension プラグインと、リリース検証済みの公式 Exposure を管理します。",
+    defaultMessage: "信頼済みの Runtime、Client Exposure、Client Extension プラグインをインストールして管理します。",
   },
   "@connect.settings.plugins.loading": { defaultMessage: "プラグインを読み込み中" },
   "@connect.settings.plugins.loadFailed": { defaultMessage: "プラグインを読み込めません" },
   "@connect.settings.plugins.actionFailed": { defaultMessage: "プラグイン操作に失敗しました" },
   "@connect.settings.plugins.installed": { defaultMessage: "インストール済みプラグイン" },
   "@connect.settings.plugins.installedEmpty": { defaultMessage: "プラグインはインストールされていません" },
-  "@connect.settings.plugins.available": { defaultMessage: "公式カタログ" },
+  "@connect.settings.plugins.available": { defaultMessage: "同梱の公式プラグイン" },
   "@connect.settings.plugins.availableEmpty": { defaultMessage: "利用可能な公式プラグインはありません" },
   "@connect.settings.plugins.actions": { defaultMessage: "プラグイン操作" },
   "@connect.settings.plugins.source": { defaultMessage: "ソース" },

@@ -281,24 +281,48 @@ describe("public Plugin Bundle authoring", () => {
       }),
     ).toBe(true);
     expect(validate({ ...authorManifest(), pluginId: "Malformed Plugin ID" })).toBe(false);
+    const exposureAuthorManifest = {
+      ...authorManifest(),
+      dependencies: [
+        {
+          type: "host",
+          id: "exposure-provider",
+          interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+        },
+        {
+          type: "host",
+          id: "durable-state",
+          interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+        },
+      ],
+      capabilities: [
+        {
+          id: "exposure",
+          type: "exposure",
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: { type: "object", additionalProperties: false },
+          durableState: {
+            schemaVersion: 1,
+            lifetime: "installation",
+            schema: {
+              type: "object",
+              properties: { count: { type: "integer" } },
+              required: ["count"],
+              additionalProperties: false,
+            },
+            migrations: [],
+          },
+        },
+      ],
+    };
+    expect(validate(exposureAuthorManifest)).toBe(true);
     expect(
       validate({
-        ...authorManifest(),
-        dependencies: [
-          {
-            type: "host",
-            id: "exposure-provider",
-            interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
-          },
-        ],
-        capabilities: [
-          {
-            id: "exposure",
-            type: "exposure",
-            interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-            configurationSchema: { type: "object", additionalProperties: false },
-          },
-        ],
+        ...exposureAuthorManifest,
+        capabilities: exposureAuthorManifest.capabilities.map((capability) => ({
+          ...capability,
+          durableState: { ...capability.durableState, lifetime: "binding" },
+        })),
       }),
     ).toBe(false);
   });

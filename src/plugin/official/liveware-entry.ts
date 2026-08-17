@@ -19,7 +19,7 @@ export interface OfficialLivewareManagedDisposer extends ConnectPluginDisposer {
 }
 
 /**
- * Privileged Core services granted only to the release-verified official
+ * Privileged Core services granted only to the release-pinned official
  * Liveware capability. This interface is intentionally absent from the public
  * Plugin SDK and contains no Binding credential or mutable Core domain object.
  */
@@ -45,17 +45,30 @@ export function createOfficialLivewarePluginEntry(): ManagedConnectPluginEntry {
           const activation = requirePrivilegedActivation(publicActivation);
           const accessPolicy = readAccessPolicy(activation.configuration);
           const initialTargets = await activation.officialLiveware.listBindings();
-          const lease =
-            accessPolicy === "private"
-              ? await activation.officialLiveware.acquireGateway(activation.activationGeneration)
-              : undefined;
-          const lifecycle = new BindingLivewarePublicationLifecycle({
-            activationGeneration: activation.activationGeneration,
-            upstream: lease?.upstream ?? "http://127.0.0.1:1",
-            state: activation.officialLiveware.state,
-            controlPlane: activation.officialLiveware.controlPlane,
-            registrations: activation.officialLiveware.registrations,
-          });
+          let lease: OfficialLivewareGatewayLease | undefined;
+          let lifecycle: BindingLivewarePublicationLifecycle | undefined;
+          const releasePublicationResources = async (): Promise<void> => {
+            const selectedLifecycle = lifecycle;
+            lifecycle = undefined;
+            await selectedLifecycle?.dispose();
+            const selectedLease = lease;
+            lease = undefined;
+            await selectedLease?.release();
+          };
+          const ensureLifecycle = async (): Promise<BindingLivewarePublicationLifecycle> => {
+            if (lifecycle) return lifecycle;
+            if (accessPolicy === "private" && !lease) {
+              lease = await activation.officialLiveware.acquireGateway(activation.activationGeneration);
+            }
+            lifecycle = new BindingLivewarePublicationLifecycle({
+              activationGeneration: activation.activationGeneration,
+              upstream: lease?.upstream ?? "http://127.0.0.1:1",
+              state: activation.officialLiveware.state,
+              controlPlane: activation.officialLiveware.controlPlane,
+              registrations: activation.officialLiveware.registrations,
+            });
+            return lifecycle;
+          };
           const targets = new Map(initialTargets.map((target) => [target.bindingId, target]));
           const remainingBindings = new Set(targets.keys());
           const retiredBindings = new Set<string>();
@@ -66,7 +79,8 @@ export function createOfficialLivewarePluginEntry(): ManagedConnectPluginEntry {
             const listedTargets = await activation.officialLiveware.listBindings();
             const listedBindingIds = new Set(listedTargets.map((target) => target.bindingId));
             for (const bindingId of retiredBindings) {
-              if (listedBindingIds.has(bindingId)) continue;
+              if (listedBindingIds.has(bindingId) && (await activation.officialLiveware.state.read(bindingId)))
+                continue;
               retiredBindings.delete(bindingId);
               targets.delete(bindingId);
             }
@@ -75,12 +89,19 @@ export function createOfficialLivewarePluginEntry(): ManagedConnectPluginEntry {
               targets.set(target.bindingId, target);
               remainingBindings.add(target.bindingId);
             }
+            if (reconcilableTargets.length === 0) {
+              if (remainingBindings.size === 0) await releasePublicationResources();
+              return;
+            }
+            const selectedLifecycle = await ensureLifecycle();
             if (accessPolicy === "private") {
               await Promise.allSettled(
-                reconcilableTargets.map(async (target) => await lifecycle.ensurePrivate(target)),
+                reconcilableTargets.map(async (target) => await selectedLifecycle.ensurePrivate(target)),
               );
             } else {
-              await Promise.allSettled(reconcilableTargets.map(async (target) => await lifecycle.retire(target)));
+              await Promise.allSettled(
+                reconcilableTargets.map(async (target) => await selectedLifecycle.retire(target)),
+              );
             }
           };
           const scheduleReconciliation = (): void => {
@@ -97,54 +118,46 @@ export function createOfficialLivewarePluginEntry(): ManagedConnectPluginEntry {
             if (reconcileTimer) clearTimeout(reconcileTimer);
             await reconciliation;
           };
-          let leaseReleased = false;
-          const releaseLease = async (): Promise<void> => {
-            if (leaseReleased) return;
-            leaseReleased = true;
-            await lease?.release();
-          };
           try {
-            if (accessPolicy === "private") {
-              await Promise.allSettled(
-                [...targets.values()].map(async (target) => await lifecycle.ensurePrivate(target)),
-              );
-            } else {
-              await Promise.all([...targets.values()].map(async (target) => await lifecycle.retire(target)));
+            if (targets.size > 0) {
+              const selectedLifecycle = await ensureLifecycle();
+              if (accessPolicy === "private") {
+                await Promise.allSettled(
+                  [...targets.values()].map(async (target) => await selectedLifecycle.ensurePrivate(target)),
+                );
+              } else {
+                await Promise.all([...targets.values()].map(async (target) => await selectedLifecycle.retire(target)));
+              }
             }
           } catch (error) {
-            await lifecycle.dispose();
-            await releaseLease().catch(() => undefined);
+            await releasePublicationResources().catch(() => undefined);
             throw error;
           }
           scheduleReconciliation();
           const dispose = Object.assign(
             async () => {
               await stopReconciliation();
-              await lifecycle.dispose();
-              await releaseLease();
+              await releasePublicationResources();
             },
             {
               retire: async () => {
                 await stopReconciliation();
-                await retireTargets(lifecycle, [...targets.values()]);
+                if (targets.size > 0) {
+                  await retireTargets(await ensureLifecycle(), [...targets.values()]);
+                }
                 remainingBindings.clear();
-                await lifecycle.dispose();
-                await releaseLease();
+                await releasePublicationResources();
               },
               retireBindings: async (bindingIds: readonly string[]) => {
                 await reconciliation;
                 const selected = new Set(bindingIds);
                 for (const target of targets.values()) {
                   if (!selected.has(target.bindingId) || !remainingBindings.has(target.bindingId)) continue;
-                  await lifecycle.retire(target);
+                  await (await ensureLifecycle()).retire(target);
                   remainingBindings.delete(target.bindingId);
                   retiredBindings.add(target.bindingId);
                 }
-                if (remainingBindings.size === 0) {
-                  await stopReconciliation();
-                  await lifecycle.dispose();
-                  await releaseLease();
-                }
+                if (remainingBindings.size === 0) await releasePublicationResources();
               },
             },
           ) satisfies OfficialLivewareManagedDisposer;
@@ -173,7 +186,7 @@ function requirePrivilegedActivation(activation: ConnectPluginExposureActivation
     !services.controlPlane ||
     !services.registrations
   ) {
-    throw new Error("The official Liveware capability requires its release-verified Core grant");
+    throw new Error("The official Liveware capability requires its release-pinned Core grant");
   }
   return privileged as PrivilegedLivewareActivation;
 }

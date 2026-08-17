@@ -11,7 +11,6 @@ import { ConnectPluginHost } from "../src/plugin/host";
 import type { ManagedConnectPluginBundleV1, ManagedConnectPluginManifestV1 } from "../src/plugin/official-sdk";
 import {
   commitStagedPlugin,
-  currentConnectPluginTarget,
   installLocalPlugin,
   listInstalledPlugins,
   MAX_PLUGIN_CONFIGURATION_BYTES,
@@ -54,22 +53,11 @@ async function installOfficialFixture(
   },
 ) {
   const bundle = await readConnectPluginBundle(bundlePath);
-  const artifact = required(
-    bundle.manifest.artifacts.find((candidate) => candidate.target === currentConnectPluginTarget()),
-    "reference fixture artifact",
-  );
   const staged = await stagePluginBundle({
     configPath,
     source: { type: "local", path: bundlePath },
     bundle,
     exposureConfigurations,
-    officialCapabilityGrants: bundle.manifest.capabilities
-      .filter(({ type }) => type === "exposure")
-      .map(({ id }) => ({
-        capabilityId: id,
-        type: "exposure" as const,
-        artifactIntegrity: artifact.integrity,
-      })),
   });
   return await commitStagedPlugin(configPath, staged, "install");
 }
@@ -199,11 +187,132 @@ describe("atomic multi-capability Plugin Bundles", () => {
     expect(Reflect.get(globalThis, "__connectReferenceExposure")).toBeUndefined();
   });
 
-  it("rejects a public local Bundle that declares privileged Client Exposure", async () => {
+  it("installs a local Bundle that declares Client Exposure without official admission metadata", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-public-exposure-"));
-    await expect(
-      installLocalPlugin({ configPath: join(directory, "config.json"), bundlePath: fixturePath }),
-    ).rejects.toThrow("release-verified official capability grant");
+    const installed = await installLocalPlugin({
+      configPath: join(directory, "config.json"),
+      bundlePath: fixturePath,
+      exposureConfigurations: { "reference-exposure": { channel: "private" } },
+    });
+
+    expect(installed.manifest.capabilities).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "reference-exposure", type: "exposure" })]),
+    );
+  });
+
+  it("never grants Liveware-only services to an arbitrary Exposure named liveware", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-liveware-spoof-"));
+    const configPath = join(directory, "config.json");
+    const config = defaultConfig();
+    config.stateDbPath = join(directory, "state.sqlite");
+    await saveConfig(config, configPath);
+    const source = `export default { activate(context) { context.hostCapabilities.get("exposure-provider").register({ capabilityId: "liveware", activate(activation) { globalThis.__connectSpoofedLivewareActivationKeys = Object.keys(activation).sort(); } }); } };`;
+    const bundlePath = await bundleFixture(
+      directory,
+      "liveware-spoof",
+      (bundle) => {
+        bundle.manifest.pluginId = "test.liveware-spoof";
+        bundle.manifest.dependencies = [required(bundle.manifest.dependencies[1], "fixture Exposure dependency")];
+        bundle.manifest.capabilities = [
+          {
+            id: "liveware",
+            type: "exposure",
+            interfaceVersion: "1",
+            configurationSchema: { type: "object", additionalProperties: false },
+          },
+        ];
+      },
+      source,
+    );
+    await installLocalPlugin({ configPath, bundlePath });
+    const stateStore = createStateStore({ dbPath: config.stateDbPath });
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, {
+      config,
+      stateStore,
+      workspaces: new WorkspaceCatalog(stateStore),
+    });
+    await host.bindClientInterface({
+      origin: "http://127.0.0.1:47823",
+      fetch: async () => new Response("unused"),
+    });
+    await host.activateInstalled();
+
+    expect(Reflect.get(globalThis, "__connectSpoofedLivewareActivationKeys")).toEqual([
+      "activationGeneration",
+      "client",
+      "configuration",
+    ]);
+    Reflect.deleteProperty(globalThis, "__connectSpoofedLivewareActivationKeys");
+    await host.close();
+    await stateStore.close();
+  });
+
+  it("provides declared installation-scoped Durable State to a public Exposure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-plugin-exposure-state-"));
+    const configPath = join(directory, "config.json");
+    const config = defaultConfig();
+    config.stateDbPath = join(directory, "state.sqlite");
+    await saveConfig(config, configPath);
+    const source = `export default { activate(context) { context.hostCapabilities.get("exposure-provider").register({ capabilityId: "stateful-exposure", async activate(activation) { globalThis.__connectExposureStateActivationKeys = Object.keys(activation).sort(); globalThis.__connectExposureStateRecord = await activation.durableState.compareAndSwap(null, { count: 1 }); } }); } };`;
+    const bundlePath = await bundleFixture(
+      directory,
+      "stateful-exposure",
+      (bundle) => {
+        bundle.manifest.pluginId = "test.stateful-exposure";
+        bundle.manifest.dependencies = [
+          required(bundle.manifest.dependencies[1], "fixture Exposure dependency"),
+          { type: "host", id: "durable-state", interfaceVersion: "1" },
+        ];
+        bundle.manifest.capabilities = [
+          {
+            id: "stateful-exposure",
+            type: "exposure",
+            interfaceVersion: "1",
+            configurationSchema: { type: "object", additionalProperties: false },
+            durableState: {
+              schemaVersion: 1,
+              lifetime: "installation",
+              schema: {
+                type: "object",
+                properties: { count: { type: "integer" } },
+                required: ["count"],
+                additionalProperties: false,
+              },
+              migrations: [],
+            },
+          },
+        ];
+      },
+      source,
+    );
+    await installLocalPlugin({ configPath, bundlePath });
+    const stateStore = createStateStore({ dbPath: config.stateDbPath });
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, {
+      config,
+      stateStore,
+      workspaces: new WorkspaceCatalog(stateStore),
+    });
+    await host.bindClientInterface({
+      origin: "http://127.0.0.1:47823",
+      fetch: async () => new Response("unused"),
+    });
+    await host.activateInstalled();
+
+    expect(Reflect.get(globalThis, "__connectExposureStateActivationKeys")).toEqual([
+      "activationGeneration",
+      "client",
+      "configuration",
+      "durableState",
+    ]);
+    expect(Reflect.get(globalThis, "__connectExposureStateRecord")).toMatchObject({
+      schemaVersion: 1,
+      revision: 1,
+      value: { count: 1 },
+    });
+    Reflect.deleteProperty(globalThis, "__connectExposureStateActivationKeys");
+    Reflect.deleteProperty(globalThis, "__connectExposureStateRecord");
+    await host.close();
+    await stateStore.close();
   });
 
   it("rejects duplicate Plugin identities without replacing the locked Bundle", async () => {
@@ -306,6 +415,26 @@ describe("atomic multi-capability Plugin Bundles", () => {
         };
       },
       message: "secret-free",
+    },
+    {
+      name: "binding-scoped-exposure-state",
+      mutate: (bundle) => {
+        bundle.manifest.dependencies.push({ type: "host", id: "durable-state", interfaceVersion: "1" });
+        const exposure = bundle.manifest.capabilities.find((capability) => capability.type === "exposure");
+        if (!exposure) throw new Error("Expected fixture Exposure capability");
+        exposure.durableState = {
+          schemaVersion: 1,
+          lifetime: "binding",
+          schema: {
+            type: "object",
+            properties: { count: { type: "integer" } },
+            required: ["count"],
+            additionalProperties: false,
+          },
+          migrations: [],
+        } as never;
+      },
+      message: "Exposure Durable State cannot use Agent Binding lifetime",
     },
     {
       name: "unsupported-client-extension-slot",

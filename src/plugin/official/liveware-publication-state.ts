@@ -32,13 +32,17 @@ export class ConnectBindingLivewarePublicationStateStore implements BindingLivew
     private readonly state: ConnectStateStore,
     private readonly assertGeneration: () => Promise<void> = async () => undefined,
     private readonly activationGeneration?: number,
+    private readonly runOperation: <T>(operation: () => Promise<T>) => Promise<T> = async (operation) =>
+      await operation(),
   ) {}
 
   async read(bindingId: string): Promise<BindingLivewarePublicationStateRecord | null> {
-    await this.assertGeneration();
-    const generation = this.activationGeneration ?? (await this.latestGeneration(bindingId));
-    if (generation === null) return null;
-    return await this.readGeneration(bindingId, generation);
+    return await this.runOperation(async () => {
+      await this.assertGeneration();
+      const generation = this.activationGeneration ?? (await this.latestGeneration(bindingId));
+      if (generation === null) return null;
+      return await this.readGeneration(bindingId, generation);
+    });
   }
 
   async compareAndSwap(
@@ -46,24 +50,26 @@ export class ConnectBindingLivewarePublicationStateStore implements BindingLivew
     expectedRevision: number | null,
     value: BindingLivewarePublicationState,
   ): Promise<BindingLivewarePublicationStateRecord> {
-    await this.assertGeneration();
-    const validated = publicationState(value, bindingId);
-    const generation =
-      this.activationGeneration ?? (await this.latestGeneration(bindingId)) ?? validated.activationGeneration;
-    const current = await this.readGeneration(bindingId, generation);
-    if (current && current.value.activationGeneration > validated.activationGeneration) {
-      throw new Error(`stale Liveware publication Activation Generation for ${bindingId}`);
-    }
-    const record = await this.state.compareAndSwapPluginDurableState(
-      publicationNamespace(bindingId, generation),
-      expectedRevision,
-      LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
-      validated,
-    );
-    return {
-      revision: record.revision,
-      value: publicationState(record.value, bindingId),
-    };
+    return await this.runOperation(async () => {
+      await this.assertGeneration();
+      const validated = publicationState(value, bindingId);
+      const generation =
+        this.activationGeneration ?? (await this.latestGeneration(bindingId)) ?? validated.activationGeneration;
+      const current = await this.readGeneration(bindingId, generation);
+      if (current && current.value.activationGeneration > validated.activationGeneration) {
+        throw new Error(`stale Liveware publication Activation Generation for ${bindingId}`);
+      }
+      const record = await this.state.compareAndSwapPluginDurableState(
+        publicationNamespace(bindingId, generation),
+        expectedRevision,
+        LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
+        validated,
+      );
+      return {
+        revision: record.revision,
+        value: publicationState(record.value, bindingId),
+      };
+    });
   }
 
   private async readGeneration(
@@ -147,6 +153,13 @@ function publicationState(value: unknown, bindingId: string): BindingLivewarePub
     registrationId: optionalText(value.registrationId, "ClawChat Liveware Registration identity"),
     diagnostic: optionalText(value.diagnostic, "publication diagnostic"),
   };
+}
+
+export function validateBindingLivewarePublicationState(
+  value: unknown,
+  bindingId: string,
+): BindingLivewarePublicationState {
+  return publicationState(value, bindingId);
 }
 
 function requiredText(value: unknown, label: string): string {

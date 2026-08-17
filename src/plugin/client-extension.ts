@@ -28,6 +28,7 @@ export function deriveClientExtensionGraph(installed: readonly InstalledPluginLo
             capabilityId: capability.id,
             version: plugin.version,
             activationGeneration: plugin.activationGeneration,
+            configuration: structuredClone(plugin.exposureConfigurations[capability.id] ?? {}),
             entry: `${artifactBase}/${encodeBundlePath(capability.browser.entry)}`,
             integrity: capability.browser.integrity,
             styles: capability.browser.styles
