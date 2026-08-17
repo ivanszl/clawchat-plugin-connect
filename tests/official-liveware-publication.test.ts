@@ -28,8 +28,8 @@ import { retireOfficialLivewarePublications } from "../src/plugin/official/livew
 import type {
   ConnectPluginExposureActivation,
   ConnectPluginExposureProvider,
-  ManagedConnectPluginHostCapabilities,
-} from "../src/plugin/official-sdk";
+  ConnectPluginHostCapabilities,
+} from "../src/plugin/sdk";
 import { installPluginBundle, listInstalledPlugins } from "../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { resolveLivewareExecutablePath } from "../src/service/liveware-control";
@@ -639,16 +639,40 @@ describe("official Liveware Binding publication lifecycle", () => {
     const remote = new FakePublicationRemote();
     let provider: ConnectPluginExposureProvider | undefined;
     const hostCapabilities = {
-      get(id: "runtime-provider" | "exposure-provider") {
-        if (id !== "exposure-provider") throw new Error("unexpected Host Capability");
-        return {
-          interfaceVersion: "1",
-          register(candidate: ConnectPluginExposureProvider) {
-            provider = candidate;
-          },
-        };
+      get(id: "runtime-provider" | "durable-state" | "exposure-provider") {
+        if (id === "exposure-provider") {
+          return {
+            interfaceVersion: "1",
+            register(candidate: ConnectPluginExposureProvider) {
+              provider = candidate;
+            },
+          };
+        }
+        if (id === "durable-state") {
+          return {
+            interfaceVersion: "1",
+            forBinding(capabilityId: string, bindingId: string) {
+              if (capabilityId !== "liveware") throw new Error("unexpected Durable State capability");
+              return {
+                async read() {
+                  const record = await state.read(bindingId);
+                  return record ? { schemaVersion: 1, revision: record.revision, value: record.value } : null;
+                },
+                async compareAndSwap(expectedRevision: number | null, value: Readonly<Record<string, unknown>>) {
+                  const record = await state.compareAndSwap(
+                    bindingId,
+                    expectedRevision,
+                    value as BindingLivewarePublicationState,
+                  );
+                  return { schemaVersion: 1, revision: record.revision, value: record.value };
+                },
+              };
+            },
+          };
+        }
+        throw new Error("unexpected Host Capability");
       },
-    } as ManagedConnectPluginHostCapabilities;
+    } as ConnectPluginHostCapabilities;
     await createOfficialLivewarePluginEntry().activate({
       activationGeneration: 12,
       interfaceVersion: "1",
@@ -665,7 +689,6 @@ describe("official Liveware Binding publication lifecycle", () => {
       async listBindings() {
         return bindingTargets;
       },
-      state,
       controlPlane: remote,
       registrations: remote,
       async acquireGateway(activationGeneration) {
@@ -852,7 +875,7 @@ describe("official Liveware Binding publication lifecycle", () => {
       await host.install({
         source: bundlePath,
         target: artifact.target,
-        exposureConfigurations: { liveware: { accessPolicy: "private" } },
+        capabilityConfigurations: { liveware: { accessPolicy: "private" } },
       });
 
       expect(tokens.sort()).toEqual(["token-a", "token-b"]);

@@ -64,6 +64,7 @@
     "format:check": "biome format .",
     "lint": "biome lint .",
     "check:core": "bun run check:generated && biome check . && bun run typecheck && bun test",
+    "check:release": "bun run check:core && bun test tests/background-service.test.ts tests/build-release.test.ts tests/release-channel.test.ts tests/release-bundle.test.ts && bun scripts/verify-liveware-bundle.ts",
     "check": "bun run check:core",
     "test:integration:workbuddy-cn-discovery": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-discovery.ts",
     "test:integration:workbuddy-cn-adoption": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-adoption.ts",

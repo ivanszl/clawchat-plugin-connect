@@ -122,7 +122,7 @@ async function installOfficialFixture(configPath: string, bundlePath: string) {
     configPath,
     source: { type: "local", path: bundlePath },
     bundle,
-    exposureConfigurations: { "reference-exposure": { channel: "private" } },
+    capabilityConfigurations: { "reference-exposure": { channel: "private" } },
   });
   return await commitStagedPlugin(configPath, staged, "install");
 }

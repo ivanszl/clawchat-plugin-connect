@@ -369,7 +369,7 @@ export const ko = {
   "@connect.settings.plugins.upload.fileDescription": { defaultMessage: ".connect-plugin 파일 하나를 선택하세요." },
   "@connect.settings.plugins.upload.required": { defaultMessage: "먼저 Plugin Bundle을 선택하세요." },
   "@connect.settings.plugins.installationConfiguration": { defaultMessage: "설치 구성" },
-  "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "기능 ID별 Exposure 구성" },
+  "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "기능 ID별 구성" },
   "@connect.settings.plugins.trust.title": { defaultMessage: "플러그인은 신뢰할 수 있는 코드로 실행됩니다" },
   "@connect.settings.plugins.trust.description": {
     defaultMessage:
@@ -400,10 +400,10 @@ export const ko = {
   "@connect.settings.plugins.schema.invalidObject": { defaultMessage: "올바른 JSON 객체를 입력하세요." },
   "@connect.settings.plugins.diagnostic": { defaultMessage: "{stage} 진단" },
   "@connect.settings.plugins.diagnostic.import": { defaultMessage: "가져오기" },
+  "@connect.settings.plugins.diagnostic.discovery": { defaultMessage: "감지" },
   "@connect.settings.plugins.diagnostic.validation": { defaultMessage: "검증" },
   "@connect.settings.plugins.diagnostic.activation": { defaultMessage: "활성화" },
   "@connect.settings.plugins.diagnostic.provider": { defaultMessage: "Provider" },
-  "@connect.settings.plugins.diagnostic.probe": { defaultMessage: "프로브" },
   "@connect.settings.plugins.diagnostic.update": { defaultMessage: "업데이트" },
   "@connect.settings.error.bindingNotFound": {
     defaultMessage: "Agent Binding을 더 이상 사용할 수 없습니다. 서버 세부 정보: {detail}",

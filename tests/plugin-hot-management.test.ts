@@ -6,8 +6,9 @@ import { basename, join } from "node:path";
 import { defaultConfig, loadConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { createAgentBinding, identifyAgentBinding } from "../src/plugin/binding";
+import { deriveClientExtensionGraph } from "../src/plugin/client-extension";
 import { ConnectPluginHost, MAX_CONCURRENT_PLUGIN_UPDATE_CHECKS } from "../src/plugin/host";
-import type { ManagedConnectPluginBundleV1 } from "../src/plugin/official-sdk";
+import type { ConnectPluginBundleV1 } from "../src/plugin/sdk";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_BUNDLE_FORMAT,
@@ -30,7 +31,7 @@ import { SessionTurnExecutor } from "../src/runtime/session-turn-executor";
 import type { TurnTarget } from "../src/workspaces/session-continuity";
 import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 
-function hotBundle(pluginId: string, version: string, failExposure = false): ManagedConnectPluginBundleV1 {
+function hotBundle(pluginId: string, version: string, failExposure = false): ConnectPluginBundleV1 {
   const source = `
 const log = globalThis.__connectHotPluginLog ??= [];
 export default {
@@ -101,7 +102,7 @@ function assetBundle(
   asset: string,
   auxiliary = "auxiliary-v1",
   failActivation = false,
-): ManagedConnectPluginBundleV1 {
+): ConnectPluginBundleV1 {
   const source = `
 import { value } from "./asset.mjs";
 export default {
@@ -180,7 +181,7 @@ function lifecycleBundle(
   pluginId: string,
   version: string,
   options: LifecycleBundleOptions = {},
-): ManagedConnectPluginBundleV1 {
+): ConnectPluginBundleV1 {
   const includeRuntime = options.includeRuntime ?? true;
   const source = `
 const log = globalThis.__connectPluginLifecycleLog ??= [];
@@ -313,7 +314,7 @@ function durableStateBundle(
   schemaVersion: 1 | 2,
   migrationFailure = false,
   lifetime: "binding" | "installation" = "binding",
-): ManagedConnectPluginBundleV1 {
+): ConnectPluginBundleV1 {
   const source = `
 export default {
   migrateDurableState(migration) {
@@ -385,7 +386,58 @@ export default {
   };
 }
 
-async function writeBundle(directory: string, bundle: ManagedConnectPluginBundleV1): Promise<string> {
+function bindingExposureStateBundle(pluginId: string, version: string): ConnectPluginBundleV1 {
+  const source = `
+export default {
+  activate(context) {
+    const durableState = context.hostCapabilities.get("durable-state");
+    context.hostCapabilities.get("exposure-provider").register({
+      capabilityId: "exposure",
+      async activate() {
+        globalThis.__connectBindingExposureState = durableState.forBinding("exposure", "stateful-binding");
+      }
+    });
+  }
+};`.trim();
+  const integrity = `sha256-${createHash("sha256").update(source).digest("base64")}`;
+  return {
+    format: CONNECT_PLUGIN_BUNDLE_FORMAT,
+    manifest: {
+      manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
+      interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
+      pluginId,
+      version,
+      dependencies: [
+        { type: "host", id: "durable-state", interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION },
+        { type: "host", id: "exposure-provider", interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION },
+      ],
+      installationConfigurationSchema: { type: "object", additionalProperties: false },
+      capabilities: [
+        {
+          id: "exposure",
+          type: "exposure",
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: { type: "object", additionalProperties: false },
+          durableState: {
+            schemaVersion: 1,
+            lifetime: "binding",
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: { count: { type: "integer" } },
+              required: ["count"],
+            },
+            migrations: [],
+          },
+        },
+      ],
+      artifacts: [{ target: currentConnectPluginTarget(), entry: "plugin.mjs", integrity }],
+    },
+    files: { "plugin.mjs": { encoding: "utf8", content: source } },
+  };
+}
+
+async function writeBundle(directory: string, bundle: ConnectPluginBundleV1): Promise<string> {
   const path = join(directory, `${bundle.manifest.pluginId}-${bundle.manifest.version}.connect-plugin`);
   await writeFile(path, `${JSON.stringify(bundle, null, 2)}\n`);
   return path;
@@ -408,7 +460,7 @@ describe("hot Plugin management service", () => {
     const configPath = join(directory, "config.json");
     const source = { type: "local" as const, path: join(directory, "source.connect-plugin") };
     const original = assetBundle("test.content-identity", "1.0.0", "asset-v1");
-    const reordered = reverseObjectKeyOrder(original) as ManagedConnectPluginBundleV1;
+    const reordered = reverseObjectKeyOrder(original) as ConnectPluginBundleV1;
 
     const first = await stagePluginBundle({ configPath, source, bundle: original });
     const identical = await stagePluginBundle({ configPath, source, bundle: reordered });
@@ -444,7 +496,7 @@ describe("hot Plugin management service", () => {
     const hostSource = "export default { activate() {} };";
     const browserSource = "export default { activate() {} };";
     const browserIntegrity = `sha256-${createHash("sha256").update(browserSource).digest("base64")}`;
-    const bundle: ManagedConnectPluginBundleV1 = {
+    const bundle: ConnectPluginBundleV1 = {
       format: CONNECT_PLUGIN_BUNDLE_FORMAT,
       manifest: {
         manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
@@ -458,7 +510,11 @@ describe("hot Plugin management service", () => {
             id: "client",
             type: "client-extension",
             interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-            configurationSchema: { type: "object", additionalProperties: false },
+            configurationSchema: {
+              type: "object",
+              additionalProperties: false,
+              properties: { label: { type: "string" } },
+            },
             browser: {
               entry: "browser/client.mjs",
               integrity: browserIntegrity,
@@ -487,6 +543,12 @@ describe("hot Plugin management service", () => {
       pluginId: "test.client-extension-only",
       status: "active",
     });
+    const configured = await host.configure("test.client-extension-only", {
+      installationConfiguration: {},
+      capabilityConfigurations: { client: { label: "Configured" } },
+      runtimeConfigurations: {},
+    });
+    expect(deriveClientExtensionGraph([configured]).extensions[0]?.configuration).toEqual({ label: "Configured" });
     await host.close();
   });
 
@@ -508,7 +570,7 @@ export default {
     });
   }
 };`.trim();
-    const bundle: ManagedConnectPluginBundleV1 = {
+    const bundle: ConnectPluginBundleV1 = {
       format: CONNECT_PLUGIN_BUNDLE_FORMAT,
       manifest: {
         manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
@@ -682,6 +744,60 @@ export default {
       value: { count: 4, label: "migrated" },
     });
     await restartedHost.close();
+    await store.close();
+  });
+
+  it("provides declared Binding Durable State to an Exposure and migrates it without Plugin identity rules", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-exposure-binding-state-"));
+    const configPath = join(directory, "config.json");
+    const stateDbPath = join(directory, "state.sqlite");
+    const pluginId = "test.exposure-binding-state";
+    const bindingId = "stateful-binding";
+    const config = {
+      ...defaultConfig(),
+      stateDbPath,
+      agents: { [bindingId]: binding("unrelated.runtime", bindingId) },
+      defaultAgent: bindingId,
+    };
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: stateDbPath });
+    await store.initialize();
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, {
+      config,
+      stateStore: store,
+      workspaces: new WorkspaceCatalog(store),
+    });
+    await host.bindClientInterface({ origin: "http://127.0.0.1:47890" });
+    const sourcePath = join(directory, "stateful-exposure.connect-plugin");
+    await writeFile(sourcePath, `${JSON.stringify(bindingExposureStateBundle(pluginId, "1.0.0"), null, 2)}\n`);
+    await host.install({ source: `local:${sourcePath}` });
+    const firstState = (
+      globalThis as typeof globalThis & {
+        __connectBindingExposureState: {
+          read(): Promise<{ schemaVersion: number; revision: number; value: unknown } | null>;
+          compareAndSwap(revision: number | null, value: Record<string, unknown>): Promise<unknown>;
+        };
+      }
+    ).__connectBindingExposureState;
+    await firstState.compareAndSwap(null, { count: 4 });
+
+    await writeFile(sourcePath, `${JSON.stringify(bindingExposureStateBundle(pluginId, "2.0.0"), null, 2)}\n`);
+    await host.update(pluginId);
+    const secondState = (
+      globalThis as typeof globalThis & {
+        __connectBindingExposureState: {
+          read(): Promise<{ schemaVersion: number; revision: number; value: unknown } | null>;
+        };
+      }
+    ).__connectBindingExposureState;
+
+    await expect(secondState.read()).resolves.toMatchObject({
+      schemaVersion: 1,
+      revision: 1,
+      value: { count: 4 },
+    });
+    await expect(firstState.compareAndSwap(1, { count: 5 })).rejects.toThrow("stale Activation Generation 1");
+    await host.close();
     await store.close();
   });
 
@@ -1875,7 +1991,7 @@ export default {
         bundle: assetBundle(pluginId, "1.0.0", "update-v1"),
         target,
         installationConfiguration: {},
-        exposureConfigurations: {},
+        capabilityConfigurations: {},
       });
       updatedBundles.set(
         repository,

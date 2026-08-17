@@ -14,7 +14,7 @@ import type { NormalizedInboundMessage } from "../src/clawchat/protocol";
 import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
-import type { ManagedConnectPluginBundleV1 } from "../src/plugin/official-sdk";
+import type { ConnectPluginBundleV1 } from "../src/plugin/sdk";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_BUNDLE_FORMAT,
@@ -75,7 +75,7 @@ const CLI_PLUGIN_ID = "example.cli-runtime";
 
 type CliPluginBehavior = "success" | "throw-entry" | "missing-provider" | "create-failure" | "prepare-failure";
 
-function cliPluginBundle(behavior: CliPluginBehavior = "success"): ManagedConnectPluginBundleV1 {
+function cliPluginBundle(behavior: CliPluginBehavior = "success"): ConnectPluginBundleV1 {
   const effectsKey = `__connectCliProviderValidation_${behavior.replaceAll("-", "_")}`;
   const runtimeRegistration =
     behavior === "missing-provider"

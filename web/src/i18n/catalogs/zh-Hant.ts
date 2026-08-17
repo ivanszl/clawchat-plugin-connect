@@ -346,7 +346,7 @@ export const zhHant = {
   "@connect.settings.plugins.upload.fileDescription": { defaultMessage: "選擇一個 .connect-plugin 檔案。" },
   "@connect.settings.plugins.upload.required": { defaultMessage: "請先選擇外掛程式 Bundle。" },
   "@connect.settings.plugins.installationConfiguration": { defaultMessage: "安裝設定" },
-  "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "依能力 ID 設定的 Exposure 組態" },
+  "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "依能力 ID 設定的組態" },
   "@connect.settings.plugins.trust.title": { defaultMessage: "外掛程式以受信任程式碼執行" },
   "@connect.settings.plugins.trust.description": {
     defaultMessage:
@@ -371,10 +371,10 @@ export const zhHant = {
   "@connect.settings.plugins.schema.invalidObject": { defaultMessage: "請輸入有效的 JSON 物件。" },
   "@connect.settings.plugins.diagnostic": { defaultMessage: "{stage}診斷" },
   "@connect.settings.plugins.diagnostic.import": { defaultMessage: "匯入" },
+  "@connect.settings.plugins.diagnostic.discovery": { defaultMessage: "偵測" },
   "@connect.settings.plugins.diagnostic.validation": { defaultMessage: "驗證" },
   "@connect.settings.plugins.diagnostic.activation": { defaultMessage: "啟用" },
   "@connect.settings.plugins.diagnostic.provider": { defaultMessage: "Provider" },
-  "@connect.settings.plugins.diagnostic.probe": { defaultMessage: "探測" },
   "@connect.settings.plugins.diagnostic.update": { defaultMessage: "更新" },
   "@connect.settings.error.bindingNotFound": {
     defaultMessage: "Agent Binding 已無法使用。伺服器詳情：{detail}",

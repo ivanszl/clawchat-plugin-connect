@@ -346,7 +346,7 @@ export const zhHans = {
   "@connect.settings.plugins.upload.fileDescription": { defaultMessage: "选择一个 .connect-plugin 文件。" },
   "@connect.settings.plugins.upload.required": { defaultMessage: "请先选择插件 Bundle。" },
   "@connect.settings.plugins.installationConfiguration": { defaultMessage: "安装配置" },
-  "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "按能力 ID 设置的 Exposure 配置" },
+  "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "按能力 ID 设置的配置" },
   "@connect.settings.plugins.trust.title": { defaultMessage: "插件作为受信任代码运行" },
   "@connect.settings.plugins.trust.description": {
     defaultMessage:
@@ -371,10 +371,10 @@ export const zhHans = {
   "@connect.settings.plugins.schema.invalidObject": { defaultMessage: "请输入有效的 JSON 对象。" },
   "@connect.settings.plugins.diagnostic": { defaultMessage: "{stage}诊断" },
   "@connect.settings.plugins.diagnostic.import": { defaultMessage: "导入" },
+  "@connect.settings.plugins.diagnostic.discovery": { defaultMessage: "检测" },
   "@connect.settings.plugins.diagnostic.validation": { defaultMessage: "验证" },
   "@connect.settings.plugins.diagnostic.activation": { defaultMessage: "激活" },
   "@connect.settings.plugins.diagnostic.provider": { defaultMessage: "Provider" },
-  "@connect.settings.plugins.diagnostic.probe": { defaultMessage: "探测" },
   "@connect.settings.plugins.diagnostic.update": { defaultMessage: "更新" },
   "@connect.settings.error.bindingNotFound": {
     defaultMessage: "Agent Binding 已不可用。服务器详情：{detail}",

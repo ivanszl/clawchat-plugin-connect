@@ -1,5 +1,10 @@
 import type { ConnectStateStore, PluginDurableStateNamespace } from "../../persistence/state";
-import { OFFICIAL_LIVEWARE_CAPABILITY_ID, OFFICIAL_LIVEWARE_PLUGIN_ID } from "./liveware-manifest";
+import type { ConnectDurableStateHostCapability, ConnectPluginDurableState } from "../sdk";
+import {
+  LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
+  OFFICIAL_LIVEWARE_CAPABILITY_ID,
+  OFFICIAL_LIVEWARE_PLUGIN_ID,
+} from "./liveware-manifest";
 import type {
   BindingLivewarePublicationState,
   BindingLivewarePublicationStateRecord,
@@ -7,8 +12,6 @@ import type {
   BindingLivewarePublicationStatus,
   BindingLivewarePublicationTransition,
 } from "./liveware-publication";
-
-export const LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION = 1 as const;
 
 const PUBLICATION_STATUSES = new Set<BindingLivewarePublicationStatus>([
   "absent",
@@ -104,6 +107,47 @@ export class ConnectBindingLivewarePublicationStateStore implements BindingLivew
       }
     }
     return latest;
+  }
+}
+
+export class DeclaredBindingLivewarePublicationStateStore implements BindingLivewarePublicationStateStore {
+  private readonly states = new Map<string, ConnectPluginDurableState>();
+
+  constructor(
+    private readonly durableState: ConnectDurableStateHostCapability,
+    private readonly capabilityId: string,
+  ) {}
+
+  async read(bindingId: string): Promise<BindingLivewarePublicationStateRecord | null> {
+    const record = await this.stateFor(bindingId).read();
+    if (!record) return null;
+    if (record.schemaVersion !== LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION) {
+      throw new Error(`Binding Liveware Publication ${bindingId} state schema ${record.schemaVersion} is unsupported`);
+    }
+    return {
+      revision: record.revision,
+      value: publicationState(record.value, bindingId),
+    };
+  }
+
+  async compareAndSwap(
+    bindingId: string,
+    expectedRevision: number | null,
+    value: BindingLivewarePublicationState,
+  ): Promise<BindingLivewarePublicationStateRecord> {
+    const record = await this.stateFor(bindingId).compareAndSwap(expectedRevision, publicationState(value, bindingId));
+    return {
+      revision: record.revision,
+      value: publicationState(record.value, bindingId),
+    };
+  }
+
+  private stateFor(bindingId: string): ConnectPluginDurableState {
+    const cached = this.states.get(bindingId);
+    if (cached) return cached;
+    const state = this.durableState.forBinding(this.capabilityId, bindingId);
+    this.states.set(bindingId, state);
+    return state;
   }
 }
 

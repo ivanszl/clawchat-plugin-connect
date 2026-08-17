@@ -42,10 +42,6 @@ export interface ConnectPluginDurableStateManifest {
   readonly migrations: readonly { readonly from: number; readonly to: number }[];
 }
 
-export interface ConnectPluginExposureDurableStateManifest extends Omit<ConnectPluginDurableStateManifest, "lifetime"> {
-  readonly lifetime: Exclude<ConnectPluginDurableStateLifetime, "binding">;
-}
-
 export interface ConnectPluginDurableStateRecord {
   readonly schemaVersion: number;
   readonly revision: number;
@@ -77,10 +73,8 @@ export interface ConnectPluginRuntimeCapabilityManifest extends ConnectPluginCap
   family: string;
 }
 
-export interface ConnectPluginExposureCapabilityManifest
-  extends Omit<ConnectPluginCapabilityManifestBase, "durableState"> {
+export interface ConnectPluginExposureCapabilityManifest extends ConnectPluginCapabilityManifestBase {
   type: "exposure";
-  durableState?: ConnectPluginExposureDurableStateManifest;
 }
 
 export interface ConnectPluginClientExtensionSlotManifest {
@@ -243,6 +237,7 @@ export interface ConnectRuntimeProviderHostCapability {
 
 export interface ConnectDurableStateHostCapability {
   readonly interfaceVersion: typeof CONNECT_HOST_CAPABILITY_INTERFACE_VERSION;
+  forBinding(capabilityId: ConnectPluginCapabilityId, bindingId: string): ConnectPluginDurableState;
 }
 
 export interface ConnectPluginClientExposure {
@@ -329,9 +324,22 @@ export interface ConnectPluginDurableStateMigration {
   readonly value: Readonly<Record<string, unknown>>;
 }
 
+export interface ConnectPluginDurableStateGenerationMigration {
+  readonly capabilityId: ConnectPluginCapabilityId;
+  readonly capabilityInstanceId: string;
+  readonly schemaVersion: number;
+  readonly fromActivationGeneration: number;
+  readonly toActivationGeneration: number;
+  readonly reactivating: boolean;
+  readonly value: Readonly<Record<string, unknown>>;
+}
+
 export interface ConnectPluginEntry {
   migrateDurableState?(
     migration: ConnectPluginDurableStateMigration,
+  ): Readonly<Record<string, unknown>> | Promise<Readonly<Record<string, unknown>>>;
+  migrateDurableStateGeneration?(
+    migration: ConnectPluginDurableStateGenerationMigration,
   ): Readonly<Record<string, unknown>> | Promise<Readonly<Record<string, unknown>>>;
   activate(
     context: ConnectPluginContext,

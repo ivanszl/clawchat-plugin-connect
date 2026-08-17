@@ -7,8 +7,10 @@ import {
   CONNECT_PLUGIN_MANIFEST_VERSION,
 } from "../sdk";
 import {
+  LIVEWARE_DURABLE_STATE_SCHEMA,
   LIVEWARE_EXPOSURE_CONFIGURATION_SCHEMA,
   LIVEWARE_INSTALLATION_CONFIGURATION_SCHEMA,
+  LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
   OFFICIAL_LIVEWARE_CAPABILITY_ID,
   OFFICIAL_LIVEWARE_PLUGIN_ID,
 } from "./liveware-manifest";
@@ -38,6 +40,12 @@ const descriptor: OfficialPluginDescriptor = {
         type: "exposure",
         interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
         configurationSchema: LIVEWARE_EXPOSURE_CONFIGURATION_SCHEMA,
+        durableState: {
+          schemaVersion: LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
+          lifetime: "binding",
+          schema: LIVEWARE_DURABLE_STATE_SCHEMA,
+          migrations: [],
+        },
       },
     ],
   },

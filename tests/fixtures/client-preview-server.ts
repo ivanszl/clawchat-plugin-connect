@@ -399,7 +399,7 @@ async function createPreviewClientExtension(): Promise<InstalledPluginLockEntry>
     manifestPath: join(root, "connect-plugin.json"),
     manifest,
     installationConfiguration: {},
-    exposureConfigurations: {},
+    capabilityConfigurations: {},
     status: "active",
     error: null,
     retainedVersions: [],
@@ -452,7 +452,7 @@ async function createPreviewFailingClientExtension(): Promise<InstalledPluginLoc
     manifestPath: join(root, "connect-plugin.json"),
     manifest,
     installationConfiguration: {},
-    exposureConfigurations: {},
+    capabilityConfigurations: {},
     status: "active",
     error: null,
     retainedVersions: [],
@@ -500,7 +500,7 @@ function previewPlugin(pluginId: string, status: InstalledPluginLockEntry["statu
     manifestPath: `/preview/${pluginId}/connect-plugin.json`,
     manifest,
     installationConfiguration: { channel: "stable", telemetry: false },
-    exposureConfigurations: {},
+    capabilityConfigurations: {},
   };
   return {
     activationGeneration: 1,
@@ -527,19 +527,20 @@ const previewOfficial: OfficialPluginDiscovery = {
       pluginId: "preview.official",
       name: "Official Preview Runtime",
       source: "npm:@clawchat/preview-runtime@1.0.0",
-      resolvedSource: null,
+      resolvedSource: { type: "local", path: "/preview/official.connect-plugin" },
       version: "1.0.0",
       target: "preview-target",
       integrity: previewIntegrity,
-      detected: true,
-      compatible: true,
-      selected: true,
+      classification: "runtime",
+      detected: false,
+      compatible: false,
+      discovery: null,
+      diagnostic: "Preview Runtime Discovery Rule intentionally failed",
+      selected: false,
       selectable: true,
-      discovery: { detected: true, compatible: true, version: "preview" },
-      diagnostic: null,
       manifest: previewPlugin("preview.official", "active", null).manifest,
       installationConfiguration: { channel: "stable", telemetry: false },
-      exposureConfigurations: {},
+      capabilityConfigurations: {},
     },
   ],
 };
@@ -551,6 +552,7 @@ function requirePreviewPlugin(pluginId: string) {
 
 const previewPluginManager = {
   list: async () => structuredClone(previewPlugins),
+  listPublishedClientExtensions: async () => structuredClone([previewClientExtension, previewFailingClientExtension]),
   checkUpdates: async () => ({
     "preview.healthy": {
       status: "available" as const,

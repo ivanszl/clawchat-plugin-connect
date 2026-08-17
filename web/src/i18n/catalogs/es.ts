@@ -389,7 +389,7 @@ export const es = {
   "@connect.settings.plugins.upload.required": { defaultMessage: "Selecciona primero un Plugin Bundle." },
   "@connect.settings.plugins.installationConfiguration": { defaultMessage: "Configuración de instalación" },
   "@connect.settings.plugins.capabilityConfigurations": {
-    defaultMessage: "Configuraciones de Exposure por ID de capacidad",
+    defaultMessage: "Configuraciones por ID de capacidad",
   },
   "@connect.settings.plugins.trust.title": { defaultMessage: "Los Plugins se ejecutan como código de confianza" },
   "@connect.settings.plugins.trust.description": {
@@ -422,10 +422,10 @@ export const es = {
   "@connect.settings.plugins.schema.invalidObject": { defaultMessage: "Introduce un objeto JSON válido." },
   "@connect.settings.plugins.diagnostic": { defaultMessage: "Diagnóstico de {stage}" },
   "@connect.settings.plugins.diagnostic.import": { defaultMessage: "Importación" },
+  "@connect.settings.plugins.diagnostic.discovery": { defaultMessage: "Detección" },
   "@connect.settings.plugins.diagnostic.validation": { defaultMessage: "Validación" },
   "@connect.settings.plugins.diagnostic.activation": { defaultMessage: "Activación" },
   "@connect.settings.plugins.diagnostic.provider": { defaultMessage: "Provider" },
-  "@connect.settings.plugins.diagnostic.probe": { defaultMessage: "Sonda" },
   "@connect.settings.plugins.diagnostic.update": { defaultMessage: "Actualización" },
   "@connect.settings.error.bindingNotFound": {
     defaultMessage: "El Agent Binding ya no está disponible. Detalle del servidor: {detail}",

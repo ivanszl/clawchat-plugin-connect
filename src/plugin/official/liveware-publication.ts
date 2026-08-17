@@ -17,7 +17,7 @@ export type BindingLivewarePublicationTransition =
   | "delete-app"
   | null;
 
-export interface BindingLivewarePublicationState {
+export interface BindingLivewarePublicationState extends Readonly<Record<string, unknown>> {
   readonly bindingId: string;
   readonly activationGeneration: number;
   readonly desired: "private" | "retired";
@@ -316,9 +316,13 @@ export class BindingLivewarePublicationLifecycle {
         throw new Error(`stale Liveware publication Activation Generation for ${bindingId}`);
       }
       if (existing.value.activationGeneration === this.options.activationGeneration) return existing;
+      const reactivate = existing.value.status === "retired" && existing.value.desired === "retired";
       return await this.options.state.compareAndSwap(bindingId, existing.revision, {
         ...existing.value,
         activationGeneration: this.options.activationGeneration,
+        ...(reactivate
+          ? { desired: "private" as const, status: "provisioning" as const, transition: null, diagnostic: null }
+          : {}),
       });
     }
     return await this.options.state.compareAndSwap(bindingId, null, {

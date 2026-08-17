@@ -81,7 +81,7 @@
         "type": { "const": "exposure" },
         "interfaceVersion": { "const": "1" },
         "configurationSchema": { "$ref": "#/$defs/configurationSchema" },
-        "durableState": { "$ref": "#/$defs/exposureDurableState" }
+        "durableState": { "$ref": "#/$defs/durableState" }
       }
     },
     "clientExtensionCapability": {
@@ -117,17 +117,6 @@
           }
         }
       }
-    },
-    "exposureDurableState": {
-      "allOf": [
-        { "$ref": "#/$defs/durableState" },
-        {
-          "type": "object",
-          "properties": {
-            "lifetime": { "enum": ["installation", "owner"] }
-          }
-        }
-      ]
     },
     "clientExtensionBrowser": {
       "type": "object",

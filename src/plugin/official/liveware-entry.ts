@@ -1,13 +1,15 @@
-import type { ConnectPluginExposureActivation, ManagedConnectPluginEntry } from "../official-sdk";
-import type { ConnectPluginDisposer } from "../sdk";
+import type { ConnectPluginDisposer, ConnectPluginEntry, ConnectPluginExposureActivation } from "../sdk";
 import { OFFICIAL_LIVEWARE_CAPABILITY_ID, type OfficialLivewareAccessPolicy } from "./liveware-manifest";
 import {
   BindingLivewarePublicationLifecycle,
-  type BindingLivewarePublicationStateStore,
   type BindingLivewarePublicationTarget,
   type LivewarePublicationControlPlane,
   type LivewarePublicationRegistrationPort,
 } from "./liveware-publication";
+import {
+  DeclaredBindingLivewarePublicationStateStore,
+  validateBindingLivewarePublicationState,
+} from "./liveware-publication-state";
 
 export interface OfficialLivewareGatewayLease {
   readonly upstream: string;
@@ -25,7 +27,6 @@ export interface OfficialLivewareManagedDisposer extends ConnectPluginDisposer {
  */
 export interface OfficialLivewareExposureServices {
   listBindings(): Promise<readonly BindingLivewarePublicationTarget[]>;
-  readonly state: BindingLivewarePublicationStateStore;
   readonly controlPlane: LivewarePublicationControlPlane;
   readonly registrations: LivewarePublicationRegistrationPort;
   acquireGateway(activationGeneration: number): Promise<OfficialLivewareGatewayLease>;
@@ -35,10 +36,30 @@ interface PrivilegedLivewareActivation extends ConnectPluginExposureActivation {
   readonly officialLiveware: OfficialLivewareExposureServices;
 }
 
-export function createOfficialLivewarePluginEntry(): ManagedConnectPluginEntry {
+export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
   return {
+    migrateDurableStateGeneration(migration) {
+      if (migration.capabilityId !== OFFICIAL_LIVEWARE_CAPABILITY_ID) return migration.value;
+      const publication = validateBindingLivewarePublicationState(migration.value, migration.capabilityInstanceId);
+      return {
+        ...publication,
+        activationGeneration: migration.toActivationGeneration,
+        ...(migration.reactivating
+          ? {
+              desired: "private" as const,
+              status: publication.status === "retired" ? ("provisioning" as const) : publication.status,
+              transition: null,
+              diagnostic: null,
+            }
+          : {}),
+      };
+    },
     activate(context) {
       const exposures = context.hostCapabilities.get("exposure-provider");
+      const state = new DeclaredBindingLivewarePublicationStateStore(
+        context.hostCapabilities.get("durable-state"),
+        OFFICIAL_LIVEWARE_CAPABILITY_ID,
+      );
       exposures.register({
         capabilityId: OFFICIAL_LIVEWARE_CAPABILITY_ID,
         async activate(publicActivation) {
@@ -63,7 +84,7 @@ export function createOfficialLivewarePluginEntry(): ManagedConnectPluginEntry {
             lifecycle = new BindingLivewarePublicationLifecycle({
               activationGeneration: activation.activationGeneration,
               upstream: lease?.upstream ?? "http://127.0.0.1:1",
-              state: activation.officialLiveware.state,
+              state,
               controlPlane: activation.officialLiveware.controlPlane,
               registrations: activation.officialLiveware.registrations,
             });
@@ -79,8 +100,7 @@ export function createOfficialLivewarePluginEntry(): ManagedConnectPluginEntry {
             const listedTargets = await activation.officialLiveware.listBindings();
             const listedBindingIds = new Set(listedTargets.map((target) => target.bindingId));
             for (const bindingId of retiredBindings) {
-              if (listedBindingIds.has(bindingId) && (await activation.officialLiveware.state.read(bindingId)))
-                continue;
+              if (listedBindingIds.has(bindingId) && (await state.read(bindingId))) continue;
               retiredBindings.delete(bindingId);
               targets.delete(bindingId);
             }
@@ -182,7 +202,6 @@ function requirePrivilegedActivation(activation: ConnectPluginExposureActivation
     !services ||
     typeof services.listBindings !== "function" ||
     typeof services.acquireGateway !== "function" ||
-    !services.state ||
     !services.controlPlane ||
     !services.registrations
   ) {

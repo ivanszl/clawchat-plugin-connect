@@ -18,9 +18,13 @@ import {
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_INTERFACE_VERSION,
+  type ConnectDurableStateHostCapability,
+  type ConnectExposureProviderHostCapability,
+  type ConnectHostCapabilityId,
   type ConnectPluginContext,
   type ConnectPluginEntry,
   type ConnectPluginRuntimeProvider,
+  type ConnectRuntimeProviderHostCapability,
 } from "../src/plugin/sdk";
 import type { OpenCodeServerClient } from "../src/runtime/opencode-server";
 import { OPENCODE_SDK_VERSION } from "../src/runtime/opencode-version";
@@ -186,18 +190,26 @@ async function fakeFailingExecutable(directory: string, name: string): Promise<s
 
 async function activateProvider(entry: ConnectPluginEntry) {
   let provider: ConnectPluginRuntimeProvider | undefined;
+  const runtimeHostCapability = {
+    interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+    register(value: ConnectPluginRuntimeProvider) {
+      if ("family" in value) provider = value;
+    },
+  };
+  function getHostCapability(id: "runtime-provider"): ConnectRuntimeProviderHostCapability;
+  function getHostCapability(id: "exposure-provider"): ConnectExposureProviderHostCapability;
+  function getHostCapability(id: "durable-state"): ConnectDurableStateHostCapability;
+  function getHostCapability(
+    id: ConnectHostCapabilityId,
+  ): ConnectRuntimeProviderHostCapability | ConnectExposureProviderHostCapability | ConnectDurableStateHostCapability {
+    if (id === "runtime-provider") return runtimeHostCapability;
+    throw new Error(`Unexpected Host Capability ${id}`);
+  }
   const context: ConnectPluginContext = {
     activationGeneration: 1,
     interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
     installationConfiguration: {},
-    hostCapabilities: {
-      get: () => ({
-        interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
-        register(value) {
-          if ("family" in value) provider = value;
-        },
-      }),
-    },
+    hostCapabilities: { get: getHostCapability },
   };
   await entry.activate(context);
   if (!provider) throw new Error("OpenCode provider was not registered");

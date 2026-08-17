@@ -7,11 +7,11 @@ import Ajv2020 from "ajv/dist/2020.js";
 import { MAX_PLUGIN_DURABLE_STATE_BYTES } from "../persistence/state";
 import type { AgentBindingConfig } from "../types";
 import type {
-  ManagedConnectPluginBundleV1,
-  ManagedConnectPluginCapabilityManifest,
-  ManagedConnectPluginHostCapabilityDependency,
-  ManagedConnectPluginManifestV1,
-} from "./official-sdk";
+  ConnectPluginBundleV1,
+  ConnectPluginCapabilityManifest,
+  ConnectPluginHostCapabilityDependency,
+  ConnectPluginManifestV1,
+} from "./sdk";
 import {
   CONNECT_CLIENT_EXTENSION_SLOT_CATALOG,
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
@@ -22,7 +22,6 @@ import {
   type ConnectPluginArtifactManifest,
   type ConnectPluginConfiguration,
   type ConnectPluginDurableStateManifest,
-  type ConnectPluginExposureDurableStateManifest,
   type ConnectPluginJsonSchema,
   type ConnectPluginSource,
 } from "./sdk";
@@ -58,9 +57,9 @@ export interface InstalledPluginVersion {
   integrity: string;
   activeArtifact: string;
   manifestPath: string;
-  manifest: ManagedConnectPluginManifestV1;
+  manifest: ConnectPluginManifestV1;
   installationConfiguration: ConnectPluginConfiguration;
-  exposureConfigurations: Readonly<Record<string, ConnectPluginConfiguration>>;
+  capabilityConfigurations: Readonly<Record<string, ConnectPluginConfiguration>>;
 }
 
 export interface InstalledPluginLockEntry extends InstalledPluginVersion {
@@ -81,15 +80,15 @@ export interface InstallLocalPluginOptions {
   bundlePath: string;
   target?: string;
   installationConfiguration?: Record<string, unknown>;
-  exposureConfigurations?: Record<string, unknown>;
+  capabilityConfigurations?: Record<string, unknown>;
 }
 export interface StagePluginBundleOptions {
   configPath: string;
   source: ConnectPluginSource;
-  bundle: ManagedConnectPluginBundleV1;
+  bundle: ConnectPluginBundleV1;
   target?: string;
   installationConfiguration?: Record<string, unknown>;
-  exposureConfigurations?: Record<string, unknown>;
+  capabilityConfigurations?: Record<string, unknown>;
 }
 
 export interface PluginInstallationPaths {
@@ -141,7 +140,10 @@ export async function stagePluginBundle(options: StagePluginBundleOptions): Prom
     options.installationConfiguration ?? {},
     `Plugin ${bundle.manifest.pluginId} installation configuration`,
   );
-  const exposureConfigurations = validateExposureConfigurations(bundle.manifest, options.exposureConfigurations ?? {});
+  const capabilityConfigurations = validateCapabilityConfigurations(
+    bundle.manifest,
+    options.capabilityConfigurations ?? {},
+  );
   const entryBytes = connectPluginBundleFileBytes(bundle, artifact.entry);
   verifyConnectPluginIntegrity(entryBytes, artifact.integrity, `${bundle.manifest.pluginId} ${artifact.entry}`);
   for (const capability of bundle.manifest.capabilities) {
@@ -200,7 +202,7 @@ export async function stagePluginBundle(options: StagePluginBundleOptions): Prom
     manifestPath,
     manifest: structuredClone(bundle.manifest),
     installationConfiguration,
-    exposureConfigurations,
+    capabilityConfigurations,
     status: "active",
     error: null,
     retainedVersions: [],
@@ -331,7 +333,7 @@ export async function updateInstalledPluginConfiguration(
   configPath: string,
   pluginId: string,
   installationConfiguration: unknown,
-  exposureConfigurations: unknown,
+  capabilityConfigurations: unknown,
 ): Promise<InstalledPluginLockEntry> {
   const paths = pluginInstallationPaths(configPath);
   let updated!: InstalledPluginLockEntry;
@@ -343,11 +345,11 @@ export async function updateInstalledPluginConfiguration(
       installationConfiguration,
       `Plugin ${pluginId} installation configuration`,
     );
-    const validatedExposures = validateExposureConfigurations(installed.manifest, exposureConfigurations);
+    const validatedCapabilities = validateCapabilityConfigurations(installed.manifest, capabilityConfigurations);
     updated = {
       ...installed,
       installationConfiguration: validatedInstallation,
-      exposureConfigurations: validatedExposures,
+      capabilityConfigurations: validatedCapabilities,
       activationGeneration: installed.activationGeneration + 1,
       error: null,
     };
@@ -510,7 +512,7 @@ function managedPluginUploadPath(uploadRoot: string, path: string): string | nul
   return candidate;
 }
 
-export async function readConnectPluginBundle(path: string): Promise<ManagedConnectPluginBundleV1> {
+export async function readConnectPluginBundle(path: string): Promise<ConnectPluginBundleV1> {
   try {
     return parseConnectPluginBundle(await readFile(path, "utf8"), path);
   } catch (error) {
@@ -520,7 +522,7 @@ export async function readConnectPluginBundle(path: string): Promise<ManagedConn
   }
 }
 
-export function parseConnectPluginBundle(value: string | Uint8Array, label = "source"): ManagedConnectPluginBundleV1 {
+export function parseConnectPluginBundle(value: string | Uint8Array, label = "source"): ConnectPluginBundleV1 {
   let parsed: unknown;
   try {
     parsed = JSON.parse(typeof value === "string" ? value : new TextDecoder().decode(value)) as unknown;
@@ -532,7 +534,7 @@ export function parseConnectPluginBundle(value: string | Uint8Array, label = "so
   return validateBundle(parsed);
 }
 
-async function writeStagedBundle(root: string, bundle: ManagedConnectPluginBundleV1): Promise<void> {
+async function writeStagedBundle(root: string, bundle: ConnectPluginBundleV1): Promise<void> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   for (const path of Object.keys(bundle.files).sort()) {
     const outputPath = resolve(root, path);
@@ -547,7 +549,7 @@ async function writeStagedBundle(root: string, bundle: ManagedConnectPluginBundl
 
 type BundleContentSignature = readonly [path: string, integrity: string];
 
-function* bundleContentSignatures(bundle: ManagedConnectPluginBundleV1): Iterable<BundleContentSignature> {
+function* bundleContentSignatures(bundle: ConnectPluginBundleV1): Iterable<BundleContentSignature> {
   for (const path of Object.keys(bundle.files)) {
     const bytes = connectPluginBundleFileBytes(bundle, path);
     yield [path, `sha256-${createHash("sha256").update(bytes).digest("base64")}`];
@@ -579,7 +581,7 @@ async function readInstalledBundleSignatures(root: string): Promise<BundleConten
 }
 
 function bundleContentDigest(
-  manifest: ManagedConnectPluginManifestV1,
+  manifest: ConnectPluginManifestV1,
   target: string,
   files: Iterable<BundleContentSignature>,
 ): string {
@@ -632,13 +634,13 @@ async function updatePluginLockfile(
   }
 }
 
-function validateBundle(value: unknown): ManagedConnectPluginBundleV1 {
+function validateBundle(value: unknown): ConnectPluginBundleV1 {
   if (!isRecord(value) || value.format !== CONNECT_PLUGIN_BUNDLE_FORMAT || !isRecord(value.manifest)) {
     throw new Error("Unsupported or malformed Connect Plugin Bundle");
   }
   const manifest = validateManifest(value.manifest);
   if (!isRecord(value.files)) throw new Error("Connect Plugin Bundle files are required");
-  const files: ManagedConnectPluginBundleV1["files"] = {};
+  const files: ConnectPluginBundleV1["files"] = {};
   for (const [path, file] of Object.entries(value.files)) {
     requireBundlePath(path);
     if (path === "connect-plugin.json") {
@@ -659,7 +661,7 @@ function validateBundle(value: unknown): ManagedConnectPluginBundleV1 {
   return { format: CONNECT_PLUGIN_BUNDLE_FORMAT, manifest, files };
 }
 
-function validateManifest(value: Record<string, unknown>): ManagedConnectPluginManifestV1 {
+function validateManifest(value: Record<string, unknown>): ConnectPluginManifestV1 {
   assertOnlyKeys(
     value,
     [
@@ -688,8 +690,8 @@ function validateManifest(value: Record<string, unknown>): ManagedConnectPluginM
   );
   if (!Array.isArray(value.dependencies))
     throw new Error(`Plugin ${pluginId} Host Capability dependencies are required`);
-  const dependencyIds = new Set<ManagedConnectPluginHostCapabilityDependency["id"]>();
-  const dependencies = value.dependencies.map((candidate): ManagedConnectPluginHostCapabilityDependency => {
+  const dependencyIds = new Set<ConnectPluginHostCapabilityDependency["id"]>();
+  const dependencies = value.dependencies.map((candidate): ConnectPluginHostCapabilityDependency => {
     if (!isRecord(candidate)) throw new Error(`Plugin ${pluginId} dependency is malformed`);
     if (candidate.type !== "host") {
       throw new Error(
@@ -723,7 +725,7 @@ function validateManifest(value: Record<string, unknown>): ManagedConnectPluginM
     throw new Error("Connect Plugin must declare at least one capability");
   }
   const capabilityIds = new Set<string>();
-  const capabilities = value.capabilities.map((candidate): ManagedConnectPluginCapabilityManifest => {
+  const capabilities = value.capabilities.map((candidate): ConnectPluginCapabilityManifest => {
     if (!isRecord(candidate)) throw new Error(`Plugin ${pluginId} capability is malformed`);
     if (candidate.type !== "runtime" && candidate.type !== "exposure" && candidate.type !== "client-extension") {
       throw new Error(`Plugin ${pluginId} declares unsupported capability type: ${String(candidate.type)}`);
@@ -762,9 +764,6 @@ function validateManifest(value: Record<string, unknown>): ManagedConnectPluginM
       candidate.durableState === undefined
         ? undefined
         : validateDurableStateManifest(candidate.durableState, pluginId, id);
-    if (candidate.type === "exposure" && durableState?.lifetime === "binding") {
-      throw new Error(`Plugin ${pluginId}/${id} Exposure Durable State cannot use Agent Binding lifetime`);
-    }
     if (candidate.type === "client-extension" && durableState) {
       throw new Error(`Plugin ${pluginId}/${id} Client Extension cannot declare Host Durable State`);
     }
@@ -796,7 +795,7 @@ function validateManifest(value: Record<string, unknown>): ManagedConnectPluginM
       type: "exposure",
       interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
       configurationSchema,
-      ...(durableState ? { durableState: durableState as ConnectPluginExposureDurableStateManifest } : {}),
+      ...(durableState ? { durableState } : {}),
     };
   });
   if (!Array.isArray(value.artifacts) || value.artifacts.length === 0) {
@@ -871,7 +870,7 @@ function validateClientExtensionBrowserManifest(
   value: unknown,
   pluginId: string,
   capabilityId: string,
-): Extract<ManagedConnectPluginCapabilityManifest, { type: "client-extension" }>["browser"] {
+): Extract<ConnectPluginCapabilityManifest, { type: "client-extension" }>["browser"] {
   const label = `Plugin ${pluginId}/${capabilityId} browser artifact`;
   if (!isRecord(value)) throw new Error(`${label} is malformed`);
   assertOnlyKeys(value, ["entry", "integrity", "styles", "slots"], label);
@@ -924,13 +923,13 @@ function requireSha256Integrity(value: unknown, label: string): string {
   return integrity;
 }
 
-function selectArtifact(manifest: ManagedConnectPluginManifestV1, target: string): ConnectPluginArtifactManifest {
+function selectArtifact(manifest: ConnectPluginManifestV1, target: string): ConnectPluginArtifactManifest {
   const artifact = manifest.artifacts.find((candidate) => candidate.target === target);
   if (!artifact) throw new Error(`Plugin ${manifest.pluginId} does not support Connect target ${target}`);
   return artifact;
 }
 
-export function connectPluginBundleFileBytes(bundle: ManagedConnectPluginBundleV1, path: string): Uint8Array {
+export function connectPluginBundleFileBytes(bundle: ConnectPluginBundleV1, path: string): Uint8Array {
   const file = bundle.files[path];
   if (!file) throw new Error(`Connect Plugin Bundle file is missing: ${path}`);
   return file.encoding === "utf8" ? new TextEncoder().encode(file.content) : Buffer.from(file.content, "base64");
@@ -997,7 +996,7 @@ function validateInstalledVersion(value: unknown, store: string, pluginId: strin
     value.installationConfiguration,
     `Installed Plugin ${pluginId} installation configuration`,
   );
-  const exposureConfigurations = validateExposureConfigurations(manifest, value.exposureConfigurations);
+  const capabilityConfigurations = validateCapabilityConfigurations(manifest, value.capabilityConfigurations);
   const selectedArtifact = selectArtifact(manifest, value.target as string);
   const expectedArtifactPath = resolve(dirname(value.manifestPath), selectedArtifact.entry);
   if (selectedArtifact.integrity !== value.integrity || expectedArtifactPath !== value.activeArtifact) {
@@ -1015,7 +1014,7 @@ function validateInstalledVersion(value: unknown, store: string, pluginId: strin
     manifestPath: value.manifestPath,
     manifest,
     installationConfiguration,
-    exposureConfigurations,
+    capabilityConfigurations,
   };
 }
 
@@ -1069,7 +1068,7 @@ function installedVersion(entry: InstalledPluginLockEntry): InstalledPluginVersi
     manifestPath: entry.manifestPath,
     manifest: entry.manifest,
     installationConfiguration: entry.installationConfiguration,
-    exposureConfigurations: entry.exposureConfigurations,
+    capabilityConfigurations: entry.capabilityConfigurations,
   };
 }
 
@@ -1217,8 +1216,8 @@ function validateConfigurationSchema(value: unknown, label: string): ConnectPlug
   return schema;
 }
 
-function validateExposureConfigurations(
-  manifest: ManagedConnectPluginManifestV1,
+function validateCapabilityConfigurations(
+  manifest: ConnectPluginManifestV1,
   value: unknown,
 ): Readonly<Record<string, ConnectPluginConfiguration>> {
   if (!isRecord(value)) throw new Error(`Plugin ${manifest.pluginId} capability configurations must be a JSON object`);

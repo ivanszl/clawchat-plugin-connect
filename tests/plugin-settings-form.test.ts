@@ -105,7 +105,7 @@ describe("Plugin Settings JSON Schema form state", () => {
     expect(selected.installation.optionalChannel).toBe("preview");
     expect(pluginConfigurationRequest(plugin, selected.installation, selected.capabilityInstances)).toEqual({
       installationConfiguration: selectedConfiguration,
-      exposureConfigurations: {},
+      capabilityConfigurations: {},
       runtimeConfigurations: { "binding-1": { workspace: "project" } },
     });
   });
@@ -227,7 +227,7 @@ describe("Plugin Settings JSON Schema form state", () => {
     expect(isPluginConfigurationFormValid(edited, editedForm.installation, editedForm.capabilityInstances)).toBe(true);
     expect(pluginConfigurationRequest(edited, editedForm.installation, editedForm.capabilityInstances)).toEqual({
       installationConfiguration: visibleConfiguration,
-      exposureConfigurations: {},
+      capabilityConfigurations: {},
       runtimeConfigurations: { "binding-1": { workspace: "project" } },
     });
 
@@ -266,7 +266,7 @@ describe("Plugin Settings JSON Schema form state", () => {
     expect(isPluginConfigurationFormValid(edited, editedForm.installation, editedForm.capabilityInstances)).toBe(true);
     expect(pluginConfigurationRequest(edited, editedForm.installation, editedForm.capabilityInstances)).toEqual({
       installationConfiguration: visibleConfiguration,
-      exposureConfigurations: {},
+      capabilityConfigurations: {},
       runtimeConfigurations: { "binding-1": { workspace: "project" } },
     });
   });
@@ -310,7 +310,7 @@ describe("Plugin Settings JSON Schema form state", () => {
     expect(validForm.invalidFieldIds.size > 0).toBe(false);
     expect(pluginConfigurationRequest(validPlugin, validForm.installation, validForm.capabilityInstances)).toEqual({
       installationConfiguration: { policy: { rules: [{ action: "allow" }] } },
-      exposureConfigurations: {},
+      capabilityConfigurations: {},
       runtimeConfigurations: { "binding-1": { workspace: "project" } },
     });
 

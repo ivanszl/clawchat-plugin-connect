@@ -9,10 +9,10 @@ import livewareDescriptor from "./official/liveware-descriptor";
 import opencodeDescriptor from "./official/opencode-descriptor";
 import workbuddyDescriptor from "./official/workbuddy-descriptor";
 import { OFFICIAL_WORKBUDDY_DISTRIBUTIONS } from "./official/workbuddy-manifest";
-import type { ManagedConnectPluginBundleV1, ManagedConnectPluginManifestV1 } from "./official-sdk";
-import type { ConnectPluginSource } from "./sdk";
-import { type PluginSourceResolverOptions, resolvePluginSource } from "./source";
+import type { ConnectPluginBundleV1, ConnectPluginManifestV1, ConnectPluginSource } from "./sdk";
+import { type PluginSourceResolverOptions, type ResolvedPluginSource, resolvePluginSource } from "./source";
 
+export type OfficialPluginClassification = "runtime" | "client-exposure";
 export interface OfficialRuntimeDiscoveryRule {
   readonly executableNames: readonly string[];
   readonly versionCommand?: {
@@ -38,8 +38,10 @@ export interface BundledOfficialPluginEntry {
   target: string;
   integrity: string;
   discovery?: OfficialRuntimeDiscoveryRule;
+  classification: OfficialPluginClassification;
+  manifest: ConnectPluginManifestV1;
   installationConfiguration?: Record<string, unknown>;
-  exposureConfigurations?: Record<string, unknown>;
+  capabilityConfigurations?: Record<string, unknown>;
 }
 
 export interface OfficialPluginDiscoveryOptions extends PluginSourceResolverOptions {
@@ -72,11 +74,12 @@ export interface OfficialPluginCandidate {
   selected: boolean;
   selectable: true;
   discovery: OfficialRuntimeDiscoveryResult | null;
+  classification: OfficialPluginClassification;
   diagnostic: string | null;
   resolvedSource: ConnectPluginSource | null;
-  manifest: ManagedConnectPluginManifestV1 | null;
+  manifest: ConnectPluginManifestV1;
   installationConfiguration: Record<string, unknown>;
-  exposureConfigurations: Record<string, unknown>;
+  capabilityConfigurations: Record<string, unknown>;
 }
 
 export interface OfficialPluginDiscovery {
@@ -91,7 +94,8 @@ interface BundledOfficialPluginDefinition {
   readonly artifactIntegrity: string;
   readonly assetIntegrities?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly discovery?: OfficialRuntimeDiscoveryRule;
-  readonly exposureConfigurations?: Record<string, unknown>;
+  readonly capabilityConfigurations?: Record<string, unknown>;
+  readonly classification: OfficialPluginClassification;
 }
 
 const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
@@ -99,6 +103,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
     descriptor: codexDescriptor,
     name: "Codex",
     artifactIntegrity: "sha256-v3dlypCmQb5woLnSUpZO6IAVM8JOqqTP8wljh09OxwU=",
+    classification: "runtime",
     discovery: {
       executableNames: ["codex"],
       versionCommand: {
@@ -123,11 +128,13 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
         maxOutputBytes: 4_096,
       },
     },
+    classification: "runtime",
   },
   {
     descriptor: workbuddyDescriptor,
     name: "WorkBuddy",
     artifactIntegrity: "sha256-z2/9LUsP7bc6M4EAeo2C/65GjfjkjA0/nUbvARNXF1E=",
+    classification: "runtime",
     discovery: {
       executableNames: OFFICIAL_WORKBUDDY_DISTRIBUTIONS.map(({ applicationPath }) => applicationPath),
     },
@@ -135,7 +142,8 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: livewareDescriptor,
     name: "Liveware",
-    artifactIntegrity: "sha256-SBYhrevbuAkTPkY+XYCkXXF5ozm68KTWcmZHR5n989E=",
+    artifactIntegrity: "sha256-ZzOJykWKify8CQmW7ez23wYcNAr7Iyk/AM5swRzoe7w=",
+    classification: "client-exposure",
     assetIntegrities: {
       "assets/liveware": {
         "darwin-arm64": "sha256-QCpSw/rYxAjV7nMPv9+iaGKjmKd1cS7PZ6CClkWuLo0=",
@@ -146,7 +154,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
         "win32-x64": "sha256-hzpEit+XWWNVL/R8Jy5Q+UV60SDJeYHhjdogcf6c9kc=",
       },
     },
-    exposureConfigurations: { liveware: { accessPolicy: "private" } },
+    capabilityConfigurations: { liveware: { accessPolicy: "private" } },
   },
 ];
 
@@ -158,7 +166,6 @@ export async function loadBundledOfficialPlugins(
     ? [resolve(options.officialPluginsDirectory)]
     : [resolve(dirname(process.execPath), "official-plugins"), resolve(import.meta.dir, "../../dist/official-plugins")];
   const entries: BundledOfficialPluginEntry[] = [];
-  const diagnostics: string[] = [];
   for (const definition of BUNDLED_OFFICIAL_PLUGINS) {
     const { descriptor } = definition;
     if (descriptor.supportedTargets && !descriptor.supportedTargets.includes(target as never)) continue;
@@ -175,28 +182,48 @@ export async function loadBundledOfficialPlugins(
       }
     }
     if (!sourcePath) continue;
-    try {
-      const resolved = await resolvePluginSource(`local:${sourcePath}`, options);
-      assertBundledBundle(definition, resolved.bundle, target);
-      const artifact = resolved.bundle.manifest.artifacts.find((candidate) => candidate.target === target);
-      if (!artifact) throw new Error(`has no ${target} artifact`);
-      entries.push({
-        pluginId: descriptor.manifest.pluginId,
-        name: definition.name,
-        source: `local:${sourcePath}`,
-        version: descriptor.manifest.version,
-        target,
-        integrity: artifact.integrity,
-        ...(definition.discovery ? { discovery: definition.discovery } : {}),
-        ...(definition.exposureConfigurations
-          ? { exposureConfigurations: structuredClone(definition.exposureConfigurations) }
-          : {}),
-      });
-    } catch (error) {
-      diagnostics.push(`Bundled official Plugin ${descriptor.manifest.pluginId} is invalid: ${errorMessage(error)}`);
-    }
+    entries.push({
+      pluginId: descriptor.manifest.pluginId,
+      name: definition.name,
+      source: `local:${sourcePath}`,
+      version: descriptor.manifest.version,
+      target,
+      integrity: definition.artifactIntegrity,
+      classification: definition.classification,
+      manifest: {
+        ...structuredClone(descriptor.manifest),
+        artifacts: [
+          {
+            target,
+            entry: `artifacts/${target}.mjs`,
+            integrity: definition.artifactIntegrity,
+          },
+        ],
+      },
+      ...(definition.discovery ? { discovery: definition.discovery } : {}),
+      ...(definition.capabilityConfigurations
+        ? { capabilityConfigurations: structuredClone(definition.capabilityConfigurations) }
+        : {}),
+    });
   }
-  return { entries, diagnostics };
+  return { entries, diagnostics: [] };
+}
+
+export async function resolveBundledOfficialPlugin(
+  entry: BundledOfficialPluginEntry,
+  options: PluginSourceResolverOptions = {},
+): Promise<ResolvedPluginSource> {
+  const definition = BUNDLED_OFFICIAL_PLUGINS.find(
+    ({ descriptor }) =>
+      descriptor.manifest.pluginId === entry.pluginId && descriptor.manifest.version === entry.version,
+  );
+  if (!definition) throw new Error(`Official Plugin ${entry.pluginId}@${entry.version} is not release-registered`);
+  const resolved = await resolvePluginSource(entry.source, { ...options, target: entry.target });
+  assertBundledBundle(definition, resolved.bundle, entry.target);
+  if (resolved.target !== entry.target || entry.integrity !== definition.artifactIntegrity) {
+    throw new Error(`Official Plugin ${entry.pluginId} resolved artifact does not match its bundled registry lock`);
+  }
+  return resolved;
 }
 
 export async function discoverOfficialPlugins(
@@ -216,11 +243,12 @@ export async function discoverOfficialPlugins(
       version: entry.version,
       target: entry.target,
       integrity: entry.integrity,
+      classification: entry.classification,
       selectable: true as const,
       resolvedSource: null,
-      manifest: null,
+      manifest: structuredClone(entry.manifest),
       installationConfiguration: structuredClone(entry.installationConfiguration ?? {}),
-      exposureConfigurations: structuredClone(entry.exposureConfigurations ?? {}),
+      capabilityConfigurations: structuredClone(entry.capabilityConfigurations ?? {}),
     };
     if (!entry.discovery) {
       candidates.push({
@@ -308,7 +336,7 @@ function sanitizeBundleIdentity(value: string): string {
 
 function assertBundledBundle(
   definition: BundledOfficialPluginDefinition,
-  bundle: ManagedConnectPluginBundleV1,
+  bundle: ConnectPluginBundleV1,
   target: string,
 ): void {
   const { artifacts, ...actualDescriptorManifest } = bundle.manifest;
@@ -363,7 +391,7 @@ export async function isBundledOfficialPluginInstallation(installed: {
   }
 }
 
-function fileIntegrity(file: ManagedConnectPluginBundleV1["files"][string]): string {
+function fileIntegrity(file: ConnectPluginBundleV1["files"][string]): string {
   const bytes = file.encoding === "base64" ? Buffer.from(file.content, "base64") : Buffer.from(file.content);
   return bytesIntegrity(bytes);
 }
@@ -414,6 +442,7 @@ async function readBoundedCommandOutput(stream: ReadableStream<Uint8Array>, maxi
   }
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
+
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {

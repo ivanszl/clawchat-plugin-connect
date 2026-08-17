@@ -393,14 +393,14 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               form.get("installationConfiguration"),
               "installationConfiguration",
             );
-            const exposureConfigurations = parsePluginFormConfiguration(
-              form.get("exposureConfigurations"),
-              "exposureConfigurations",
+            const capabilityConfigurations = parsePluginFormConfiguration(
+              form.get("capabilityConfigurations"),
+              "capabilityConfigurations",
             );
             return jsonResponse(
               await options.pluginManager.installUpload(bundle.name, new Uint8Array(await bundle.arrayBuffer()), {
                 installationConfiguration,
-                exposureConfigurations,
+                capabilityConfigurations,
               }),
               201,
             );
@@ -457,8 +457,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   ...(body.installationConfiguration !== undefined
                     ? { installationConfiguration: body.installationConfiguration }
                     : {}),
-                  ...(body.exposureConfigurations !== undefined
-                    ? { exposureConfigurations: body.exposureConfigurations }
+                  ...(body.capabilityConfigurations !== undefined
+                    ? { capabilityConfigurations: body.capabilityConfigurations }
                     : {}),
                 }),
                 201,
@@ -489,8 +489,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   ...(body.installationConfiguration !== undefined
                     ? { installationConfiguration: body.installationConfiguration }
                     : {}),
-                  ...(body.exposureConfigurations !== undefined
-                    ? { exposureConfigurations: body.exposureConfigurations }
+                  ...(body.capabilityConfigurations !== undefined
+                    ? { capabilityConfigurations: body.capabilityConfigurations }
                     : {}),
                 }),
               );
@@ -502,13 +502,13 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               const body = await readJsonBody<Partial<ConfigurePluginRequest>>(request);
               if (
                 !isPlainRecord(body.installationConfiguration) ||
-                !isPlainRecord(body.exposureConfigurations) ||
+                !isPlainRecord(body.capabilityConfigurations) ||
                 !isPlainRecord(body.runtimeConfigurations)
               ) {
                 return errorResponse(
                   400,
                   "invalid-plugin-configuration",
-                  "installationConfiguration, exposureConfigurations, and runtimeConfigurations must be JSON objects",
+                  "installationConfiguration, capabilityConfigurations, and runtimeConfigurations must be JSON objects",
                 );
               }
               return jsonResponse(await options.pluginManager.configure(pluginId, body as ConfigurePluginOptions));
@@ -1773,7 +1773,7 @@ function pluginAdministrationView(
                     instanceId: capability.id,
                     bindingId: null,
                     displayName: capability.id,
-                    configuration: structuredClone(entry.exposureConfigurations[capability.id] ?? {}),
+                    configuration: structuredClone(entry.capabilityConfigurations[capability.id] ?? {}),
                   },
                 ],
         }),
@@ -1788,7 +1788,7 @@ function pluginAdministrationView(
       pluginId: candidate.pluginId,
       name: candidate.name,
       sourceReference: candidate.source,
-      source: candidate.resolvedSource ? structuredClone(candidate.resolvedSource) : null,
+      source: structuredClone(candidate.resolvedSource),
       version: candidate.version,
       target: candidate.target,
       integrity: candidate.integrity,
@@ -1800,47 +1800,42 @@ function pluginAdministrationView(
         integrity: candidate.integrity,
         diagnostic: null,
       },
-      installationConfigurationSchema: candidate.manifest
-        ? structuredClone(candidate.manifest.installationConfigurationSchema)
-        : null,
+      installationConfigurationSchema: structuredClone(candidate.manifest.installationConfigurationSchema),
       installationConfiguration: structuredClone(candidate.installationConfiguration),
-      capabilities:
-        candidate.manifest?.capabilities.map(
-          (capability): PluginCapabilityView => ({
-            id: capability.id,
-            type: capability.type,
-            family: capability.type === "runtime" ? capability.family : null,
-            configurationSchema: structuredClone(capability.configurationSchema),
-            instances:
-              capability.type === "exposure"
-                ? [
-                    {
-                      instanceId: capability.id,
-                      bindingId: null,
-                      displayName: capability.id,
-                      configuration: isPlainRecord(candidate.exposureConfigurations[capability.id])
-                        ? structuredClone(candidate.exposureConfigurations[capability.id] as Record<string, unknown>)
-                        : {},
-                    },
-                  ]
-                : [],
-          }),
-        ) ?? [],
-      detected: candidate.detected,
-      compatible: candidate.compatible,
+      capabilities: candidate.manifest.capabilities.map(
+        (capability): PluginCapabilityView => ({
+          id: capability.id,
+          type: capability.type,
+          family: capability.type === "runtime" ? capability.family : null,
+          configurationSchema: structuredClone(capability.configurationSchema),
+          instances:
+            capability.type === "exposure" || capability.type === "client-extension"
+              ? [
+                  {
+                    instanceId: capability.id,
+                    bindingId: null,
+                    displayName: capability.id,
+                    configuration: isPlainRecord(candidate.capabilityConfigurations[capability.id])
+                      ? structuredClone(candidate.capabilityConfigurations[capability.id] as Record<string, unknown>)
+                      : {},
+                  },
+                ]
+              : [],
+        }),
+      ),
+      classification: candidate.classification,
       selected: candidate.selected,
-      diagnostics: candidate.diagnostic ? [pluginDiagnostic(candidate.diagnostic, "probe")] : [],
+      diagnostics: candidate.diagnostic ? [{ stage: "discovery", message: candidate.diagnostic }] : [],
     })),
     officialSource: official.officialSource,
-    diagnostics: official.diagnostics.map((message) => pluginDiagnostic(message, "probe")),
+    diagnostics: official.diagnostics.map((message) => pluginDiagnostic(message, "validation")),
   };
 }
 
 function pluginDiagnostic(message: string, fallback: PluginDiagnosticStage): PluginDiagnosticView {
   const normalized = message.toLowerCase();
-  const stage: PluginDiagnosticStage = normalized.includes("probe")
-    ? "probe"
-    : normalized.includes("provider") || normalized.includes("register")
+  const stage: PluginDiagnosticStage =
+    normalized.includes("provider") || normalized.includes("register")
       ? "provider"
       : normalized.includes("import") || normalized.includes("export") || normalized.includes("entry artifact")
         ? "import"

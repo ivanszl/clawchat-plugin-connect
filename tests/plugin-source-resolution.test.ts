@@ -12,7 +12,11 @@ import {
 import { MAX_PLUGIN_BUNDLE_BYTES } from "../src/client-contract";
 import { defaultConfig, saveConfig } from "../src/config";
 import codexDescriptor from "../src/plugin/official/codex-descriptor";
-import { discoverOfficialPlugins, loadBundledOfficialPlugins } from "../src/plugin/official-registry";
+import {
+  discoverOfficialPlugins,
+  loadBundledOfficialPlugins,
+  resolveBundledOfficialPlugin,
+} from "../src/plugin/official-registry";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_BUNDLE_FORMAT,
@@ -621,6 +625,8 @@ describe("bundled official Plugin setup", () => {
         detected: true,
         compatible: true,
         selected: true,
+        resolvedSource: null,
+        manifest: expect.objectContaining({ pluginId: "clawling.runtime.codex" }),
       }),
     ]);
     const stdout: string[] = [];
@@ -642,10 +648,11 @@ describe("bundled official Plugin setup", () => {
     ]);
   });
 
-  it("rejects a self-consistent bundled file whose entry bytes are not release-pinned", async () => {
+  it("defers Bundle validation until a release-packaged candidate is selected", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-bundled-official-pin-"));
+    const target = `${process.platform}-${process.arch}`;
     const built = await buildOfficialPlugin(codexDescriptor, {
-      target: `${process.platform}-${process.arch}`,
+      target,
       outputDirectory: directory,
     });
     const bundle = JSON.parse(await readFile(built.outputPath, "utf8")) as ConnectPluginBundleV1;
@@ -664,10 +671,20 @@ describe("bundled official Plugin setup", () => {
 
     const loaded = await loadBundledOfficialPlugins({
       officialPluginsDirectory: directory,
-      target: `${process.platform}-${process.arch}`,
+      target,
     });
-    expect(loaded.entries).toEqual([]);
-    expect(loaded.diagnostics.join("\n")).toContain("does not match the release-pinned integrity");
+    expect(loaded.diagnostics).toEqual([]);
+    expect(loaded.entries).toEqual([
+      expect.objectContaining({
+        pluginId: "clawling.runtime.codex",
+        integrity: "sha256-v3dlypCmQb5woLnSUpZO6IAVM8JOqqTP8wljh09OxwU=",
+      }),
+    ]);
+    const candidate = loaded.entries[0];
+    if (!candidate) throw new Error("official Codex candidate is missing");
+    await expect(resolveBundledOfficialPlugin(candidate, { target })).rejects.toThrow(
+      "does not match the release-pinned integrity",
+    );
   });
 
   it("isolates bounded discovery failures and preselects every compatible official Runtime", async () => {

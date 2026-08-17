@@ -416,7 +416,9 @@ export const en = {
   "@connect.settings.plugins.upload.fileDescription": { defaultMessage: "Choose one .connect-plugin file." },
   "@connect.settings.plugins.upload.required": { defaultMessage: "Choose a Plugin Bundle first." },
   "@connect.settings.plugins.installationConfiguration": { defaultMessage: "Installation configuration" },
-  "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "Exposure configurations by capability ID" },
+  "@connect.settings.plugins.capabilityConfigurations": {
+    defaultMessage: "Capability configurations by capability ID",
+  },
   "@connect.settings.plugins.trust.title": { defaultMessage: "Plugins run as trusted code" },
   "@connect.settings.plugins.trust.description": {
     defaultMessage:
@@ -447,10 +449,10 @@ export const en = {
   "@connect.settings.plugins.schema.invalidObject": { defaultMessage: "Enter a valid JSON object." },
   "@connect.settings.plugins.diagnostic": { defaultMessage: "{stage} diagnostic" },
   "@connect.settings.plugins.diagnostic.import": { defaultMessage: "Import" },
+  "@connect.settings.plugins.diagnostic.discovery": { defaultMessage: "Discovery" },
   "@connect.settings.plugins.diagnostic.validation": { defaultMessage: "Validation" },
   "@connect.settings.plugins.diagnostic.activation": { defaultMessage: "Activation" },
   "@connect.settings.plugins.diagnostic.provider": { defaultMessage: "Provider" },
-  "@connect.settings.plugins.diagnostic.probe": { defaultMessage: "Probe" },
   "@connect.settings.plugins.diagnostic.update": { defaultMessage: "Update" },
   "@connect.settings.error.bindingNotFound": {
     defaultMessage: "The Agent Binding is no longer available. Server detail: {detail}",

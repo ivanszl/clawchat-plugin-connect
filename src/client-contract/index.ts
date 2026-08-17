@@ -18,7 +18,7 @@ export type PluginSourceView =
       asset: string;
     };
 
-export type PluginDiagnosticStage = "import" | "validation" | "activation" | "provider" | "probe" | "update";
+export type PluginDiagnosticStage = "discovery" | "import" | "validation" | "activation" | "provider" | "update";
 
 export interface PluginDiagnosticView {
   stage: PluginDiagnosticStage;
@@ -86,8 +86,7 @@ export interface AvailablePluginView {
   installationConfigurationSchema: PluginJsonSchemaView | null;
   installationConfiguration: Record<string, unknown>;
   capabilities: PluginCapabilityView[];
-  detected: boolean;
-  compatible: boolean;
+  classification: "runtime" | "client-exposure";
   selected: boolean;
   diagnostics: PluginDiagnosticView[];
 }
@@ -103,12 +102,12 @@ export interface ManagePluginRequest {
   source: string;
   target?: string;
   installationConfiguration?: Record<string, unknown>;
-  exposureConfigurations?: Record<string, Record<string, unknown>>;
+  capabilityConfigurations?: Record<string, Record<string, unknown>>;
 }
 
 export interface ConfigurePluginRequest {
   installationConfiguration: Record<string, unknown>;
-  exposureConfigurations: Record<string, Record<string, unknown>>;
+  capabilityConfigurations: Record<string, Record<string, unknown>>;
   runtimeConfigurations: Record<string, Record<string, unknown>>;
 }
 

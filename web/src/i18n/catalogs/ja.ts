@@ -374,7 +374,7 @@ export const ja = {
   },
   "@connect.settings.plugins.upload.required": { defaultMessage: "先に Plugin Bundle を選択してください。" },
   "@connect.settings.plugins.installationConfiguration": { defaultMessage: "インストール設定" },
-  "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "ケイパビリティ ID 別 Exposure 設定" },
+  "@connect.settings.plugins.capabilityConfigurations": { defaultMessage: "ケイパビリティ ID 別設定" },
   "@connect.settings.plugins.trust.title": { defaultMessage: "プラグインは信頼済みコードとして実行されます" },
   "@connect.settings.plugins.trust.description": {
     defaultMessage:
@@ -407,10 +407,10 @@ export const ja = {
   "@connect.settings.plugins.schema.invalidObject": { defaultMessage: "有効な JSON オブジェクトを入力してください。" },
   "@connect.settings.plugins.diagnostic": { defaultMessage: "{stage}診断" },
   "@connect.settings.plugins.diagnostic.import": { defaultMessage: "インポート" },
+  "@connect.settings.plugins.diagnostic.discovery": { defaultMessage: "検出" },
   "@connect.settings.plugins.diagnostic.validation": { defaultMessage: "検証" },
   "@connect.settings.plugins.diagnostic.activation": { defaultMessage: "有効化" },
   "@connect.settings.plugins.diagnostic.provider": { defaultMessage: "Provider" },
-  "@connect.settings.plugins.diagnostic.probe": { defaultMessage: "プローブ" },
   "@connect.settings.plugins.diagnostic.update": { defaultMessage: "更新" },
   "@connect.settings.error.bindingNotFound": {
     defaultMessage: "Agent Binding は利用できなくなりました。サーバー詳細：{detail}",

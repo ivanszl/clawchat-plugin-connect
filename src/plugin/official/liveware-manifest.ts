@@ -21,6 +21,8 @@ export const LIVEWARE_EXPOSURE_CONFIGURATION_SCHEMA = {
   },
 } as const;
 
+export const LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION = 1 as const;
+
 export const LIVEWARE_DURABLE_STATE_SCHEMA = {
   type: "object",
   additionalProperties: false,

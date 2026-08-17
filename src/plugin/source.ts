@@ -3,8 +3,7 @@ import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { MAX_PLUGIN_BUNDLE_BYTES } from "../client-contract";
-import type { ManagedConnectPluginBundleV1 } from "./official-sdk";
-import type { ConnectPluginSource } from "./sdk";
+import type { ConnectPluginBundleV1, ConnectPluginSource } from "./sdk";
 import {
   currentConnectPluginTarget,
   managedPluginUploadRoot,
@@ -34,7 +33,7 @@ export interface PluginSourceResolverOptions {
 
 export interface ResolvedPluginSource {
   source: ConnectPluginSource;
-  bundle: ManagedConnectPluginBundleV1;
+  bundle: ConnectPluginBundleV1;
   target: string;
 }
 
@@ -213,7 +212,7 @@ function stableVersionOrder(versions: NpmVersionMetadata[], metadata: Record<str
   ];
 }
 
-function bundleFromNpmTarball(bytes: Uint8Array, label: string): ManagedConnectPluginBundleV1 {
+function bundleFromNpmTarball(bytes: Uint8Array, label: string): ConnectPluginBundleV1 {
   const archive = decompressNpmTarball(bytes, label);
   const files = readTarFiles(archive);
   let declaredPath: string | undefined;
@@ -572,7 +571,7 @@ function verifyDistributionIntegrity(bytes: Uint8Array, distribution: NpmVersion
   throw new Error(`${label} metadata does not provide registry integrity`);
 }
 
-function requireTarget(bundle: ManagedConnectPluginBundleV1, target: string, label: string): void {
+function requireTarget(bundle: ConnectPluginBundleV1, target: string, label: string): void {
   if (!bundle.manifest.artifacts.some((artifact) => artifact.target === target)) {
     throw new Error(`${label} does not support Connect target ${target}`);
   }

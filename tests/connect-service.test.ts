@@ -60,10 +60,16 @@ describe("Connect Service", () => {
   });
 
   it("rejects startup when the release-managed Agent skills do not match", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-skills-failure-"));
     const config = serviceConfig(["codex"]);
     await expect(
       startConnectService(
-        { config, writeOutput: () => undefined, writeError: () => undefined },
+        {
+          config,
+          configPath: join(directory, "config.json"),
+          writeOutput: () => undefined,
+          writeError: () => undefined,
+        },
         {
           verifyInstalledSkills: async () => {
             throw new Error("managed skills mismatch");
@@ -85,6 +91,7 @@ describe("Connect Service", () => {
       startConnectService(
         {
           config,
+          configPath: join(directory, "config.json"),
           stateStore,
           waitUntilShutdown: async () => undefined,
           writeOutput: () => undefined,
@@ -377,6 +384,7 @@ describe("Connect Service", () => {
       startConnectService(
         {
           config,
+          configPath: join(directory, "config.json"),
           stateStore,
           waitUntilShutdown: async () => undefined,
           writeOutput: () => undefined,
@@ -524,6 +532,7 @@ describe("Connect Service", () => {
       {
         config,
         stateStore,
+        configPath: join(directory, "config.json"),
         waitUntilShutdown: async () => await shutdown,
         writeOutput: () => undefined,
         writeError: (message) => errors.push(message),

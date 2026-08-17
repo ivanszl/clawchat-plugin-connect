@@ -260,12 +260,12 @@ export async function installPlugin(input: ManagePluginRequest): Promise<void> {
 export async function uploadPlugin(
   bundle: File,
   installationConfiguration: Record<string, unknown>,
-  exposureConfigurations: Record<string, Record<string, unknown>>,
+  capabilityConfigurations: Record<string, Record<string, unknown>>,
 ): Promise<void> {
   const form = new FormData();
   form.set("bundle", bundle);
   form.set("installationConfiguration", JSON.stringify(installationConfiguration));
-  form.set("exposureConfigurations", JSON.stringify(exposureConfigurations));
+  form.set("capabilityConfigurations", JSON.stringify(capabilityConfigurations));
   await clientFetch(`${CLIENT_API_PREFIX}/plugins/upload`, { method: "POST", body: form });
 }
 

@@ -78,7 +78,7 @@ describe("Client Extension graph epochs", () => {
     const first = await installLocalPlugin({
       configPath,
       bundlePath,
-      exposureConfigurations: { client: { label: "Configured" } },
+      capabilityConfigurations: { client: { label: "Configured" } },
     });
     const firstGraph = deriveClientExtensionGraph([first]);
     expect(firstGraph.extensions).toEqual([
@@ -145,7 +145,7 @@ describe("Client Extension graph epochs", () => {
         manifestPath: "/second/manifest.json",
         manifest: low.manifest,
         installationConfiguration: {},
-        exposureConfigurations: {},
+        capabilityConfigurations: {},
         status: "active" as const,
         error: null,
         retainedVersions: [],
@@ -161,7 +161,7 @@ describe("Client Extension graph epochs", () => {
         manifestPath: "/first/manifest.json",
         manifest: high.manifest,
         installationConfiguration: {},
-        exposureConfigurations: {},
+        capabilityConfigurations: {},
         status: "active" as const,
         error: null,
         retainedVersions: [],

@@ -43,6 +43,7 @@ import {
   discoverOfficialPlugins,
   type OfficialPluginDiscovery,
   type OfficialPluginDiscoveryOptions,
+  resolveBundledOfficialPlugin,
 } from "../plugin/official-registry";
 import { resolvePluginSource } from "../plugin/source";
 import {
@@ -102,8 +103,8 @@ const HELP_TEXT = `${[
   "  agent add <id> --plugin <plugin-id> --capability <capability-id> [--runtime-config-json <object>] [--config <path>]",
   "  agent remove <id> --yes [--config <path>]",
   "  owner reset [--yes-reset-owner] [--config <path>]",
-  "  plugin install <local-path|npm:package[@version]|github:owner/repo[@release]> [--installation-config-json <object>] [--exposure-config-json <object>] [--config <path>]",
-  "  plugin update <id> [source] [--installation-config-json <object>] [--exposure-config-json <object>] [--config <path>]",
+  "  plugin install <local-path|npm:package[@version]|github:owner/repo[@release]> [--installation-config-json <object>] [--capability-config-json <object>] [--config <path>]",
+  "  plugin update <id> [source] [--installation-config-json <object>] [--capability-config-json <object>] [--config <path>]",
   "  plugin setup [--non-interactive --select <id,id>] [--deselect <id,id>] [--config <path>]",
   "  plugin enable|disable <id> [--config <path>]",
   "  plugin remove <id> [--force] [--config <path>]",
@@ -699,9 +700,9 @@ async function maybeRunPluginCommand(
         optionValue(argv, "--installation-config-json"),
         "--installation-config-json",
       ),
-      exposureConfigurations: parseJsonObjectOption(
-        optionValue(argv, "--exposure-config-json"),
-        "--exposure-config-json",
+      capabilityConfigurations: parseJsonObjectOption(
+        optionValue(argv, "--capability-config-json"),
+        "--capability-config-json",
       ),
     });
 
@@ -747,21 +748,7 @@ async function maybeRunPluginCommand(
             if (!candidate) {
               throw new Error(`Official Plugin ${pluginId} is not in the latest staged discovery`);
             }
-            const resolved = await resolvePluginSource(candidate.source, {
-              ...sourceOptions,
-              target: candidate.target,
-            });
-            const artifact = resolved.bundle.manifest.artifacts.find((entry) => entry.target === candidate.target);
-            if (
-              resolved.bundle.manifest.pluginId !== candidate.pluginId ||
-              resolved.bundle.manifest.version !== candidate.version ||
-              resolved.target !== candidate.target ||
-              artifact?.integrity !== candidate.integrity
-            ) {
-              throw new Error(
-                `Official Plugin ${candidate.pluginId} resolved artifact does not match its bundled registry lock`,
-              );
-            }
+            const resolved = await resolveBundledOfficialPlugin(candidate, sourceOptions);
             installed.push(
               await installPluginBundle({
                 configPath,
@@ -769,7 +756,7 @@ async function maybeRunPluginCommand(
                 bundle: resolved.bundle,
                 target: resolved.target,
                 installationConfiguration: candidate.installationConfiguration,
-                exposureConfigurations: candidate.exposureConfigurations,
+                capabilityConfigurations: candidate.capabilityConfigurations,
               }),
             );
           }
@@ -790,7 +777,7 @@ async function maybeRunPluginCommand(
         `${discovery.candidates
           .map(
             (candidate) =>
-              `${candidate.selected ? "[x]" : "[ ]"} ${candidate.pluginId}@${candidate.version ?? "unresolved"} — ${
+              `${candidate.selected ? "[x]" : "[ ]"} ${candidate.pluginId}@${candidate.version} — ${
                 candidate.diagnostic ??
                 (candidate.detected ? "detected compatible runtime" : "not detected; selectable")
               }`,

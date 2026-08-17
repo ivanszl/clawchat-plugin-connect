@@ -393,7 +393,7 @@ describe("standalone release bundle", () => {
     expect(workflow).not.toContain("@openai/codex");
     expect(workflow).not.toContain("${{ secrets.");
     expect(workflow).toContain("needs: [validate, windows-smoke]");
-    expect(workflow).toContain("run: bun run check:core");
+    expect(workflow).toContain("run: bun run check:release");
 
     const ciWorkflow = await readFile(".github/workflows/ci.yml", "utf8");
     expect(ciWorkflow).not.toContain("playwright install");
@@ -415,6 +415,8 @@ describe("standalone release bundle", () => {
       "test:integration:workbuddy-cn-ui-concurrency-recovery",
     );
     expect(packageManifest.scripts["check:release:workbuddy"]).toContain("bun run check:core");
+    expect(packageManifest.scripts["check:release"]).toContain("bun run check:core");
+    expect(packageManifest.scripts["check:release"]).toContain("tests/release-bundle.test.ts");
     expect(packageManifest.scripts["check:core"]).not.toContain("test:client-web");
     expect(packageManifest.scripts.check).toBe("bun run check:core");
     expect(packageManifest.scripts["test:client-web"]).toBeUndefined();

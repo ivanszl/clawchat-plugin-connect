@@ -8,7 +8,7 @@ import { defaultConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
 import { ConnectPluginHost } from "../src/plugin/host";
-import type { ManagedConnectPluginBundleV1, ManagedConnectPluginManifestV1 } from "../src/plugin/official-sdk";
+import type { ConnectPluginBundleV1, ConnectPluginManifestV1 } from "../src/plugin/sdk";
 import {
   commitStagedPlugin,
   installLocalPlugin,
@@ -22,7 +22,7 @@ import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 
 const fixturePath = join(import.meta.dir, "fixtures", "reference-runtime.connect-plugin");
 
-type MutableBundle = ManagedConnectPluginBundleV1 & { manifest: ManagedConnectPluginManifestV1 };
+type MutableBundle = ConnectPluginBundleV1 & { manifest: ConnectPluginManifestV1 };
 function required<T>(value: T | undefined, label: string): T {
   if (value === undefined) throw new Error(`Expected ${label}`);
   return value;
@@ -48,7 +48,7 @@ async function bundleFixture(
 async function installOfficialFixture(
   configPath: string,
   bundlePath = fixturePath,
-  exposureConfigurations: Record<string, Record<string, unknown>> = {
+  capabilityConfigurations: Record<string, Record<string, unknown>> = {
     "reference-exposure": { channel: "private" },
   },
 ) {
@@ -57,7 +57,7 @@ async function installOfficialFixture(
     configPath,
     source: { type: "local", path: bundlePath },
     bundle,
-    exposureConfigurations,
+    capabilityConfigurations,
   });
   return await commitStagedPlugin(configPath, staged, "install");
 }
@@ -100,7 +100,7 @@ describe("atomic multi-capability Plugin Bundles", () => {
       ["reference-runtime", "runtime"],
       ["reference-exposure", "exposure"],
     ]);
-    expect(installed.exposureConfigurations).toEqual({ "reference-exposure": { channel: "private" } });
+    expect(installed.capabilityConfigurations).toEqual({ "reference-exposure": { channel: "private" } });
 
     const diagnostics: string[] = [];
     const registry = new RuntimeAdapterRegistry([]);
@@ -192,7 +192,7 @@ describe("atomic multi-capability Plugin Bundles", () => {
     const installed = await installLocalPlugin({
       configPath: join(directory, "config.json"),
       bundlePath: fixturePath,
-      exposureConfigurations: { "reference-exposure": { channel: "private" } },
+      capabilityConfigurations: { "reference-exposure": { channel: "private" } },
     });
 
     expect(installed.manifest.capabilities).toEqual(
@@ -415,26 +415,6 @@ describe("atomic multi-capability Plugin Bundles", () => {
         };
       },
       message: "secret-free",
-    },
-    {
-      name: "binding-scoped-exposure-state",
-      mutate: (bundle) => {
-        bundle.manifest.dependencies.push({ type: "host", id: "durable-state", interfaceVersion: "1" });
-        const exposure = bundle.manifest.capabilities.find((capability) => capability.type === "exposure");
-        if (!exposure) throw new Error("Expected fixture Exposure capability");
-        exposure.durableState = {
-          schemaVersion: 1,
-          lifetime: "binding",
-          schema: {
-            type: "object",
-            properties: { count: { type: "integer" } },
-            required: ["count"],
-            additionalProperties: false,
-          },
-          migrations: [],
-        } as never;
-      },
-      message: "Exposure Durable State cannot use Agent Binding lifetime",
     },
     {
       name: "unsupported-client-extension-slot",

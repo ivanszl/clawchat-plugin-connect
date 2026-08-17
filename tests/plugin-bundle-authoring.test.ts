@@ -324,7 +324,7 @@ describe("public Plugin Bundle authoring", () => {
           durableState: { ...capability.durableState, lifetime: "binding" },
         })),
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("rejects malformed manifests before writing output", async () => {

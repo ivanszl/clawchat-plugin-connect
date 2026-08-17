@@ -28,7 +28,7 @@ export function deriveClientExtensionGraph(installed: readonly InstalledPluginLo
             capabilityId: capability.id,
             version: plugin.version,
             activationGeneration: plugin.activationGeneration,
-            configuration: structuredClone(plugin.exposureConfigurations[capability.id] ?? {}),
+            configuration: structuredClone(plugin.capabilityConfigurations[capability.id] ?? {}),
             entry: `${artifactBase}/${encodeBundlePath(capability.browser.entry)}`,
             integrity: capability.browser.integrity,
             styles: capability.browser.styles
@@ -57,7 +57,7 @@ export function deriveClientExtensionGraph(installed: readonly InstalledPluginLo
       integrity: plugin.integrity,
       activationGeneration: plugin.activationGeneration,
       configurationRevision: `sha256-${createHash("sha256")
-        .update(canonicalJson([plugin.installationConfiguration, plugin.exposureConfigurations]))
+        .update(canonicalJson([plugin.installationConfiguration, plugin.capabilityConfigurations]))
         .digest("base64")}`,
     }))
     .sort((left, right) => left.pluginId.localeCompare(right.pluginId));

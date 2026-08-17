@@ -34,25 +34,21 @@ import type {
 } from "./official/liveware-entry";
 import { OFFICIAL_LIVEWARE_CAPABILITY_ID, OFFICIAL_LIVEWARE_PLUGIN_ID } from "./official/liveware-manifest";
 import {
-  ConnectBindingLivewarePublicationStateStore,
-  LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
-  validateBindingLivewarePublicationState,
-} from "./official/liveware-publication-state";
-import {
   type BundledOfficialPluginEntry,
   discoverOfficialPlugins,
   isBundledOfficialPluginInstallation,
   type OfficialPluginDiscovery,
   type OfficialPluginDiscoveryOptions,
+  resolveBundledOfficialPlugin,
 } from "./official-registry";
 import type {
   ConnectExposureProviderHostCapability,
   ConnectPluginClientExposure,
+  ConnectPluginContext,
+  ConnectPluginEntry,
   ConnectPluginExposureProvider,
-  ManagedConnectPluginContext,
-  ManagedConnectPluginEntry,
-  ManagedConnectPluginHostCapabilities,
-} from "./official-sdk";
+  ConnectPluginHostCapabilities,
+} from "./sdk";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_INTERFACE_VERSION,
@@ -122,7 +118,7 @@ interface ResolvedOfficialPlugin {
   entry: BundledOfficialPluginEntry;
 }
 
-type ResolvedPluginInstallOptions = Pick<ManagePluginOptions, "installationConfiguration" | "exposureConfigurations">;
+type ResolvedPluginInstallOptions = Pick<ManagePluginOptions, "installationConfiguration" | "capabilityConfigurations">;
 
 interface ConnectPluginManagementDependencies {
   config: ConnectConfig;
@@ -152,13 +148,13 @@ export interface ManagePluginOptions {
   source: string;
   target?: string;
   installationConfiguration?: Record<string, unknown>;
-  exposureConfigurations?: Record<string, unknown>;
+  capabilityConfigurations?: Record<string, unknown>;
 }
 type CoreManagePluginOptions = ManagePluginOptions;
 
 export interface ConfigurePluginOptions {
   installationConfiguration: Record<string, unknown>;
-  exposureConfigurations: Record<string, Record<string, unknown>>;
+  capabilityConfigurations: Record<string, Record<string, unknown>>;
   runtimeConfigurations: Record<string, Record<string, unknown>>;
 }
 
@@ -406,7 +402,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           bundle: resolved.bundle,
           target: resolved.target,
           installationConfiguration: options.installationConfiguration,
-          exposureConfigurations: options.exposureConfigurations,
+          capabilityConfigurations: options.capabilityConfigurations,
         });
         const alreadyInstalled = (await listInstalledPlugins(this.configPath)).some(
           (installed) => installed.pluginId === staged.entry.pluginId,
@@ -440,7 +436,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         bundle: resolved.bundle,
         target: installed.target,
         installationConfiguration: installed.installationConfiguration,
-        exposureConfigurations: installed.exposureConfigurations,
+        capabilityConfigurations: installed.capabilityConfigurations,
       });
       if (staged.entry.pluginId !== pluginId || staged.entry.version !== installed.version) {
         await discardStagedPlugin(this.configPath, staged).catch(() => undefined);
@@ -506,21 +502,25 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         options.installationConfiguration,
         `Plugin ${pluginId} installation configuration`,
       );
-      const exposureCapabilities = installed.manifest.capabilities.filter(
-        (capability) => capability.type === "exposure",
+      const installationCapabilities = installed.manifest.capabilities.filter(
+        (capability) => capability.type === "exposure" || capability.type === "client-extension",
       );
-      const exposureIds = new Set(exposureCapabilities.map((capability) => capability.id));
-      const unknownExposures = Object.keys(options.exposureConfigurations).filter((id) => !exposureIds.has(id));
-      if (unknownExposures.length > 0) {
-        throw new Error(`Plugin ${pluginId} has no Exposure capability ${unknownExposures.join(", ")}`);
+      const installationCapabilityIds = new Set(installationCapabilities.map((capability) => capability.id));
+      const unknownCapabilities = Object.keys(options.capabilityConfigurations).filter(
+        (id) => !installationCapabilityIds.has(id),
+      );
+      if (unknownCapabilities.length > 0) {
+        throw new Error(`Plugin ${pluginId} has no installation-scoped capability ${unknownCapabilities.join(", ")}`);
       }
-      const exposureConfigurations = Object.fromEntries(
-        exposureCapabilities.map((capability) => [
+      const capabilityConfigurations = Object.fromEntries(
+        installationCapabilities.map((capability) => [
           capability.id,
           validatePluginConfiguration(
             capability.configurationSchema,
-            options.exposureConfigurations[capability.id] ?? {},
-            `Plugin ${pluginId}/${capability.id} Exposure configuration`,
+            options.capabilityConfigurations[capability.id] ?? {},
+            `Plugin ${pluginId}/${capability.id} ${
+              capability.type === "exposure" ? "Exposure" : "Client Extension"
+            } configuration`,
           ),
         ]),
       );
@@ -529,7 +529,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         ...installed,
         activationGeneration: installed.activationGeneration + 1,
         installationConfiguration,
-        exposureConfigurations,
+        capabilityConfigurations,
         error: null,
       };
       const dependentBindingIds = this.validateDependentBindings(
@@ -556,7 +556,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
             this.configPath,
             pluginId,
             installationConfiguration,
-            exposureConfigurations,
+            capabilityConfigurations,
           );
           configurationCommitted = true;
           try {
@@ -628,7 +628,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         bundle: resolved.bundle,
         target: resolved.target,
         installationConfiguration: options.installationConfiguration ?? installed.installationConfiguration,
-        exposureConfigurations: options.exposureConfigurations ?? installed.exposureConfigurations,
+        capabilityConfigurations: options.capabilityConfigurations ?? installed.capabilityConfigurations,
       });
       if (staged.entry.pluginId !== pluginId) {
         await discardStagedPlugin(this.configPath, staged).catch(() => undefined);
@@ -667,22 +667,11 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           );
         }
         const entry = candidate.entry;
-        const resolved = await resolvePluginSource(entry.source, { ...this.sourceOptions, target: entry.target });
-        const artifact = resolved.bundle.manifest.artifacts.find((candidate) => candidate.target === entry.target);
-        if (
-          resolved.bundle.manifest.pluginId !== entry.pluginId ||
-          resolved.bundle.manifest.version !== entry.version ||
-          resolved.target !== entry.target ||
-          artifact?.integrity !== entry.integrity
-        ) {
-          throw new Error(
-            `Official Plugin ${entry.pluginId} resolved artifact does not match its bundled registry lock`,
-          );
-        }
+        const resolved = await resolveBundledOfficialPlugin(entry, this.sourceOptions);
         installed.push(
           await this.installResolved(resolved, {
             installationConfiguration: entry.installationConfiguration,
-            exposureConfigurations: entry.exposureConfigurations,
+            capabilityConfigurations: entry.capabilityConfigurations,
           }),
         );
       }
@@ -921,7 +910,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       bundle: resolved.bundle,
       target: resolved.target,
       installationConfiguration: options.installationConfiguration,
-      exposureConfigurations: options.exposureConfigurations,
+      capabilityConfigurations: options.capabilityConfigurations,
     });
     return await this.installStaged(staged);
   }
@@ -1154,12 +1143,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     declaration: ConnectPluginDurableStateManifest | undefined,
     durableStateGate: DurableStateGenerationGate,
   ): ConnectPluginDurableState | undefined {
-    if (!declaration) return undefined;
-    if (declaration.lifetime === "binding") {
-      throw new Error(
-        `Plugin ${installed.pluginId}/${capabilityId} Exposure Durable State cannot use Agent Binding lifetime`,
-      );
-    }
+    if (!declaration || declaration.lifetime === "binding") return undefined;
     return this.createCapabilityDurableState(
       installed,
       capabilityId,
@@ -1169,6 +1153,47 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         declaration.lifetime === "installation"
           ? "installation"
           : await this.requireInstallationOwner(installed.pluginId, capabilityId),
+      durableStateGate,
+    );
+  }
+
+  private createExposureBindingDurableState(
+    installed: InstalledPluginLockEntry,
+    capabilityId: string,
+    bindingId: string,
+    durableStateGate: DurableStateGenerationGate,
+  ): ConnectPluginDurableState {
+    if (
+      typeof capabilityId !== "string" ||
+      !capabilityId.trim() ||
+      capabilityId !== capabilityId.trim() ||
+      typeof bindingId !== "string" ||
+      !bindingId.trim() ||
+      bindingId !== bindingId.trim()
+    ) {
+      throw new Error("Exposure Binding Durable State requires exact capability and Agent Binding identities");
+    }
+    const capability = installed.manifest.capabilities.find(
+      (candidate) => candidate.id === capabilityId && candidate.type === "exposure",
+    );
+    const declaration = capability?.type === "exposure" ? capability.durableState : undefined;
+    if (declaration?.lifetime !== "binding") {
+      throw new Error(`Plugin ${installed.pluginId}/${capabilityId} does not declare Exposure Binding Durable State`);
+    }
+    return this.createCapabilityDurableState(
+      installed,
+      capabilityId,
+      declaration,
+      bindingId,
+      async () => {
+        if (!this.management) {
+          throw new Error("Plugin Durable State requires running Connect management dependencies");
+        }
+        if (!this.management.config.agents[bindingId]) {
+          throw new Error(`Agent Binding ${bindingId} is not available to Plugin ${installed.pluginId}`);
+        }
+        return bindingId;
+      },
       durableStateGate,
     );
   }
@@ -1252,10 +1277,9 @@ export class ConnectPluginHost implements ConnectPluginManagement {
 
   private async prepareDurableStateMigrations(
     installed: InstalledPluginLockEntry,
-    entry: ManagedConnectPluginEntry,
+    entry: ConnectPluginEntry,
     sourceActivationGeneration: number | null,
-    bundledOfficialInstallation: boolean,
-    reactivateRetiredLiveware: boolean,
+    reactivateDurableState: boolean,
   ): Promise<PluginDurableStateMigrationCommit[]> {
     if (sourceActivationGeneration === installed.activationGeneration) return [];
     if (!this.management || sourceActivationGeneration === null) return [];
@@ -1268,40 +1292,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     for (const snapshot of snapshots) {
       const capability = capabilities.get(snapshot.namespace.capabilityId);
       const declaration = capability && "durableState" in capability ? capability.durableState : undefined;
-      if (
-        !declaration &&
-        bundledOfficialInstallation &&
-        installed.pluginId === OFFICIAL_LIVEWARE_PLUGIN_ID &&
-        snapshot.namespace.capabilityId === OFFICIAL_LIVEWARE_CAPABILITY_ID &&
-        snapshot.namespace.lifetime === "binding"
-      ) {
-        const publication = validateBindingLivewarePublicationState(
-          snapshot.record.value,
-          snapshot.namespace.instanceId,
-        );
-        migrations.push({
-          namespace: {
-            ...snapshot.namespace,
-            activationGeneration: installed.activationGeneration,
-          },
-          revision: snapshot.record.revision,
-          schemaVersion: LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
-          value: reactivateRetiredLiveware
-            ? {
-                ...publication,
-                activationGeneration: installed.activationGeneration,
-                desired: "private",
-                status: publication.status === "retired" ? "provisioning" : publication.status,
-                transition: null,
-                diagnostic: null,
-              }
-            : {
-                ...publication,
-                activationGeneration: installed.activationGeneration,
-              },
-        });
-        continue;
-      }
       if (!capability || !declaration) continue;
       if (snapshot.namespace.lifetime !== declaration.lifetime) {
         throw new Error(
@@ -1345,6 +1335,19 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         schemaVersion = nextVersion;
         revision += 1;
       }
+      if (entry.migrateDurableStateGeneration) {
+        value = await entry.migrateDurableStateGeneration(
+          Object.freeze({
+            capabilityId: capability.id,
+            capabilityInstanceId: snapshot.namespace.instanceId,
+            schemaVersion,
+            fromActivationGeneration: sourceActivationGeneration,
+            toActivationGeneration: installed.activationGeneration,
+            reactivating: reactivateDurableState,
+            value: deepFreeze(structuredClone(value)) as Readonly<Record<string, unknown>>,
+          }),
+        );
+      }
       migrations.push({
         namespace: {
           ...snapshot.namespace,
@@ -1362,7 +1365,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     installed: InstalledPluginLockEntry,
     replacedRuntimeRefs?: readonly RuntimeCapabilityRef[],
     durableStateSourceGeneration: number | null = installed.activationGeneration,
-    reactivateRetiredLiveware = false,
+    reactivateDurableState = false,
   ): Promise<ActivatedCandidate> {
     const bundledOfficialInstallation = await isBundledOfficialPluginInstallation(installed);
     // Plugin artifact paths are runtime-selected and version-distinct, so static imports cannot represent this boundary.
@@ -1374,7 +1377,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     if (!entry || typeof entry !== "object" || !("activate" in entry) || typeof entry.activate !== "function") {
       throw new Error(`Plugin ${installed.pluginId} default export does not implement activate(context)`);
     }
-    const pluginEntry = entry as ManagedConnectPluginEntry;
+    const pluginEntry = entry as ConnectPluginEntry;
     const durableStateGate = createDurableStateGenerationGate(
       `Plugin ${installed.pluginId} rejected stale Activation Generation ${installed.activationGeneration}`,
     );
@@ -1382,8 +1385,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       installed,
       pluginEntry,
       durableStateSourceGeneration,
-      bundledOfficialInstallation,
-      reactivateRetiredLiveware,
+      reactivateDurableState,
     );
     const declaredHostCapabilities = new Set(installed.manifest.dependencies.map((dependency) => dependency.id));
     const pending = new Map<string, PendingProvider>();
@@ -1437,6 +1439,8 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     });
     const durableStateHostCapability: ConnectDurableStateHostCapability = Object.freeze({
       interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+      forBinding: (capabilityId: string, bindingId: string) =>
+        this.createExposureBindingDurableState(installed, capabilityId, bindingId, durableStateGate),
     });
     const hostCapabilities = Object.freeze({
       get: (id: "runtime-provider" | "durable-state" | "exposure-provider") => {
@@ -1447,8 +1451,8 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         if (id === "durable-state") return durableStateHostCapability;
         return exposureHostCapability;
       },
-    }) as ManagedConnectPluginHostCapabilities;
-    const context: ManagedConnectPluginContext = Object.freeze({
+    }) as ConnectPluginHostCapabilities;
+    const context: ConnectPluginContext = Object.freeze({
       activationGeneration: installed.activationGeneration,
       interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
       installationConfiguration: deepFreeze(structuredClone(installed.installationConfiguration)),
@@ -1532,7 +1536,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         stagedExposures.push({
           capabilityId: capability.id,
           provider: registration.implementation,
-          configuration: deepFreeze(structuredClone(installed.exposureConfigurations[capability.id] ?? {})),
+          configuration: deepFreeze(structuredClone(installed.capabilityConfigurations[capability.id] ?? {})),
           durableState: this.createExposureDurableState(
             installed,
             capability.id,
@@ -1590,7 +1594,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           staged.capabilityId,
           bundledOfficialInstallation,
           assertActivationLifecycle,
-          durableStateGate,
         );
         const disposer = await staged.provider.activate(
           Object.freeze({
@@ -1667,8 +1670,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           installed,
           pluginEntry,
           durableStateSourceGeneration,
-          bundledOfficialInstallation,
-          reactivateRetiredLiveware,
+          reactivateDurableState,
         );
       },
       revokeRuntime: async () => {
@@ -1721,7 +1723,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     capabilityId: string,
     bundledOfficialInstallation: boolean,
     assertActivationLifecycle: () => void,
-    durableStateGate: DurableStateGenerationGate,
   ): OfficialLivewareExposureServices | undefined {
     if (
       installed.pluginId !== OFFICIAL_LIVEWARE_PLUGIN_ID ||
@@ -1765,12 +1766,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         }
         return targets;
       },
-      state: new ConnectBindingLivewarePublicationStateStore(
-        management.stateStore,
-        assertGeneration,
-        installed.activationGeneration,
-        async (operation) => await durableStateGate.run(operation),
-      ),
       controlPlane: {
         connect: async (bindingId) => {
           await assertGeneration();

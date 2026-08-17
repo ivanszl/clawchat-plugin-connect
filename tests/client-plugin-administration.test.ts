@@ -138,18 +138,19 @@ describe("Connect Client trusted Plugin administration", () => {
           pluginId: "official.fixture",
           name: "Official Fixture",
           source: "npm:@clawchat/fixture@1.2.0",
-          resolvedSource: null,
+          resolvedSource: { type: "local", path: "/official/fixture.connect-plugin" },
           version: "1.2.0",
           target: "test-target",
           integrity: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-          detected: true,
-          compatible: true,
-          selected: true,
+          classification: "runtime",
+          detected: false,
+          compatible: false,
+          discovery: null,
+          diagnostic: "Detected runtime version output did not match the bundled compatibility rule",
+          selected: false,
           selectable: true,
-          discovery: { detected: true, compatible: true },
-          diagnostic: null,
           installationConfiguration: { channel: "stable" },
-          exposureConfigurations: {},
+          capabilityConfigurations: {},
           manifest: healthy.manifest,
         },
       ],
@@ -242,12 +243,19 @@ describe("Connect Client trusted Plugin administration", () => {
         {
           kind: "available",
           pluginId: "official.fixture",
-          source: null,
+          source: { type: "local", path: "/official/fixture.connect-plugin" },
           sourceReference: "npm:@clawchat/fixture@1.2.0",
           version: "1.2.0",
           capabilities: [{ id: "runtime", configurationSchema: healthy.manifest.capabilities[0]?.configurationSchema }],
+          classification: "runtime",
           status: "available",
           updateAvailability: { status: "not-installed" },
+          diagnostics: [
+            {
+              stage: "discovery",
+              message: "Detected runtime version output did not match the bundled compatibility rule",
+            },
+          ],
         },
       ],
       officialSource: "bundled",
@@ -384,7 +392,7 @@ describe("Connect Client trusted Plugin administration", () => {
           json: {
             source: "npm:@clawchat/fixture@1.2.0",
             installationConfiguration: { channel: "stable" },
-            exposureConfigurations: {},
+            capabilityConfigurations: {},
           },
         })
       ).status,
@@ -392,13 +400,13 @@ describe("Connect Client trusted Plugin administration", () => {
     expect(install).toHaveBeenCalledWith({
       source: "npm:@clawchat/fixture@1.2.0",
       installationConfiguration: { channel: "stable" },
-      exposureConfigurations: {},
+      capabilityConfigurations: {},
     });
 
     const form = new FormData();
     form.set("bundle", new File(["fixture Bundle bytes"], "fixture.connect-plugin"));
     form.set("installationConfiguration", JSON.stringify({ channel: "local" }));
-    form.set("exposureConfigurations", JSON.stringify({ exposure: { enabled: true } }));
+    form.set("capabilityConfigurations", JSON.stringify({ exposure: { enabled: true } }));
     expect(
       (
         await request(fetchHandler, handle.origin, "/client/v1/plugins/upload", {
@@ -412,7 +420,7 @@ describe("Connect Client trusted Plugin administration", () => {
       new TextEncoder().encode("fixture Bundle bytes"),
       {
         installationConfiguration: { channel: "local" },
-        exposureConfigurations: { exposure: { enabled: true } },
+        capabilityConfigurations: { exposure: { enabled: true } },
       },
     );
 
@@ -484,7 +492,7 @@ describe("Connect Client trusted Plugin administration", () => {
 
     const configuration = {
       installationConfiguration: { channel: "canary" },
-      exposureConfigurations: {},
+      capabilityConfigurations: {},
       runtimeConfigurations: { "plugin-binding": { workspace: "shared" } },
     };
     expect(
@@ -1044,7 +1052,7 @@ function installedPlugin(
       artifacts: [{ target: "test-target", entry: "entry.mjs", integrity }],
     },
     installationConfiguration: { channel: "stable" },
-    exposureConfigurations: {},
+    capabilityConfigurations: {},
   };
   return {
     activationGeneration: 1,

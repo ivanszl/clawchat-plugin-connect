@@ -66,11 +66,11 @@ const PLUGIN_UPDATE_MESSAGE = {
 } as const;
 
 const PLUGIN_DIAGNOSTIC_MESSAGE = {
+  discovery: "@connect.settings.plugins.diagnostic.discovery",
   import: "@connect.settings.plugins.diagnostic.import",
   validation: "@connect.settings.plugins.diagnostic.validation",
   activation: "@connect.settings.plugins.diagnostic.activation",
   provider: "@connect.settings.plugins.diagnostic.provider",
-  probe: "@connect.settings.plugins.diagnostic.probe",
   update: "@connect.settings.plugins.diagnostic.update",
 } as const;
 
@@ -445,16 +445,16 @@ function ReferenceInstallDialog({ isOpen, onOpenChange }: { isOpen: boolean; onO
   const queryClient = useQueryClient();
   const [source, setSource] = useState("");
   const [installationConfiguration, setInstallationConfiguration] = useState<Record<string, unknown>>({});
-  const [exposureConfigurations, setExposureConfigurations] = useState<Record<string, Record<string, unknown>>>({});
+  const [capabilityConfigurations, setCapabilityConfigurations] = useState<Record<string, Record<string, unknown>>>({});
   const [installationValid, setInstallationValid] = useState(true);
   const [capabilityValid, setCapabilityValid] = useState(true);
   const install = useMutation({
-    mutationFn: async () => await installPlugin({ source, installationConfiguration, exposureConfigurations }),
+    mutationFn: async () => await installPlugin({ source, installationConfiguration, capabilityConfigurations }),
     onSuccess: () => {
       onOpenChange(false);
       setSource("");
       setInstallationConfiguration({});
-      setExposureConfigurations({});
+      setCapabilityConfigurations({});
       void queryClient.invalidateQueries({ queryKey: clientKeys.plugins });
     },
   });
@@ -511,8 +511,8 @@ function ReferenceInstallDialog({ isOpen, onOpenChange }: { isOpen: boolean; onO
         />
         <JsonObjectInput
           label={t("@connect.settings.plugins.capabilityConfigurations")}
-          value={exposureConfigurations}
-          onChange={(value) => setExposureConfigurations(value as Record<string, Record<string, unknown>>)}
+          value={capabilityConfigurations}
+          onChange={(value) => setCapabilityConfigurations(value as Record<string, Record<string, unknown>>)}
           onValidityChange={setCapabilityValid}
         />
       </FormLayout>
@@ -525,19 +525,19 @@ function UploadInstallDialog({ isOpen, onOpenChange }: { isOpen: boolean; onOpen
   const queryClient = useQueryClient();
   const [bundle, setBundle] = useState<File | null>(null);
   const [installationConfiguration, setInstallationConfiguration] = useState<Record<string, unknown>>({});
-  const [exposureConfigurations, setExposureConfigurations] = useState<Record<string, Record<string, unknown>>>({});
+  const [capabilityConfigurations, setCapabilityConfigurations] = useState<Record<string, Record<string, unknown>>>({});
   const [installationValid, setInstallationValid] = useState(true);
   const [capabilityValid, setCapabilityValid] = useState(true);
   const install = useMutation({
     mutationFn: async () => {
       if (!bundle) throw new Error(t("@connect.settings.plugins.upload.required"));
-      await uploadPlugin(bundle, installationConfiguration, exposureConfigurations);
+      await uploadPlugin(bundle, installationConfiguration, capabilityConfigurations);
     },
     onSuccess: () => {
       onOpenChange(false);
       setBundle(null);
       setInstallationConfiguration({});
-      setExposureConfigurations({});
+      setCapabilityConfigurations({});
       void queryClient.invalidateQueries({ queryKey: clientKeys.plugins });
     },
   });
@@ -596,8 +596,8 @@ function UploadInstallDialog({ isOpen, onOpenChange }: { isOpen: boolean; onOpen
         />
         <JsonObjectInput
           label={t("@connect.settings.plugins.capabilityConfigurations")}
-          value={exposureConfigurations}
-          onChange={(value) => setExposureConfigurations(value as Record<string, Record<string, unknown>>)}
+          value={capabilityConfigurations}
+          onChange={(value) => setCapabilityConfigurations(value as Record<string, Record<string, unknown>>)}
           onValidityChange={setCapabilityValid}
         />
       </FormLayout>
@@ -1107,17 +1107,17 @@ export function pluginConfigurationRequest(
   capabilityInstances: Record<string, Record<string, unknown>>,
 ): ConfigurePluginRequest {
   const runtimeConfigurations: Record<string, Record<string, unknown>> = {};
-  const exposureConfigurations: Record<string, Record<string, unknown>> = {};
+  const capabilityConfigurations: Record<string, Record<string, unknown>> = {};
   for (const capability of plugin.capabilities) {
     for (const instance of capability.instances) {
       const configuration = capabilityInstances[capabilityInstanceKey(capability, instance.instanceId)] ?? {};
       if (capability.type === "runtime" && instance.bindingId)
         runtimeConfigurations[instance.bindingId] = configuration;
       if (capability.type === "exposure" || capability.type === "client-extension")
-        exposureConfigurations[capability.id] = configuration;
+        capabilityConfigurations[capability.id] = configuration;
     }
   }
-  return { installationConfiguration: installation, exposureConfigurations, runtimeConfigurations };
+  return { installationConfiguration: installation, capabilityConfigurations, runtimeConfigurations };
 }
 
 export function prepareJsonSchemaConfiguration(

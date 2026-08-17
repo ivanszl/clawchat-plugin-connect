@@ -4,9 +4,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { CONNECT_PLUGIN_BUNDLE_FORMAT } from "../src/plugin/sdk";
 import type {
-  ManagedConnectPluginBundleV1,
-  ManagedConnectPluginManifestV1,
-} from "../src/plugin/official-sdk";
+  ConnectPluginBundleV1,
+  ConnectPluginManifestV1,
+} from "../src/plugin/sdk";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -34,7 +34,7 @@ export interface OfficialPluginAssetDescriptor {
 
 export interface OfficialPluginDescriptor {
   readonly supportedTargets?: readonly OfficialPluginTarget[];
-  readonly manifest: Omit<ManagedConnectPluginManifestV1, "artifacts">;
+  readonly manifest: Omit<ConnectPluginManifestV1, "artifacts">;
   readonly entrypoint: string;
   readonly assets?: readonly OfficialPluginAssetDescriptor[];
 }
@@ -50,7 +50,7 @@ export interface BuiltOfficialPlugin {
   readonly target: string;
   readonly filename: string;
   readonly outputPath: string;
-  readonly bundle: ManagedConnectPluginBundleV1;
+  readonly bundle: ConnectPluginBundleV1;
 }
 
 export function officialPluginSupportsTarget(descriptor: OfficialPluginDescriptor, target: string): boolean {
@@ -83,7 +83,7 @@ export async function buildOfficialPlugin(
   const target = options.target ?? `${process.platform}-${process.arch}`;
   const entry = await bundleModule(descriptor.entrypoint);
   const entryPath = `artifacts/${target}.mjs`;
-  const files: ManagedConnectPluginBundleV1["files"] = {
+  const files: ConnectPluginBundleV1["files"] = {
     [entryPath]: { encoding: "utf8", content: entry },
   };
   for (const asset of descriptor.assets ?? []) {
@@ -96,7 +96,7 @@ export async function buildOfficialPlugin(
     const bytes = await readFile(resolve(repositoryRoot, source));
     files[asset.entry] = { encoding: "base64", content: bytes.toString("base64") };
   }
-  const bundle: ManagedConnectPluginBundleV1 = {
+  const bundle: ConnectPluginBundleV1 = {
     format: CONNECT_PLUGIN_BUNDLE_FORMAT,
     manifest: {
       ...structuredClone(descriptor.manifest),
