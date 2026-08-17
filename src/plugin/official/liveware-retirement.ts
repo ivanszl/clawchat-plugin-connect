@@ -84,6 +84,7 @@ function createRetirementLifecycle(
           inspectApp: async (appId) => toPublicationApp(await requireInspectApp(session, appId)),
           createApp: async (correlationKey) => toPublicationApp(await session.createApp(correlationKey, "private")),
           bindTunnel: async (appId, upstream) => await session.bindTunnel(appId, upstream),
+          startAgent: async () => await session.startAgent(),
           deleteApp: async (appId) => await session.deleteApp(appId),
         };
       },

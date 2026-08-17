@@ -2,7 +2,7 @@
 
 All notable changes to ClawChat Connect are documented in this file.
 
-## Unreleased
+## [0.1.0-beta.8] - 2026-08-17
 
 ### Changed
 
@@ -10,6 +10,11 @@ All notable changes to ClawChat Connect are documented in this file.
 - Made the generation-fenced Cordis Plugin Platform the sole Runtime, Client Exposure, and Client Extension path, with release-bundled official discovery, strict schema/state contracts, and whole-epoch Client graph replacement.
 - Moved private Connect publication and its platform companion into the release-pinned official Liveware Plugin Bundle; release archives no longer install a root companion executable.
 - Enforced one Installation Owner, exact Runtime Plugin capability identities, a public Core-mediated Client Exposure facade, and an integrity-fenced internal Liveware publication extension.
+- Upgraded every release-vendored Liveware companion to v0.0.32.
+
+### Fixed
+
+- Always bind the tunnel for a newly created private Liveware App, including when the Control Plane preassigns its public URL.
 
 ## [0.1.0-beta.7] - 2026-08-06
 

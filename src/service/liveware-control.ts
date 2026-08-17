@@ -11,6 +11,8 @@ const LIVEWARE_APP_BINDING_SEPARATOR = " · ";
 export const LIVEWARE_APP_SUBTITLE = "Connect Web";
 export const DEFAULT_LIVEWARE_API_URL = "https://api-liveware.clawling.io";
 export const DEFAULT_LIVEWARE_RELAY_URL = "https://tunnel-liveware.clawling.io";
+const LIVEWARE_AGENT_READY_MESSAGE = "relay grpc control connected";
+const LIVEWARE_AGENT_READY_TIMEOUT_MS = 15_000;
 
 type EnabledLivewareAccessPolicy = "private" | "public";
 
@@ -20,12 +22,18 @@ export interface LivewareApp {
   publicUrl: string;
 }
 
+export interface LivewareAgentProcess {
+  readonly ready: Promise<void>;
+  readonly exited: Promise<number>;
+  stop(): Promise<void>;
+}
 export interface LivewareControlSession {
   listApps(): Promise<LivewareApp[]>;
   inspectApp?(appId: string): Promise<LivewareApp>;
   createApp(name: string, accessPolicy: EnabledLivewareAccessPolicy): Promise<LivewareApp>;
   setAccessPolicy(appId: string, accessPolicy: EnabledLivewareAccessPolicy): Promise<void>;
   bindTunnel(appId: string, upstream: string): Promise<string>;
+  startAgent(): Promise<LivewareAgentProcess>;
   unbindTunnel?(appId: string): Promise<void>;
   deleteApp(appId: string): Promise<void>;
 }
@@ -64,6 +72,8 @@ export interface LivewareProcessResult {
 
 export type RunLivewareProcess = (command: string[], env: Record<string, string>) => Promise<LivewareProcessResult>;
 
+export type SpawnLivewareAgent = (command: string[], env: Record<string, string>) => LivewareAgentProcess;
+
 export interface ProductionLivewareControlOptions {
   livewarePath: string;
   clawChatBaseUrl: string;
@@ -71,6 +81,7 @@ export interface ProductionLivewareControlOptions {
   livewareRelayUrl?: string;
   fetchImpl?: typeof fetch;
   runProcess?: RunLivewareProcess;
+  spawnAgent?: SpawnLivewareAgent;
 }
 
 export function createLivewareControlDependencies(
@@ -82,6 +93,7 @@ export function createLivewareControlDependencies(
   const livewareRelayUrl = normalizeBaseUrl(options.livewareRelayUrl ?? DEFAULT_LIVEWARE_RELAY_URL, "livewareRelayUrl");
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const runProcess = options.runProcess ?? runLivewareProcess;
+  const spawnAgent = options.spawnAgent ?? spawnLivewareAgent;
   return {
     controlPlane: new CliLivewareControlPlane({
       livewarePath,
@@ -89,6 +101,7 @@ export function createLivewareControlDependencies(
       livewareRelayUrl,
       fetchImpl,
       runProcess,
+      spawnAgent,
     }),
     clawChat: new HttpClawChatLiveware({ baseUrl: clawChatBaseUrl, fetchImpl }),
   };
@@ -149,6 +162,7 @@ interface CliLivewareControlPlaneOptions {
   livewareRelayUrl: string;
   fetchImpl: typeof fetch;
   runProcess: RunLivewareProcess;
+  spawnAgent: SpawnLivewareAgent;
 }
 
 class CliLivewareControlPlane implements LivewareControlPlanePort {
@@ -192,6 +206,25 @@ class CliLivewareControlSession implements LivewareControlSession {
   async bindTunnel(appId: string, upstream: string): Promise<string> {
     await this.command(["tunnel", "bind", appId, upstream, "--relay-url", this.options.livewareRelayUrl]);
     return (await this.inspectApp(appId)).publicUrl;
+  }
+
+  async startAgent(): Promise<LivewareAgentProcess> {
+    const env = processEnvironment({
+      LIVEWARE_TOKEN: this.token,
+      LIVEWARE_CONTROL_URL: this.options.livewareApiUrl,
+      TUNNEL_RELAY_URL: this.options.livewareRelayUrl,
+    });
+    return this.options.spawnAgent(
+      [
+        this.options.livewarePath,
+        "agent",
+        "--relay-url",
+        this.options.livewareRelayUrl,
+        "--control-url",
+        this.options.livewareApiUrl,
+      ],
+      env,
+    );
   }
 
   async deleteApp(appId: string): Promise<void> {
@@ -302,6 +335,93 @@ async function runLivewareProcess(command: string[], env: Record<string, string>
     new Response(child.stderr).text(),
   ]);
   return { exitCode, stdout, stderr };
+}
+
+function spawnLivewareAgent(command: string[], env: Record<string, string>): LivewareAgentProcess {
+  const child = Bun.spawn(command, {
+    env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const diagnostics: string[] = [];
+  let readySettled = false;
+  let resolveReady: () => void = () => undefined;
+  let rejectReady: (error: Error) => void = () => undefined;
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  const readyTimeout = setTimeout(() => {
+    failReady(new Error(`Liveware agent did not connect to the relay within ${LIVEWARE_AGENT_READY_TIMEOUT_MS}ms`));
+  }, LIVEWARE_AGENT_READY_TIMEOUT_MS);
+  readyTimeout.unref?.();
+
+  const stdout = forwardLivewareAgentOutput(child.stdout, console.log);
+  const stderr = forwardLivewareAgentOutput(child.stderr, console.error);
+  const exited = child.exited.then(async (exitCode) => {
+    await Promise.allSettled([stdout, stderr]);
+    failReady(
+      new Error(
+        `Liveware agent exited before relay readiness (exit ${exitCode})${diagnostics.length > 0 ? `: ${diagnostics.join("\n")}` : ""}`,
+      ),
+    );
+    return exitCode;
+  });
+  let stopPromise: Promise<void> | undefined;
+
+  return {
+    ready,
+    exited,
+    stop: async () => {
+      stopPromise ??= (async () => {
+        clearTimeout(readyTimeout);
+        child.kill();
+        await exited;
+      })();
+      await stopPromise;
+    },
+  };
+
+  async function forwardLivewareAgentOutput(
+    stream: ReadableStream<Uint8Array>,
+    writeLine: (line: string) => void,
+  ): Promise<void> {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      buffered += decoder.decode(value, { stream: !done });
+      const lines = buffered.split(/\r?\n/u);
+      buffered = done ? "" : (lines.pop() ?? "");
+      for (const line of lines) observeLine(line, writeLine);
+      if (done) {
+        if (buffered) observeLine(buffered, writeLine);
+        return;
+      }
+    }
+  }
+
+  function observeLine(line: string, writeLine: (line: string) => void): void {
+    if (!line) return;
+    writeLine(line);
+    diagnostics.push(line);
+    if (diagnostics.length > 8) diagnostics.shift();
+    if (line.includes(LIVEWARE_AGENT_READY_MESSAGE)) {
+      if (readySettled) return;
+      readySettled = true;
+      clearTimeout(readyTimeout);
+      resolveReady();
+    }
+  }
+
+  function failReady(error: Error): void {
+    if (readySettled) return;
+    readySettled = true;
+    clearTimeout(readyTimeout);
+    rejectReady(error);
+  }
 }
 
 async function readEnvelope(response: Response, label: string): Promise<Record<string, unknown>> {

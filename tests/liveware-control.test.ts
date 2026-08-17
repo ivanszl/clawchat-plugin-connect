@@ -1,11 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import { createLivewareControlDependencies, type RunLivewareProcess } from "../src/service/liveware-control";
+import {
+  createLivewareControlDependencies,
+  type RunLivewareProcess,
+  type SpawnLivewareAgent,
+} from "../src/service/liveware-control";
 import type { ActivationCredentials } from "../src/types";
 
 describe("production Liveware adapters", () => {
   it("uses the pinned CLI contract and the canonical ClawChat Liveware registration surface", async () => {
     const commands: Array<{ command: string[]; env: Record<string, string> }> = [];
     const requests: Array<{ url: string; init: RequestInit }> = [];
+    const agents: Array<{ command: string[]; env: Record<string, string>; stopped: boolean }> = [];
     const runProcess: RunLivewareProcess = async (command, env) => {
       commands.push({ command, env });
       const operation = command.slice(1, -1).join(" ");
@@ -35,6 +40,17 @@ describe("production Liveware adapters", () => {
       if (operation === "tunnel unbind app-0000000000000001") return success("{}");
       if (operation === "app delete app-0000000000000001") return success("{}");
       throw new Error(`unexpected Liveware command: ${command.join(" ")}`);
+    };
+    const spawnAgent: SpawnLivewareAgent = (command, env) => {
+      const process = { command, env, stopped: false };
+      agents.push(process);
+      return {
+        ready: Promise.resolve(),
+        exited: new Promise<number>(() => undefined),
+        stop: async () => {
+          process.stopped = true;
+        },
+      };
     };
     const fetchImpl = async (input: string | URL | Request, init: RequestInit = {}) => {
       const url = String(input);
@@ -71,6 +87,7 @@ describe("production Liveware adapters", () => {
       livewareRelayUrl: "https://relay.example",
       fetchImpl: fetchImpl as typeof fetch,
       runProcess,
+      spawnAgent,
     });
     const principal = activation();
 
@@ -79,6 +96,8 @@ describe("production Liveware adapters", () => {
     const app = await session.createApp("ClawChat Connect · codex", "private");
     await session.setAccessPolicy(app.appId, "private");
     const publicUrl = await session.bindTunnel(app.appId, "http://127.0.0.1:47823");
+    const agent = await session.startAgent();
+    await agent.ready;
     await dependencies.clawChat.list(principal, "device-1");
     await dependencies.clawChat.register(principal, "device-1", {
       livewareId: app.appId,
@@ -89,6 +108,7 @@ describe("production Liveware adapters", () => {
     await dependencies.clawChat.unregister(principal, "device-1", app.appId);
     await session.unbindTunnel?.(app.appId);
     await session.deleteApp(app.appId);
+    await agent.stop();
 
     expect(app.appId).toBe("app-0000000000000001");
     expect(commands.map(({ command }) => command.slice(1, -1).join(" "))).toEqual([
@@ -102,6 +122,21 @@ describe("production Liveware adapters", () => {
     ]);
     expect(commands.every(({ command }) => !command.some((argument) => /token/u.test(argument)))).toBe(true);
     expect(commands.every(({ env }) => env.LIVEWARE_TOKEN === "liveware-token")).toBe(true);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]?.command).toEqual([
+      "/bundle/liveware",
+      "agent",
+      "--relay-url",
+      "https://relay.example",
+      "--control-url",
+      "https://control.example",
+    ]);
+    expect(agents[0]?.env).toMatchObject({
+      LIVEWARE_TOKEN: "liveware-token",
+      LIVEWARE_CONTROL_URL: "https://control.example",
+      TUNNEL_RELAY_URL: "https://relay.example",
+    });
+    expect(agents[0]?.stopped).toBeTrue();
     expect(
       requests
         .filter(({ url }) => url.startsWith("https://clawchat.example/"))

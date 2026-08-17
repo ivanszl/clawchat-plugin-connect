@@ -775,24 +775,42 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       }
       const originalConfig = dependents.length > 0 ? structuredClone(config) : config;
       return await this.withBindingQuiescence(dependents, async () => {
-        if (dependents.length > 0) {
-          const retireRuntimeBindings = this.management?.retireRuntimeBindings;
-          if (!retireRuntimeBindings) throw new Error("Agent Binding transport retirement is unavailable");
-          await retireRuntimeBindings(dependents);
-        }
         const active = this.active.get(pluginId);
         if (active) {
           try {
             await active.retireManagedResources();
-            await active.dispose();
-            this.active.delete(pluginId);
           } catch (error) {
-            await recordInstalledPluginError(this.configPath, pluginId, error);
-            await this.markDependentBindingsUnavailable(pluginId, error);
             this.reportActivationFailure(pluginId, error);
             throw new Error(`Plugin ${pluginId} could not be removed because managed resource retirement failed`, {
               cause: error,
             });
+          }
+        }
+        if (dependents.length > 0) {
+          const retireRuntimeBindings = this.management?.retireRuntimeBindings;
+          if (!retireRuntimeBindings) throw new Error("Agent Binding transport retirement is unavailable");
+          try {
+            await retireRuntimeBindings(dependents);
+          } catch (error) {
+            await recordInstalledPluginError(this.configPath, pluginId, error).catch(() => undefined);
+            await this.markDependentBindingsUnavailable(pluginId, error).catch(() => undefined);
+            this.reportActivationFailure(pluginId, error);
+            throw error;
+          }
+        }
+        if (active) {
+          try {
+            await active.dispose();
+            this.active.delete(pluginId);
+          } catch (error) {
+            const failure = new Error(
+              `Plugin Bundle disposal failed: ${error instanceof Error ? error.message : String(error)}`,
+              { cause: error },
+            );
+            await recordInstalledPluginError(this.configPath, pluginId, failure).catch(() => undefined);
+            await this.markDependentBindingsUnavailable(pluginId, failure).catch(() => undefined);
+            this.reportActivationFailure(pluginId, failure);
+            throw failure;
           }
         }
         if (dependents.length > 0) {
@@ -1470,6 +1488,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     const exposureDisposers: ConnectPluginDisposer[] = [];
     const managedRetirements: Array<() => Promise<void>> = [];
     const managedBindingRetirements: Array<(bindingIds: readonly string[]) => Promise<void>> = [];
+    let managedResourcesRetired = false;
     try {
       const activated = await pluginEntry.activate(context);
       acceptingRegistrations = false;
@@ -1633,7 +1652,9 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         if (failure) throw failure.reason;
       },
       retireManagedResources: async () => {
+        if (managedResourcesRetired) return;
         for (const retire of managedRetirements.toReversed()) await retire();
+        managedResourcesRetired = true;
       },
       retireBindings: async (bindingIds) => {
         for (const retire of managedBindingRetirements.toReversed()) await retire(bindingIds);
@@ -1793,6 +1814,10 @@ export class ConnectPluginHost implements ConnectPluginManagement {
             bindTunnel: async (appId, upstream) => {
               await assertGeneration();
               return await control.bindTunnel(appId, upstream);
+            },
+            startAgent: async () => {
+              await assertGeneration();
+              return await control.startAgent();
             },
             deleteApp: async (appId) => {
               await assertGeneration();

@@ -631,17 +631,18 @@ describe("bundled official Plugin setup", () => {
     ]);
     const stdout: string[] = [];
     const stderr: string[] = [];
-    await expect(
-      runConnectCli(
-        ["plugin", "setup", "--non-interactive", "--select", "clawling.runtime.codex", "--config", configPath],
-        {
-          pluginSourceOptions: options,
-          writeStdout: (value) => stdout.push(value),
-          writeStderr: (value) => stderr.push(value),
+    const exitCode = await runConnectCli(
+      ["plugin", "setup", "--non-interactive", "--select", "clawling.runtime.codex", "--config", configPath],
+      {
+        pluginSourceOptions: options,
+        pluginManagementFetch: async () => {
+          throw new Error("offline Plugin manager");
         },
-      ),
-    ).resolves.toBe(0);
-    expect(stderr).toEqual([]);
+        writeStdout: (value) => stdout.push(value),
+        writeStderr: (value) => stderr.push(value),
+      },
+    );
+    expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: [] });
     expect(stdout.join("")).toContain("Installed Plugin clawling.runtime.codex");
     await expect(listInstalledPlugins(configPath)).resolves.toEqual([
       expect.objectContaining({ pluginId: "clawling.runtime.codex", status: "active" }),
@@ -677,7 +678,7 @@ describe("bundled official Plugin setup", () => {
     expect(loaded.entries).toEqual([
       expect.objectContaining({
         pluginId: "clawling.runtime.codex",
-        integrity: "sha256-v3dlypCmQb5woLnSUpZO6IAVM8JOqqTP8wljh09OxwU=",
+        integrity: "sha256-u1XynRHzio92lPc1Am4K3SONYxEhBy0+lV1TNPwh+aM=",
       }),
     ]);
     const candidate = loaded.entries[0];

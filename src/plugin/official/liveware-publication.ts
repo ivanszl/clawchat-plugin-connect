@@ -50,11 +50,18 @@ export interface LivewarePublicationApp {
   publicUrl: string | null;
 }
 
+export interface LivewarePublicationAgent {
+  readonly ready: Promise<void>;
+  readonly exited: Promise<unknown>;
+  stop(): Promise<void>;
+}
+
 export interface LivewarePublicationControlSession {
   listApps(): Promise<LivewarePublicationApp[]>;
   inspectApp(appId: string): Promise<LivewarePublicationApp>;
   createApp(correlationKey: string, accessPolicy: "private"): Promise<LivewarePublicationApp>;
   bindTunnel(appId: string, upstream: string): Promise<string>;
+  startAgent(): Promise<LivewarePublicationAgent>;
   deleteApp(appId: string): Promise<void>;
 }
 
@@ -91,6 +98,7 @@ export interface BindingLivewarePublicationTarget {
 export class BindingLivewarePublicationLifecycle {
   private readonly operations = new Map<string, Promise<unknown>>();
   private readonly reconciled = new Set<string>();
+  private readonly agents = new Map<string, LivewarePublicationAgent>();
   private accepting = true;
 
   constructor(private readonly options: BindingLivewarePublicationLifecycleOptions) {
@@ -113,12 +121,16 @@ export class BindingLivewarePublicationLifecycle {
 
   async dispose(): Promise<void> {
     this.accepting = false;
+    await this.stopAgents();
     await Promise.allSettled(this.operations.values());
   }
 
   private async retirePublication(target: BindingLivewarePublicationTarget): Promise<BindingLivewarePublicationState> {
     let record = await this.currentRecord(target.bindingId);
-    if (record.value.status === "retired") return record.value;
+    if (record.value.status === "retired") {
+      await this.releaseAgent(target.bindingId);
+      return record.value;
+    }
     record = await this.commit(record, {
       ...record.value,
       desired: "retired",
@@ -174,6 +186,7 @@ export class BindingLivewarePublicationLifecycle {
           throw new Error(`Liveware App ${record.value.appId} remains after deletion`);
         }
       }
+      await this.releaseAgent(target.bindingId);
       record = await this.commit(record, {
         ...record.value,
         status: "retired",
@@ -199,6 +212,7 @@ export class BindingLivewarePublicationLifecycle {
     }
     if (record.value.status === "active" && this.reconciled.has(target.bindingId)) return record.value;
     const rebind = record.value.status === "active";
+    const tunnelMayHaveBeenBound = record.value.appId !== null && record.value.publicUrl === null;
 
     record = await this.commit(record, {
       ...record.value,
@@ -254,7 +268,7 @@ export class BindingLivewarePublicationLifecycle {
       throw error;
     }
     let publicUrl = inspected.publicUrl;
-    if (rebind || !publicUrl) {
+    if (rebind || !tunnelMayHaveBeenBound || !publicUrl) {
       try {
         await this.assertAuthority(target.bindingId);
         publicUrl = await control.bindTunnel(app.appId, this.options.upstream);
@@ -262,6 +276,12 @@ export class BindingLivewarePublicationLifecycle {
         await this.degrade(record, `Tunnel binding failed: ${errorMessage(error)}`);
         throw error;
       }
+    }
+    try {
+      await this.ensureAgent(target.bindingId, control);
+    } catch (error) {
+      await this.degrade(record, `Liveware agent startup failed: ${errorMessage(error)}`);
+      throw error;
     }
     record = await this.commit(record, {
       ...record.value,
@@ -305,7 +325,7 @@ export class BindingLivewarePublicationLifecycle {
       registrationId: app.appId,
       diagnostic: null,
     });
-    this.reconciled.add(target.bindingId);
+    if (this.agents.has(target.bindingId)) this.reconciled.add(target.bindingId);
     return record.value;
   }
 
@@ -354,6 +374,47 @@ export class BindingLivewarePublicationLifecycle {
     diagnostic: string,
   ): Promise<BindingLivewarePublicationStateRecord> {
     return await this.commit(current, { ...current.value, status: "degraded", diagnostic });
+  }
+
+  private async ensureAgent(bindingId: string, control: LivewarePublicationControlSession): Promise<void> {
+    const existing = this.agents.get(bindingId);
+    if (existing) {
+      await existing.ready;
+      return;
+    }
+    await this.assertAuthority(bindingId);
+    if (!this.accepting) throw new Error("Liveware publication generation is fenced");
+    const agent = await control.startAgent();
+    this.agents.set(bindingId, agent);
+    void agent.exited.then(
+      () => this.forgetExitedAgent(bindingId, agent),
+      () => this.forgetExitedAgent(bindingId, agent),
+    );
+    try {
+      await agent.ready;
+      await this.assertAuthority(bindingId);
+    } catch (error) {
+      if (this.agents.get(bindingId) === agent) this.agents.delete(bindingId);
+      await agent.stop().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private forgetExitedAgent(bindingId: string, agent: LivewarePublicationAgent): void {
+    if (this.agents.get(bindingId) !== agent) return;
+    this.agents.delete(bindingId);
+    this.reconciled.delete(bindingId);
+  }
+
+  private async releaseAgent(bindingId: string): Promise<void> {
+    const agent = this.agents.get(bindingId);
+    if (!agent) return;
+    this.agents.delete(bindingId);
+    await agent.stop();
+  }
+
+  private async stopAgents(): Promise<void> {
+    await Promise.all([...this.agents.keys()].map(async (bindingId) => await this.releaseAgent(bindingId)));
   }
 
   private async assertAuthority(bindingId: string): Promise<void> {

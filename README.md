@@ -126,7 +126,7 @@ To install a specific release or choose another directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-beta.7
+  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-beta.8
 ```
 
 On Windows PowerShell, download and inspect the installer before running it:
@@ -143,7 +143,7 @@ The Windows installer verifies the Release ZIP checksum, installs `clawchat-conn
 
 ```powershell
 .\install.ps1 `
-  -Version v0.1.0-beta.7 `
+  -Version v0.1.0-beta.8 `
   -InstallDirectory "D:\Tools\ClawChatConnect"
 ```
 
@@ -159,7 +159,7 @@ Update an existing installation to the current beta-channel release:
 clawchat-connect update
 ```
 
-Use `clawchat-connect update --version v0.1.0-beta.7` to install a specific release. The update command preserves the existing configuration and refreshes the native Connect Service. Historical versions remain installable when explicitly specified.
+Use `clawchat-connect update --version v0.1.0-beta.8` to install a specific release. The update command preserves the existing configuration and refreshes the native Connect Service. Historical versions remain installable when explicitly specified.
 
 ### 2. Install a Runtime Plugin and create the first Agent Binding
 
@@ -618,7 +618,7 @@ Create a lighter, unpackaged standalone build with `bun run build:binary`; it bu
 
 Create a distributable release for the current host with `bun run build:release`. It writes the archive, installers, `CHANGELOG.md`, and SHA-256 checksums under `build/release/`.
 
-Version tags such as `v0.1.0-beta.7` run the beta release workflow. Tags matching `v*-beta.*` run [`.github/workflows/release-beta.yml`](.github/workflows/release-beta.yml), which checks the tag against `package.json`, runs deterministic code checks, verifies all six vendored Liveware inputs, builds target-complete official Plugin Bundles, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. Local installed-product qualification is optional and does not block tagging; WorkBuddy Task configuration is never sent to GitHub Actions. After every release asset is published, the workflow advances the `release-channel/latest-beta.txt` pointer used by default installs and updates through the [beta channel artifact](https://github.com/XMethues/clawchat-plugin-connect/releases/download/channel-beta/latest-beta.txt).
+Version tags such as `v0.1.0-beta.8` run the beta release workflow. Tags matching `v*-beta.*` run [`.github/workflows/release-beta.yml`](.github/workflows/release-beta.yml), which checks the tag against `package.json`, runs deterministic code checks, verifies all six vendored Liveware inputs, builds target-complete official Plugin Bundles, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. Local installed-product qualification is optional and does not block tagging; WorkBuddy Task configuration is never sent to GitHub Actions. After every release asset is published, the workflow advances the `release-channel/latest-beta.txt` pointer used by default installs and updates through the [beta channel artifact](https://github.com/XMethues/clawchat-plugin-connect/releases/download/beta-channel/latest-beta.txt).
 
 ## License
 

@@ -399,6 +399,9 @@ function fakeLivewarePorts(actions: string[]): {
         async bindTunnel(): Promise<string> {
           throw new Error("not used");
         },
+        async startAgent() {
+          throw new Error("not used");
+        },
         async unbindTunnel(appId): Promise<void> {
           actions.push(`tunnel:unbind:${appId}`);
         },

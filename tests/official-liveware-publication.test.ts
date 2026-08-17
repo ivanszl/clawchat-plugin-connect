@@ -11,7 +11,7 @@ import {
   createOfficialLivewarePluginEntry,
   type OfficialLivewareExposureServices,
 } from "../src/plugin/official/liveware-entry";
-import { OFFICIAL_LIVEWARE_PLUGIN_ID } from "../src/plugin/official/liveware-manifest";
+import { OFFICIAL_LIVEWARE_CAPABILITY_ID, OFFICIAL_LIVEWARE_PLUGIN_ID } from "../src/plugin/official/liveware-manifest";
 import {
   BindingLivewarePublicationLifecycle,
   type BindingLivewarePublicationState,
@@ -66,6 +66,9 @@ class FakePublicationRemote
 {
   readonly apps: LivewarePublicationApp[] = [];
   afterCreate?: () => void;
+  publicUrlOnCreate = false;
+  agentReady: Promise<void> = Promise.resolve();
+  readonly agentExitResolvers: Array<() => void> = [];
   appLookupError: Error | null = null;
   afterBind?: () => void;
   afterRegister?: () => void;
@@ -99,7 +102,7 @@ class FakePublicationRemote
     const app: LivewarePublicationApp = {
       appId: `app-${this.apps.length + 1}`,
       name: correlationKey,
-      publicUrl: null,
+      publicUrl: this.publicUrlOnCreate ? `https://app-${this.apps.length + 1}.liveware.example` : null,
     };
     this.apps.push(app);
     this.afterCreate?.();
@@ -112,6 +115,22 @@ class FakePublicationRemote
     app.publicUrl = `https://${appId}.liveware.example`;
     this.afterBind?.();
     return app.publicUrl;
+  }
+  async startAgent() {
+    this.calls.push("agent:start");
+    let markExited: () => void = () => undefined;
+    const exited = new Promise<void>((resolve) => {
+      markExited = resolve;
+    });
+    this.agentExitResolvers.push(markExited);
+    return {
+      ready: this.agentReady,
+      exited,
+      stop: async () => {
+        this.calls.push("agent:stop");
+        markExited();
+      },
+    };
   }
 
   async deleteApp(appId: string): Promise<void> {
@@ -293,9 +312,86 @@ describe("official Liveware Binding publication lifecycle", () => {
     expect(remote.calls).not.toContain(expect.stringContaining("unbind"));
   });
 
+  it("binds a newly created App even when the Control Plane preassigns its public URL", async () => {
+    const state = new MemoryPublicationStateStore();
+    const remote = new FakePublicationRemote();
+    remote.publicUrlOnCreate = true;
+    const lifecycle = new BindingLivewarePublicationLifecycle({
+      activationGeneration: 1,
+      upstream: "http://127.0.0.1:47890",
+      state,
+      controlPlane: remote,
+      registrations: remote,
+    });
+
+    await expect(
+      lifecycle.ensurePrivate({ bindingId: "preassigned-url", deviceId: "device-preassigned-url" }),
+    ).resolves.toMatchObject({
+      status: "active",
+      publicUrl: "https://app-1.liveware.example",
+    });
+    expect(remote.calls.filter((call) => call.startsWith("tunnel:bind:"))).toEqual([
+      "tunnel:bind:app-1:http://127.0.0.1:47890",
+    ]);
+  });
+
+  it("waits for the Binding Liveware agent before registering and stops it on disposal", async () => {
+    const state = new MemoryPublicationStateStore();
+    const remote = new FakePublicationRemote();
+    let markReady: () => void = () => undefined;
+    remote.agentReady = new Promise<void>((resolve) => {
+      markReady = resolve;
+    });
+    const lifecycle = new BindingLivewarePublicationLifecycle({
+      activationGeneration: 1,
+      upstream: "http://127.0.0.1:47890",
+      state,
+      controlPlane: remote,
+      registrations: remote,
+    });
+
+    const publication = lifecycle.ensurePrivate({
+      bindingId: "agent-ready",
+      deviceId: "device-agent-ready",
+    });
+    await Bun.sleep(0);
+    expect(remote.calls).toContain("agent:start");
+    expect(remote.calls.some((call) => call.startsWith("registration:create:"))).toBeFalse();
+
+    markReady();
+    await expect(publication).resolves.toMatchObject({ status: "active" });
+    expect(remote.calls.indexOf("agent:start")).toBeLessThan(
+      remote.calls.findIndex((call) => call.startsWith("registration:create:")),
+    );
+    await lifecycle.dispose();
+    expect(remote.calls).toContain("agent:stop");
+  });
+
+  it("restarts a Liveware agent that exits after readiness on the next reconciliation", async () => {
+    const state = new MemoryPublicationStateStore();
+    const remote = new FakePublicationRemote();
+    const lifecycle = new BindingLivewarePublicationLifecycle({
+      activationGeneration: 1,
+      upstream: "http://127.0.0.1:47890",
+      state,
+      controlPlane: remote,
+      registrations: remote,
+    });
+    const target = { bindingId: "agent-restart", deviceId: "device-agent-restart" };
+
+    await lifecycle.ensurePrivate(target);
+    remote.agentExitResolvers[0]?.();
+    await Bun.sleep(0);
+    await lifecycle.ensurePrivate(target);
+
+    expect(remote.calls.filter((call) => call === "agent:start")).toHaveLength(2);
+    await lifecycle.dispose();
+  });
+
   it("adopts an App by its persisted correlation key after remote success and a crash before identity commit", async () => {
     const state = new MemoryPublicationStateStore();
     const remote = new FakePublicationRemote();
+    remote.publicUrlOnCreate = true;
     remote.afterCreate = () => {
       state.failNextCompareAndSwap = true;
     };
@@ -326,6 +422,7 @@ describe("official Liveware Binding publication lifecycle", () => {
       appId: "app-1",
     });
     expect(remote.calls.filter((call) => call.startsWith("app:create:"))).toHaveLength(1);
+    expect(remote.calls.filter((call) => call.startsWith("tunnel:bind:"))).toHaveLength(1);
   });
 
   it("recovers an uncommitted App identity by correlation key before retirement", async () => {
@@ -490,6 +587,7 @@ describe("official Liveware Binding publication lifecycle", () => {
       "app:list",
       "app:delete:app-1",
       "app:list",
+      "agent:stop",
     ]);
     expect(remote.calls.some((call) => call.includes("unbind"))).toBeFalse();
     expect(remote.apps).toHaveLength(0);
@@ -813,10 +911,16 @@ describe("official Liveware Binding publication lifecycle", () => {
     await writeFile(bundlePath, `${JSON.stringify(built.bundle)}\n`);
     const remote = new FakePublicationRemote();
     const tokens: string[] = [];
+    const retiredRuntimeBindings: string[][] = [];
+    let retireRuntimeError: Error | null = null;
     const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined, {
       config,
       stateStore,
       workspaces: new WorkspaceCatalog(stateStore),
+      retireRuntimeBindings: async (bindingIds) => {
+        retiredRuntimeBindings.push([...bindingIds]);
+        if (retireRuntimeError) throw retireRuntimeError;
+      },
       livewareDependencies: {
         controlPlane: {
           async connect(accessToken) {
@@ -835,7 +939,11 @@ describe("official Liveware Binding publication lifecycle", () => {
               setAccessPolicy: async () => undefined,
               bindTunnel: remote.bindTunnel.bind(remote),
               deleteApp: remote.deleteApp.bind(remote),
-              startAgent: async () => ({ exited: new Promise<number>(() => undefined), stop: async () => undefined }),
+              startAgent: async () => ({
+                ready: Promise.resolve(),
+                exited: new Promise<number>(() => undefined),
+                stop: async () => undefined,
+              }),
             };
           },
         },
@@ -919,8 +1027,41 @@ describe("official Liveware Binding publication lifecycle", () => {
         "active",
       );
       expect(remote.apps).toHaveLength(2);
+      config.agents["liveware-dependent"] = {
+        runtime: { pluginId: OFFICIAL_LIVEWARE_PLUGIN_ID, capabilityId: OFFICIAL_LIVEWARE_CAPABILITY_ID },
+        runtimeConfig: {},
+      };
+      await expect(host.remove(OFFICIAL_LIVEWARE_PLUGIN_ID, true)).rejects.toThrow(
+        "managed resource retirement failed",
+      );
+      expect((await host.list()).find((entry) => entry.pluginId === OFFICIAL_LIVEWARE_PLUGIN_ID)?.status).toBe(
+        "active",
+      );
+      expect(retiredRuntimeBindings).toEqual([]);
+      await stateStore.upsertRuntimeStatus({
+        websocketConnected: true,
+        activeAgent: "liveware-dependent",
+        activeChats: 0,
+        globalRunning: 0,
+        globalQueued: 0,
+        recentError: null,
+      });
       remote.failUnregister = false;
-      await host.remove(OFFICIAL_LIVEWARE_PLUGIN_ID);
+      retireRuntimeError = new Error("dependent Binding retirement failed");
+      await expect(host.remove(OFFICIAL_LIVEWARE_PLUGIN_ID, true)).rejects.toThrow(
+        "dependent Binding retirement failed",
+      );
+      expect((await host.list()).find((entry) => entry.pluginId === OFFICIAL_LIVEWARE_PLUGIN_ID)?.status).toBe("error");
+      await expect(stateStore.getRuntimeStatus("liveware-dependent")).resolves.toMatchObject({
+        runtimeAvailability: "startup-unavailable",
+        recentError: expect.stringContaining("dependent Binding retirement failed"),
+      });
+      expect(remote.apps).toHaveLength(0);
+      retireRuntimeError = null;
+      await expect(host.remove(OFFICIAL_LIVEWARE_PLUGIN_ID, true)).resolves.toMatchObject({
+        pluginId: OFFICIAL_LIVEWARE_PLUGIN_ID,
+      });
+      expect(retiredRuntimeBindings).toEqual([["liveware-dependent"], ["liveware-dependent"]]);
       expect(remote.apps).toHaveLength(0);
       expect(await new ConnectBindingLivewarePublicationStateStore(stateStore).read("binding-a")).toBeNull();
     } finally {
@@ -928,5 +1069,5 @@ describe("official Liveware Binding publication lifecycle", () => {
       await stateStore.close();
       await rm(directory, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });

@@ -1,4 +1,5 @@
 import type { OfficialPluginDescriptor } from "../../../scripts/build-official-plugins";
+import { CONNECT_VERSION } from "../../service/version";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
@@ -20,7 +21,7 @@ const descriptor: OfficialPluginDescriptor = {
     manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
     interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
     pluginId: WORKBUDDY_OFFICIAL_PLUGIN_ID,
-    version: "0.1.0-beta.7",
+    version: CONNECT_VERSION,
     dependencies: [
       {
         type: "host",

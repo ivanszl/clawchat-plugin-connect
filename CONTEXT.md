@@ -32,10 +32,6 @@ _Avoid_: WorkBuddy Task, WorkBuddy Session, tool Task
 A user-installed DeepSeek Harness (DSH) coding-agent runtime whose native Sessions and full plugin ecosystem can be operated through an Agent Binding. DSH plugins (tools, skills, workflows, MCP servers, subagents) are installed and owned inside the DSH runtime itself, never through Connect's plugin platform; installing Node.js and DSH is the user's decision, and Connect only integrates when the runtime is present.
 _Avoid_: DSH plugin host, DSH Plugin Bundle, when referring to the runtime family
 
-**DeepSeek Harness Home**:
-The user-owned configuration and state boundary assigned exclusively to one configured DeepSeek Harness Agent Binding. It owns that Runtime's native Sessions, credentials, and plugin composition and remains user-owned after the Binding is removed.
-_Avoid_: Shared DSH Home, Connect-managed DSH Home
-
 **Binding Runtime Instance**:
 The stateful runtime process and adapter state owned by one Agent Binding. Instances of the same exact Runtime Plugin capability remain isolated.
 _Avoid_: Runtime Adapter, shared runtime process
@@ -322,7 +318,6 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Connect binds and manages multiple Agent Bindings independently of any coding-agent runtime family.
 - Multiple Agent Bindings may select the same exact Runtime Plugin capability.
 - Every Agent Binding owns an independent Binding Runtime Instance. Runtime process, provider configuration, cached client state, and shutdown lifecycle are never shared between Agent Bindings, including Bindings that select the same capability.
-- Each configured DeepSeek Harness Agent Binding exclusively selects one DeepSeek Harness Home. The same Binding may reactivate it, but another configured Binding cannot select the same canonical Home; removing the Binding releases the association without deleting the Home.
 - Runtime Skill and Runtime Command discovery and cached summaries remain scoped to one Agent Binding and runtime workspace. Connect never derives them by scanning local instruction files, and the active Runtime Adapter remains authoritative when a selected entry is invoked. A manually typed same-name prefix resolves to a Runtime Command before a Runtime Skill, while an explicit picker selection retains its selected kind.
 - A Connect installation has at most one Installation Owner. The first successful Agent Binding activation establishes it.
 - Every activated Agent Binding has exactly one Binding Owner, and that identity must equal the Installation Owner.

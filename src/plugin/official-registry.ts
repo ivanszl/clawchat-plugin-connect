@@ -103,7 +103,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: codexDescriptor,
     name: "Codex",
-    artifactIntegrity: "sha256-v3dlypCmQb5woLnSUpZO6IAVM8JOqqTP8wljh09OxwU=",
+    artifactIntegrity: "sha256-u1XynRHzio92lPc1Am4K3SONYxEhBy0+lV1TNPwh+aM=",
     classification: "runtime",
     discovery: {
       executableNames: ["codex"],
@@ -119,7 +119,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: opencodeDescriptor,
     name: "OpenCode",
-    artifactIntegrity: "sha256-UNYonWIa/uwM85ZFWu1p9e7E9U9oaT7seroHkLxnvWk=",
+    artifactIntegrity: "sha256-nqP88AARx8NKzCcvQy50F6ex3bRENxZPmv8VUGNv1dA=",
     discovery: {
       executableNames: ["opencode"],
       versionCommand: {
@@ -143,16 +143,16 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: livewareDescriptor,
     name: "Liveware",
-    artifactIntegrity: "sha256-ZzOJykWKify8CQmW7ez23wYcNAr7Iyk/AM5swRzoe7w=",
+    artifactIntegrity: "sha256-H2GxdH2i5it4MIyvBGZo5BZUYIGIBCGicpI3lRlqCjM=",
     classification: "client-exposure",
     assetIntegrities: {
       "assets/liveware": {
-        "darwin-arm64": "sha256-QCpSw/rYxAjV7nMPv9+iaGKjmKd1cS7PZ6CClkWuLo0=",
-        "darwin-x64": "sha256-DVKz8x7esr1HN4CLy92/WoYT56VxQ1fYH7CMVcTZ/dk=",
-        "linux-arm64": "sha256-APmL2NRQxncDXYKHirraT81eQQWY/0k+L4eSXrm8zRk=",
-        "linux-x64": "sha256-o8FV+rwHd00UUfoJeUAxcFrBFSrW3hSywzzQslmkWB8=",
-        "win32-arm64": "sha256-0cfkZAPbjDjOsAIcHmQSFc8RpnqhPaL6dAzyhb41tJY=",
-        "win32-x64": "sha256-hzpEit+XWWNVL/R8Jy5Q+UV60SDJeYHhjdogcf6c9kc=",
+        "darwin-arm64": "sha256-VvdovxnGns0nO7xvDeLbzuF0C+7w5OjL6mAiR8R8ozY=",
+        "darwin-x64": "sha256-jKIIJaJz/2Dd4xe6dLM+2yinjhRvZGc02Nu1yB/htAA=",
+        "linux-arm64": "sha256-E7JUiHiroNSzIxF08C0mXSEO9Hwmn1zA6V23RoxbANk=",
+        "linux-x64": "sha256-dXp0+LGu6GynF9NbKsNEvl1GTQA3A9jA2vagM7yso0A=",
+        "win32-arm64": "sha256-DPjXoma/+jLF+Ro0pcaiE5fQG7hafGez5IDj5g0qFjo=",
+        "win32-x64": "sha256-mjvLq67uGSZw3C2zklBY4FTmoEXW6CZMzT6miSP5Zeg=",
       },
     },
     capabilityConfigurations: { liveware: { accessPolicy: "private" } },

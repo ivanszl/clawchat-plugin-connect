@@ -1926,6 +1926,66 @@ export default {
     await host.close();
     await store.close();
   });
+
+  it("marks the selected Bundle and dependent Binding unavailable when removal disposal fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-hot-remove-disposal-failure-"));
+    const configPath = join(directory, "config.json");
+    const stateDbPath = join(directory, "state.sqlite");
+    const pluginId = "test.remove-disposal-failure";
+    const bindingId = "remove-failure-binding";
+    const dependent = binding(pluginId, bindingId);
+    const config = {
+      ...defaultConfig(),
+      stateDbPath,
+      agents: { [bindingId]: dependent },
+      defaultAgent: bindingId,
+    };
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: stateDbPath });
+    await store.initialize();
+    await store.upsertRuntimeStatus({
+      websocketConnected: true,
+      activeAgent: bindingId,
+      activeChats: 0,
+      globalRunning: 0,
+      globalQueued: 0,
+      recentError: null,
+    });
+    const registry = new RuntimeAdapterRegistry([]);
+    const diagnostics: string[] = [];
+    const host = new ConnectPluginHost(
+      configPath,
+      registry,
+      (_id, error) => diagnostics.push(error instanceof Error ? error.message : String(error)),
+      {
+        config,
+        stateStore: store,
+        workspaces: new WorkspaceCatalog(store),
+        retireRuntimeBindings: async () => undefined,
+      },
+    );
+    const sourcePath = await writeBundle(directory, lifecycleBundle(pluginId, "1.0.0", { failAdapterClose: true }));
+    await installOfficialBundle(host, sourcePath);
+    await registry.prepare(dependent);
+
+    await expect(host.remove(pluginId, true)).rejects.toThrow("Plugin Bundle disposal failed");
+    await expect(host.list()).resolves.toEqual([
+      expect.objectContaining({
+        pluginId,
+        status: "error",
+        error: expect.stringContaining("v1 adapter disposal failed"),
+      }),
+    ]);
+    await expect(store.getRuntimeStatus(bindingId)).resolves.toMatchObject({
+      runtimeAvailability: "startup-unavailable",
+      recentError: expect.stringContaining("v1 adapter disposal failed"),
+    });
+    expect(diagnostics).toContainEqual(expect.stringContaining("v1 adapter disposal failed"));
+
+    await host.close();
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  });
   it("collects only unreferenced managed uploads after failed installs and final removal", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-managed-plugin-uploads-"));
     const configPath = join(directory, "config.json");
