@@ -11,7 +11,11 @@ import type { OfficialPluginDiscovery } from "../../src/plugin/official-registry
 import type { InstalledPluginLockEntry } from "../../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../../src/runtime/runtime-interaction-coordinator";
-import type { RuntimeActivity, RuntimeTranscriptEntry } from "../../src/runtime/types";
+import {
+  completeRuntimeThreadDiscovery,
+  type RuntimeActivity,
+  type RuntimeTranscriptEntry,
+} from "../../src/runtime/types";
 import { fixedRuntimeAdapter, pluginBinding } from "../runtime-adapter-fixture";
 
 const directory = await mkdtemp(join(tmpdir(), "connect-client-preview-"));
@@ -69,7 +73,7 @@ await stateStore.upsertRuntimeSession({
   agentId: "codex",
   runtimeSessionId: "thread-local",
   name: "Non-Project scratch",
-  model: "gpt-removed",
+  model: { model: "gpt-removed" },
   reasoningEffort: "high",
   hasMessages: true,
   isCurrent: true,
@@ -211,6 +215,7 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
     listModels: async () => [
       {
         id: "gpt-default",
+        selection: { model: "gpt-default" },
         displayName: "Default model",
         description: "Runtime default",
         isDefault: true,
@@ -220,6 +225,7 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
       },
       {
         id: "gpt-deep",
+        selection: { model: "gpt-deep" },
         displayName: "Deep model",
         description: "Long-running coding work",
         isDefault: false,
@@ -239,28 +245,29 @@ const runtimeAdapters = new RuntimeAdapterRegistry([
     listCommands: async () => [
       { id: "preview-command:compact", name: "compact", description: "Compact the Session context" },
     ],
-    discoverAllThreads: async () => [
-      {
-        runtimeThreadId: "thread-project",
-        name: "App Server 与 Web Client",
-        updatedAt: projectThreadUpdatedAt,
-        workingDirectory: workspaceRoot,
-      },
-      { runtimeThreadId: "thread-local", name: "Non-Project scratch", updatedAt: Date.now() - 1_000 },
-      {
-        runtimeThreadId: "thread-unmanaged",
-        name: "Codex TUI existing thread",
-        updatedAt: Date.now() - 2_000,
-        workingDirectory: discoveredWorkspace,
-      },
-      {
-        runtimeThreadId: "thread-unmanaged-archived",
-        name: "Archived Codex TUI thread",
-        updatedAt: Date.now() - 3_000,
-        workingDirectory: archivedDiscoveredWorkspace,
-        isArchived: true,
-      },
-    ],
+    discoverAllThreads: async () =>
+      completeRuntimeThreadDiscovery([
+        {
+          runtimeThreadId: "thread-project",
+          name: "App Server 与 Web Client",
+          updatedAt: projectThreadUpdatedAt,
+          workingDirectory: workspaceRoot,
+        },
+        { runtimeThreadId: "thread-local", name: "Non-Project scratch", updatedAt: Date.now() - 1_000 },
+        {
+          runtimeThreadId: "thread-unmanaged",
+          name: "Codex TUI existing thread",
+          updatedAt: Date.now() - 2_000,
+          workingDirectory: discoveredWorkspace,
+        },
+        {
+          runtimeThreadId: "thread-unmanaged-archived",
+          name: "Archived Codex TUI thread",
+          updatedAt: Date.now() - 3_000,
+          workingDirectory: archivedDiscoveredWorkspace,
+          isArchived: true,
+        },
+      ]),
     readActivity: async (_binding, runtimeThreadId) => ({
       activities: (transcripts.get(runtimeThreadId) ?? []).map((entry, index) => previewActivity(entry, `${index}`)),
       completeness: "complete",
@@ -314,11 +321,24 @@ const runtime = {
   websocketUrl: config.websocketUrl,
   deviceId: "preview",
   close: async () => undefined,
-  enqueueClientTurn: async (sessionRef: string, prompt: string) => {
-    const turnId = crypto.randomUUID();
+  enqueueClientTurn: async (
+    sessionRef: string,
+    prompt: string,
+    _media: unknown[] = [],
+    _selection: unknown = null,
+    _signal?: AbortSignal,
+    requestedTurnId?: string,
+  ) => {
+    const turnId = requestedTurnId?.trim() || crypto.randomUUID();
     activityBySessionRef.set(sessionRef, "running");
     void (async () => {
-      await transcriptProjection.appendUserMessage({ sessionRef, text: prompt, origin: "client", author: "You" });
+      await transcriptProjection.appendUserMessage({
+        sessionRef,
+        text: prompt,
+        origin: "client",
+        author: "You",
+        id: `turn_${turnId}_user`,
+      });
       await Bun.sleep(250);
       await transcriptProjection.upsertRuntimeActivity(sessionRef, {
         id: `preview:${turnId}`,

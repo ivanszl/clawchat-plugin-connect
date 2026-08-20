@@ -8,7 +8,12 @@ import {
   verifyWorkBuddyEndpoint,
   type WorkBuddyConnectedSocketIdentity,
 } from "../src/runtime/workbuddy-acp-client";
-import type { WorkBuddyProfile } from "../src/runtime/workbuddy-task-discovery";
+import {
+  attachWorkBuddyTask,
+  type WorkBuddyProcessIdentity,
+  type WorkBuddyProfile,
+  type WorkBuddyTaskDiscoverySource,
+} from "../src/runtime/workbuddy-task-discovery";
 
 const taskId = "00000000-0000-4000-8000-000000000001";
 const workspace = "/private/tmp/workbuddy-acp-client";
@@ -164,6 +169,167 @@ describe("WorkBuddy private ACP client", () => {
       },
     });
     expect(new Set(verification.activities.map((activity) => activity.id)).size).toBe(verification.activities.length);
+  });
+
+  it("fingerprints only ordered transcript identities while preserving replay Activity identities", async () => {
+    const endpoint = await serve((request) => {
+      if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "transcript-proof" });
+      if (request.method === "DELETE") return emptyResponse();
+      const rpc = JSON.parse(request.body) as { id: number; method: string };
+      if (rpc.method === "initialize") {
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+      }
+      return sseResponse([
+        update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+        update({
+          sessionUpdate: "user_message_chunk",
+          messageId: "native-user",
+          content: { type: "text", text: "same " },
+        }),
+        update({
+          sessionUpdate: "user_message_chunk",
+          messageId: "native-user",
+          content: { type: "text", text: "question" },
+        }),
+        update({
+          sessionUpdate: "tool_call",
+          messageId: "tool-only-message",
+          toolCallId: "tool-call",
+          title: "Inspect workspace",
+        }),
+        update({
+          sessionUpdate: "agent_thought_chunk",
+          messageId: "reused-reasoning",
+          content: { type: "text", text: "first " },
+        }),
+        update({
+          sessionUpdate: "agent_thought_chunk",
+          messageId: "reused-reasoning",
+          content: { type: "text", text: "second" },
+        }),
+        update({
+          sessionUpdate: "tool_call_update",
+          messageId: "native-assistant-2",
+          toolCallId: "tool-call",
+          title: "Inspect workspace",
+        }),
+        update({
+          sessionUpdate: "plan",
+          messageId: "plan-only-message",
+          planId: "history-plan",
+          entries: [{ content: "Check native history" }],
+        }),
+        update({
+          sessionUpdate: "agent_message_chunk",
+          messageId: "native-assistant-1",
+          content: { type: "text", text: "equal answer" },
+        }),
+        update({
+          sessionUpdate: "agent_message_chunk",
+          messageId: "native-assistant-2",
+          content: { type: "text", text: "equal answer" },
+        }),
+        update({
+          sessionUpdate: "session_info_update",
+          messageId: "metadata-only-message",
+          _meta: { "codebuddy.ai/historyReplay": "end" },
+        }),
+        { jsonrpc: "2.0", id: rpc.id, result: {} },
+      ]);
+    });
+
+    const verification = await verifyWorkBuddyEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => null,
+    );
+
+    expect(verification.replayFingerprint).toBe(
+      fingerprint(["native-user", "native-assistant-1", "native-assistant-2"]),
+    );
+    expect(verification.activities.filter((activity) => activity.kind === "tool")).toEqual([
+      expect.objectContaining({
+        id: "workbuddy:tool:tool-call",
+        text: "Inspect workspace",
+        source: "history",
+      }),
+    ]);
+    expect(verification.activities.find((activity) => activity.kind === "reasoning")).toMatchObject({
+      id: "workbuddy:reasoning:reused-reasoning",
+      text: "first second",
+    });
+    expect(verification.activities.find((activity) => activity.kind === "plan")).toMatchObject({
+      id: "workbuddy:plan:history-plan",
+      text: "Check native history",
+    });
+    expect(
+      verification.activities.filter((activity) => activity.kind === "assistant").map(({ id, text }) => ({ id, text })),
+    ).toEqual([
+      { id: "workbuddy:assistant:native-assistant-1", text: "equal answer" },
+      { id: "workbuddy:assistant:native-assistant-2", text: "equal answer" },
+    ]);
+  });
+
+  it("makes a matching tool-bearing replay ready at the complete Attachment seam", async () => {
+    const endpoint = await serveReplay([
+      update({
+        sessionUpdate: "user_message_chunk",
+        messageId: "native-user",
+        content: { type: "text", text: "question" },
+      }),
+      update({
+        sessionUpdate: "tool_call",
+        messageId: "independent-tool-message",
+        toolCallId: "history-tool",
+        title: "Read history",
+      }),
+      update({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "native-assistant",
+        content: { type: "text", text: "answer" },
+      }),
+    ]);
+
+    await expect(
+      attachWorkBuddyTask(
+        { profile: "workbuddy-ai", taskId, expectedWorkspace: workspace },
+        attachmentSource(endpoint, ["native-user", "native-assistant"]),
+      ),
+    ).resolves.toMatchObject({
+      completeness: "complete",
+      activities: [
+        expect.objectContaining({ kind: "user", id: "workbuddy:user:native-user" }),
+        expect.objectContaining({ kind: "tool", id: "workbuddy:tool:history-tool", text: "Read history" }),
+        expect.objectContaining({ kind: "assistant", id: "workbuddy:assistant:native-assistant" }),
+      ],
+    });
+  });
+
+  it.each([
+    { case: "a missing assistant identity", replayIds: ["native-user"] },
+    { case: "a changed assistant identity", replayIds: ["native-user", "wrong-assistant"] },
+    { case: "reordered transcript identities", replayIds: ["native-assistant", "native-user"] },
+    {
+      case: "an extra assistant identity",
+      replayIds: ["native-user", "native-assistant", "extra-assistant"],
+    },
+  ])("rejects $case at the complete Attachment seam", async ({ replayIds }) => {
+    const endpoint = await serveReplay(
+      replayIds.map((messageId) =>
+        update({
+          sessionUpdate: messageId === "native-user" ? "user_message_chunk" : "agent_message_chunk",
+          messageId,
+          content: { type: "text", text: "identical visible text" },
+        }),
+      ),
+    );
+
+    await expect(
+      attachWorkBuddyTask(
+        { profile: "workbuddy-ai", taskId, expectedWorkspace: workspace },
+        attachmentSource(endpoint, ["native-user", "native-assistant"]),
+      ),
+    ).rejects.toMatchObject({ code: "task-identity-mismatch" });
   });
 
   it("redacts connection credentials when the server rejects JSON-RPC", async () => {
@@ -518,6 +684,7 @@ describe("WorkBuddy private ACP client", () => {
     expect(attachment.catalog?.models).toEqual([
       {
         id: "workbuddy-fast",
+        selection: { model: "workbuddy-fast" },
         displayName: "WorkBuddy AI Fast",
         description: "Product alias",
         isDefault: true,
@@ -547,7 +714,7 @@ describe("WorkBuddy private ACP client", () => {
     await collect(
       attachment.prompt({
         prompt: "use the selected model",
-        model: "workbuddy-deep",
+        model: { model: "workbuddy-deep" },
         workspace: {
           workspaceRef: "WSDEFALT",
           workingDirectory: workspace,
@@ -1499,6 +1666,70 @@ interface FakeRequest {
 type FakeResponse =
   | { raw: string }
   | { body: string; contentType: string; chunked?: boolean; fragmented?: boolean; statusCode?: number };
+
+async function serveReplay(replayUpdates: unknown[]): Promise<string> {
+  return await serve((request) => {
+    if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "attachment-proof" });
+    if (request.method === "DELETE") return emptyResponse();
+    const rpc = JSON.parse(request.body) as { id: number; method: string };
+    if (rpc.method === "initialize") {
+      return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+    }
+    return sseResponse([
+      update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+      ...replayUpdates,
+      update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+      { jsonrpc: "2.0", id: rpc.id, result: {} },
+    ]);
+  });
+}
+
+function attachmentSource(endpoint: string, nativeMessageIds: string[]): WorkBuddyTaskDiscoverySource {
+  const applicationProcess: WorkBuddyProcessIdentity = {
+    pid: 100,
+    parentPid: 1,
+    executablePath: `${applicationPath}/Contents/MacOS/Electron`,
+  };
+  const sidecarProcess: WorkBuddyProcessIdentity = {
+    pid: 110,
+    parentPid: 100,
+    executablePath: `${applicationPath}/Contents/MacOS/Electron`,
+  };
+  const endpointOwner: WorkBuddyProcessIdentity = {
+    pid: 120,
+    parentPid: 110,
+    executablePath: `${applicationPath}/Contents/MacOS/Electron`,
+  };
+  return {
+    inspect: async () => ({
+      application: {
+        path: applicationPath,
+        bundleIdentifier: "com.workbuddy.workbuddy-ai",
+        version: "2026.8.16",
+        embeddedCodeBuddyVersion: "9.99.1-nightly.4",
+      },
+      applicationProcess,
+      task: {
+        id: taskId,
+        workspace,
+        transcriptIdentityMatches: true,
+        replayFingerprint: fingerprint(nativeMessageIds),
+      },
+      sidecarRegistration: { pid: 110, version: 3 },
+      sidecarIdentity: {
+        pid: 110,
+        version: 3,
+        registrationTokenMatches: true,
+        registrationToken: "registration-token",
+      },
+      sidecarProcess,
+      endpointSession: { sessionId: taskId, pid: 120, endpoint },
+      endpointOwner,
+    }),
+    verifyEndpoint: async (input) => await verifyWorkBuddyEndpoint(input, 1_000, async () => endpointOwner),
+    confirmEndpointOwner: async () => endpointOwner,
+  };
+}
 
 async function serve(
   respond: (request: FakeRequest, socket: Socket) => FakeResponse | null,

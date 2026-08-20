@@ -34,6 +34,7 @@ if (-not (Test-Path -LiteralPath $OfficialPluginsDirectory -PathType Container))
 }
 foreach ($OfficialPluginId in @(
   "clawling.runtime.codex",
+  "clawling.runtime.deepseek-harness",
   "clawling.runtime.opencode",
   "clawling.exposure.liveware"
 )) {

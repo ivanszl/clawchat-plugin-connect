@@ -115,7 +115,7 @@ try {
   if (!pluginModels?.length) throw new Error("Official OpenCode Plugin returned no models");
   if (!Array.isArray(pluginSkills) || !Array.isArray(pluginCommands))
     throw new Error("Official OpenCode Plugin did not preserve Runtime Skill and Command catalogs");
-  if (!pluginThreads.some((thread) => thread.runtimeThreadId === session.id))
+  if (!pluginThreads.threads.some((thread) => thread.runtimeThreadId === session.id))
     throw new Error("Official OpenCode Plugin did not discover the native Session");
   const activity = await within(registry.readActivity(binding, session.id), "Plugin native Session activity");
   if (

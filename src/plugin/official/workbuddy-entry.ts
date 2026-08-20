@@ -64,6 +64,9 @@ function bridgeWorkBuddyAdapter(
   adapter: ConnectRuntimeAdapter,
   binding: WorkBuddyRuntimeAdapterBinding,
 ): ConnectPluginRuntimeAdapter {
+  const discoverThreads = adapter.discoverThreads?.bind(adapter);
+  const discoverAllThreads = adapter.discoverAllThreads?.bind(adapter);
+  const discoverArchivedThreads = adapter.discoverArchivedThreads?.bind(adapter);
   return {
     modes: adapter.modes,
     lifecycleCapabilities: adapter.lifecycleCapabilities,
@@ -82,15 +85,9 @@ function bridgeWorkBuddyAdapter(
       : undefined,
     onCommandsChanged: adapter.onCommandsChanged?.bind(adapter),
     onCatalogsChanged: adapter.onCatalogsChanged?.bind(adapter),
-    discoverThreads: adapter.discoverThreads
-      ? async (workspace) => (await adapter.discoverThreads?.(binding, workspace)) ?? []
-      : undefined,
-    discoverAllThreads: adapter.discoverAllThreads
-      ? async () => (await adapter.discoverAllThreads?.(binding)) ?? []
-      : undefined,
-    discoverArchivedThreads: adapter.discoverArchivedThreads
-      ? async () => (await adapter.discoverArchivedThreads?.(binding)) ?? []
-      : undefined,
+    discoverThreads: discoverThreads ? async (workspace) => await discoverThreads(binding, workspace) : undefined,
+    discoverAllThreads: discoverAllThreads ? async () => await discoverAllThreads(binding) : undefined,
+    discoverArchivedThreads: discoverArchivedThreads ? async () => await discoverArchivedThreads(binding) : undefined,
     verifyThreadReady: adapter.verifyThreadReady
       ? async (runtimeThreadId) => await adapter.verifyThreadReady?.(binding, runtimeThreadId)
       : undefined,

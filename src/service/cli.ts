@@ -1308,7 +1308,27 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
     return;
   }
   if (field === "model") {
-    binding.model = value;
+    const trimmed = value.trim();
+    if (!trimmed) throw new Error("Agent Binding model must not be empty");
+    if (!trimmed.startsWith("{")) {
+      binding.model = { model: trimmed };
+      return;
+    }
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Agent Binding model must be a structured model selection");
+    }
+    const selection = parsed as Record<string, unknown>;
+    if (typeof selection.model !== "string" || !selection.model.trim()) {
+      throw new Error("Agent Binding model.model must not be empty");
+    }
+    if (selection.provider !== undefined && (typeof selection.provider !== "string" || !selection.provider.trim())) {
+      throw new Error("Agent Binding model.provider must not be empty");
+    }
+    binding.model = {
+      ...(typeof selection.provider === "string" ? { provider: selection.provider.trim() } : {}),
+      model: selection.model.trim(),
+    };
     return;
   }
   if (field === "modelReasoningEffort") {

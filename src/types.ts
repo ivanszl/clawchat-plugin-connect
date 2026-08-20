@@ -6,6 +6,10 @@ export const AGENT_TYPE = "clawbot" as const;
 export type OutputVisibility = "minimal" | "normal" | "full";
 export type ChatType = "direct" | "group";
 export type ClientHost = "127.0.0.1" | "0.0.0.0";
+export interface RuntimeModelSelection {
+  provider?: string;
+  model: string;
+}
 
 export interface AgentBindingConfigBase {
   outputVisibility?: OutputVisibility;
@@ -16,7 +20,7 @@ export interface AgentBindingConfigBase {
 export interface AgentBindingConfig extends AgentBindingConfigBase {
   runtime: RuntimeCapabilityRef;
   runtimeConfig: Record<string, unknown>;
-  model?: string;
+  model?: RuntimeModelSelection;
   modelReasoningEffort?: string;
 }
 
@@ -71,7 +75,7 @@ export interface RuntimeSessionRecord {
   workspaceRef: string | null;
   name: string | null;
   mode: string | null;
-  model: string | null;
+  model: RuntimeModelSelection | null;
   reasoningEffort: string | null;
   sessionOptions?: Record<string, string>;
   hasMessages: boolean;
@@ -85,7 +89,7 @@ export interface SessionIntentRecord {
   workspaceRef: string | null;
   name: string | null;
   mode: string | null;
-  model: string | null;
+  model: RuntimeModelSelection | null;
   reasoningEffort: string | null;
   sessionOptions?: Record<string, string>;
   updatedAt: number;

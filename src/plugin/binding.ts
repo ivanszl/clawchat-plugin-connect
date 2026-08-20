@@ -1,4 +1,4 @@
-import type { AgentBindingConfig, OutputVisibility } from "../types";
+import type { AgentBindingConfig, OutputVisibility, RuntimeModelSelection } from "../types";
 import type { RuntimeCapabilityRef } from "./sdk";
 
 const BINDING_FIELDS: Readonly<Record<string, true>> = {
@@ -64,7 +64,7 @@ export function normalizeAgentBinding(agentId: string, raw: unknown): AgentBindi
   }
 
   const displayName = optionalString(record.displayName);
-  const model = optionalString(record.model);
+  const model = optionalRuntimeModelSelection(record.model, agentId);
   const modelReasoningEffort = optionalString(record.modelReasoningEffort);
   const outputVisibility = optionalOutputVisibility(record.outputVisibility, agentId);
   const sessionOptions = optionalStringConfiguration(record.sessionOptions, agentId, "Session option");
@@ -78,6 +78,26 @@ export function normalizeAgentBinding(agentId: string, raw: unknown): AgentBindi
     ...(outputVisibility ? { outputVisibility } : {}),
     ...(sessionOptions ? { sessionOptions } : {}),
   };
+}
+
+function optionalRuntimeModelSelection(value: unknown, agentId: string): RuntimeModelSelection | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Agent Binding ${agentId} model must be a structured model selection`);
+  }
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "provider" && key !== "model")) {
+    throw new Error(`Agent Binding ${agentId} model may contain only provider and model`);
+  }
+  const model = typeof record.model === "string" ? record.model.trim() : "";
+  const provider = typeof record.provider === "string" ? record.provider.trim() : "";
+  if (!model || model.length > 200) {
+    throw new Error(`Agent Binding ${agentId} model.model must contain at most 200 characters`);
+  }
+  if (record.provider !== undefined && (!provider || provider.length > 200)) {
+    throw new Error(`Agent Binding ${agentId} model.provider must contain at most 200 characters`);
+  }
+  return { ...(provider ? { provider } : {}), model };
 }
 
 function stableIdentity(value: unknown, label: string): string {

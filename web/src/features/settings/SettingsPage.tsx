@@ -10,16 +10,18 @@ import { List, ListItem } from "@astryxdesign/core/List";
 import { Section } from "@astryxdesign/core/Section";
 import { Selector } from "@astryxdesign/core/Selector";
 import { HStack, VStack } from "@astryxdesign/core/Stack";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { Text } from "@astryxdesign/core/Text";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
-import type {
-  BindingPreferenceView,
-  BootstrapView,
-  PluginJsonSchemaView,
-  WorkspaceDirectoryRequest,
-  WorkspaceView,
+import {
+  type BindingPreferenceView,
+  type BootstrapView,
+  type PluginJsonSchemaView,
+  runtimeModelSelectionsEqual,
+  type WorkspaceDirectoryRequest,
+  type WorkspaceView,
 } from "../../../../src/client-contract";
 import {
   addWorkspace,
@@ -45,10 +47,14 @@ type RuntimeCapabilityOption = {
   configurationSchema: PluginJsonSchemaView;
 };
 
+type SettingsTab = "agent" | "workspace" | "plugins";
+
 export function SettingsPage() {
   const t = useClientTranslator();
   const bootstrap = useQuery(bootstrapQueryOptions);
   const plugins = useQuery(pluginAdministrationQueryOptions);
+  const [activeTab, setActiveTab] = useState<SettingsTab>("agent");
+  const [selectedBindingId, setSelectedBindingId] = useState("");
   const runtimeCapabilities = useMemo(
     () =>
       (plugins.data?.installed ?? [])
@@ -76,6 +82,9 @@ export function SettingsPage() {
     [plugins.data, t],
   );
   if (!bootstrap.data) return null;
+  const bindings = bootstrap.data.bindings;
+  const selectedBinding = bindings.find((binding) => binding.bindingId === selectedBindingId) ?? bindings[0] ?? null;
+
   return (
     <Layout
       height="fill"
@@ -90,30 +99,48 @@ export function SettingsPage() {
               <Heading level={1}>{t("@connect.settings.title")}</Heading>
               <Text type="supporting">{t("@connect.settings.description")}</Text>
             </VStack>
-            <Banner
-              status="info"
-              title={t("@connect.settings.continuity.title")}
-              description={t("@connect.settings.continuity.description")}
-              container="section"
-            />
-            <VStack gap={4}>
-              <NewBindingSettings
-                runtimeCapabilities={runtimeCapabilities}
-                capabilitiesPending={plugins.isPending}
-                capabilitiesError={plugins.error}
-              />
-              {bootstrap.data.bindings.map((binding) => (
-                <BindingSettings
-                  key={binding.bindingId}
-                  binding={binding}
-                  runtimeCapabilities={runtimeCapabilities}
-                  capabilitiesPending={plugins.isPending}
-                  capabilitiesError={plugins.error}
-                />
-              ))}
-              <PluginSettings />
-              <WorkspaceSettings bindings={bootstrap.data.bindings} />
-            </VStack>
+            <TabList
+              value={activeTab}
+              onChange={(value) => setActiveTab(value as SettingsTab)}
+              layout="fill"
+              hasDivider
+            >
+              <Tab value="agent" label={t("@connect.settings.tabs.agent")} />
+              <Tab value="workspace" label={t("@connect.settings.tabs.workspace")} />
+              <Tab value="plugins" label={t("@connect.settings.tabs.plugins")} />
+            </TabList>
+            {activeTab === "plugins" ? <PluginSettings /> : null}
+            {activeTab !== "plugins" ? (
+              <VStack gap={4}>
+                {selectedBinding ? (
+                  <BindingContextSelector
+                    bindings={bindings}
+                    value={selectedBinding.bindingId}
+                    onChange={setSelectedBindingId}
+                  />
+                ) : null}
+                {activeTab === "agent" ? (
+                  <VStack gap={4}>
+                    {selectedBinding ? (
+                      <BindingSettings
+                        binding={selectedBinding}
+                        runtimeCapabilities={runtimeCapabilities}
+                        capabilitiesPending={plugins.isPending}
+                        capabilitiesError={plugins.error}
+                      />
+                    ) : null}
+                    <NewBindingSettings
+                      runtimeCapabilities={runtimeCapabilities}
+                      capabilitiesPending={plugins.isPending}
+                      capabilitiesError={plugins.error}
+                    />
+                  </VStack>
+                ) : null}
+                {activeTab === "workspace" && selectedBinding ? (
+                  <WorkspaceSettings key={selectedBinding.bindingId} binding={selectedBinding} />
+                ) : null}
+              </VStack>
+            ) : null}
           </VStack>
         </LayoutContent>
       }
@@ -126,6 +153,31 @@ type RuntimeCapabilityProps = {
   capabilitiesPending: boolean;
   capabilitiesError: Error | null;
 };
+
+function BindingContextSelector({
+  bindings,
+  value,
+  onChange,
+}: {
+  bindings: BindingPreferenceView[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const t = useClientTranslator();
+  return (
+    <Selector
+      label={t("@connect.newSession.binding.label")}
+      options={bindings.map((binding) => ({
+        value: binding.bindingId,
+        label: `${binding.displayName} (${binding.bindingId})`,
+      }))}
+      value={value}
+      onChange={onChange}
+      isDisabled={bindings.length < 2}
+      width="100%"
+    />
+  );
+}
 
 function NewBindingSettings({ runtimeCapabilities, capabilitiesPending, capabilitiesError }: RuntimeCapabilityProps) {
   const t = useClientTranslator();
@@ -275,7 +327,9 @@ function BindingSettings({
   const t = useClientTranslator();
   const queryClient = useQueryClient();
   const [displayName, setDisplayName] = useState(binding.displayName);
-  const [model, setModel] = useState(binding.model ?? "");
+  const [model, setModel] = useState(
+    binding.modelOptions.find((option) => runtimeModelSelectionsEqual(option.selection, binding.model))?.id ?? "",
+  );
   const [effort, setEffort] = useState(binding.modelReasoningEffort ?? "default");
   const [visibility, setVisibility] = useState(binding.outputVisibility);
   const [providerValue, setProviderValue] = useState(
@@ -301,7 +355,9 @@ function BindingSettings({
   }, []);
   useEffect(() => {
     setDisplayName(binding.displayName);
-    setModel(binding.model ?? "");
+    setModel(
+      binding.modelOptions.find((option) => runtimeModelSelectionsEqual(option.selection, binding.model))?.id ?? "",
+    );
     setEffort(binding.modelReasoningEffort ?? "default");
     setVisibility(binding.outputVisibility);
     setProviderValue(runtimeCapabilityValue(binding.runtimePluginId, binding.runtimeCapabilityId));
@@ -310,6 +366,7 @@ function BindingSettings({
   }, [
     binding.displayName,
     binding.model,
+    binding.modelOptions,
     binding.modelReasoningEffort,
     binding.outputVisibility,
     binding.runtimePluginId,
@@ -320,7 +377,7 @@ function BindingSettings({
     mutationFn: async () =>
       await updateBindingPreferences(binding.bindingId, {
         displayName,
-        model: model.trim() || null,
+        model: selectedModel && model ? selectedModel.selection : null,
         modelReasoningEffort: effort === "default" ? null : effort,
         outputVisibility: visibility,
       }),
@@ -548,11 +605,11 @@ function updatedInvalidFieldIds(current: Set<string>, fieldId: string, valid: bo
   return next;
 }
 
-function WorkspaceSettings({ bindings }: { bindings: BindingPreferenceView[] }) {
+function WorkspaceSettings({ binding }: { binding: BindingPreferenceView }) {
   const t = useClientTranslator();
   const queryClient = useQueryClient();
-  const [bindingId, setBindingId] = useState(bindings[0]?.bindingId ?? "");
-  const workspaces = useQuery(workspacesQueryOptions(bindingId || null));
+  const bindingId = binding.bindingId;
+  const workspaces = useQuery(workspacesQueryOptions(bindingId));
   const [directory, setDirectory] = useState<WorkspaceDirectoryRequest | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [removalTarget, setRemovalTarget] = useState<WorkspaceListItem | null>(null);
@@ -602,21 +659,6 @@ function WorkspaceSettings({ bindings }: { bindings: BindingPreferenceView[] }) 
               />
             </HStack>
           </HStack>
-          <Selector
-            label={t("@connect.newSession.binding.label")}
-            options={bindings.map((binding) => ({
-              value: binding.bindingId,
-              label: `${binding.displayName} (${binding.bindingId})`,
-            }))}
-            value={bindingId}
-            onChange={(value) => {
-              setBindingId(value);
-              setDirectory(null);
-              setLastRemovedWorkspace(null);
-              setRemovalTarget(null);
-            }}
-            width="100%"
-          />
           {directory ? (
             <Section variant="muted">
               <VStack gap={1}>

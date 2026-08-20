@@ -17,10 +17,10 @@ test -f "$client_directory/index.html"
 test -d "$official_plugins_directory"
 case "$plugin_target" in
   darwin-arm64 | darwin-x64)
-    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode clawling.runtime.workbuddy clawling.exposure.liveware"
+    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.deepseek-harness clawling.runtime.opencode clawling.runtime.workbuddy clawling.exposure.liveware"
     ;;
   linux-arm64 | linux-x64)
-    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode clawling.exposure.liveware"
+    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.deepseek-harness clawling.runtime.opencode clawling.exposure.liveware"
     ;;
   *)
     printf 'Unsupported official Plugin target: %s\n' "$plugin_target" >&2

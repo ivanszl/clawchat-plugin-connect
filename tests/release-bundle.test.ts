@@ -8,6 +8,7 @@ import { CONNECT_VERSION } from "../src/service/version";
 
 const PORTABLE_OFFICIAL_PLUGIN_BUNDLES = [
   "clawling.runtime.codex-0.0.0-test.connect-plugin",
+  "clawling.runtime.deepseek-harness-0.0.0-test.connect-plugin",
   "clawling.runtime.opencode-0.0.0-test.connect-plugin",
   "clawling.exposure.liveware-0.0.0-test.connect-plugin",
 ] as const;
@@ -63,6 +64,7 @@ describe("standalone release bundle", () => {
     expect(posixPackager).toContain("darwin-arm64 | darwin-x64");
     expect(posixPackager).toContain("linux-arm64 | linux-x64");
     expect(windowsPackager).not.toContain("clawling.runtime.workbuddy");
+    expect(windowsPackager).toContain("clawling.runtime.deepseek-harness");
     expect(posixPackager).toContain("clawling.exposure.liveware");
     expect(windowsPackager).toContain("clawling.exposure.liveware");
   });
@@ -346,6 +348,7 @@ describe("standalone release bundle", () => {
   it("ships a checksum-verifying PowerShell installer and Windows release targets", async () => {
     const installer = await readFile("install.ps1", "utf8");
     expect(installer).toContain("clawling.runtime.codex");
+    expect(installer).toContain("clawling.runtime.deepseek-harness");
     expect(installer).toContain("clawling.runtime.opencode");
     expect(installer).not.toContain("clawling.runtime.workbuddy");
     expect(installer).toContain("raw.githubusercontent.com/$repository/release-channel/latest-beta.txt");

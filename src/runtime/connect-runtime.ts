@@ -250,6 +250,7 @@ export class ConnectRuntime {
     media: ConnectRuntimeMedia[] = [],
     selection: RuntimeSlashSelection | null = null,
     signal?: AbortSignal,
+    requestedTurnId?: string,
   ): Promise<{ turnId: string; sessionRef: string }> {
     signal?.throwIfAborted();
     const text = prompt;
@@ -265,7 +266,12 @@ export class ConnectRuntime {
         `Session ${current.sessionRef} belongs to a different Agent Binding`,
       );
     }
-    const turnId = randomUUID();
+    const turnId = requestedTurnId?.trim() || randomUUID();
+    const existing = this.clientTurnTickets.get(turnId);
+    if (existing) {
+      if (existing.turn.sessionRef !== current.sessionRef) throw new Error(`Turn ${turnId} belongs to another Session`);
+      return { turnId, sessionRef: current.sessionRef };
+    }
     const key = sessionKey(current.chatId, current.sessionId);
     let ticket: SessionQueueTicket;
     try {
@@ -463,7 +469,8 @@ export class ConnectRuntime {
         : null;
     if (!workspace) return [];
     const sessions = await this.options.stateStore.listRuntimeSessions(chatId, this.options.agentId);
-    const discovered = await this.runtimeAdapters.discoverThreads(binding, workspace);
+    const discovery = await this.runtimeAdapters.discoverThreads(binding, workspace);
+    const discovered = discovery.threads.filter((thread) => thread.adoption.status === "available");
     const discoveriesById = new Map(discovered.map((thread) => [thread.runtimeThreadId, thread]));
     await Promise.all(
       sessions.map(async (session) => {
@@ -479,7 +486,7 @@ export class ConnectRuntime {
     return await Promise.all(
       discovered
         .filter((thread) => !managed.has(thread.runtimeThreadId))
-        .map(async (thread) => ({
+        .map(async ({ adoption: _adoption, ...thread }) => ({
           ...thread,
           sessionRef: await this.options.stateStore.getOrCreateSessionRef({
             chatId,

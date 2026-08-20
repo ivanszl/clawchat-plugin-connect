@@ -652,7 +652,7 @@ describe("OpenCode Runtime Adapter", () => {
         supportedReasoningEfforts: ["low", "high"],
       }),
     ]);
-    expect(await adapter.discoverAllThreads?.(binding)).toEqual([
+    expect((await adapter.discoverAllThreads?.(binding))?.threads).toEqual([
       expect.objectContaining({
         runtimeThreadId: "session-1",
         name: "Existing work",
@@ -667,7 +667,7 @@ describe("OpenCode Runtime Adapter", () => {
       }),
     );
     expect(
-      (await adapter.discoverAllThreads?.(binding))?.find((thread) => thread.runtimeThreadId === "isolated-1"),
+      (await adapter.discoverAllThreads?.(binding))?.threads.find((thread) => thread.runtimeThreadId === "isolated-1"),
     ).toMatchObject({
       workspaceKind: "transient",
       workspaceIdentity: { kind: "transient" },
@@ -687,7 +687,9 @@ describe("OpenCode Runtime Adapter", () => {
 
     const threads = await adapter.discoverAllThreads?.(pluginBinding());
 
-    expect(threads).toEqual([expect.objectContaining({ runtimeThreadId: "session-1", workingDirectory: directory })]);
+    expect(threads?.threads).toEqual([
+      expect.objectContaining({ runtimeThreadId: "session-1", workingDirectory: directory }),
+    ]);
     await adapter.close?.();
   });
 
@@ -1167,7 +1169,7 @@ describe("OpenCode Runtime Adapter", () => {
     };
     const submissions = new TurnSubmission({
       capabilityFor: async () => capability,
-      staging: { stage: async () => ({ rollback, transfer }) },
+      staging: { stage: async () => ({ reference: "staged", digest: "digest", rollback, transfer }) },
       accept,
     });
 

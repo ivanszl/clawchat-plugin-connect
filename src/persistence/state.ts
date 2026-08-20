@@ -14,6 +14,7 @@ import {
   type ActivationCredentials,
   type OutputVisibility,
   PLATFORM_ID,
+  type RuntimeModelSelection,
   type RuntimeSessionRecord,
   type RuntimeStatus,
   type SessionIntentRecord,
@@ -61,6 +62,8 @@ import type {
   ClientCommandClaim,
   ClientCommandOutcome,
   ConnectStateOptions,
+  CreateTurnOutboxInput,
+  CreateTurnOutboxResult,
   GroupSettingsRecord,
   GroupSettingsSnapshotRecord,
   HandledInboundMessage,
@@ -83,6 +86,7 @@ import type {
   StoredClientEvent,
   ToolRequestRecord,
   TranscriptBlockInput,
+  TurnOutboxRecord,
   UpsertRuntimeSessionInput,
 } from "./state-types";
 export const MAX_PLUGIN_DURABLE_STATE_BYTES = 1024 * 1024;
@@ -355,7 +359,6 @@ export class ConnectStateStore {
         );
       }
 
-      run("DELETE FROM turn_submission_cancellations");
       run("DELETE FROM transcript_blocks");
       run("DELETE FROM session_lifecycle_operations");
       run("DELETE FROM client_commands");
@@ -387,11 +390,6 @@ export class ConnectStateStore {
     const bindingId = requireStateString(localAgentId, "Agent Binding ID");
     const db = await this.requireDb();
     db.transaction((run) => {
-      run(
-        `DELETE FROM turn_submission_cancellations
-          WHERE session_ref IN (SELECT session_ref FROM session_refs WHERE agent_id = ?)`,
-        bindingId,
-      );
       run(
         `DELETE FROM transcript_blocks
           WHERE session_ref IN (SELECT session_ref FROM session_refs WHERE agent_id = ?)`,
@@ -899,7 +897,7 @@ export class ConnectStateStore {
       input.workspaceRef ?? null,
       input.name ?? null,
       input.mode ?? null,
-      input.model ?? null,
+      toJson(input.model),
       input.reasoningEffort ?? null,
       JSON.stringify(input.sessionOptions ?? {}),
       input.hasMessages === false ? 0 : 1,
@@ -967,7 +965,7 @@ export class ConnectStateStore {
         input.workspaceRef,
         input.name ?? null,
         input.mode ?? null,
-        input.model ?? null,
+        toJson(input.model),
         input.reasoningEffort ?? null,
         JSON.stringify(input.sessionOptions ?? {}),
         now,
@@ -991,13 +989,13 @@ export class ConnectStateStore {
     chatId: string,
     agentId: string,
     sessionId: string,
-    model: string | null,
+    model: RuntimeModelSelection | null,
     reasoningEffort: string | null,
   ): Promise<boolean> {
     const db = await this.requireDb();
     const result = await db.run(
       "UPDATE runtime_sessions SET model = ?, reasoning_effort = ?, updated_at = ? WHERE chat_id = ? AND agent_id = ? AND session_id = ?",
-      model,
+      toJson(model),
       reasoningEffort,
       Date.now(),
       chatId,
@@ -1037,7 +1035,7 @@ export class ConnectStateStore {
         input.workspaceRef,
         input.name ?? null,
         input.mode ?? null,
-        input.model ?? null,
+        toJson(input.model),
         input.reasoningEffort ?? null,
         JSON.stringify(input.sessionOptions ?? {}),
         now,
@@ -1854,62 +1852,205 @@ export class ConnectStateStore {
   async deleteExpiredClientCommands(now = Date.now()): Promise<void> {
     const db = await this.requireDb();
     await db.run("DELETE FROM client_commands WHERE created_at < ?", now - 24 * 60 * 60 * 1_000);
-    await db.run("DELETE FROM turn_submission_cancellations WHERE created_at < ?", now - 24 * 60 * 60 * 1_000);
+    await db.run("DELETE FROM turn_outbox WHERE state = 'accepted' AND updated_at < ?", now - 24 * 60 * 60 * 1_000);
   }
 
-  async cancelTurnSubmission(submissionId: string, sessionRef: string): Promise<boolean> {
+  async createTurnOutbox(input: CreateTurnOutboxInput): Promise<CreateTurnOutboxResult> {
+    const db = await this.requireDb();
+    const now = Date.now();
+    return db.transaction((run, get) => {
+      if (
+        get<{ present: number }>(
+          "SELECT 1 AS present FROM client_commands WHERE request_id = ? LIMIT 1",
+          input.submissionId,
+        )
+      ) {
+        return { created: false, reason: "reserved" };
+      }
+      const inserted = run(
+        `INSERT OR IGNORE INTO turn_outbox(
+           submission_id, session_ref, message_id, digest, prompt, selection_json, staging_ref,
+           state, turn_id, error_json, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, ?, ?)`,
+        input.submissionId,
+        input.sessionRef,
+        input.messageId,
+        input.digest,
+        input.prompt,
+        input.selection ? JSON.stringify(input.selection) : null,
+        input.stagingRef,
+        now,
+        now,
+      );
+      const row = get<Record<string, unknown>>("SELECT * FROM turn_outbox WHERE submission_id = ?", input.submissionId);
+      if (!row) throw new Error("Turn Outbox submission was not persisted");
+      const record = turnOutboxRecordFromRow(row);
+      if (inserted.changes > 0) return { created: true, record };
+      if (
+        record.sessionRef === input.sessionRef &&
+        record.messageId === input.messageId &&
+        record.digest === input.digest
+      ) {
+        return { created: false, reason: "existing", record };
+      }
+      return { created: false, reason: "conflict", record };
+    });
+  }
+
+  async getTurnOutbox(submissionId: string): Promise<TurnOutboxRecord | null> {
+    const db = await this.requireDb();
+    const row = await db.get<Record<string, unknown>>(
+      "SELECT * FROM turn_outbox WHERE submission_id = ?",
+      submissionId,
+    );
+    return row ? turnOutboxRecordFromRow(row) : null;
+  }
+
+  async claimNextTurnOutbox(): Promise<TurnOutboxRecord | null> {
+    const db = await this.requireDb();
+    return db.transaction((run, get) => {
+      const candidate = get<Record<string, unknown>>(
+        `SELECT candidate.*
+           FROM turn_outbox AS candidate
+          WHERE candidate.state = 'pending'
+            AND NOT EXISTS (
+              SELECT 1
+                FROM turn_outbox AS blocker
+               WHERE blocker.session_ref = candidate.session_ref
+                 AND blocker.state IN ('pending', 'delivering', 'failed')
+                 AND (
+                   blocker.created_at < candidate.created_at
+                   OR (blocker.created_at = candidate.created_at AND blocker.submission_id < candidate.submission_id)
+                 )
+            )
+          ORDER BY candidate.created_at, candidate.submission_id
+          LIMIT 1`,
+      );
+      if (!candidate) return null;
+      const submissionId = stringValue(candidate.submission_id);
+      const now = Date.now();
+      const claimed = run(
+        "UPDATE turn_outbox SET state = 'delivering', updated_at = ? WHERE submission_id = ? AND state = 'pending'",
+        now,
+        submissionId,
+      );
+      if (claimed.changes !== 1) return null;
+      const row = get<Record<string, unknown>>("SELECT * FROM turn_outbox WHERE submission_id = ?", submissionId);
+      return row ? turnOutboxRecordFromRow(row) : null;
+    });
+  }
+
+  async acceptTurnOutbox(submissionId: string, turnId: string): Promise<TurnOutboxRecord | null> {
     const db = await this.requireDb();
     await db.run(
-      "INSERT OR IGNORE INTO turn_submission_cancellations(submission_id, session_ref, created_at) VALUES (?, ?, ?)",
-      submissionId,
-      sessionRef,
+      "UPDATE turn_outbox SET state = 'accepted', turn_id = ?, error_json = NULL, updated_at = ? WHERE submission_id = ? AND state = 'delivering'",
+      turnId,
       Date.now(),
-    );
-    const row = await db.get<{ session_ref: string }>(
-      "SELECT session_ref FROM turn_submission_cancellations WHERE submission_id = ?",
       submissionId,
     );
-    return row?.session_ref === sessionRef;
+    return await this.getTurnOutbox(submissionId);
   }
 
-  async isTurnSubmissionCancelled(submissionId: string, sessionRef: string): Promise<boolean> {
+  async failTurnOutbox(
+    submissionId: string,
+    error: TurnOutboxRecord["error"],
+    fromStates: Array<TurnOutboxRecord["state"]> = ["delivering"],
+  ): Promise<TurnOutboxRecord | null> {
+    if (!error || fromStates.length === 0) return await this.getTurnOutbox(submissionId);
     const db = await this.requireDb();
-    const row = await db.get<{ present: number }>(
-      "SELECT 1 AS present FROM turn_submission_cancellations WHERE submission_id = ? AND session_ref = ?",
+    const placeholders = fromStates.map(() => "?").join(", ");
+    await db.run(
+      `UPDATE turn_outbox
+          SET state = 'failed', error_json = ?, updated_at = ?
+        WHERE submission_id = ? AND state IN (${placeholders})`,
+      JSON.stringify(error),
+      Date.now(),
+      submissionId,
+      ...fromStates,
+    );
+    return await this.getTurnOutbox(submissionId);
+  }
+
+  async failInterruptedTurnOutbox(error: NonNullable<TurnOutboxRecord["error"]>): Promise<number> {
+    const db = await this.requireDb();
+    const result = await db.run(
+      "UPDATE turn_outbox SET state = 'failed', error_json = ?, updated_at = ? WHERE state = 'delivering'",
+      JSON.stringify(error),
+      Date.now(),
+    );
+    return result.changes;
+  }
+
+  async retryTurnOutbox(submissionId: string, sessionRef: string): Promise<TurnOutboxRecord | null> {
+    const db = await this.requireDb();
+    await db.run(
+      "UPDATE turn_outbox SET state = 'pending', turn_id = NULL, error_json = NULL, updated_at = ? WHERE submission_id = ? AND session_ref = ? AND state = 'failed'",
+      Date.now(),
       submissionId,
       sessionRef,
     );
-    return row?.present === 1;
+    return await this.getTurnOutbox(submissionId);
+  }
+
+  async discardTurnOutbox(submissionId: string, sessionRef: string): Promise<TurnOutboxRecord | null> {
+    const db = await this.requireDb();
+    return db.transaction((run, get) => {
+      const row = get<Record<string, unknown>>(
+        "SELECT * FROM turn_outbox WHERE submission_id = ? AND session_ref = ? AND state IN ('pending', 'failed')",
+        submissionId,
+        sessionRef,
+      );
+      if (!row) return null;
+      run(
+        "DELETE FROM turn_outbox WHERE submission_id = ? AND session_ref = ? AND state IN ('pending', 'failed')",
+        submissionId,
+        sessionRef,
+      );
+      return turnOutboxRecordFromRow(row);
+    });
+  }
+
+  async listRecoverableTurnOutbox(): Promise<TurnOutboxRecord[]> {
+    const db = await this.requireDb();
+    const rows = await db.all<Record<string, unknown>[]>(
+      "SELECT * FROM turn_outbox WHERE state IN ('pending', 'delivering', 'failed') ORDER BY created_at, submission_id",
+    );
+    return rows.map(turnOutboxRecordFromRow);
   }
 
   async claimClientCommand(requestId: string, commandKind: string, entityRef: string): Promise<ClientCommandClaim> {
     const db = await this.requireDb();
-    const inserted = await db.run(
-      "INSERT OR IGNORE INTO client_commands(request_id, command_kind, entity_ref, response_status, response_json, created_at, completed_at) VALUES (?, ?, ?, NULL, NULL, ?, NULL)",
-      requestId,
-      commandKind,
-      entityRef,
-      Date.now(),
-    );
-    if (inserted.changes > 0) return { state: "claimed" };
-    const row = await db.get<{
-      command_kind: string;
-      entity_ref: string;
-      response_status: number | null;
-      response_json: string | null;
-    }>(
-      "SELECT command_kind, entity_ref, response_status, response_json FROM client_commands WHERE request_id = ?",
-      requestId,
-    );
-    if (!row || row.command_kind !== commandKind || row.entity_ref !== entityRef) {
-      return { state: "conflict" };
-    }
-    if (row.response_status == null || row.response_json == null) return { state: "pending" };
-    try {
-      return { state: "complete", responseStatus: row.response_status, responseBody: JSON.parse(row.response_json) };
-    } catch {
-      throw new Error("stored Client command response is invalid");
-    }
+    return db.transaction((run, get) => {
+      if (get<{ present: number }>("SELECT 1 AS present FROM turn_outbox WHERE submission_id = ? LIMIT 1", requestId)) {
+        return { state: "conflict" };
+      }
+      const inserted = run(
+        "INSERT OR IGNORE INTO client_commands(request_id, command_kind, entity_ref, response_status, response_json, created_at, completed_at) VALUES (?, ?, ?, NULL, NULL, ?, NULL)",
+        requestId,
+        commandKind,
+        entityRef,
+        Date.now(),
+      );
+      if (inserted.changes > 0) return { state: "claimed" };
+      const row = get<{
+        command_kind: string;
+        entity_ref: string;
+        response_status: number | null;
+        response_json: string | null;
+      }>(
+        "SELECT command_kind, entity_ref, response_status, response_json FROM client_commands WHERE request_id = ?",
+        requestId,
+      );
+      if (!row || row.command_kind !== commandKind || row.entity_ref !== entityRef) {
+        return { state: "conflict" };
+      }
+      if (row.response_status == null || row.response_json == null) return { state: "pending" };
+      try {
+        return { state: "complete", responseStatus: row.response_status, responseBody: JSON.parse(row.response_json) };
+      } catch {
+        throw new Error("stored Client command response is invalid");
+      }
+    });
   }
 
   async getClientCommandOutcome(requestId: string): Promise<ClientCommandOutcome> {
@@ -2174,6 +2315,56 @@ export class ConnectStateStore {
       expired += 1;
     }
     return expired;
+  }
+  async getTranscriptBlock(sessionRef: string, blockId: string): Promise<TranscriptBlock | null> {
+    const db = await this.requireDb();
+    const row = await db.get<{ block_json: string }>(
+      "SELECT block_json FROM transcript_blocks WHERE session_ref = ? AND block_id = ?",
+      sessionRef,
+      blockId,
+    );
+    if (!row) return null;
+    try {
+      return JSON.parse(row.block_json) as TranscriptBlock;
+    } catch {
+      return null;
+    }
+  }
+
+  async removeTranscriptBlock(sessionRef: string, blockId: string): Promise<boolean> {
+    const db = await this.requireDb();
+    return db.transaction((run, get) => {
+      const row = get<{ revision: number }>(
+        "SELECT revision FROM transcript_blocks WHERE session_ref = ? AND block_id = ?",
+        sessionRef,
+        blockId,
+      );
+      if (!row) return false;
+      const removed = run(
+        "DELETE FROM transcript_blocks WHERE session_ref = ? AND block_id = ? AND revision = ?",
+        sessionRef,
+        blockId,
+        row.revision,
+      );
+      if (removed.changes !== 1) return false;
+      const event = {
+        type: "transcript.block-removed",
+        cursor: 0,
+        sessionRef,
+        revision: row.revision + 1,
+        blockId,
+      } satisfies ClientViewEvent;
+      const stored = clientEventStorage(event);
+      run(
+        "INSERT INTO client_events(event_type, entity_ref, revision, event_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        stored.type,
+        sessionRef,
+        event.revision,
+        stored.json,
+        Date.now(),
+      );
+      return true;
+    });
   }
 
   async rekeyTranscriptBlock(
@@ -2944,6 +3135,37 @@ export class ConnectStateStore {
     return this.db;
   }
 }
+function turnOutboxRecordFromRow(row: Record<string, unknown>): TurnOutboxRecord {
+  const state = stringValue(row.state);
+  if (state !== "pending" && state !== "delivering" && state !== "accepted" && state !== "failed") {
+    throw new Error("stored Turn Outbox state is invalid");
+  }
+  const selectionJson = nullableString(row.selection_json);
+  const errorJson = nullableString(row.error_json);
+  let selection: TurnOutboxRecord["selection"] = null;
+  let error: TurnOutboxRecord["error"] = null;
+  try {
+    selection = selectionJson ? (JSON.parse(selectionJson) as TurnOutboxRecord["selection"]) : null;
+    error = errorJson ? (JSON.parse(errorJson) as TurnOutboxRecord["error"]) : null;
+  } catch {
+    throw new Error("stored Turn Outbox JSON is invalid");
+  }
+  return {
+    submissionId: stringValue(row.submission_id),
+    sessionRef: stringValue(row.session_ref),
+    messageId: stringValue(row.message_id),
+    digest: stringValue(row.digest),
+    prompt: stringValue(row.prompt),
+    selection,
+    stagingRef: stringValue(row.staging_ref),
+    state,
+    turnId: nullableString(row.turn_id),
+    error,
+    createdAt: numberValue(row.created_at),
+    updatedAt: numberValue(row.updated_at),
+  };
+}
+
 function validatePluginDurableStateNamespace(namespace: PluginDurableStateNamespace): void {
   for (const [label, value] of [
     ["Plugin", namespace.pluginId],

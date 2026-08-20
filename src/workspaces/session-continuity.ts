@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ConnectStateStore, SessionLifecycleAction, SessionLifecycleOperationRecord } from "../persistence/state";
 import { type RuntimeLifecycleCapabilities, RuntimeLifecycleError } from "../runtime/types";
-import type { RuntimeSessionRecord } from "../types";
+import type { RuntimeModelSelection, RuntimeSessionRecord } from "../types";
 
 export type TurnOrigin = "client" | "clawchat";
 
@@ -14,7 +14,7 @@ export interface SessionSelection {
   workspaceRef: string;
   name: string | null;
   mode: string | null;
-  model: string | null;
+  model: RuntimeModelSelection | null;
   reasoningEffort: string | null;
   sessionOptions?: Record<string, string>;
 }
@@ -38,7 +38,7 @@ export interface ConversationSessions {
   switchTo(sessionId: string): Promise<boolean>;
   adopt(input: { sessionRef: string; sessionId: string; selection: SessionSelection }): Promise<SessionTarget | null>;
   changeMode(mode: string | null): Promise<"intent" | "session">;
-  changeModel(model: string | null, reasoningEffort: string | null): Promise<"intent" | "session">;
+  changeModel(model: RuntimeModelSelection | null, reasoningEffort: string | null): Promise<"intent" | "session">;
   changeSessionOptions(sessionOptions: Record<string, string>): Promise<"intent" | "session">;
 }
 
@@ -62,7 +62,7 @@ export interface SessionLifecycle {
   changeBinding(bindingId: string): Promise<void>;
   continueWith(bindingId: string): Promise<SessionTarget>;
   attachRuntimeThread(runtimeThreadId: string | null): Promise<void>;
-  changeModel(model: string | null, reasoningEffort: string | null): Promise<void>;
+  changeModel(model: RuntimeModelSelection | null, reasoningEffort: string | null): Promise<void>;
   changeSessionOptions(sessionOptions: Record<string, string>): Promise<void>;
   associateWorkspaceRef(workspaceRef: string): Promise<void>;
   discardEmpty(): Promise<void>;

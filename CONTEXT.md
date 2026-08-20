@@ -29,8 +29,28 @@ A native conversation created or loaded through the CodeBuddy Runtime. Under a W
 _Avoid_: WorkBuddy Task, WorkBuddy Session, tool Task
 
 **DeepSeek Harness Runtime**:
-A user-installed DeepSeek Harness (DSH) coding-agent runtime whose native Sessions and full plugin ecosystem can be operated through an Agent Binding. DSH plugins (tools, skills, workflows, MCP servers, subagents) are installed and owned inside the DSH runtime itself, never through Connect's plugin platform; installing Node.js and DSH is the user's decision, and Connect only integrates when the runtime is present.
+A user-installed DeepSeek Harness (DSH) coding-agent runtime whose native Sessions and full plugin ecosystem can be operated through an Agent Binding. User-selected DSH plugins (tools, skills, workflows, MCP servers, and subagents) remain installed and owned inside DSH; installing Node.js and DSH is the user's decision, and Connect only integrates when the runtime is present.
 _Avoid_: DSH plugin host, DSH Plugin Bundle, when referring to the runtime family
+
+**DeepSeek Harness Home**:
+The user-owned native configuration and state boundary selected by a DeepSeek Harness Agent Binding for its Sessions, credentials, and plugin composition. A Binding without an explicit Home selection uses DSH's native default Home.
+_Avoid_: Connect-managed DSH Home, shared active DSH Home
+
+**DeepSeek Harness Profile**:
+The existing named DSH process composition selected explicitly by an Agent Binding or selected by DSH's native CLI rules within the effective DeepSeek Harness Home. A DSH version may supply a native default or require an explicit name; Connect does not decide that policy. The Profile determines the Runtime's user-owned bundles, plugins, and capability configuration independently of the Session's Workspace.
+_Avoid_: Workspace, Connect-managed Profile, DSH Session
+
+**DeepSeek Harness Permission Preset**:
+A native DSH Session option that selects a named sandbox-mode and approval-policy pair. It does not choose the DSH process composition or Agent composition and therefore remains distinct from both the DeepSeek Harness Profile and DSH Agent Preset.
+_Avoid_: DeepSeek Harness Profile, Agent Preset, Connect approval policy
+
+**DSH Integration Bridge**:
+The Connect-owned companion composed into only the Binding-owned DSH process through DSH's documented final `--patch` configuration layer. “Mounted” means adding the Bridge to that process's effective Cordis configuration; it does not mean a filesystem mount, copying the Bridge into the DSH Home, or installing it with `dsh plugin add`. The Bridge and its inherited-pipe protocol are Connect-defined rather than an official DSH integration API. They are versioned and lifecycle-bound with the official Connect Runtime Plugin and are not retained as part of the user's DSH Profile.
+_Avoid_: User DSH plugin, Connect Plugin Bundle, permanent Profile plugin
+
+**DeepSeek Harness Root Agent**:
+The native top-level DSH Agent that represents one Connect Session and its immutable Workspace inside that Session's DeepSeek Harness Binding Runtime Instance. Multiple Root Agents with distinct Workspaces may coexist in the same Binding-owned DSH process; their native subagents remain descendants rather than separate Binding Runtime Instances.
+_Avoid_: DSH process, Agent Binding, DSH subagent
 
 **Binding Runtime Instance**:
 The stateful runtime process and adapter state owned by one Agent Binding. Instances of the same exact Runtime Plugin capability remain isolated.
@@ -111,6 +131,10 @@ _Avoid_: Connect Agent Skill, Connect-discovered Skill, generic slash command
 **Runtime Command**:
 A named user-invocable command that a coding-agent runtime reports for one Agent Binding and runtime workspace. Connect displays Runtime Commands and Runtime Skills in one slash picker but preserves their distinct Runtime Adapter-owned identities through submission and native invocation.
 _Avoid_: ClawChat Tool Command, Connect control command, Runtime Skill
+
+**Runtime Model Selection**:
+The structured model identity selected for an Agent Binding or Session. It contains a model identity and, when the Runtime routes models through named providers, a separate provider identity; reasoning effort remains an independent selection.
+_Avoid_: Provider-qualified model string, model display name
 
 **ClawChat Turn Context**:
 Connect-derived Agent-visible metadata attached to one ClawChat-originated turn. It identifies the exact conversation, message, sender, conversation type, and known mentions without treating user-authored text as authoritative metadata.
@@ -253,9 +277,21 @@ _Avoid_: WorkBuddy AI Distribution, CodeBuddy Runtime
 The international WorkBuddy AI desktop product. It bundles its own product-configured CodeBuddy Runtime and remains isolated from the separately versioned WorkBuddy Distribution.
 _Avoid_: WorkBuddy Distribution, CodeBuddy Runtime
 
+**WorkBuddy Runtime Capability**:
+One of the two exact official Runtime Plugin capabilities, `workbuddy-ai` or `workbuddy-cn`, that selects a WorkBuddy Distribution and scopes its Task identities and Binding Runtime Instance. Both capabilities belong to one Plugin but never substitute for or share runtime state with each other.
+_Avoid_: WorkBuddy Profile, application version, fallback distribution
+
 **WorkBuddy Task**:
 A top-level WorkBuddy Desktop conversation or work item that owns product transcript projection, artifacts, connector wiring, UI metadata, and desktop lifecycle in addition to an underlying CodeBuddy Session. Connect represents it as a Runtime Thread identified durably by its stable Task ID; it is neither a standalone CodeBuddy Session nor a WorkBuddy Automation.
 _Avoid_: WorkBuddy Session, CodeBuddy Session, WorkBuddy Automation, tool Task
+
+**WorkBuddy Task Identity**:
+The stable native Task ID scoped by the selected WorkBuddy Runtime Capability. An Agent Binding already fixes that capability, so Connect durably retains the native Task ID without treating workspace, endpoint, process, credential, or application version as identity fields.
+_Avoid_: bare global Task UUID, Workspace identity, endpoint identity
+
+**WorkBuddy Task Identity Proof**:
+The connection-time evidence that a candidate endpoint belongs to the selected WorkBuddy Task: authoritative Task metadata and native transcript identity agree with the loaded ACP Task and its transcript-bearing replay. The proof is reacquired for every Attachment and is not durable Task identity.
+_Avoid_: Task ID, endpoint availability, successful `session/load`
 
 **WorkBuddy Task ACP Endpoint**:
 A private desktop-owned ACP service for one active WorkBuddy Task through which a verified client can replay and continue that Task. It is lifecycle-bound and has no supported public discovery contract; it is not a direct CodeBuddy ACP process owned by Connect.
@@ -318,6 +354,22 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Connect binds and manages multiple Agent Bindings independently of any coding-agent runtime family.
 - Multiple Agent Bindings may select the same exact Runtime Plugin capability.
 - Every Agent Binding owns an independent Binding Runtime Instance. Runtime process, provider configuration, cached client state, and shutdown lifecycle are never shared between Agent Bindings, including Bindings that select the same capability.
+- Every DeepSeek Harness Agent Binding may select a DeepSeek Harness Home explicitly and otherwise uses DSH's native default Home. Connect resolves the effective Home but never creates, copies, mutates, or deletes it.
+- Multiple DeepSeek Harness Binding Runtime Instances may operate the same canonical DeepSeek Harness Home. Connect does not claim, lease, lock, or otherwise arbitrate that Home or its native Sessions; concurrent behavior and conflicts remain DSH's native responsibility.
+- Every DeepSeek Harness Agent Binding may select one existing DeepSeek Harness Profile explicitly; without a selection, Connect omits the Profile argument and lets DSH either select a native default or return its native missing-Profile error. Connect does not create, install, or persistently modify the effective Profile, and the Session's Workspace remains an independent Connect-owned selection.
+- A selected DeepSeek Harness Profile is compatible according to the services and behavior its native composition actually provides. Connect imposes no Code Agent version, component-graph, Profile-name, or complete-capability allowlist; absence of an optional native capability does not prevent the Binding from activating.
+- The official DeepSeek Harness Runtime Plugin owns the DSH Integration Bridge paired with it, mounts that Bridge only for its Binding Runtime Instance, and leaves the selected DeepSeek Harness Profile and its user-owned plugin composition unchanged.
+- The DSH Integration Bridge adapts only capabilities already supplied by the selected Profile's native composition. It does not add DSH Web or other internal service bundles to manufacture a missing capability; an operation whose native capability is absent reports that operation as unavailable rather than imposing a broader activation restriction.
+- A DeepSeek Harness Profile's existing native Questions provider remains authoritative. The Bridge never replaces it or rejects the Binding because the provider slot is occupied; native questions continue to that provider's surface, and the Bridge exposes Connect-routed questions only when the native provider slot is free.
+- A DeepSeek Harness Profile's native sandbox, Permission Preset, approval policy, and approval handlers remain authoritative. The Bridge never preempts or rewrites a native approval decision; it presents a Connect Runtime Interaction only when DSH delegates the unresolved approval request to the Bridge.
+- The DSH Integration Bridge communicates only through two inherited anonymous pipes. Its handshake reports the Connect protocol, verified DSH version, selected composition, and actual capabilities separately; DSH stdout/stderr remain diagnostics and no network listener is opened.
+- DSH Profile, Agent Preset, and Permission Preset are three separate selections: process plugin composition, per-Session Agent composition, and per-Session sandbox/approval pair respectively. The Adapter never collapses them into one Profile field.
+- A new DeepSeek Harness Session uses its explicitly selected native Agent Preset when present; otherwise it uses the selected Profile's native default Agent Preset. If that Profile publishes no Agent Preset service, the Bridge leaves Agent composition to the Profile rather than injecting a Connect default or rejecting Session creation.
+- A new DeepSeek Harness Session applies an explicitly selected native Permission Preset when present. Without one, Connect leaves sandbox and approval behavior to the selected Profile, Agent Preset, and native DSH plugins; it neither injects a default Permission Preset nor requires that service to exist.
+- Every DeepSeek Harness Binding Runtime Instance starts one DSH process with its effective Home and DSH-resolved Profile. It does not start a process per Session or Workspace.
+- Each Connect Session under a DeepSeek Harness Agent Binding is represented by a distinct DeepSeek Harness Root Agent with that Session's immutable Workspace; multiple Root Agents may coexist in the Binding-owned DSH process.
+- DeepSeek Harness discovery reports every materialized top-level native Session in the selected Home regardless of whether Connect, DSH Web, DSH TUI, or another DSH client created it. Native subagent Sessions remain below their parent. Connect may adopt and resume a persisted native Session through DSH's native mechanisms without imposing its own owner, busy, Home, or process gate; any concurrent-use behavior or error remains authoritative DSH behavior.
+- Every released and future Runtime Plugin capability maintains a complete profile against the normative Runtime Adapter standard. Native capability differences are reported as supported, partial, unsupported, or not applicable; they do not change Connect's Runtime Thread, Workspace, Session, Activity, Interaction, lifecycle, or recovery semantics.
 - Runtime Skill and Runtime Command discovery and cached summaries remain scoped to one Agent Binding and runtime workspace. Connect never derives them by scanning local instruction files, and the active Runtime Adapter remains authoritative when a selected entry is invoked. A manually typed same-name prefix resolves to a Runtime Command before a Runtime Skill, while an explicit picker selection retains its selected kind.
 - A Connect installation has at most one Installation Owner. The first successful Agent Binding activation establishes it.
 - Every activated Agent Binding has exactly one Binding Owner, and that identity must equal the Installation Owner.

@@ -89,7 +89,7 @@ describe("Agent Binding configuration", () => {
           },
           displayName: "Local Codex",
           outputVisibility: "full",
-          model: "gpt-5-codex",
+          model: { model: "gpt-5-codex" },
           modelReasoningEffort: "high",
           sessionOptions: { collaborationMode: "default" },
         },
@@ -105,7 +105,7 @@ describe("Agent Binding configuration", () => {
       },
       displayName: "Local Codex",
       outputVisibility: "full",
-      model: "gpt-5-codex",
+      model: { model: "gpt-5-codex" },
       modelReasoningEffort: "high",
       sessionOptions: { collaborationMode: "default" },
     });

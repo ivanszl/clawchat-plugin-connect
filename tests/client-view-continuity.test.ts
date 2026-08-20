@@ -28,6 +28,8 @@ function catalog(revision: number, name: string): SessionCatalogView {
             unreadCount: 0,
             pendingInteractionCount: 0,
             allowedActions: ["open", "send"],
+            runtimeThreadUnavailableReason: null,
+            runtimeThreadUnavailableDetail: null,
           },
         ],
       },

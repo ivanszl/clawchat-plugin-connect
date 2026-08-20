@@ -146,14 +146,19 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
   };
   const discoverAllThreads: NonNullable<ConnectRuntimeAdapter["discoverAllThreads"]> = async (binding) => {
     const profile = requireWorkBuddyProfile(binding);
-    return (await listTasks(source, profile)).map((task) => ({
-      runtimeThreadId: task.id,
-      name: task.title,
-      updatedAt: task.updatedAt,
-      workingDirectory: task.workspace,
-      workspaceKind: "persistent" as const,
-      workspaceIdentity: { key: task.workspace, kind: "persistent" as const, localRoot: task.workspace },
-    }));
+    return {
+      status: "complete",
+      threads: (await listTasks(source, profile)).map((task) => ({
+        runtimeThreadId: task.id,
+        name: task.title,
+        updatedAt: task.updatedAt,
+        workingDirectory: task.workspace,
+        workspaceKind: "persistent" as const,
+        workspaceIdentity: { key: task.workspace, kind: "persistent" as const, localRoot: task.workspace },
+        adoption: { status: "available" as const },
+      })),
+      limitations: [],
+    };
   };
   const attachTask = async (binding: AgentBindingConfig, runtimeThreadId: string) => {
     const profile = requireWorkBuddyProfile(binding);
@@ -208,8 +213,13 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
       return () => catalogListeners.delete(listener);
     },
     discoverAllThreads,
-    discoverThreads: async (binding, workspace) =>
-      (await discoverAllThreads(binding)).filter((thread) => thread.workingDirectory === workspace.workingDirectory),
+    discoverThreads: async (binding, workspace) => {
+      const snapshot = await discoverAllThreads(binding);
+      return {
+        ...snapshot,
+        threads: snapshot.threads.filter((thread) => thread.workingDirectory === workspace.workingDirectory),
+      };
+    },
     verifyThreadReady: async (binding, runtimeThreadId) => {
       if (isCodeBuddySessionRuntimeTarget(runtimeThreadId)) {
         requireCodeBuddySessionId(runtimeThreadId);

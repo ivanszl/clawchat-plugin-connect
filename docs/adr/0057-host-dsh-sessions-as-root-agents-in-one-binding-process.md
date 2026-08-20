@@ -1,0 +1,5 @@
+# Host DSH Sessions as Root Agents in one Binding process
+
+Every DeepSeek Harness Binding Runtime Instance starts one DSH process with the Agent Binding's selected Home and Profile, and the DSH Integration Bridge represents each Connect Session as a distinct native Root Agent carrying that Session's immutable Workspace. Connect does not start a DSH process per Session or Workspace: the Binding-owned process initializes the Profile and its plugin composition once, while native Root Agent identity preserves Session and Workspace separation inside that process. Process failure or shutdown therefore affects every Root Agent in the Binding Runtime Instance and is handled at the Binding lifecycle boundary rather than pretending each Session owns an independent runtime.
+
+The [published-runtime prototype](../../.scratch/deepseek-harness-integration/prototype/result.md) proved the required topology against DSH `0.1.0-rc.7`: one real DSH process created two native Root Agents whose public `session.header.cwd` values were two distinct canonical Workspace roots, then disposed both Agent handles and the Bridge cleanly on `SIGTERM`.

@@ -17,6 +17,15 @@ export async function verifyInstalledWorkBuddyNativeUi(input: NativeUiVerificati
   await waitForApplicationProcess(input.compatibility.applicationPath, false);
   await runCommand("/usr/bin/open", [input.compatibility.applicationPath], 15_000);
   const processId = await waitForApplicationProcess(input.compatibility.applicationPath, true);
+  await verifyMarkerAndRestore(input, processId);
+}
+
+export async function verifyInstalledWorkBuddyNativeUiLive(input: NativeUiVerificationInput): Promise<void> {
+  const processId = await waitForApplicationProcess(input.compatibility.applicationPath, true);
+  await verifyMarkerAndRestore(input, processId);
+}
+
+async function verifyMarkerAndRestore(input: NativeUiVerificationInput, processId: number): Promise<void> {
   try {
     await runCommand(
       "/usr/bin/osascript",

@@ -330,6 +330,7 @@ async function installedHarness(profile: WorkBuddyProfile): Promise<AdapterHarne
   return {
     registry,
     binding,
+    expectedDiscoveryStatus: "complete",
     activateThread() {
       instance.active = true;
     },

@@ -27,7 +27,8 @@ import type {
   RuntimeInteractionPort,
   RuntimeModelOption,
   RuntimeSkillSummary,
-  RuntimeThreadSummary,
+  RuntimeThreadCandidate,
+  RuntimeThreadDiscoverySnapshot,
   RuntimeTranscriptEntry,
 } from "./types";
 import { runtimeInputIdentity, runtimeInputIdentityContains } from "./types";
@@ -228,6 +229,7 @@ async function discoverCodexModels(client: CodexAppServerClient): Promise<Runtim
         .filter((model) => !model.hidden)
         .map((model) => ({
           id: model.id,
+          selection: { model: model.id },
           displayName: model.displayName,
           description: model.description,
           isDefault: model.isDefault,
@@ -537,8 +539,8 @@ async function discoverCodexThreads(
   client: CodexAppServerClient,
   workingDirectory?: string,
   archived = false,
-): Promise<RuntimeThreadSummary[]> {
-  const summaries: RuntimeThreadSummary[] = [];
+): Promise<RuntimeThreadDiscoverySnapshot> {
+  const threads: RuntimeThreadCandidate[] = [];
   const seenCursors = new Set<string>();
   let cursor: string | null = null;
   do {
@@ -551,7 +553,7 @@ async function discoverCodexThreads(
       archived,
       ...(workingDirectory ? { cwd: workingDirectory } : {}),
     });
-    summaries.push(
+    threads.push(
       ...page.data
         .filter((thread) => !thread.parentThreadId)
         .map((thread) => {
@@ -568,6 +570,9 @@ async function discoverCodexThreads(
             updatedAt: thread.updatedAt * 1_000,
             workingDirectory: thread.cwd,
             ...(workspaceKind === "transient" ? { workspaceKind } : {}),
+            adoption: archived
+              ? ({ status: "unavailable", reason: "archived" } as const)
+              : ({ status: "available" } as const),
           };
         }),
     );
@@ -575,7 +580,11 @@ async function discoverCodexThreads(
     if (cursor && seenCursors.has(cursor)) throw new Error("Codex app-server returned a repeated thread/list cursor");
     if (cursor) seenCursors.add(cursor);
   } while (cursor);
-  return summaries.sort((left, right) => right.updatedAt - left.updatedAt);
+  return {
+    status: "complete",
+    threads: threads.sort((left, right) => right.updatedAt - left.updatedAt),
+    limitations: [],
+  };
 }
 
 function isTransientWorkspace(thread: CodexAppServerThread): boolean {
@@ -658,7 +667,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
     if (this.activeTurn) throw new Error("Codex already has an active turn for this session");
     const sandboxMode = resolveSandboxMode(input.mode, this.binding.sandboxMode);
     const resumesMaterializedThread = Boolean(this.runtimeSessionId);
-    const threadId = await this.ensureThread(input.workspace, sandboxMode, input.model, input.reasoningEffort);
+    const threadId = await this.ensureThread(input.workspace, sandboxMode, input.model?.model, input.reasoningEffort);
     const turnPositionPrefix = resumesMaterializedThread
       ? `${(await this.client.readThread({ threadId, includeTurns: true })).thread.turns?.length ?? 0}`
       : "0";
@@ -710,7 +719,7 @@ class CodexRuntimeSession implements ConnectRuntimeSession {
           this.binding.networkAccessEnabled === true,
           this.binding.additionalDirectories ?? [],
         ),
-        ...(input.model ? { model: input.model } : {}),
+        ...(input.model ? { model: input.model.model } : {}),
         ...(input.reasoningEffort ? { effort: input.reasoningEffort } : {}),
       });
       await input.onAccepted?.();

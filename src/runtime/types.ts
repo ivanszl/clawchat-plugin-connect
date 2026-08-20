@@ -1,5 +1,5 @@
 import type { RuntimeOutputKind } from "../clawchat/output-visibility";
-import type { AgentBindingConfig, RuntimeWorkspace } from "../types";
+import type { AgentBindingConfig, RuntimeModelSelection, RuntimeWorkspace } from "../types";
 
 export interface RuntimeInputMessageIdentity {
   messageId: string;
@@ -101,7 +101,7 @@ export interface ConnectRuntimePrompt {
   trustedMediaOrigins?: string[];
   workspace: RuntimeWorkspace;
   mode?: string;
-  model?: string;
+  model?: RuntimeModelSelection;
   reasoningEffort?: string;
   sessionOptions?: Record<string, string>;
   turnId?: string;
@@ -201,6 +201,7 @@ export interface RuntimeModelOption {
   defaultReasoningEffort: string;
   supportedReasoningEfforts: string[];
   inputModalities: Array<"text" | "image" | "audio">;
+  selection: RuntimeModelSelection;
   turnSubmissionCapability?: RuntimeTurnSubmissionCapability;
 }
 
@@ -270,6 +271,42 @@ export interface RuntimeThreadSummary {
   workingDirectory?: string | null;
   workspaceKind?: "persistent" | "transient";
   workspaceIdentity?: RuntimeWorkspaceIdentity;
+}
+export type RuntimeThreadDiscoveryStatus = "complete" | "partial" | "unavailable";
+
+export type RuntimeThreadUnavailableReason =
+  | "workspace-missing"
+  | "workspace-unusable"
+  | "runtime-incompatible"
+  | "native-state-corrupt"
+  | "external-ownership-unverifiable"
+  | "externally-busy"
+  | "already-adopted"
+  | "archived";
+
+export interface RuntimeThreadCandidate extends RuntimeThreadSummary {
+  adoption:
+    | { status: "available" }
+    | { status: "unavailable"; reason: RuntimeThreadUnavailableReason; detail?: string };
+}
+
+export interface RuntimeThreadDiscoverySnapshot {
+  status: RuntimeThreadDiscoveryStatus;
+  threads: readonly RuntimeThreadCandidate[];
+  limitations: readonly string[];
+}
+export function completeRuntimeThreadDiscovery(
+  threads: readonly RuntimeThreadSummary[],
+  unavailable?: { reason: RuntimeThreadUnavailableReason; detail?: string },
+): RuntimeThreadDiscoverySnapshot {
+  return {
+    status: "complete",
+    threads: threads.map((thread) => ({
+      ...thread,
+      adoption: unavailable ? { status: "unavailable", ...unavailable } : { status: "available" },
+    })),
+    limitations: [],
+  };
 }
 
 export interface RuntimeWorkspaceIdentity {
@@ -408,9 +445,9 @@ export interface ConnectRuntimeAdapter {
   onCommandsChanged?(listener: () => void): () => void;
   onCatalogsChanged?(listener: () => void): () => void;
   discoverWorkspaces?(binding: AgentBindingConfig): Promise<RuntimeWorkspaceSnapshot>;
-  discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
-  discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
-  discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]>;
+  discoverThreads?(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadDiscoverySnapshot>;
+  discoverAllThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadDiscoverySnapshot>;
+  discoverArchivedThreads?(binding: AgentBindingConfig): Promise<RuntimeThreadDiscoverySnapshot>;
   verifyThreadReady?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<void>;
   readActivity?(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeActivitySnapshot>;
   reconcileInput?(

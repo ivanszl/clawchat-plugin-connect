@@ -8,6 +8,8 @@ const appShellUrl = new URL("../web/src/features/app-shell/ConnectAppShell.tsx",
 const artifactWorkspaceUrl = new URL("../web/src/features/artifacts/ArtifactWorkspaceView.tsx", import.meta.url);
 const transcriptBlockUrl = new URL("../web/src/features/transcript/TranscriptBlockView.tsx", import.meta.url);
 const settingsPageUrl = new URL("../web/src/features/settings/SettingsPage.tsx", import.meta.url);
+const sessionNavigationUrl = new URL("../web/src/features/session-catalog/SessionNavigation.tsx", import.meta.url);
+const turnSubmissionHookUrl = new URL("../web/src/features/composer/useTurnSubmission.ts", import.meta.url);
 
 describe("Connect Client session layout", () => {
   it("keeps Conversation primary and places Artifact files in a secondary dock", async () => {
@@ -47,6 +49,20 @@ describe("Connect Client session layout", () => {
     expect(source).not.toMatch(/<(?:div|span)\b/u);
   });
 
+  it("organizes Agent, Workspace, and Plugin settings with one shared Agent context", async () => {
+    const source = await Bun.file(settingsPageUrl).text();
+
+    expect(source).toContain('import { Tab, TabList } from "@astryxdesign/core/TabList"');
+    expect(source).toContain('const [activeTab, setActiveTab] = useState<SettingsTab>("agent")');
+    expect(source).toContain("const [selectedBindingId, setSelectedBindingId]");
+    expect(source).toContain('<Tab value="agent"');
+    expect(source).toContain('<Tab value="workspace"');
+    expect(source).toContain('<Tab value="plugins"');
+    expect(source).toContain("<BindingContextSelector");
+    expect(source).toContain("<WorkspaceSettings key={selectedBinding.bindingId} binding={selectedBinding} />");
+    expect(source).not.toContain('t("@connect.settings.continuity.description")');
+  });
+
   it("keeps model settings out of the Session header and inside the composer", async () => {
     const source = await Bun.file(sessionRouteUrl).text();
     const header = source.slice(source.indexOf('<header className="session-header">'), source.indexOf("</header>"));
@@ -74,18 +90,20 @@ describe("Connect Client session layout", () => {
     expect(artifactWorkspace).toContain('className="artifact-mobile-controls"');
   });
 
-  it("describes submission acknowledgement without claiming that the Session queue is blocking", async () => {
+  it("optimistically enters the message in Chat without exposing transfer progress", async () => {
     const composer = await Bun.file(sessionComposerUrl).text();
 
-    expect(composer).toContain('t("@connect.composer.progress.attachmentsAccepting")');
-    expect(composer).toContain('t("@connect.composer.action.accepting")');
-    expect(composer).toContain('t("@connect.composer.action.cancelSubmission")');
-    expect(composer).not.toContain("等待 Session 队列接收");
+    expect(composer).toContain("submissionId: requestId()");
+    expect(composer).toContain("composerDisabled || send.isPending || !hasSubmissionDraft");
+    expect(composer).not.toContain("<ProgressBar");
+    expect(composer).not.toContain("send.progress");
+    expect(composer).not.toContain("cancelSubmission");
   });
 
-  it("uses Astryx Chat primitives for slash selection, tokenized messages, attachments, and progress", async () => {
-    const [composer, transcript, stylesheet] = await Promise.all([
+  it("uses Astryx Chat primitives for slash selection, tokenized messages, attachments, and failed-message retry", async () => {
+    const [composer, turnSubmission, transcript, stylesheet] = await Promise.all([
       Bun.file(sessionComposerUrl).text(),
+      Bun.file(turnSubmissionHookUrl).text(),
       Bun.file(transcriptBlockUrl).text(),
       Bun.file(stylesheetUrl).text(),
     ]);
@@ -94,12 +112,32 @@ describe("Connect Client session layout", () => {
     expect(composer).toContain("triggers={[slashTrigger]}");
     expect(composer).toContain("<TypeaheadItem");
     expect(composer).toContain("<Token");
-    expect(composer).toContain("<ProgressBar");
+    expect(composer).not.toContain("<ProgressBar");
     expect(composer).not.toContain('className="slash-suggestions"');
     expect(composer).not.toContain("onKeyDownCapture");
     expect(stylesheet).not.toContain(".slash-suggestions");
     expect(stylesheet).not.toContain(".composer-attachment");
+    expect(stylesheet).not.toContain(".composer-submission-progress");
     expect(transcript).toContain("<ChatTokenizedText");
+    expect(transcript).toContain("<IconButton");
+    expect(turnSubmission).toContain("markUnpersistedMessageFailed");
+    expect(turnSubmission).toContain('allowedActions: ["retry"]');
+    expect(turnSubmission).toContain("localTurnSubmissions");
+    expect(transcript).toContain("retryVisibleTurnSubmission");
+    expect(composer).not.toContain("setValue(prompt)");
+    expect(composer).not.toContain("send.error");
+  });
+
+  it("derives the New Session Agent from context instead of rendering another selector", async () => {
+    const source = await Bun.file(sessionNavigationUrl).text();
+    const dialog = source.slice(
+      source.indexOf("export function NewSessionDialog"),
+      source.indexOf("function navigationItems"),
+    );
+
+    expect(dialog).toContain("preferredBindingId");
+    expect(dialog).not.toContain('label={t("@connect.newSession.binding.label")}');
+    expect(dialog).not.toContain("changeBinding");
   });
 
   it("keeps a pointer-accessible enqueue action while the Agent is working", async () => {

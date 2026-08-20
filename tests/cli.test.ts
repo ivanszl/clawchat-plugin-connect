@@ -1219,7 +1219,7 @@ describe("handleChatCommand", () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-model-command-"));
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
     const workspaces = new WorkspaceCatalog(store);
-    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding({}, { model: "gpt-default" }));
+    const config = upsertAgentBinding(defaultConfig(), "codex", testBinding({}, { model: { model: "gpt-default" } }));
     await store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-model",
@@ -1235,6 +1235,7 @@ describe("handleChatCommand", () => {
       listRuntimeModels: async () => [
         {
           id: "gpt-default",
+          selection: { model: "gpt-default" },
           displayName: "Default",
           description: "Default model",
           isDefault: true,
@@ -1244,6 +1245,7 @@ describe("handleChatCommand", () => {
         },
         {
           id: "gpt-deep",
+          selection: { model: "gpt-deep" },
           displayName: "Deep",
           description: "Deep model",
           isDefault: false,
@@ -1259,7 +1261,7 @@ describe("handleChatCommand", () => {
     });
     await expect(store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
       runtimeSessionId: "thread-stable",
-      model: "gpt-deep",
+      model: { model: "gpt-deep" },
       reasoningEffort: "xhigh",
     });
 
@@ -1287,6 +1289,7 @@ describe("handleChatCommand", () => {
     const models = async () => [
       {
         id: "gpt-deep",
+        selection: { model: "gpt-deep" },
         displayName: "Deep",
         description: "Deep model",
         isDefault: true,
@@ -1307,20 +1310,20 @@ describe("handleChatCommand", () => {
 
     await handleChatCommand({ ...context, message: message("/model gpt-deep") });
     await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
-      model: "gpt-deep",
+      model: { model: "gpt-deep" },
       reasoningEffort: "high",
     });
     await expect(handleChatCommand({ ...context, message: message("/model gpt-deep low") })).resolves.toMatchObject({
       text: expect.stringContaining("not supported"),
     });
     await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
-      model: "gpt-deep",
+      model: { model: "gpt-deep" },
       reasoningEffort: "high",
     });
     await handleChatCommand({ ...context, message: message("/new Continue") });
     await expect(store.getSessionIntent("chat-1", "codex")).resolves.toMatchObject({
       name: "Continue",
-      model: "gpt-deep",
+      model: { model: "gpt-deep" },
       reasoningEffort: "high",
     });
     await expect(

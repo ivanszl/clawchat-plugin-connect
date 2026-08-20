@@ -17,7 +17,12 @@ import type {
   CodexTurnStartParams,
 } from "../src/runtime/codex-app-server";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import type { ConnectRuntimeSession, ConnectRuntimeStartContext, RuntimeActivity } from "../src/runtime/types";
+import {
+  type ConnectRuntimeSession,
+  type ConnectRuntimeStartContext,
+  completeRuntimeThreadDiscovery,
+  type RuntimeActivity,
+} from "../src/runtime/types";
 import type { RuntimeWorkspace } from "../src/types";
 import { pluginBinding, TEST_RUNTIME_CAPABILITY } from "./runtime-adapter-fixture";
 
@@ -29,7 +34,7 @@ const workspace: RuntimeWorkspace = {
 
 const agent: CodexRuntimeAdapterBinding = {
   ...pluginBinding(),
-  model: "gpt-5-codex",
+  model: { model: "gpt-5-codex" },
   sandboxMode: "workspace-write",
   modelReasoningEffort: "high",
   approvalPolicy: "never",
@@ -684,22 +689,24 @@ describe("Codex app-server runtime adapter", () => {
       });
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
 
-    await expect(adapter.discoverThreads?.(agent, workspace)).resolves.toEqual([
-      {
-        runtimeThreadId: "thread-newest",
-        name: "Named thread",
-        updatedAt: 30_000,
-        workingDirectory: "/repo",
-        workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
-      },
-      {
-        runtimeThreadId: "thread-old",
-        name: "Older task",
-        updatedAt: 20_000,
-        workingDirectory: "/repo",
-        workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
-      },
-    ]);
+    await expect(adapter.discoverThreads?.(agent, workspace)).resolves.toEqual(
+      completeRuntimeThreadDiscovery([
+        {
+          runtimeThreadId: "thread-newest",
+          name: "Named thread",
+          updatedAt: 30_000,
+          workingDirectory: "/repo",
+          workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
+        },
+        {
+          runtimeThreadId: "thread-old",
+          name: "Older task",
+          updatedAt: 20_000,
+          workingDirectory: "/repo",
+          workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
+        },
+      ]),
+    );
     expect(client.listThreads).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
@@ -764,82 +771,84 @@ describe("Codex app-server runtime adapter", () => {
     });
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
 
-    await expect(adapter.discoverAllThreads?.(agent)).resolves.toEqual([
-      {
-        runtimeThreadId: "thread-scratch",
-        name: "Scratch task",
-        updatedAt: 30_000,
-        workingDirectory: "/Users/test/Documents/Codex/2026-07-24/f",
-        workspaceKind: "transient",
-        workspaceIdentity: {
-          key: "/Users/test/Documents/Codex/2026-07-24/f",
-          kind: "transient",
-          localRoot: "/Users/test/Documents/Codex/2026-07-24/f",
+    await expect(adapter.discoverAllThreads?.(agent)).resolves.toEqual(
+      completeRuntimeThreadDiscovery([
+        {
+          runtimeThreadId: "thread-scratch",
+          name: "Scratch task",
+          updatedAt: 30_000,
+          workingDirectory: "/Users/test/Documents/Codex/2026-07-24/f",
+          workspaceKind: "transient",
+          workspaceIdentity: {
+            key: "/Users/test/Documents/Codex/2026-07-24/f",
+            kind: "transient",
+            localRoot: "/Users/test/Documents/Codex/2026-07-24/f",
+          },
         },
-      },
-      {
-        runtimeThreadId: "thread-subagent-scratch",
-        name: "Scratch sub-agent",
-        updatedAt: 25_000,
-        workingDirectory: "/Users/test/Documents/Codex/2026-07-24/sub-agent",
-        workspaceKind: "transient",
-        workspaceIdentity: {
-          key: "/Users/test/Documents/Codex/2026-07-24/sub-agent",
-          kind: "transient",
-          localRoot: "/Users/test/Documents/Codex/2026-07-24/sub-agent",
+        {
+          runtimeThreadId: "thread-subagent-scratch",
+          name: "Scratch sub-agent",
+          updatedAt: 25_000,
+          workingDirectory: "/Users/test/Documents/Codex/2026-07-24/sub-agent",
+          workspaceKind: "transient",
+          workspaceIdentity: {
+            key: "/Users/test/Documents/Codex/2026-07-24/sub-agent",
+            kind: "transient",
+            localRoot: "/Users/test/Documents/Codex/2026-07-24/sub-agent",
+          },
         },
-      },
-      {
-        runtimeThreadId: "thread-folder",
-        name: "Folder task",
-        updatedAt: 20_000,
-        workingDirectory: "/Users/test/account",
-        workspaceIdentity: {
-          key: "/Users/test/account",
-          kind: "persistent",
-          localRoot: "/Users/test/account",
+        {
+          runtimeThreadId: "thread-folder",
+          name: "Folder task",
+          updatedAt: 20_000,
+          workingDirectory: "/Users/test/account",
+          workspaceIdentity: {
+            key: "/Users/test/account",
+            kind: "persistent",
+            localRoot: "/Users/test/account",
+          },
         },
-      },
-      {
-        runtimeThreadId: "thread-repository",
-        name: "Repository task",
-        updatedAt: 10_000,
-        workingDirectory: "/Users/test/Documents/Codex/2026-07-24/repository",
-        workspaceIdentity: {
-          key: "/Users/test/Documents/Codex/2026-07-24/repository",
-          kind: "persistent",
-          localRoot: "/Users/test/Documents/Codex/2026-07-24/repository",
+        {
+          runtimeThreadId: "thread-repository",
+          name: "Repository task",
+          updatedAt: 10_000,
+          workingDirectory: "/Users/test/Documents/Codex/2026-07-24/repository",
+          workspaceIdentity: {
+            key: "/Users/test/Documents/Codex/2026-07-24/repository",
+            kind: "persistent",
+            localRoot: "/Users/test/Documents/Codex/2026-07-24/repository",
+          },
         },
-      },
-      {
-        runtimeThreadId: "thread-connect-workspace",
-        name: "Connect scratch task",
-        updatedAt: 5_000,
-        workingDirectory:
-          "/Users/test/.clawchat-connect/workspaces/57de4cf40144bdf7d00010f2/a958e6097c7590a995e8507c/4b9efa2cb28ba7783bb95ae8",
-        workspaceKind: "transient",
-        workspaceIdentity: {
-          key: "/Users/test/.clawchat-connect/workspaces/57de4cf40144bdf7d00010f2/a958e6097c7590a995e8507c/4b9efa2cb28ba7783bb95ae8",
-          kind: "transient",
-          localRoot:
+        {
+          runtimeThreadId: "thread-connect-workspace",
+          name: "Connect scratch task",
+          updatedAt: 5_000,
+          workingDirectory:
             "/Users/test/.clawchat-connect/workspaces/57de4cf40144bdf7d00010f2/a958e6097c7590a995e8507c/4b9efa2cb28ba7783bb95ae8",
+          workspaceKind: "transient",
+          workspaceIdentity: {
+            key: "/Users/test/.clawchat-connect/workspaces/57de4cf40144bdf7d00010f2/a958e6097c7590a995e8507c/4b9efa2cb28ba7783bb95ae8",
+            kind: "transient",
+            localRoot:
+              "/Users/test/.clawchat-connect/workspaces/57de4cf40144bdf7d00010f2/a958e6097c7590a995e8507c/4b9efa2cb28ba7783bb95ae8",
+          },
         },
-      },
-      {
-        runtimeThreadId: "thread-connect-live-workspace",
-        name: "Connect live scratch task",
-        updatedAt: 4_000,
-        workingDirectory:
-          "/private/tmp/clawchat-connect-live.Ku5dMU/workspaces/57de4cf40144bdf7d00010f2/a90ec25770b003c317041a4f/819fe744e7eafb83a81277d4",
-        workspaceKind: "transient",
-        workspaceIdentity: {
-          key: "/private/tmp/clawchat-connect-live.Ku5dMU/workspaces/57de4cf40144bdf7d00010f2/a90ec25770b003c317041a4f/819fe744e7eafb83a81277d4",
-          kind: "transient",
-          localRoot:
+        {
+          runtimeThreadId: "thread-connect-live-workspace",
+          name: "Connect live scratch task",
+          updatedAt: 4_000,
+          workingDirectory:
             "/private/tmp/clawchat-connect-live.Ku5dMU/workspaces/57de4cf40144bdf7d00010f2/a90ec25770b003c317041a4f/819fe744e7eafb83a81277d4",
+          workspaceKind: "transient",
+          workspaceIdentity: {
+            key: "/private/tmp/clawchat-connect-live.Ku5dMU/workspaces/57de4cf40144bdf7d00010f2/a90ec25770b003c317041a4f/819fe744e7eafb83a81277d4",
+            kind: "transient",
+            localRoot:
+              "/private/tmp/clawchat-connect-live.Ku5dMU/workspaces/57de4cf40144bdf7d00010f2/a90ec25770b003c317041a4f/819fe744e7eafb83a81277d4",
+          },
         },
-      },
-    ]);
+      ]),
+    );
   });
 
   it("discovers runtime-neutral model choices through the pinned app-server", async () => {
@@ -897,6 +906,7 @@ describe("Codex app-server runtime adapter", () => {
     await expect(adapter.listModels(agent)).resolves.toEqual([
       {
         id: "gpt-5.2-codex",
+        selection: { model: "gpt-5.2-codex" },
         displayName: "GPT-5.2 Codex",
         description: "Coding model",
         isDefault: true,
@@ -906,6 +916,7 @@ describe("Codex app-server runtime adapter", () => {
       },
       {
         id: "gpt-fast",
+        selection: { model: "gpt-fast" },
         displayName: "Fast",
         description: "Quick coding model",
         isDefault: false,
@@ -958,15 +969,17 @@ describe("Codex app-server runtime adapter", () => {
     }));
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
 
-    await expect(adapter.discoverAllThreads?.(agent)).resolves.toEqual([
-      {
-        runtimeThreadId: "thread-parent",
-        name: "Fix the runtime",
-        updatedAt: 20_000,
-        workingDirectory: "/repo",
-        workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
-      },
-    ]);
+    await expect(adapter.discoverAllThreads?.(agent)).resolves.toEqual(
+      completeRuntimeThreadDiscovery([
+        {
+          runtimeThreadId: "thread-parent",
+          name: "Fix the runtime",
+          updatedAt: 20_000,
+          workingDirectory: "/repo",
+          workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
+        },
+      ]),
+    );
     await expect(adapter.readActivity?.(agent, "thread-parent")).resolves.toMatchObject({
       completeness: "partial",
       activities: [
@@ -1068,16 +1081,21 @@ describe("Codex app-server runtime adapter", () => {
     });
     const adapter = createCodexRuntimeAdapter({ createAppServer: async () => client });
 
-    await expect(adapter.discoverArchivedThreads?.(agent)).resolves.toEqual([
-      {
-        runtimeThreadId: "thread-archived",
-        name: "Archived task",
-        updatedAt: 20_000,
-        workingDirectory: "/repo",
-        isArchived: true,
-        workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
-      },
-    ]);
+    await expect(adapter.discoverArchivedThreads?.(agent)).resolves.toEqual(
+      completeRuntimeThreadDiscovery(
+        [
+          {
+            runtimeThreadId: "thread-archived",
+            name: "Archived task",
+            updatedAt: 20_000,
+            workingDirectory: "/repo",
+            isArchived: true,
+            workspaceIdentity: { key: "/repo", kind: "persistent", localRoot: "/repo" },
+          },
+        ],
+        { reason: "archived" },
+      ),
+    );
     expect(client.listThreads).toHaveBeenCalledWith(expect.objectContaining({ archived: true }));
     await adapter.archiveThread?.(agent, "thread-1");
     await adapter.unarchiveThread?.(agent, "thread-1");
@@ -1146,7 +1164,7 @@ describe("Codex app-server runtime adapter", () => {
     for await (const _event of runtimeSession.prompt({
       prompt: "switch model",
       workspace,
-      model: "gpt-5.2-codex",
+      model: { model: "gpt-5.2-codex" },
       reasoningEffort: "medium",
     })) {
       // Drain the public Runtime Session output.

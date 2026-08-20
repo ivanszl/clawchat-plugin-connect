@@ -237,13 +237,25 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
       ON tool_requests(binding_id, state, created_at);
     CREATE INDEX IF NOT EXISTS idx_tool_requests_retention
       ON tool_requests(binding_id, settled_at);
-    CREATE TABLE IF NOT EXISTS turn_submission_cancellations(
+    CREATE TABLE IF NOT EXISTS turn_outbox(
       submission_id TEXT PRIMARY KEY,
-      session_ref TEXT NOT NULL,
-      created_at INTEGER NOT NULL
+      session_ref TEXT NOT NULL COLLATE NOCASE REFERENCES session_refs(session_ref) ON DELETE CASCADE,
+      message_id TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      selection_json TEXT,
+      staging_ref TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('pending', 'delivering', 'accepted', 'failed')),
+      turn_id TEXT,
+      error_json TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(session_ref, message_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_turn_submission_cancellations_created
-      ON turn_submission_cancellations(created_at);
+    CREATE INDEX IF NOT EXISTS idx_turn_outbox_delivery
+      ON turn_outbox(state, created_at, submission_id);
+    CREATE INDEX IF NOT EXISTS idx_turn_outbox_session_order
+      ON turn_outbox(session_ref, created_at, submission_id);
     CREATE TABLE IF NOT EXISTS transcript_blocks(
       session_ref TEXT NOT NULL REFERENCES session_refs(session_ref) ON DELETE CASCADE,
       block_id TEXT NOT NULL,
@@ -322,6 +334,29 @@ export async function migratePluginDurableStateActivationGeneration(db: SqliteDb
     CREATE INDEX idx_plugin_durable_state_scope
       ON plugin_durable_state(lifetime, scope_key);
   `);
+}
+
+export async function migrateRuntimeModelSelections(db: SqliteDb): Promise<void> {
+  for (const table of ["runtime_sessions", "session_intents"] as const) {
+    const rows = await db.all<Array<{ rowid: number; model: string }>>(
+      `SELECT rowid, model FROM ${table} WHERE model IS NOT NULL`,
+    );
+    for (const row of rows) {
+      let alreadyStructured = false;
+      try {
+        const parsed = JSON.parse(row.model) as unknown;
+        alreadyStructured =
+          Boolean(parsed) &&
+          typeof parsed === "object" &&
+          !Array.isArray(parsed) &&
+          typeof (parsed as Record<string, unknown>).model === "string";
+      } catch {
+        // Legacy model identifiers were stored as unencoded text.
+      }
+      if (alreadyStructured) continue;
+      await db.run(`UPDATE ${table} SET model = ? WHERE rowid = ?`, JSON.stringify({ model: row.model }), row.rowid);
+    }
+  }
 }
 
 export async function resetStateForWorkspaceCutover(db: SqliteDb): Promise<void> {

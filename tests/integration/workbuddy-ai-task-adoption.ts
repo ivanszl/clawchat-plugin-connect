@@ -36,7 +36,7 @@ const catalog = new SessionCatalog({ config, stateStore: store, runtimeAdapters,
 try {
   const canonicalWorkspace = await realpath(workspace);
   const threads = await runtimeAdapters.discoverAllThreads(binding);
-  const thread = threads.find((candidate) => candidate.runtimeThreadId === taskId);
+  const thread = threads.threads.find((candidate) => candidate.runtimeThreadId === taskId);
   if (!thread) {
     throw new Error(
       `The dedicated ${workBuddyTestCompatibility.displayName} Task was not discovered as a Runtime Thread`,

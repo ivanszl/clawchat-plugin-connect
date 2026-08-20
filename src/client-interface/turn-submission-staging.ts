@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ConnectRuntimeMedia } from "../runtime/types";
@@ -13,6 +13,7 @@ import {
 const STAGING_TTL_MS = 24 * 60 * 60 * 1_000;
 
 interface StagedAttachmentManifest {
+  submissionId: string | null;
   sessionRef: string | null;
   attachments: Array<{ file: string; name: string; mime: string; size: number }>;
 }
@@ -35,18 +36,41 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
 
   async stage(draft: TurnSubmissionDraft, signal?: AbortSignal): Promise<StagedTurnSubmission> {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
-    const directory = join(this.root, `${safeIdentity(draft.submissionId)}-${randomUUID()}`);
+    const reference = `${safeIdentity(draft.submissionId)}-${randomUUID()}`;
+    const directory = join(this.root, reference);
     await mkdir(directory, { mode: 0o700 });
     let transferred = false;
+    const digest = createHash("sha256");
+    digest.update(draft.sessionRef);
+    digest.update("\0");
+    digest.update(draft.prompt);
+    if (draft.selection) {
+      digest.update(`\0${draft.selection.kind}\0`);
+      digest.update(draft.selection.id);
+      digest.update("\0");
+      digest.update(draft.selection.name);
+    }
     try {
       const media: ConnectRuntimeMedia[] = [];
-      const manifest: StagedAttachmentManifest = { sessionRef: draft.sessionRef, attachments: [] };
+      const manifest: StagedAttachmentManifest = {
+        submissionId: draft.submissionId,
+        sessionRef: draft.sessionRef,
+        attachments: [],
+      };
       for (const [index, attachment] of draft.attachments.entries()) {
         signal?.throwIfAborted();
         const kind = attachmentKind(attachment.mime);
         if (!kind) throw new TurnSubmissionError("attachment-unsupported", `${attachment.name} has no media type`);
         const path = join(directory, `${index}-${randomUUID()}`);
-        await Bun.write(path, await attachment.readBytes());
+        const bytes = await attachment.readBytes();
+        digest.update("\0");
+        digest.update(attachment.name);
+        digest.update("\0");
+        digest.update(attachment.mime);
+        digest.update("\0");
+        digest.update(String(attachment.size));
+        digest.update(bytes);
+        await Bun.write(path, bytes);
         const actual = (await stat(path)).size;
         if (actual !== attachment.size) {
           throw new TurnSubmissionError(
@@ -71,6 +95,8 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
       }
       await Bun.write(join(directory, "manifest.json"), JSON.stringify(manifest));
       const staged: StagedTurnSubmission = {
+        reference,
+        digest: digest.digest("hex"),
         transfer() {
           transferred = true;
         },
@@ -90,6 +116,36 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
     const media = this.stagedMedia.get(staged);
     if (!media) throw new Error("Turn Submission staging handle is invalid");
     return media;
+  }
+  async mediaForReference(reference: string): Promise<ConnectRuntimeMedia[]> {
+    const directory = this.directory(reference);
+    const manifest = await readManifest(join(directory, "manifest.json"));
+    if (!manifest?.submissionId) throw new Error("Turn Submission staging manifest is invalid");
+    const media: ConnectRuntimeMedia[] = [];
+    for (const [index, attachment] of manifest.attachments.entries()) {
+      const kind = attachmentKind(attachment.mime);
+      if (!kind || !attachment.file || attachment.file.includes("/") || attachment.file.includes("\\")) {
+        throw new Error("Turn Submission staged attachment is invalid");
+      }
+      const path = join(directory, attachment.file);
+      const details = await stat(path);
+      if (!details.isFile() || details.size !== attachment.size) {
+        throw new Error("Turn Submission staged attachment size changed");
+      }
+      media.push({
+        kind,
+        url: `/client/v1/turn-submissions/${encodeURIComponent(manifest.submissionId)}/attachments/${index}`,
+        stagedPath: path,
+        name: attachment.name,
+        mime: attachment.mime,
+        size: attachment.size,
+      });
+    }
+    return media;
+  }
+
+  async remove(reference: string): Promise<void> {
+    await rm(this.directory(reference), { recursive: true, force: true });
   }
 
   async attachment(submissionId: string, index: number): Promise<StagedTurnSubmissionAttachment | null> {
@@ -132,11 +188,11 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
     return null;
   }
 
-  async cleanupExpired(now = Date.now()): Promise<void> {
+  async cleanupExpired(now = Date.now(), preserved: ReadonlySet<string> = new Set()): Promise<void> {
     const entries = await readdir(this.root, { withFileTypes: true }).catch(() => []);
     await Promise.all(
       entries.map(async (entry) => {
-        if (!entry.isDirectory()) return;
+        if (!entry.isDirectory() || preserved.has(entry.name)) return;
         const path = join(this.root, entry.name);
         const details = await stat(path).catch(() => null);
         if (details && now - details.mtimeMs >= STAGING_TTL_MS) {
@@ -161,13 +217,24 @@ export class FileTurnSubmissionStaging implements TurnSubmissionStaging {
       }),
     );
   }
+
+  private directory(reference: string): string {
+    if (!reference || reference.includes("/") || reference.includes("\\") || reference === "." || reference === "..") {
+      throw new Error("Turn Submission staging reference is invalid");
+    }
+    return join(this.root, reference);
+  }
 }
 
 async function readManifest(path: string): Promise<StagedAttachmentManifest | null> {
   try {
     const value = JSON.parse(await readFile(path, "utf8")) as Partial<StagedAttachmentManifest>;
     return Array.isArray(value.attachments)
-      ? { sessionRef: typeof value.sessionRef === "string" ? value.sessionRef : null, attachments: value.attachments }
+      ? {
+          submissionId: typeof value.submissionId === "string" ? value.submissionId : null,
+          sessionRef: typeof value.sessionRef === "string" ? value.sessionRef : null,
+          attachments: value.attachments,
+        }
       : null;
   } catch {
     return null;

@@ -19,6 +19,8 @@ export interface TurnSubmissionDraft {
 }
 
 export interface StagedTurnSubmission {
+  readonly reference: string;
+  readonly digest: string;
   rollback(): Promise<void>;
   transfer(): void;
 }

@@ -5,11 +5,12 @@ import { BunSqliteAdapter, Database, SQLITE_BUSY_TIMEOUT_MS, type SqliteDb } fro
 import {
   createStateSchema,
   migratePluginDurableStateActivationGeneration,
+  migrateRuntimeModelSelections,
   resetStateForWorkspaceCutover,
 } from "./state-schema";
 
 export const CONNECT_SQLITE_APPLICATION_ID = 0x43434f4e;
-export const CONNECT_SQLITE_SCHEMA_VERSION = 3;
+export const CONNECT_SQLITE_SCHEMA_VERSION = 4;
 
 const REQUIRED_STATE_TABLES = [
   "activations",
@@ -31,7 +32,7 @@ const REQUIRED_STATE_TABLES = [
   "runtime_statuses",
   "client_commands",
   "tool_requests",
-  "turn_submission_cancellations",
+  "turn_outbox",
   "transcript_blocks",
   "client_events",
   "plugin_durable_state",
@@ -140,6 +141,9 @@ async function initializeSchema(db: SqliteDb, _allowAmbiguousLegacyOwnerReset = 
       await migratePluginDurableStateActivationGeneration(db);
     } else {
       await createStateSchema(db);
+    }
+    if (userVersion < 4) {
+      await migrateRuntimeModelSelections(db);
     }
     if (userVersion < CONNECT_SQLITE_SCHEMA_VERSION) {
       await db.exec(`PRAGMA application_id = ${CONNECT_SQLITE_APPLICATION_ID}`);

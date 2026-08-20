@@ -98,6 +98,7 @@ export interface BindingRuntimeHandle {
     media?: ConnectRuntimeMedia[],
     selection?: RuntimeSlashSelection | null,
     signal?: AbortSignal,
+    turnId?: string,
   ): Promise<{ turnId: string; sessionRef: string }>;
   uploadClientMedia?(file: Blob, filename: string): Promise<ConnectRuntimeMedia>;
   cancelClientTurn?(sessionRef: string): Promise<boolean>;
@@ -305,6 +306,9 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     options.writeError(`${options.agentId}: ${detail}\n`);
     void recordConnectionStatus(options, false, detail).catch(() => undefined);
   });
+  wsClient.on("close", ({ code, reason }: { code: number; reason: string }) => {
+    options.writeError(`${options.agentId}: WebSocket closed ${code}: ${reason || "no reason"}\n`);
+  });
   wsClient.on("state", (state: string) => {
     if (state === "connected") {
       void recordConnectionStatus(options, true, null).catch(() => undefined);
@@ -368,8 +372,8 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     agentId: options.agentId,
     websocketUrl: options.config.websocketUrl,
     deviceId: options.deviceId,
-    enqueueClientTurn: async (sessionRef, prompt, media, selection, signal) =>
-      await runtime.enqueueClientTurn(sessionRef, prompt, media, selection, signal),
+    enqueueClientTurn: async (sessionRef, prompt, media, selection, signal, turnId) =>
+      await runtime.enqueueClientTurn(sessionRef, prompt, media, selection, signal, turnId),
     uploadClientMedia: async (file, filename) => await runtime.uploadClientMedia(file, filename),
     cancelClientTurn: async (sessionRef) => await runtime.cancelClientTurn(sessionRef),
     queuedClientTurns: (sessionRef) => runtime.queuedClientTurns(sessionRef),

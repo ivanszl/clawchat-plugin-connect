@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type {
   EmbeddedTranscriptBlock,
   MessageBlockContent,
+  MessageDeliveryView,
   RuntimeInteractionBlock,
   RuntimeInteractionBlockContent,
   TranscriptBlock,
@@ -134,6 +135,8 @@ export class TranscriptProjection {
     author: string;
     sender?: MessageBlockContent["sender"];
     conversationType?: MessageBlockContent["conversationType"];
+    state?: "pending" | "complete" | "error";
+    delivery?: MessageDeliveryView;
     id?: string;
     media?: MessageBlockContent["media"];
   }): Promise<TranscriptBlock> {
@@ -143,7 +146,7 @@ export class TranscriptProjection {
         id: params.id ?? randomUUID(),
         type: "message",
         origin: params.origin,
-        state: "complete",
+        state: params.state ?? "complete",
         plainText: text,
         role: "user",
         author: params.author,
@@ -151,6 +154,24 @@ export class TranscriptProjection {
         ...(params.conversationType ? { conversationType: params.conversationType } : {}),
         markdown: text,
         ...(params.media && params.media.length > 0 ? { media: params.media } : {}),
+        ...(params.delivery ? { delivery: params.delivery } : {}),
+      })
+    ).block;
+  }
+
+  async updateClientMessageDelivery(
+    sessionRef: string,
+    messageId: string,
+    state: "pending" | "complete" | "error",
+    delivery?: MessageDeliveryView,
+  ): Promise<TranscriptBlock | null> {
+    const current = await this.options.stateStore.getTranscriptBlock(sessionRef, messageId);
+    if (current?.type !== "message" || current.role !== "user" || current.origin !== "client") return null;
+    return (
+      await this.options.stateStore.upsertTranscriptBlock(sessionRef, {
+        ...current,
+        state,
+        ...(delivery ? { delivery } : { delivery: undefined }),
       })
     ).block;
   }

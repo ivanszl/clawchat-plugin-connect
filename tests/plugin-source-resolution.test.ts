@@ -678,7 +678,7 @@ describe("bundled official Plugin setup", () => {
     expect(loaded.entries).toEqual([
       expect.objectContaining({
         pluginId: "clawling.runtime.codex",
-        integrity: "sha256-oVPqU29N7c1bvTyrykkbHHngxTVFvN9KaPf1dWdSNWI=",
+        integrity: "sha256-kwKYeSWjku/p9TWj9zJbHr1FjSQAXhqXHWMxCZ643NQ=",
       }),
     ]);
     const candidate = loaded.entries[0];
@@ -696,6 +696,7 @@ describe("bundled official Plugin setup", () => {
     const base = { officialPluginsDirectory: directory, target };
     const executable = (command: string) => {
       if (command === "codex") return "/fake/bin/codex";
+      if (command === "dsh") return "/fake/bin/dsh";
       if (command === "opencode") return "/fake/bin/opencode";
       if (command === "/Applications/WorkBuddy AI.app") return command;
       return null;
@@ -713,7 +714,12 @@ describe("bundled official Plugin setup", () => {
         .filter((candidate) => candidate.selected)
         .map((candidate) => candidate.pluginId)
         .sort(),
-    ).toEqual(["clawling.runtime.codex", "clawling.runtime.opencode", "clawling.runtime.workbuddy"]);
+    ).toEqual([
+      "clawling.runtime.codex",
+      "clawling.runtime.deepseek-harness",
+      "clawling.runtime.opencode",
+      "clawling.runtime.workbuddy",
+    ]);
     expect(detected.candidates.find((candidate) => candidate.pluginId === "clawling.exposure.liveware")).toMatchObject({
       detected: false,
       selected: false,
@@ -737,7 +743,12 @@ describe("bundled official Plugin setup", () => {
     });
     expect(
       malformed.candidates
-        .filter((candidate) => candidate.pluginId !== "clawling.runtime.workbuddy" && candidate.discovery !== null)
+        .filter(
+          (candidate) =>
+            candidate.pluginId !== "clawling.runtime.deepseek-harness" &&
+            candidate.pluginId !== "clawling.runtime.workbuddy" &&
+            candidate.discovery !== null,
+        )
         .every((candidate) => candidate.detected && !candidate.compatible && !candidate.selected),
     ).toBe(true);
 
@@ -748,7 +759,12 @@ describe("bundled official Plugin setup", () => {
     });
     expect(
       overflow.candidates
-        .filter((candidate) => candidate.pluginId !== "clawling.runtime.workbuddy" && candidate.discovery !== null)
+        .filter(
+          (candidate) =>
+            candidate.pluginId !== "clawling.runtime.deepseek-harness" &&
+            candidate.pluginId !== "clawling.runtime.workbuddy" &&
+            candidate.discovery !== null,
+        )
         .every((candidate) => candidate.diagnostic?.includes("output limit")),
     ).toBe(true);
 

@@ -35,11 +35,11 @@ printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$
 case "$(uname -s)" in
   Darwin)
     os="darwin"
-    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode clawling.runtime.workbuddy clawling.exposure.liveware"
+    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.deepseek-harness clawling.runtime.opencode clawling.runtime.workbuddy clawling.exposure.liveware"
     ;;
   Linux)
     os="linux"
-    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.opencode clawling.exposure.liveware"
+    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.deepseek-harness clawling.runtime.opencode clawling.exposure.liveware"
     ;;
   *) fail "unsupported operating system: $(uname -s)" ;;
 esac

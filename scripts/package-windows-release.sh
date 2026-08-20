@@ -24,7 +24,7 @@ case "$plugin_target" in
     exit 1
     ;;
 esac
-for official_plugin_id in clawling.runtime.codex clawling.runtime.opencode clawling.exposure.liveware; do
+for official_plugin_id in clawling.runtime.codex clawling.runtime.deepseek-harness clawling.runtime.opencode clawling.exposure.liveware; do
   official_plugin_found=0
   for official_plugin_bundle in "$official_plugins_directory/${official_plugin_id}-"*.connect-plugin; do
     if [ -f "$official_plugin_bundle" ]; then official_plugin_found=1; break; fi

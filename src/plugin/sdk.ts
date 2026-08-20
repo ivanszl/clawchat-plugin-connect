@@ -14,7 +14,7 @@ import type {
   RuntimeModelOption,
   RuntimeSessionOption,
   RuntimeSkillSummary,
-  RuntimeThreadSummary,
+  RuntimeThreadDiscoverySnapshot,
   RuntimeWorkspaceSnapshot,
 } from "../runtime/types";
 import type { RuntimeWorkspace } from "../types";
@@ -202,9 +202,9 @@ export interface ConnectPluginRuntimeAdapter {
   onCommandsChanged?(listener: () => void): () => void;
   onCatalogsChanged?(listener: () => void): () => void;
   discoverWorkspaces?(): Promise<RuntimeWorkspaceSnapshot>;
-  discoverThreads?(workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]>;
-  discoverAllThreads?(): Promise<RuntimeThreadSummary[]>;
-  discoverArchivedThreads?(): Promise<RuntimeThreadSummary[]>;
+  discoverThreads?(workspace: RuntimeWorkspace): Promise<RuntimeThreadDiscoverySnapshot>;
+  discoverAllThreads?(): Promise<RuntimeThreadDiscoverySnapshot>;
+  discoverArchivedThreads?(): Promise<RuntimeThreadDiscoverySnapshot>;
   verifyThreadReady?(runtimeThreadId: string): Promise<void>;
   readActivity?(runtimeThreadId: string): Promise<RuntimeActivitySnapshot>;
   reconcileInput?(runtimeThreadId: string, candidate: RuntimeInputMessageIdentity): Promise<RuntimeInputReconciliation>;

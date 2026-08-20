@@ -27,8 +27,13 @@ function observation(): WorkBuddyDiscoveryObservation {
     },
     applicationProcess: { pid: 100, parentPid: 1, executablePath: `${applicationPath}/Contents/MacOS/Electron` },
     task: { id: taskId, workspace, transcriptIdentityMatches: true, replayFingerprint: nativeReplayFingerprint },
-    sidecarRegistration: { pid: 110, version: 1 },
-    sidecarIdentity: { pid: 110, version: 1, registrationTokenMatches: true },
+    sidecarRegistration: { pid: 110, version: 3 },
+    sidecarIdentity: {
+      pid: 110,
+      version: 3,
+      registrationTokenMatches: true,
+      registrationToken: "registration-token",
+    },
     sidecarProcess: { pid: 110, parentPid: 100, executablePath: `${applicationPath}/Contents/MacOS/Electron` },
     endpointSession: {
       sessionId: taskId,
@@ -92,14 +97,15 @@ describe("WorkBuddy Task discovery contract", () => {
     });
   });
 
-  it("rejects the central CLI host instead of treating it as the selected Task endpoint", async () => {
-    expect(
-      await failureCode(
+  it("recognizes the WorkBuddy AI sidecar v3 host as a verified native Task replay surface", async () => {
+    await expect(
+      discoverWorkBuddyTask(
+        { profile: "workbuddy-ai", taskId, expectedWorkspace: workspace },
         source((value) => {
-          if (value.endpointSession) value.endpointSession.sessionId = "__workbuddy_cli_host__-2-fixture";
+          if (value.endpointSession) value.endpointSession.sessionId = "__workbuddy_cli_host__-2-048fa1ff";
         }),
       ),
-    ).toBe("task-identity-mismatch");
+    ).resolves.toMatchObject({ profile: "workbuddy-ai", task: { id: taskId } });
   });
 
   it("reports an Attachment ready only with the complete verified authoritative replay", async () => {
@@ -163,16 +169,68 @@ describe("WorkBuddy Task discovery contract", () => {
     expect(closes).toBe(1);
   });
 
-  it("prepares a writable Task endpoint before inspecting and retaining it", async () => {
+  it("reuses a verified exact Task endpoint without replacing the WorkBuddy-owned runtime", async () => {
     const calls: string[] = [];
     const discoverySource = source();
     const inspect = discoverySource.inspect;
     discoverySource.prepareEndpoint = async () => {
       calls.push("prepare");
     };
-    discoverySource.inspect = async (input) => {
-      calls.push("inspect");
-      return await inspect(input);
+    discoverySource.inspect = async (input, endpointSelection) => {
+      calls.push(`inspect:${endpointSelection}`);
+      return await inspect(input, endpointSelection);
+    };
+    discoverySource.connectEndpoint = async () => {
+      calls.push("connect");
+      return {
+        verification: {
+          taskId,
+          replayFingerprint: nativeReplayFingerprint,
+          replayStarted: true,
+          replayCompleted: true,
+          activities: [],
+          connectionOwner: observation().endpointOwner,
+        },
+        prompt: async function* () {
+          yield* [];
+        },
+        close: async () => undefined,
+      };
+    };
+
+    const attachment = await connectWorkBuddyTask(
+      { profile: "workbuddy-ai", taskId, expectedWorkspace: workspace },
+      discoverySource,
+    );
+
+    expect(calls).toEqual(["inspect:task", "connect"]);
+    await attachment.close();
+  });
+
+  it("verifies the host before preparation when no exact Task endpoint exists, then requires rediscovery", async () => {
+    const calls: string[] = [];
+    const preparations: unknown[] = [];
+    let prepared = false;
+    const discoverySource = source();
+    const inspect = discoverySource.inspect;
+    discoverySource.prepareEndpoint = async (_input, sidecarIdentity) => {
+      calls.push("prepare");
+      preparations.push(sidecarIdentity);
+      prepared = true;
+    };
+    discoverySource.inspect = async (input, endpointSelection) => {
+      calls.push(`inspect:${endpointSelection}`);
+      if (endpointSelection === "task" && !prepared) {
+        throw new WorkBuddyDiscoveryError("endpoint-unavailable", "WorkBuddy AI sidecar has no exact Task endpoint.", {
+          expectedEndpointKind: "task",
+          candidateCount: 0,
+        });
+      }
+      const value = await inspect(input, endpointSelection);
+      if (value.endpointSession) {
+        value.endpointSession.sessionId = endpointSelection === "host" ? "__workbuddy_cli_host__-2-048fa1ff" : taskId;
+      }
+      return value;
     };
     discoverySource.connectEndpoint = async () => ({
       verification: {
@@ -194,8 +252,53 @@ describe("WorkBuddy Task discovery contract", () => {
       discoverySource,
     );
 
-    expect(calls.slice(0, 3)).toEqual(["inspect", "prepare", "inspect"]);
+    expect(calls).toEqual(["inspect:task", "inspect:host", "prepare", "inspect:task"]);
+    expect(preparations).toEqual([
+      {
+        applicationProcessId: 100,
+        sidecarProcessId: 110,
+        sidecarVersion: 3,
+        registrationToken: "registration-token",
+      },
+    ]);
     await attachment.close();
+  });
+
+  it("normalizes and redacts Task runtime preparation failures", async () => {
+    const discoverySource = source();
+    const inspect = discoverySource.inspect;
+    discoverySource.inspect = async (input, endpointSelection) => {
+      if (endpointSelection === "task") {
+        throw new WorkBuddyDiscoveryError("endpoint-unavailable", "WorkBuddy AI sidecar has no exact Task endpoint.", {
+          expectedEndpointKind: "task",
+          candidateCount: 0,
+        });
+      }
+      const value = await inspect(input, endpointSelection);
+      if (value.endpointSession) value.endpointSession.sessionId = "__workbuddy_cli_host__-2-048fa1ff";
+      return value;
+    };
+    discoverySource.prepareEndpoint = async () => {
+      throw new Error(
+        '{"CODEBUDDY_GATEWAY_PASSWORD":"dynamic-gateway"} sessionToken=dynamic-session password=dynamic-password',
+      );
+    };
+    discoverySource.connectEndpoint = async () => {
+      throw new Error("must not connect");
+    };
+
+    try {
+      await connectWorkBuddyTask({ profile: "workbuddy-ai", taskId, expectedWorkspace: workspace }, discoverySource);
+      throw new Error("expected preparation failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(WorkBuddyDiscoveryError);
+      const diagnostic = JSON.stringify((error as WorkBuddyDiscoveryError).toJSON());
+      expect(diagnostic).toContain("Task runtime preparation failed");
+      expect(diagnostic).not.toContain("dynamic-session");
+      expect(diagnostic).not.toContain("dynamic-password");
+      expect(diagnostic).not.toContain("dynamic-gateway");
+      expect(diagnostic).toContain("[REDACTED]");
+    }
   });
 
   it("fails closed when an empty Task has no independent native identity record", async () => {

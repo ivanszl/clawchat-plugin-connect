@@ -192,6 +192,9 @@ export const zhHans = {
     defaultMessage:
       "管理安全的 Agent 偏好、主机 Workspace 和受信任的本地插件。Runtime 启动参数与审批策略仍由本地配置控制。",
   },
+  "@connect.settings.tabs.agent": { defaultMessage: "Agent" },
+  "@connect.settings.tabs.workspace": { defaultMessage: "Workspace" },
+  "@connect.settings.tabs.plugins": { defaultMessage: "插件" },
   "@connect.settings.binding.save": { defaultMessage: "保存设置" },
   "@connect.settings.binding.saving": { defaultMessage: "正在保存设置" },
   "@connect.settings.binding.saved": { defaultMessage: "设置已保存" },
@@ -427,6 +430,7 @@ export const zhHans = {
   "@connect.transcript.blockedImage": { defaultMessage: "[图片已阻止：{description}]" },
   "@connect.transcript.noImageDescription": { defaultMessage: "无描述" },
   "@connect.transcript.origin.client": { defaultMessage: "Connect Client" },
+  "@connect.transcript.message.retry": { defaultMessage: "重试发送消息" },
   "@connect.transcript.empty.title": { defaultMessage: "这个 Session 还没有消息" },
   "@connect.transcript.empty.description": { defaultMessage: "在下方输入消息，Connect 会把它直接发送给绑定的 Agent。" },
   "@connect.transcript.loadingOlder": { defaultMessage: "正在载入更早的消息" },
@@ -556,40 +560,15 @@ export const zhHans = {
   "@connect.composer.error.submissionIdConflict": { defaultMessage: "提交标识属于另一个 Session。" },
   "@connect.composer.error.unknown": { defaultMessage: "Turn Submission 失败。" },
   "@connect.composer.error.withDiagnostic": { defaultMessage: "{message} 诊断引用：{reference}" },
-  "@connect.session.agent.fixed.title": { defaultMessage: "此 Session 的 Agent Binding 已固定" },
-  "@connect.session.agent.fixed.acceptedTurn": {
-    defaultMessage: "第一个 Turn 已被接受。若要使用其他 Agent，请在同一 Workspace 中创建新的 Session。",
-  },
   "@connect.session.agent.empty.label": { defaultMessage: "此空 Session 的 Agent Binding" },
   "@connect.session.agent.empty.description": { defaultMessage: "第一个 Turn 被接受前，可以原地更改 Agent。" },
   "@connect.session.agent.empty.unavailable": { defaultMessage: "没有其他已激活的 Agent Binding。" },
   "@connect.session.agent.empty.action": { defaultMessage: "在此 Session 中更改 Agent" },
   "@connect.session.agent.changeFailure": { defaultMessage: "无法更改 Agent" },
-  "@connect.session.continue.action": { defaultMessage: "使用其他 Agent 继续 Workspace" },
-  "@connect.session.continue.title": { defaultMessage: "使用其他 Agent 继续" },
-  "@connect.session.continue.subtitle": { defaultMessage: "在同一 Workspace 中创建全新 Session。" },
-  "@connect.session.continue.warning.title": { defaultMessage: "仅工作区文件会保留" },
-  "@connect.session.continue.warning.description": {
-    defaultMessage:
-      "将创建新的 Session 和 Runtime Thread。对话历史、工具上下文、隐藏推理和记忆不会转移。工作区文件通过共享 Workspace 保留，原 Session 保持不变。",
-  },
-  "@connect.session.continue.binding.label": { defaultMessage: "新 Session 的 Agent Binding" },
-  "@connect.session.continue.binding.description": {
-    defaultMessage: "仅可选择属于当前 Connect 安装所有者的已激活 Agent Binding。",
-  },
-  "@connect.session.continue.workspace": { defaultMessage: "共享 Workspace：{workspace}" },
-  "@connect.session.continue.failure": { defaultMessage: "无法创建继续 Session" },
-  "@connect.session.continue.cancel": { defaultMessage: "取消" },
-  "@connect.session.continue.confirm": { defaultMessage: "创建全新 Session" },
   "@connect.error.sessionBindingLocked": {
     defaultMessage: "此 Session 的 Agent 已固定。请改为在同一 Workspace 中创建新 Session。",
   },
   "@connect.error.bindingNotActive": { defaultMessage: "所选 Agent Binding 未激活。" },
   "@connect.error.bindingOwnerMismatch": { defaultMessage: "所选 Agent Binding 不属于当前安装所有者。" },
   "@connect.error.continuationBindingUnchanged": { defaultMessage: "请选择其他 Agent Binding。" },
-  "@connect.settings.continuity.title": { defaultMessage: "在 Session 之间更换 Agent" },
-  "@connect.settings.continuity.description": {
-    defaultMessage:
-      "空 Session 可在第一个 Turn 被接受前更换 Agent。之后使用其他 Agent 继续会在同一 Workspace 中创建新 Session。对话历史、工具上下文、记忆和原生 Runtime Thread 不会转移；工作区文件保留，原 Session 不变。",
-  },
 } satisfies ClientCatalog;

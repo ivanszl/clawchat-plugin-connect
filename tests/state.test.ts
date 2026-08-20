@@ -530,11 +530,11 @@ describe("state store", () => {
       workspaceRef: null,
       name: "Deep review",
       mode: "workspace-write",
-      model: "gpt-5.2-codex",
+      model: { model: "gpt-5.2-codex" },
       reasoningEffort: "high",
     });
     await expect(store.getSessionIntent("chat-model", "codex")).resolves.toMatchObject({
-      model: "gpt-5.2-codex",
+      model: { model: "gpt-5.2-codex" },
       reasoningEffort: "high",
     });
 
@@ -545,14 +545,14 @@ describe("state store", () => {
       workspaceRef: null,
       name: "Deep review",
       mode: "workspace-write",
-      model: "gpt-5.2-codex",
+      model: { model: "gpt-5.2-codex" },
       reasoningEffort: "high",
     });
     await store.close();
 
     const reopened = createStateStore({ dbPath });
     await expect(reopened.getCurrentRuntimeSession("chat-model", "codex")).resolves.toMatchObject({
-      model: "gpt-5.2-codex",
+      model: { model: "gpt-5.2-codex" },
       reasoningEffort: "high",
     });
     await reopened.close();
@@ -567,7 +567,7 @@ describe("state store", () => {
       workspaceRef: null,
       name: "Planned",
       mode: "read-only",
-      model: "gpt-planned",
+      model: { model: "gpt-planned" },
       reasoningEffort: "high",
     });
 
@@ -580,7 +580,7 @@ describe("state store", () => {
     expect(first).toMatchObject({
       name: "Planned",
       mode: "read-only",
-      model: "gpt-planned",
+      model: { model: "gpt-planned" },
       reasoningEffort: "high",
     });
     await expect(store.listRuntimeSessions("chat-race", "codex")).resolves.toHaveLength(1);
@@ -612,17 +612,23 @@ describe("state store", () => {
       chatId: "chat-model-update",
       sessionId: "session-model-update",
       agentId: "codex",
-      model: "gpt-old",
+      model: { model: "gpt-old" },
       reasoningEffort: "medium",
     });
     await store.setRuntimeSessionId("chat-model-update", "codex", "session-model-update", "thread-concurrent");
 
     await expect(
-      store.setRuntimeSessionModelSelection("chat-model-update", "codex", "session-model-update", "gpt-new", "high"),
+      store.setRuntimeSessionModelSelection(
+        "chat-model-update",
+        "codex",
+        "session-model-update",
+        { model: "gpt-new" },
+        "high",
+      ),
     ).resolves.toBe(true);
     await expect(store.getCurrentRuntimeSession("chat-model-update", "codex")).resolves.toMatchObject({
       runtimeSessionId: "thread-concurrent",
-      model: "gpt-new",
+      model: { model: "gpt-new" },
       reasoningEffort: "high",
     });
     await store.close();
@@ -1227,19 +1233,6 @@ describe("state store", () => {
     ).resolves.toBeUndefined();
     expect(await holder.exited).toBe(0);
     await store.close();
-  });
-
-  it("keeps a cancelled Turn Submission terminal across a state-store restart", async () => {
-    const dir = await tempDir();
-    const dbPath = join(dir, "state.sqlite");
-    const first = createStateStore({ dbPath });
-    await expect(first.cancelTurnSubmission("submission-restart", "NKEP79B8")).resolves.toBe(true);
-    await first.close();
-
-    const restarted = createStateStore({ dbPath });
-    await expect(restarted.isTurnSubmissionCancelled("submission-restart", "NKEP79B8")).resolves.toBe(true);
-    await expect(restarted.cancelTurnSubmission("submission-restart", "OTHER123")).resolves.toBe(false);
-    await restarted.close();
   });
 
   it("claims each Tool Request once and returns the settled record for a reused request id", async () => {

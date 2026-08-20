@@ -8,11 +8,12 @@ import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { identifyAgentBinding } from "../src/plugin/binding";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import type {
-  ConnectRuntimePrompt,
-  ConnectRuntimeSession,
-  ConnectRuntimeStartContext,
-  RuntimeActivity,
+import {
+  type ConnectRuntimePrompt,
+  type ConnectRuntimeSession,
+  type ConnectRuntimeStartContext,
+  completeRuntimeThreadDiscovery,
+  type RuntimeActivity,
 } from "../src/runtime/types";
 import { WorkBuddyPromptTransportError, type WorkBuddyTaskCatalog } from "../src/runtime/workbuddy-acp-client";
 import {
@@ -221,23 +222,24 @@ describe("WorkBuddy Runtime Adapter", () => {
   it("discovers WorkBuddy AI Tasks through the Runtime Thread catalog", async () => {
     const adapter = createWorkBuddyRuntimeAdapter({ createSource: source });
 
-    await expect(adapter.discoverAllThreads?.(binding)).resolves.toEqual([
-      {
-        runtimeThreadId: taskId,
-        name: "Authoritative desktop task",
-        updatedAt: 1_786_000_000_000,
-        workingDirectory: workspace,
-        workspaceKind: "persistent",
-        workspaceIdentity: { key: workspace, kind: "persistent", localRoot: workspace },
-      },
-    ]);
-    await expect(
-      adapter.discoverThreads?.(binding, {
-        workspaceRef: "WSDEFALT",
-        workingDirectory: workspace,
-        skipGitRepoCheck: false,
-      }),
-    ).resolves.toHaveLength(1);
+    await expect(adapter.discoverAllThreads?.(binding)).resolves.toEqual(
+      completeRuntimeThreadDiscovery([
+        {
+          runtimeThreadId: taskId,
+          name: "Authoritative desktop task",
+          updatedAt: 1_786_000_000_000,
+          workingDirectory: workspace,
+          workspaceKind: "persistent",
+          workspaceIdentity: { key: workspace, kind: "persistent", localRoot: workspace },
+        },
+      ]),
+    );
+    const workspaceDiscovery = await adapter.discoverThreads?.(binding, {
+      workspaceRef: "WSDEFALT",
+      workingDirectory: workspace,
+      skipGitRepoCheck: false,
+    });
+    expect(workspaceDiscovery?.threads).toHaveLength(1);
   });
 
   it("attaches the selected Task and returns deterministic complete Runtime Activity history", async () => {
@@ -466,7 +468,7 @@ describe("WorkBuddy Runtime Adapter", () => {
       const view = await catalog.sessionView(adopted?.sessionRef ?? "");
 
       expect(view).toMatchObject({
-        effectiveModel: "workbuddy-fast",
+        effectiveModel: { model: "workbuddy-fast" },
         modelSource: "runtime",
         modelAvailable: true,
         modelOptions: [{ id: "workbuddy-fast", displayName: "WorkBuddy AI Fast", isDefault: true }],
@@ -1241,6 +1243,7 @@ function taskCatalog(currentModelId: string): WorkBuddyTaskCatalog {
     models: [
       {
         id: currentModelId,
+        selection: { model: currentModelId },
         displayName: currentModelId === "workbuddy-fast" ? "WorkBuddy AI Fast" : "Hy3 Product Model",
         description: "Product-provided model",
         isDefault: true,

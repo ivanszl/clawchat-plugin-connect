@@ -6,6 +6,7 @@ import {
   CONNECT_PLUGIN_INTERFACE_VERSION,
   CONNECT_PLUGIN_MANIFEST_VERSION,
 } from "../sdk";
+import { OFFICIAL_LIVEWARE_VENDOR_SOURCES } from "./liveware-binaries";
 import {
   LIVEWARE_DURABLE_STATE_SCHEMA,
   LIVEWARE_EXPOSURE_CONFIGURATION_SCHEMA,
@@ -52,14 +53,7 @@ const descriptor: OfficialPluginDescriptor = {
   assets: [
     {
       entry: "assets/liveware",
-      sources: {
-        "darwin-arm64": "vendor/liveware/liveware-darwin-arm64",
-        "darwin-x64": "vendor/liveware/liveware-darwin-amd64",
-        "linux-arm64": "vendor/liveware/liveware-linux-arm64",
-        "linux-x64": "vendor/liveware/liveware-linux-amd64",
-        "win32-arm64": "vendor/liveware/liveware-windows-arm64.exe",
-        "win32-x64": "vendor/liveware/liveware-windows-amd64.exe",
-      },
+      sources: OFFICIAL_LIVEWARE_VENDOR_SOURCES,
     },
   ],
   entrypoint: "src/plugin/official/liveware-entry.ts",

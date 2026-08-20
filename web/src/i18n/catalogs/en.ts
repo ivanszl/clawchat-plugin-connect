@@ -139,10 +139,6 @@ export const en = {
   "@connect.session.actions.delete": { defaultMessage: "Permanently delete Session" },
   "@connect.session.restored": { defaultMessage: "Session restored" },
   "@connect.session.lifecycleFailure": { defaultMessage: "Session action failed" },
-  "@connect.session.agent.fixed.title": { defaultMessage: "Agent Binding fixed for this Session" },
-  "@connect.session.agent.fixed.acceptedTurn": {
-    defaultMessage: "The first Turn has been accepted. Continue the Workspace in a new Session to use another Agent.",
-  },
   "@connect.session.agent.empty.label": { defaultMessage: "Agent Binding for this empty Session" },
   "@connect.session.agent.empty.description": {
     defaultMessage: "You can change Agent in place until the first Turn is accepted.",
@@ -150,24 +146,6 @@ export const en = {
   "@connect.session.agent.empty.unavailable": { defaultMessage: "No other active Agent Binding is available." },
   "@connect.session.agent.empty.action": { defaultMessage: "Change Agent in this Session" },
   "@connect.session.agent.changeFailure": { defaultMessage: "Unable to change Agent" },
-  "@connect.session.continue.action": { defaultMessage: "Continue Workspace with another Agent" },
-  "@connect.session.continue.title": { defaultMessage: "Continue with another Agent" },
-  "@connect.session.continue.subtitle": {
-    defaultMessage: "Create a fresh Session in the same Workspace.",
-  },
-  "@connect.session.continue.warning.title": { defaultMessage: "Only workspace files carry forward" },
-  "@connect.session.continue.warning.description": {
-    defaultMessage:
-      "A new Session and Runtime Thread are created. Conversation history, tool context, hidden reasoning, and memory are not transferred. Workspace files remain through the shared Workspace, and the original Session stays unchanged.",
-  },
-  "@connect.session.continue.binding.label": { defaultMessage: "Agent Binding for the new Session" },
-  "@connect.session.continue.binding.description": {
-    defaultMessage: "Only active Agent Bindings owned by this Connect installation are eligible.",
-  },
-  "@connect.session.continue.workspace": { defaultMessage: "Shared Workspace: {workspace}" },
-  "@connect.session.continue.failure": { defaultMessage: "Unable to create continuation Session" },
-  "@connect.session.continue.cancel": { defaultMessage: "Cancel" },
-  "@connect.session.continue.confirm": { defaultMessage: "Create fresh Session" },
   "@connect.session.unavailable.title": { defaultMessage: "Runtime Thread unavailable" },
   "@connect.session.unavailable.description": {
     defaultMessage: "This Session remains readable, but its Runtime Thread cannot currently accept actions.",
@@ -245,11 +223,9 @@ export const en = {
     defaultMessage:
       "Manage safe Agent preferences, host Workspaces, and trusted local Plugins. Runtime launch arguments and approval policy remain controlled by local configuration.",
   },
-  "@connect.settings.continuity.title": { defaultMessage: "Changing Agents between Sessions" },
-  "@connect.settings.continuity.description": {
-    defaultMessage:
-      "An empty Session can change Agent until its first Turn is accepted. After that, continuing with another Agent creates a new Session in the same Workspace. Conversation history, tool context, memory, and the native Runtime Thread are not transferred; workspace files remain and the original Session is unchanged.",
-  },
+  "@connect.settings.tabs.agent": { defaultMessage: "Agent" },
+  "@connect.settings.tabs.workspace": { defaultMessage: "Workspaces" },
+  "@connect.settings.tabs.plugins": { defaultMessage: "Plugins" },
   "@connect.settings.binding.save": { defaultMessage: "Save settings" },
   "@connect.settings.binding.saving": { defaultMessage: "Saving settings" },
   "@connect.settings.binding.saved": { defaultMessage: "Settings saved" },
@@ -510,6 +486,7 @@ export const en = {
   "@connect.transcript.blockedImage": { defaultMessage: "[Image blocked: {description}]" },
   "@connect.transcript.noImageDescription": { defaultMessage: "no description" },
   "@connect.transcript.origin.client": { defaultMessage: "Connect Client" },
+  "@connect.transcript.message.retry": { defaultMessage: "Retry sending message" },
   "@connect.transcript.empty.title": { defaultMessage: "This Session has no messages yet" },
   "@connect.transcript.empty.description": {
     defaultMessage: "Enter a message below and Connect will send it directly to the bound Agent.",

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import { leadingSkillName } from "../agent/skill-invocation";
@@ -58,7 +58,7 @@ import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { RuntimeSlashSelection } from "../runtime/types";
 import type { BindingRuntimeHandle } from "../service/binding-runtime";
-import type { AgentBindingConfig, ConnectConfig } from "../types";
+import type { AgentBindingConfig, ConnectConfig, RuntimeModelSelection } from "../types";
 import {
   HostDirectoryError,
   listHostDirectories,
@@ -75,13 +75,13 @@ import { WorkspaceCatalog } from "../workspaces/workspaces";
 import { resolveClientAssetsPath, staticResponse } from "./client-assets";
 import {
   ClientRequestError,
-  clientErrorView,
   commandError,
   errorResponse,
   eventCursor,
   isClientAdministrationPath,
   isMutation,
   isPathWithin,
+  isRuntimeModelSelection,
   isStringRecord,
   jsonResponse,
   parseBeforeCursor,
@@ -98,7 +98,9 @@ import {
 import { SessionCatalog } from "./session-catalog";
 import { validatedSessionOptions } from "./session-option-validation";
 import type { TranscriptProjection } from "./transcript-projection";
-import { TurnSubmission, type TurnSubmissionDraft, TurnSubmissionError } from "./turn-submission";
+import { TurnOutbox, TurnOutboxError } from "./turn-outbox";
+import type { TurnSubmissionDraft } from "./turn-submission";
+import { TurnSubmissionError } from "./turn-submission";
 import { FileTurnSubmissionStaging } from "./turn-submission-staging";
 
 const MAX_PLUGIN_MULTIPART_OVERHEAD_BYTES = 1024 * 1024;
@@ -195,6 +197,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     options.pluginManager?.configMutations ?? new ConnectConfigMutationCoordinator(options.config, options.configPath);
   const retiredBindings = new Set<string>();
   const retiringBindings = new Set<string>();
+  const activeTurnSubmissions = new Map<string, ActiveTurnSubmission>();
   const runtimeIsUnavailable = (bindingId: string): boolean =>
     retiredBindings.has(bindingId) || retiringBindings.has(bindingId);
   const catalog = new SessionCatalog({
@@ -214,8 +217,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   const runtimeInteractions =
     options.runtimeInteractions ?? new RuntimeInteractionCoordinator(options.transcriptProjection);
   const submissionStaging = new FileTurnSubmissionStaging(options.config.stateDbPath);
-  const activeTurnSubmissions = new Map<string, ActiveTurnSubmission>();
-  const turnSubmissions = new TurnSubmission({
+  const turnOutbox = new TurnOutbox({
+    stateStore: options.stateStore,
+    staging: submissionStaging,
+    transcriptProjection: options.transcriptProjection,
     capabilityFor: async (sessionRef) => {
       const stored = await options.stateStore.getRuntimeSessionByRef(sessionRef);
       if (stored && runtimeIsUnavailable(stored.agentId)) {
@@ -230,19 +235,18 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       }
       return view.turnSubmissionCapability;
     },
-    staging: submissionStaging,
-    accept: async (sessionRef, prompt, selection, staged, signal) => {
-      signal?.throwIfAborted();
-      if (runtimeInteractions.hasPending(sessionRef)) {
+    deliver: async (record, media, signal) => {
+      signal.throwIfAborted();
+      if (runtimeInteractions.hasPending(record.sessionRef)) {
         throw new ClientRequestError(
           409,
           "runtime-interaction-pending",
           "Complete the pending Runtime interaction before sending another message",
         );
       }
-      const session = await catalog.adopt(sessionRef);
+      const session = await catalog.adopt(record.sessionRef);
       if (!session) throw new ClientRequestError(404, "session-not-found", "Session was not found");
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       if (runtimeIsUnavailable(session.agentId)) {
         throw new ClientRequestError(503, "runtime-offline", "Runtime is unavailable", true);
       }
@@ -250,17 +254,18 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       if (!runtime?.enqueueClientTurn) {
         throw new ClientRequestError(503, "runtime-offline", "Runtime is unavailable", true);
       }
-      signal?.throwIfAborted();
       const accepted = await runtime.enqueueClientTurn(
-        sessionRef,
-        prompt,
-        submissionStaging.mediaFor(staged),
-        selection,
+        record.sessionRef,
+        record.prompt,
+        media,
+        record.selection,
         signal,
+        record.submissionId,
       );
       catalog.invalidate();
-      return { accepted: true, ...accepted };
+      return accepted;
     },
+    onChanged: () => catalog.invalidate(),
   });
   const publishClientViews = clientViewPublisher(options.stateStore, catalog);
   let ready = false;
@@ -687,8 +692,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             return errorResponse(400, "invalid-name", "name must be a string or null");
           if (body.mode !== null && typeof body.mode !== "string")
             return errorResponse(400, "invalid-mode", "mode must be a string or null");
-          if (body.model !== null && typeof body.model !== "string")
-            return errorResponse(400, "invalid-model", "model must be a string or null");
+          if (body.model !== null && !isRuntimeModelSelection(body.model))
+            return errorResponse(400, "invalid-model", "model must be a structured model selection or null");
           if (body.reasoningEffort !== null && typeof body.reasoningEffort !== "string")
             return errorResponse(400, "invalid-reasoning-effort", "reasoningEffort must be a string or null");
           if (!isStringRecord(body.sessionOptions))
@@ -714,12 +719,12 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               const modes = options.runtimeAdapters.modesFor(binding);
               if (body.mode && !modes.includes(body.mode))
                 return commandError(400, "invalid-mode", `Mode is not available: ${body.mode}`);
-              let model: string | null = null;
+              let model: RuntimeModelSelection | null = null;
               let reasoningEffort: string | null = null;
               try {
                 if (body.model) {
                   const selectedModel = requireModel(await options.runtimeAdapters.listModels(binding), body.model);
-                  model = selectedModel.id;
+                  model = selectedModel.selection;
                   reasoningEffort = resolveEffort(selectedModel, body.reasoningEffort, true);
                 } else if (body.reasoningEffort) {
                   return commandError(400, "invalid-reasoning-effort", "reasoningEffort requires a model");
@@ -1088,6 +1093,20 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             }),
           });
         }
+        const retrySubmissionMatch = url.pathname.match(
+          /^\/client\/v1\/sessions\/([^/]+)\/turn-submissions\/([^/]+)\/retry$/u,
+        );
+        if (retrySubmissionMatch && request.method === "POST") {
+          const sessionRef = normalizeSessionRef(retrySubmissionMatch[1] ?? "");
+          const submissionId = decodeURIComponent(retrySubmissionMatch[2] ?? "");
+          if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
+          if (!validRequestId(submissionId))
+            return errorResponse(400, "invalid-submission-id", "Invalid submission identity");
+          const retried = await turnOutbox.retry(sessionRef, submissionId);
+          return retried
+            ? jsonResponse(retried, 202)
+            : errorResponse(409, "submission-not-retryable", "Turn Submission cannot be retried");
+        }
         const submissionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turn-submissions\/([^/]+)$/u);
         if (submissionMatch && (request.method === "GET" || request.method === "DELETE")) {
           const sessionRef = normalizeSessionRef(submissionMatch[1] ?? "");
@@ -1095,31 +1114,15 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
           if (!validRequestId(submissionId))
             return errorResponse(400, "invalid-submission-id", "Invalid submission identity");
-          const submissionTarget = `${sessionRef}:${submissionId}`;
-          const outcome = await options.stateStore.getClientCommandOutcome(submissionId);
-          const belongsToSession =
-            outcome.state !== "missing" &&
-            outcome.commandKind === "turn.submit" &&
-            outcome.entityRef.startsWith(`${sessionRef}:`);
-          if (outcome.state === "complete" && belongsToSession) {
-            return jsonResponse(outcome.responseBody, outcome.responseStatus);
-          }
-          if (outcome.state !== "missing" && !belongsToSession) {
-            return errorResponse(404, "submission-not-found", "Turn Submission was not found");
-          }
           if (request.method === "DELETE") {
-            if (!(await options.stateStore.cancelTurnSubmission(submissionId, sessionRef))) {
-              return errorResponse(409, "submission-id-conflict", "Submission identity belongs to another Session");
-            }
-            activeTurnSubmissions.get(submissionTarget)?.controller.abort();
+            return (await turnOutbox.discard(sessionRef, submissionId))
+              ? jsonResponse({ submissionId, sessionRef, discarded: true })
+              : errorResponse(409, "submission-not-cancellable", "Turn Submission cannot be cancelled or discarded");
           }
-          if (outcome.state === "pending" && belongsToSession) {
-            return jsonResponse({ pending: true, submissionId, sessionRef }, 202);
-          }
-          if (request.method === "DELETE") {
-            return jsonResponse({ cancelled: true, submissionId, sessionRef }, 200);
-          }
-          return errorResponse(404, "submission-not-found", "Turn Submission was not found");
+          const outcome = await turnOutbox.get(sessionRef, submissionId);
+          return outcome
+            ? jsonResponse(outcome)
+            : errorResponse(404, "submission-not-found", "Turn Submission was not found");
         }
         if (submissionMatch && request.method === "POST") {
           const sessionRef = normalizeSessionRef(submissionMatch[1] ?? "");
@@ -1187,8 +1190,9 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               readBytes: async () => new Uint8Array(await file.arrayBuffer()),
             })),
           };
-          const digest = await turnSubmissionDigest(draft);
           const controller = new AbortController();
+          const abortForRequest = () => controller.abort();
+          request.signal.addEventListener("abort", abortForRequest, { once: true });
           let settleSubmission: () => void = () => undefined;
           const settled = new Promise<void>((resolve) => {
             settleSubmission = resolve;
@@ -1201,59 +1205,31 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           };
           activeTurnSubmissions.set(submissionTarget, activeSubmission);
           try {
-            if (await options.stateStore.isTurnSubmissionCancelled(submissionId, sessionRef)) {
-              const cancelled = clientErrorView(
-                "submission-cancelled",
-                "Turn Submission was cancelled before acceptance",
-                false,
-              );
-              const claim = await options.stateStore.claimClientCommand(
-                submissionId,
-                "turn.submit",
-                `${sessionRef}:${digest}`,
-              );
-              if (claim.state === "conflict") {
-                return errorResponse(409, "request-id-conflict", "requestId was used by another command");
-              }
-              if (claim.state === "complete") return jsonResponse(claim.responseBody, claim.responseStatus);
-              await options.stateStore.completeClientCommand(submissionId, 409, cancelled);
-              return jsonResponse(cancelled, 409);
+            return jsonResponse(await turnOutbox.submit(draft, controller.signal), 202);
+          } catch (error) {
+            if (error instanceof TurnSubmissionError) {
+              return errorResponse(400, error.code, error.message);
             }
-            return await idempotentCommand(
-              options.stateStore,
-              submissionId,
-              "turn.submit",
-              `${sessionRef}:${digest}`,
-              async () => {
-                try {
-                  return {
-                    status: 202,
-                    body: await turnSubmissions.submit(draft, controller.signal),
-                  };
-                } catch (error) {
-                  if (error instanceof TurnSubmissionError) {
-                    return commandError(400, error.code, error.message);
-                  }
-                  if (error instanceof ClientRequestError) {
-                    return commandError(error.status, error.code, error.message, error.retryable);
-                  }
-                  if (error instanceof SessionLifecycleError) {
-                    return commandError(error.code === "session-not-found" ? 404 : 409, error.code, error.message);
-                  }
-                  if (error instanceof DOMException && error.name === "AbortError") {
-                    return commandError(409, "submission-cancelled", "Turn Submission was cancelled");
-                  }
-                  return commandError(
-                    500,
-                    "submission-failed",
-                    error instanceof Error ? error.message : "Turn Submission failed",
-                    true,
-                  );
-                }
-              },
-              { preserveClaimOnError: true },
+            if (error instanceof TurnOutboxError) {
+              return errorResponse(error.status, error.code, error.message, error.retryable);
+            }
+            if (error instanceof ClientRequestError) {
+              return errorResponse(error.status, error.code, error.message, error.retryable);
+            }
+            if (error instanceof SessionLifecycleError) {
+              return errorResponse(error.code === "session-not-found" ? 404 : 409, error.code, error.message);
+            }
+            if (error instanceof DOMException && error.name === "AbortError") {
+              return errorResponse(409, "submission-cancelled", "Turn Submission was cancelled");
+            }
+            return errorResponse(
+              500,
+              "submission-failed",
+              error instanceof Error ? error.message : "Turn Submission failed",
+              true,
             );
           } finally {
+            request.signal.removeEventListener("abort", abortForRequest);
             if (activeTurnSubmissions.get(submissionTarget) === activeSubmission) {
               activeTurnSubmissions.delete(submissionTarget);
             }
@@ -1289,8 +1265,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
           const body = await readJsonBody<UpdateSessionPreferencesRequest>(request);
           if (!validRequestId(body.requestId)) return errorResponse(400, "invalid-request-id", "requestId is required");
-          if (body.model !== null && typeof body.model !== "string")
-            return errorResponse(400, "invalid-model", "model must be a string or null");
+          if (body.model !== null && !isRuntimeModelSelection(body.model))
+            return errorResponse(400, "invalid-model", "model must be a structured model selection or null");
           if (body.reasoningEffort !== null && typeof body.reasoningEffort !== "string")
             return errorResponse(400, "invalid-reasoning-effort", "reasoningEffort must be a string or null");
           if (!isStringRecord(body.sessionOptions))
@@ -1306,7 +1282,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               if (!options.config.agents[session.agentId])
                 return commandError(404, "binding-not-found", "Agent Binding was not found");
               const binding = getAgentBinding(options.config, session.agentId);
-              let model: string | null = null;
+              let model: RuntimeModelSelection | null = null;
               let reasoningEffort: string | null = null;
               try {
                 if (body.model) {
@@ -1316,7 +1292,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                     workspace,
                   });
                   const selectedModel = requireModel(models, body.model);
-                  model = selectedModel.id;
+                  model = selectedModel.selection;
                   reasoningEffort = resolveEffort(selectedModel, body.reasoningEffort, true);
                 } else if (body.reasoningEffort) {
                   return commandError(400, "invalid-reasoning-effort", "reasoningEffort requires a model");
@@ -1542,8 +1518,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                 let modelUpdate = body.model;
                 let effortUpdate = body.modelReasoningEffort;
                 if (body.model !== undefined || body.modelReasoningEffort !== undefined) {
-                  const requestedModel =
-                    body.model === undefined ? (binding.model ?? null) : body.model?.trim() || null;
+                  const requestedModel = body.model === undefined ? (binding.model ?? null) : body.model;
                   const requestedEffort =
                     body.modelReasoningEffort === undefined
                       ? body.model === undefined
@@ -1557,7 +1532,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                         requestedModel,
                       );
                       resolveEffort(selectedModel, requestedEffort, true);
-                      if (body.model !== undefined) modelUpdate = selectedModel.id;
+                      if (body.model !== undefined) modelUpdate = selectedModel.selection;
                     } catch (error) {
                       return commandError(400, "invalid-model", error instanceof Error ? error.message : String(error));
                     }
@@ -1589,7 +1564,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
                   const candidate = config.agents[bindingId];
                   if (!candidate) throw new Error(`Agent Binding ${bindingId} is no longer available`);
                   if (body.displayName !== undefined) candidate.displayName = requireDisplayName(body.displayName);
-                  if (modelUpdate !== undefined) setOptionalString(candidate, "model", modelUpdate);
+                  if (modelUpdate !== undefined) {
+                    if (modelUpdate === null) delete candidate.model;
+                    else candidate.model = structuredClone(modelUpdate);
+                  }
                   if (effortUpdate !== undefined) {
                     if (effortUpdate === null) delete candidate.modelReasoningEffort;
                     else
@@ -1644,13 +1622,15 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     fetch: handleRequest,
   });
   try {
+    const recoverable = await options.stateStore.listRecoverableTurnOutbox();
     const warming = await Promise.allSettled([
       catalog.reconcileLifecycle(),
-      submissionStaging.cleanupExpired(),
+      submissionStaging.cleanupExpired(Date.now(), new Set(recoverable.map((record) => record.stagingRef))),
       options.stateStore.deleteExpiredClientCommands(),
     ]);
     const failure = warming.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failure) throw failure.reason;
+    await turnOutbox.start();
     await publishClientViews();
     ready = true;
   } catch (error) {
@@ -2223,29 +2203,6 @@ async function rollbackInlineWorkspace(
   }
   const removed = await workspaces.remove(bindingId, createdWorkspaceRef).catch(() => null);
   if (removed) await materialized.rollback();
-}
-
-async function turnSubmissionDigest(draft: TurnSubmissionDraft): Promise<string> {
-  const hash = createHash("sha256");
-  hash.update(draft.sessionRef);
-  hash.update("\0");
-  hash.update(draft.prompt);
-  if (draft.selection) {
-    hash.update(`\0${draft.selection.kind}\0`);
-    hash.update(draft.selection.id);
-    hash.update("\0");
-    hash.update(draft.selection.name);
-  }
-  for (const attachment of draft.attachments) {
-    hash.update("\0");
-    hash.update(attachment.name);
-    hash.update("\0");
-    hash.update(attachment.mime);
-    hash.update("\0");
-    hash.update(String(attachment.size));
-    hash.update(await attachment.readBytes());
-  }
-  return hash.digest("hex");
 }
 
 async function sessionSkills(

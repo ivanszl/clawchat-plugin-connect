@@ -48,6 +48,7 @@ runtimeAdapterConformance("installed official OpenCode Plugin", async () => {
   return {
     registry,
     binding,
+    expectedDiscoveryStatus: "complete",
     activateThread() {
       const current = states?.[instance];
       if (current) current.active = true;

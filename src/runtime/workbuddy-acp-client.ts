@@ -181,7 +181,7 @@ export async function openWorkBuddyTaskEndpoint(
     if (!observedTaskId) throw new Error("ACP replay emitted no Task identity");
     const verification = {
       taskId: observedTaskId,
-      replayFingerprint: replayFingerprint(loaded.messageIds),
+      replayFingerprint: loaded.transcriptIdentityValid ? replayFingerprint(loaded.transcriptMessageIds) : "",
       replayStarted: loaded.replayStarted,
       replayCompleted: loaded.replayCompleted,
       activities: replayActivities(loaded.replayMessages),
@@ -298,7 +298,9 @@ interface RpcObservation {
   replayStarted: boolean;
   replayCompleted: boolean;
   replayActive: boolean;
-  messageIds: string[];
+  transcriptIdentityValid: boolean;
+  transcriptMessageIds: string[];
+  transcriptMessageIdSet: Set<string>;
   replayMessages: ReplayMessage[];
 }
 
@@ -327,7 +329,9 @@ async function postRpc(
     replayStarted: false,
     replayCompleted: false,
     replayActive: false,
-    messageIds: [],
+    transcriptIdentityValid: true,
+    transcriptMessageIds: [],
+    transcriptMessageIdSet: new Set(),
     replayMessages: [],
   };
   const response = await connection.request(
@@ -490,6 +494,7 @@ function emptyWorkBuddyTaskCatalog(): WorkBuddyTaskCatalog {
 function workBuddyModelOption(native: Record<string, unknown>, id: string, isDefault: boolean): RuntimeModelOption {
   return {
     id,
+    selection: { model: id },
     displayName: stringValue(native.name) ?? id,
     description: stringValue(native.description) ?? "WorkBuddy Task model",
     isDefault,
@@ -638,17 +643,26 @@ function observeRpcPayload(payload: unknown, expectedId: number, observation: Rp
     observation.replayStarted = true;
     observation.replayActive = true;
   }
-  if (observation.replayActive) {
-    const messageId = update?.messageId;
-    if (typeof messageId === "string" && !observation.messageIds.includes(messageId)) {
-      observation.messageIds.push(messageId);
-    }
-    if (update) observeReplayUpdate(update, observation.replayMessages);
+  if (observation.replayActive && update) {
+    observeReplayTranscriptIdentity(update, observation);
+    observeReplayUpdate(update, observation.replayMessages);
   }
   if (meta?.["codebuddy.ai/historyReplay"] === "end") {
     observation.replayCompleted = true;
     observation.replayActive = false;
   }
+}
+
+function observeReplayTranscriptIdentity(update: Record<string, unknown>, observation: RpcObservation): void {
+  if (update.sessionUpdate !== "user_message_chunk" && update.sessionUpdate !== "agent_message_chunk") return;
+  const messageId = update.messageId;
+  if (typeof messageId !== "string" || !messageId) {
+    observation.transcriptIdentityValid = false;
+    return;
+  }
+  if (observation.transcriptMessageIdSet.has(messageId)) return;
+  observation.transcriptMessageIdSet.add(messageId);
+  observation.transcriptMessageIds.push(messageId);
 }
 
 function observeReplayUpdate(update: Record<string, unknown>, messages: ReplayMessage[]): void {
@@ -824,10 +838,15 @@ function selectWorkBuddyPrompt(
   const selectedSlash = resolveWorkBuddySlashSelection(previous, input);
   const selectedMode = input.mode ? previous.modes.find((mode) => mode.id === input.mode) : undefined;
   if (input.mode && !selectedMode) throw new Error(`WorkBuddy mode is no longer available: ${input.mode}`);
-  const selectedModel = input.model
-    ? previous.models.find((model) => model.id.toLowerCase() === input.model?.trim().toLowerCase())
+  const requestedModel = input.model;
+  const selectedModel = requestedModel
+    ? previous.models.find(
+        (model) =>
+          !requestedModel.provider && model.selection.model.toLowerCase() === requestedModel.model.toLowerCase(),
+      )
     : undefined;
-  if (input.model && !selectedModel) throw new Error(`WorkBuddy model is no longer available: ${input.model}`);
+  if (requestedModel && !selectedModel)
+    throw new Error(`WorkBuddy model is no longer available: ${requestedModel.model}`);
   return {
     input: selectedSlash ? { ...input, prompt: nativeSlashPrompt(prompt, selectedSlash.nativeName) } : input,
     previous,

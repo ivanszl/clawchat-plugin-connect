@@ -13,6 +13,7 @@ import { fixedRuntimeAdapter } from "./runtime-adapter-fixture";
 export interface AdapterHarness {
   adapter?: ConnectRuntimeAdapter;
   registry?: RuntimeAdapterRegistry;
+  expectedDiscoveryStatus?: "complete" | "unavailable";
   binding: AgentBindingConfig;
   activateThread(): void;
   closeCount(): number;
@@ -56,13 +57,16 @@ export function runtimeAdapterConformance(
       const models = await registry.listModels(binding);
       if (!adapter || adapter.listModels) expect(models).toEqual(expect.any(Array));
       else expect(models).toBeNull();
-      expect(
-        await registry.discoverThreads(binding, {
-          workspaceRef: "WSDEFALT",
-          workingDirectory: "/tmp",
-          skipGitRepoCheck: true,
-        }),
-      ).toEqual([]);
+      const discovery = await registry.discoverThreads(binding, {
+        workspaceRef: "WSDEFALT",
+        workingDirectory: "/tmp",
+        skipGitRepoCheck: true,
+      });
+      const expectedDiscoveryStatus =
+        harness.expectedDiscoveryStatus ?? (adapter?.discoverThreads ? "complete" : "unavailable");
+      expect(discovery.status).toBe(expectedDiscoveryStatus);
+      expect(discovery.threads).toEqual([]);
+      expect(discovery.limitations).toEqual(expectedDiscoveryStatus === "complete" ? [] : ["unsupported"]);
       await registry.close();
       await harness.dispose?.();
     });

@@ -12,6 +12,7 @@ $observationPath = Join-Path $temporaryDirectory "preflight-observation.txt"
 $asset = "clawchat-connect-windows-$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant() -replace 'x64','x64' -replace 'arm64','arm64').zip"
 $officialPluginBundles = @(
   "clawling.runtime.codex-0.0.0-test-win32.connect-plugin",
+  "clawling.runtime.deepseek-harness-0.0.0-test-win32.connect-plugin",
   "clawling.runtime.opencode-0.0.0-test-win32.connect-plugin",
   "clawling.exposure.liveware-0.0.0-test-win32.connect-plugin"
 )

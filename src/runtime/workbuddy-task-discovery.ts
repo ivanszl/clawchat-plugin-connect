@@ -1,5 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { RuntimeActivity, RuntimeActivitySnapshot } from "./types";
+import type { WorkBuddyAcpTaskAttachment, WorkBuddyTaskCatalog } from "./workbuddy-acp-client";
 
 export type WorkBuddyProfile = "workbuddy-ai" | "workbuddy-cn";
 
@@ -9,7 +11,8 @@ export interface WorkBuddyProfileCompatibility {
   applicationPath: string;
   bundleIdentifier: string;
   configDirectory: string;
-  endpointSessionPrefix: string | null;
+  dataFolderName: string;
+  endpointSessionPrefix: string;
   sidecarVersion: number;
   acpVersion: number;
 }
@@ -20,8 +23,9 @@ export const WORKBUDDY_AI_COMPATIBILITY = {
   applicationPath: "/Applications/WorkBuddy AI.app",
   bundleIdentifier: "com.workbuddy.workbuddy-ai",
   configDirectory: join(homedir(), ".workbuddy-ai"),
-  endpointSessionPrefix: null,
-  sidecarVersion: 1,
+  dataFolderName: ".workbuddy-ai",
+  endpointSessionPrefix: "__workbuddy_cli_host__-",
+  sidecarVersion: 3,
   acpVersion: 1,
 } as const satisfies WorkBuddyProfileCompatibility;
 
@@ -31,6 +35,7 @@ export const WORKBUDDY_CN_COMPATIBILITY = {
   applicationPath: "/Applications/WorkBuddy.app",
   bundleIdentifier: "com.workbuddy.workbuddy",
   configDirectory: join(homedir(), ".workbuddy"),
+  dataFolderName: ".workbuddy",
   endpointSessionPrefix: "__workbuddy_cli_host__-",
   sidecarVersion: 3,
   acpVersion: 1,
@@ -47,7 +52,7 @@ export function workBuddyProfileCompatibility(profile: WorkBuddyProfile): WorkBu
 
 export function isWorkBuddyProfileHostSession(profile: WorkBuddyProfile, sessionId: string): boolean {
   const prefix = workBuddyProfileCompatibility(profile).endpointSessionPrefix;
-  return prefix !== null && sessionId.startsWith(prefix) && /^\d+-[0-9a-f]{8}$/u.test(sessionId.slice(prefix.length));
+  return sessionId.startsWith(prefix) && /^\d+-[0-9a-f]{8}$/u.test(sessionId.slice(prefix.length));
 }
 
 export interface WorkBuddyProcessIdentity {
@@ -72,7 +77,12 @@ export interface WorkBuddyDiscoveryObservation {
     replayFingerprint: string;
   } | null;
   sidecarRegistration: { pid: number; version: number } | null;
-  sidecarIdentity: { pid: number; version: number; registrationTokenMatches: boolean } | null;
+  sidecarIdentity: {
+    pid: number;
+    version: number;
+    registrationTokenMatches: boolean;
+    registrationToken: string;
+  } | null;
   sidecarProcess: WorkBuddyProcessIdentity | null;
   endpointSession: { sessionId: string; pid: number; endpoint: string } | null;
   endpointOwner: WorkBuddyProcessIdentity | null;
@@ -83,9 +93,9 @@ export interface WorkBuddyEndpointVerification {
   replayFingerprint: string;
   replayStarted: boolean;
   replayCompleted: boolean;
-  activities: import("./types").RuntimeActivity[];
+  activities: RuntimeActivity[];
   connectionOwner: WorkBuddyProcessIdentity | null;
-  catalog?: import("./workbuddy-acp-client").WorkBuddyTaskCatalog;
+  catalog?: WorkBuddyTaskCatalog;
 }
 
 export interface WorkBuddyEndpointInput {
@@ -99,12 +109,26 @@ export interface WorkBuddyEndpointInput {
   expectedSidecarProcessId: number;
 }
 
+export type WorkBuddyEndpointSelection = "any" | "host" | "task";
+export interface WorkBuddySidecarPreparationIdentity {
+  applicationProcessId: number;
+  sidecarProcessId: number;
+  sidecarVersion: number;
+  registrationToken: string;
+}
+
 export interface WorkBuddyTaskDiscoverySource {
-  prepareEndpoint?(input: WorkBuddyTaskDiscoveryInput): Promise<void>;
-  inspect(input: WorkBuddyTaskDiscoveryInput): Promise<WorkBuddyDiscoveryObservation>;
+  prepareEndpoint?(
+    input: WorkBuddyTaskDiscoveryInput,
+    sidecarIdentity: WorkBuddySidecarPreparationIdentity,
+  ): Promise<void>;
+  inspect(
+    input: WorkBuddyTaskDiscoveryInput,
+    endpointSelection?: WorkBuddyEndpointSelection,
+  ): Promise<WorkBuddyDiscoveryObservation>;
   canonicalizeWorkspace?(workspace: string): Promise<string>;
   verifyEndpoint(input: WorkBuddyEndpointInput): Promise<WorkBuddyEndpointVerification>;
-  connectEndpoint?(input: WorkBuddyEndpointInput): Promise<import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment>;
+  connectEndpoint?(input: WorkBuddyEndpointInput): Promise<WorkBuddyAcpTaskAttachment>;
   confirmEndpointOwner(endpoint: string): Promise<WorkBuddyProcessIdentity | null>;
 }
 
@@ -175,7 +199,7 @@ export async function discoverWorkBuddyTask(
 export async function attachWorkBuddyTask(
   input: WorkBuddyTaskDiscoveryInput,
   source: WorkBuddyTaskDiscoverySource,
-): Promise<import("./types").RuntimeActivitySnapshot> {
+): Promise<RuntimeActivitySnapshot> {
   const { verification } = await verifyWorkBuddyTask(input, source);
   return {
     activities: verification.activities,
@@ -188,40 +212,78 @@ export async function attachWorkBuddyTask(
 export async function connectWorkBuddyTask(
   input: WorkBuddyTaskDiscoveryInput,
   source: WorkBuddyTaskDiscoverySource,
-): Promise<import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment> {
+): Promise<WorkBuddyAcpTaskAttachment> {
   const connectEndpoint = source.connectEndpoint;
   if (!connectEndpoint) throw new Error("WorkBuddy discovery source cannot retain a Task Attachment");
-  let attachment: import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment | null = null;
+  let attachment: WorkBuddyAcpTaskAttachment | null = null;
+  const connectSelectedEndpoint = async (endpointSelection: WorkBuddyEndpointSelection): Promise<void> => {
+    await verifyWorkBuddyTask(
+      input,
+      source,
+      async (endpointInput) => {
+        attachment = await connectEndpoint(endpointInput);
+        return attachment.verification;
+      },
+      endpointSelection,
+    );
+  };
   try {
     if (source.prepareEndpoint) {
-      // A profile-host endpoint may be safe for replay but intentionally read-only. Pin its
-      // application, Task, transcript, sidecar, and ACP identities before asking the product's
-      // deterministic sidecar to materialize the writable per-Task runtime.
-      await verifyWorkBuddyTask(input, source);
-      await source.prepareEndpoint(input);
+      try {
+        await connectSelectedEndpoint("task");
+        if (!attachment) throw new Error("WorkBuddy Task Attachment was not established");
+        return attachment;
+      } catch (error) {
+        if (attachment || !isMissingExactTaskEndpoint(error)) throw error;
+      }
+
+      // No WorkBuddy-owned Task endpoint exists. Authenticate the native Task through
+      // the shared read-only host before asking the selected sidecar to create one.
+      const { sidecarIdentity } = await verifyWorkBuddyTask(input, source, source.verifyEndpoint, "host");
+      try {
+        await source.prepareEndpoint(input, sidecarIdentity);
+      } catch (error) {
+        if (error instanceof WorkBuddyDiscoveryError) throw error;
+        const message = redactSecrets(error instanceof Error ? error.message : String(error));
+        throw failure(
+          "discovery-failed",
+          `${workBuddyProfileCompatibility(input.profile).displayName} Task runtime preparation failed: ${message}`,
+        );
+      }
     }
-    await verifyWorkBuddyTask(input, source, async (endpointInput) => {
-      attachment = await connectEndpoint(endpointInput);
-      return attachment.verification;
-    });
+    await connectSelectedEndpoint(source.prepareEndpoint ? "task" : "any");
     if (!attachment) throw new Error("WorkBuddy Task Attachment was not established");
     return attachment;
   } catch (error) {
-    await (attachment as import("./workbuddy-acp-client").WorkBuddyAcpTaskAttachment | null)?.close();
+    await (attachment as WorkBuddyAcpTaskAttachment | null)?.close();
     throw error;
   }
+}
+
+function isMissingExactTaskEndpoint(error: unknown): boolean {
+  return (
+    error instanceof WorkBuddyDiscoveryError &&
+    error.code === "endpoint-unavailable" &&
+    error.details.expectedEndpointKind === "task" &&
+    error.details.candidateCount === 0
+  );
 }
 
 async function verifyWorkBuddyTask(
   input: WorkBuddyTaskDiscoveryInput,
   source: WorkBuddyTaskDiscoverySource,
   verifyEndpoint = source.verifyEndpoint,
-): Promise<{ discovered: DiscoveredWorkBuddyTask; verification: WorkBuddyEndpointVerification }> {
+  endpointSelection: WorkBuddyEndpointSelection = "any",
+): Promise<{
+  discovered: DiscoveredWorkBuddyTask;
+  verification: WorkBuddyEndpointVerification;
+  sidecarIdentity: WorkBuddySidecarPreparationIdentity;
+}> {
   const compatibility = workBuddyProfileCompatibility(input.profile);
   const product = compatibility.displayName;
   let observation: WorkBuddyDiscoveryObservation;
   try {
-    observation = await source.inspect(input);
+    observation = await source.inspect(input, endpointSelection);
   } catch (error) {
     if (error instanceof WorkBuddyDiscoveryError) throw error;
     throw failure(
@@ -344,10 +406,20 @@ async function verifyWorkBuddyTask(
       `${product} has no active ACP endpoint for this Task; open the Task and run one native turn before attaching.`,
     );
   }
+  const isExactTask = endpointSession.sessionId === task.id;
   const isProfileHost = isWorkBuddyProfileHostSession(input.profile, endpointSession.sessionId);
-  if (endpointSession.sessionId !== task.id && !isProfileHost) {
-    throw failure("task-identity-mismatch", "The discovered ACP endpoint belongs to a different WorkBuddy session.", {
-      expectedTaskId: task.id,
+  if (
+    (endpointSelection === "host" && !isProfileHost) ||
+    (endpointSelection === "task" && !isExactTask) ||
+    (endpointSelection === "any" && !isExactTask && !isProfileHost)
+  ) {
+    throw failure("task-identity-mismatch", "The discovered ACP endpoint has the wrong WorkBuddy Session identity.", {
+      expectedSessionIdentity:
+        endpointSelection === "host"
+          ? "profile-host"
+          : endpointSelection === "task"
+            ? task.id
+            : `${task.id} or profile-host`,
       detectedSessionId: endpointSession.sessionId,
     });
   }
@@ -426,6 +498,12 @@ async function verifyWorkBuddyTask(
       owner: { sidecarProcessId: observation.sidecarProcess.pid, endpointProcessId: confirmedOwner.pid },
       endpoint: endpointSession.endpoint,
     },
+    sidecarIdentity: {
+      applicationProcessId: applicationProcess.pid,
+      sidecarProcessId: observation.sidecarProcess.pid,
+      sidecarVersion: registration.version,
+      registrationToken: sidecarIdentity.registrationToken,
+    },
     verification,
   };
 }
@@ -482,6 +560,10 @@ function assertExpectedEndpointOwner(
 
 function redactSecrets(value: string): string {
   return value
+    .replace(
+      /(["'][^"']*(?:authorization|bearer|password|credential|secret|token|connection[^"']*id)[^"']*["']\s*:\s*)["'][^"']*["']/giu,
+      '$1"[REDACTED]"',
+    )
     .replace(/\bBearer\s+[^\s,;]+/giu, "Bearer [REDACTED]")
     .replace(
       /\b(connection[-_ ]?id|session[-_ ]?token|authorization|bearer[-_ ]?token|bearer|password|credential|secret)\s*[=:]\s*[^\s,;]+/giu,

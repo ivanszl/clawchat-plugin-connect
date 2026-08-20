@@ -104,17 +104,17 @@ describe("official OpenCode Runtime Plugin", () => {
     const beta = provider.create({ env: { INSTANCE: "beta" } }, { activationGeneration: 1 });
 
     await Promise.all([alpha.prepare?.(), beta.prepare?.()]);
-    await expect(alpha.discoverAllThreads?.()).resolves.toEqual([
+    expect((await alpha.discoverAllThreads?.())?.threads).toEqual([
       expect.objectContaining({ runtimeThreadId: "alpha-session", workingDirectory: "/repo/alpha" }),
     ]);
-    await expect(beta.discoverAllThreads?.()).resolves.toEqual([
+    expect((await beta.discoverAllThreads?.())?.threads).toEqual([
       expect.objectContaining({ runtimeThreadId: "beta-session", workingDirectory: "/repo/beta" }),
     ]);
     expect(createServer).toHaveBeenCalledTimes(2);
 
     await alpha.close?.();
     expect(closes.get("alpha")).toBe(1);
-    await expect(beta.discoverAllThreads?.()).resolves.toHaveLength(1);
+    expect((await beta.discoverAllThreads?.())?.threads).toHaveLength(1);
     await beta.close?.();
     expect(closes.get("alpha")).toBe(1);
     expect(closes.get("beta")).toBe(1);

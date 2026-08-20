@@ -10,7 +10,6 @@ import {
 import { Icon } from "@astryxdesign/core/Icon";
 import { Stack } from "@astryxdesign/core/Layout";
 import { List, ListItem } from "@astryxdesign/core/List";
-import { ProgressBar } from "@astryxdesign/core/ProgressBar";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { Token } from "@astryxdesign/core/Token";
 import { createStaticSource, TypeaheadItem } from "@astryxdesign/core/Typeahead";
@@ -20,8 +19,8 @@ import { MessageCircle, Paperclip, RotateCcw, Square, Trash2 } from "lucide-reac
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { QueuedTurnView, SlashSuggestionView, TurnSubmissionCapability } from "../../../../src/client-contract";
 import { attachmentKind, mediaTypeAllowed } from "../../../../src/client-interface/turn-submission";
+import { requestId } from "../../client-interface/http";
 import { cancelTurn, clientKeys, withdrawQueuedTurn } from "../../client-interface/query-options";
-import { formatTurnSubmissionError } from "../../client-interface/turn-submission";
 import { type ClientTranslator, useClientTranslator } from "../../i18n/client-i18n";
 import {
   keepsSlashSelection,
@@ -30,17 +29,6 @@ import {
   slashSuggestionToken,
 } from "../slash-suggestions";
 import { useTurnSubmission } from "./useTurnSubmission";
-
-interface OptimisticQueuedTurn extends QueuedTurnView {
-  optimisticId: string;
-  acceptedTurnId: string | null;
-}
-
-interface ActiveSubmissionDraft {
-  prompt: string;
-  files: File[];
-  selection: SlashSuggestionView | null;
-}
 
 export interface SessionComposerProps {
   sessionRef: string;
@@ -77,13 +65,10 @@ export function SessionComposer({
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [acceptedTurnId, setAcceptedTurnId] = useState<string | null>(null);
   const [selectedSelection, setSelectedSelection] = useState<SlashSuggestionView | null>(null);
-  const [activeSubmission, setActiveSubmission] = useState<ActiveSubmissionDraft | null>(null);
-  const [optimisticQueuedTurns, setOptimisticQueuedTurns] = useState<OptimisticQueuedTurn[]>([]);
   const [hiddenQueuedTurnIds, setHiddenQueuedTurnIds] = useState<string[]>([]);
   const [completionAnnouncement, setCompletionAnnouncement] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerInputRef = useRef<HTMLDivElement>(null);
-  const optimisticSequenceRef = useRef(0);
   const wasAgentWorkingRef = useRef(false);
   useEffect(() => {
     const next = sessionStorage.getItem(storageKey) ?? "";
@@ -92,8 +77,6 @@ export function SessionComposer({
     setAttachmentError(null);
     setAcceptedTurnId(null);
     setSelectedSelection(null);
-    setActiveSubmission(null);
-    setOptimisticQueuedTurns([]);
     setHiddenQueuedTurnIds([]);
     setCompletionAnnouncement("");
     wasAgentWorkingRef.current = false;
@@ -111,12 +94,8 @@ export function SessionComposer({
     else if (isWorking) setCompletionAnnouncement("");
     wasAgentWorkingRef.current = isWorking;
   }, [acceptedTurnId, isRuntimeActive, t]);
+
   useEffect(() => {
-    setOptimisticQueuedTurns((current) =>
-      current.filter(
-        (turn) => !turn.acceptedTurnId || !queuedTurns.some((queued) => queued.turnId === turn.acceptedTurnId),
-      ),
-    );
     setHiddenQueuedTurnIds((current) =>
       current.filter((turnId) => queuedTurns.some((queued) => queued.turnId === turnId)),
     );
@@ -237,45 +216,21 @@ export function SessionComposer({
   }, [slashSuggestions, slashSuggestionsError, t]);
   const submit = (prompt: string) => {
     if (!send.isPending && (prompt.trim() || attachments.length > 0)) {
-      const draft = { prompt, files: [...attachments], selection: selectedSelection };
-      const shouldShowInQueue = isRuntimeActive || queuedTurns.length > 0;
-      const optimisticId = `optimistic-${++optimisticSequenceRef.current}`;
-      setActiveSubmission(draft);
-      if (shouldShowInQueue) {
-        setOptimisticQueuedTurns((current) => [
-          ...current,
-          {
-            optimisticId,
-            acceptedTurnId: null,
-            turnId: optimisticId,
-            prompt,
-            selection: selectedSelection,
-            attachments: attachments.map((file) => ({ name: file.name })),
-            createdAt: new Date().toISOString(),
-          },
-        ]);
-      }
+      const draft = {
+        submissionId: requestId(),
+        prompt,
+        files: [...attachments],
+        selection: selectedSelection,
+      };
       setValue("");
       setSelectedSelection(null);
       setAttachments([]);
       setAttachmentError(null);
       send.mutate(draft, {
         onSuccess: (response) => {
-          setOptimisticQueuedTurns((current) =>
-            current.map((turn) =>
-              turn.optimisticId === optimisticId ? { ...turn, acceptedTurnId: response.turnId } : turn,
-            ),
-          );
-          setAcceptedTurnId(response.turnId);
+          if (response.turnId) setAcceptedTurnId(response.turnId);
           void queryClient.invalidateQueries({ queryKey: clientKeys.session(sessionRef) });
         },
-        onError: () => {
-          setOptimisticQueuedTurns((current) => current.filter((turn) => turn.optimisticId !== optimisticId));
-          setValue(prompt);
-          setSelectedSelection(draft.selection);
-          setAttachments(draft.files);
-        },
-        onSettled: () => setActiveSubmission(null),
       });
     }
   };
@@ -306,20 +261,12 @@ export function SessionComposer({
     );
   };
   const visibleQueuedTurns = queuedTurns.filter((turn) => !hiddenQueuedTurnIds.includes(turn.turnId));
-  const visibleOptimisticTurns = optimisticQueuedTurns.filter(
-    (turn) => !turn.acceptedTurnId || !visibleQueuedTurns.some((queued) => queued.turnId === turn.acceptedTurnId),
-  );
-  const queueCount = visibleOptimisticTurns.length + visibleQueuedTurns.length;
-  const error =
-    attachmentError ??
-    (send.error ? formatTurnSubmissionError(send.error, t) : null) ??
-    stop.error?.message ??
-    withdraw.error?.message;
+  const queueCount = visibleQueuedTurns.length;
+  const error = attachmentError ?? stop.error?.message ?? withdraw.error?.message;
   const composerDisabled = !canSend || hasPendingInteraction;
   const composerInputDisabled = composerDisabled || send.isPending;
   const isAgentWorking = Boolean(acceptedTurnId) || isRuntimeActive;
   const hasSubmissionDraft = Boolean(value.trim() || attachments.length > 0);
-  const hasSubmissionAttachments = send.isPending ? (activeSubmission?.files.length ?? 0) > 0 : attachments.length > 0;
   const attachmentLimitLabel =
     capability.attachments.maxCount === 0
       ? t("@connect.composer.attachment.notSupported")
@@ -337,14 +284,6 @@ export function SessionComposer({
           hasDividers
           header={t("@connect.composer.queue.header", { count: queueCount })}
         >
-          {visibleOptimisticTurns.map((turn) => (
-            <ListItem
-              key={turn.optimisticId}
-              label={turn.prompt || t("@connect.composer.queue.attachmentOnly")}
-              description={t("@connect.composer.queue.submitting")}
-              endContent={<Spinner size="sm" />}
-            />
-          ))}
           {visibleQueuedTurns.map((turn) => (
             <ListItem
               key={turn.turnId}
@@ -373,30 +312,6 @@ export function SessionComposer({
             />
           ))}
         </List>
-      ) : null}
-      {send.isPending && send.progress ? (
-        <ProgressBar
-          className="composer-submission-progress"
-          label={
-            hasSubmissionAttachments
-              ? send.progress.phase === "accepting"
-                ? t("@connect.composer.progress.attachmentsAccepting")
-                : t("@connect.composer.progress.attachmentsTransferring")
-              : send.progress.phase === "accepting"
-                ? t("@connect.composer.progress.accepting")
-                : t("@connect.composer.progress.submitting")
-          }
-          value={send.progress.transferredBytes}
-          max={Math.max(1, send.progress.totalBytes)}
-          hasValueLabel={send.progress.phase === "transferring" && send.progress.totalBytes > 0}
-          formatValueLabel={(transferred, total) =>
-            t("@connect.composer.progress.bytes", {
-              transferred: formatBytes(transferred, t),
-              total: formatBytes(total, t),
-            })
-          }
-          isIndeterminate={send.progress.phase === "accepting" || send.progress.totalBytes === 0}
-        />
       ) : null}
       <ChatComposer
         className="session-composer"
@@ -513,19 +428,7 @@ export function SessionComposer({
         }
         sendActions={modelControl}
         sendButton={
-          send.isPending ? (
-            <Button
-              label={
-                send.progress?.phase === "accepting"
-                  ? t("@connect.composer.action.accepting")
-                  : t("@connect.composer.action.cancelSubmission")
-              }
-              isLoading={send.progress?.phase === "accepting"}
-              size="md"
-              variant="secondary"
-              onClick={send.cancel}
-            />
-          ) : isAgentWorking && !hasSubmissionDraft ? (
+          isAgentWorking && !hasSubmissionDraft ? (
             <Button
               label={t("@connect.composer.action.stop")}
               tooltip={t("@connect.composer.action.stopTooltip")}
@@ -545,22 +448,16 @@ export function SessionComposer({
               onClick={() => stop.mutate()}
             />
           ) : (
-            <ChatSendButton isDisabled={composerDisabled || !hasSubmissionDraft} onSend={() => submit(value)} />
+            <ChatSendButton
+              isDisabled={composerDisabled || send.isPending || !hasSubmissionDraft}
+              onSend={() => submit(value)}
+            />
           )
         }
       />
       <VisuallyHidden as="div" aria-live="polite">
         {send.isPending
-          ? hasSubmissionAttachments
-            ? send.progress?.phase === "accepting"
-              ? t("@connect.composer.progress.attachmentsAccepting")
-              : t("@connect.composer.progress.announcement", {
-                  transferred: formatBytes(send.progress?.transferredBytes ?? 0, t),
-                  total: formatBytes(send.progress?.totalBytes ?? 0, t),
-                })
-            : send.progress?.phase === "accepting"
-              ? t("@connect.composer.progress.accepting")
-              : t("@connect.composer.progress.submitting")
+          ? t("@connect.composer.progress.submitting")
           : isAgentWorking
             ? t("@connect.composer.agentWorking")
             : error || completionAnnouncement}

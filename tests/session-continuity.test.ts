@@ -19,7 +19,7 @@ it("materializes one Turn Target when concurrent first messages consume a Sessio
     workspaceRef: "WSDEFALT",
     name: "Planned",
     mode: "read-only",
-    model: "gpt-planned",
+    model: { model: "gpt-planned" },
     reasoningEffort: "high",
     sessionOptions: { agent: "build", variant: "high" },
   });
@@ -37,7 +37,7 @@ it("materializes one Turn Target when concurrent first messages consume a Sessio
     workspaceRef: "WSDEFALT",
     name: "Planned",
     mode: "read-only",
-    model: "gpt-planned",
+    model: { model: "gpt-planned" },
     reasoningEffort: "high",
     sessionOptions: { agent: "build", variant: "high" },
     runtimeThreadId: null,
@@ -65,7 +65,7 @@ it("creates an explicit empty Session from one complete selection", async () => 
     workspaceRef: "WSDEFALT",
     name: "Client work",
     mode: "workspace-write",
-    model: "gpt-client",
+    model: { model: "gpt-client" },
     reasoningEffort: "medium",
   });
 
@@ -75,7 +75,7 @@ it("creates an explicit empty Session from one complete selection", async () => 
     workspaceRef: "WSDEFALT",
     name: "Client work",
     mode: "workspace-write",
-    model: "gpt-client",
+    model: { model: "gpt-client" },
     reasoningEffort: "medium",
     runtimeThreadId: null,
   });

@@ -13,7 +13,7 @@ import {
 import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import type { ConnectRuntimePrompt } from "../src/runtime/types";
+import { type ConnectRuntimePrompt, completeRuntimeThreadDiscovery } from "../src/runtime/types";
 import { type BindingProtocolEvent, startBindingRuntime } from "../src/service/binding-runtime";
 import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
@@ -195,7 +195,7 @@ describe("Binding Runtime Protocol v2 assembly", () => {
         modes: ["read-only"],
         discoverAllThreads: async () => {
           await discoveryGate;
-          return [];
+          return completeRuntimeThreadDiscovery([]);
         },
         start: async () => {
           throw new Error("not used by this assembly test");

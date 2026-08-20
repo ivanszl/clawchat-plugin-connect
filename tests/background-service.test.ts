@@ -34,6 +34,8 @@ describe("background service manager", () => {
     const plistPath = join(homeDirectory, "Library", "LaunchAgents", "com.clawchat.connect.plist");
     const plist = await readFile(plistPath, "utf8");
     expect(plist).toContain("/Applications/Claw &amp; Chat/clawchat-connect");
+    expect(plist).toContain("<key>WorkingDirectory</key>");
+    expect(plist).toContain("<string>/Applications/Claw &amp; Chat</string>");
     expect(plist).toContain(`<string>${configPath}</string>`);
     expect(plist).toContain("<string>service</string>");
     expect(plist).toContain("<string>exec</string>");
@@ -96,6 +98,7 @@ describe("background service manager", () => {
     expect(unit).toContain(
       `ExecStart="/opt/Claw Chat/clawchat-connect" "service" "exec" "--config" ${JSON.stringify(configPath)}`,
     );
+    expect(unit).toContain('WorkingDirectory="/opt/Claw Chat"');
     expect(unit).not.toContain("--agent");
     expect(unit).toContain('Environment="PATH=/opt/codex/bin:/usr/bin"');
     expect(unit).toContain("Restart=on-failure");
@@ -145,6 +148,7 @@ describe("background service manager", () => {
     expect(script).toContain("$env:PATH = 'C:\\Codex;C:\\Windows\\System32'");
     expect(script).toContain("& 'C:\\Program Files\\Claw''s Chat\\clawchat-connect.exe'");
     expect(script).toContain("'service' 'exec' '--config'");
+    expect(script).toContain("Set-Location -LiteralPath");
     expect(script).toContain("Set-Content");
     expect(script).toContain("Start-Sleep -Seconds 5");
     expect(commands.some(({ command }) => command[0] === "schtasks.exe" && command.includes("/Create"))).toBe(true);

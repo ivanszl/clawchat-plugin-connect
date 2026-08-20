@@ -10,7 +10,7 @@
     <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub 版本" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
     <img alt="支持 macOS、Linux 和 Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
-    <img alt="运行时：Codex、OpenCode 与 WorkBuddy" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode%20%7C%20WorkBuddy-f97316?style=flat-square">
+    <img alt="运行时：Codex、OpenCode、WorkBuddy 与 DeepSeek Harness" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode%20%7C%20WorkBuddy%20%7C%20DeepSeek%20Harness-f97316?style=flat-square">
   </p>
   <p>
     <a href="#功能">功能</a> ·
@@ -30,7 +30,7 @@ ClawChat Connect 是连接 ClawChat 与本地编程 Agent 运行时的桥梁。A
 
 | 领域 | Connect 提供的能力 |
 | --- | --- |
-| Runtime Adapter | 连接用户自行安装的 Codex CLI 或 OpenCode，不接管运行时登录、模型供应商、插件和 MCP 配置。 |
+| Runtime Adapter | 连接用户自行安装的 Codex、OpenCode、WorkBuddy 或 DeepSeek Harness 运行时，不接管运行时登录、模型供应商、插件和 MCP 配置。 |
 | 持久工作 | 通过稳定的 Connect Session 恢复原生 Runtime Thread，并使用 Binding-scoped Workspace。 |
 | 跨入口对话 | ClawChat 与 Connect Client 的消息进入同一个 Session 队列；不同 Session 可并发运行。 |
 | 运行时控制 | 动态发现模型与选项，将审批和问题送回发起任务的入口，并支持取消任务。 |
@@ -58,8 +58,9 @@ ClawChat 入口负责对话范围内的工作；Workspace 注册、Service 管�
 | Codex | `codex app-server` | 模型、推理强度、sandbox mode | 发现、恢复、取消、归档、还原、删除 |
 | OpenCode | `opencode serve` | agent、带 provider 的模型、variant | 发现、恢复、取消、删除 |
 | WorkBuddy | Desktop 自有 Task ACP endpoint | Task 自有模型、mode、配置、Command、Skill | 发现、采用、恢复、取消 |
+| DeepSeek Harness | 每个 Agent Binding 一个 `dsh` 进程 | 原生模型/推理、Agent Preset、Permission Preset、Command、Skill | 发现、恢复、取消；所选 Profile 提供能力时可归档 |
 
-OpenCode 兼容性已针对 `1.18.10` 与 `1.18.13` 验证，并使用 `@opencode-ai/sdk` `1.18.13`。WorkBuddy 仅支持 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) 中列出的两个精确 Desktop tuple。Connect 不会安装或升级任一运行时；通用能力边界见 [Runtime Adapters](./docs/runtime-adapters.md)。
+OpenCode 兼容性已针对 `1.18.10` 与 `1.18.13` 验证，并使用 `@opencode-ai/sdk` `1.18.13`。WorkBuddy 仅支持 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) 中列出的两个精确 Desktop tuple。DeepSeek Harness 通过原生进程启动、配套 Connect Bridge 协议和运行时实际发布的能力建立兼容性，不使用 DSH 版本或内部组件图白名单。Connect 保留所选 DSH Home 和 Profile 中的原生工具、插件、Skill、workflow、MCP Server、subagent、provider、凭据、sandbox 与审批策略。Connect 不会安装或升级任一运行时；通用能力边界见 [Runtime Adapters](./docs/runtime-adapters.md)。
 
 > [!IMPORTANT]
 > ClawChat Connect 仍处于 Beta 阶段，尚未稳定。启用可信局域网或公开 Liveware 访问前，请先阅读[本地数据与安全](#本地数据与安全)。
@@ -78,9 +79,11 @@ OpenCode 兼容性已针对 `1.18.10` 与 `1.18.13` 验证，并使用 `@opencod
 codex --version
 # 或
 opencode --version
+# DeepSeek Harness 只需确认 dsh 在 PATH 中
+command -v dsh
 ```
 
-Connect 使用运行时现有的登录状态、配置、模型供应商、插件、MCP Server 与原生 Session 存储。Codex 需要提供 Connect 所需的 app-server 接口；OpenCode 必须为 `1.18.10` 或 `1.18.13`。Connect 不会安装、登录或重新配置它们。
+Connect 使用运行时现有的登录状态、配置、模型供应商、插件、MCP Server 与原生 Session 存储。Codex 需要提供 Connect 所需的 app-server 接口；OpenCode 必须为 `1.18.10` 或 `1.18.13`。对于 DeepSeek Harness，Connect 不检查 DSH 版本或内部组件图；配置了 Profile 就使用它，未配置则省略 Profile 参数并保留 DSH 原生的默认选择或错误。Connect 不会安装、登录或重新配置任一运行时。
 
 ## 快速开始
 
@@ -155,6 +158,11 @@ clawchat-connect agent add work --plugin clawling.runtime.codex --capability cod
 clawchat-connect init
 clawchat-connect plugin setup --non-interactive --select clawling.runtime.opencode
 clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
+
+# DeepSeek Harness
+clawchat-connect init
+clawchat-connect plugin setup --non-interactive --select clawling.runtime.deepseek-harness
+clawchat-connect agent add work --plugin clawling.runtime.deepseek-harness --capability deepseek-harness
 ```
 
 运行时专属设置放在 capability Schema 校验的 `runtimeConfig` 中：
@@ -164,6 +172,15 @@ clawchat-connect agent add work \
   --plugin clawling.runtime.codex \
   --capability codex \
   --runtime-config-json '{"executablePathOverride":"/absolute/path/to/codex"}'
+```
+
+DeepSeek Harness 的 `homePath`、`profile`、`executablePathOverride`、`outputVisibility` 与 `displayName` 都是可选配置。省略 `profile` 时 Connect 不传 `--profile`，由已安装的 DSH 使用原生默认值或返回原生配置错误；Connect 不会虚构 Profile：
+
+```bash
+clawchat-connect agent add work \
+  --plugin clawling.runtime.deepseek-harness \
+  --capability deepseek-harness \
+  --runtime-config-json '{"homePath":"/absolute/path/to/.dsh","profile":"my-profile"}'
 ```
 
 `init` 会创建不含 Runtime Plugin 的空配置；已有安装应在 provider Bundle 安装并激活后使用 `agent add`。

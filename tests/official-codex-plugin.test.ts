@@ -72,7 +72,7 @@ describe("official Codex Plugin Bundle", () => {
     const binding: CodexRuntimeAdapterBinding = {
       runtime: { pluginId: CODEX_PLUGIN_ID, capabilityId: CODEX_CAPABILITY_ID },
       runtimeConfig: {},
-      model: "binding-default-must-not-leak",
+      model: { model: "binding-default-must-not-leak" },
       modelReasoningEffort: "xhigh",
     };
     const official = createCodexOfficialAdapter(adapter, binding);
@@ -91,14 +91,14 @@ describe("official Codex Plugin Bundle", () => {
       session.prompt({
         prompt: "selected",
         workspace,
-        model: "catalog-selected-model",
+        model: { model: "catalog-selected-model" },
         reasoningEffort: "medium",
       }),
     );
     await Array.fromAsync(session.prompt({ prompt: "runtime default", workspace }));
 
     expect(prompts.map(({ model, reasoningEffort }) => ({ model, reasoningEffort }))).toEqual([
-      { model: "catalog-selected-model", reasoningEffort: "medium" },
+      { model: { model: "catalog-selected-model" }, reasoningEffort: "medium" },
       { model: undefined, reasoningEffort: undefined },
     ]);
   });
@@ -268,6 +268,7 @@ async function createInstalledCodexHarness(): Promise<AdapterHarness> {
   return {
     registry: setup.registry,
     binding,
+    expectedDiscoveryStatus: "complete",
     activateThread() {
       writeFileSync(statePath, "active");
     },
@@ -330,7 +331,7 @@ function pluginBinding(executable: string, directory: string): AgentBindingConfi
       additionalDirectories: [runtimeDirectory],
       outputVisibility: "full",
     },
-    model: "gpt-5-codex",
+    model: { model: "gpt-5-codex" },
     modelReasoningEffort: "high",
   };
 }

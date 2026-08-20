@@ -4,7 +4,7 @@ import { workBuddyProfileCompatibility } from "../../src/runtime/workbuddy-task-
 import { readWorkBuddyTaskRuntimeSelection } from "../../src/runtime/workbuddy-task-discovery-macos";
 import { inspectInstalledWorkBuddyTaskTranscript } from "../../src/runtime/workbuddy-task-transcript";
 import { createInstalledWorkBuddyPluginRuntime } from "./workbuddy-installed-plugin";
-import { verifyInstalledWorkBuddyNativeUi } from "./workbuddy-native-ui";
+import { verifyInstalledWorkBuddyNativeUi, verifyInstalledWorkBuddyNativeUiLive } from "./workbuddy-native-ui";
 import {
   requiredWorkBuddyTestEnv,
   workBuddyTestBindingId,
@@ -30,7 +30,11 @@ const { UI_TASK_TITLE: uiTaskTitle, UI_RESTORE_TASK_TITLE: uiRestoreTaskTitle } 
 );
 const before = await inspectInstalledWorkBuddyTaskTranscript(taskId, "", workBuddyTestProfile);
 const selectedModel = (
-  await readWorkBuddyTaskRuntimeSelection(workBuddyProfileCompatibility(workBuddyTestProfile).configDirectory, taskId)
+  await readWorkBuddyTaskRuntimeSelection({
+    profile: workBuddyTestProfile,
+    configDirectory: workBuddyProfileCompatibility(workBuddyTestProfile).configDirectory,
+    taskId,
+  })
 ).model;
 if (!selectedModel) throw new Error("The dedicated WorkBuddy Task has no selected model to preserve");
 
@@ -53,9 +57,6 @@ if (currentTaskModel?.id !== selectedModel) {
   throw new Error(
     `The Task ACP catalog did not report the product-selected model as default: ${selectedModel} -> ${currentTaskModel?.id ?? "missing"}`,
   );
-}
-if (workBuddyTestProfile === "workbuddy-ai" && !/fast/iu.test(currentTaskModel.displayName)) {
-  throw new Error(`The dedicated WorkBuddy AI Task must use a Fast product model, got ${currentTaskModel.displayName}`);
 }
 const sessionOptions = (await runtimeAdapters.listSessionOptions(binding, runtimeWorkspace, catalogScope)) ?? [];
 const commands = (await runtimeAdapters.listCommands(binding, runtimeWorkspace, { runtimeThreadId: taskId })) ?? [];
@@ -133,6 +134,12 @@ if (persistedModel !== selectedModel) {
   );
 }
 
+await verifyInstalledWorkBuddyNativeUiLive({
+  compatibility: workBuddyProfileCompatibility(workBuddyTestProfile),
+  taskTitle: uiTaskTitle,
+  marker: turnMarker,
+  restoreTaskTitle: uiRestoreTaskTitle,
+});
 await installedPlugin.close();
 await verifyInstalledWorkBuddyNativeUi({
   compatibility: workBuddyProfileCompatibility(workBuddyTestProfile),
@@ -158,7 +165,8 @@ console.log(
       activityCount: activities.length,
       replayActivityCount: replay.activities.length,
       nativeRecordDelta: after.recordCount - before.recordCount,
-      nativeUiVerified: true,
+      nativeUiLiveVerified: true,
+      nativeUiRestartVerified: true,
       priorApplicationViewRestored: uiRestoreTaskTitle,
     },
     null,

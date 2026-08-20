@@ -14,12 +14,13 @@ import { TreeList, type TreeListItemData } from "@astryxdesign/core/TreeList";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import type {
-  BindingPreferenceView,
-  SessionCatalogBindingView,
-  SessionCatalogEntryView,
-  WorkspaceDirectoryRequest,
-  WorkspaceView,
+import {
+  type BindingPreferenceView,
+  runtimeModelSelectionsEqual,
+  type SessionCatalogBindingView,
+  type SessionCatalogEntryView,
+  type WorkspaceDirectoryRequest,
+  type WorkspaceView,
 } from "../../../../src/client-contract";
 import { catalogQueryOptions, createSession, workspacesQueryOptions } from "../../client-interface/query-options";
 import { AddIcon, FolderIcon, ThreadIcon } from "../../components/icons";
@@ -132,18 +133,21 @@ export function NewSessionDialog({
   isOpen,
   bindings,
   catalogBindings,
+  preferredBindingId,
   onOpenChange,
   onCreated,
 }: {
   isOpen: boolean;
   bindings: BindingPreferenceView[];
   catalogBindings: SessionCatalogBindingView[];
+  preferredBindingId: string | null;
   onOpenChange: (open: boolean) => void;
   onCreated: (sessionRef: string) => void;
 }) {
   const t = useClientTranslator();
   const queryClient = useQueryClient();
-  const [bindingId, setBindingId] = useState(bindings[0]?.bindingId ?? "");
+  const bindingId =
+    bindings.find((binding) => binding.bindingId === preferredBindingId)?.bindingId ?? bindings[0]?.bindingId ?? "";
   const [workspaceSelection, setWorkspaceSelection] = useState("");
   const [pendingWorkspace, setPendingWorkspace] = useState<WorkspaceDirectoryRequest | null>(null);
   const [isPickingWorkspace, setIsPickingWorkspace] = useState(false);
@@ -151,9 +155,6 @@ export function NewSessionDialog({
   const [mode, setMode] = useState("default");
   const [model, setModel] = useState("default");
   const [reasoningEffort, setReasoningEffort] = useState("default");
-  useEffect(() => {
-    if (!bindings.some((binding) => binding.bindingId === bindingId)) setBindingId(bindings[0]?.bindingId ?? "");
-  }, [bindingId, bindings]);
   useEffect(() => {
     if (isOpen) return;
     setIsPickingWorkspace(false);
@@ -174,7 +175,7 @@ export function NewSessionDialog({
     );
   }, [pendingWorkspace, workspaceOptions, workspaceSelection, workspaces.data]);
   const defaultModel =
-    binding?.modelOptions.find((candidate) => candidate.id === binding.model) ??
+    binding?.modelOptions.find((candidate) => runtimeModelSelectionsEqual(candidate.selection, binding.model)) ??
     binding?.modelOptions.find((candidate) => candidate.isDefault) ??
     binding?.modelOptions[0];
   const selectedModel = binding?.modelOptions.find(
@@ -194,7 +195,7 @@ export function NewSessionDialog({
           : { kind: "existing", workspaceRef: workspaceSelection },
         name: name.trim() || null,
         mode: mode === "default" ? null : mode,
-        model: model === "default" ? null : model,
+        model: model === "default" ? null : (selectedModel?.selection ?? null),
         reasoningEffort: model === "default" ? null : reasoningEffort,
       }),
     onSuccess: (session) => {
@@ -202,15 +203,6 @@ export function NewSessionDialog({
       onCreated(session.sessionRef);
     },
   });
-  const changeBinding = (value: string) => {
-    setBindingId(value);
-    setMode("default");
-    setModel("default");
-    setReasoningEffort("default");
-    setWorkspaceSelection("");
-    setPendingWorkspace(null);
-    setIsPickingWorkspace(false);
-  };
   return (
     <Dialog
       className="new-session-dialog"
@@ -260,16 +252,6 @@ export function NewSessionDialog({
                   value={name}
                   onChange={setName}
                   status={nameTooLong ? { type: "error", message: t("@connect.newSession.name.tooLong") } : undefined}
-                  width="100%"
-                />
-                <Selector
-                  label={t("@connect.newSession.binding.label")}
-                  options={bindings.map((candidate) => ({
-                    value: candidate.bindingId,
-                    label: `${candidate.displayName} (${candidate.bindingId})`,
-                  }))}
-                  value={bindingId}
-                  onChange={changeBinding}
                   width="100%"
                 />
                 <VStack className="workspace-selector-field" gap={1}>

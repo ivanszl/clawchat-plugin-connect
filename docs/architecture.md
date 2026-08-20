@@ -85,13 +85,18 @@ RuntimeAdapterRegistry → per-Binding Runtime Adapter → private native runtim
   child history into recursive Runtime Activities.
 - The Connect Service composition root creates and closes one initially empty Runtime Adapter registry. Installed Plugin Bundles publish providers before surfaces start. Binding runtimes close only their own Sessions, while Bundle replacement quiesces and replaces every dependent Binding instance.
 - `ConnectRuntime` depends only on the provider-backed Runtime Adapter registry and has no runtime-specific construction path.
+- The planned DeepSeek Harness Adapter starts one Binding-owned DSH process and mounts its paired Bridge through the final
+  `--patch` layer. Two inherited anonymous pipes carry the Connect-owned, versioned protocol; DSH stdout/stderr remain
+  diagnostics. The selected Profile must itself publish the native services it claims. DSH rc.7 discovery is read-only
+  for persisted Sessions: they remain visible, but adoption/restart-resume is unavailable because the current published graph has no
+  cross-process Session owner/busy signal and permits two processes to resume the same Session.
 - `ConnectRuntime` owns turn queueing and exposes a narrow lifecycle claim that drains/cancels work and releases the
   in-memory handle. Session Continuity retains lifecycle validation, journaling, native mutation, and local commit.
 - Runtime Adapters may expose a runtime-neutral model catalog. Connect resolves model inheritance as Session → Agent Binding → Runtime default. Reasoning effort resolves independently as strict Session effort → valid Agent Binding effort → the effective model's advertised default. Codex-native `model/list` pagination stays private to the Codex Adapter.
 - ClawChat media fragments remain structured across `ConnectRuntimePrompt`: the Codex Adapter downloads media into the Connect-owned cache, submits images and audio as native local app-server inputs, and submits files and videos as local file mentions. Configured API/media origins are trusted for private self-hosting; other URLs require HTTPS and public DNS answers. Every redirect is revalidated. Downloads are capped at 100 MiB and use path-safe cached names. The cache is bounded to 512 MiB, refreshes access time on reuse, evicts least-recently-used files when full, and expires files after 15 days without access.
 - Adapters receive a resolved `RuntimeWorkspace` and never access SQLite directly. They may discover resumable Runtime Threads scoped to that workspace through the same seam.
 
-Future coding clients must ship as Runtime Plugin Bundles that contribute Runtime Adapters behind the same seam rather than adding host-owned Adapter construction or changing Agent Binding or `ConnectRuntime` semantics.
+Future coding clients must ship as Runtime Plugin Bundles that contribute Runtime Adapters behind the same seam rather than adding host-owned Adapter construction or changing Agent Binding or `ConnectRuntime` semantics. Every released capability must maintain a complete profile against the [normative Runtime Adapter standard](runtime-adapters.md#normative-runtime-adapter-standard) and pass its shared conformance requirements; native feature absence is represented as an explicit capability or limitation rather than an Adapter-specific semantic exception.
 
 ## Connect Client boundary
 

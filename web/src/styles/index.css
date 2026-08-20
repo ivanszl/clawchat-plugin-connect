@@ -772,10 +772,6 @@ textarea {
   background: var(--color-background-muted);
 }
 
-.composer-submission-progress {
-  margin-bottom: var(--spacing-1);
-}
-
 .composer-context-actions {
   display: flex;
   flex: 1 1 auto;

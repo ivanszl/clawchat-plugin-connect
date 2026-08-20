@@ -15,3 +15,5 @@ This decision is based on local end-to-end tests of both pinned distributions. I
 This supersedes ADR-0037. Direct stdio ACP remains useful evidence about the embedded runtime but is not the product integration boundary for WorkBuddy-backed Agent Bindings.
 
 ADR-0040 later supersedes only the prohibition on direct stdio ACP and Connect-owned Sessions: an explicit CodeBuddy Session target now coexists with this Task Attachment target. This ADR remains authoritative for every desktop-synchronized WorkBuddy Task.
+
+ADR-0064 later supersedes the exact application-version and embedded-runtime allowlists. This ADR remains authoritative for the Task Attachment boundary, distribution isolation, durable Task identity, synchronization, and recovery.

@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
-import { requireModel, resolveEffort, resolveModelSelection } from "../runtime/model-selection";
+import {
+  requireModel,
+  resolveEffort,
+  resolveModelSelection,
+  runtimeModelSelectionLabel,
+} from "../runtime/model-selection";
 import type { RuntimeModelOption, SelectableRuntimeThread } from "../runtime/types";
 import { workBuddyRuntimeTargetKind } from "../runtime/workbuddy-runtime-target";
 import type {
   AgentBindingConfig,
   ConnectConfig,
   OutputVisibility,
+  RuntimeModelSelection,
   RuntimeSessionRecord,
   SessionIntentRecord,
   WorkspaceRecord,
@@ -183,18 +189,19 @@ async function handleStatus(ctx: ChatCommandContext): Promise<ChatCommandResult>
     (await ctx.workspaces.ensureDefault(selected?.agentId ?? ctx.agentId));
   const binding = getAgentBinding(ctx.config, selected?.agentId ?? ctx.agentId);
   const models = (await ctx.listRuntimeModels?.(binding, selected).catch(() => null)) ?? null;
-  let modelText = binding.model ?? "runtime default";
+  let modelText = binding.model ? runtimeModelSelectionLabel(binding.model) : "runtime default";
   let effortText = binding.modelReasoningEffort ?? "runtime default";
   let source = binding.model ? "binding" : "runtime";
   try {
     if (selected) {
       const effective = resolveModelSelection(binding, selected, models);
-      modelText = effective.model ?? "runtime default";
+      modelText = effective.model ? runtimeModelSelectionLabel(effective.model) : "runtime default";
       effortText = effective.reasoningEffort ?? "runtime default";
       source = effective.source;
     }
   } catch (error) {
-    modelText = `${selected?.model ?? binding.model ?? "unknown"} (unavailable: ${error instanceof Error ? error.message : String(error)})`;
+    const unavailableModel = selected?.model ?? binding.model;
+    modelText = `${unavailableModel ? runtimeModelSelectionLabel(unavailableModel) : "unknown"} (unavailable: ${error instanceof Error ? error.message : String(error)})`;
     effortText = selected?.reasoningEffort ?? binding.modelReasoningEffort ?? "unknown";
     source = selected?.model ? "session" : "binding";
   }
@@ -466,7 +473,7 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
       handled: true,
       text: [
         `**Available ${ctx.runtimeFamilyFor(binding)} models**`,
-        `Current: \`${effective.model ?? "runtime default"}\`${effective.reasoningEffort ? ` · \`${effective.reasoningEffort}\`` : ""} (${effective.source})`,
+        `Current: \`${effective.model ? runtimeModelSelectionLabel(effective.model) : "runtime default"}\`${effective.reasoningEffort ? ` · \`${effective.reasoningEffort}\`` : ""} (${effective.source})`,
         "",
         ...models.map(
           (model) =>
@@ -479,7 +486,7 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
   try {
     const model = requireModel(models, modelReference);
     const reasoningEffort = resolveEffort(model, args[1], true);
-    await persistModelSelection(ctx, model.id, reasoningEffort);
+    await persistModelSelection(ctx, model.selection, reasoningEffort);
     return {
       handled: true,
       text: `${intent || !current ? "Next Session" : "Current Session"} model set to \`${model.id}\` with \`${reasoningEffort}\` reasoning.`,
@@ -491,7 +498,7 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
 
 async function persistModelSelection(
   ctx: ChatCommandContext,
-  model: string | null,
+  model: RuntimeModelSelection | null,
   reasoningEffort: string | null,
 ): Promise<void> {
   await conversationSessions(ctx).changeModel(model, reasoningEffort);

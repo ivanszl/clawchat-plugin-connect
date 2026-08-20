@@ -1,5 +1,10 @@
 import { isAbsolute, relative, sep } from "node:path";
-import { CLIENT_API_PREFIX, type ClientErrorView, type UpdateBindingPreferencesRequest } from "../client-contract";
+import {
+  CLIENT_API_PREFIX,
+  type ClientErrorView,
+  type RuntimeModelSelectionView,
+  type UpdateBindingPreferencesRequest,
+} from "../client-contract";
 
 const MAX_JSON_BODY_BYTES = 128 * 1_024;
 const OUTPUT_VISIBILITIES = new Set(["minimal", "normal", "full"]);
@@ -131,6 +136,17 @@ export function isStringRecord(value: unknown): value is Record<string, string> 
   );
 }
 
+export function isRuntimeModelSelection(value: unknown): value is RuntimeModelSelectionView {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "provider" && key !== "model")) return false;
+  if (typeof record.model !== "string" || !record.model.trim() || record.model.trim().length > 200) return false;
+  return (
+    record.provider === undefined ||
+    (typeof record.provider === "string" && Boolean(record.provider.trim()) && record.provider.trim().length <= 200)
+  );
+}
+
 export function requireDisplayName(value: unknown): string {
   if (typeof value !== "string" || !value.trim() || value.trim().length > 80) {
     throw new ClientRequestError(400, "invalid-display-name", "displayName must contain 1 to 80 characters");
@@ -140,10 +156,8 @@ export function requireDisplayName(value: unknown): string {
 
 export function validatePreferencePatch(body: UpdateBindingPreferencesRequest): void {
   if (body.displayName !== undefined) requireDisplayName(body.displayName);
-  if (body.model !== undefined && body.model !== null) {
-    if (typeof body.model !== "string" || body.model.trim().length > 200) {
-      throw new ClientRequestError(400, "invalid-model", "model must be null or contain at most 200 characters");
-    }
+  if (body.model !== undefined && body.model !== null && !isRuntimeModelSelection(body.model)) {
+    throw new ClientRequestError(400, "invalid-model", "model must be null or a structured model selection");
   }
   if (body.modelReasoningEffort !== undefined && body.modelReasoningEffort !== null) {
     if (typeof body.modelReasoningEffort !== "string" || body.modelReasoningEffort.trim().length > 100) {

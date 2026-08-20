@@ -12,9 +12,13 @@ import {
 } from "@astryxdesign/core/Chat";
 import { CodeBlock } from "@astryxdesign/core/CodeBlock";
 import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { Icon } from "@astryxdesign/core/Icon";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { HStack } from "@astryxdesign/core/Layout";
 import { Markdown } from "@astryxdesign/core/Markdown";
 import { Text } from "@astryxdesign/core/Text";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { RotateCcw } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import type {
   EmbeddedTranscriptBlock,
@@ -23,8 +27,9 @@ import type {
   TranscriptBlock,
 } from "../../../../src/client-contract";
 import { normalizeWorkspaceArtifactHref, workspaceArtifactUrl } from "../../../../src/workspaces/workspace-artifact";
-import { respondToRuntimeInteraction } from "../../client-interface/query-options";
+import { clientKeys, respondToRuntimeInteraction } from "../../client-interface/query-options";
 import { type ClientTranslator, localizedClientError, useClientTranslator } from "../../i18n/client-i18n";
+import { releaseLocalTurnSubmission, retryVisibleTurnSubmission } from "../composer/useTurnSubmission";
 import { leadingSlashSuggestion, slashSuggestionToken } from "../slash-suggestions";
 
 export function TranscriptBlockView({
@@ -50,7 +55,7 @@ export function TranscriptBlockView({
           name={messageAuthorLabel(block)}
           metadata={
             <ChatMessageMetadata
-              footer={originLabel(block.origin, t)}
+              footer={<MessageMetadataFooter block={block} sessionRef={sessionRef} />}
               status={block.state === "error" ? "error" : block.state === "pending" ? "sending" : undefined}
             />
           }
@@ -91,6 +96,7 @@ export function TranscriptBlockView({
       </ChatMessage>
     );
   }
+
   if (block.type === "subagent") {
     return (
       <div className="runtime-block subagent-block">
@@ -185,6 +191,56 @@ export function TranscriptBlockView({
         ]}
       />
     </div>
+  );
+}
+function MessageMetadataFooter({
+  block,
+  sessionRef,
+}: {
+  block: Extract<TranscriptBlock | EmbeddedTranscriptBlock, { type: "message" }>;
+  sessionRef: string;
+}) {
+  const t = useClientTranslator();
+  const canRetry = block.delivery?.state === "failed" && block.delivery.allowedActions.includes("retry");
+  return (
+    <HStack gap={1} align="center">
+      {originLabel(block.origin, t)}
+      {canRetry && block.delivery ? <MessageRetryButton delivery={block.delivery} sessionRef={sessionRef} /> : null}
+    </HStack>
+  );
+}
+
+function MessageRetryButton({
+  delivery,
+  sessionRef,
+}: {
+  delivery: NonNullable<Extract<TranscriptBlock, { type: "message" }>["delivery"]>;
+  sessionRef: string;
+}) {
+  const t = useClientTranslator();
+  const queryClient = useQueryClient();
+  const retry = useMutation({
+    mutationFn: async () => await retryVisibleTurnSubmission(sessionRef, delivery.submissionId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: clientKeys.transcript(sessionRef) }),
+        queryClient.invalidateQueries({ queryKey: clientKeys.session(sessionRef) }),
+      ]);
+      releaseLocalTurnSubmission(sessionRef, delivery.submissionId);
+    },
+  });
+  const retryLabel = t("@connect.transcript.message.retry");
+  const retryTooltip = retry.error ? localizedClientError(t, retry.error) : (delivery.error?.message ?? retryLabel);
+  return (
+    <IconButton
+      label={retryLabel}
+      tooltip={retryTooltip}
+      icon={<Icon icon={RotateCcw} size="sm" />}
+      size="sm"
+      variant="ghost"
+      isLoading={retry.isPending}
+      onClick={() => retry.mutate()}
+    />
   );
 }
 

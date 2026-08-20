@@ -35,6 +35,7 @@ export interface BackgroundServiceDependencies {
 
 interface ServiceDefinition {
   command: string[];
+  workingDirectory: string;
   label: string;
   unitName: string;
   windowsTaskName: string;
@@ -103,10 +104,12 @@ function createServiceDefinition(request: BackgroundServiceRequest, homeDirector
   const command = (request.command ?? currentConnectCommand()).map((value, index) =>
     requireServiceValue(value, `command argument ${index + 1}`),
   );
-  if (command.length === 0) throw new Error("background service command is required");
+  const entrypoint = command.at(-1);
+  if (!entrypoint) throw new Error("background service command is required");
   const logsDirectory = join(homeDirectory, ".clawchat-connect", "logs");
   return {
     command: [...command, "service", BACKGROUND_SERVICE_PROCESS_ACTION, "--config", configPath],
+    workingDirectory: dirname(entrypoint),
     label: "com.clawchat.connect",
     unitName: "clawchat-connect.service",
     windowsTaskName: "ClawChat Connect",
@@ -305,6 +308,8 @@ function launchAgentPlist(definition: ServiceDefinition, pathEnvironment: string
     "    <array>",
     argumentsXml,
     "    </array>",
+    "    <key>WorkingDirectory</key>",
+    `    <string>${xmlEscape(definition.workingDirectory)}</string>`,
     "    <key>EnvironmentVariables</key>",
     "    <dict>",
     "      <key>PATH</key>",
@@ -335,6 +340,7 @@ function systemdUnit(definition: ServiceDefinition, pathEnvironment: string): st
     "[Service]",
     "Type=simple",
     `ExecStart=${definition.command.map(systemdQuote).join(" ")}`,
+    `WorkingDirectory=${systemdQuote(definition.workingDirectory)}`,
     `Environment=${systemdQuote(`PATH=${pathEnvironment}`)}`,
     "Restart=on-failure",
     "RestartSec=5",
@@ -349,6 +355,7 @@ function windowsServiceScript(definition: ServiceDefinition, pathEnvironment: st
   return `${[
     "$ErrorActionPreference = 'Continue'",
     `$env:PATH = ${powerShellQuote(pathEnvironment)}`,
+    `Set-Location -LiteralPath ${powerShellQuote(definition.workingDirectory)}`,
     `Set-Content -LiteralPath ${powerShellQuote(definition.windowsPidPath)} -Value $PID -Encoding ascii`,
     "try {",
     "  while ($true) {",

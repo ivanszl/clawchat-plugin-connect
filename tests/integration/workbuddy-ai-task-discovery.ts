@@ -14,7 +14,7 @@ try {
   const canonicalWorkspace = await realpath(workspace);
   const { binding, runtimeAdapters } = installedPlugin;
   const providerThreads = await runtimeAdapters.discoverAllThreads(binding);
-  const providerThread = providerThreads.find((candidate) => candidate.runtimeThreadId === taskId);
+  const providerThread = providerThreads.threads.find((candidate) => candidate.runtimeThreadId === taskId);
   if (!providerThread || providerThread.workingDirectory !== canonicalWorkspace) {
     throw new Error("The official WorkBuddy Runtime provider did not discover the dedicated Task");
   }

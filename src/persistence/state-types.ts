@@ -1,4 +1,11 @@
-import type { ClientViewEvent, TranscriptBlock } from "../client-contract";
+import type {
+  ClientViewEvent,
+  TranscriptBlock,
+  TurnSubmissionErrorView,
+  TurnSubmissionState,
+} from "../client-contract";
+import type { RuntimeSlashSelection } from "../runtime/types";
+import type { RuntimeModelSelection } from "../types";
 
 export interface ConnectStateOptions {
   dbPath?: string;
@@ -139,7 +146,7 @@ export interface UpsertRuntimeSessionInput {
   workspaceRef?: string | null;
   name?: string | null;
   mode?: string | null;
-  model?: string | null;
+  model?: RuntimeModelSelection | null;
   reasoningEffort?: string | null;
   sessionOptions?: Record<string, string>;
   hasMessages?: boolean;
@@ -153,7 +160,7 @@ export interface AdoptRuntimeThreadRefInput {
   workspaceRef: string | null;
   name?: string | null;
   mode?: string | null;
-  model?: string | null;
+  model?: RuntimeModelSelection | null;
   reasoningEffort?: string | null;
   sessionOptions?: Record<string, string>;
 }
@@ -163,7 +170,7 @@ export interface SetSessionIntentInput {
   workspaceRef: string | null;
   name?: string | null;
   mode?: string | null;
-  model?: string | null;
+  model?: RuntimeModelSelection | null;
   reasoningEffort?: string | null;
   sessionOptions?: Record<string, string>;
 }
@@ -221,6 +228,35 @@ export type ClientCommandOutcome =
       responseStatus: number;
       responseBody: unknown;
     };
+export interface TurnOutboxRecord {
+  submissionId: string;
+  sessionRef: string;
+  messageId: string;
+  digest: string;
+  prompt: string;
+  selection: RuntimeSlashSelection | null;
+  stagingRef: string;
+  state: TurnSubmissionState;
+  turnId: string | null;
+  error: TurnSubmissionErrorView | null;
+  createdAt: number;
+  updatedAt: number;
+}
+export interface CreateTurnOutboxInput {
+  submissionId: string;
+  sessionRef: string;
+  messageId: string;
+  digest: string;
+  prompt: string;
+  selection: RuntimeSlashSelection | null;
+  stagingRef: string;
+}
+
+export type CreateTurnOutboxResult =
+  | { created: true; record: TurnOutboxRecord }
+  | { created: false; reason: "reserved" }
+  | { created: false; reason: "conflict"; record: TurnOutboxRecord }
+  | { created: false; reason: "existing"; record: TurnOutboxRecord };
 
 export type TranscriptBlockInput<T extends TranscriptBlock = TranscriptBlock> = T extends TranscriptBlock
   ? Omit<T, "sequence" | "revision" | "createdAt" | "updatedAt"> & {

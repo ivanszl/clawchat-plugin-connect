@@ -1,5 +1,5 @@
 import type { EmbeddedTranscriptBlock, TranscriptBlock } from "../client-contract";
-import type { RuntimeSessionRecord, SessionIntentRecord, WorkspaceRecord } from "../types";
+import type { RuntimeModelSelection, RuntimeSessionRecord, SessionIntentRecord, WorkspaceRecord } from "../types";
 import type {
   GroupReplyMode,
   GroupSettingsRecord,
@@ -229,6 +229,16 @@ export function stringRecordFromJson(value: unknown): Record<string, string> {
     return {};
   }
 }
+
+export function runtimeModelSelectionFromJson(value: unknown): RuntimeModelSelection | null {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  const model = typeof record.model === "string" ? record.model.trim() : "";
+  const provider = typeof record.provider === "string" ? record.provider.trim() : "";
+  if (!model || (record.provider !== undefined && !provider)) return null;
+  return { ...(provider ? { provider } : {}), model };
+}
 export function runtimeSessionFromRow(row: Record<string, unknown>): RuntimeSessionRecord {
   return {
     chatId: stringValue(row.chat_id),
@@ -239,7 +249,7 @@ export function runtimeSessionFromRow(row: Record<string, unknown>): RuntimeSess
     workspaceRef: nullableString(row.workspace_ref),
     name: nullableString(row.name),
     mode: nullableString(row.mode),
-    model: nullableString(row.model),
+    model: runtimeModelSelectionFromJson(row.model),
     reasoningEffort: nullableString(row.reasoning_effort),
     sessionOptions: stringRecordFromJson(row.session_options_json),
     hasMessages: Boolean(row.has_messages),
@@ -268,7 +278,7 @@ export function sessionIntentFromRow(row: Record<string, unknown>): SessionInten
     workspaceRef: nullableString(row.workspace_ref),
     name: nullableString(row.name),
     mode: nullableString(row.mode),
-    model: nullableString(row.model),
+    model: runtimeModelSelectionFromJson(row.model),
     reasoningEffort: nullableString(row.reasoning_effort),
     sessionOptions: stringRecordFromJson(row.session_options_json),
     updatedAt: numberValue(row.updated_at),

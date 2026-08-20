@@ -1960,6 +1960,9 @@ function bridgeRuntimeProvider(
   const configuration = deepFreeze(validateConfiguration(binding.runtimeConfig));
   const adapter = implementation.create(configuration, instanceContext);
   const discoverWorkspaces = adapter.discoverWorkspaces?.bind(adapter);
+  const discoverThreads = adapter.discoverThreads?.bind(adapter);
+  const discoverAllThreads = adapter.discoverAllThreads?.bind(adapter);
+  const discoverArchivedThreads = adapter.discoverArchivedThreads?.bind(adapter);
   const internal: ConnectRuntimeAdapter = {
     kind: family,
     modes: adapter.modes,
@@ -1980,15 +1983,9 @@ function bridgeRuntimeProvider(
     onCommandsChanged: adapter.onCommandsChanged?.bind(adapter),
     onCatalogsChanged: adapter.onCatalogsChanged?.bind(adapter),
     discoverWorkspaces: discoverWorkspaces ? async () => await discoverWorkspaces() : undefined,
-    discoverThreads: adapter.discoverThreads
-      ? async (_binding, workspace) => (await adapter.discoverThreads?.(workspace)) ?? []
-      : undefined,
-    discoverAllThreads: adapter.discoverAllThreads
-      ? async () => (await adapter.discoverAllThreads?.()) ?? []
-      : undefined,
-    discoverArchivedThreads: adapter.discoverArchivedThreads
-      ? async () => (await adapter.discoverArchivedThreads?.()) ?? []
-      : undefined,
+    discoverThreads: discoverThreads ? async (_binding, workspace) => await discoverThreads(workspace) : undefined,
+    discoverAllThreads: discoverAllThreads ? async () => await discoverAllThreads() : undefined,
+    discoverArchivedThreads: discoverArchivedThreads ? async () => await discoverArchivedThreads() : undefined,
     verifyThreadReady: adapter.verifyThreadReady
       ? async (_binding, runtimeThreadId) => await adapter.verifyThreadReady?.(runtimeThreadId)
       : undefined,

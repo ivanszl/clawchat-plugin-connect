@@ -14,9 +14,11 @@ import {
   isWorkBuddyProfileHostSession,
   WorkBuddyDiscoveryError,
   type WorkBuddyDiscoveryObservation,
+  type WorkBuddyEndpointSelection,
   type WorkBuddyProcessIdentity,
   type WorkBuddyProfile,
   type WorkBuddyProfileCompatibility,
+  type WorkBuddySidecarPreparationIdentity,
   type WorkBuddyTaskDiscoveryInput,
   type WorkBuddyTaskDiscoverySource,
   workBuddyProfileCompatibility,
@@ -27,7 +29,13 @@ export interface WorkBuddyMacosDiscoveryOptions {
   commandTimeoutMs?: number;
   requestTimeoutMs?: number;
   prepareTaskRuntime?: (input: WorkBuddyTaskRuntimeInput) => Promise<void>;
-  readTaskRuntimeSelection?: (configDirectory: string, taskId: string) => Promise<WorkBuddyTaskRuntimeSelection>;
+  readTaskRuntimeSelection?: (input: WorkBuddyTaskRuntimeSelectionInput) => Promise<WorkBuddyTaskRuntimeSelection>;
+}
+
+export interface WorkBuddyTaskRuntimeSelectionInput {
+  profile: WorkBuddyProfile;
+  configDirectory: string;
+  taskId: string;
 }
 
 export interface WorkBuddyTaskRuntimeSelection {
@@ -35,13 +43,20 @@ export interface WorkBuddyTaskRuntimeSelection {
   permissionMode: "fullAccess" | "plan" | "default" | "acceptEdits" | "bypassPermissions";
 }
 
-export interface WorkBuddyTaskRuntimeInput {
+export interface WorkBuddyTaskRuntimeRequestInput {
+  profile: WorkBuddyProfile;
   applicationPath: string;
   configDirectory: string;
+  dataFolderName: string;
+  resourcesPath: string;
   taskId: string;
   workspace: string;
   selection: WorkBuddyTaskRuntimeSelection;
   commandTimeoutMs: number;
+}
+
+export interface WorkBuddyTaskRuntimeInput extends WorkBuddyTaskRuntimeRequestInput {
+  sidecarIdentity: WorkBuddySidecarPreparationIdentity;
 }
 
 export interface WorkBuddyTaskRuntimeRequest {
@@ -111,14 +126,12 @@ export async function listWorkBuddyTasks(
         "SELECT id, cwd, title, custom_title, updated_at FROM sessions WHERE deleted_at IS NULL ORDER BY updated_at DESC, id",
       )
       .all();
-    return await Promise.all(
-      rows.map(async (row) => ({
-        id: row.id,
-        title: row.custom_title || row.title || null,
-        workspace: await realpath(row.cwd).catch(() => row.cwd),
-        updatedAt: row.updated_at,
-      })),
-    );
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.custom_title || row.title || null,
+      workspace: row.cwd,
+      updatedAt: row.updated_at,
+    }));
   } catch (error) {
     if (error instanceof WorkBuddyDiscoveryError) throw error;
     throw new WorkBuddyDiscoveryError(
@@ -142,30 +155,39 @@ export function createWorkBuddyMacosDiscoverySource(
   const commandTimeoutMs = options.commandTimeoutMs ?? 5_000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
   return {
-    ...(profile === "workbuddy-cn"
-      ? {
-          prepareEndpoint: async (input: WorkBuddyTaskDiscoveryInput) => {
-            if (input.profile !== profile) throw wrongDiscoverySource(profile, input.profile);
-            const selection = options.readTaskRuntimeSelection
-              ? await options.readTaskRuntimeSelection(configDirectory, input.taskId)
-              : await readWorkBuddyTaskRuntimeSelection(configDirectory, input.taskId);
-            await (options.prepareTaskRuntime ?? prepareWorkBuddyTaskRuntime)({
-              applicationPath,
-              configDirectory,
-              taskId: input.taskId,
-              workspace: await realpath(input.expectedWorkspace),
-              selection,
-              commandTimeoutMs,
-            });
-          },
-        }
-      : {}),
+    prepareEndpoint: async (
+      input: WorkBuddyTaskDiscoveryInput,
+      sidecarIdentity: WorkBuddySidecarPreparationIdentity,
+    ) => {
+      if (input.profile !== profile) throw wrongDiscoverySource(profile, input.profile);
+      const selectionInput = { profile, configDirectory, taskId: input.taskId };
+      const selection = options.readTaskRuntimeSelection
+        ? await options.readTaskRuntimeSelection(selectionInput)
+        : await readWorkBuddyTaskRuntimeSelection(selectionInput);
+      await (options.prepareTaskRuntime ?? prepareWorkBuddyTaskRuntime)({
+        profile,
+        applicationPath,
+        configDirectory,
+        dataFolderName: compatibility.dataFolderName,
+        resourcesPath: join(applicationPath, "Contents", "Resources"),
+        taskId: input.taskId,
+        workspace: await realpath(input.expectedWorkspace),
+        selection,
+        commandTimeoutMs,
+        sidecarIdentity,
+      });
+    },
     canonicalizeWorkspace: async (workspace) => await realpath(workspace),
-    inspect: async (input) => {
+    inspect: async (input, endpointSelection = "any") => {
       if (input.profile !== profile) {
         throw wrongDiscoverySource(profile, input.profile);
       }
-      return await inspectWorkBuddy(input, { applicationPath, configDirectory, commandTimeoutMs, compatibility });
+      return await inspectWorkBuddy(input, endpointSelection, {
+        applicationPath,
+        configDirectory,
+        commandTimeoutMs,
+        compatibility,
+      });
     },
     verifyEndpoint: async (input) =>
       await verifyWorkBuddyEndpoint(input, requestTimeoutMs, async (identity) =>
@@ -190,24 +212,9 @@ function wrongDiscoverySource(
   );
 }
 
-export type WorkBuddyAiMacosDiscoveryOptions = WorkBuddyMacosDiscoveryOptions;
-export type WorkBuddyAiTaskCatalogEntry = WorkBuddyTaskCatalogEntry;
-
-export async function listWorkBuddyAiTasks(
-  profile: WorkBuddyProfile,
-  options: WorkBuddyAiMacosDiscoveryOptions = {},
-): Promise<WorkBuddyAiTaskCatalogEntry[]> {
-  return await listWorkBuddyTasks(profile, options);
-}
-
-export function createWorkBuddyAiMacosDiscoverySource(
-  options: WorkBuddyAiMacosDiscoveryOptions = {},
-): WorkBuddyTaskDiscoverySource {
-  return createWorkBuddyMacosDiscoverySource("workbuddy-ai", options);
-}
-
 async function inspectWorkBuddy(
   input: WorkBuddyTaskDiscoveryInput,
+  endpointSelection: WorkBuddyEndpointSelection,
   options: {
     applicationPath: string;
     configDirectory: string;
@@ -228,47 +235,73 @@ async function inspectWorkBuddy(
 
   const task = await readTask(options.configDirectory, input.taskId, input.profile);
   const runtimeDirectory = sidecarRuntimeDirectory(options.configDirectory);
-  const registration = await readJsonFile<{ pid: number; token: string; version: number }>(
-    join(runtimeDirectory, "sidecar.pid"),
-  );
+  const registrationPath = join(runtimeDirectory, "sidecar.pid");
+  const registration = await readJsonFile<unknown>(registrationPath);
   if (!registration) {
+    if (await exists(registrationPath)) {
+      throw malformedSidecarState(input.profile, "registration");
+    }
     return { ...emptyObservation(), application, applicationProcess, task };
   }
-  const liveSidecarIdentity = await sidecarRpc<{ pid: number; token: string; version: number }>(
+  if (!isSidecarIdentity(registration)) throw malformedSidecarState(input.profile, "registration");
+  const liveSidecarIdentity = await sidecarRpc<unknown>(
     join(runtimeDirectory, "sidecar.sock"),
     "sidecar.ping",
     options.commandTimeoutMs,
   ).catch(() => null);
+  if (liveSidecarIdentity !== null && !isSidecarIdentity(liveSidecarIdentity)) {
+    throw malformedSidecarState(input.profile, "live identity");
+  }
   const sidecarIdentity = liveSidecarIdentity
     ? {
         pid: liveSidecarIdentity.pid,
         version: liveSidecarIdentity.version,
         registrationTokenMatches: liveSidecarIdentity.token === registration.token,
+        registrationToken: liveSidecarIdentity.token,
       }
     : null;
-  const sessions = liveSidecarIdentity
-    ? await sidecarRpc<Array<{ sessionId: string; pid: number; acpEndpoint: string }>>(
-        join(runtimeDirectory, "sidecar.sock"),
-        "session.list",
-        options.commandTimeoutMs,
-      ).catch(() => [])
+  const listedSessions = liveSidecarIdentity
+    ? await sidecarRpc<unknown>(join(runtimeDirectory, "sidecar.sock"), "session.list", options.commandTimeoutMs).catch(
+        () => null,
+      )
     : [];
-  const validSessions = sessions.filter(
-    (session) => Number.isSafeInteger(session.pid) && typeof session.acpEndpoint === "string",
-  );
+  if (
+    listedSessions !== null &&
+    (!Array.isArray(listedSessions) || listedSessions.some((entry) => !isSidecarSession(entry)))
+  ) {
+    throw malformedSidecarState(input.profile, "Session inventory");
+  }
+  const validSessions = listedSessions ?? [];
   const exactTaskCandidates = validSessions.filter((session) => session.sessionId === input.taskId);
-  const endpointCandidates = exactTaskCandidates.length
-    ? exactTaskCandidates
-    : validSessions.filter((session) => isWorkBuddyProfileHostSession(input.profile, session.sessionId));
+  const hostCandidates = validSessions.filter((session) =>
+    isWorkBuddyProfileHostSession(input.profile, session.sessionId),
+  );
+  const endpointCandidates =
+    endpointSelection === "host"
+      ? hostCandidates
+      : endpointSelection === "task"
+        ? exactTaskCandidates
+        : exactTaskCandidates.length
+          ? exactTaskCandidates
+          : hostCandidates;
+  if (endpointCandidates.length !== 1) {
+    const expected = endpointSelection === "task" ? `Task Session ${input.taskId}` : "profile host Session";
+    throw new WorkBuddyDiscoveryError(
+      "endpoint-unavailable",
+      `${options.compatibility.displayName} sidecar must expose exactly one ${expected} for this lifecycle phase.`,
+      {
+        selectedProfile: input.profile,
+        expectedEndpointKind: endpointSelection,
+        candidateCount: endpointCandidates.length,
+      },
+    );
+  }
   const endpointCandidate = endpointCandidates[0];
-  const endpointSession =
-    endpointCandidates.length === 1 && endpointCandidate
-      ? {
-          sessionId: endpointCandidate.sessionId,
-          pid: endpointCandidate.pid,
-          endpoint: endpointCandidate.acpEndpoint,
-        }
-      : null;
+  const endpointSession = {
+    sessionId: endpointCandidate.sessionId,
+    pid: endpointCandidate.pid,
+    endpoint: endpointCandidate.acpEndpoint,
+  };
   const sidecarProcess = processIdentity(processes, registration.pid);
   const endpointOwnerPid = endpointSession
     ? await readEndpointOwner(endpointSession.endpoint, options.commandTimeoutMs).catch(() => null)
@@ -284,6 +317,46 @@ async function inspectWorkBuddy(
     endpointSession,
     endpointOwner,
   };
+}
+
+function isSidecarIdentity(value: unknown): value is { pid: number; token: string; version: number } {
+  if (!value || typeof value !== "object" || !("pid" in value) || !("token" in value) || !("version" in value)) {
+    return false;
+  }
+  return (
+    Number.isSafeInteger(value.pid) &&
+    typeof value.token === "string" &&
+    value.token.length > 0 &&
+    Number.isSafeInteger(value.version)
+  );
+}
+
+function isSidecarSession(value: unknown): value is { sessionId: string; pid: number; acpEndpoint: string } {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("sessionId" in value) ||
+    !("pid" in value) ||
+    !("acpEndpoint" in value)
+  ) {
+    return false;
+  }
+  return (
+    typeof value.sessionId === "string" &&
+    value.sessionId.length > 0 &&
+    Number.isSafeInteger(value.pid) &&
+    typeof value.acpEndpoint === "string" &&
+    value.acpEndpoint.length > 0
+  );
+}
+
+function malformedSidecarState(profile: WorkBuddyProfile, component: string): WorkBuddyDiscoveryError {
+  const product = workBuddyProfileCompatibility(profile).displayName;
+  return new WorkBuddyDiscoveryError(
+    "endpoint-unavailable",
+    `${product} sidecar ${component} is malformed and cannot be trusted.`,
+    { selectedProfile: profile, malformedComponent: component },
+  );
 }
 
 async function inspectWorkBuddyApplication(
@@ -383,27 +456,32 @@ const WORKBUDDY_PERMISSION_MODES = new Set<WorkBuddyTaskRuntimeSelection["permis
 ]);
 
 export async function readWorkBuddyTaskRuntimeSelection(
-  configDirectory: string,
-  taskId: string,
+  input: WorkBuddyTaskRuntimeSelectionInput,
 ): Promise<WorkBuddyTaskRuntimeSelection> {
-  const database = new Database(join(configDirectory, "workbuddy.db"), { readonly: true });
+  const compatibility = workBuddyProfileCompatibility(input.profile);
+  const database = new Database(join(input.configDirectory, "workbuddy.db"), { readonly: true });
   try {
     const row = database
       .query<{ model: string | null; permission_mode: string | null }, [string]>(
         "SELECT model, permission_mode FROM sessions WHERE id = ? AND deleted_at IS NULL",
       )
-      .get(taskId);
+      .get(input.taskId);
     if (!row) {
-      throw new WorkBuddyDiscoveryError("task-not-found", "The requested WorkBuddy Task has no runtime selection.", {
-        taskId,
-      });
+      throw new WorkBuddyDiscoveryError(
+        "task-not-found",
+        `The requested ${compatibility.displayName} Task has no runtime selection.`,
+        {
+          selectedProfile: input.profile,
+          taskId: input.taskId,
+        },
+      );
     }
     if (!WORKBUDDY_PERMISSION_MODES.has(row.permission_mode as WorkBuddyTaskRuntimeSelection["permissionMode"])) {
       throw new WorkBuddyDiscoveryError(
         "incompatible-version",
-        "The WorkBuddy Task permission mode is unsupported for profile workbuddy-cn.",
+        `The ${compatibility.displayName} Task permission mode is unsupported for profile ${input.profile}.`,
         {
-          selectedProfile: "workbuddy-cn",
+          selectedProfile: input.profile,
           detectedPermissionMode: row.permission_mode ?? "[missing]",
           supportedPermissionModes: [...WORKBUDDY_PERMISSION_MODES],
         },
@@ -546,10 +624,11 @@ function assertConnectedEndpointOwner(
 }
 
 async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Promise<void> {
+  assertTaskRuntimeComposition(input);
+  const compatibility = workBuddyProfileCompatibility(input.profile);
   const runtimeDirectory = sidecarRuntimeDirectory(input.configDirectory);
   const socketPath = join(runtimeDirectory, "sidecar.sock");
-  const resourcesPath = join(input.applicationPath, "Contents", "Resources");
-  const cliRoot = join(resourcesPath, "app.asar.unpacked", "cli");
+  const cliRoot = join(input.resourcesPath, "app.asar.unpacked", "cli");
   const cliCandidates = [join(cliRoot, "bin", "codebuddy"), join(cliRoot, "dist", "codebuddy.js")];
   const cliPath = (
     await Promise.all(cliCandidates.map(async (candidate) => ((await exists(candidate)) ? candidate : null)))
@@ -557,8 +636,8 @@ async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Pr
   if (!cliPath) {
     throw new WorkBuddyDiscoveryError(
       "incompatible-version",
-      "The installed WorkBuddy Task runtime executable is unavailable for profile workbuddy-cn.",
-      { selectedProfile: "workbuddy-cn" },
+      `The installed ${compatibility.displayName} Task runtime executable is unavailable for profile ${input.profile}.`,
+      { selectedProfile: input.profile },
     );
   }
   const applicationVersion = await readPlistValue(
@@ -567,44 +646,105 @@ async function prepareWorkBuddyTaskRuntime(input: WorkBuddyTaskRuntimeInput): Pr
     input.commandTimeoutMs,
   );
   const request = buildWorkBuddyTaskRuntimeRequest(input, cliPath, applicationVersion);
-  await reconcileWorkBuddyTaskRuntime(
-    request,
-    input.commandTimeoutMs,
-    async (method, timeoutMs, params) => await sidecarRpc<unknown>(socketPath, method, timeoutMs, params),
-  );
+  try {
+    await withSidecarRpc(socketPath, async (invoke) => {
+      await assertCurrentSidecarIdentity(input, compatibility, invoke);
+      await reconcileWorkBuddyTaskRuntime(input.profile, request, input.commandTimeoutMs, invoke);
+    });
+  } catch (error) {
+    if (error instanceof WorkBuddyDiscoveryError) throw error;
+    const gatewaySecret = request.env.CODEBUDDY_GATEWAY_PASSWORD;
+    const message = (error instanceof Error ? error.message : String(error)).replaceAll(gatewaySecret, "[REDACTED]");
+    throw new WorkBuddyDiscoveryError(
+      "discovery-failed",
+      `${compatibility.displayName} Task runtime preparation failed: ${message}`,
+      { selectedProfile: input.profile },
+    );
+  }
+}
+async function assertCurrentSidecarIdentity(
+  input: WorkBuddyTaskRuntimeInput,
+  compatibility: WorkBuddyProfileCompatibility,
+  invoke: WorkBuddySidecarInvoke,
+): Promise<void> {
+  const current = await inspectWorkBuddyApplication(input.applicationPath, compatibility, input.commandTimeoutMs);
+  const applicationProcess = current.applicationProcess;
+  if (
+    current.application?.bundleIdentifier !== compatibility.bundleIdentifier ||
+    applicationProcess?.pid !== input.sidecarIdentity.applicationProcessId
+  ) {
+    throw new WorkBuddyDiscoveryError(
+      "endpoint-stale",
+      `${compatibility.displayName} changed after host verification; Task runtime preparation was not attempted.`,
+      { selectedProfile: input.profile },
+    );
+  }
+
+  const registration = await readJsonFile<unknown>(join(sidecarRuntimeDirectory(input.configDirectory), "sidecar.pid"));
+  if (!isSidecarIdentity(registration)) throw malformedSidecarState(input.profile, "registration");
+  const liveSidecarIdentity = await invoke("sidecar.ping", input.commandTimeoutMs);
+  if (!isSidecarIdentity(liveSidecarIdentity)) throw malformedSidecarState(input.profile, "live identity");
+
+  const expected = input.sidecarIdentity;
+  if (
+    registration.pid !== expected.sidecarProcessId ||
+    registration.version !== expected.sidecarVersion ||
+    registration.token !== expected.registrationToken ||
+    liveSidecarIdentity.pid !== expected.sidecarProcessId ||
+    liveSidecarIdentity.version !== expected.sidecarVersion ||
+    liveSidecarIdentity.token !== expected.registrationToken
+  ) {
+    throw new WorkBuddyDiscoveryError(
+      "endpoint-stale",
+      `${compatibility.displayName}'s sidecar identity changed after host verification; Task runtime preparation was not attempted.`,
+      { selectedProfile: input.profile },
+    );
+  }
+
+  const sidecarProcess = current.processes.find((candidate) => candidate.pid === expected.sidecarProcessId);
+  if (
+    !sidecarProcess?.executablePath.startsWith(`${input.applicationPath}/Contents/`) ||
+    (sidecarProcess.parentPid !== applicationProcess.pid &&
+      sidecarProcess.ancestorPids?.includes(applicationProcess.pid) !== true)
+  ) {
+    throw new WorkBuddyDiscoveryError(
+      "wrong-owning-process",
+      `${compatibility.displayName}'s verified sidecar is no longer owned by the selected application.`,
+      { selectedProfile: input.profile },
+    );
+  }
 }
 
 type WorkBuddySidecarInvoke = (method: string, timeoutMs: number, params?: unknown) => Promise<unknown>;
 
 export async function reconcileWorkBuddyTaskRuntime(
+  profile: WorkBuddyProfile,
   request: WorkBuddyTaskRuntimeRequest,
   commandTimeoutMs: number,
   invoke: WorkBuddySidecarInvoke,
 ): Promise<void> {
-  const existing = (await invoke("session.list", commandTimeoutMs)) as Array<{ sessionId: string }>;
+  const existing = await invoke("session.list", commandTimeoutMs);
+  if (!isRuntimeSessionInventory(existing)) {
+    throw malformedSidecarState(profile, "Session inventory");
+  }
   if (existing.some((session) => session.sessionId === request.sessionId)) {
-    // session.list does not expose the argv that fixed the existing runtime's model and permission
-    // selection. Replace it only after the first host replay has authenticated this exact Task.
-    await invoke("session.kill", commandTimeoutMs, { sessionId: request.sessionId });
+    throw new WorkBuddyDiscoveryError(
+      "endpoint-stale",
+      "A WorkBuddy-owned Task endpoint appeared after host verification; retry without replacing it.",
+      { selectedProfile: profile, taskId: request.sessionId },
+    );
   }
-  try {
-    await invoke("session.create", Math.max(commandTimeoutMs, 180_000), request);
-  } catch (error) {
-    const raced = ((await invoke("session.list", commandTimeoutMs).catch(() => [])) ?? []) as Array<{
-      sessionId: string;
-    }>;
-    if (!raced.some((session) => session.sessionId === request.sessionId)) throw error;
-  }
+  await invoke("session.create", Math.max(commandTimeoutMs, 180_000), request);
 }
 
 export function buildWorkBuddyTaskRuntimeRequest(
-  input: WorkBuddyTaskRuntimeInput,
+  input: WorkBuddyTaskRuntimeRequestInput,
   cliPath: string,
   applicationVersion: string,
   gatewaySecret = randomBytes(32).toString("base64url"),
 ): WorkBuddyTaskRuntimeRequest {
-  const resourcesPath = join(input.applicationPath, "Contents", "Resources");
-  const cliRoot = join(resourcesPath, "app.asar.unpacked", "cli");
+  assertTaskRuntimeComposition(input);
+  const cliRoot = join(input.resourcesPath, "app.asar.unpacked", "cli");
   const trustedWorkspace = `${input.workspace.replace(/[/\\]+$/u, "") || input.workspace}/**`;
   return {
     sessionId: input.taskId,
@@ -636,14 +776,14 @@ export function buildWorkBuddyTaskRuntimeRequest(
       SERVER__HOST: "127.0.0.1",
       CODEBUDDY_CONFIG_DIR: input.configDirectory,
       WORKBUDDY_CONFIG_DIR: input.configDirectory,
-      WORKBUDDY_DATA_FOLDER_NAME: ".workbuddy",
+      WORKBUDDY_DATA_FOLDER_NAME: input.dataFolderName,
       CODEBUDDY_GATEWAY_AUTH: "password",
       CODEBUDDY_GATEWAY_PASSWORD: gatewaySecret,
       CODEBUDDY_GATEWAY_DISABLE_API_DOCS: "1",
       CODEBUDDY_DISABLE_CRON: "1",
       CODEBUDDY_INCLUDE_TOPIC_MESSAGE: "1",
       CODEBUDDY_CODE_DISABLE_SESSION_SUMMARY: "1",
-      CODEBUDDY_BUILTIN_SKILLS_DIR: join(resourcesPath, "app.asar.unpacked", "resources", "builtin-skills"),
+      CODEBUDDY_BUILTIN_SKILLS_DIR: join(input.resourcesPath, "app.asar.unpacked", "resources", "builtin-skills"),
       CODEBUDDY_DISABLE_AUTO_MEMORY: "1",
       CODEBUDDY_DISABLE_SYSTEM_REMINDER_MD: "1",
       CODEBUDDY_DISABLE_REQUEST_VALIDATION: "1",
@@ -665,10 +805,65 @@ export function buildWorkBuddyTaskRuntimeRequest(
       WORKBUDDY_APP_VERSION: applicationVersion,
       WORKBUDDY_IS_PACKAGED: "true",
       WORKBUDDY_NODE_ENV: "production",
-      WORKBUDDY_RESOURCES_PATH: resourcesPath,
+      WORKBUDDY_RESOURCES_PATH: input.resourcesPath,
     },
     port: 0,
   };
+}
+
+function assertTaskRuntimeComposition(input: WorkBuddyTaskRuntimeRequestInput): void {
+  const compatibility = workBuddyProfileCompatibility(input.profile);
+  const expectedResourcesPath = join(compatibility.applicationPath, "Contents", "Resources");
+  if (
+    input.applicationPath !== compatibility.applicationPath ||
+    input.configDirectory !== compatibility.configDirectory ||
+    input.dataFolderName !== compatibility.dataFolderName ||
+    input.resourcesPath !== expectedResourcesPath
+  ) {
+    throw new WorkBuddyDiscoveryError(
+      "wrong-distribution",
+      `The ${compatibility.displayName} Task runtime inputs combine resources from different distributions.`,
+      {
+        selectedProfile: input.profile,
+        expectedApplicationPath: compatibility.applicationPath,
+        expectedConfigDirectory: compatibility.configDirectory,
+        expectedDataFolderName: compatibility.dataFolderName,
+        expectedResourcesPath,
+      },
+    );
+  }
+  if (
+    !WORKBUDDY_PERMISSION_MODES.has(input.selection.permissionMode) ||
+    (input.selection.model !== null &&
+      (typeof input.selection.model !== "string" ||
+        input.selection.model.length === 0 ||
+        input.selection.model.trim() !== input.selection.model))
+  ) {
+    throw new WorkBuddyDiscoveryError(
+      "incompatible-version",
+      `The ${compatibility.displayName} Task runtime selection cannot be reproduced exactly.`,
+      {
+        selectedProfile: input.profile,
+        detectedPermissionMode: input.selection.permissionMode,
+      },
+    );
+  }
+}
+
+function isRuntimeSessionInventory(value: unknown): value is Array<{ sessionId: string }> {
+  if (!Array.isArray(value)) return false;
+  for (const entry of value) {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      !("sessionId" in entry) ||
+      typeof entry.sessionId !== "string" ||
+      entry.sessionId.length === 0
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function sidecarRpc<Result>(
@@ -677,26 +872,107 @@ async function sidecarRpc<Result>(
   timeoutMs: number,
   params?: unknown,
 ): Promise<Result> {
-  return await new Promise<Result>((resolve, reject) => {
-    const socket = connect(socketPath);
-    let buffer = "";
-    socket.setTimeout(timeoutMs, () => socket.destroy(new Error("WorkBuddy sidecar control request timed out")));
-    socket.once("connect", () =>
-      socket.write(
-        `${JSON.stringify({ jsonrpc: "2.0", id: 1, method, ...(params === undefined ? {} : { params }) })}\n`,
-      ),
-    );
-    socket.on("data", (chunk) => {
-      buffer += chunk.toString("utf8");
+  return (await withSidecarRpc(socketPath, async (invoke) => await invoke(method, timeoutMs, params))) as Result;
+}
+
+async function withSidecarRpc<Result>(
+  socketPath: string,
+  operation: (invoke: WorkBuddySidecarInvoke) => Promise<Result>,
+): Promise<Result> {
+  const socket = connect(socketPath);
+  await new Promise<void>((resolve, reject) => {
+    const connected = () => {
+      socket.off("error", failed);
+      resolve();
+    };
+    const failed = (error: Error) => {
+      socket.off("connect", connected);
+      reject(error);
+    };
+    socket.once("connect", connected);
+    socket.once("error", failed);
+  });
+
+  let buffer = "";
+  let nextId = 1;
+  const pending = new Map<
+    number,
+    {
+      resolve(value: unknown): void;
+      reject(error: Error): void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
+  const failPending = (error: Error) => {
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+    pending.clear();
+  };
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString("utf8");
+    while (true) {
       const newline = buffer.indexOf("\n");
       if (newline < 0) return;
-      socket.end();
-      const response = JSON.parse(buffer.slice(0, newline)) as { result?: Result; error?: { message?: string } };
-      if (response.error) reject(new Error(response.error.message ?? "WorkBuddy sidecar request failed"));
-      else resolve(response.result as Result);
-    });
-    socket.once("error", reject);
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      let response: { id?: unknown; result?: unknown; error?: { message?: string } };
+      try {
+        response = JSON.parse(line) as typeof response;
+      } catch {
+        socket.destroy(new Error("WorkBuddy sidecar returned malformed JSON"));
+        return;
+      }
+      if (!Number.isSafeInteger(response.id)) {
+        socket.destroy(new Error("WorkBuddy sidecar returned a response without a valid request ID"));
+        return;
+      }
+      const request = pending.get(response.id as number);
+      if (!request) {
+        socket.destroy(new Error("WorkBuddy sidecar returned an unexpected request ID"));
+        return;
+      }
+      pending.delete(response.id as number);
+      clearTimeout(request.timer);
+      if (response.error) request.reject(new Error(response.error.message ?? "WorkBuddy sidecar request failed"));
+      else request.resolve(response.result);
+    }
   });
+  socket.on("error", failPending);
+  socket.on("close", () => {
+    if (pending.size) failPending(new Error("WorkBuddy sidecar closed the authenticated control connection"));
+  });
+
+  const invoke: WorkBuddySidecarInvoke = async (method, timeoutMs, params) => {
+    const id = nextId++;
+    return await new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        const error = new Error("WorkBuddy sidecar control request timed out");
+        reject(error);
+        socket.destroy(error);
+      }, timeoutMs);
+      pending.set(id, { resolve, reject, timer });
+      socket.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) })}\n`,
+        (error) => {
+          if (!error) return;
+          const request = pending.get(id);
+          if (!request) return;
+          pending.delete(id);
+          clearTimeout(request.timer);
+          request.reject(error);
+        },
+      );
+    });
+  };
+
+  try {
+    return await operation(invoke);
+  } finally {
+    socket.end();
+  }
 }
 
 function sidecarRuntimeDirectory(configDirectory: string): string {

@@ -34,7 +34,7 @@ import type {
   RuntimeModelOption,
   RuntimeSessionOption,
 } from "./types";
-import { runtimeInputIdentity, runtimeInputIdentityContains } from "./types";
+import { completeRuntimeThreadDiscovery, runtimeInputIdentity, runtimeInputIdentityContains } from "./types";
 export interface OpenCodeRuntimeAdapterBinding extends AgentBindingConfig {
   executablePathOverride?: string;
   env?: Record<string, string>;
@@ -211,11 +211,13 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
     },
     async discoverThreads(binding, workspace) {
       lastDirectory = workspace.workingDirectory;
-      return summarizeSessions(
-        (await (await clientFor(binding)).listSessions(workspace.workingDirectory)).filter(
-          (session) => canonical(session.directory) === canonical(workspace.workingDirectory),
+      return completeRuntimeThreadDiscovery(
+        summarizeSessions(
+          (await (await clientFor(binding)).listSessions(workspace.workingDirectory)).filter(
+            (session) => canonical(session.directory) === canonical(workspace.workingDirectory),
+          ),
+          threadDirectories,
         ),
-        threadDirectories,
       );
     },
     async discoverAllThreads(binding) {
@@ -229,7 +231,7 @@ export function createOpenCodeRuntimeAdapter(options: OpenCodeRuntimeAdapterOpti
         ...directories.map(async (directory) => await client.listSessions(directory)),
       ]);
       const sessions = [...new Map(sessionGroups.flat().map((session) => [session.id, session])).values()];
-      return summarizeSessions(sessions, threadDirectories);
+      return completeRuntimeThreadDiscovery(summarizeSessions(sessions, threadDirectories));
     },
     async readActivity(binding, runtimeThreadId) {
       const { client, session } = await locateSession(binding, runtimeThreadId);
@@ -801,6 +803,7 @@ function modelOptions(providers: {
     const defaultModel = providers.default[provider.id];
     return {
       id: `${provider.id}/${model.id}`,
+      selection: { provider: provider.id, model: model.id },
       displayName: model.name,
       description: `${provider.name} · ${model.status}`,
       isDefault: defaultModel === model.id || defaultModel === `${provider.id}/${model.id}`,
@@ -1077,12 +1080,19 @@ function promptParts(input: ConnectRuntimePrompt) {
 
 function promptSelection(input: ConnectRuntimePrompt) {
   const agent = input.sessionOptions?.agent ?? input.mode;
-  const model = input.sessionOptions?.model ?? input.model;
+  const model = input.sessionOptions?.model
+    ? parseModel(input.sessionOptions.model)
+    : input.model
+      ? {
+          providerID: input.model.provider ?? "",
+          modelID: input.model.model,
+        }
+      : null;
+  if (model && !model.providerID) throw new Error("OpenCode requires a provider-qualified model selection");
   const variant = input.sessionOptions?.variant ?? input.reasoningEffort;
-  const parsedModel = model ? parseModel(model) : null;
   return {
     ...(agent ? { agent } : {}),
-    ...(parsedModel ? { model: parsedModel } : {}),
+    ...(model ? { model } : {}),
     ...(variant && variant !== "default" ? { variant } : {}),
   };
 }

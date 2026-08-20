@@ -1,7 +1,12 @@
 import { describe, expect, it, mock } from "bun:test";
 import type { RuntimeCapabilityRef } from "../src/plugin/sdk";
 import { type RuntimeAdapterDefinition, RuntimeAdapterRegistry } from "../src/runtime/registry";
-import type { ConnectRuntimeAdapter, ConnectRuntimeSession, RuntimeModelOption } from "../src/runtime/types";
+import {
+  type ConnectRuntimeAdapter,
+  type ConnectRuntimeSession,
+  completeRuntimeThreadDiscovery,
+  type RuntimeModelOption,
+} from "../src/runtime/types";
 import type { AgentBindingConfig, RuntimeWorkspace } from "../src/types";
 
 const session: ConnectRuntimeSession = {
@@ -14,7 +19,9 @@ function adapter(kind = "codex"): ConnectRuntimeAdapter {
     kind,
     modes: ["read-only", "workspace-write"],
     prepare: mock(async () => undefined),
-    discoverThreads: mock(async () => [{ runtimeThreadId: "thread-1", name: "Existing thread", updatedAt: 1 }]),
+    discoverThreads: mock(async () =>
+      completeRuntimeThreadDiscovery([{ runtimeThreadId: "thread-1", name: "Existing thread", updatedAt: 1 }]),
+    ),
     start: mock(async () => session),
     close: mock(async () => undefined),
   };
@@ -93,7 +100,9 @@ describe("RuntimeAdapterRegistry", () => {
         workingDirectory: "/repo",
         skipGitRepoCheck: true,
       }),
-    ).resolves.toEqual([{ runtimeThreadId: "thread-1", name: "Existing thread", updatedAt: 1 }]);
+    ).resolves.toEqual(
+      completeRuntimeThreadDiscovery([{ runtimeThreadId: "thread-1", name: "Existing thread", updatedAt: 1 }]),
+    );
   });
 
   it("allows capabilities with one Runtime family to coexist", () => {
@@ -199,6 +208,7 @@ describe("RuntimeAdapterRegistry", () => {
       async (): Promise<RuntimeModelOption[]> => [
         {
           id: "gpt-default",
+          selection: { model: "gpt-default" },
           displayName: "Default model",
           description: "Runtime default",
           isDefault: true,

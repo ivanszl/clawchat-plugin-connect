@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { createCodexRuntimeAdapter } from "../src/runtime/codex-adapter";
 import { createOpenCodeRuntimeAdapter } from "../src/runtime/opencode-adapter";
 import type { OpenCodeMessage, OpenCodeServerClient } from "../src/runtime/opencode-server";
-import { runtimeInputIdentity } from "../src/runtime/types";
+import { completeRuntimeThreadDiscovery, runtimeInputIdentity } from "../src/runtime/types";
 import {
   createWorkBuddyRuntimeAdapter,
   type WorkBuddyRuntimeAdapterBinding,
@@ -134,9 +134,14 @@ runtimeAdapterConformance("reference", () => {
       modes: [],
       lifecycleCapabilities: { archive: true, restore: true, delete: true },
       discoverAllThreads: async () =>
-        state === "active" ? [{ runtimeThreadId: "thread-1", name: null, updatedAt: 1 }] : [],
+        completeRuntimeThreadDiscovery(
+          state === "active" ? [{ runtimeThreadId: "thread-1", name: null, updatedAt: 1 }] : [],
+        ),
       discoverArchivedThreads: async () =>
-        state === "archived" ? [{ runtimeThreadId: "thread-1", name: null, updatedAt: 1, isArchived: true }] : [],
+        completeRuntimeThreadDiscovery(
+          state === "archived" ? [{ runtimeThreadId: "thread-1", name: null, updatedAt: 1, isArchived: true }] : [],
+          { reason: "archived" },
+        ),
       archiveThread: async () => {
         if (failArchive) {
           failArchive = false;

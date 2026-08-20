@@ -1,8 +1,6 @@
 import type { SlashSuggestionView, StartTurnResponse } from "../../../src/client-contract";
 import { CLIENT_API_PREFIX } from "../../../src/client-contract";
-import { ClientInterfaceError } from "./http";
-
-export type TurnSubmissionPhase = "transferring" | "accepting";
+import { ClientInterfaceError, clientFetch } from "./http";
 
 export interface ClientTurnSubmission {
   submissionId: string;
@@ -10,19 +8,6 @@ export interface ClientTurnSubmission {
   prompt: string;
   selection?: SlashSuggestionView | null;
   attachments: File[];
-}
-
-export interface TurnSubmissionProgress {
-  phase: TurnSubmissionPhase;
-  transferredBytes: number;
-  totalBytes: number;
-}
-
-export class TurnSubmissionCancelledError extends Error {
-  constructor() {
-    super("Turn Submission was cancelled before acceptance");
-    this.name = "TurnSubmissionCancelledError";
-  }
 }
 
 const KNOWN_TURN_SUBMISSION_ERROR_KEYS = {
@@ -57,9 +42,7 @@ type TurnSubmissionErrorTranslator = (key: TurnSubmissionErrorKey, values?: Reco
 
 export function formatTurnSubmissionError(error: unknown, translate: TurnSubmissionErrorTranslator): string {
   let message: string;
-  if (error instanceof TurnSubmissionCancelledError) {
-    message = translate("@connect.composer.error.submissionCancelled");
-  } else if (error instanceof ClientInterfaceError) {
+  if (error instanceof ClientInterfaceError) {
     const key = KNOWN_TURN_SUBMISSION_ERROR_KEYS[error.code as keyof typeof KNOWN_TURN_SUBMISSION_ERROR_KEYS];
     message = key ? translate(key) : error.message;
   } else if (error instanceof Error) {
@@ -74,19 +57,10 @@ export function formatTurnSubmissionError(error: unknown, translate: TurnSubmiss
   });
 }
 
-type SubmissionOutcome =
-  | StartTurnResponse
-  | { pending: true; submissionId: string; sessionRef: string }
-  | { cancelled: true; submissionId: string; sessionRef: string };
-
-export function submitTurn(
+export async function submitTurn(
   draft: ClientTurnSubmission,
-  options: {
-    signal?: AbortSignal;
-    onProgress?: (progress: TurnSubmissionProgress) => void;
-  } = {},
+  options: { signal?: AbortSignal } = {},
 ): Promise<StartTurnResponse> {
-  const totalBytes = draft.attachments.reduce((total, file) => total + file.size, 0);
   const body = new FormData();
   body.append("prompt", draft.prompt);
   if (draft.selection) {
@@ -95,134 +69,38 @@ export function submitTurn(
     body.append("selectionName", draft.selection.name);
   }
   for (const file of draft.attachments) body.append("attachments", file, file.name);
-  options.onProgress?.({ phase: "transferring", transferredBytes: 0, totalBytes });
 
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    let settled = false;
-    const finish = (action: () => void) => {
-      if (settled) return;
-      settled = true;
-      options.signal?.removeEventListener("abort", abort);
-      action();
-    };
-    const abort = () => {
-      request.abort();
-      void cancelTurnSubmission(draft.sessionRef, draft.submissionId).then(
-        (outcome) =>
-          finish(() => {
-            if ("accepted" in outcome) resolve(outcome);
-            else reject(new TurnSubmissionCancelledError());
-          }),
-        (error) => finish(() => reject(error)),
-      );
-    };
-    options.signal?.addEventListener("abort", abort, { once: true });
-    request.open("POST", submissionUrl(draft.sessionRef, draft.submissionId));
-    request.setRequestHeader("Accept", "application/json");
-    request.upload.addEventListener("progress", (event) => {
-      const ratio = event.lengthComputable && event.total > 0 ? event.loaded / event.total : 0;
-      options.onProgress?.({
-        phase: "transferring",
-        transferredBytes: Math.min(totalBytes, Math.round(totalBytes * ratio)),
-        totalBytes,
-      });
+  try {
+    return await clientFetch<StartTurnResponse>(submissionUrl(draft.sessionRef, draft.submissionId), {
+      method: "POST",
+      body,
+      signal: options.signal,
     });
-    request.upload.addEventListener("load", () => {
-      options.onProgress?.({ phase: "accepting", transferredBytes: totalBytes, totalBytes });
-    });
-    request.addEventListener("load", () => {
-      let value: unknown;
-      try {
-        value = JSON.parse(request.responseText);
-      } catch {
-        value = null;
-      }
-      if (request.status >= 200 && request.status < 300) {
-        finish(() => resolve(value as StartTurnResponse));
-        return;
-      }
-      const error = value as {
-        error?: { code?: string; message?: string; retryable?: boolean; diagnosticRef?: string };
-      } | null;
-      const failure = new ClientInterfaceError(
-        request.status,
-        error?.error?.code ?? `http-${request.status}`,
-        error?.error?.message ?? `Connect Client 请求失败（HTTP ${request.status}）`,
-        error?.error?.retryable ?? request.status >= 500,
-        error?.error?.diagnosticRef,
-      );
-      if (error?.error?.code) {
-        finish(() => reject(failure));
-        return;
-      }
-      void requestOutcome(draft.sessionRef, draft.submissionId, "GET").then(
-        (outcome) =>
-          finish(() => {
-            if ("accepted" in outcome) resolve(outcome);
-            else if ("cancelled" in outcome) reject(new TurnSubmissionCancelledError());
-            else
-              reject(
-                new ClientInterfaceError(0, "submission-outcome-unknown", "无法确认提交结果，请使用相同提交重试", true),
-              );
-          }),
-        () => finish(() => reject(failure)),
-      );
-    });
-    request.addEventListener("abort", () => {
-      if (!options.signal?.aborted) {
-        finish(() =>
-          reject(new ClientInterfaceError(0, "submission-outcome-unknown", "无法确认提交结果，请重试", true)),
-        );
-      }
-    });
-    request.addEventListener("error", () => {
-      finish(() => reject(new ClientInterfaceError(0, "submission-outcome-unknown", "无法确认提交结果，请重试", true)));
-    });
-    request.send(body);
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    try {
+      return await getTurnSubmission(draft.sessionRef, draft.submissionId);
+    } catch {
+      throw error;
+    }
+  }
+}
+
+export async function getTurnSubmission(sessionRef: string, submissionId: string): Promise<StartTurnResponse> {
+  return await clientFetch<StartTurnResponse>(submissionUrl(sessionRef, submissionId));
+}
+
+export async function retryTurnSubmission(sessionRef: string, submissionId: string): Promise<StartTurnResponse> {
+  return await clientFetch<StartTurnResponse>(`${submissionUrl(sessionRef, submissionId)}/retry`, {
+    method: "POST",
   });
 }
 
-export async function cancelTurnSubmission(
+export async function discardTurnSubmission(
   sessionRef: string,
   submissionId: string,
-): Promise<StartTurnResponse | { cancelled: true; submissionId: string; sessionRef: string }> {
-  let outcome = await requestOutcome(sessionRef, submissionId, "DELETE");
-  for (let attempt = 0; "pending" in outcome && attempt < 20; attempt += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    outcome = await requestOutcome(sessionRef, submissionId, "GET");
-  }
-  if ("pending" in outcome) {
-    throw new ClientInterfaceError(0, "submission-outcome-unknown", "无法确认提交结果，请使用相同提交重试", true);
-  }
-  return outcome;
-}
-
-async function requestOutcome(
-  sessionRef: string,
-  submissionId: string,
-  method: "GET" | "DELETE",
-): Promise<SubmissionOutcome> {
-  const response = await fetch(submissionUrl(sessionRef, submissionId), {
-    method,
-    headers: { Accept: "application/json" },
-  });
-  const value = (await response.json().catch(() => null)) as
-    | SubmissionOutcome
-    | { error?: { code?: string; message?: string; retryable?: boolean; diagnosticRef?: string } }
-    | null;
-  if (response.ok) return value as SubmissionOutcome;
-  const error = value && "error" in value ? value.error : undefined;
-  if (error?.code === "submission-cancelled") {
-    return { cancelled: true, submissionId, sessionRef };
-  }
-  throw new ClientInterfaceError(
-    response.status,
-    error?.code ?? `http-${response.status}`,
-    error?.message ?? `Connect Client 请求失败（HTTP ${response.status}）`,
-    error?.retryable ?? response.status >= 500,
-    error?.diagnosticRef,
-  );
+): Promise<{ submissionId: string; sessionRef: string; discarded: true }> {
+  return await clientFetch(submissionUrl(sessionRef, submissionId), { method: "DELETE" });
 }
 
 function submissionUrl(sessionRef: string, submissionId: string): string {

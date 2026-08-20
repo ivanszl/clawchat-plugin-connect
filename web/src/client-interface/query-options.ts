@@ -10,6 +10,7 @@ import type {
   PluginAdministrationView,
   RespondToRuntimeInteractionRequest,
   RuntimeInteractionBlock,
+  RuntimeModelSelectionView,
   SelectPluginVersionRequest,
   SessionArchiveResponse,
   SessionCatalogView,
@@ -201,7 +202,7 @@ export async function deleteSession(sessionRef: string): Promise<SessionDeleteRe
 
 export async function updateSessionPreferences(
   sessionRef: string,
-  model: string | null,
+  model: RuntimeModelSelectionView | null,
   reasoningEffort: string | null,
   sessionOptions?: Record<string, string>,
 ): Promise<SessionView> {

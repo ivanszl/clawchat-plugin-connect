@@ -14,7 +14,7 @@ import type {
   RuntimeModelOption,
   RuntimeSessionOption,
   RuntimeSkillSummary,
-  RuntimeThreadSummary,
+  RuntimeThreadDiscoverySnapshot,
   RuntimeWorkspaceSnapshot,
 } from "./types";
 import { RuntimeLifecycleError } from "./types";
@@ -303,8 +303,10 @@ export class RuntimeAdapterRegistry {
     if (adapter.discoverWorkspaces) return await adapter.discoverWorkspaces(binding);
     if (!adapter.discoverAllThreads) return { status: "unavailable", identities: [] };
     try {
+      const snapshot = await adapter.discoverAllThreads(binding);
+      if (snapshot.status === "unavailable") return { status: "unavailable", identities: [] };
       const identities = new Map(
-        (await adapter.discoverAllThreads(binding))
+        snapshot.threads
           .flatMap((thread) => (thread.workspaceIdentity ? [thread.workspaceIdentity] : []))
           .map((identity) => [identity.key, identity] as const),
       );
@@ -314,16 +316,23 @@ export class RuntimeAdapterRegistry {
     }
   }
 
-  async discoverThreads(binding: AgentBindingConfig, workspace: RuntimeWorkspace): Promise<RuntimeThreadSummary[]> {
-    return (await this.require(binding).discoverThreads?.(binding, workspace)) ?? [];
+  async discoverThreads(
+    binding: AgentBindingConfig,
+    workspace: RuntimeWorkspace,
+  ): Promise<RuntimeThreadDiscoverySnapshot> {
+    return (
+      (await this.require(binding).discoverThreads?.(binding, workspace)) ?? unavailableThreadDiscovery("unsupported")
+    );
   }
 
-  async discoverAllThreads(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]> {
-    return (await this.require(binding).discoverAllThreads?.(binding)) ?? [];
+  async discoverAllThreads(binding: AgentBindingConfig): Promise<RuntimeThreadDiscoverySnapshot> {
+    return (await this.require(binding).discoverAllThreads?.(binding)) ?? unavailableThreadDiscovery("unsupported");
   }
 
-  async discoverArchivedThreads(binding: AgentBindingConfig): Promise<RuntimeThreadSummary[]> {
-    return (await this.require(binding).discoverArchivedThreads?.(binding)) ?? [];
+  async discoverArchivedThreads(binding: AgentBindingConfig): Promise<RuntimeThreadDiscoverySnapshot> {
+    return (
+      (await this.require(binding).discoverArchivedThreads?.(binding)) ?? unavailableThreadDiscovery("unsupported")
+    );
   }
 
   async readActivity(binding: AgentBindingConfig, runtimeThreadId: string): Promise<RuntimeActivitySnapshot> {
@@ -363,13 +372,16 @@ export class RuntimeAdapterRegistry {
         `${this.familyFor(binding)} Runtime Adapter does not support thread archiving`,
       );
     if (adapter.discoverArchivedThreads) {
-      if ((await adapter.discoverArchivedThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId))
-        return;
-      if (
-        adapter.discoverAllThreads &&
-        !(await adapter.discoverAllThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId)
-      ) {
-        throw new RuntimeLifecycleError("not-found", `Runtime Thread ${runtimeThreadId} was not found`);
+      const archived = await adapter.discoverArchivedThreads(binding);
+      if (archived.threads.some((thread) => thread.runtimeThreadId === runtimeThreadId)) return;
+      if (adapter.discoverAllThreads) {
+        const active = await adapter.discoverAllThreads(binding);
+        if (
+          active.status === "complete" &&
+          !active.threads.some((thread) => thread.runtimeThreadId === runtimeThreadId)
+        ) {
+          throw new RuntimeLifecycleError("not-found", `Runtime Thread ${runtimeThreadId} was not found`);
+        }
       }
     }
     await runLifecycleMutation("archive", () => operation(binding, runtimeThreadId));
@@ -384,13 +396,16 @@ export class RuntimeAdapterRegistry {
         `${this.familyFor(binding)} Runtime Adapter does not support thread restoration`,
       );
     if (adapter.discoverAllThreads) {
-      if ((await adapter.discoverAllThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId))
-        return;
-      if (
-        adapter.discoverArchivedThreads &&
-        !(await adapter.discoverArchivedThreads(binding)).some((thread) => thread.runtimeThreadId === runtimeThreadId)
-      ) {
-        throw new RuntimeLifecycleError("not-found", `Runtime Thread ${runtimeThreadId} was not found`);
+      const active = await adapter.discoverAllThreads(binding);
+      if (active.threads.some((thread) => thread.runtimeThreadId === runtimeThreadId)) return;
+      if (adapter.discoverArchivedThreads) {
+        const archived = await adapter.discoverArchivedThreads(binding);
+        if (
+          archived.status === "complete" &&
+          !archived.threads.some((thread) => thread.runtimeThreadId === runtimeThreadId)
+        ) {
+          throw new RuntimeLifecycleError("not-found", `Runtime Thread ${runtimeThreadId} was not found`);
+        }
       }
     }
     await runLifecycleMutation("restore", () => operation(binding, runtimeThreadId));
@@ -409,7 +424,13 @@ export class RuntimeAdapterRegistry {
         adapter.discoverAllThreads(binding),
         adapter.discoverArchivedThreads(binding),
       ]);
-      if (![...active, ...archived].some((thread) => thread.runtimeThreadId === runtimeThreadId)) return;
+      if (
+        active.status === "complete" &&
+        archived.status === "complete" &&
+        ![...active.threads, ...archived.threads].some((thread) => thread.runtimeThreadId === runtimeThreadId)
+      ) {
+        return;
+      }
     }
     await runLifecycleMutation("delete", () => operation(binding, runtimeThreadId));
   }
@@ -606,6 +627,9 @@ export class RuntimeAdapterRegistry {
       for (const key of cache.keys()) if (key.startsWith(`${bindingId}\0`)) cache.delete(key);
     }
   }
+}
+function unavailableThreadDiscovery(limitation: string): RuntimeThreadDiscoverySnapshot {
+  return { status: "unavailable", threads: [], limitations: [limitation] };
 }
 
 async function waitForRuntimeList<T>(loading: Promise<T[]>, waitMs: number): Promise<T[] | null> {

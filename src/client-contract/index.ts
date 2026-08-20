@@ -135,6 +135,21 @@ export interface TranscriptBlockMetadata {
 }
 
 export type TranscriptBlockBase = TranscriptBlockContentBase & TranscriptBlockMetadata;
+export type TurnSubmissionState = "pending" | "delivering" | "accepted" | "failed";
+
+export interface TurnSubmissionErrorView {
+  code: string;
+  message: string;
+  retryable: boolean;
+  diagnosticRef?: string;
+}
+
+export interface MessageDeliveryView {
+  submissionId: string;
+  state: "pending" | "failed";
+  error: TurnSubmissionErrorView | null;
+  allowedActions: Array<"cancel" | "retry" | "discard">;
+}
 
 export interface MessageBlockContent extends TranscriptBlockContentBase {
   type: "message";
@@ -154,6 +169,7 @@ export interface MessageBlockContent extends TranscriptBlockContentBase {
     width: number | null;
     height: number | null;
   }>;
+  delivery?: MessageDeliveryView;
 }
 
 export interface ReasoningSummaryBlockContent extends TranscriptBlockContentBase {
@@ -292,6 +308,15 @@ export interface TranscriptPageView {
 
 export type SessionCatalogAction = "open" | "send" | "cancel" | "adopt" | "archive" | "unarchive" | "delete";
 export type SessionAction = "send" | "cancel" | "archive" | "unarchive" | "delete";
+export type RuntimeThreadUnavailableReasonView =
+  | "workspace-missing"
+  | "workspace-unusable"
+  | "runtime-incompatible"
+  | "native-state-corrupt"
+  | "external-ownership-unverifiable"
+  | "externally-busy"
+  | "already-adopted"
+  | "archived";
 
 export interface SessionCatalogEntryView {
   sessionRef: string;
@@ -309,6 +334,8 @@ export interface SessionCatalogEntryView {
   unreadCount: number;
   pendingInteractionCount: number;
   allowedActions: SessionCatalogAction[];
+  runtimeThreadUnavailableReason: RuntimeThreadUnavailableReasonView | null;
+  runtimeThreadUnavailableDetail: string | null;
 }
 
 export interface SessionCatalogBindingView {
@@ -336,17 +363,19 @@ export interface SessionView {
   name: string;
   isArchived: boolean;
   mode: string | null;
-  model: string | null;
+  model: RuntimeModelSelectionView | null;
   reasoningEffort: string | null;
   sessionOptions: Record<string, string>;
   sessionOptionDefinitions: RuntimeSessionOptionView[];
-  effectiveModel: string | null;
+  effectiveModel: RuntimeModelSelectionView | null;
   effectiveReasoningEffort: string | null;
   modelSource: "session" | "binding" | "runtime";
   modelAvailable: boolean;
   modelOptions: RuntimeModelOptionView[];
   status: "idle" | "running" | "queued" | "offline" | "error";
   runtimeThreadAvailable: boolean;
+  runtimeThreadUnavailableReason: RuntimeThreadUnavailableReasonView | null;
+  runtimeThreadUnavailableDetail: string | null;
   activeTurnId: string | null;
   queuedTurns: QueuedTurnView[];
   transcriptCompleteness: "complete" | "partial" | "live-only";
@@ -379,8 +408,27 @@ export interface TurnSubmissionCapability {
   };
 }
 
+export interface RuntimeModelSelectionView {
+  provider?: string;
+  model: string;
+}
+export function runtimeModelSelectionsEqual(
+  left: RuntimeModelSelectionView | null | undefined,
+  right: RuntimeModelSelectionView | null | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  return (
+    (left.provider ?? "").toLowerCase() === (right.provider ?? "").toLowerCase() &&
+    left.model.toLowerCase() === right.model.toLowerCase()
+  );
+}
+export function runtimeModelSelectionLabel(selection: RuntimeModelSelectionView): string {
+  return selection.provider ? `${selection.provider}/${selection.model}` : selection.model;
+}
+
 export interface RuntimeModelOptionView {
   id: string;
+  selection: RuntimeModelSelectionView;
   displayName: string;
   description: string;
   isDefault: boolean;
@@ -445,7 +493,7 @@ export interface BindingPreferenceView {
   clawChatUserId: string | null;
   runtimeKind: string;
   outputVisibility: "minimal" | "normal" | "full";
-  model: string | null;
+  model: RuntimeModelSelectionView | null;
   modelReasoningEffort: string | null;
   modelOptions: RuntimeModelOptionView[];
   runtimePluginId: string;
@@ -572,15 +620,18 @@ export interface CreateSessionRequest {
   workspace: { kind: "existing"; workspaceRef: string } | { kind: "new"; directory: WorkspaceDirectoryRequest };
   name: string | null;
   mode: string | null;
-  model: string | null;
+  model: RuntimeModelSelectionView | null;
   reasoningEffort: string | null;
   sessionOptions?: Record<string, string>;
 }
 
 export interface StartTurnResponse {
-  accepted: true;
-  turnId: string;
+  submissionId: string;
+  messageId: string;
   sessionRef: string;
+  state: TurnSubmissionState;
+  turnId: string | null;
+  error: TurnSubmissionErrorView | null;
 }
 
 export interface CancelTurnRequest {
@@ -606,7 +657,7 @@ export interface ContinueSessionRequest extends SessionMutationRequest {
 
 export interface UpdateSessionPreferencesRequest {
   requestId: string;
-  model: string | null;
+  model: RuntimeModelSelectionView | null;
   reasoningEffort: string | null;
   sessionOptions?: Record<string, string>;
 }
@@ -631,7 +682,7 @@ export interface UpdateBindingPreferencesRequest {
   requestId: string;
   clientExtensionEpoch?: string;
   displayName?: string;
-  model?: string | null;
+  model?: RuntimeModelSelectionView | null;
   modelReasoningEffort?: string | null;
   outputVisibility?: "minimal" | "normal" | "full";
 }

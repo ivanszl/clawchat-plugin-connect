@@ -209,6 +209,9 @@ export const ja = {
     defaultMessage:
       "安全な Agent 設定、ホスト Workspace、信頼済みローカルプラグインを管理します。Runtime の起動引数と承認ポリシーは引き続きローカル設定で管理されます。",
   },
+  "@connect.settings.tabs.agent": { defaultMessage: "Agent" },
+  "@connect.settings.tabs.workspace": { defaultMessage: "Workspace" },
+  "@connect.settings.tabs.plugins": { defaultMessage: "プラグイン" },
   "@connect.settings.binding.save": { defaultMessage: "設定を保存" },
   "@connect.settings.binding.saving": { defaultMessage: "設定を保存中" },
   "@connect.settings.binding.saved": { defaultMessage: "設定を保存しました" },
@@ -471,6 +474,7 @@ export const ja = {
   "@connect.transcript.blockedImage": { defaultMessage: "[画像をブロックしました: {description}]" },
   "@connect.transcript.noImageDescription": { defaultMessage: "説明なし" },
   "@connect.transcript.origin.client": { defaultMessage: "Connect Client" },
+  "@connect.transcript.message.retry": { defaultMessage: "メッセージの送信を再試行" },
   "@connect.transcript.empty.title": { defaultMessage: "この Session にはまだメッセージがありません" },
   "@connect.transcript.empty.description": {
     defaultMessage: "下にメッセージを入力すると、Connect がバインドされた Agent に直接送信します。",
@@ -616,10 +620,6 @@ export const ja = {
   "@connect.composer.error.submissionIdConflict": { defaultMessage: "送信 ID は別の Session に属しています。" },
   "@connect.composer.error.unknown": { defaultMessage: "Turn Submission に失敗しました。" },
   "@connect.composer.error.withDiagnostic": { defaultMessage: "{message} 診断参照：{reference}" },
-  "@connect.session.agent.fixed.title": { defaultMessage: "Agent Binding fixed for this Session" },
-  "@connect.session.agent.fixed.acceptedTurn": {
-    defaultMessage: "The first Turn has been accepted. Continue the Workspace in a new Session to use another Agent.",
-  },
   "@connect.session.agent.empty.label": { defaultMessage: "Agent Binding for this empty Session" },
   "@connect.session.agent.empty.description": {
     defaultMessage: "You can change Agent in place until the first Turn is accepted.",
@@ -627,22 +627,6 @@ export const ja = {
   "@connect.session.agent.empty.unavailable": { defaultMessage: "No other active Agent Binding is available." },
   "@connect.session.agent.empty.action": { defaultMessage: "Change Agent in this Session" },
   "@connect.session.agent.changeFailure": { defaultMessage: "Unable to change Agent" },
-  "@connect.session.continue.action": { defaultMessage: "Continue Workspace with another Agent" },
-  "@connect.session.continue.title": { defaultMessage: "Continue with another Agent" },
-  "@connect.session.continue.subtitle": { defaultMessage: "Create a fresh Session in the same Workspace." },
-  "@connect.session.continue.warning.title": { defaultMessage: "Only workspace files carry forward" },
-  "@connect.session.continue.warning.description": {
-    defaultMessage:
-      "A new Session and Runtime Thread are created. Conversation history, tool context, hidden reasoning, and memory are not transferred. Workspace files remain through the shared Workspace, and the original Session stays unchanged.",
-  },
-  "@connect.session.continue.binding.label": { defaultMessage: "Agent Binding for the new Session" },
-  "@connect.session.continue.binding.description": {
-    defaultMessage: "Only active Agent Bindings owned by this Connect installation are eligible.",
-  },
-  "@connect.session.continue.workspace": { defaultMessage: "Shared Workspace: {workspace}" },
-  "@connect.session.continue.failure": { defaultMessage: "Unable to create continuation Session" },
-  "@connect.session.continue.cancel": { defaultMessage: "Cancel" },
-  "@connect.session.continue.confirm": { defaultMessage: "Create fresh Session" },
   "@connect.error.sessionBindingLocked": {
     defaultMessage: "This Session's Agent is fixed. Continue its Workspace in a new Session instead.",
   },
@@ -651,9 +635,4 @@ export const ja = {
     defaultMessage: "The selected Agent Binding does not belong to this Installation Owner.",
   },
   "@connect.error.continuationBindingUnchanged": { defaultMessage: "Choose another Agent Binding." },
-  "@connect.settings.continuity.title": { defaultMessage: "Changing Agents between Sessions" },
-  "@connect.settings.continuity.description": {
-    defaultMessage:
-      "An empty Session can change Agent until its first Turn is accepted. After that, continuing with another Agent creates a new Session in the same Workspace. Conversation history, tool context, memory, and the native Runtime Thread are not transferred; workspace files remain and the original Session is unchanged.",
-  },
 } satisfies ClientCatalog;

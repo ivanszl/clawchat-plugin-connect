@@ -18,7 +18,7 @@ describe("Connect Client Session lifecycle", () => {
     expect(source).not.toContain("window.confirm");
   });
 
-  it("distinguishes empty-Session switching from a fresh same-Workspace continuation", async () => {
+  it("offers Agent switching only for an empty Session and keeps fixed Sessions free of reminders", async () => {
     const source = await Bun.file(sessionRouteUrl).text();
     const settings = await Bun.file(settingsUrl).text();
     const controls = source.slice(
@@ -28,12 +28,12 @@ describe("Connect Client Session lifecycle", () => {
 
     expect(controls).toContain("<Selector");
     expect(controls).toContain("changeSessionBinding(view.sessionRef");
-    expect(controls).toContain("continueSession(view.sessionRef");
-    expect(controls).toContain('t("@connect.session.continue.warning.description")');
-    expect(controls).toContain('navigate({ to: "/sessions/$sessionRef"');
+    expect(controls).toContain("if (view.bindingLocked) return null");
+    expect(controls).not.toContain("continueSession(view.sessionRef");
+    expect(controls).not.toContain("@connect.session.continue.");
     expect(controls).not.toContain("<div");
     expect(controls).not.toContain("<span");
-    expect(settings).toContain('t("@connect.settings.continuity.description")');
+    expect(settings).not.toContain('t("@connect.settings.continuity.description")');
   });
 
   it("localizes the complete new-Session dialog without changing technical choices", async () => {

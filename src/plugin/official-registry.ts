@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { OfficialPluginDescriptor } from "../../scripts/build-official-plugins";
 import { OPENCODE_SEMANTIC_VERSION_PATTERN } from "../runtime/opencode-version";
 import codexDescriptor from "./official/codex-descriptor";
+import deepSeekHarnessDescriptor from "./official/deepseek-harness-descriptor";
 import livewareDescriptor from "./official/liveware-descriptor";
 import opencodeDescriptor from "./official/opencode-descriptor";
 import workbuddyDescriptor from "./official/workbuddy-descriptor";
@@ -103,7 +104,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: codexDescriptor,
     name: "Codex",
-    artifactIntegrity: "sha256-oVPqU29N7c1bvTyrykkbHHngxTVFvN9KaPf1dWdSNWI=",
+    artifactIntegrity: "sha256-kwKYeSWjku/p9TWj9zJbHr1FjSQAXhqXHWMxCZ643NQ=",
     classification: "runtime",
     discovery: {
       executableNames: ["codex"],
@@ -119,7 +120,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: opencodeDescriptor,
     name: "OpenCode",
-    artifactIntegrity: "sha256-nqP88AARx8NKzCcvQy50F6ex3bRENxZPmv8VUGNv1dA=",
+    artifactIntegrity: "sha256-k/Y1Cj0aplq4OG8hioWSNXulokfCJLMPYmmAaGI9cn0=",
     discovery: {
       executableNames: ["opencode"],
       versionCommand: {
@@ -132,9 +133,28 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
     classification: "runtime",
   },
   {
+    descriptor: deepSeekHarnessDescriptor,
+    name: "DeepSeek Harness",
+    artifactIntegrity: "sha256-e+G+X1YgP9JGNZaW0HL+ZvvFoJ8PrkP22HjoVgEaqoU=",
+    assetIntegrities: {
+      "artifacts/deepseek-harness-bridge.mjs": {
+        "darwin-arm64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
+        "darwin-x64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
+        "linux-arm64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
+        "linux-x64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
+        "win32-arm64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
+        "win32-x64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
+      },
+    },
+    classification: "runtime",
+    discovery: {
+      executableNames: ["dsh"],
+    },
+  },
+  {
     descriptor: workbuddyDescriptor,
     name: "WorkBuddy",
-    artifactIntegrity: "sha256-z2/9LUsP7bc6M4EAeo2C/65GjfjkjA0/nUbvARNXF1E=",
+    artifactIntegrity: "sha256-opps6frZbUqy9lk/MoS/UA4FLNOTEPcqOlnzv41DZoU=",
     classification: "runtime",
     discovery: {
       executableNames: OFFICIAL_WORKBUDDY_DISTRIBUTIONS.map(({ applicationPath }) => applicationPath),

@@ -29,7 +29,7 @@ async function verifyProfile(profile: WorkBuddyProfile) {
   try {
     const { binding, runtimeAdapters } = installedPlugin;
     const tasks = await runtimeAdapters.discoverAllThreads(binding);
-    const selected = tasks.find((task) => task.runtimeThreadId === taskId);
+    const selected = tasks.threads.find((task) => task.runtimeThreadId === taskId);
     if (!selected?.workingDirectory || (await realpath(selected.workingDirectory)) !== workspace) {
       throw new Error(`${profile} did not expose its configured dedicated Task from the selected Plugin capability`);
     }
@@ -37,8 +37,8 @@ async function verifyProfile(profile: WorkBuddyProfile) {
       profile,
       taskId,
       workspace,
-      taskCount: tasks.length,
-      catalogTaskIds: tasks.map((task) => task.runtimeThreadId),
+      taskCount: tasks.threads.length,
+      catalogTaskIds: tasks.threads.map((task) => task.runtimeThreadId),
     };
   } finally {
     await installedPlugin.close();

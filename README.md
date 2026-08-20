@@ -10,7 +10,7 @@
     <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
     <img alt="Platforms: macOS, Linux, and Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
-    <img alt="Runtimes: Codex, OpenCode, and WorkBuddy" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode%20%7C%20WorkBuddy-f97316?style=flat-square">
+    <img alt="Runtimes: Codex, OpenCode, WorkBuddy, and DeepSeek Harness" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode%20%7C%20WorkBuddy%20%7C%20DeepSeek%20Harness-f97316?style=flat-square">
   </p>
   <p>
     <a href="#features">Features</a> ·
@@ -42,7 +42,7 @@ ClawChat Connect is a local bridge between ClawChat and coding-agent runtimes. I
 
 | Area | What Connect provides |
 | --- | --- |
-| Runtime Adapters | Connects to a user-installed Codex CLI or OpenCode executable without taking over runtime login, providers, plugins, or MCP configuration. |
+| Runtime Adapters | Connects to user-installed Codex, OpenCode, WorkBuddy, or DeepSeek Harness runtimes without taking over runtime login, providers, plugins, or MCP configuration. |
 | Persistent work | Resumes native Runtime Threads through stable Connect Sessions and Binding-scoped Workspaces. |
 | Shared conversation | Orders ClawChat and Connect Client turns in the same per-Session queue; separate Sessions can run concurrently. |
 | Runtime controls | Discovers runtime-provided models and options, routes approvals and questions back to the originating surface, and supports cancellation. |
@@ -70,8 +70,9 @@ The ClawChat surface is for conversation-scoped work. Workspace registration, se
 | Codex | `codex app-server` | model, reasoning effort, sandbox mode | discover, resume, cancel, archive, restore, delete |
 | OpenCode | `opencode serve` | agent, provider-qualified model, variant | discover, resume, cancel, delete |
 | WorkBuddy | desktop-owned Task ACP endpoint | Task-owned model, mode, configuration, Commands, Skills | discover, adopt, resume, cancel |
+| DeepSeek Harness | one `dsh` process per Agent Binding | native model/reasoning, Agent Preset, Permission Preset, Commands, Skills | discover, resume, cancel; archive when the selected Profile supplies it |
 
-OpenCode compatibility is tested against OpenCode `1.18.10` and `1.18.13`, using `@opencode-ai/sdk` `1.18.13`. WorkBuddy supports only the two exact desktop tuples documented in [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md). Connect does not install or upgrade any runtime. See [Runtime Adapters](./docs/runtime-adapters.md) for the general capability boundary.
+OpenCode compatibility is tested against OpenCode `1.18.10` and `1.18.13`, using `@opencode-ai/sdk` `1.18.13`. WorkBuddy supports only the two exact desktop tuples documented in [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md). DeepSeek Harness compatibility is established by native process boot, the paired Connect Bridge protocol, and runtime-published capabilities—not a DSH version or component-graph allowlist. Connect preserves the selected DSH Home and Profile, including native tools, plugins, Skills, workflows, MCP servers, subagents, providers, credentials, sandbox, and approval policy. Connect does not install or upgrade any runtime. See [Runtime Adapters](./docs/runtime-adapters.md) for the general capability boundary.
 
 > [!IMPORTANT]
 > ClawChat Connect is beta software. Review [Local data and security](#local-data-and-security) before enabling trusted-LAN or private Liveware access.
@@ -90,9 +91,11 @@ Check the runtime you plan to use:
 codex --version
 # or
 opencode --version
+# or, for DeepSeek Harness, verify that dsh is on PATH
+command -v dsh
 ```
 
-Connect uses the runtime's existing login, configuration, providers, plugins, MCP servers, and native Session storage. Codex must expose the required app-server interface; OpenCode must be version `1.18.10` or `1.18.13`. Connect does not install, authenticate, or reconfigure either runtime.
+Connect uses the runtime's existing login, configuration, providers, plugins, MCP servers, and native Session storage. Codex must expose the required app-server interface; OpenCode must be version `1.18.10` or `1.18.13`. For DeepSeek Harness, Connect performs no DSH version or internal component-graph check. It uses the configured Profile when present; otherwise it omits the Profile argument and preserves DSH's native default-or-error behavior. Connect does not install, authenticate, or reconfigure any runtime.
 
 ## Quick start
 
@@ -176,6 +179,11 @@ clawchat-connect agent add work --plugin clawling.runtime.codex --capability cod
 clawchat-connect init
 clawchat-connect plugin setup --non-interactive --select clawling.runtime.opencode
 clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
+
+# DeepSeek Harness
+clawchat-connect init
+clawchat-connect plugin setup --non-interactive --select clawling.runtime.deepseek-harness
+clawchat-connect agent add work --plugin clawling.runtime.deepseek-harness --capability deepseek-harness
 ```
 
 Runtime-specific settings belong to the selected capability's validated `runtimeConfig`. For example:
@@ -185,6 +193,15 @@ clawchat-connect agent add work \
   --plugin clawling.runtime.codex \
   --capability codex \
   --runtime-config-json '{"executablePathOverride":"/absolute/path/to/codex"}'
+```
+
+For DeepSeek Harness, `homePath`, `profile`, `executablePathOverride`, `outputVisibility`, and `displayName` are optional. Omitting `profile` passes no `--profile` flag, so the installed DSH version either applies its native default or reports its native configuration error; Connect does not synthesize a Profile:
+
+```bash
+clawchat-connect agent add work \
+  --plugin clawling.runtime.deepseek-harness \
+  --capability deepseek-harness \
+  --runtime-config-json '{"homePath":"/absolute/path/to/.dsh","profile":"my-profile"}'
 ```
 
 `init` creates a new Plugin-free configuration. On an existing installation, use `agent add` to create or update a

@@ -61,6 +61,7 @@ export async function readWorkBuddyTaskTranscriptIdentity(
 
   const canonicalWorkspace = await canonicalPathOrSelf(workspace);
   const messageIds: string[] = [];
+  const messageIdSet = new Set<string>();
   let observedTaskId = false;
   let observedWorkspace = false;
   try {
@@ -78,13 +79,21 @@ export async function readWorkBuddyTaskTranscriptIdentity(
         }
         observedWorkspace = true;
       }
-      if (parsed.type === "message") {
-        if (typeof parsed.id !== "string" || parsed.sessionId !== taskId || typeof parsed.cwd !== "string") {
+      if (parsed.type === "message" && (parsed.role === "user" || parsed.role === "assistant")) {
+        if (
+          typeof parsed.id !== "string" ||
+          !parsed.id ||
+          parsed.sessionId !== taskId ||
+          typeof parsed.cwd !== "string"
+        ) {
           return mismatch();
         }
         const messageId = nativeReplayMessageId(parsed, profile);
         if (!messageId) return mismatch();
-        if (!messageIds.includes(messageId)) messageIds.push(messageId);
+        if (!messageIdSet.has(messageId)) {
+          messageIdSet.add(messageId);
+          messageIds.push(messageId);
+        }
       }
     }
   } catch {
@@ -98,7 +107,7 @@ export async function readWorkBuddyTaskTranscriptIdentity(
 
 function nativeReplayMessageId(record: Record<string, unknown>, profile: WorkBuddyProfile): string | null {
   if (profile !== "workbuddy-cn" || record.role !== "assistant") {
-    return typeof record.id === "string" ? record.id : null;
+    return typeof record.id === "string" && record.id ? record.id : null;
   }
   const providerData = record.providerData;
   if (!providerData || typeof providerData !== "object" || Array.isArray(providerData)) return null;

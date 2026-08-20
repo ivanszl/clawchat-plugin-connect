@@ -27,10 +27,27 @@ describe("WorkBuddy native Task transcript identity", () => {
     });
   });
 
-  it("fingerprints ordered native message identities", async () => {
+  it("fingerprints ordered, deduplicated user and assistant identities only", async () => {
     const configDirectory = await fixture([
-      { type: "message", id: "message-1", sessionId: taskId, cwd: workspace, content: "never exposed" },
-      { type: "message", id: "message-2", sessionId: taskId, cwd: workspace, content: "never exposed" },
+      { type: "message", id: "message-1", role: "user", sessionId: taskId, cwd: workspace, content: "same" },
+      { type: "message", id: "tool-only", role: "tool", sessionId: taskId, cwd: workspace, content: "same" },
+      { type: "message", id: "message-1", role: "user", sessionId: taskId, cwd: workspace, content: "same" },
+      {
+        type: "message",
+        id: "message-2",
+        role: "assistant",
+        sessionId: taskId,
+        cwd: workspace,
+        content: "same",
+      },
+      {
+        type: "message",
+        id: "message-2",
+        role: "assistant",
+        sessionId: taskId,
+        cwd: workspace,
+        content: "same",
+      },
     ]);
     await expect(readWorkBuddyTaskTranscriptIdentity(configDirectory, taskId, workspace)).resolves.toEqual({
       transcriptIdentityMatches: true,
@@ -41,9 +58,18 @@ describe("WorkBuddy native Task transcript identity", () => {
   it("uses mainland provider message identity for assistant replay parity", async () => {
     const configDirectory = await fixture([
       { type: "message", id: "user-record", role: "user", sessionId: taskId, cwd: workspace },
+      { type: "message", id: "tool-record", role: "tool", sessionId: taskId, cwd: workspace },
       {
         type: "message",
         id: "gen-record",
+        role: "assistant",
+        sessionId: taskId,
+        cwd: workspace,
+        providerData: { messageId: "provider-message" },
+      },
+      {
+        type: "message",
+        id: "duplicate-gen-record",
         role: "assistant",
         sessionId: taskId,
         cwd: workspace,
@@ -64,9 +90,23 @@ describe("WorkBuddy native Task transcript identity", () => {
     { name: "identity-free records", records: [{}] },
     { name: "a mismatched Task", records: [{ sessionId: "another-task", cwd: workspace }] },
     { name: "a mismatched workspace", records: [{ sessionId: taskId, cwd: "/private/tmp/another-workspace" }] },
-  ])("fails closed for $name", async ({ records }) => {
+    {
+      name: "a user message missing its identity",
+      records: [
+        { type: "ai-title", sessionId: taskId, cwd: workspace },
+        { type: "message", role: "user", sessionId: taskId, cwd: workspace },
+      ],
+    },
+    {
+      name: "a mainland assistant missing its provider identity",
+      profile: "workbuddy-cn" as const,
+      records: [{ type: "message", id: "assistant-record", role: "assistant", sessionId: taskId, cwd: workspace }],
+    },
+  ])("fails closed for $name", async ({ records, profile }) => {
     const configDirectory = await fixture(records);
-    await expect(readWorkBuddyTaskTranscriptIdentity(configDirectory, taskId, workspace)).resolves.toMatchObject({
+    await expect(
+      readWorkBuddyTaskTranscriptIdentity(configDirectory, taskId, workspace, profile),
+    ).resolves.toMatchObject({
       transcriptIdentityMatches: false,
     });
   });

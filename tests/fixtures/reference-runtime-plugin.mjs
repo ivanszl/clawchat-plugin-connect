@@ -43,11 +43,16 @@ class ReferenceRuntimeAdapter {
   }
 
   async discoverAllThreads() {
-    return [...this.activities.keys()].map((runtimeThreadId) => ({
-      runtimeThreadId,
-      name: `${this.instance} thread`,
-      updatedAt: 1,
-    }));
+    return {
+      status: "complete",
+      threads: [...this.activities.keys()].map((runtimeThreadId) => ({
+        runtimeThreadId,
+        name: `${this.instance} thread`,
+        updatedAt: 1,
+        adoption: { status: "available" },
+      })),
+      limitations: [],
+    };
   }
 
   async close() {

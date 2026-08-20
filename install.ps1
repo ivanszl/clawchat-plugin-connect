@@ -113,6 +113,7 @@ try {
   }
   foreach ($officialPluginId in @(
     "clawling.runtime.codex",
+    "clawling.runtime.deepseek-harness",
     "clawling.runtime.opencode",
     "clawling.exposure.liveware"
   )) {

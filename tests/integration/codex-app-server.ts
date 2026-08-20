@@ -75,7 +75,7 @@ try {
       skipGitRepoCheck: true,
     },
     mode: "read-only",
-    model: model.id,
+    model: model.selection,
     reasoningEffort: model.defaultReasoningEffort,
     outputPolicy: { mode: "client-full", allowedKinds: ["final"] },
   });

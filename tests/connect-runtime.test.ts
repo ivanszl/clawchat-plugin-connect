@@ -10,12 +10,13 @@ import { defaultConfig, upsertAgentBinding } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { ConnectRuntime } from "../src/runtime/connect-runtime";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import type {
-  ConnectRuntimeAdapter,
-  ConnectRuntimePrompt,
-  ConnectRuntimeSession,
-  ConnectRuntimeStartContext,
-  RuntimeActivity,
+import {
+  type ConnectRuntimeAdapter,
+  type ConnectRuntimePrompt,
+  type ConnectRuntimeSession,
+  type ConnectRuntimeStartContext,
+  completeRuntimeThreadDiscovery,
+  type RuntimeActivity,
 } from "../src/runtime/types";
 import { createWorkBuddyRuntimeAdapter, type WorkBuddyRuntimeSource } from "../src/runtime/workbuddy-adapter";
 import { WorkspaceCatalog } from "../src/workspaces/workspaces";
@@ -308,35 +309,40 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
-      discoverAllThreads: async () => [
-        {
-          runtimeThreadId: "thread-connect",
-          name: "Connect task",
-          updatedAt: 2,
-          workingDirectory: registeredRoot,
-        },
-        {
-          runtimeThreadId: "thread-clawpet",
-          name: "Clawpet task",
-          updatedAt: 1,
-          workingDirectory: discoveredRoot,
-        },
-      ],
-      discoverArchivedThreads: async () => [
-        {
-          runtimeThreadId: "thread-archived-worktree",
-          name: "Archived worktree task",
-          updatedAt: 1,
-          workingDirectory: join(
-            dirname(fixture.config.stateDbPath),
-            ".codex",
-            "worktrees",
-            "0ed0",
-            "clawchat-plugin-connect",
-          ),
-          isArchived: true,
-        },
-      ],
+      discoverAllThreads: async () =>
+        completeRuntimeThreadDiscovery([
+          {
+            runtimeThreadId: "thread-connect",
+            name: "Connect task",
+            updatedAt: 2,
+            workingDirectory: registeredRoot,
+          },
+          {
+            runtimeThreadId: "thread-clawpet",
+            name: "Clawpet task",
+            updatedAt: 1,
+            workingDirectory: discoveredRoot,
+          },
+        ]),
+      discoverArchivedThreads: async () =>
+        completeRuntimeThreadDiscovery(
+          [
+            {
+              runtimeThreadId: "thread-archived-worktree",
+              name: "Archived worktree task",
+              updatedAt: 1,
+              workingDirectory: join(
+                dirname(fixture.config.stateDbPath),
+                ".codex",
+                "worktrees",
+                "0ed0",
+                "clawchat-plugin-connect",
+              ),
+              isArchived: true,
+            },
+          ],
+          { reason: "archived" },
+        ),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
       discoverWorkspaces: async () => ({
         status: "complete",
@@ -543,7 +549,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       chatId: "chat-1",
       agentId: "codex",
       workspaceRef: null,
-      model: "gpt-session",
+      model: { model: "gpt-session" },
       reasoningEffort: "high",
     });
     let releaseFirst: (() => void) | undefined;
@@ -561,6 +567,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       listModels: async () => [
         {
           id: "gpt-session",
+          selection: { model: "gpt-session" },
           displayName: "Session model",
           description: "Session selection",
           isDefault: true,
@@ -607,8 +614,8 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     expect(await fixture.store.getSessionIntent("chat-1", "codex")).toBeNull();
     expect(prompts.map((input) => input.metadata?.sessionId)).toEqual([sessions[0]?.sessionId, sessions[0]?.sessionId]);
     expect(prompts.map((input) => [input.model, input.reasoningEffort])).toEqual([
-      ["gpt-session", "high"],
-      ["gpt-session", "high"],
+      [{ model: "gpt-session" }, "high"],
+      [{ model: "gpt-session" }, "high"],
     ]);
     await runtime.dispose();
     await fixture.store.close();
@@ -681,12 +688,12 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
   it("resolves Session model selection before the Agent Binding default", async () => {
     const fixture = await runtimeFixture();
-    fixture.config.agents.codex = pluginBinding({}, { model: "gpt-binding", modelReasoningEffort: "low" });
+    fixture.config.agents.codex = pluginBinding({}, { model: { model: "gpt-binding" }, modelReasoningEffort: "low" });
     await fixture.store.upsertRuntimeSession({
       chatId: "chat-1",
       sessionId: "session-1",
       agentId: "codex",
-      model: "gpt-session",
+      model: { model: "gpt-session" },
       reasoningEffort: "high",
     });
     const prompts: ConnectRuntimePrompt[] = [];
@@ -696,6 +703,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       listModels: async () => [
         {
           id: "gpt-session",
+          selection: { model: "gpt-session" },
           displayName: "Session model",
           description: "Session choice",
           isDefault: false,
@@ -705,6 +713,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
         },
         {
           id: "gpt-binding",
+          selection: { model: "gpt-binding" },
           displayName: "Binding model",
           description: "Binding default",
           isDefault: true,
@@ -732,7 +741,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
 
     await runtime.handleInboundMessage(message("use the session choice"));
 
-    expect(prompts[0]).toMatchObject({ model: "gpt-session", reasoningEffort: "high" });
+    expect(prompts[0]).toMatchObject({ model: { model: "gpt-session" }, reasoningEffort: "high" });
     await runtime.dispose();
     await fixture.store.close();
   });
@@ -751,6 +760,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     const models = [
       {
         id: "gpt-default",
+        selection: { model: "gpt-default" },
         displayName: "Default model",
         description: "Runtime default",
         isDefault: true,
@@ -760,6 +770,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       },
       {
         id: "gpt-deep",
+        selection: { model: "gpt-deep" },
         displayName: "Deep model",
         description: "Deep work",
         isDefault: false,
@@ -827,11 +838,11 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     await Promise.all([first, control, following]);
 
     expect(prompts).toHaveLength(2);
-    expect(prompts[0]).toMatchObject({ model: "gpt-default", reasoningEffort: "medium" });
-    expect(prompts[1]).toMatchObject({ model: "gpt-deep", reasoningEffort: "xhigh" });
+    expect(prompts[0]).toMatchObject({ model: { model: "gpt-default" }, reasoningEffort: "medium" });
+    expect(prompts[1]).toMatchObject({ model: { model: "gpt-deep" }, reasoningEffort: "xhigh" });
     await expect(fixture.store.getCurrentRuntimeSession("chat-1", "codex")).resolves.toMatchObject({
       runtimeSessionId: "thread-stable",
-      model: "gpt-deep",
+      model: { model: "gpt-deep" },
       reasoningEffort: "xhigh",
     });
     await runtime.dispose();
@@ -844,7 +855,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       chatId: "chat-1",
       sessionId: "session-1",
       agentId: "codex",
-      model: "gpt-removed",
+      model: { model: "gpt-removed" },
       reasoningEffort: "high",
     });
     const start = mock(async () => ({
@@ -859,6 +870,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       listModels: async () => [
         {
           id: "gpt-current",
+          selection: { model: "gpt-current" },
           displayName: "Current model",
           description: "Still available",
           isDefault: true,
@@ -1116,7 +1128,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       workspaceRef: project.workspaceRef,
       name: "Planned work",
       mode: "read-only",
-      model: "gpt-planned",
+      model: { model: "gpt-planned" },
       reasoningEffort: "medium",
     });
     const discoveredWorkspaces: string[] = [];
@@ -1127,6 +1139,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       listModels: async () => [
         {
           id: "gpt-planned",
+          selection: { model: "gpt-planned" },
           displayName: "Planned model",
           description: "For planned work",
           isDefault: true,
@@ -1137,7 +1150,9 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       ],
       discoverThreads: mock(async (_agent, workspace) => {
         discoveredWorkspaces.push(workspace.workingDirectory);
-        return [{ runtimeThreadId: "thread-existing", name: "Existing thread", updatedAt: 1 }];
+        return completeRuntimeThreadDiscovery([
+          { runtimeThreadId: "thread-existing", name: "Existing thread", updatedAt: 1 },
+        ]);
       }),
       start: mock(async () => ({
         prompt: async function* (input: ConnectRuntimePrompt) {
@@ -1171,7 +1186,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
       workspaceRef: project.workspaceRef,
       name: "Planned work",
       mode: "read-only",
-      model: "gpt-planned",
+      model: { model: "gpt-planned" },
       reasoningEffort: "medium",
       hasMessages: true,
     });
@@ -1179,7 +1194,7 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     expect(prompts[0]).toMatchObject({
       workspace: { workspaceRef: project.workspaceRef, workingDirectory: canonicalProjectRoot },
       mode: "read-only",
-      model: "gpt-planned",
+      model: { model: "gpt-planned" },
       reasoningEffort: "medium",
     });
     await runtime.dispose();
@@ -2019,10 +2034,12 @@ describe("ConnectRuntime Agent Binding sessions", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["read-only", "workspace-write", "danger-full-access"],
-      discoverThreads: mock(async () => [
-        { runtimeThreadId: "thread-managed", name: "Managed history", updatedAt: 2 },
-        { runtimeThreadId: "thread-external", name: "External history", updatedAt: 1 },
-      ]),
+      discoverThreads: mock(async () =>
+        completeRuntimeThreadDiscovery([
+          { runtimeThreadId: "thread-managed", name: "Managed history", updatedAt: 2 },
+          { runtimeThreadId: "thread-external", name: "External history", updatedAt: 1 },
+        ]),
+      ),
       start: mock(async () => session(async function* () {}, {} as ConnectRuntimeStartContext)),
     };
     const runtime = new ConnectRuntime({

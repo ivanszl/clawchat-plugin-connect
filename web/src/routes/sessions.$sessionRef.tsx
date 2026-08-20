@@ -2,25 +2,26 @@ import { AlertDialog } from "@astryxdesign/core/AlertDialog";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Banner } from "@astryxdesign/core/Banner";
 import { Button } from "@astryxdesign/core/Button";
-import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { DropdownMenu } from "@astryxdesign/core/DropdownMenu";
-import { Layout, LayoutContent, LayoutFooter } from "@astryxdesign/core/Layout";
 import { Popover } from "@astryxdesign/core/Popover";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Spinner } from "@astryxdesign/core/Spinner";
 import { HStack, VStack } from "@astryxdesign/core/Stack";
-import { Text } from "@astryxdesign/core/Text";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import type { BindingPreferenceView, SessionView } from "../../../src/client-contract";
+import {
+  type BindingPreferenceView,
+  runtimeModelSelectionLabel,
+  runtimeModelSelectionsEqual,
+  type SessionView,
+} from "../../../src/client-contract";
 import {
   archiveSession,
   bootstrapQueryOptions,
   catalogQueryOptions,
   changeSessionBinding,
   clientKeys,
-  continueSession,
   deleteSession,
   sessionQueryOptions,
   slashSuggestionsQueryOptions,
@@ -265,28 +266,12 @@ function SessionPage() {
 function SessionAgentControls({ view, bindings }: { view: SessionView; bindings: BindingPreferenceView[] }) {
   const t = useClientTranslator();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const eligibleBindings = useMemo(() => bindings.filter((binding) => binding.clawChatUserId !== null), [bindings]);
-  const continuationBindings = useMemo(
-    () => eligibleBindings.filter((binding) => binding.bindingId !== view.bindingId),
-    [eligibleBindings, view.bindingId],
-  );
   const [selectedBindingId, setSelectedBindingId] = useState(view.bindingId);
-  const [continuationBindingId, setContinuationBindingId] = useState(continuationBindings[0]?.bindingId ?? "");
-  const [continuationOpen, setContinuationOpen] = useState(false);
   useEffect(() => {
     setSelectedBindingId(view.bindingId);
-    setContinuationBindingId((current) =>
-      continuationBindings.some((binding) => binding.bindingId === current)
-        ? current
-        : (continuationBindings[0]?.bindingId ?? ""),
-    );
-  }, [continuationBindings, view.bindingId]);
+  }, [view.bindingId]);
   const bindingOptions = eligibleBindings.map((binding) => ({
-    value: binding.bindingId,
-    label: `${binding.displayName} (${binding.bindingId})`,
-  }));
-  const continuationOptions = continuationBindings.map((binding) => ({
     value: binding.bindingId,
     label: `${binding.displayName} (${binding.bindingId})`,
   }));
@@ -297,125 +282,37 @@ function SessionAgentControls({ view, bindings }: { view: SessionView; bindings:
       await queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
     },
   });
-  const continuation = useMutation({
-    mutationFn: async () => await continueSession(view.sessionRef, continuationBindingId),
-    onSuccess: async (created) => {
-      setContinuationOpen(false);
-      await queryClient.invalidateQueries({ queryKey: catalogQueryOptions.queryKey });
-      await navigate({ to: "/sessions/$sessionRef", params: { sessionRef: created.sessionRef } });
-    },
-  });
+
+  if (view.bindingLocked) return null;
+
   return (
     <VStack gap={2}>
-      {view.bindingLocked ? (
-        view.bindingLockReason === "accepted-turn" ? (
-          <Banner
-            status="info"
-            title={t("@connect.session.agent.fixed.title")}
-            description={t("@connect.session.agent.fixed.acceptedTurn")}
-            container="section"
-          />
-        ) : null
-      ) : (
-        <VStack gap={2}>
-          <Selector
-            label={t("@connect.session.agent.empty.label")}
-            description={t("@connect.session.agent.empty.description")}
-            options={bindingOptions}
-            value={selectedBindingId}
-            onChange={setSelectedBindingId}
-            isDisabled={bindingOptions.length < 2 || change.isPending}
-            disabledMessage={t("@connect.session.agent.empty.unavailable")}
-            width="100%"
-          />
-          <HStack justify="end">
-            <Button
-              label={t("@connect.session.agent.empty.action")}
-              variant="secondary"
-              isLoading={change.isPending}
-              isDisabled={selectedBindingId === view.bindingId}
-              onClick={() => change.mutate()}
-            />
-          </HStack>
-          {change.isError ? (
-            <Banner
-              status="error"
-              title={t("@connect.session.agent.changeFailure")}
-              description={localizedClientError(t, change.error)}
-            />
-          ) : null}
-        </VStack>
-      )}
-      {view.bindingLocked ? (
-        <HStack justify="end">
-          <Button
-            label={t("@connect.session.continue.action")}
-            variant="secondary"
-            isDisabled={continuationBindings.length === 0}
-            onClick={() => setContinuationOpen(true)}
-          />
-        </HStack>
-      ) : null}
-      <Dialog
-        isOpen={continuationOpen}
-        onOpenChange={(isOpen) => {
-          if (!continuation.isPending) setContinuationOpen(isOpen);
-        }}
-        purpose="form"
-        width={520}
-      >
-        <Layout
-          height="auto"
-          header={
-            <DialogHeader
-              title={t("@connect.session.continue.title")}
-              subtitle={t("@connect.session.continue.subtitle")}
-              onOpenChange={setContinuationOpen}
-            />
-          }
-          content={
-            <LayoutContent>
-              <VStack gap={4}>
-                <Banner
-                  status="warning"
-                  title={t("@connect.session.continue.warning.title")}
-                  description={t("@connect.session.continue.warning.description")}
-                />
-                <Selector
-                  label={t("@connect.session.continue.binding.label")}
-                  description={t("@connect.session.continue.binding.description")}
-                  options={continuationOptions}
-                  value={continuationBindingId}
-                  onChange={setContinuationBindingId}
-                  width="100%"
-                />
-                <Text>{t("@connect.session.continue.workspace", { workspace: view.workspaceName ?? "" })}</Text>
-                {continuation.isError ? (
-                  <Banner
-                    status="error"
-                    title={t("@connect.session.continue.failure")}
-                    description={localizedClientError(t, continuation.error)}
-                  />
-                ) : null}
-              </VStack>
-            </LayoutContent>
-          }
-          footer={
-            <LayoutFooter hasDivider>
-              <HStack gap={2} justify="end">
-                <Button label={t("@connect.session.continue.cancel")} onClick={() => setContinuationOpen(false)} />
-                <Button
-                  label={t("@connect.session.continue.confirm")}
-                  variant="primary"
-                  isLoading={continuation.isPending}
-                  isDisabled={!continuationBindingId}
-                  onClick={() => continuation.mutate()}
-                />
-              </HStack>
-            </LayoutFooter>
-          }
+      <Selector
+        label={t("@connect.session.agent.empty.label")}
+        description={t("@connect.session.agent.empty.description")}
+        options={bindingOptions}
+        value={selectedBindingId}
+        onChange={setSelectedBindingId}
+        isDisabled={bindingOptions.length < 2 || change.isPending}
+        disabledMessage={t("@connect.session.agent.empty.unavailable")}
+        width="100%"
+      />
+      <HStack justify="end">
+        <Button
+          label={t("@connect.session.agent.empty.action")}
+          variant="secondary"
+          isLoading={change.isPending}
+          isDisabled={selectedBindingId === view.bindingId}
+          onClick={() => change.mutate()}
         />
-      </Dialog>
+      </HStack>
+      {change.isError ? (
+        <Banner
+          status="error"
+          title={t("@connect.session.agent.changeFailure")}
+          description={localizedClientError(t, change.error)}
+        />
+      ) : null}
     </VStack>
   );
 }
@@ -424,31 +321,43 @@ function SessionModelControls({ view }: { view: SessionView }) {
   const t = useClientTranslator();
   const queryClient = useQueryClient();
   const [isOpen, setIsOpen] = useState(false);
-  const [model, setModel] = useState(view.model ?? "default");
+  const viewModelId = sessionModelId(view);
+  const [model, setModel] = useState(viewModelId);
   const [effort, setEffort] = useState(view.reasoningEffort ?? view.effectiveReasoningEffort ?? "default");
   const [sessionOptions, setSessionOptions] = useState(view.sessionOptions);
   useEffect(() => {
-    setModel(view.model ?? "default");
+    setModel(viewModelId);
     setEffort(view.reasoningEffort ?? view.effectiveReasoningEffort ?? "default");
     setSessionOptions(view.sessionOptions);
-  }, [view.effectiveReasoningEffort, view.model, view.reasoningEffort, view.sessionOptions]);
+  }, [view.effectiveReasoningEffort, view.reasoningEffort, view.sessionOptions, viewModelId]);
   const selectedModel = view.modelOptions.find((option) => option.id === model);
-  const effectiveModelOption = view.modelOptions.find((option) => option.id === view.effectiveModel);
+  const effectiveModelOption = view.modelOptions.find((option) =>
+    runtimeModelSelectionsEqual(option.selection, view.effectiveModel),
+  );
   const unavailableModel =
-    view.model && !view.modelOptions.some((option) => option.id === view.model) ? view.model : null;
+    view.model && !view.modelOptions.some((option) => runtimeModelSelectionsEqual(option.selection, view.model))
+      ? view.model
+      : null;
   const usesGenericModelOptions = view.sessionOptionDefinitions.some(
     (definition) => definition.category === "model" || definition.category === "variant",
   );
   const compactLabel = usesGenericModelOptions
     ? [sessionOptions.agent, sessionOptions.model, sessionOptions.variant].filter(Boolean).join(" · ") ||
       t("@connect.composer.model.runtimeNativeDefault")
-    : `${effectiveModelOption?.displayName ?? view.effectiveModel ?? t("@connect.composer.model.runtimeDefaultModel")} · ${
+    : `${effectiveModelOption?.displayName ?? (view.effectiveModel ? runtimeModelSelectionLabel(view.effectiveModel) : t("@connect.composer.model.runtimeDefaultModel"))} · ${
         view.effectiveReasoningEffort ?? t("@connect.composer.model.runtimeDefaultReasoning")
       }`;
   const modelOptions = [
     { value: "default", label: t("@connect.composer.model.inheritDefault") },
     ...(unavailableModel
-      ? [{ value: unavailableModel, label: t("@connect.composer.model.unavailableValue", { value: unavailableModel }) }]
+      ? [
+          {
+            value: "__unavailable__",
+            label: t("@connect.composer.model.unavailableValue", {
+              value: runtimeModelSelectionLabel(unavailableModel),
+            }),
+          },
+        ]
       : []),
     ...view.modelOptions.map((option) => ({
       value: option.id,
@@ -459,7 +368,11 @@ function SessionModelControls({ view }: { view: SessionView }) {
     mutationFn: async () =>
       await updateSessionPreferences(
         view.sessionRef,
-        model === "default" ? null : model,
+        model === "default"
+          ? null
+          : model === "__unavailable__"
+            ? unavailableModel
+            : (selectedModel?.selection ?? null),
         model === "default" ? null : effort,
         sessionOptions,
       ),
@@ -594,6 +507,14 @@ function SessionModelControls({ view }: { view: SessionView }) {
         {compactLabel}
       </Button>
     </Popover>
+  );
+}
+
+function sessionModelId(view: SessionView): string {
+  if (!view.model) return "default";
+  return (
+    view.modelOptions.find((option) => runtimeModelSelectionsEqual(option.selection, view.model))?.id ??
+    "__unavailable__"
   );
 }
 

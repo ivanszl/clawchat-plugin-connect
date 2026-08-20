@@ -7,7 +7,7 @@ import { TranscriptProjection } from "../src/client-interface/transcript-project
 import { defaultConfig } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import type { ConnectRuntimeAdapter } from "../src/runtime/types";
+import { type ConnectRuntimeAdapter, completeRuntimeThreadDiscovery } from "../src/runtime/types";
 import { encodeCodeBuddySessionId } from "../src/runtime/workbuddy-runtime-target";
 import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
@@ -113,11 +113,11 @@ describe("Session Catalog workspace grouping", () => {
       modes: ["workspace-write"],
       discoverAllThreads: async () => {
         discoveryCalls += 1;
-        return [];
+        return completeRuntimeThreadDiscovery([]);
       },
       discoverArchivedThreads: async () => {
         discoveryCalls += 1;
-        return [];
+        return completeRuntimeThreadDiscovery([], { reason: "archived" });
       },
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
@@ -149,14 +149,14 @@ describe("Session Catalog workspace grouping", () => {
       discoverAllThreads: async () => {
         discoveryCalls += 1;
         if (discoveryBlocked) return await new Promise<never>(() => undefined);
-        return [
+        return completeRuntimeThreadDiscovery([
           {
             runtimeThreadId: "thread-project",
             name: "Project task",
             updatedAt: 1,
             workspaceIdentity: persistentWorkspace(workspace),
           },
-        ];
+        ]);
       },
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
@@ -191,21 +191,22 @@ describe("Session Catalog workspace grouping", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
-      discoverAllThreads: async () => [
-        {
-          runtimeThreadId: "thread-parent",
-          name: "Parent task",
-          updatedAt: 2,
-          workspaceIdentity: persistentWorkspace(workspace),
-        },
-        {
-          runtimeThreadId: "thread-child",
-          parentRuntimeThreadId: "thread-parent",
-          name: "Child task",
-          updatedAt: 1,
-          workspaceIdentity: persistentWorkspace(workspace),
-        },
-      ],
+      discoverAllThreads: async () =>
+        completeRuntimeThreadDiscovery([
+          {
+            runtimeThreadId: "thread-parent",
+            name: "Parent task",
+            updatedAt: 2,
+            workspaceIdentity: persistentWorkspace(workspace),
+          },
+          {
+            runtimeThreadId: "thread-child",
+            parentRuntimeThreadId: "thread-parent",
+            name: "Child task",
+            updatedAt: 1,
+            workspaceIdentity: persistentWorkspace(workspace),
+          },
+        ]),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
@@ -233,20 +234,21 @@ describe("Session Catalog workspace grouping", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
-      discoverAllThreads: async () => [
-        {
-          runtimeThreadId: "thread-first",
-          name: "First task",
-          updatedAt: 2,
-          workspaceIdentity: persistentWorkspace(firstWorkspace),
-        },
-        {
-          runtimeThreadId: "thread-second",
-          name: "Second task",
-          updatedAt: 1,
-          workspaceIdentity: persistentWorkspace(secondWorkspace),
-        },
-      ],
+      discoverAllThreads: async () =>
+        completeRuntimeThreadDiscovery([
+          {
+            runtimeThreadId: "thread-first",
+            name: "First task",
+            updatedAt: 2,
+            workspaceIdentity: persistentWorkspace(firstWorkspace),
+          },
+          {
+            runtimeThreadId: "thread-second",
+            name: "Second task",
+            updatedAt: 1,
+            workspaceIdentity: persistentWorkspace(secondWorkspace),
+          },
+        ]),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
@@ -285,14 +287,15 @@ describe("Session Catalog workspace grouping", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "workbuddy",
       modes: [],
-      discoverAllThreads: async () => [
-        {
-          runtimeThreadId: "task-native",
-          name: "Native Task",
-          updatedAt: 2,
-          workspaceIdentity: persistentWorkspace(workspace),
-        },
-      ],
+      discoverAllThreads: async () =>
+        completeRuntimeThreadDiscovery([
+          {
+            runtimeThreadId: "task-native",
+            name: "Native Task",
+            updatedAt: 2,
+            workspaceIdentity: persistentWorkspace(workspace),
+          },
+        ]),
       listModels: async () => {
         throw new Error("native Task replay is temporarily unavailable");
       },
@@ -325,16 +328,20 @@ describe("Session Catalog workspace grouping", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
-      discoverAllThreads: async () => [],
-      discoverArchivedThreads: async () => [
-        {
-          runtimeThreadId: "thread-archived",
-          name: "Archived task",
-          updatedAt: 1,
-          workspaceIdentity: persistentWorkspace(workspace),
-          isArchived: true,
-        },
-      ],
+      discoverAllThreads: async () => completeRuntimeThreadDiscovery([]),
+      discoverArchivedThreads: async () =>
+        completeRuntimeThreadDiscovery(
+          [
+            {
+              runtimeThreadId: "thread-archived",
+              name: "Archived task",
+              updatedAt: 1,
+              workspaceIdentity: persistentWorkspace(workspace),
+              isArchived: true,
+            },
+          ],
+          { reason: "archived" },
+        ),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
@@ -375,20 +382,21 @@ describe("Session Catalog workspace grouping", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
-      discoverAllThreads: async () => [
-        {
-          runtimeThreadId: "thread-current-date",
-          name: "Current date task",
-          updatedAt: 2,
-          workspaceIdentity: { key: firstWorkspace, kind: "transient", localRoot: firstWorkspace },
-        },
-        {
-          runtimeThreadId: "thread-previous-date",
-          name: "Previous date task",
-          updatedAt: 1,
-          workspaceIdentity: { key: secondWorkspace, kind: "transient", localRoot: secondWorkspace },
-        },
-      ],
+      discoverAllThreads: async () =>
+        completeRuntimeThreadDiscovery([
+          {
+            runtimeThreadId: "thread-current-date",
+            name: "Current date task",
+            updatedAt: 2,
+            workspaceIdentity: { key: firstWorkspace, kind: "transient", localRoot: firstWorkspace },
+          },
+          {
+            runtimeThreadId: "thread-previous-date",
+            name: "Previous date task",
+            updatedAt: 1,
+            workspaceIdentity: { key: secondWorkspace, kind: "transient", localRoot: secondWorkspace },
+          },
+        ]),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
@@ -436,14 +444,15 @@ describe("Session Catalog workspace grouping", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
-      discoverAllThreads: async () => [
-        {
-          runtimeThreadId: "thread-non-project",
-          name: "Legacy task",
-          updatedAt: 1,
-          workspaceIdentity: persistentWorkspace(isolatedWorkspace),
-        },
-      ],
+      discoverAllThreads: async () =>
+        completeRuntimeThreadDiscovery([
+          {
+            runtimeThreadId: "thread-non-project",
+            name: "Legacy task",
+            updatedAt: 1,
+            workspaceIdentity: persistentWorkspace(isolatedWorkspace),
+          },
+        ]),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
@@ -478,7 +487,7 @@ describe("Session Catalog workspace grouping", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "workbuddy",
       modes: [],
-      discoverAllThreads: async () => [],
+      discoverAllThreads: async () => completeRuntimeThreadDiscovery([]),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
@@ -540,7 +549,7 @@ describe("Session Catalog workspace grouping", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
-      discoverAllThreads: async () => [],
+      discoverAllThreads: async () => completeRuntimeThreadDiscovery([]),
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
@@ -605,6 +614,7 @@ describe("Session Catalog workspace grouping", () => {
       listModels: async () => [
         {
           id: "test/model",
+          selection: { model: "test/model" },
           displayName: "Test",
           description: "Test model",
           isDefault: true,
@@ -620,14 +630,15 @@ describe("Session Catalog workspace grouping", () => {
           },
         },
       ],
-      discoverAllThreads: async () => [
-        {
-          runtimeThreadId: "thread-1",
-          name: "Thread",
-          updatedAt: 1,
-          workspaceIdentity: persistentWorkspace(directory),
-        },
-      ],
+      discoverAllThreads: async () =>
+        completeRuntimeThreadDiscovery([
+          {
+            runtimeThreadId: "thread-1",
+            name: "Thread",
+            updatedAt: 1,
+            workspaceIdentity: persistentWorkspace(directory),
+          },
+        ]),
       readActivity: async (_binding, runtimeThreadId) => {
         if (runtimeThreadId === "thread-deleted-externally") {
           throw new Error(`OpenCode Session was not found: ${runtimeThreadId}`);
@@ -706,8 +717,11 @@ describe("Session Catalog workspace grouping", () => {
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
-      discoverAllThreads: async () => (!archived && !deleted ? [summary] : []),
-      discoverArchivedThreads: async () => (archived && !deleted ? [{ ...summary, isArchived: true }] : []),
+      discoverAllThreads: async () => completeRuntimeThreadDiscovery(!archived && !deleted ? [summary] : []),
+      discoverArchivedThreads: async () =>
+        completeRuntimeThreadDiscovery(archived && !deleted ? [{ ...summary, isArchived: true }] : [], {
+          reason: "archived",
+        }),
       archiveThread: async (_binding, threadId) => {
         calls.push(`archive:${threadId}`);
         archived = true;

@@ -10,7 +10,11 @@ import { agentBindingIdentity } from "../src/plugin/binding";
 import type { ConnectPluginManagement } from "../src/plugin/host";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
-import type { ConnectRuntimeAdapter, RuntimeModelOption } from "../src/runtime/types";
+import {
+  type ConnectRuntimeAdapter,
+  completeRuntimeThreadDiscovery,
+  type RuntimeModelOption,
+} from "../src/runtime/types";
 import type { BindingRuntimeHandle } from "../src/service/binding-runtime";
 import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
@@ -57,9 +61,9 @@ describe("Connect Client Interface", () => {
         discoverAllThreads: async () => {
           publishDiscoveryStarted();
           await discoveryGate;
-          return [];
+          return completeRuntimeThreadDiscovery([]);
         },
-        discoverArchivedThreads: async () => [],
+        discoverArchivedThreads: async () => completeRuntimeThreadDiscovery([], { reason: "archived" }),
         start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
       }),
     ]);
@@ -152,7 +156,7 @@ describe("Connect Client Interface", () => {
           await discoveryGate;
           throw new Error("catalog discovery failed");
         },
-        discoverArchivedThreads: async () => [],
+        discoverArchivedThreads: async () => completeRuntimeThreadDiscovery([], { reason: "archived" }),
         start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
       }),
     ]);
@@ -326,6 +330,7 @@ describe("Connect Client Interface", () => {
         return [
           {
             id: "gpt-default",
+            selection: { model: "gpt-default" },
             displayName: "Default model",
             description: "Runtime default",
             isDefault: true,
@@ -335,6 +340,7 @@ describe("Connect Client Interface", () => {
           },
           {
             id: "gpt-deep",
+            selection: { model: "gpt-deep" },
             displayName: "Deep model",
             description: "Long tasks",
             isDefault: false,
@@ -398,8 +404,12 @@ describe("Connect Client Interface", () => {
           { id: "codex-command:grill-with-docs", name: "grill-with-docs", description: "Runtime command" },
         ];
       },
-      discoverAllThreads: async () => (!isArchived && !isDeleted ? [summary, discoveredSummary] : [discoveredSummary]),
-      discoverArchivedThreads: async () => (isArchived && !isDeleted ? [{ ...summary, isArchived: true }] : []),
+      discoverAllThreads: async () =>
+        completeRuntimeThreadDiscovery(!isArchived && !isDeleted ? [summary, discoveredSummary] : [discoveredSummary]),
+      discoverArchivedThreads: async () =>
+        completeRuntimeThreadDiscovery(isArchived && !isDeleted ? [{ ...summary, isArchived: true }] : [], {
+          reason: "archived",
+        }),
       archiveThread: async (_binding, threadId) => {
         lifecycleCalls.push(`archive:${threadId}`);
         isArchived = true;
@@ -621,7 +631,7 @@ describe("Connect Client Interface", () => {
         headers: { origin: handle.origin, "content-type": "application/json" },
         body: JSON.stringify({
           requestId: "binding_invalid_model_request",
-          model: "missing-model",
+          model: { model: "missing-model" },
           modelReasoningEffort: "high",
         }),
       },
@@ -658,7 +668,7 @@ describe("Connect Client Interface", () => {
     expect(sessionResponse.status).toBe(200);
     await expect(sessionResponse.json()).resolves.toMatchObject({
       model: null,
-      effectiveModel: "gpt-default",
+      effectiveModel: { model: "gpt-default" },
       effectiveReasoningEffort: "medium",
       modelSource: "runtime",
       modelAvailable: true,
@@ -677,7 +687,7 @@ describe("Connect Client Interface", () => {
         headers: { origin: handle.origin, "content-type": "application/json" },
         body: JSON.stringify({
           requestId: "session_invalid_model_request",
-          model: "missing-model",
+          model: { model: "missing-model" },
           reasoningEffort: "high",
         }),
       },
@@ -695,20 +705,24 @@ describe("Connect Client Interface", () => {
       {
         method: "PATCH",
         headers: { origin: handle.origin, "content-type": "application/json" },
-        body: JSON.stringify({ requestId: "model_request", model: "gpt-deep", reasoningEffort: "xhigh" }),
+        body: JSON.stringify({
+          requestId: "model_request",
+          model: { model: "gpt-deep" },
+          reasoningEffort: "xhigh",
+        }),
       },
     );
     expect(modelPreference.status).toBe(200);
     await expect(modelPreference.json()).resolves.toMatchObject({
       sessionRef: session.sessionRef,
-      model: "gpt-deep",
+      model: { model: "gpt-deep" },
       reasoningEffort: "xhigh",
-      effectiveModel: "gpt-deep",
+      effectiveModel: { model: "gpt-deep" },
       modelSource: "session",
     });
     await expect(store.getRuntimeSessionByRef(session.sessionRef)).resolves.toMatchObject({
       runtimeSessionId: "thread-1",
-      model: "gpt-deep",
+      model: { model: "gpt-deep" },
       reasoningEffort: "xhigh",
     });
     const projectRoot = join(directory, "project-root");
@@ -812,7 +826,7 @@ describe("Connect Client Interface", () => {
         workspace: { kind: "existing", workspaceRef: sessionProject.workspaceRef },
         name: "Invalid model",
         mode: "workspace-write",
-        model: "missing-model",
+        model: { model: "missing-model" },
         reasoningEffort: "high",
       }),
     });
@@ -827,7 +841,7 @@ describe("Connect Client Interface", () => {
         workspace: { kind: "existing", workspaceRef: sessionProject.workspaceRef },
         name: "Planned from Client",
         mode: "workspace-write",
-        model: "gpt-deep",
+        model: { model: "gpt-deep" },
         reasoningEffort: "xhigh",
       }),
     });
@@ -836,7 +850,7 @@ describe("Connect Client Interface", () => {
       sessionRef: string;
       workspaceRef: string;
       mode: string;
-      model: string;
+      model: { model: string };
       reasoningEffort: string;
       runtimeThreadAvailable: boolean;
       turnSubmissionCapability: {
@@ -852,7 +866,7 @@ describe("Connect Client Interface", () => {
     expect(createdSessionView).toMatchObject({
       workspaceRef: sessionProject.workspaceRef,
       mode: "workspace-write",
-      model: "gpt-deep",
+      model: { model: "gpt-deep" },
       reasoningEffort: "xhigh",
       runtimeThreadAvailable: false,
       turnSubmissionCapability: {
@@ -868,7 +882,7 @@ describe("Connect Client Interface", () => {
     await expect(store.getRuntimeSessionByRef(createdSessionView.sessionRef)).resolves.toMatchObject({
       workspaceRef: sessionProject.workspaceRef,
       mode: "workspace-write",
-      model: "gpt-deep",
+      model: { model: "gpt-deep" },
       reasoningEffort: "xhigh",
       runtimeSessionId: null,
     });
@@ -1071,7 +1085,15 @@ describe("Connect Client Interface", () => {
     expect(turn.status).toBe(202);
     expect(listModels.mock.calls.length - modelReadsBeforeSubmission).toBe(0);
     expect(listSessionOptions.mock.calls.length - optionReadsBeforeSubmission).toBe(0);
-    await expect(turn.json()).resolves.toEqual({ accepted: true, turnId: "turn-123", sessionRef: session.sessionRef });
+    await expect(turn.json()).resolves.toEqual({
+      submissionId: "request_123",
+      messageId: "turn_request_123_user",
+      sessionRef: session.sessionRef,
+      state: "pending",
+      turnId: null,
+      error: null,
+    });
+    await waitFor(() => enqueueClientTurn.mock.calls.length >= 1);
     queuedTurns.push({
       turnId: "turn-queued",
       sessionRef: session.sessionRef,
@@ -1123,6 +1145,7 @@ describe("Connect Client Interface", () => {
         name: "grill-with-docs",
       },
       expect.any(AbortSignal),
+      "request_123",
     );
     const acceptedMedia = enqueueClientTurn.mock.calls[0]?.[2]?.[0];
     if (!acceptedMedia?.stagedPath) throw new Error("accepted media was not Connect-staged");
@@ -1158,12 +1181,14 @@ describe("Connect Client Interface", () => {
       },
     );
     expect(unknownSlashTurn.status).toBe(202);
+    await waitFor(() => enqueueClientTurn.mock.calls.length >= 2);
     expect(enqueueClientTurn).toHaveBeenLastCalledWith(
       session.sessionRef,
       "/not-a-skill keep this as ordinary text",
       [],
       null,
       expect.any(AbortSignal),
+      "request_unknown_slash",
     );
 
     const knownSlashBody = new FormData();
@@ -1179,6 +1204,7 @@ describe("Connect Client Interface", () => {
       },
     );
     expect(knownSlashTurn.status).toBe(202);
+    await waitFor(() => enqueueClientTurn.mock.calls.length >= 3);
     expect(enqueueClientTurn).toHaveBeenLastCalledWith(
       session.sessionRef,
       "  /grill-with-docs preserve the authored prompt  ",
@@ -1190,6 +1216,7 @@ describe("Connect Client Interface", () => {
         description: "Runtime command",
       },
       expect.any(AbortSignal),
+      "request_known_slash",
     );
     expect(enqueueClientTurn).toHaveBeenCalledTimes(3);
 
@@ -1198,8 +1225,8 @@ describe("Connect Client Interface", () => {
       handle.origin,
       `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_123`,
     );
-    expect(acceptedOutcome.status).toBe(202);
-    await expect(acceptedOutcome.json()).resolves.toMatchObject({ accepted: true, turnId: "turn-123" });
+    expect(acceptedOutcome.status).toBe(200);
+    await expect(acceptedOutcome.json()).resolves.toMatchObject({ state: "accepted", turnId: "turn-123" });
 
     const acceptedCancelRace = await localRequest(
       fetchHandler,
@@ -1207,27 +1234,10 @@ describe("Connect Client Interface", () => {
       `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_123`,
       { method: "DELETE", headers: { origin: handle.origin } },
     );
-    expect(acceptedCancelRace.status).toBe(202);
-    await expect(acceptedCancelRace.json()).resolves.toMatchObject({ accepted: true, turnId: "turn-123" });
-
-    const cancelledBeforeUpload = await localRequest(
-      fetchHandler,
-      handle.origin,
-      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_cancelled`,
-      { method: "DELETE", headers: { origin: handle.origin } },
-    );
-    expect(cancelledBeforeUpload.status).toBe(200);
-    const cancelledBody = new FormData();
-    cancelledBody.append("prompt", "must not enter the queue");
-    const cancelledTurn = await localRequest(
-      fetchHandler,
-      handle.origin,
-      `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_cancelled`,
-      { method: "POST", headers: { origin: handle.origin }, body: cancelledBody },
-    );
-    expect(cancelledTurn.status).toBe(409);
-    await expect(cancelledTurn.json()).resolves.toMatchObject({ error: { code: "submission-cancelled" } });
-    expect(enqueueClientTurn).toHaveBeenCalledTimes(3);
+    expect(acceptedCancelRace.status).toBe(409);
+    await expect(acceptedCancelRace.json()).resolves.toMatchObject({
+      error: { code: "submission-not-cancellable" },
+    });
 
     const conflictingSubmission = await localRequest(
       fetchHandler,
@@ -1300,12 +1310,19 @@ describe("Connect Client Interface", () => {
         })(),
       },
     );
-    expect(blockedTurn.status).toBe(409);
-    await expect(blockedTurn.json()).resolves.toMatchObject({
-      error: { code: "runtime-interaction-pending" },
+    expect(blockedTurn.status).toBe(202);
+    const requestHandler = fetchHandler;
+    await waitFor(async () => {
+      const outcome = await localRequest(
+        requestHandler,
+        handle.origin,
+        `/client/v1/sessions/${session.sessionRef}/turn-submissions/request_blocked_by_approval`,
+      );
+      const view = (await outcome.json()) as { state?: string; error?: { code?: string } };
+      return view.state === "failed" && view.error?.code === "runtime-interaction-pending";
     });
     const stagingEntries = await readdir(join(directory, "turn-submissions"));
-    expect(stagingEntries.some((entry) => entry.startsWith("request_blocked_by_approval-"))).toBe(false);
+    expect(stagingEntries.some((entry) => entry.startsWith("request_blocked_by_approval-"))).toBe(true);
     const pending = (await store.listPendingRuntimeInteractions(session.sessionRef))[0];
     if (!pending) throw new Error("pending interaction was not projected");
     const approval = await localRequest(
@@ -1388,7 +1405,7 @@ describe("Connect Client Interface", () => {
       body: JSON.stringify({
         requestId: "concurrent_binding_preference",
         displayName: "Concurrent preference",
-        model: "gpt-default",
+        model: { model: "gpt-default" },
       }),
     });
     await concurrentModelListStarted;
@@ -1401,7 +1418,7 @@ describe("Connect Client Interface", () => {
     expect(providerResult.binding).toEqual(providerBinding);
     expect(config.agents.codex).toMatchObject({
       displayName: "Concurrent preference",
-      model: "gpt-default",
+      model: { model: "gpt-default" },
     });
     expect(config.agents["concurrent-provider"]).toEqual(providerBinding);
     await expect(loadConfig(configPath)).resolves.toEqual(config);
@@ -1433,6 +1450,7 @@ describe("Connect Client Interface", () => {
           return [
             {
               id: "gpt-default",
+              selection: { model: "gpt-default" },
               displayName: "Default model",
               description: "Runtime default",
               isDefault: true,
@@ -1660,6 +1678,7 @@ describe("Connect Client Interface", () => {
       listModels: async () => [
         {
           id: "scoped-model",
+          selection: { model: "scoped-model" },
           displayName: "Scoped model",
           description: "Supports scoped attachment tests",
           isDefault: true,
@@ -1684,9 +1703,11 @@ describe("Connect Client Interface", () => {
       },
       discoverAllThreads: async (binding) => {
         const bindingId = agentBindingIdentity(binding);
-        return bindingId === "personal"
-          ? [{ runtimeThreadId: "personal-thread", name: "Personal Session", updatedAt: 1 }]
-          : [{ runtimeThreadId: "work-thread", name: "Work Session", updatedAt: 1 }];
+        return completeRuntimeThreadDiscovery(
+          bindingId === "personal"
+            ? [{ runtimeThreadId: "personal-thread", name: "Personal Session", updatedAt: 1 }]
+            : [{ runtimeThreadId: "work-thread", name: "Work Session", updatedAt: 1 }],
+        );
       },
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
@@ -1850,6 +1871,7 @@ describe("Connect Client Interface", () => {
       },
     );
     if (workSubmission.status !== 202) throw new Error(await workSubmission.text());
+    await waitFor(() => enqueueWorkTurn.mock.calls.length >= 1);
     const workAttachmentUrl = enqueueWorkTurn.mock.calls[0]?.[2]?.[0]?.url;
     if (!workAttachmentUrl) throw new Error("work attachment was not staged");
     const crossBindingAttachment = await localRequest(fetchHandler, handle.origin, workAttachmentUrl, {
@@ -1967,6 +1989,7 @@ describe("Connect Client Interface", () => {
           return [
             {
               id: "gpt-default",
+              selection: { model: "gpt-default" },
               displayName: "Default model",
               description: "Runtime default",
               isDefault: true,
@@ -2074,6 +2097,14 @@ describe("Connect Client Interface", () => {
     expect(unrelatedEnqueue).not.toHaveBeenCalled();
   });
 });
+
+async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await predicate()) return;
+    await Bun.sleep(1);
+  }
+  throw new Error("Timed out waiting for asynchronous Client Interface work");
+}
 
 async function localRequest(
   fetchHandler: (request: Request) => Response | Promise<Response>,

@@ -28,7 +28,12 @@ describe("TurnSubmission", () => {
       sessionRef,
     }));
     const staging: TurnSubmissionStaging = {
-      stage: async () => ({ rollback: async () => undefined, transfer: () => undefined }),
+      stage: async () => ({
+        reference: "staged",
+        digest: "digest",
+        rollback: async () => undefined,
+        transfer: () => undefined,
+      }),
     };
     const submissions = new TurnSubmission({ capabilityFor: async () => capability, staging, accept: accepted });
 
@@ -63,6 +68,8 @@ describe("TurnSubmission", () => {
     const transfer = mock(() => undefined);
     const staging: TurnSubmissionStaging = {
       stage: mock(async () => ({
+        reference: "staged",
+        digest: "digest",
         rollback,
         transfer,
       })),
@@ -113,6 +120,8 @@ describe("TurnSubmission", () => {
       },
       staging: {
         stage: async () => ({
+          reference: "staged",
+          digest: "digest",
           rollback,
           transfer: () => undefined,
         }),
@@ -146,7 +155,7 @@ describe("TurnSubmission", () => {
     const submissions = new TurnSubmission({
       capabilityFor: async () => capability,
       staging: {
-        stage: async () => ({ rollback, transfer: () => undefined }),
+        stage: async () => ({ reference: "staged", digest: "digest", rollback, transfer: () => undefined }),
       },
       accept: async (_sessionRef, _prompt, _skill, _staged, signal) =>
         await new Promise((_, reject) => {

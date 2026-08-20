@@ -28,6 +28,10 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const isSettings = pathname === "/settings";
+  const selectedSessionRef = pathname.match(/^\/sessions\/([^/]+)$/u)?.[1]?.toUpperCase() ?? null;
+  const preferredBindingId =
+    catalog.data?.bindings.find((binding) => binding.entries.some((entry) => entry.sessionRef === selectedSessionRef))
+      ?.bindingId ?? null;
   const [mobileNav, setMobileNav] = useState({ isOpen: false, openedAtPath: pathname });
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const isMobileNavOpen = mobileNav.openedAtPath === pathname && mobileNav.isOpen;
@@ -88,6 +92,7 @@ export function ConnectAppShell({ children }: { children: ReactNode }) {
         isOpen={newSessionOpen}
         bindings={bootstrap.data?.bindings ?? []}
         catalogBindings={catalog.data?.bindings ?? []}
+        preferredBindingId={preferredBindingId}
         onOpenChange={setNewSessionOpen}
         onCreated={(sessionRef) => {
           setNewSessionOpen(false);

@@ -12,14 +12,20 @@ import type {
 } from "../client-contract";
 import { getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
-import { resolveModelSelection } from "../runtime/model-selection";
+import { resolveModelSelection, runtimeModelSelectionsEqual } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { SessionActivity } from "../runtime/session-queue";
-import type { RuntimeLifecycleCapabilities, RuntimeModelOption, RuntimeThreadSummary } from "../runtime/types";
+import type {
+  RuntimeLifecycleCapabilities,
+  RuntimeModelOption,
+  RuntimeThreadCandidate,
+  RuntimeThreadDiscoverySnapshot,
+} from "../runtime/types";
 import { isCodeBuddySessionRuntimeTarget } from "../runtime/workbuddy-runtime-target";
 import type {
   AgentBindingConfig,
   ConnectConfig,
+  RuntimeModelSelection,
   RuntimeSessionRecord,
   RuntimeStatus,
   RuntimeWorkspace,
@@ -186,8 +192,10 @@ export class SessionCatalog {
     const session = await this.options.stateStore.getRuntimeSessionByRef(normalized);
     const target = session ? null : await this.options.stateStore.getSessionRefTarget(normalized);
     const hasMappedRuntimeThread = Boolean(session?.runtimeSessionId || target?.runtimeSessionId);
-    const runtimeThreadAvailable = hasMappedRuntimeThread && catalogState.runtimeRevisionByRef.has(normalized);
-    const runtimeThreadMissing = hasMappedRuntimeThread && !runtimeThreadAvailable;
+    const runtimeThreadPresent = hasMappedRuntimeThread && catalogState.runtimeRevisionByRef.has(normalized);
+    const runtimeThreadAvailable = runtimeThreadPresent && entry.runtimeThreadUnavailableReason === null;
+    const runtimeThreadMissing = hasMappedRuntimeThread && !runtimeThreadPresent;
+    const canSubmit = !hasMappedRuntimeThread || runtimeThreadAvailable;
     const bindingLockReason = session
       ? await this.options.stateStore.sessionBindingLock(normalized)
       : hasMappedRuntimeThread
@@ -249,7 +257,7 @@ export class SessionCatalog {
       });
     }
     let modelAvailable = true;
-    let effectiveModel: string | null = null;
+    let effectiveModel: RuntimeModelSelection | null = null;
     let effectiveReasoningEffort: string | null = null;
     let modelSource: SessionView["modelSource"] = "runtime";
     try {
@@ -272,7 +280,7 @@ export class SessionCatalog {
       ? this.options.runtimeAdapters.lifecycleCapabilities(binding)
       : { archive: false, restore: false, delete: false };
     const effectiveModelOption =
-      modelOptions.find((candidate) => candidate.id === effectiveModel) ??
+      modelOptions.find((candidate) => runtimeModelSelectionsEqual(candidate.selection, effectiveModel)) ??
       modelOptions.find((candidate) => candidate.isDefault) ??
       modelOptions[0];
     return {
@@ -298,6 +306,8 @@ export class SessionCatalog {
       modelOptions,
       status: providerAvailable ? sessionStatus(runtimeStatus, activity) : "offline",
       runtimeThreadAvailable,
+      runtimeThreadUnavailableReason: entry.runtimeThreadUnavailableReason,
+      runtimeThreadUnavailableDetail: entry.runtimeThreadUnavailableDetail,
       activeTurnId: (await this.options.activeTurnId?.(entry.bindingId, normalized)) ?? null,
       queuedTurns: (await this.options.queuedTurns?.(entry.bindingId, normalized)) ?? [],
       transcriptCompleteness:
@@ -310,7 +320,9 @@ export class SessionCatalog {
       ),
       allowedActions:
         providerAvailable && !runtimeThreadMissing
-          ? sessionActions(entry.isArchived, runtimeThreadAvailable, activity, lifecycleCapabilities)
+          ? sessionActions(entry.isArchived, runtimeThreadPresent, activity, lifecycleCapabilities).filter(
+              (action) => canSubmit || (action !== "send" && action !== "cancel"),
+            )
           : [],
       updatedAt: entry.updatedAt,
     };
@@ -441,6 +453,7 @@ export class SessionCatalog {
   }
 
   private async load(force = false): Promise<CatalogState> {
+    const previousState = this.state;
     if (!force && this.state && this.state.expiresAt > Date.now()) return this.state;
     const sessions = await this.options.stateStore.listAllRuntimeSessions();
     const bindings: SessionCatalogBindingView[] = [];
@@ -462,16 +475,19 @@ export class SessionCatalog {
       const managedRuntimeIds = new Set(
         managed.map((session) => session.runtimeSessionId).filter((id): id is string => Boolean(id)),
       );
-      const discoveredActive = runtimeUnavailable
-        ? []
-        : (
-            await this.options.runtimeAdapters.discoverAllThreads(getAgentBinding(this.options.config, bindingId))
-          ).filter((thread) => !thread.parentRuntimeThreadId);
-      const discoveredArchived = runtimeUnavailable
-        ? []
-        : (
-            await this.options.runtimeAdapters.discoverArchivedThreads(getAgentBinding(this.options.config, bindingId))
-          ).filter((thread) => !thread.parentRuntimeThreadId);
+      const unavailableDiscovery: RuntimeThreadDiscoverySnapshot = {
+        status: "unavailable",
+        threads: [],
+        limitations: ["runtime-unavailable"],
+      };
+      const activeSnapshot = runtimeUnavailable
+        ? unavailableDiscovery
+        : await this.options.runtimeAdapters.discoverAllThreads(getAgentBinding(this.options.config, bindingId));
+      const archivedSnapshot = runtimeUnavailable
+        ? unavailableDiscovery
+        : await this.options.runtimeAdapters.discoverArchivedThreads(getAgentBinding(this.options.config, bindingId));
+      const discoveredActive = activeSnapshot.threads.filter((thread) => !thread.parentRuntimeThreadId);
+      const discoveredArchived = archivedSnapshot.threads.filter((thread) => !thread.parentRuntimeThreadId);
       let workspaces: WorkspaceRecord[];
       try {
         const snapshot = runtimeUnavailable
@@ -519,6 +535,7 @@ export class SessionCatalog {
                   updatedAt: session.updatedAt,
                   workingDirectory: workspace.rootPath,
                   workspaceKind: "persistent" as const,
+                  adoption: { status: "available" as const },
                 }
               : undefined);
           if (runtimeThread) {
@@ -555,6 +572,10 @@ export class SessionCatalog {
         });
         runtimeRevisionByRef.set(sessionRef.toUpperCase(), `${thread.runtimeThreadId}:${thread.updatedAt}`);
         workingDirectoryByRef.set(sessionRef.toUpperCase(), thread.workingDirectory ?? workspace.rootPath);
+        const unavailable =
+          thread.adoption.status === "unavailable"
+            ? { reason: thread.adoption.reason, detail: thread.adoption.detail ?? null }
+            : null;
         entries.push({
           sessionRef,
           entryKind: "runtime-thread",
@@ -570,8 +591,25 @@ export class SessionCatalog {
           isAdopted: false,
           unreadCount: 0,
           pendingInteractionCount: 0,
-          allowedActions: catalogActions(thread.isArchived === true, false, true, "idle", lifecycleCapabilities),
+          allowedActions: catalogActions(thread.isArchived === true, false, true, "idle", lifecycleCapabilities).filter(
+            (action) => action !== "adopt" || unavailable === null,
+          ),
+          runtimeThreadUnavailableReason: unavailable?.reason ?? null,
+          runtimeThreadUnavailableDetail: unavailable?.detail ?? null,
         });
+      }
+      if (activeSnapshot.status !== "complete" || archivedSnapshot.status !== "complete") {
+        const previousBinding = previousState?.view.bindings.find((candidate) => candidate.bindingId === bindingId);
+        const knownRefs = new Set(entries.map((entry) => entry.sessionRef.toUpperCase()));
+        for (const previous of previousBinding?.entries ?? []) {
+          const normalizedRef = previous.sessionRef.toUpperCase();
+          if (knownRefs.has(normalizedRef) || previous.entryKind !== "runtime-thread") continue;
+          entries.push({ ...previous, status: "offline", allowedActions: ["open"] });
+          const previousRevision = previousState?.runtimeRevisionByRef.get(normalizedRef);
+          if (previousRevision) runtimeRevisionByRef.set(normalizedRef, previousRevision);
+          const previousWorkingDirectory = previousState?.workingDirectoryByRef.get(normalizedRef);
+          if (previousWorkingDirectory) workingDirectoryByRef.set(normalizedRef, previousWorkingDirectory);
+        }
       }
       await Promise.all(
         entries.map(async (entry) => {
@@ -647,8 +685,22 @@ function managedEntry(
   status: RuntimeStatus | null,
   activity: SessionActivity,
   lifecycleCapabilities: RuntimeLifecycleCapabilities,
-  runtimeThread?: RuntimeThreadSummary,
+  runtimeThread?: RuntimeThreadCandidate,
 ): SessionCatalogEntryView {
+  const unavailable =
+    runtimeThread?.adoption.status === "unavailable"
+      ? { reason: runtimeThread.adoption.reason, detail: runtimeThread.adoption.detail ?? null }
+      : null;
+  const allowedActions =
+    session.runtimeSessionId && !runtimeThread
+      ? (["open"] as SessionCatalogAction[])
+      : catalogActions(
+          runtimeThread?.isArchived === true,
+          true,
+          Boolean(runtimeThread),
+          activity,
+          lifecycleCapabilities,
+        ).filter((action) => unavailable === null || (action !== "send" && action !== "cancel"));
   return {
     sessionRef: session.sessionRef,
     entryKind: "session",
@@ -664,16 +716,9 @@ function managedEntry(
     isAdopted: true,
     unreadCount: 0,
     pendingInteractionCount: 0,
-    allowedActions:
-      session.runtimeSessionId && !runtimeThread
-        ? ["open"]
-        : catalogActions(
-            runtimeThread?.isArchived === true,
-            true,
-            Boolean(runtimeThread),
-            activity,
-            lifecycleCapabilities,
-          ),
+    allowedActions,
+    runtimeThreadUnavailableReason: unavailable?.reason ?? null,
+    runtimeThreadUnavailableDetail: unavailable?.detail ?? null,
   };
 }
 

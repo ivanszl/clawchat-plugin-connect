@@ -15,6 +15,7 @@ import {
   type WorkBuddyRuntimeSource,
 } from "../src/runtime/workbuddy-adapter";
 import {
+  connectWorkBuddyTask,
   discoverWorkBuddyTask,
   type WorkBuddyDiscoveryObservation,
   type WorkBuddyEndpointVerification,
@@ -36,6 +37,14 @@ const taskId = "00000000-0000-4000-8000-000000000001";
 const port = "43129";
 const fixtureApplicationVersion = "2026.8.16";
 const fixtureCodeBuddyVersion = "9.99.1-nightly.4";
+function preparationIdentity(profile: WorkBuddyProfile) {
+  return {
+    applicationProcessId: 100,
+    sidecarProcessId: 110,
+    sidecarVersion: workBuddyProfileCompatibility(profile).sidecarVersion,
+    registrationToken: "registration-token",
+  };
+}
 
 describe.each(profiles)("WorkBuddy profile parity: %s", (profile) => {
   it("uses profile-specific application identity and rejects the other installed distribution", async () => {
@@ -155,7 +164,8 @@ describe.each(profiles)("WorkBuddy profile parity: %s", (profile) => {
       transcriptProjection: projection,
     });
     try {
-      await expect(adapter.discoverAllThreads?.(binding)).resolves.toEqual([
+      const discovery = await adapter.discoverAllThreads?.(binding);
+      expect(discovery?.threads).toEqual([
         expect.objectContaining({
           runtimeThreadId: taskId,
           name: `${profile} task`,
@@ -199,83 +209,198 @@ describe.each(profiles)("WorkBuddy profile parity: %s", (profile) => {
   });
 });
 
-it("accepts the mainland sidecar v3 control surface while retaining ACP v1", async () => {
-  const profile = "workbuddy-cn";
+it.each(profiles)(
+  "reuses an existing exact Task endpoint for %s without invoking host preparation",
+  async (profile) => {
+    const compatibility = workBuddyProfileCompatibility(profile);
+    expect(compatibility).toMatchObject({
+      endpointSessionPrefix: "__workbuddy_cli_host__-",
+      sidecarVersion: 3,
+      acpVersion: 1,
+    });
+    const source = discoverySource(profile);
+    const inspect = source.inspect;
+    const calls: string[] = [];
+    source.prepareEndpoint = async () => {
+      calls.push("prepare");
+    };
+    source.inspect = async (input, endpointSelection) => {
+      calls.push(`inspect:${endpointSelection}`);
+      const value = await inspect(input, endpointSelection);
+      if (value.endpointSession) {
+        value.endpointSession.sessionId = endpointSelection === "host" ? "__workbuddy_cli_host__-2-048fa1ff" : taskId;
+      }
+      return value;
+    };
+    source.connectEndpoint = async () => {
+      calls.push("connect");
+      const value = await inspect({ profile, taskId, expectedWorkspace: compatibility.configDirectory }, "task");
+      return {
+        verification: {
+          taskId,
+          replayFingerprint: "empty",
+          replayStarted: true,
+          replayCompleted: true,
+          activities: [],
+          connectionOwner: value.endpointOwner,
+        },
+        prompt: async function* () {
+          yield* [];
+        },
+        close: async () => undefined,
+      };
+    };
+
+    const attachment = await connectWorkBuddyTask(
+      { profile, taskId, expectedWorkspace: compatibility.configDirectory },
+      source,
+    );
+    expect(calls).toEqual(["inspect:task", "connect"]);
+    await attachment.close();
+  },
+);
+
+it.each(profiles)("does not prepare %s when host Task verification fails", async (profile) => {
   const compatibility = workBuddyProfileCompatibility(profile);
   const source = discoverySource(profile);
   const inspect = source.inspect;
-  source.inspect = async (input) => {
-    const value = await inspect(input);
-    if (value.sidecarRegistration) value.sidecarRegistration.version = 3;
-    if (value.sidecarIdentity) value.sidecarIdentity.version = 3;
+  let preparations = 0;
+  source.inspect = async (input, endpointSelection) => {
+    const value = await inspect(input, endpointSelection);
+    if (value.endpointSession) value.endpointSession.sessionId = "__workbuddy_cli_host__-2-048fa1ff";
     return value;
+  };
+  source.verifyEndpoint = async () => ({
+    taskId,
+    replayFingerprint: "wrong-native-transcript",
+    replayStarted: true,
+    replayCompleted: true,
+    activities: [],
+    connectionOwner: (await inspect({ profile, taskId, expectedWorkspace: compatibility.configDirectory }, "host"))
+      .endpointOwner,
+  });
+  source.prepareEndpoint = async () => {
+    preparations += 1;
+  };
+  source.connectEndpoint = async () => {
+    throw new Error("must not connect");
   };
 
   await expect(
-    discoverWorkBuddyTask({ profile, taskId, expectedWorkspace: compatibility.configDirectory }, source),
-  ).resolves.toMatchObject({ profile });
+    connectWorkBuddyTask({ profile, taskId, expectedWorkspace: compatibility.configDirectory }, source),
+  ).rejects.toMatchObject({ code: "task-identity-mismatch" });
+  expect(preparations).toBe(0);
 });
 
-it("materializes a writable mainland Task runtime only for the explicit mainland profile", async () => {
-  const prepared: Array<{ taskId: string; workspace: string; applicationPath: string; configDirectory: string }> = [];
-  const source = createWorkBuddyMacosDiscoverySource("workbuddy-cn", {
-    readTaskRuntimeSelection: async () => ({ model: "hy3", permissionMode: "default" }),
+it.each(profiles)("rejects %s when preparation does not rediscover the exact native Task Session", async (profile) => {
+  const compatibility = workBuddyProfileCompatibility(profile);
+  const source = discoverySource(profile);
+  const inspect = source.inspect;
+  let connections = 0;
+  source.inspect = async (input, endpointSelection) => {
+    const value = await inspect(input, endpointSelection);
+    if (value.endpointSession) value.endpointSession.sessionId = "__workbuddy_cli_host__-2-048fa1ff";
+    return value;
+  };
+  source.prepareEndpoint = async () => undefined;
+  source.connectEndpoint = async () => {
+    connections += 1;
+    throw new Error("must not connect");
+  };
+
+  await expect(
+    connectWorkBuddyTask({ profile, taskId, expectedWorkspace: compatibility.configDirectory }, source),
+  ).rejects.toMatchObject({ code: "task-identity-mismatch" });
+  expect(connections).toBe(0);
+});
+
+it.each(profiles)("passes only %s-owned inputs to per-Task runtime preparation", async (profile) => {
+  const compatibility = workBuddyProfileCompatibility(profile);
+  const selections: unknown[] = [];
+  const prepared: unknown[] = [];
+  const source = createWorkBuddyMacosDiscoverySource(profile, {
+    readTaskRuntimeSelection: async (input) => {
+      selections.push(input);
+      return { model: `${profile}-model`, permissionMode: profile === "workbuddy-ai" ? "acceptEdits" : "default" };
+    },
     prepareTaskRuntime: async (input) => {
       prepared.push(input);
     },
   });
 
-  await source.prepareEndpoint?.({ profile: "workbuddy-cn", taskId, expectedWorkspace: tmpdir() });
+  await source.prepareEndpoint?.({ profile, taskId, expectedWorkspace: tmpdir() }, preparationIdentity(profile));
 
+  expect(selections).toEqual([{ profile, configDirectory: compatibility.configDirectory, taskId }]);
   expect(prepared).toEqual([
-    expect.objectContaining({
+    {
+      profile,
+      applicationPath: compatibility.applicationPath,
+      configDirectory: compatibility.configDirectory,
+      dataFolderName: compatibility.dataFolderName,
+      resourcesPath: join(compatibility.applicationPath, "Contents", "Resources"),
       taskId,
       workspace: await realpath(tmpdir()),
-      applicationPath: "/Applications/WorkBuddy.app",
-      configDirectory: workBuddyProfileCompatibility("workbuddy-cn").configDirectory,
-      selection: { model: "hy3", permissionMode: "default" },
-    }),
+      selection: {
+        model: `${profile}-model`,
+        permissionMode: profile === "workbuddy-ai" ? "acceptEdits" : "default",
+      },
+      commandTimeoutMs: 5_000,
+      sidecarIdentity: preparationIdentity(profile),
+    },
   ]);
-  expect(createWorkBuddyMacosDiscoverySource("workbuddy-ai").prepareEndpoint).toBeUndefined();
+  const otherProfile = profile === "workbuddy-ai" ? "workbuddy-cn" : "workbuddy-ai";
+  await expect(
+    source.prepareEndpoint?.(
+      { profile: otherProfile, taskId, expectedWorkspace: tmpdir() },
+      preparationIdentity(otherProfile),
+    ),
+  ).rejects.toMatchObject({ code: "wrong-distribution" });
 });
 
-it("builds the production mainland Task runtime request from the native Task selection", () => {
+it.each(profiles)("builds the %s Task runtime request entirely from capability-owned inputs", (profile) => {
+  const compatibility = workBuddyProfileCompatibility(profile);
+  const resourcesPath = join(compatibility.applicationPath, "Contents", "Resources");
+  const model = `${profile}-model`;
   const request = buildWorkBuddyTaskRuntimeRequest(
     {
-      applicationPath: "/Applications/WorkBuddy.app",
-      configDirectory: "/Users/test/.workbuddy",
+      profile,
+      applicationPath: compatibility.applicationPath,
+      configDirectory: compatibility.configDirectory,
+      dataFolderName: compatibility.dataFolderName,
+      resourcesPath,
       taskId,
       workspace: "/private/tmp/workspace",
-      selection: { model: "hy3", permissionMode: "default" },
+      selection: { model, permissionMode: "default" },
       commandTimeoutMs: 5_000,
     },
-    "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+    join(resourcesPath, "app.asar.unpacked", "cli", "bin", "codebuddy"),
     "6.0.0-preview.2",
     "test-gateway-secret",
   );
 
   expect(request).toMatchObject({
     sessionId: taskId,
-    command: "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+    command: join(compatibility.applicationPath, "Contents", "MacOS", "Electron"),
     cwd: "/private/tmp/workspace",
     port: 0,
     env: {
-      CODEBUDDY_CONFIG_DIR: "/Users/test/.workbuddy",
+      CODEBUDDY_CONFIG_DIR: compatibility.configDirectory,
+      WORKBUDDY_CONFIG_DIR: compatibility.configDirectory,
+      WORKBUDDY_DATA_FOLDER_NAME: compatibility.dataFolderName,
       CODEBUDDY_GATEWAY_PASSWORD: "test-gateway-secret",
-      WORKBUDDY_APP_PATH: "/Applications/WorkBuddy.app",
+      CODEBUDDY_BUILTIN_SKILLS_DIR: join(resourcesPath, "app.asar.unpacked", "resources", "builtin-skills"),
+      ACC_PRODUCT_CONFIG_PATH: join(resourcesPath, "app.asar.unpacked", "cli", "product.json"),
+      WORKBUDDY_APP_PATH: compatibility.applicationPath,
       WORKBUDDY_APP_VERSION: "6.0.0-preview.2",
+      WORKBUDDY_RESOURCES_PATH: resourcesPath,
     },
   });
-  expect(request.args.slice(request.args.indexOf("--session-id"), request.args.indexOf("--session-id") + 2)).toEqual([
-    "--session-id",
-    taskId,
-  ]);
   expect(
     request.args.slice(request.args.indexOf("--permission-mode"), request.args.indexOf("--permission-mode") + 2),
   ).toEqual(["--permission-mode", "default"]);
   expect(request.args.slice(request.args.indexOf("--model"), request.args.indexOf("--model") + 2)).toEqual([
     "--model",
-    "hy3",
+    model,
   ]);
   expect(request.args).not.toContain("--no-session-persistence");
   expect(request.args.join(" ")).toContain("/private/tmp/workspace/**");
@@ -290,7 +415,9 @@ it("reads the current Task model from the catalog even when no assistant history
       .query("INSERT INTO sessions (id, model, permission_mode, deleted_at) VALUES (?, ?, ?, NULL)")
       .run(taskId, "hy3", "acceptEdits");
 
-    await expect(readWorkBuddyTaskRuntimeSelection(directory, taskId)).resolves.toEqual({
+    await expect(
+      readWorkBuddyTaskRuntimeSelection({ profile: "workbuddy-cn", configDirectory: directory, taskId }),
+    ).resolves.toEqual({
       model: "hy3",
       permissionMode: "acceptEdits",
     });
@@ -300,8 +427,8 @@ it("reads the current Task model from the catalog even when no assistant history
   }
 });
 
-it("fails closed when the Task catalog contains an unknown permission mode", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "workbuddy-cn-permission-selection-"));
+it.each(profiles)("fails closed when the %s Task catalog contains an unknown permission mode", async (profile) => {
+  const directory = await mkdtemp(join(tmpdir(), `${profile}-permission-selection-`));
   const database = new Database(join(directory, "workbuddy.db"));
   try {
     database.run("CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, permission_mode TEXT, deleted_at INTEGER)");
@@ -309,10 +436,12 @@ it("fails closed when the Task catalog contains an unknown permission mode", asy
       .query("INSERT INTO sessions (id, model, permission_mode, deleted_at) VALUES (?, ?, ?, NULL)")
       .run(taskId, "hy3", "future-unverified-mode");
 
-    await expect(readWorkBuddyTaskRuntimeSelection(directory, taskId)).rejects.toMatchObject({
+    await expect(
+      readWorkBuddyTaskRuntimeSelection({ profile, configDirectory: directory, taskId }),
+    ).rejects.toMatchObject({
       code: "incompatible-version",
       details: {
-        selectedProfile: "workbuddy-cn",
+        selectedProfile: profile,
         detectedPermissionMode: "future-unverified-mode",
       },
     });
@@ -337,7 +466,9 @@ it("prefers the current catalog model over stale assistant transcript metadata",
       `${JSON.stringify({ type: "assistant", providerData: { model: "stale-model" } })}\n`,
     );
 
-    await expect(readWorkBuddyTaskRuntimeSelection(directory, taskId)).resolves.toEqual({
+    await expect(
+      readWorkBuddyTaskRuntimeSelection({ profile: "workbuddy-cn", configDirectory: directory, taskId }),
+    ).resolves.toEqual({
       model: "hy3",
       permissionMode: "default",
     });
@@ -347,51 +478,85 @@ it("prefers the current catalog model over stale assistant transcript metadata",
   }
 });
 
-it("replaces an existing Task runtime before applying a changed catalog model", async () => {
+it("fails closed instead of replacing an existing WorkBuddy-owned Task runtime", async () => {
+  const profile = "workbuddy-cn";
+  const compatibility = workBuddyProfileCompatibility(profile);
+  const resourcesPath = join(compatibility.applicationPath, "Contents", "Resources");
   const request = buildWorkBuddyTaskRuntimeRequest(
     {
-      applicationPath: "/Applications/WorkBuddy.app",
-      configDirectory: "/Users/test/.workbuddy",
+      profile,
+      applicationPath: compatibility.applicationPath,
+      configDirectory: compatibility.configDirectory,
+      dataFolderName: compatibility.dataFolderName,
+      resourcesPath,
       taskId,
       workspace: "/private/tmp/workspace",
       selection: { model: "new-catalog-model", permissionMode: "default" },
       commandTimeoutMs: 5_000,
     },
-    "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+    join(resourcesPath, "app.asar.unpacked", "cli", "bin", "codebuddy"),
     "6.0.0-preview.2",
     "test-gateway-secret",
   );
   const calls: Array<{ method: string; params: unknown }> = [];
 
-  await reconcileWorkBuddyTaskRuntime(request, 5_000, async (method, _timeoutMs, params) => {
-    calls.push({ method, params });
-    if (method === "session.list") return [{ sessionId: taskId }];
-    return { ok: true };
-  });
+  await expect(
+    reconcileWorkBuddyTaskRuntime(profile, request, 5_000, async (method, _timeoutMs, params) => {
+      calls.push({ method, params });
+      if (method === "session.list") return [{ sessionId: taskId }];
+      return { ok: true };
+    }),
+  ).rejects.toMatchObject({ code: "endpoint-stale" });
 
-  expect(calls.map((call) => call.method)).toEqual(["session.list", "session.kill", "session.create"]);
-  expect(calls[1]?.params).toEqual({ sessionId: taskId });
-  expect(calls[2]?.params).toBe(request);
+  expect(calls.map((call) => call.method)).toEqual(["session.list"]);
   expect(request.args.slice(request.args.indexOf("--model"), request.args.indexOf("--model") + 2)).toEqual([
     "--model",
     "new-catalog-model",
   ]);
 });
 
-it("accepts the mainland profile host only after exact Task replay verification", async () => {
-  const profile = "workbuddy-cn";
-  const compatibility = workBuddyProfileCompatibility(profile);
-  const source = discoverySource(profile);
-  const inspect = source.inspect;
-  source.inspect = async (input) => {
-    const value = await inspect(input);
-    if (value.endpointSession) value.endpointSession.sessionId = "__workbuddy_cli_host__-2-048fa1ff";
-    return value;
+it("rejects a failed Task runtime creation even when the Task ID appears afterward", async () => {
+  const request = {
+    sessionId: taskId,
+    command: "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+    args: [],
+    cwd: "/private/tmp/workspace",
+    env: {},
+    port: 0,
   };
+  let inventoryCalls = 0;
 
   await expect(
-    discoverWorkBuddyTask({ profile, taskId, expectedWorkspace: compatibility.configDirectory }, source),
-  ).resolves.toMatchObject({ profile, task: { id: taskId } });
+    reconcileWorkBuddyTaskRuntime("workbuddy-cn", request, 5_000, async (method) => {
+      if (method === "session.list") return inventoryCalls++ === 0 ? [] : [{ sessionId: taskId }];
+      if (method === "session.create") throw new Error("create rejected");
+      return { ok: true };
+    }),
+  ).rejects.toThrow("create rejected");
+  expect(inventoryCalls).toBe(1);
+});
+
+it("fails closed when runtime preparation combines AI identity with mainland resources", () => {
+  const ai = workBuddyProfileCompatibility("workbuddy-ai");
+  const mainland = workBuddyProfileCompatibility("workbuddy-cn");
+  expect(() =>
+    buildWorkBuddyTaskRuntimeRequest(
+      {
+        profile: "workbuddy-ai",
+        applicationPath: ai.applicationPath,
+        configDirectory: mainland.configDirectory,
+        dataFolderName: ai.dataFolderName,
+        resourcesPath: join(ai.applicationPath, "Contents", "Resources"),
+        taskId,
+        workspace: "/private/tmp/workspace",
+        selection: { model: "ai-model", permissionMode: "default" },
+        commandTimeoutMs: 5_000,
+      },
+      join(ai.applicationPath, "Contents", "Resources", "app.asar.unpacked", "cli", "bin", "codebuddy"),
+      "6.0.0-preview.2",
+      "test-gateway-secret",
+    ),
+  ).toThrow("Task runtime inputs combine resources from different distributions");
 });
 
 function discoverySource(profile: WorkBuddyProfile): WorkBuddyTaskDiscoverySource {
@@ -426,7 +591,12 @@ function discoverySource(profile: WorkBuddyProfile): WorkBuddyTaskDiscoverySourc
       replayFingerprint: "empty",
     },
     sidecarRegistration: { pid: 110, version: compatibility.sidecarVersion },
-    sidecarIdentity: { pid: 110, version: compatibility.sidecarVersion, registrationTokenMatches: true },
+    sidecarIdentity: {
+      pid: 110,
+      version: compatibility.sidecarVersion,
+      registrationTokenMatches: true,
+      registrationToken: "registration-token",
+    },
     sidecarProcess,
     endpointSession: { sessionId: taskId, pid: 120, endpoint: `http://127.0.0.1:${port}/api/v1/acp` },
     endpointOwner,
