@@ -1,5 +1,7 @@
 import { realpath } from "node:fs/promises";
 import type { RuntimeActivity, RuntimeInteractionRequest, RuntimeInteractionResponse } from "../../src/runtime/types";
+import { workBuddyProfileCompatibility } from "../../src/runtime/workbuddy-task-discovery";
+import { readWorkBuddyTaskRuntimeSelection } from "../../src/runtime/workbuddy-task-discovery-macos";
 import { createInstalledWorkBuddyPluginRuntime } from "./workbuddy-installed-plugin";
 import { requiredWorkBuddyTestEnv, workBuddyTestBindingId, workBuddyTestProfile } from "./workbuddy-test-profile";
 
@@ -13,6 +15,11 @@ const {
   "verify installed Runtime Interaction routing and native prompt cancellation",
 );
 const canonicalWorkspace = await realpath(workspace);
+const { permissionMode } = await readWorkBuddyTaskRuntimeSelection({
+  profile: workBuddyTestProfile,
+  configDirectory: workBuddyProfileCompatibility(workBuddyTestProfile).configDirectory,
+  taskId,
+});
 const installedPlugin = await createInstalledWorkBuddyPluginRuntime(workBuddyTestProfile);
 const { binding, runtimeAdapters } = installedPlugin;
 const session = await runtimeAdapters.start(binding, {
@@ -27,6 +34,7 @@ const session = await runtimeAdapters.start(binding, {
 const runtimeWorkspace = { workspaceRef: "WSDEFALT", workingDirectory: canonicalWorkspace, skipGitRepoCheck: false };
 
 let interactionAccepted = 0;
+let deniedSafely = false;
 const interactions: RuntimeInteractionRequest[] = [];
 let interactionFailure: unknown;
 try {
@@ -43,6 +51,7 @@ try {
             if (request.kind !== "approval") {
               throw new Error("The installed interaction prompt must produce an approval request");
             }
+            deniedSafely = true;
             return { kind: "approval", optionId: "deny" };
           },
         },
@@ -60,8 +69,17 @@ try {
       cause: interactionFailure,
     });
   }
-  if (interactions.length !== 1 || interactions[0]?.kind !== "approval") {
-    throw new Error(`Expected one installed WorkBuddy approval, observed ${interactions.length}`, {
+  if (permissionMode === "bypassPermissions") {
+    if (interactions.length !== 0) {
+      throw new Error(
+        `Expected no installed WorkBuddy Interaction in bypassPermissions mode, observed ${interactions.length}`,
+        {
+          cause: interactionFailure,
+        },
+      );
+    }
+  } else if (interactions.length !== 1 || interactions[0]?.kind !== "approval" || !deniedSafely) {
+    throw new Error(`Expected one safely denied installed WorkBuddy approval, observed ${interactions.length}`, {
       cause: interactionFailure,
     });
   }
@@ -95,8 +113,13 @@ try {
     `${JSON.stringify({
       profile: workBuddyTestProfile,
       taskId,
-      interactionKind: interactions[0].kind,
-      deniedSafely: true,
+      permissionMode,
+      approvalCapability: permissionMode === "bypassPermissions" ? "unsupported" : "supported",
+      approvalDowngraded: permissionMode === "bypassPermissions",
+      observedInteractionCount: interactions.length,
+      interactionKind: interactions[0]?.kind ?? null,
+      deniedSafely: permissionMode === "bypassPermissions" ? null : deniedSafely,
+      cancellationResult: "cancelled",
       cancellationSettled: true,
       cancellationActivityCount: cancellationActivities.length,
     })}\n`,

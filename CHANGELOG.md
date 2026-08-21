@@ -12,6 +12,9 @@ All notable changes to ClawChat Connect are documented in this file.
 
 - Reused a verified WorkBuddy-owned exact Task endpoint instead of killing and replacing it before every Connect turn, preserving desktop synchronization, native parentage, background Task ownership, and endpoint recovery.
 - Kept WorkBuddy Task Identity fingerprints limited to transcript-bearing user/assistant messages while retaining independent tool Activities and failing conflicting native branches closed.
+- Required WorkBuddy ACP initialization to advertise `agentCapabilities.loadSession === true` before Connect calls `session/load`; `session/resume` is never treated as replay.
+- Classified connection refusal or closure from the discovered exact Task socket as `endpoint-stale`, without falling back to another endpoint or creating a replacement.
+- Downgraded native `bypassPermissions` Tasks to no approval Interaction capability because they execute without emitting an ACP permission request; Connect does not synthesize one.
 
 ## [0.1.0-beta.8] - 2026-08-17
 

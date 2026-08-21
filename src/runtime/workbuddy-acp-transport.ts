@@ -9,6 +9,33 @@ export interface WorkBuddyConnectedSocketIdentity {
   remotePort: number;
 }
 
+class WorkBuddyAcpConnectionClosedError extends Error {
+  readonly name = "WorkBuddyAcpConnectionClosedError";
+
+  constructor(readonly state: "closed" | "closed-unexpectedly") {
+    super(state === "closed" ? "ACP HTTP connection is closed" : "ACP HTTP connection closed unexpectedly");
+  }
+}
+
+export function isWorkBuddyAcpConnectionUnavailable(error: unknown): boolean {
+  let candidate = error;
+  const seen = new Set<object>();
+  while (candidate && typeof candidate === "object" && !seen.has(candidate)) {
+    if (candidate instanceof WorkBuddyAcpConnectionClosedError) return true;
+    seen.add(candidate);
+    const transportError = candidate as { cause?: unknown; code?: unknown };
+    if (
+      transportError.code === "ECONNREFUSED" ||
+      transportError.code === "ECONNRESET" ||
+      transportError.code === "EPIPE"
+    ) {
+      return true;
+    }
+    candidate = transportError.cause;
+  }
+  return false;
+}
+
 export function acpHeaders(connectionId: string, sessionToken: string): Record<string, string> {
   return {
     Accept: "application/json, text/event-stream",
@@ -59,7 +86,7 @@ export class PersistentHttpConnection {
     socket.on("error", (error) => this.rejectPending(error));
     socket.on("close", () => {
       this.closed = true;
-      this.rejectPending(new Error("ACP HTTP connection closed unexpectedly"));
+      this.rejectPending(new WorkBuddyAcpConnectionClosedError("closed-unexpectedly"));
     });
   }
 
@@ -94,7 +121,7 @@ export class PersistentHttpConnection {
     body = Buffer.alloc(0),
     onBodyChunk?: (chunk: Buffer) => void,
   ): Promise<HttpResponse> {
-    if (this.closed || this.socket.destroyed) throw new Error("ACP HTTP connection is closed");
+    if (this.closed || this.socket.destroyed) throw new WorkBuddyAcpConnectionClosedError("closed");
     if (this.pending) throw new Error("Concurrent ACP HTTP requests are not supported");
     const requestHeaders = {
       Host: `${this.hostname}:${this.port}`,

@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { RuntimeActivity, RuntimeActivitySnapshot } from "./types";
 import type { WorkBuddyAcpTaskAttachment, WorkBuddyTaskCatalog } from "./workbuddy-acp-client";
+import { isWorkBuddyAcpConnectionUnavailable } from "./workbuddy-acp-transport";
 
 export type WorkBuddyProfile = "workbuddy-ai" | "workbuddy-cn";
 
@@ -448,6 +449,9 @@ async function verifyWorkBuddyTask(
   } catch (error) {
     if (error instanceof WorkBuddyDiscoveryError) throw error;
     const message = redactSecrets(error instanceof Error ? error.message : String(error));
+    if (isExactTask && isWorkBuddyAcpConnectionUnavailable(error)) {
+      throw failure("endpoint-stale", `${product}'s exact Task ACP endpoint is no longer listening: ${message}`);
+    }
     throw failure("endpoint-verification-failed", `${product} ACP identity verification failed: ${message}`);
   }
   assertExpectedEndpointOwner(

@@ -19,6 +19,7 @@ const taskId = "00000000-0000-4000-8000-000000000001";
 const workspace = "/private/tmp/workbuddy-acp-client";
 const applicationPath = "/Applications/WorkBuddy AI.app";
 const servers: Server[] = [];
+const successfulInitializeResult = { protocolVersion: 1, agentCapabilities: { loadSession: true } } as const;
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(closeServer));
@@ -38,7 +39,7 @@ describe("WorkBuddy private ACP client", () => {
       const rpc = JSON.parse(request.body) as { id: number; method: string };
       rpcMethods.push(rpc.method);
       if (rpc.method === "initialize") {
-        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }], true);
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }], true);
       }
       loadReceived = true;
       return sseResponse(
@@ -177,7 +178,7 @@ describe("WorkBuddy private ACP client", () => {
       if (request.method === "DELETE") return emptyResponse();
       const rpc = JSON.parse(request.body) as { id: number; method: string };
       if (rpc.method === "initialize") {
-        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
       }
       return sseResponse([
         update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
@@ -375,6 +376,107 @@ describe("WorkBuddy private ACP client", () => {
     },
   );
 
+  it.each([
+    {
+      capability: "missing",
+      initializeResult: { protocolVersion: 1 },
+      expectedAdvertisedLoadSession: "[missing]",
+    },
+    {
+      capability: "false",
+      initializeResult: { protocolVersion: 1, agentCapabilities: { loadSession: false } },
+      expectedAdvertisedLoadSession: false,
+    },
+  ])(
+    "rejects an initialize result with $capability loadSession capability before loading history",
+    async ({ initializeResult, expectedAdvertisedLoadSession }) => {
+      const rpcMethods: string[] = [];
+      const endpoint = await serve((request) => {
+        if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "capability-connection" });
+        if (request.method === "DELETE") return emptyResponse();
+        const rpc = JSON.parse(request.body) as { id: number; method: string };
+        rpcMethods.push(rpc.method);
+        if (rpc.method === "initialize") {
+          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: initializeResult }]);
+        }
+        return sseResponse([
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+          update({
+            sessionUpdate: "user_message_chunk",
+            messageId: "must-not-be-loaded",
+            content: { type: "text", text: "unadvertised history" },
+          }),
+          update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+          { jsonrpc: "2.0", id: rpc.id, result: {} },
+        ]);
+      });
+
+      await expect(
+        verifyWorkBuddyEndpoint({ endpoint, taskId, workspace, acpVersion: 1 }, 1_000, async () => null),
+      ).rejects.toMatchObject({
+        code: "protocol-incompatible",
+        message: "The WorkBuddy AI ACP endpoint does not advertise session/load for capability workbuddy-ai.",
+        details: {
+          selectedCapability: "workbuddy-ai",
+          requiredCapability: "agentCapabilities.loadSession",
+          advertisedLoadSession: expectedAdvertisedLoadSession,
+        },
+      });
+      expect(rpcMethods).toEqual(["initialize"]);
+    },
+  );
+
+  it("loads and verifies replay when initialize advertises loadSession capability", async () => {
+    const rpcMethods: string[] = [];
+    const endpoint = await serve((request) => {
+      if (request.path.endsWith("/connect")) return jsonResponse({ connectionId: "capability-connection" });
+      if (request.method === "DELETE") return emptyResponse();
+      const rpc = JSON.parse(request.body) as { id: number; method: string };
+      rpcMethods.push(rpc.method);
+      if (rpc.method === "initialize") {
+        return sseResponse([
+          {
+            jsonrpc: "2.0",
+            id: rpc.id,
+            result: successfulInitializeResult,
+          },
+        ]);
+      }
+      return sseResponse([
+        update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),
+        update({
+          sessionUpdate: "user_message_chunk",
+          messageId: "capable-user",
+          content: { type: "text", text: "advertised history" },
+        }),
+        update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "end" } }),
+        { jsonrpc: "2.0", id: rpc.id, result: {} },
+      ]);
+    });
+
+    const verification = await verifyWorkBuddyEndpoint(
+      { endpoint, taskId, workspace, acpVersion: 1 },
+      1_000,
+      async () => null,
+    );
+
+    expect(rpcMethods).toEqual(["initialize", "session/load"]);
+    expect(verification).toMatchObject({
+      taskId,
+      replayFingerprint: fingerprint(["capable-user"]),
+      replayStarted: true,
+      replayCompleted: true,
+      activities: [
+        expect.objectContaining({
+          id: "workbuddy:user:capable-user",
+          kind: "user",
+          text: "advertised history",
+          source: "history",
+        }),
+      ],
+    });
+  });
+
   it("reports authentication expiry distinctly from transport loss", async () => {
     const endpoint = await serve(() => jsonResponse({ error: "expired credential" }, false, 401));
     await expect(
@@ -402,7 +504,7 @@ describe("WorkBuddy private ACP client", () => {
       if (request.method === "DELETE") return emptyResponse();
       const rpc = JSON.parse(request.body) as { id: number; method: string };
       if (rpc.method === "initialize") {
-        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
       }
       writeHeartbeatSse(socket, rpc.id);
       return null;
@@ -432,7 +534,7 @@ describe("WorkBuddy private ACP client", () => {
       }
       const rpc = JSON.parse(request.body) as { id: number; method: string; params: Record<string, unknown> };
       if (rpc.method === "initialize") {
-        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
       }
       if (rpc.method === "session/load") {
         return sseResponse([
@@ -576,8 +678,11 @@ describe("WorkBuddy private ACP client", () => {
             jsonrpc: "2.0",
             id: rpc.id,
             result: {
-              protocolVersion: 1,
-              agentCapabilities: { promptCapabilities: { image: true, embeddedContext: true } },
+              ...successfulInitializeResult,
+              agentCapabilities: {
+                ...successfulInitializeResult.agentCapabilities,
+                promptCapabilities: { image: true, embeddedContext: true },
+              },
             },
           },
         ]);
@@ -806,7 +911,7 @@ describe("WorkBuddy private ACP client", () => {
       if (request.method === "DELETE") return emptyResponse();
       const rpc = JSON.parse(request.body) as { id?: number; method: string; params: Record<string, unknown> };
       if (rpc.method === "initialize") {
-        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
       }
       if (rpc.method === "session/load") {
         return sseResponse([
@@ -925,7 +1030,7 @@ describe("WorkBuddy private ACP client", () => {
         if (request.method === "DELETE") return emptyResponse();
         const rpc = JSON.parse(request.body) as { id?: number; method: string; params: Record<string, unknown> };
         if (rpc.method === "initialize") {
-          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
         }
         if (rpc.method === "session/load") {
           return sseResponse([
@@ -1086,7 +1191,7 @@ describe("WorkBuddy private ACP client", () => {
       if (request.method === "DELETE") return emptyResponse();
       const rpc = JSON.parse(request.body) as { id?: number; method: string };
       if (rpc.method === "initialize") {
-        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
       }
       if (rpc.method === "session/load") {
         return sseResponse([
@@ -1189,7 +1294,7 @@ describe("WorkBuddy private ACP client", () => {
       if (request.method === "DELETE") return emptyResponse();
       const rpc = JSON.parse(request.body) as { id?: number; method: string };
       if (rpc.method === "initialize") {
-        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
       }
       if (rpc.method === "session/load") {
         return sseResponse([
@@ -1292,7 +1397,7 @@ describe("WorkBuddy private ACP client", () => {
       if (request.method === "DELETE") return emptyResponse();
       const rpc = JSON.parse(request.body) as { id?: number; method: string };
       if (rpc.method === "initialize") {
-        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
       }
       if (rpc.method === "session/load") {
         return sseResponse([
@@ -1361,7 +1466,7 @@ describe("WorkBuddy private ACP client", () => {
         if (request.method === "DELETE") return emptyResponse();
         const rpc = JSON.parse(request.body) as { id: number; method: string };
         if (rpc.method === "initialize") {
-          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
         }
         if (rpc.method === "session/load") {
           return sseResponse([
@@ -1484,7 +1589,7 @@ describe("WorkBuddy private ACP client", () => {
         if (request.method === "DELETE") return emptyResponse();
         const rpc = JSON.parse(request.body) as { id: number; method: string };
         if (rpc.method === "initialize") {
-          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+          return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
         }
         if (rpc.method === "session/load") {
           return sseResponse([
@@ -1564,7 +1669,7 @@ describe("WorkBuddy private ACP client", () => {
       if (request.method === "DELETE") return emptyResponse();
       const rpc = JSON.parse(request.body) as { id: number; method: string };
       if (rpc.method === "initialize") {
-        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
       }
       if (rpc.method === "session/load") {
         return sseResponse([
@@ -1614,7 +1719,7 @@ describe("WorkBuddy private ACP client", () => {
       if (request.method === "DELETE") return emptyResponse();
       const rpc = JSON.parse(request.body) as { id: number; method: string };
       if (rpc.method === "initialize") {
-        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+        return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
       }
       if (rpc.method === "session/load") {
         return sseResponse([
@@ -1673,7 +1778,7 @@ async function serveReplay(replayUpdates: unknown[]): Promise<string> {
     if (request.method === "DELETE") return emptyResponse();
     const rpc = JSON.parse(request.body) as { id: number; method: string };
     if (rpc.method === "initialize") {
-      return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: 1 } }]);
+      return sseResponse([{ jsonrpc: "2.0", id: rpc.id, result: successfulInitializeResult }]);
     }
     return sseResponse([
       update({ sessionUpdate: "session_info_update", _meta: { "codebuddy.ai/historyReplay": "start" } }),

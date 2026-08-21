@@ -150,10 +150,11 @@ export async function openWorkBuddyTaskEndpoint(
       undefined,
       catalogState,
     );
-    const initializedProtocol = (initialized.result as { protocolVersion?: unknown } | undefined)?.protocolVersion;
+    const initializedResult = record(initialized.result);
+    const initializedProtocol = initializedResult?.protocolVersion;
+    const profile = input.profile ?? "workbuddy-ai";
+    const compatibility = workBuddyProfileCompatibility(profile);
     if (initializedProtocol !== input.acpVersion) {
-      const profile = input.profile ?? "workbuddy-ai";
-      const compatibility = workBuddyProfileCompatibility(profile);
       throw new WorkBuddyDiscoveryError(
         "protocol-incompatible",
         `The ${compatibility.displayName} ACP protocol version is unsupported for profile ${profile}.`,
@@ -161,6 +162,19 @@ export async function openWorkBuddyTaskEndpoint(
           selectedProfile: profile,
           detectedAcpVersion: initializedProtocol ?? "[missing]",
           supportedAcpVersion: input.acpVersion,
+        },
+      );
+    }
+    const advertisedLoadSession = record(initializedResult?.agentCapabilities)?.loadSession;
+    if (advertisedLoadSession !== true) {
+      throw new WorkBuddyDiscoveryError(
+        "protocol-incompatible",
+        `The ${compatibility.displayName} ACP endpoint does not advertise session/load for capability ${profile}.`,
+        {
+          selectedCapability: profile,
+          requiredCapability: "agentCapabilities.loadSession",
+          advertisedLoadSession:
+            advertisedLoadSession === undefined ? "[missing]" : advertisedLoadSession === false ? false : "[invalid]",
         },
       );
     }
@@ -277,7 +291,9 @@ export async function openWorkBuddyTaskEndpoint(
   } catch (error) {
     await teardown();
     if (error instanceof WorkBuddyDiscoveryError) throw error;
-    throw new Error(redact(error instanceof Error ? error.message : String(error), [connectionId, sessionToken]));
+    throw new Error(redact(error instanceof Error ? error.message : String(error), [connectionId, sessionToken]), {
+      cause: error,
+    });
   }
 }
 

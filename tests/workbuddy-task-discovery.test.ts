@@ -207,6 +207,94 @@ describe("WorkBuddy Task discovery contract", () => {
     await attachment.close();
   });
 
+  it.each([
+    {
+      case: "refused",
+      transportError: () =>
+        Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:43129"), {
+          code: "ECONNREFUSED",
+          errno: -61,
+          syscall: "connect",
+        }),
+    },
+    {
+      case: "reset",
+      transportError: () =>
+        new Error("The ACP bootstrap failed with redacted transport detail", {
+          cause: Object.assign(new Error("read ECONNRESET"), {
+            code: "ECONNRESET",
+            errno: -54,
+            syscall: "read",
+          }),
+        }),
+    },
+  ])(
+    "reports a $case exact Task ACP socket as stale without replacement or capability fallback",
+    async ({ transportError }) => {
+      const calls: string[] = [];
+      let preparations = 0;
+      let snapshotVerifications = 0;
+      const discoverySource = source();
+      const inspect = discoverySource.inspect;
+      discoverySource.inspect = async (input, endpointSelection) => {
+        calls.push(`inspect:${endpointSelection}`);
+        return await inspect(input, endpointSelection);
+      };
+      discoverySource.prepareEndpoint = async () => {
+        preparations += 1;
+        calls.push("prepare");
+      };
+      discoverySource.verifyEndpoint = async () => {
+        snapshotVerifications += 1;
+        throw new Error("must not fall back to another verification capability");
+      };
+      discoverySource.connectEndpoint = async (input) => {
+        calls.push(`connect:${input.endpoint}`);
+        throw transportError();
+      };
+
+      await expect(
+        connectWorkBuddyTask({ profile: "workbuddy-ai", taskId, expectedWorkspace: workspace }, discoverySource),
+      ).rejects.toMatchObject({ code: "endpoint-stale" });
+
+      expect(calls).toEqual(["inspect:task", "connect:http://127.0.0.1:43129/api/v1/acp"]);
+      expect(preparations).toBe(0);
+      expect(snapshotVerifications).toBe(0);
+    },
+  );
+
+  it("keeps an unrelated exact Task ACP failure in endpoint verification without fallback", async () => {
+    const calls: string[] = [];
+    let preparations = 0;
+    let snapshotVerifications = 0;
+    const discoverySource = source();
+    const inspect = discoverySource.inspect;
+    discoverySource.inspect = async (input, endpointSelection) => {
+      calls.push(`inspect:${endpointSelection}`);
+      return await inspect(input, endpointSelection);
+    };
+    discoverySource.prepareEndpoint = async () => {
+      preparations += 1;
+      calls.push("prepare");
+    };
+    discoverySource.verifyEndpoint = async () => {
+      snapshotVerifications += 1;
+      throw new Error("must not fall back to another verification capability");
+    };
+    discoverySource.connectEndpoint = async () => {
+      calls.push("connect");
+      throw new Error("ACP connect response omitted its connection identifier");
+    };
+
+    await expect(
+      connectWorkBuddyTask({ profile: "workbuddy-ai", taskId, expectedWorkspace: workspace }, discoverySource),
+    ).rejects.toMatchObject({ code: "endpoint-verification-failed" });
+
+    expect(calls).toEqual(["inspect:task", "connect"]);
+    expect(preparations).toBe(0);
+    expect(snapshotVerifications).toBe(0);
+  });
+
   it("verifies the host before preparation when no exact Task endpoint exists, then requires rediscovery", async () => {
     const calls: string[] = [];
     const preparations: unknown[] = [];
