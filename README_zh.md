@@ -53,23 +53,26 @@ ClawChat 入口负责对话范围内的工作；Workspace 注册、Service 管�
 
 ### Runtime 支持
 
-| Runtime | Connect 管理的进程 | Session 选项 | 原生 Runtime Thread 生命周期 |
-| --- | --- | --- | --- |
-| Codex | `codex app-server` | 模型、推理强度、sandbox mode | 发现、恢复、取消、归档、还原、删除 |
-| OpenCode | `opencode serve` | agent、带 provider 的模型、variant | 发现、恢复、取消、删除 |
-| WorkBuddy | Desktop 自有 Task ACP endpoint | Task 自有模型、mode、配置、Command、Skill | 发现、采用、恢复、取消 |
-| DeepSeek Harness | 每个 Agent Binding 一个 `dsh` 进程 | 原生模型/推理、Agent Preset、Permission Preset、Command、Skill | 发现、恢复、取消；所选 Profile 提供能力时可归档 |
+| Runtime | Connect 可以做什么 | 主要限制 |
+| --- | --- | --- |
+| Codex | 新建或恢复 Session，选择可用的模型、推理和 sandbox 选项，取消任务，并执行 Codex 支持的 Session 管理操作。 | 需要用户自行安装 Codex。Connect 只显示 Codex 实际提供的控制项。 |
+| OpenCode | 连接正在运行的 OpenCode，发现或恢复 Session，选择可用的 agent、模型和 variant，取消任务并删除受支持的 Session。 | 必须先运行 `opencode serve`。不支持归档和还原。 |
+| WorkBuddy | 打开并继续已有 Task，保留历史；Desktop 切换 Task 后继续原 Task；重启后恢复；取消正在运行的任务。 | 不支持图片/媒体输入；Task 跳过权限确认时无法显示审批提示；不支持归档、还原和删除。 |
+| DeepSeek Harness | 使用所选 Profile 新建或恢复 Session，使用可用的 preset、Command 和 Skill，取消任务，并在 Profile 支持时归档。 | 可用功能和 Session 管理操作取决于所选 DeepSeek Harness Profile。 |
 
-OpenCode 兼容性已针对 `1.18.10` 与 `1.18.13` 验证，并使用 `@opencode-ai/sdk` `1.18.13`。WorkBuddy 仅支持 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) 中列出的两个精确 Desktop tuple。DeepSeek Harness 通过原生进程启动、配套 Connect Bridge 协议和运行时实际发布的能力建立兼容性，不使用 DSH 版本或内部组件图白名单。Connect 保留所选 DSH Home 和 Profile 中的原生工具、插件、Skill、workflow、MCP Server、subagent、provider、凭据、sandbox 与审批策略。Connect 不会安装或升级任一运行时；通用能力边界见 [Runtime Adapters](./docs/runtime-adapters.md)。
+Connect 使用你自行安装的运行时，并保留它们自己的登录、模型、供应商、插件、工具、凭据、sandbox 和审批设置。Connect 不会安装或升级运行时。兼容性详情见 [Runtime Adapters](./docs/runtime-adapters.md)。
 
-#### WorkBuddy 资格边界
+#### WorkBuddy 支持边界
 
 | 状态 | 边界 |
 | --- | --- |
-| **支持** | Desktop tuple 已通过资格验证且 replay endpoint 健康时：Task 发现与采用、文本轮次、基于 replay 的恢复，以及取消。 |
-| **有条件支持** | 仅当运行时实际发布自有模型、mode、配置、Command 或 Skill 时才使用这些能力。Replay 新鲜度和 sidecar 健康状态仍是原生前置条件；WorkBuddy Session/恢复使用 replay，而不是重新连接 Connect 自有进程。 |
-| **降级** | 应用停止、endpoint 过期或被复用，以及认证/发现失败时，仅对应 WorkBuddy Binding 降级。ClawChat 保持连接；Liveware 中的持久 Session 仍可读取，但处于离线/仅打开模式，发送、采用和取消均禁用。Endpoint 冲突会明确报告为冲突，绝不猜测选择。 |
-| **未验证/不支持** | 图片或其他媒体输入；需要 `bypassPermissions` 的审批流程；归档、还原或删除；以及覆盖每一种 runtime mode、Command 或 Skill。 |
+| **支持** | 在 Connect 中打开已有 WorkBuddy Task，继续发送文本并保留 Task 历史；WorkBuddy 切换当前显示的 Task 不会改变 Connect 正在操作的 Task；WorkBuddy 重启后可以继续；也可以取消正在运行的任务。 |
+| **取决于 WorkBuddy** | 只有当前 WorkBuddy Task 本身提供时，Connect 才会显示对应的模型、权限模式、Command 和 Skill。 |
+| **暂时不可用** | 如果 WorkBuddy 已关闭或当前 Task 尚未就绪，只会暂停这个 WorkBuddy 连接。其他已连接 Agent 可以继续工作，已有历史仍可阅读。重新打开 WorkBuddy 后重试同一个 Task 即可。 |
+| **不支持** | 图片或其他媒体输入；为已配置为跳过权限确认的 WorkBuddy Task 提供审批提示；归档、还原或删除；以及 WorkBuddy 本身未提供的 mode、Command 或 Skill。 |
+
+> [!WARNING]
+> **WorkBuddy 审批：**WorkBuddy Task 可以配置为跳过权限确认。启用这种模式后，Connect 无法在 ClawChat 或 Connect Client 中显示审批按钮，WorkBuddy 会按照自己的设置直接执行操作。如果你的工作流必须人工审批，请在 WorkBuddy 中选择会在执行前询问的权限模式。Connect 不会替你修改这项设置。
 
 详情见 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md)。
 
@@ -431,7 +434,7 @@ clawchat-connect service logs --lines 250
 
 - **运行时无法启动：** 运行 `codex --version` 或 `opencode --version`，确认已登录并检查初始化错误。需要使用其他可执行文件时，通过 `agents.<id>.executablePathOverride` 指定。
 - **运行时在终端正常，但 Connect 无法启动：** 重新安装服务以捕获当前 `PATH`。
-- **OpenCode 版本不匹配：** 安装受支持的 OpenCode（推荐 `1.18.13`，并保留 `1.18.10` 兼容）；Connect 会拒绝未经验证的版本。
+- **OpenCode 版本不匹配：** 安装受支持的 OpenCode（推荐 `1.18.13`，并保留 `1.18.10` 兼容）。其他 OpenCode 版本当前不支持。
 - **修改配置后未生效：** 重启服务。
 - **浏览器 Client 无法打开：** 确认服务正在运行，再用 `clawchat-connect web --no-open` 获取地址。
 - **ClawChat 中没有 `ClawChat Connect`：** 检查 `status`，重启服务并查看 Liveware 日志。

@@ -65,23 +65,26 @@ The ClawChat surface is for conversation-scoped work. Workspace registration, se
 
 ### Runtime support
 
-| Runtime | Process owned by Connect | Session options | Native Runtime Thread lifecycle |
-| --- | --- | --- | --- |
-| Codex | `codex app-server` | model, reasoning effort, sandbox mode | discover, resume, cancel, archive, restore, delete |
-| OpenCode | `opencode serve` | agent, provider-qualified model, variant | discover, resume, cancel, delete |
-| WorkBuddy | desktop-owned Task ACP endpoint | Task-owned model, mode, configuration, Commands, Skills | discover, adopt, resume, cancel |
-| DeepSeek Harness | one `dsh` process per Agent Binding | native model/reasoning, Agent Preset, Permission Preset, Commands, Skills | discover, resume, cancel; archive when the selected Profile supplies it |
+| Runtime | What Connect can do | Important limits |
+| --- | --- | --- |
+| Codex | Start or resume Sessions, choose available model/reasoning and sandbox options, cancel work, and manage supported Session lifecycle actions. | Requires a user-installed Codex. Connect shows only the controls that Codex makes available. |
+| OpenCode | Connect to a running OpenCode server, discover or resume Sessions, choose available agents/models/variants, cancel work, and delete supported Sessions. | `opencode serve` must be running. Archive and restore are not available. |
+| WorkBuddy | Open and continue an existing Task, preserve its history, keep working when the Desktop switches Tasks, recover after restart, and cancel work. | No image/media input. No approval prompt when the Task skips permission checks. Archive, restore, and delete are not available. |
+| DeepSeek Harness | Start or resume Sessions with the selected Profile, use available presets/Commands/Skills, cancel work, and archive when the Profile supports it. | Available features and lifecycle actions depend on the selected DeepSeek Harness Profile. |
 
-OpenCode compatibility is tested against OpenCode `1.18.10` and `1.18.13`, using `@opencode-ai/sdk` `1.18.13`. WorkBuddy supports only the two exact desktop tuples documented in [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md). DeepSeek Harness compatibility is established by native process boot, the paired Connect Bridge protocol, and runtime-published capabilities—not a DSH version or component-graph allowlist. Connect preserves the selected DSH Home and Profile, including native tools, plugins, Skills, workflows, MCP servers, subagents, providers, credentials, sandbox, and approval policy. Connect does not install or upgrade any runtime. See [Runtime Adapters](./docs/runtime-adapters.md) for the general capability boundary.
+Connect uses the runtimes you install and leaves their login, models, providers, plugins, tools, credentials, sandbox, and approval settings under your control. It does not install or upgrade runtimes. See [Runtime Adapters](./docs/runtime-adapters.md) for compatibility details.
 
-#### WorkBuddy qualification boundary
+#### WorkBuddy support boundary
 
 | Status | Boundary |
 | --- | --- |
-| **Supported** | With a qualified Desktop tuple and a healthy replay endpoint: Task discovery and adoption, text turns, replay-backed resume, and cancellation. |
-| **Conditional** | Runtime-owned model, mode, configuration, Commands, and Skills are used only when actually advertised. Replay freshness and sidecar health remain native prerequisites; WorkBuddy Session/resume uses replay rather than reconnecting a Connect-owned process. |
-| **Degraded** | A stopped application, stale or recycled endpoint, or authentication/discovery failure degrades only that WorkBuddy Binding. ClawChat stays connected, while Liveware keeps durable Sessions readable in offline/open-only mode with send, adopt, and cancel disabled. Endpoint conflicts are reported as conflicts and never guessed through. |
-| **Not qualified / unsupported** | Image or other media inputs; approval flows that require `bypassPermissions`; archive, restore, or delete; and complete coverage of every runtime mode, Command, or Skill. |
+| **Supported** | Open an existing WorkBuddy Task in Connect, continue it with text, keep its Task history, switch the Task shown in WorkBuddy without changing Connect's Task, resume after WorkBuddy restarts, and cancel running work. |
+| **Depends on WorkBuddy** | Models, permission modes, Commands, and Skills are available only when the selected WorkBuddy Task offers them. |
+| **Temporarily unavailable** | If WorkBuddy is closed or the selected Task is not ready, only that WorkBuddy connection pauses. Other connected Agents keep working and existing history stays readable. Reopen WorkBuddy and retry the same Task. |
+| **Unsupported** | Image or other media input; approval prompts for WorkBuddy Tasks configured to skip permission checks; archive, restore, or delete; and modes, Commands, or Skills that WorkBuddy does not offer. |
+
+> [!WARNING]
+> **WorkBuddy approvals:** a WorkBuddy Task can be configured to skip permission checks. When it is, Connect cannot show approval buttons in ClawChat or Connect Client, and WorkBuddy runs actions according to its own settings. If you require human approval, choose a WorkBuddy permission mode that asks before acting. Connect will not change that setting for you.
 
 See [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) for details.
 
@@ -544,7 +547,7 @@ Common causes:
 
 - **A runtime cannot start:** run `codex --version` or `opencode --version`, confirm the runtime is authenticated, and inspect the initialization error. Set `agents.<id>.runtimeConfig.executablePathOverride` when the selected Runtime Plugin capability should launch a different executable.
 - **A runtime works in a terminal but not in Connect:** reinstall the service so it captures the current `PATH`.
-- **OpenCode reports a version mismatch:** install a supported OpenCode version (`1.18.13` recommended; `1.18.10` retained for compatibility); Connect deliberately refuses unverified versions.
+- **OpenCode reports a version mismatch:** install a supported OpenCode version (`1.18.13` recommended; `1.18.10` retained for compatibility). Other OpenCode versions are not supported.
 - **Configuration changed but behavior did not:** restart the service.
 - **Browser client does not open:** confirm the service is running, then use `clawchat-connect web --no-open` and open the printed URL.
 - **ClawChat does not show `ClawChat Connect`:** run `clawchat-connect status`, then restart the service and inspect its logs for `Liveware Exposure`.
