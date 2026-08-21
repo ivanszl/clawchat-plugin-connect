@@ -9,7 +9,7 @@
   <p>
     <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub 版本" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
-    <img alt="支持 macOS、Linux 和 Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
+    <img alt="支持 Apple silicon macOS" src="https://img.shields.io/badge/platform-macOS%20Apple%20silicon-59636e?style=flat-square">
     <img alt="运行时：Codex、OpenCode、WorkBuddy 与 DeepSeek Harness" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode%20%7C%20WorkBuddy%20%7C%20DeepSeek%20Harness-f97316?style=flat-square">
   </p>
   <p>
@@ -62,6 +62,17 @@ ClawChat 入口负责对话范围内的工作；Workspace 注册、Service 管�
 
 OpenCode 兼容性已针对 `1.18.10` 与 `1.18.13` 验证，并使用 `@opencode-ai/sdk` `1.18.13`。WorkBuddy 仅支持 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) 中列出的两个精确 Desktop tuple。DeepSeek Harness 通过原生进程启动、配套 Connect Bridge 协议和运行时实际发布的能力建立兼容性，不使用 DSH 版本或内部组件图白名单。Connect 保留所选 DSH Home 和 Profile 中的原生工具、插件、Skill、workflow、MCP Server、subagent、provider、凭据、sandbox 与审批策略。Connect 不会安装或升级任一运行时；通用能力边界见 [Runtime Adapters](./docs/runtime-adapters.md)。
 
+#### WorkBuddy 资格边界
+
+| 状态 | 边界 |
+| --- | --- |
+| **支持** | Desktop tuple 已通过资格验证且 replay endpoint 健康时：Task 发现与采用、文本轮次、基于 replay 的恢复，以及取消。 |
+| **有条件支持** | 仅当运行时实际发布自有模型、mode、配置、Command 或 Skill 时才使用这些能力。Replay 新鲜度和 sidecar 健康状态仍是原生前置条件；WorkBuddy Session/恢复使用 replay，而不是重新连接 Connect 自有进程。 |
+| **降级** | 应用停止、endpoint 过期或被复用，以及认证/发现失败时，仅对应 WorkBuddy Binding 降级。ClawChat 保持连接；Liveware 中的持久 Session 仍可读取，但处于离线/仅打开模式，发送、采用和取消均禁用。Endpoint 冲突会明确报告为冲突，绝不猜测选择。 |
+| **未验证/不支持** | 图片或其他媒体输入；需要 `bypassPermissions` 的审批流程；归档、还原或删除；以及覆盖每一种 runtime mode、Command 或 Skill。 |
+
+详情见 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md)。
+
 > [!IMPORTANT]
 > ClawChat Connect 仍处于 Beta 阶段，尚未稳定。启用可信局域网或公开 Liveware 访问前，请先阅读[本地数据与安全](#本地数据与安全)。
 
@@ -71,7 +82,7 @@ OpenCode 兼容性已针对 `1.18.10` 与 `1.18.13` 验证，并使用 `@opencod
 
 1. ClawChat 账号和 Agent 邀请码；
 2. 已在同一台电脑上安装并登录至少一种受支持的编程 Agent 运行时；
-3. arm64 或 x64 架构的 macOS、Linux 或 Windows 10/11。
+3. Apple silicon 架构的 macOS（`darwin-arm64`）；其他操作系统与架构暂不进入当前 beta 发行范围。
 
 检查准备使用的运行时：
 
@@ -97,7 +108,7 @@ Connect 使用运行时现有的登录状态、配置、模型供应商、插件
 
 ### 1. 安装 Connect
 
-macOS 或 Linux 的独立安装包不需要 Bun 或 Node.js：
+Apple silicon macOS 的独立安装包不需要 Bun 或 Node.js：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
@@ -118,17 +129,7 @@ curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/ma
   CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-beta.8
 ```
 
-Windows PowerShell 用户应先下载安装脚本并检查其内容：
-
-```powershell
-Invoke-WebRequest `
-  https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.ps1 `
-  -OutFile install.ps1
-
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-Windows 安装器会校验发行包的 SHA-256，安装 `clawchat-connect.exe`、Client 资源和官方 Plugin Bundle，删除旧版同级 `liveware.exe`，并把安装目录加入当前用户的持久 `PATH`。
+当前 beta 通道只发布已经完成验收的 `darwin-arm64` 归档。Linux、Windows 和 Intel macOS 的发行产物延期到恢复对应原生平台验收之后。
 
 开发者也可以安装 Bun 包：
 
@@ -217,7 +218,7 @@ clawchat-connect service install
 clawchat-connect service status
 ```
 
-服务会立即启动，并在以后登录系统时自动运行。macOS 使用 LaunchAgent，Linux 使用 systemd user service，Windows 使用当前用户的任务计划程序；均不要求管理员/root 权限。
+服务会立即启动，并通过当前用户的 macOS LaunchAgent 在以后登录系统时自动运行；不要求管理员/root 权限。
 
 ### 5. 发送消息
 
@@ -446,7 +447,6 @@ clawchat-connect service logs --lines 250
 | 媒体缓存 | `~/.clawchat-connect/media-cache/` |
 | 原生 Runtime Thread | 由运行时管理，例如 Codex 使用 `~/.codex/sessions/` |
 
-Windows 上，Connect 数据位于 `%USERPROFILE%\.clawchat-connect\`，独立二进制和许可证声明默认位于 `%LOCALAPPDATA%\ClawChatConnect\`。
 
 邀请码不会被持久化。Connect 不会把自身的 ClawChat 工具暴露给编程 Agent 运行时、运行 MCP Server 或注入 MCP 配置；运行时中已有的 MCP Server 仍由该运行时管理。
 
@@ -480,11 +480,11 @@ OpenCode 能力与原生 Session 生命周期集成测试：
 OPENCODE_EXECUTABLE=/absolute/path/to/opencode bun run test:integration:opencode
 ```
 
-`bun run build:binary` 会生成较轻量的未打包独立构建，在 `dist/` 中写入 Connect 可执行文件和自包含官方 Plugin Bundle；官方 Liveware Bundle 内含已校验 SHA-256 的当前平台 companion。Windows Connect 构建使用 `.exe` 名称。
+`bun run build:binary` 会生成较轻量的未打包独立构建，在 `dist/` 中写入 Connect 可执行文件和自包含官方 Plugin Bundle；官方 Liveware Bundle 内含已校验 SHA-256 的 Darwin arm64 companion。
 
-`bun run build:release` 会生成当前主机的可分发发行包，并将归档文件、安装器、`CHANGELOG.md` 和 SHA-256 校验和写入 `build/release/`。
+在 Apple silicon 上运行 `bun run build:release` 会生成当前可分发版本，并将 Darwin arm64 归档、`install.sh`、`CHANGELOG.md` 和 SHA-256 校验和写入 `build/release/`；其他目标会在修改输出目录前失败。
 
-匹配 `v*-beta.*` 的标签会运行 [`.github/workflows/release-beta.yml`](./.github/workflows/release-beta.yml)。该工作流校验标签与 `package.json`、运行确定性代码检查、验证六个平台 Liveware 输入、构建目标完整的官方 Plugin Bundle，再构建 macOS、Linux 和 Windows 的 arm64/x64 二进制。本机已安装产品验收属于任务内验证，不会由 mock 替代。所有资源发布后，工作流会更新供默认安装和更新使用的 [`release-channel/latest-beta.txt`](https://github.com/XMethues/clawchat-plugin-connect/releases/download/channel-beta/latest-beta.txt)。
+匹配 `v*-beta.*` 的标签会运行 [`.github/workflows/release-beta.yml`](./.github/workflows/release-beta.yml)。该工作流校验标签与 `package.json`，在原生 Apple silicon runner 上运行 release gate，并且只发布已验收的 Darwin arm64 归档和 POSIX 安装器。本机已安装产品验收属于任务内验证，不会由 mock 替代。所有资源发布后，工作流会更新供默认安装和更新使用的 [`release-channel/latest-beta.txt`](https://github.com/XMethues/clawchat-plugin-connect/releases/download/channel-beta/latest-beta.txt)。
 
 贡献代码前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)、[CONTEXT.md](./CONTEXT.md) 和相关 [ADR](./docs/adr/)。
 

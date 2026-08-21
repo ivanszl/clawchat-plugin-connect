@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 describe("Connect Client Interface", () => {
-  it("starts listening before Runtime-backed Client catalog initialization completes", async () => {
+  it("serves the Client while Runtime-backed catalog initialization completes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-readiness-"));
     const assetsPath = join(directory, "assets");
     await mkdir(assetsPath);
@@ -102,18 +102,19 @@ describe("Connect Client Interface", () => {
       const origin = `http://127.0.0.1:${port}`;
       const document = await localRequest(fetchHandler, origin, "/");
       expect(document.status).toBe(200);
-      const warmingBootstrap = await localRequest(fetchHandler, origin, "/client/v1/bootstrap");
-      expect(warmingBootstrap.status).toBe(503);
-      await expect(warmingBootstrap.json()).resolves.toMatchObject({
-        error: { code: "client-warming-up", retryable: true },
-      });
+      const readyBootstrap = await localRequest(fetchHandler, origin, "/client/v1/bootstrap");
+      expect(readyBootstrap.status).toBe(200);
       await expect(Promise.race([starting.then(() => "ready"), Bun.sleep(10).then(() => "waiting")])).resolves.toBe(
-        "waiting",
+        "ready",
       );
-      releaseDiscovery();
       handle = await starting;
+      releaseDiscovery();
       const bootstrap = await localRequest(fetchHandler, handle.origin, "/client/v1/bootstrap");
       expect(bootstrap.status).toBe(200);
+      const eventBatch = await localRequest(fetchHandler, handle.origin, "/client/v1/events/batch?after=0");
+      expect(eventBatch.status).toBe(200);
+      const events = (await eventBatch.json()) as { events: Array<{ type: string }> };
+      expect(events.events.some((event) => event.type === "catalog.changed")).toBe(true);
     } finally {
       releaseDiscovery();
       handle ??= await starting;

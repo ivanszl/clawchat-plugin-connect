@@ -22,9 +22,12 @@ import type {
   RuntimeThreadCandidate,
   RuntimeThreadDiscoverySnapshot,
 } from "../runtime/types";
-import { workBuddyCapabilityAvailability } from "../runtime/workbuddy-availability";
+import {
+  workBuddyCapabilityAvailability,
+  type WorkBuddyCapabilityFailure,
+  workBuddyCapabilityFailure,
+} from "../runtime/workbuddy-availability";
 import { isCodeBuddySessionRuntimeTarget } from "../runtime/workbuddy-runtime-target";
-import { WorkBuddyDiscoveryError } from "../runtime/workbuddy-task-discovery";
 import type {
   AgentBindingConfig,
   ConnectConfig,
@@ -378,10 +381,11 @@ export class SessionCatalog {
       );
       return true;
     } catch (error) {
-      if (!(error instanceof WorkBuddyDiscoveryError)) throw error;
+      const failure = workBuddyCapabilityFailure(error);
+      if (!failure) throw error;
       this.options.transcriptProjection.invalidate(normalized);
-      entry.runtimeThreadUnavailableReason = projectionFailureReason(error);
-      entry.runtimeThreadUnavailableDetail = projectionFailureDetail(entry.runtimeThreadUnavailableDetail, error);
+      entry.runtimeThreadUnavailableReason = projectionFailureReason(failure);
+      entry.runtimeThreadUnavailableDetail = projectionFailureDetail(entry.runtimeThreadUnavailableDetail, failure);
       entry.status =
         entry.runtimeThreadUnavailableReason === "native-state-corrupt" ||
         entry.runtimeThreadUnavailableReason === "runtime-incompatible"
@@ -519,7 +523,7 @@ export class SessionCatalog {
             getAgentBinding(this.options.config, bindingId),
           );
         } catch (error) {
-          if (family !== "workbuddy" || !(error instanceof WorkBuddyDiscoveryError)) throw error;
+          if (family !== "workbuddy" || !workBuddyCapabilityFailure(error)) throw error;
           activeDiscoveryFailed = true;
         }
         try {
@@ -527,7 +531,7 @@ export class SessionCatalog {
             getAgentBinding(this.options.config, bindingId),
           );
         } catch (error) {
-          if (family !== "workbuddy" || !(error instanceof WorkBuddyDiscoveryError)) throw error;
+          if (family !== "workbuddy" || !workBuddyCapabilityFailure(error)) throw error;
         }
       }
       const bindingUnavailable = runtimeUnavailable || activeDiscoveryFailed;
@@ -799,7 +803,7 @@ function catalogActions(
   return actions;
 }
 
-function projectionFailureDetail(existing: string | null, error: WorkBuddyDiscoveryError): string {
+function projectionFailureDetail(existing: string | null, error: WorkBuddyCapabilityFailure): string {
   const availability = workBuddyCapabilityAvailability(error.code);
   if (availability === "unavailable") {
     const detail = existing ?? error.message;
@@ -819,7 +823,7 @@ function projectionFailureDetail(existing: string | null, error: WorkBuddyDiscov
   return boundedProjectionFailureDetail(conflictDetail);
 }
 
-function projectionFailureReason(error: WorkBuddyDiscoveryError): RuntimeThreadUnavailableReasonView {
+function projectionFailureReason(error: WorkBuddyCapabilityFailure): RuntimeThreadUnavailableReasonView {
   const availability = workBuddyCapabilityAvailability(error.code);
   if (availability === "unsupported") return "runtime-incompatible";
   if (availability === "unavailable") return "external-ownership-unverifiable";

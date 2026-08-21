@@ -9,11 +9,11 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const releaseDirectory = join(repositoryRoot, "build", "release");
 
 export interface ReleaseTarget {
-  platform: "darwin" | "linux" | "windows";
-  architecture: "arm64" | "x64";
-  archiveName: string;
-  archiveFormat: "tar.gz" | "zip";
-  connectExecutable: "clawchat-connect" | "clawchat-connect.exe";
+  platform: "darwin";
+  architecture: "arm64";
+  archiveName: "clawchat-connect-darwin-arm64.tar.gz";
+  archiveFormat: "tar.gz";
+  connectExecutable: "clawchat-connect";
 }
 
 export interface ReleasePayload {
@@ -31,49 +31,12 @@ export interface ReleaseBuildOptions {
   runPhase?: (phase: ReleasePhase) => Promise<void>;
 }
 
-const releaseTargets: Record<string, ReleaseTarget> = {
-  "darwin/arm64": {
-    platform: "darwin",
-    architecture: "arm64",
-    archiveName: "clawchat-connect-darwin-arm64.tar.gz",
-    archiveFormat: "tar.gz",
-    connectExecutable: "clawchat-connect",
-  },
-  "darwin/x64": {
-    platform: "darwin",
-    architecture: "x64",
-    archiveName: "clawchat-connect-darwin-x64.tar.gz",
-    archiveFormat: "tar.gz",
-    connectExecutable: "clawchat-connect",
-  },
-  "linux/arm64": {
-    platform: "linux",
-    architecture: "arm64",
-    archiveName: "clawchat-connect-linux-arm64.tar.gz",
-    archiveFormat: "tar.gz",
-    connectExecutable: "clawchat-connect",
-  },
-  "linux/x64": {
-    platform: "linux",
-    architecture: "x64",
-    archiveName: "clawchat-connect-linux-x64.tar.gz",
-    archiveFormat: "tar.gz",
-    connectExecutable: "clawchat-connect",
-  },
-  "win32/arm64": {
-    platform: "windows",
-    architecture: "arm64",
-    archiveName: "clawchat-connect-windows-arm64.zip",
-    archiveFormat: "zip",
-    connectExecutable: "clawchat-connect.exe",
-  },
-  "win32/x64": {
-    platform: "windows",
-    architecture: "x64",
-    archiveName: "clawchat-connect-windows-x64.zip",
-    archiveFormat: "zip",
-    connectExecutable: "clawchat-connect.exe",
-  },
+const releaseTarget: ReleaseTarget = {
+  platform: "darwin",
+  architecture: "arm64",
+  archiveName: "clawchat-connect-darwin-arm64.tar.gz",
+  archiveFormat: "tar.gz",
+  connectExecutable: "clawchat-connect",
 };
 
 export function requireBetaVersion(version: string): string {
@@ -84,11 +47,10 @@ export function requireBetaVersion(version: string): string {
 }
 
 export function resolveReleaseTarget(platform: NodeJS.Platform, architecture: string): ReleaseTarget {
-  const target = releaseTargets[`${platform}/${architecture}`];
-  if (!target) {
-    throw new Error(`Unsupported release host: ${platform}/${architecture}`);
+  if (platform !== releaseTarget.platform || architecture !== releaseTarget.architecture) {
+    throw new Error(`Current beta releases support only darwin/arm64, received ${platform}/${architecture}`);
   }
-  return target;
+  return releaseTarget;
 }
 
 export function releasePayload(_target: ReleaseTarget): ReleasePayload {
@@ -108,37 +70,22 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
   const connectExecutable = join("dist", target.connectExecutable);
   const clientDirectory = join("dist", "client");
   const officialPluginsDirectory = join("dist", "official-plugins");
-  const pluginTarget = `${target.platform === "windows" ? "win32" : target.platform}-${target.architecture}`;
+  const pluginTarget = `${target.platform}-${target.architecture}`;
   const outputArchive = join("build", "release", target.archiveName);
-  const packageCommand =
-    target.platform === "windows"
-      ? [
-          "powershell.exe",
-          "-NoProfile",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-File",
-          join("scripts", "package-windows-release.ps1"),
-          connectExecutable,
-          clientDirectory,
-          officialPluginsDirectory,
-          outputArchive,
-          pluginTarget,
-        ]
-      : [
-          "sh",
-          join("scripts", "package-release-archive.sh"),
-          connectExecutable,
-          clientDirectory,
-          officialPluginsDirectory,
-          outputArchive,
-          pluginTarget,
-        ];
+  const packageCommand = [
+    "sh",
+    join("scripts", "package-release-archive.sh"),
+    connectExecutable,
+    clientDirectory,
+    officialPluginsDirectory,
+    outputArchive,
+    pluginTarget,
+  ];
 
   return [
     { name: "validate version" },
     { name: "prepare output" },
-    { name: "core checks", command: [process.execPath, "run", "check:core"] },
+    { name: "release checks", command: [process.execPath, "run", "check:release"] },
     {
       name: "verify Liveware bundle",
       command: [process.execPath, join("scripts", "verify-liveware-bundle.ts")],
@@ -210,18 +157,13 @@ async function executeReleasePhase(phase: ReleasePhase, options: ReleaseBuildOpt
       return;
     case "copy release support files":
       await Promise.all(
-        ["install.sh", "install.ps1", "CHANGELOG.md"].map((filename) =>
+        ["install.sh", "CHANGELOG.md"].map((filename) =>
           copyFile(join(repositoryRoot, filename), join(releaseDirectory, filename)),
         ),
       );
       return;
     case "write checksums":
-      await writeChecksums(releaseDirectory, [
-        options.target.archiveName,
-        "install.sh",
-        "install.ps1",
-        "CHANGELOG.md",
-      ]);
+      await writeChecksums(releaseDirectory, [options.target.archiveName, "install.sh", "CHANGELOG.md"]);
       return;
     default:
       throw new Error(`Unknown release phase: ${phase.name}`);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { workBuddyCapabilityAvailability } from "../src/runtime/workbuddy-availability";
+import { workBuddyCapabilityAvailability, workBuddyCapabilityFailure } from "../src/runtime/workbuddy-availability";
 import {
   attachWorkBuddyTask,
   connectWorkBuddyTask,
@@ -112,6 +112,22 @@ describe("WorkBuddy capability availability", () => {
     ["endpoint-verification-failed"],
   ] satisfies Array<[WorkBuddyDiscoveryFailureCode]>)("classifies %s as conflict", (code) => {
     expect(workBuddyCapabilityAvailability(code)).toBe("conflict");
+  });
+
+  it("recognizes a WorkBuddy failure created by an isolated Plugin realm", () => {
+    const isolatedFailure = Object.assign(new Error("WorkBuddy AI is not running"), {
+      name: "WorkBuddyDiscoveryError",
+      code: "application-stopped",
+      details: { selectedCapability: "workbuddy-ai" },
+    });
+    const expected = {
+      code: "application-stopped",
+      message: "WorkBuddy AI is not running",
+    } as const;
+    expect(workBuddyCapabilityFailure(isolatedFailure)).toEqual(expected);
+    expect(workBuddyCapabilityFailure(new Error("Plugin invocation failed", { cause: isolatedFailure }))).toEqual(
+      expected,
+    );
   });
 });
 

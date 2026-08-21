@@ -34,16 +34,12 @@ async function listFiles(directory: string, prefix = ""): Promise<string[]> {
 }
 
 describe("standalone release bundle", () => {
-  it("runs the native Windows packaging test in the Windows smoke job", async () => {
+  it("runs the beta release on a native Apple silicon runner without a Windows smoke job", async () => {
     const workflow = Bun.YAML.parse(await readFile(".github/workflows/release-beta.yml", "utf8")) as {
-      jobs: { "windows-smoke": { steps: Array<{ name?: string; run?: string }> } };
+      jobs: Record<string, { "runs-on"?: string }>;
     };
-    const verification = workflow.jobs["windows-smoke"].steps.find(
-      ({ name }) => name === "Verify Windows service behavior and bundled assets",
-    );
-    expect(verification?.run?.split("\n").map((line) => line.trim())).toContain(
-      'bun test tests/release-bundle.test.ts --test-name-pattern "native Windows packager creates the exact archive-root payload"',
-    );
+    expect(workflow.jobs.release?.["runs-on"]).toBe("macos-14");
+    expect(workflow.jobs["windows-smoke"]).toBeUndefined();
   });
 
   it("keeps POSIX and native Windows package payloads in parity", async () => {
@@ -259,7 +255,7 @@ describe("standalone release bundle", () => {
     expect(await packageFor("darwin-x64", join(directory, "darwin.tar.gz"))).toBe(0);
   });
 
-  it("pins a Liveware release asset for every standalone Connect target", async () => {
+  it("retains verified Liveware inputs for deferred target tooling", async () => {
     expect([
       livewareAssetName("darwin", "arm64"),
       livewareAssetName("darwin", "x64"),
@@ -345,42 +341,18 @@ describe("standalone release bundle", () => {
     );
   });
 
-  it("ships a checksum-verifying PowerShell installer and Windows release targets", async () => {
+  it("excludes Windows artifacts and the PowerShell installer from the current beta inventory", async () => {
     const installer = await readFile("install.ps1", "utf8");
-    expect(installer).toContain("clawling.runtime.codex");
-    expect(installer).toContain("clawling.runtime.deepseek-harness");
-    expect(installer).toContain("clawling.runtime.opencode");
-    expect(installer).not.toContain("clawling.runtime.workbuddy");
-    expect(installer).toContain("raw.githubusercontent.com/$repository/release-channel/latest-beta.txt");
-    expect(installer).not.toContain("api.github.com");
-    expect(installer).toContain("Get-FileHash");
-    expect(installer).toContain("Expand-Archive");
-    expect(installer).toContain("clawchat-connect.exe");
-    expect(installer).toContain('$legacyLivewareTarget = Join-Path $InstallDirectory "liveware.exe"');
-    expect(installer).not.toContain("$livewareSource");
-    expect(installer).not.toContain("$livewareStaging");
-    expect(installer).toContain("CHANGELOG.md");
-    expect(installer).toContain('service", "stop');
-    expect(installer).toContain("$transactionStarted");
-    expect(installer).toContain('$officialPluginsSource = Join-Path $extractedDirectory "official-plugins"');
-    expect(installer).toContain('$officialPluginsStaging = "$officialPluginsTarget.new"');
-    expect(installer).toContain(
-      '@{ Target = $officialPluginsTarget; Backup = (Join-Path $backupDirectory "official-plugins"); Name = "officialPlugins" }',
-    );
-    expect(installer).toContain("Move-Item -LiteralPath $officialPluginsStaging -Destination $officialPluginsTarget");
-    expect(installer).toContain("if ($transactionStarted -and -not $transactionCommitted)");
+    expect(installer).toContain("Current beta releases support only macOS on Apple silicon (darwin-arm64)");
+    expect(installer).toContain("Pass -Version only to install an explicitly selected historical Windows release");
+    expect(installer).not.toContain("release-channel/latest-beta.txt");
+
     const workflow = await readFile(".github/workflows/release-beta.yml", "utf8");
-    expect(workflow).toContain("bun-windows-x64 windows x64");
-    expect(workflow).toContain("bun-windows-arm64 windows arm64");
-    expect(workflow).toContain("bun-linux-x64-baseline linux x64");
-    expect(workflow).not.toMatch(/^\s*bun-linux-x64 linux x64$/mu);
-    expect(workflow).toContain("install.ps1");
-    expect(workflow).toContain("sh scripts/package-windows-release.sh");
-    expect(workflow).toContain("./tests/windows-installer-preflight.ps1");
+    expect(workflow).toContain("runs-on: macos-14");
+    expect(workflow).toContain("run: bun run build:release");
+    expect(workflow).not.toMatch(/bun-windows|bun-linux|darwin-x64|install\\.ps1|windows-smoke/iu);
     expect(workflow).toContain("bun scripts/release-beta.ts publish build/release-notes.md build/release/*");
     expect(workflow).not.toContain("--clobber");
-    expect(workflow).toContain("release-channel");
-    expect(workflow).toContain("latest-beta.txt");
   });
 
   it("keeps installed WorkBuddy qualification optional and the beta workflow deterministic", async () => {
@@ -395,8 +367,8 @@ describe("standalone release bundle", () => {
     expect(workflow).not.toContain("test:integration:codex");
     expect(workflow).not.toContain("@openai/codex");
     expect(workflow).not.toContain("${{ secrets.");
-    expect(workflow).toContain("needs: [validate, windows-smoke]");
-    expect(workflow).toContain("run: bun run check:release");
+    expect(workflow).toContain("needs: validate");
+    expect(workflow).toContain("run: bun run build:release");
 
     const ciWorkflow = await readFile(".github/workflows/ci.yml", "utf8");
     expect(ciWorkflow).not.toContain("playwright install");

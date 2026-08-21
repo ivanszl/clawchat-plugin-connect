@@ -256,6 +256,6 @@ Do not add `sqlite`, `sqlite3`, `node:sqlite`, or `better-sqlite3`.
 
 ## Build and quality tooling
 
-Bun owns dependency installation (`bun.lock`), TypeScript execution, `bun:test`, and service bundling. Vite builds the browser-only SPA to `dist/client`; `bun build --target=bun --packages=external` emits service entrypoints under `dist/src`. Release assembly builds and verifies self-contained official Plugin Bundles, includes the official Liveware Bundle's pinned platform companion artifact, and packages the standalone Connect binaries for macOS, Linux, and Windows arm64/x64. Runtime and Client Extension artifacts remain independently installable Plugin assets rather than unconditional Core startup payloads.
+Bun owns dependency installation (`bun.lock`), TypeScript execution, `bun:test`, and service bundling. Vite builds the browser-only SPA to `dist/client`; `bun build --target=bun --packages=external` emits service entrypoints under `dist/src`. Current release assembly builds and verifies self-contained Darwin arm64 official Plugin Bundles, includes the official Liveware Bundle's pinned Apple silicon companion, and packages one qualified macOS Apple silicon standalone archive. Runtime and Client Extension artifacts remain independently installable Plugin assets rather than unconditional Core startup payloads.
 
 Biome owns formatting, import organization, and linting. `tsc --noEmit` remains the independent type check. Generated `dist/` artifacts stay ignored and outside Git history.

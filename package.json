@@ -39,7 +39,7 @@
     "dev": "bun src/bin.ts",
     "dev:web": "vite --config vite.config.ts",
     "preview:web": "bun run build:web && bun tests/fixtures/client-preview-server.ts",
-    "build": "bun run build:service && bun run build:web && bun scripts/build-official-plugins.ts --all-targets",
+    "build": "bun run build:service && bun run build:web && bun scripts/build-official-plugins.ts --target darwin-arm64",
     "build:service": "bun build ./src/bin.ts ./src/index.ts ./src/plugin/build-cli.ts --target=bun --outdir=dist/src --packages=external --sourcemap=linked",
     "build:web": "vite build --config vite.config.ts",
     "build:official-plugins": "bun scripts/build-official-plugins.ts",

@@ -8,9 +8,8 @@ import {
   runtimeModelSelectionLabel,
 } from "../runtime/model-selection";
 import type { RuntimeModelOption, SelectableRuntimeThread } from "../runtime/types";
-import { workBuddyCapabilityAvailability } from "../runtime/workbuddy-availability";
+import { workBuddyCapabilityAvailability, workBuddyCapabilityFailure } from "../runtime/workbuddy-availability";
 import { workBuddyRuntimeTargetKind } from "../runtime/workbuddy-runtime-target";
-import { WorkBuddyDiscoveryError } from "../runtime/workbuddy-task-discovery";
 import type {
   AgentBindingConfig,
   ConnectConfig,
@@ -176,15 +175,16 @@ function workBuddyCapabilityFailureText(
   capability: "Task discovery" | "model catalog",
   retryCommand: "/sessions" | "/switch" | "/model",
 ): string | null {
-  if (!(error instanceof WorkBuddyDiscoveryError)) return null;
-  const state = workBuddyCapabilityAvailability(error.code);
+  const failure = workBuddyCapabilityFailure(error);
+  if (!failure) return null;
+  const state = workBuddyCapabilityAvailability(failure.code);
   const action =
     state === "unsupported"
       ? `Update the selected WorkBuddy Runtime Capability before retrying \`${retryCommand}\`.`
       : state === "unavailable"
         ? `Restore WorkBuddy, then retry \`${retryCommand}\`.`
         : `Open the exact WorkBuddy Task and resolve its identity or replay conflict before retrying \`${retryCommand}\`.`;
-  return `WorkBuddy ${capability} is ${state === "conflict" ? "conflicted" : state}: ${error.message}\n${action}`;
+  return `WorkBuddy ${capability} is ${state === "conflict" ? "conflicted" : state}: ${failure.message}\n${action}`;
 }
 
 async function handleOutput(ctx: ChatCommandContext, rawMode: string | undefined): Promise<ChatCommandResult> {
@@ -504,7 +504,7 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
     if (!catalogFailure) throw error;
     return { handled: true, text: catalogFailure };
   }
-  if (!models)
+  if (!models || models.length === 0)
     return {
       handled: true,
       text: `Runtime ${ctx.runtimeFamilyFor(binding)} does not support model selection.`,

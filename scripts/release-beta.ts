@@ -77,12 +77,6 @@ const requiredBetaReleaseAssetNames = [
   "CHANGELOG.md",
   "checksums.txt",
   "clawchat-connect-darwin-arm64.tar.gz",
-  "clawchat-connect-darwin-x64.tar.gz",
-  "clawchat-connect-linux-arm64.tar.gz",
-  "clawchat-connect-linux-x64.tar.gz",
-  "clawchat-connect-windows-arm64.zip",
-  "clawchat-connect-windows-x64.zip",
-  "install.ps1",
   "install.sh",
 ] as const;
 

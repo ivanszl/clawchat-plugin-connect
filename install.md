@@ -17,7 +17,7 @@ The installation is complete only when:
 - A ClawChat Agent invite code.
 - An authenticated Codex CLI installation on the same computer.
 - An Agent Binding ID. Use `work` unless the user provides another ID.
-- macOS, Linux, or Windows 10/11 on arm64 or x64.
+- Apple silicon macOS (`darwin-arm64`). The current beta channel does not publish Intel macOS, Linux, or Windows artifacts.
 
 Never write the invite code to a file, commit it, print it, or enable shell tracing while it is present. Connect exchanges the code for credentials and does not persist the invite code.
 
@@ -29,7 +29,7 @@ Core starts the local Shared Client Gateway when the release-verified official L
 
 The capability accepts only `private` and `off`. `private` admits only the Installation Owner; `off` retires all Publications and releases the Plugin's gateway lease.
 
-## macOS and Linux
+## Apple silicon macOS
 
 Provide the invite code through `CLAWCHAT_INVITE_CODE`, then run the following script. Do not use `set -x`.
 
@@ -107,85 +107,9 @@ If Codex is not the executable on `PATH`, add `--codex-path /absolute/path/to/co
 
 On an existing installation, the script preserves the current Agent Binding configuration. Set `CLAWCHAT_AGENT_ID` to an existing Binding instead of overwriting its runtime preferences.
 
-## Windows PowerShell
+## Deferred platforms
 
-Set the invite code only in the current PowerShell process, then run:
-
-```powershell
-$ErrorActionPreference = "Stop"
-Set-StrictMode -Version Latest
-
-$AgentId = if ($env:CLAWCHAT_AGENT_ID) { $env:CLAWCHAT_AGENT_ID } else { "work" }
-if ([string]::IsNullOrWhiteSpace($env:CLAWCHAT_INVITE_CODE)) {
-  throw "Set CLAWCHAT_INVITE_CODE before running this script"
-}
-
-$CodexOutput = & codex --version 2>&1
-$CodexExitCode = $LASTEXITCODE
-$ActualCodexVersion = ($CodexOutput | Out-String).Trim()
-if ($CodexExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($ActualCodexVersion)) {
-  throw "Codex CLI is missing or did not return a version"
-}
-Write-Output "Using $ActualCodexVersion"
-
-Invoke-WebRequest `
-  https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.ps1 `
-  -OutFile install.ps1
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-
-$Connect = Join-Path $env:LOCALAPPDATA "ClawChatConnect\bin\clawchat-connect.exe"
-if (-not (Test-Path -LiteralPath $Connect)) {
-  throw "clawchat-connect.exe was not found at $Connect"
-}
-
-$ConfigPath = if ($env:CLAWCHAT_CONNECT_CONFIG) {
-  $env:CLAWCHAT_CONNECT_CONFIG
-} else {
-  Join-Path $HOME ".clawchat-connect\config.json"
-}
-if (Test-Path -LiteralPath $ConfigPath) {
-  & $Connect status --agent $AgentId | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "Config already exists but Agent Binding '$AgentId' is not configured. Set CLAWCHAT_AGENT_ID to an existing Binding or ask the user before changing the config."
-  }
-} else {
-  & $Connect init
-  if ($LASTEXITCODE -ne 0) { throw "Connect initialization failed" }
-  & $Connect plugin setup --non-interactive --select clawling.runtime.codex,clawling.exposure.liveware
-  if ($LASTEXITCODE -ne 0) { throw "Codex Runtime Plugin setup failed" }
-  & $Connect agent add $AgentId --plugin clawling.runtime.codex --capability codex
-  if ($LASTEXITCODE -ne 0) { throw "Agent Binding configuration failed" }
-}
-
-& $Connect activate $AgentId $env:CLAWCHAT_INVITE_CODE
-if ($LASTEXITCODE -ne 0) { throw "ClawChat activation failed" }
-Remove-Item Env:CLAWCHAT_INVITE_CODE
-
-& $Connect doctor
-if ($LASTEXITCODE -ne 0) { throw "Connect doctor failed" }
-
-& $Connect service install
-if ($LASTEXITCODE -ne 0) { throw "Connect Service installation failed" }
-
-for ($Attempt = 1; $Attempt -le 30; $Attempt++) {
-  $StatusOutput = (& $Connect status --agent $AgentId 2>&1) -join "`n"
-  if (
-    $StatusOutput.Contains("activated: yes") -and
-    $StatusOutput.Contains("runtime: connected")
-  ) {
-    Write-Output $StatusOutput
-    & $Connect service status
-    exit 0
-  }
-  Start-Sleep -Seconds 2
-}
-
-Write-Error "Connect or the selected Runtime did not become ready within 60 seconds."
-& $Connect status --agent $AgentId
-& $Connect service status
-& $Connect service logs --lines 100
-exit 1
-```
+Intel macOS, Linux, and Windows are outside the current beta release scope. Do not substitute a source build or an unqualified historical artifact when this runbook requests the current release; wait until the corresponding native release qualification resumes.
 
 ## Existing installations
 
@@ -198,7 +122,6 @@ clawchat-connect service status
 clawchat-connect status
 ```
 
-On Windows, rerun `install.ps1`, then run the same `service install`, `service status`, and `status` commands from a new PowerShell window.
 
 `service install` is intentional during an update: it refreshes the captured executable path and `PATH`, starts Connect, and keeps it enabled for future user logins.
 

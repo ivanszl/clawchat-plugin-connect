@@ -34,25 +34,20 @@ describe("resolveReleaseTarget", () => {
     });
   });
 
-  test("maps Linux x64", () => {
-    expect(resolveReleaseTarget("linux", "x64")).toMatchObject({
-      platform: "linux",
-      architecture: "x64",
-      archiveName: "clawchat-connect-linux-x64.tar.gz",
-    });
+  test.each([
+    ["darwin", "x64"],
+    ["linux", "arm64"],
+    ["linux", "x64"],
+    ["win32", "arm64"],
+    ["win32", "x64"],
+  ] as const)("rejects deferred release host %s/%s", (platform, architecture) => {
+    expect(() => resolveReleaseTarget(platform, architecture)).toThrow(
+      "Current beta releases support only darwin/arm64",
+    );
   });
 
-  test("maps Windows x64 to a zip", () => {
-    expect(resolveReleaseTarget("win32", "x64")).toMatchObject({
-      platform: "windows",
-      architecture: "x64",
-      archiveName: "clawchat-connect-windows-x64.zip",
-      connectExecutable: "clawchat-connect.exe",
-    });
-  });
-
-  test("rejects unsupported hosts", () => {
-    expect(() => resolveReleaseTarget("freebsd", "x64")).toThrow("Unsupported release host");
+  test("rejects unknown hosts", () => {
+    expect(() => resolveReleaseTarget("freebsd", "x64")).toThrow("Current beta releases support only darwin/arm64");
   });
 });
 
@@ -73,7 +68,7 @@ test("release phases validate before mutating output and package last", () => {
   expect(phases.map(({ name }) => name)).toEqual([
     "validate version",
     "prepare output",
-    "core checks",
+    "release checks",
     "verify Liveware bundle",
     "clean distributable",
     "build standalone executable",
@@ -84,29 +79,22 @@ test("release phases validate before mutating output and package last", () => {
   ]);
 });
 
-test.each([
-  ["darwin", "arm64", "darwin-arm64"],
-  ["darwin", "x64", "darwin-x64"],
-  ["linux", "arm64", "linux-arm64"],
-  ["linux", "x64", "linux-x64"],
-  ["win32", "arm64", "win32-arm64"],
-  ["win32", "x64", "win32-x64"],
-] as const)("builds the official Plugin payload for %s/%s using target %s", (platform, architecture, pluginTarget) => {
-  const phases = releasePhases(resolveReleaseTarget(platform, architecture));
+test("builds the Darwin arm64 official Plugin payload", () => {
+  const phases = releasePhases(resolveReleaseTarget("darwin", "arm64"));
   const buildPhase = phases.find((candidate) => candidate.name === "build official Plugins");
   const packagePhase = phases.find((candidate) => candidate.name === "package release archive");
   expect(buildPhase?.command).toEqual([
     process.execPath,
     join("scripts", "build-official-plugins.ts"),
     "--target",
-    pluginTarget,
+    "darwin-arm64",
   ]);
-  expect(packagePhase?.command?.at(-1)).toBe(pluginTarget);
+  expect(packagePhase?.command?.at(-1)).toBe("darwin-arm64");
 });
 
 test("checksums cover the archive and copied support files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "connect-release-"));
-  const files = ["artifact.tar.gz", "install.sh", "install.ps1", "CHANGELOG.md"];
+  const files = ["artifact.tar.gz", "install.sh", "CHANGELOG.md"];
   for (const filename of files) await writeFile(join(directory, filename), filename);
   await writeChecksums(directory, files);
   const manifest = await readFile(join(directory, "checksums.txt"), "utf8");
@@ -114,7 +102,6 @@ test("checksums cover the archive and copied support files", async () => {
   expect(manifest.trim().split("\n")).toEqual([
     expect.stringMatching(/^[a-f0-9]{64} {2}CHANGELOG\.md$/u),
     expect.stringMatching(/^[a-f0-9]{64} {2}artifact\.tar\.gz$/u),
-    expect.stringMatching(/^[a-f0-9]{64} {2}install\.ps1$/u),
     expect.stringMatching(/^[a-f0-9]{64} {2}install\.sh$/u),
   ]);
   expect(manifest).not.toContain("checksums.txt");
@@ -127,8 +114,8 @@ test("a failed phase keeps its name and exit status", async () => {
       version: "0.1.0-beta.1",
       target: resolveReleaseTarget("darwin", "arm64"),
       runPhase: async (phase) => {
-        if (phase.name === "core checks") throw failure;
+        if (phase.name === "release checks") throw failure;
       },
     }),
-  ).rejects.toMatchObject({ message: expect.stringContaining("core checks"), exitCode: 17 });
+  ).rejects.toMatchObject({ message: expect.stringContaining("release checks"), exitCode: 17 });
 });

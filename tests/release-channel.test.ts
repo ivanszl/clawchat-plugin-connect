@@ -11,18 +11,7 @@ import {
 } from "../scripts/release-beta";
 
 const read = (path: string) => readFile(path, "utf8");
-const betaReleaseAssetNames = [
-  "CHANGELOG.md",
-  "checksums.txt",
-  "clawchat-connect-darwin-arm64.tar.gz",
-  "clawchat-connect-darwin-x64.tar.gz",
-  "clawchat-connect-linux-arm64.tar.gz",
-  "clawchat-connect-linux-x64.tar.gz",
-  "clawchat-connect-windows-arm64.zip",
-  "clawchat-connect-windows-x64.zip",
-  "install.ps1",
-  "install.sh",
-];
+const betaReleaseAssetNames = ["CHANGELOG.md", "checksums.txt", "clawchat-connect-darwin-arm64.tar.gz", "install.sh"];
 const betaReleaseAssets = betaReleaseAssetNames.map((name) => `build/release/${name}`);
 
 test("beta tag comparison uses semantic version order", () => {
@@ -38,7 +27,7 @@ test("beta tag comparison rejects non-beta channel values", () => {
   expect(() => compareBetaTags("v0.1.0-beta.0", "v0.1.0-beta.1")).toThrow("beta release tag");
 });
 
-test("publication requires the exact ten-file beta release inventory", async () => {
+test("publication requires the exact four-file beta release inventory", async () => {
   let reads = 0;
   let creates = 0;
   await expect(
@@ -405,12 +394,11 @@ test("beta workflow invokes the immutable release and monotonic channel behavior
   expect(advancement?.if).toBe("github.event_name == 'push'");
 });
 
-test("beta workflow validates the exact tag and beta version before Windows compilation", async () => {
+test("beta workflow validates the exact tag before the Darwin arm64 release", async () => {
   const workflow = Bun.YAML.parse(await read(".github/workflows/release-beta.yml")) as {
     jobs: {
       validate: { steps: Array<{ name?: string; run?: string }> };
-      "windows-smoke": { needs?: string | string[]; steps: Array<{ name?: string; run?: string }> };
-      release: { needs?: string | string[]; steps: Array<{ name?: string }> };
+      release: { needs?: string | string[]; "runs-on"?: string; steps: Array<{ name?: string }> };
     };
   };
   const validation = workflow.jobs.validate.steps.find(({ name }) => name === "Verify beta version");
@@ -431,32 +419,9 @@ test("beta workflow validates the exact tag and beta version before Windows comp
     `test "${dollar}{GITHUB_REF_NAME}" = "v${dollar}{package_version}"`,
     "fi",
   ]);
-  expect(workflow.jobs["windows-smoke"].needs).toBe("validate");
-  expect(workflow.jobs.release.needs).toEqual(["validate", "windows-smoke"]);
+  expect(workflow.jobs.release.needs).toBe("validate");
+  expect(workflow.jobs.release["runs-on"]).toBe("macos-14");
   expect(workflow.jobs.release.steps.some(({ name }) => name === "Verify beta version")).toBe(false);
-  expect(
-    workflow.jobs["windows-smoke"].steps.some(({ name }) => name === "Build and run Windows x64 smoke checks"),
-  ).toBe(true);
-});
-
-test("every PowerShell beta workflow command block fails fast on native command errors", async () => {
-  const workflow = Bun.YAML.parse(await read(".github/workflows/release-beta.yml")) as {
-    jobs: { "windows-smoke": { steps: Array<{ name?: string; shell?: string; run?: string }> } };
-  };
-  const commandSteps = workflow.jobs["windows-smoke"].steps.filter(({ run }) => run !== undefined);
-  expect(commandSteps.map(({ name }) => name)).toEqual([
-    "Install dependencies",
-    "Verify Windows service behavior and bundled assets",
-    "Validate PowerShell installer syntax",
-    "Build and run Windows x64 smoke checks",
-  ]);
-  for (const step of commandSteps) {
-    expect(step.shell).toBe("pwsh");
-    expect(step.run?.split("\n").slice(0, 2)).toEqual([
-      '$ErrorActionPreference = "Stop"',
-      "$PSNativeCommandUseErrorActionPreference = $true",
-    ]);
-  }
 });
 
 test("version metadata is synchronized at beta.8", async () => {
@@ -468,13 +433,13 @@ test("version metadata is synchronized at beta.8", async () => {
   expect(manifest.connectVersion).toBe("0.1.0-beta.8");
 });
 
-test("unversioned installers follow beta", async () => {
+test("the unversioned shell installer follows beta while Windows requires an explicit historical version", async () => {
   const shell = await read("install.sh");
   const powershell = await read("install.ps1");
-  for (const source of [shell, powershell]) {
-    expect(source).toContain("release-channel/latest-beta.txt");
-    expect(source).not.toContain("release-channel/latest-alpha.txt");
-  }
+  expect(shell).toContain("release-channel/latest-beta.txt");
+  expect(shell).not.toContain("release-channel/latest-alpha.txt");
+  expect(powershell).not.toContain("release-channel/latest-beta.txt");
+  expect(powershell).toContain("Pass -Version only to install an explicitly selected historical Windows release");
 });
 
 test("shell installer bypasses the beta channel for an explicit historical version", async () => {
@@ -526,7 +491,7 @@ test("PowerShell installer bypasses the beta channel for an explicit historical 
   const executable = Bun.which("pwsh");
   if (!executable) {
     expect(powershell).toContain("[string]$Version");
-    expect(powershell).toContain("if ([string]::IsNullOrWhiteSpace($Version)) {\n  $releaseChannelUrl =");
+    expect(powershell).toContain("Pass -Version only to install an explicitly selected historical Windows release");
     expect(powershell).toContain('$baseUrl = "https://github.com/$repository/releases/download/$Version"');
     return;
   }
@@ -555,28 +520,18 @@ test("PowerShell installer bypasses the beta channel for an explicit historical 
   expect(requests).not.toContain("release-channel/latest-beta.txt");
 }, 30_000);
 
-test("beta workflow builds six archives before publishing and advancing the channel", async () => {
+test("beta workflow builds only the qualified Darwin arm64 release before publication", async () => {
   const workflow = Bun.YAML.parse(await read(".github/workflows/release-beta.yml")) as {
     on: { push: { tags: string[] }; workflow_dispatch: Record<string, never> };
-    jobs: { release: { steps: Array<{ name?: string; run?: string }> } };
+    jobs: { release: { "runs-on": string; steps: Array<{ name?: string; run?: string }> } };
   };
   expect(workflow.on.push.tags).toEqual(["v*-beta.*"]);
   expect(workflow.on.workflow_dispatch).toEqual({});
   const steps = workflow.jobs.release.steps;
-  const build = steps.find(({ name }) => name === "Build standalone binaries");
-  expect(
-    build?.run
-      ?.split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith("bun-")),
-  ).toEqual([
-    "bun-darwin-arm64 darwin arm64",
-    "bun-darwin-x64 darwin x64",
-    "bun-linux-arm64 linux arm64",
-    "bun-linux-x64-baseline linux x64",
-    "bun-windows-arm64 windows arm64",
-    "bun-windows-x64 windows x64",
-  ]);
+  const build = steps.find(({ name }) => name === "Build qualified Darwin arm64 release");
+  expect(workflow.jobs.release["runs-on"]).toBe("macos-14");
+  expect(build?.run?.trim()).toBe("bun run build:release");
+  expect(await read(".github/workflows/release-beta.yml")).not.toMatch(/darwin-x64|linux-|windows-|install\\.ps1/iu);
   const publicationIndex = steps.findIndex(({ name }) => name === "Publish GitHub prerelease");
   const advancementIndex = steps.findIndex(({ name }) => name === "Advance beta release channel");
   expect(publicationIndex).toBeGreaterThan(-1);

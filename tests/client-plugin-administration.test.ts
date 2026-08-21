@@ -267,6 +267,9 @@ describe("Connect Client trusted Plugin administration", () => {
         headers: { [BINDING_SCOPE_HEADER]: "plugin-binding" },
       }).then((response) => response.status),
     ).resolves.toBe(404);
+    await expect(
+      request(fetchHandler, handle.origin, "/client/v1/events/batch?after=0").then((response) => response.status),
+    ).resolves.toBe(200);
     const configBeforeSaveFailure = structuredClone(config);
     const bootstrapBeforeSaveFailure = await request(fetchHandler, handle.origin, "/client/v1/bootstrap").then(
       async (response) => await response.json(),

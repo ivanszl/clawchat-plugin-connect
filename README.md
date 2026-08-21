@@ -9,7 +9,7 @@
   <p>
     <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
     <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
-    <img alt="Platforms: macOS, Linux, and Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-59636e?style=flat-square">
+    <img alt="Platform: macOS Apple silicon" src="https://img.shields.io/badge/platform-macOS%20Apple%20silicon-59636e?style=flat-square">
     <img alt="Runtimes: Codex, OpenCode, WorkBuddy, and DeepSeek Harness" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode%20%7C%20WorkBuddy%20%7C%20DeepSeek%20Harness-f97316?style=flat-square">
   </p>
   <p>
@@ -74,6 +74,17 @@ The ClawChat surface is for conversation-scoped work. Workspace registration, se
 
 OpenCode compatibility is tested against OpenCode `1.18.10` and `1.18.13`, using `@opencode-ai/sdk` `1.18.13`. WorkBuddy supports only the two exact desktop tuples documented in [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md). DeepSeek Harness compatibility is established by native process boot, the paired Connect Bridge protocol, and runtime-published capabilities—not a DSH version or component-graph allowlist. Connect preserves the selected DSH Home and Profile, including native tools, plugins, Skills, workflows, MCP servers, subagents, providers, credentials, sandbox, and approval policy. Connect does not install or upgrade any runtime. See [Runtime Adapters](./docs/runtime-adapters.md) for the general capability boundary.
 
+#### WorkBuddy qualification boundary
+
+| Status | Boundary |
+| --- | --- |
+| **Supported** | With a qualified Desktop tuple and a healthy replay endpoint: Task discovery and adoption, text turns, replay-backed resume, and cancellation. |
+| **Conditional** | Runtime-owned model, mode, configuration, Commands, and Skills are used only when actually advertised. Replay freshness and sidecar health remain native prerequisites; WorkBuddy Session/resume uses replay rather than reconnecting a Connect-owned process. |
+| **Degraded** | A stopped application, stale or recycled endpoint, or authentication/discovery failure degrades only that WorkBuddy Binding. ClawChat stays connected, while Liveware keeps durable Sessions readable in offline/open-only mode with send, adopt, and cancel disabled. Endpoint conflicts are reported as conflicts and never guessed through. |
+| **Not qualified / unsupported** | Image or other media inputs; approval flows that require `bypassPermissions`; archive, restore, or delete; and complete coverage of every runtime mode, Command, or Skill. |
+
+See [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) for details.
+
 > [!IMPORTANT]
 > ClawChat Connect is beta software. Review [Local data and security](#local-data-and-security) before enabling trusted-LAN or private Liveware access.
 
@@ -83,7 +94,7 @@ Before installing Connect, you need:
 
 1. A ClawChat account and an Agent invite code.
 2. At least one supported coding-agent runtime installed and authenticated on the same computer.
-3. macOS, Linux, or Windows 10/11 on arm64 or x64.
+3. macOS on Apple silicon (`darwin-arm64`). Other operating systems and architectures are deferred from the current beta release.
 
 Check the runtime you plan to use:
 
@@ -109,7 +120,7 @@ Install the current beta-channel ClawChat Connect release on this computer. Read
 
 ### 1. Install Connect
 
-On macOS or Linux, the standalone installer does not require Bun or Node.js:
+On macOS Apple silicon, the standalone installer does not require Bun or Node.js:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
@@ -132,23 +143,7 @@ curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/ma
   CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-beta.8
 ```
 
-On Windows PowerShell, download and inspect the installer before running it:
-
-```powershell
-Invoke-WebRequest `
-  https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.ps1 `
-  -OutFile install.ps1
-
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-The Windows installer verifies the Release ZIP checksum, installs `clawchat-connect.exe`, Client assets, and official Plugin Bundles under `%LOCALAPPDATA%\ClawChatConnect\bin`, removes an obsolete sibling `liveware.exe`, and adds the directory to the current user's persistent `PATH`. Install a specific release or directory with:
-
-```powershell
-.\install.ps1 `
-  -Version v0.1.0-beta.8 `
-  -InstallDirectory "D:\Tools\ClawChatConnect"
-```
+The current beta channel publishes only the qualified `darwin-arm64` archive. Linux, Windows, and Intel macOS release artifacts are deferred until their native qualification resumes.
 
 Developers may install the Bun package instead:
 
@@ -246,7 +241,7 @@ clawchat-connect service install
 clawchat-connect service status
 ```
 
-Installation starts Connect immediately and enables it for future logins. Connect runs as a native per-user LaunchAgent on macOS, systemd user service on Linux, or current-user Task Scheduler task on Windows; administrator/root access is not required.
+Installation starts Connect immediately and enables it for future logins as a native per-user macOS LaunchAgent; administrator/root access is not required.
 
 There is no foreground `run` command. The background service owns the ClawChat WebSocket connection, Runtime Adapter processes, Shared Client Gateway, and every active Plugin lifecycle; the official Liveware companion runs only when its Plugin is installed and active.
 
@@ -550,7 +545,6 @@ Common causes:
 - **A runtime cannot start:** run `codex --version` or `opencode --version`, confirm the runtime is authenticated, and inspect the initialization error. Set `agents.<id>.runtimeConfig.executablePathOverride` when the selected Runtime Plugin capability should launch a different executable.
 - **A runtime works in a terminal but not in Connect:** reinstall the service so it captures the current `PATH`.
 - **OpenCode reports a version mismatch:** install a supported OpenCode version (`1.18.13` recommended; `1.18.10` retained for compatibility); Connect deliberately refuses unverified versions.
-- **Windows service does not start:** run `clawchat-connect service install` again from a terminal where the configured runtime works, then inspect `clawchat-connect service logs`.
 - **Configuration changed but behavior did not:** restart the service.
 - **Browser client does not open:** confirm the service is running, then use `clawchat-connect web --no-open` and open the printed URL.
 - **ClawChat does not show `ClawChat Connect`:** run `clawchat-connect status`, then restart the service and inspect its logs for `Liveware Exposure`.
@@ -568,7 +562,6 @@ Common causes:
 | Downloaded media cache | `~/.clawchat-connect/media-cache/` |
 | Native Runtime Threads | Runtime-owned storage, such as `~/.codex/sessions/` for Codex |
 
-On Windows, Connect data uses `%USERPROFILE%\.clawchat-connect\`, while the standalone binaries and notices default to `%LOCALAPPDATA%\ClawChatConnect\`.
 
 Invite codes are not persisted. Connect does not expose its ClawChat tools to the coding-agent runtime, run an MCP server, or inject MCP configuration. MCP servers already configured in the selected runtime remain under that runtime's ownership.
 
@@ -631,11 +624,11 @@ Run the OpenCode capability and native Session lifecycle integration with:
 OPENCODE_EXECUTABLE=/absolute/path/to/opencode bun run test:integration:opencode
 ```
 
-Create a lighter, unpackaged standalone build with `bun run build:binary`; it builds the Connect executable and self-contained official Plugin Bundles under `dist/`, including the release-verified Liveware Bundle's SHA-256-verified platform companion. Preview the browser client with `bun run preview:web`.
+Create a lighter, unpackaged standalone build with `bun run build:binary`; it builds the Connect executable and self-contained official Plugin Bundles under `dist/`, including the release-verified Liveware Bundle's SHA-256-verified Darwin arm64 companion. Preview the browser client with `bun run preview:web`.
 
-Create a distributable release for the current host with `bun run build:release`. It writes the archive, installers, `CHANGELOG.md`, and SHA-256 checksums under `build/release/`.
+Create the current distributable release on Apple silicon with `bun run build:release`. It writes the Darwin arm64 archive, `install.sh`, `CHANGELOG.md`, and SHA-256 checksums under `build/release/`; other targets fail before the output directory is mutated.
 
-Version tags such as `v0.1.0-beta.8` run the beta release workflow. Tags matching `v*-beta.*` run [`.github/workflows/release-beta.yml`](.github/workflows/release-beta.yml), which checks the tag against `package.json`, runs deterministic code checks, verifies all six vendored Liveware inputs, builds target-complete official Plugin Bundles, and uses GitHub Actions to compile macOS, Linux, and Windows arm64/x64 binaries. Local installed-product qualification is optional and does not block tagging; WorkBuddy Task configuration is never sent to GitHub Actions. After every release asset is published, the workflow advances the `release-channel/latest-beta.txt` pointer used by default installs and updates through the [beta channel artifact](https://github.com/XMethues/clawchat-plugin-connect/releases/download/beta-channel/latest-beta.txt).
+Version tags such as `v0.1.0-beta.8` run the beta release workflow. Tags matching `v*-beta.*` run [`.github/workflows/release-beta.yml`](.github/workflows/release-beta.yml), which checks the tag against `package.json`, runs the release gate on a native Apple silicon runner, and publishes only the qualified Darwin arm64 archive and POSIX installer. Local installed-product qualification is optional and does not block tagging; WorkBuddy Task configuration is never sent to GitHub Actions. After every release asset is published, the workflow advances the `release-channel/latest-beta.txt` pointer used by default installs and updates through the [beta channel artifact](https://github.com/XMethues/clawchat-plugin-connect/releases/download/channel-beta/latest-beta.txt).
 
 ## License
 

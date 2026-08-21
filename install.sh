@@ -32,25 +32,20 @@ esac
 printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ||
   fail "invalid release version: ${version}"
 
-case "$(uname -s)" in
-  Darwin)
-    os="darwin"
-    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.deepseek-harness clawling.runtime.opencode clawling.runtime.workbuddy clawling.exposure.liveware"
-    ;;
-  Linux)
-    os="linux"
-    required_official_plugin_ids="clawling.runtime.codex clawling.runtime.deepseek-harness clawling.runtime.opencode clawling.exposure.liveware"
-    ;;
-  *) fail "unsupported operating system: $(uname -s)" ;;
-esac
+kernel="$(uname -s)"
+machine="$(uname -m)"
+translated=0
+if [ "$kernel" = "Darwin" ] && [ "$machine" = "x86_64" ] && command -v sysctl >/dev/null 2>&1; then
+  translated="$(sysctl -in sysctl.proc_translated 2>/dev/null || printf '0\n')"
+fi
+if [ "$kernel" != "Darwin" ] || { [ "$machine" != "arm64" ] && [ "$translated" != "1" ]; }; then
+  fail "current beta releases support only macOS on Apple silicon (darwin-arm64)"
+fi
+os="darwin"
+arch="arm64"
+required_official_plugin_ids="clawling.runtime.codex clawling.runtime.deepseek-harness clawling.runtime.opencode clawling.runtime.workbuddy clawling.exposure.liveware"
 
-case "$(uname -m)" in
-  arm64 | aarch64) arch="arm64" ;;
-  x86_64 | amd64) arch="x64" ;;
-  *) fail "unsupported architecture: $(uname -m)" ;;
-esac
-
-asset="clawchat-connect-${os}-${arch}.tar.gz"
+asset="clawchat-connect-darwin-arm64.tar.gz"
 base_url="https://github.com/${repository}/releases/download/${version}"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/clawchat-connect.XXXXXX")"
 transaction_started=0

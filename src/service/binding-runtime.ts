@@ -32,8 +32,11 @@ import {
   type RuntimeSlashSelection,
   runtimeInputIdentityContains,
 } from "../runtime/types";
-import { workBuddyCapabilityAvailability } from "../runtime/workbuddy-availability";
-import { WorkBuddyDiscoveryError } from "../runtime/workbuddy-task-discovery";
+import {
+  workBuddyCapabilityAvailability,
+  type WorkBuddyCapabilityFailure,
+  workBuddyCapabilityFailure,
+} from "../runtime/workbuddy-availability";
 import type { ActivationCredentials, ConnectConfig } from "../types";
 import {
   createSessionContinuity,
@@ -366,15 +369,16 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         );
       });
   };
-  const isWorkBuddyRuntimeUnavailable = (error: unknown): error is WorkBuddyDiscoveryError =>
-    workBuddyRuntime && error instanceof WorkBuddyDiscoveryError;
-  const isRetryableWorkBuddyPreparationError = (error: WorkBuddyDiscoveryError): boolean =>
+  const workBuddyRuntimeFailure = (error: unknown): WorkBuddyCapabilityFailure | null =>
+    workBuddyRuntime ? workBuddyCapabilityFailure(error) : null;
+  const isRetryableWorkBuddyPreparationError = (error: WorkBuddyCapabilityFailure): boolean =>
     workBuddyCapabilityAvailability(error.code) === "unavailable";
   const retryRuntimePreparation = async (): Promise<void> => {
     try {
       await runtimeAdapters.prepare(binding);
     } catch (error) {
-      if (!isWorkBuddyRuntimeUnavailable(error)) {
+      const failure = workBuddyRuntimeFailure(error);
+      if (!failure) {
         const detail = error instanceof Error ? error.message : String(error);
         options.writeError(`${options.agentId}: Runtime preparation retry failed fatally: ${detail}\n`);
         void shutdownBinding(detail).catch((shutdownError) =>
@@ -385,8 +389,8 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         return;
       }
       if (runtimeClosing) return;
-      runtimeStartupUnavailableDetail = error.message;
-      runtimePreparationRetryable = isRetryableWorkBuddyPreparationError(error);
+      runtimeStartupUnavailableDetail = failure.message;
+      runtimePreparationRetryable = isRetryableWorkBuddyPreparationError(failure);
       await options.stateStore.setRuntimeAvailability(
         options.agentId,
         "startup-unavailable",
@@ -453,9 +457,10 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     try {
       await runtimeAdapters.prepare(binding);
     } catch (error) {
-      if (!isWorkBuddyRuntimeUnavailable(error)) throw error;
-      runtimeStartupUnavailableDetail = error.message;
-      runtimePreparationRetryable = isRetryableWorkBuddyPreparationError(error);
+      const failure = workBuddyRuntimeFailure(error);
+      if (!failure) throw error;
+      runtimeStartupUnavailableDetail = failure.message;
+      runtimePreparationRetryable = isRetryableWorkBuddyPreparationError(failure);
     }
     await wsClient.connect();
     void resolveSenderDisplayName(options.activation.ownerUserId)

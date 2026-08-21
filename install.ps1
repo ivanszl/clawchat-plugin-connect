@@ -34,14 +34,7 @@ $repository = if ($env:CLAWCHAT_CONNECT_REPOSITORY) {
   "XMethues/clawchat-plugin-connect"
 }
 if ([string]::IsNullOrWhiteSpace($Version)) {
-  $Version = $env:CLAWCHAT_CONNECT_VERSION
-}
-if ([string]::IsNullOrWhiteSpace($Version)) {
-  $releaseChannelUrl = "https://raw.githubusercontent.com/$repository/release-channel/latest-beta.txt"
-  $Version = (Invoke-WebRequest -UseBasicParsing -Uri $releaseChannelUrl).Content.Trim()
-  if ([string]::IsNullOrWhiteSpace($Version)) {
-    throw "Beta release channel was empty for $repository"
-  }
+  throw "Current beta releases support only macOS on Apple silicon (darwin-arm64). Pass -Version only to install an explicitly selected historical Windows release."
 }
 if (-not $Version.StartsWith("v")) {
   $Version = "v$Version"

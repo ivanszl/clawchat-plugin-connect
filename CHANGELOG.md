@@ -8,6 +8,10 @@ All notable changes to ClawChat Connect are documented in this file.
 
 - Added the official DeepSeek Harness Runtime Plugin with native Session discovery/resume, model and preset options, approvals/questions, Commands, Skills, cancellation, rich input, runtime-owned Profile composition, and capability-gated archive support.
 
+### Changed
+
+- Restricted the current beta release, installer, official Bundle inventory, and release workflow to qualified Apple silicon macOS (`darwin-arm64`); Intel macOS, Linux, and Windows release artifacts are deferred until native qualification resumes.
+
 ### Fixed
 
 - Reused a verified WorkBuddy-owned exact Task endpoint instead of killing and replacing it before every Connect turn, preserving desktop synchronization, native parentage, background Task ownership, and endpoint recovery.

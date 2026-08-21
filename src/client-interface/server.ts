@@ -57,8 +57,7 @@ import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { RuntimeSlashSelection } from "../runtime/types";
-import { workBuddyCapabilityAvailability } from "../runtime/workbuddy-availability";
-import { WorkBuddyDiscoveryError } from "../runtime/workbuddy-task-discovery";
+import { workBuddyCapabilityAvailability, workBuddyCapabilityFailure } from "../runtime/workbuddy-availability";
 import type { BindingRuntimeHandle } from "../service/binding-runtime";
 import type { AgentBindingConfig, ConnectConfig, RuntimeModelSelection } from "../types";
 import {
@@ -271,6 +270,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   });
   const publishClientViews = clientViewPublisher(options.stateStore, catalog);
   let ready = false;
+  let initialClientViewPublication: Promise<void> | null = null;
 
   const serverFactory: ClientHttpServerFactory = options.serverFactory ?? ((serverOptions) => Bun.serve(serverOptions));
   const handleRequest: ClientHttpServerOptions["fetch"] = async (request, requestServer) => {
@@ -880,9 +880,10 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
               ],
             });
           } catch (error) {
-            if (!(error instanceof WorkBuddyDiscoveryError)) throw error;
-            const availability = workBuddyCapabilityAvailability(error.code);
-            return jsonResponse({ supported: false, entries: [], availability, detail: error.message });
+            const failure = workBuddyCapabilityFailure(error);
+            if (!failure) throw error;
+            const availability = workBuddyCapabilityAvailability(failure.code);
+            return jsonResponse({ supported: false, entries: [], availability, detail: failure.message });
           }
         }
         const sessionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)$/u);
@@ -1639,8 +1640,8 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     const failure = warming.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failure) throw failure.reason;
     await turnOutbox.start();
-    await publishClientViews();
     ready = true;
+    initialClientViewPublication = publishClientViews({ emitInitial: true }).catch(() => undefined);
   } catch (error) {
     await server.stop(true);
     throw error;
@@ -1678,6 +1679,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
     },
     async stop() {
       await server.stop(true);
+      await initialClientViewPublication;
     },
   };
 }
@@ -1959,56 +1961,75 @@ async function validateMutationRequest(request: Request, origin: string): Promis
   return null;
 }
 
-function clientViewPublisher(store: ConnectStateStore, catalog: SessionCatalog): () => Promise<void> {
+function clientViewPublisher(
+  store: ConnectStateStore,
+  catalog: SessionCatalog,
+): (options?: { emitInitial?: boolean }) => Promise<void> {
   let catalogFingerprint: string | null = null;
   const sessionFingerprints = new Map<string, string>();
   let publishing: Promise<void> | null = null;
+  let publishRequested = false;
+  let emitInitialRequested = false;
   let lastRevision = Date.now();
   const nextRevision = (floor: number) => {
     lastRevision = Math.max(Date.now(), lastRevision + 1, floor + 1);
     return lastRevision;
   };
-  return async () => {
-    if (publishing) return await publishing;
-    publishing = (async () => {
-      const catalogView = await catalog.view();
-      const nextCatalogFingerprint = viewFingerprint(catalogView);
-      if (catalogFingerprint !== null && nextCatalogFingerprint !== catalogFingerprint) {
-        const revision = nextRevision(catalogView.revision);
+  const publishOnce = async (emitInitial: boolean) => {
+    const catalogView = await catalog.view();
+    const nextCatalogFingerprint = viewFingerprint(catalogView);
+    if (
+      (catalogFingerprint === null && emitInitial) ||
+      (catalogFingerprint !== null && nextCatalogFingerprint !== catalogFingerprint)
+    ) {
+      const revision = nextRevision(catalogView.revision);
+      await store.appendClientViewEvent({
+        type: "catalog.changed",
+        cursor: 0,
+        revision,
+        catalog: { ...catalogView, revision },
+      });
+    }
+    catalogFingerprint = nextCatalogFingerprint;
+    const sessionRefs = new Set(
+      catalogView.bindings.flatMap((binding) => binding.entries.map((entry) => entry.sessionRef)),
+    );
+    for (const sessionRef of sessionRefs) {
+      const view = await catalog.sessionView(sessionRef);
+      if (!view) continue;
+      const fingerprint = viewFingerprint(view);
+      const previous = sessionFingerprints.get(sessionRef);
+      if ((previous === undefined && emitInitial) || (previous !== undefined && previous !== fingerprint)) {
+        const revision = nextRevision(view.revision);
         await store.appendClientViewEvent({
-          type: "catalog.changed",
+          type: "session.changed",
           cursor: 0,
+          sessionRef,
           revision,
-          catalog: { ...catalogView, revision },
+          session: { ...view, revision },
         });
       }
-      catalogFingerprint = nextCatalogFingerprint;
-      const sessionRefs = new Set(
-        catalogView.bindings.flatMap((binding) => binding.entries.map((entry) => entry.sessionRef)),
-      );
-      for (const sessionRef of sessionRefs) {
-        const view = await catalog.sessionView(sessionRef);
-        if (!view) continue;
-        const fingerprint = viewFingerprint(view);
-        const previous = sessionFingerprints.get(sessionRef);
-        if (previous !== undefined && previous !== fingerprint) {
-          const revision = nextRevision(view.revision);
-          await store.appendClientViewEvent({
-            type: "session.changed",
-            cursor: 0,
-            sessionRef,
-            revision,
-            session: { ...view, revision },
-          });
+      sessionFingerprints.set(sessionRef, fingerprint);
+    }
+    for (const sessionRef of sessionFingerprints.keys()) {
+      if (!sessionRefs.has(sessionRef)) sessionFingerprints.delete(sessionRef);
+    }
+  };
+  return async (options) => {
+    publishRequested = true;
+    emitInitialRequested ||= options?.emitInitial === true;
+    if (!publishing) {
+      publishing = (async () => {
+        while (publishRequested) {
+          publishRequested = false;
+          const emitInitial = emitInitialRequested;
+          emitInitialRequested = false;
+          await publishOnce(emitInitial);
         }
-        sessionFingerprints.set(sessionRef, fingerprint);
-      }
-      for (const sessionRef of sessionFingerprints.keys()) {
-        if (!sessionRefs.has(sessionRef)) sessionFingerprints.delete(sessionRef);
-      }
-    })().finally(() => {
-      publishing = null;
-    });
+      })().finally(() => {
+        publishing = null;
+      });
+    }
     await publishing;
   };
 }
