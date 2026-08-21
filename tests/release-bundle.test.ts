@@ -355,7 +355,7 @@ describe("standalone release bundle", () => {
     expect(workflow).not.toContain("--clobber");
   });
 
-  it("keeps installed WorkBuddy qualification optional and the beta workflow deterministic", async () => {
+  it("keeps per-profile installed WorkBuddy qualification optional and the beta workflow deterministic", async () => {
     const workflow = await readFile(".github/workflows/release-beta.yml", "utf8");
     expect(workflow).not.toContain("workbuddy-installed:");
     expect(workflow).not.toContain("workbuddy-release");
@@ -380,16 +380,14 @@ describe("standalone release bundle", () => {
       scripts: Record<string, string>;
       devDependencies: Record<string, string>;
     };
-    expect(packageManifest.scripts["check:release:workbuddy"]).toContain(
-      "test:integration:workbuddy-installation-preflight",
-    );
+    expect(packageManifest.scripts["check:release:workbuddy"]).toBeUndefined();
+    expect(packageManifest.scripts["test:integration:workbuddy-installation-preflight"]).toBeUndefined();
     expect(packageManifest.scripts["test:integration:workbuddy-ai"]).toContain(
       "test:integration:workbuddy-ai-ui-concurrency-recovery",
     );
     expect(packageManifest.scripts["test:integration:workbuddy-cn"]).toContain(
       "test:integration:workbuddy-cn-ui-concurrency-recovery",
     );
-    expect(packageManifest.scripts["check:release:workbuddy"]).toContain("bun run check:core");
     expect(packageManifest.scripts["check:release"]).toContain("bun run check:core");
     expect(packageManifest.scripts["check:release"]).toContain("tests/release-bundle.test.ts");
     expect(packageManifest.scripts["check:core"]).not.toContain("test:client-web");
@@ -399,7 +397,7 @@ describe("standalone release bundle", () => {
 
     const workbuddyDocs = await readFile("docs/workbuddy-adapter.md", "utf8");
     expect(workbuddyDocs).toContain("Optional installed-release diagnostics");
-    expect(workbuddyDocs).toContain("does not block creating or publishing a release tag");
+    expect(workbuddyDocs).toContain("do not block creating or publishing a release tag");
     expect(workbuddyDocs).not.toContain("Record the local qualification result before creating the release tag");
   });
 

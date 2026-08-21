@@ -72,9 +72,7 @@
     "test:integration:workbuddy-cn-turn": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-turn.ts",
     "test:integration:workbuddy-cn-ui-concurrency-recovery": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-ui-concurrency-recovery.ts",
     "test:integration:workbuddy-cn-interaction-cancellation": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-interaction-cancellation.ts",
-    "test:integration:workbuddy-cn": "bun run test:integration:workbuddy-cn-discovery && bun run test:integration:workbuddy-cn-adoption && bun run test:integration:workbuddy-cn-turn && bun run test:integration:workbuddy-cn-interaction-cancellation && bun run test:integration:workbuddy-cn-ui-concurrency-recovery",
-    "test:integration:workbuddy-installation-preflight": "bun tests/integration/workbuddy-installation-preflight.ts",
-    "check:release:workbuddy": "bun run test:integration:workbuddy-installation-preflight && bun run test:integration:workbuddy-ai && bun run test:integration:workbuddy-cn && bun run check:core"
+    "test:integration:workbuddy-cn": "bun run test:integration:workbuddy-cn-discovery && bun run test:integration:workbuddy-cn-adoption && bun run test:integration:workbuddy-cn-turn && bun run test:integration:workbuddy-cn-interaction-cancellation && bun run test:integration:workbuddy-cn-ui-concurrency-recovery"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",

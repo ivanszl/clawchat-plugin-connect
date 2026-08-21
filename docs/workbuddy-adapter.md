@@ -75,7 +75,7 @@ Connect adopts or recovers a Task only from complete `session/load` replay. `ses
 
 The currently qualified native Tasks select `bypassPermissions`. They execute without emitting `session/request_permission`, so Connect neither synthesizes an approval nor advertises approval Interaction support for that attachment. This is an honest capability and installed-qualification downgrade, not a new Connect code capability. Native WorkBuddy must provide a non-bypass mode and emit the real request before approval Interaction can be qualified.
 
-Current installed `workbuddy-ai` qualification observed a complete Task-owned catalog: five text-only models, six modes, three Session options, 40 Runtime Commands, and 32 Runtime Skills. These counts are diagnostics, not an allowlist. It also passed authoritative active-branch reconciliation after a native UI Turn, background Task A execution while WorkBuddy displayed Task B, and automatic same-Task continuation after application restart. The complete current `workbuddy-cn` catalog and equivalent client-independence/recovery run, real Runtime Interactions, and the clean simultaneous two-distribution matrix remain qualification gaps.
+Current installed `workbuddy-ai` qualification observed a complete Task-owned catalog: five text-only models, six modes, three Session options, 40 Runtime Commands, and 32 Runtime Skills. These counts are diagnostics, not an allowlist. It also passed authoritative active-branch reconciliation after a native UI Turn, background Task A execution while WorkBuddy displayed Task B, and automatic same-Task continuation after application restart. Mainland `workbuddy-cn` completion is accepted through the shared Adapter contract and automated profile parity without another installed UI run. Approval remains unsupported for Tasks configured to skip permission checks.
 
 ## Recovery behavior
 
@@ -115,15 +115,17 @@ A CodeBuddy Session is recovered only through stdio ACP `session/load` using its
 
 ## Optional installed-release diagnostics
 
-When a maintainer needs to investigate or manually exercise both exact distributions on a designated Mac, run:
+When a maintainer needs to investigate one installed distribution on a designated Mac, run only that profile's command:
 
 ```bash
-bun run check:release:workbuddy
+bun run test:integration:workbuddy-ai
+# or
+bun run test:integration:workbuddy-cn
 ```
 
-This optional diagnostic command exercises discovery, adoption/replay, context/model/native persistence, native-client selection independence, cancellation, application restart, endpoint rotation, and recovery for both profiles, then runs the repository's non-browser quality gate. Approval Interaction is exercised only when the native Task emits a real permission request; `bypassPermissions` is recorded as no approval capability, never replaced by a synthesized approval. The result is useful task evidence, but it does not block creating or publishing a release tag. It does not install Chromium or require cross-client live message mirroring. Browser checks for the loopback Connect Client remain in the ordinary repository quality gate.
+Each command independently exercises discovery, adoption/replay, context/model/native persistence, native-client selection independence, cancellation, application restart, endpoint rotation, and recovery for its selected profile. Running both desktop applications together is not required. Approval is exercised only when the selected native Task actually asks for permission; a Task configured to skip permission checks is reported as unsupported rather than replaced by a synthesized prompt.
 
-Use dedicated test Tasks only. For each `WORKBUDDY_AI_TEST_` and `WORKBUDDY_CN_TEST_` prefix, set:
+Use a dedicated test Task and set only the chosen profile's `WORKBUDDY_AI_TEST_` or `WORKBUDDY_CN_TEST_` variables:
 
 - `DEDICATED_TASK=1`, after confirming the configured Task is reserved for release verification;
 - `TASK_ID`, `TASK_WORKSPACE`;
@@ -132,11 +134,11 @@ Use dedicated test Tasks only. For each `WORKBUDDY_AI_TEST_` and `WORKBUDDY_CN_T
 - `UI_TASK_TITLE`, `UI_RESTORE_TASK_TITLE` so native-client selection checks restore the prior application view even on failure;
 - `UI_BACKGROUND_TASK_TITLE` for a second dedicated Task used to prove the Attachment remains bound while the application displays another Task;
 - `UI_ORIGINATED_USER_MARKER`, `UI_ORIGINATED_ASSISTANT_MARKER` for the native UI turn performed while Connect holds the Attachment;
-- `INTERACTION_PROMPT`, a safe permission probe; `bypassPermissions` must produce no approval request and is recorded as a capability downgrade;
+- `INTERACTION_PROMPT`, a safe permission probe;
 - `CANCELLATION_PROMPT`, a harmless long-running prompt that can be cancelled safely.
 
-Optional `TURN_MARKER` and `RECOVERY_MARKER` values make a diagnostic run reproducible; otherwise the suite generates unique markers. The scripts use temporary Connect databases and delete them. Native prompt markers intentionally remain in the dedicated WorkBuddy test Tasks as diagnostic evidence; the JSON result discloses them. Clean up only those dedicated Tasks through WorkBuddy after recording the result. Never point the suite at an unrelated Task.
+Optional `TURN_MARKER` and `RECOVERY_MARKER` values make a diagnostic run reproducible; otherwise the suite generates unique markers. The scripts use temporary Connect databases and delete them. Native prompt markers intentionally remain in the dedicated WorkBuddy test Task as diagnostic evidence; the JSON result discloses them. Clean up only that dedicated Task through WorkBuddy after recording the result. Never point a suite at an unrelated Task.
 
-The preflight requires both configured applications to be running simultaneously and resolves each Task only through its selected profile. The UI step selects the dedicated Task only to establish native state, then restores `UI_RESTORE_TASK_TITLE`; a Connect-originated marker is not required to render live in that client. The concurrency/restart step asks the operator to complete one marked native UI turn while Connect holds the Attachment, switches the application to `UI_BACKGROUND_TASK_TITLE`, then deliberately asks the operator to restart only the selected distribution. WorkBuddy AI now qualifies authoritative replay freshness, native-client selection independence and automatic restart continuation; mainland parity, real Interactions and the simultaneous matrix remain pending.
+The UI steps select only the chosen profile's dedicated Task, restore `UI_RESTORE_TASK_TITLE`, switch to `UI_BACKGROUND_TASK_TITLE`, and ask the operator to restart only that selected distribution. No other WorkBuddy installation participates in the result.
 
-The tag-triggered GitHub release workflow cannot run signed-in WorkBuddy, ClawChat, or Liveware UI qualification on clean hosted runners. Mainland WorkBuddy parity, real Runtime Interactions and the simultaneous two-distribution matrix therefore remain explicit installed-product QA gaps until separately evidenced on clean Tasks. Release claims must not replace those scenarios with mocks or unauthenticated browser probes.
+Hosted GitHub runners cannot perform signed-in WorkBuddy, ClawChat, or Liveware UI checks. These profile-specific diagnostics remain optional local evidence and do not block creating or publishing a release tag.
