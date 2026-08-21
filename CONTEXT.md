@@ -298,11 +298,11 @@ The connection-time evidence that a candidate endpoint belongs to the selected W
 _Avoid_: Task ID, endpoint availability, successful `session/load`
 
 **WorkBuddy Task ACP Endpoint**:
-A private desktop-owned ACP service for one active WorkBuddy Task through which a verified client can replay and continue that Task. It is lifecycle-bound and has no supported public discovery contract; it is not a direct CodeBuddy ACP process owned by Connect.
-_Avoid_: Public WorkBuddy API, direct CodeBuddy ACP
+A private desktop-owned ACP service through which one Attachment loads, verifies and continues an exact WorkBuddy Task. It may be an exact per-Task service or a separately connected capability-owned host after `session/load` proves the same Task; either form is ephemeral transport rather than Session or Task identity.
+_Avoid_: Public WorkBuddy API, direct CodeBuddy ACP, Native Runtime Client
 
 **WorkBuddy Task Attachment**:
-A verified relationship in which one Agent Binding operates an existing WorkBuddy Task through its WorkBuddy Task ACP Endpoint while retaining the Task's native conversation. Its connection and authorization state are ephemeral, and neither the WorkBuddy Desktop process nor its current UI selection owns the Attachment or its routing.
+A verified relationship in which one Agent Binding operates an existing WorkBuddy Task through a WorkBuddy Task ACP Endpoint while retaining the Task's native conversation. Its connection and authorization state are ephemeral, and neither a WorkBuddy Desktop process, host connection, per-Task process nor current UI selection owns the Attachment or its routing.
 _Avoid_: WorkBuddy Task, Runtime Thread mapping, CodeBuddy Session, direct ACP session
 
 **WorkBuddy Automation**:

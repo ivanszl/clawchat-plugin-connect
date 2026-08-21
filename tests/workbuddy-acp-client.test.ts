@@ -109,7 +109,7 @@ describe("WorkBuddy private ACP client", () => {
       activities: [
         {
           id: "workbuddy:user:message-1",
-          position: "0.1",
+          position: "9000000000.1",
           parentId: null,
           kind: "user",
           text: "remember this",
@@ -118,7 +118,7 @@ describe("WorkBuddy private ACP client", () => {
         },
         {
           id: "workbuddy:tool:tool-1",
-          position: "0.2",
+          position: "9000000000.2",
           parentId: null,
           kind: "tool",
           text: "Inspect workspace",
@@ -127,7 +127,7 @@ describe("WorkBuddy private ACP client", () => {
         },
         {
           id: "workbuddy:unknown:vendor-1:codebuddy_vendor_event",
-          position: "0.3",
+          position: "9000000000.3",
           parentId: null,
           kind: "unknown",
           text: "WorkBuddy codebuddy_vendor_event",
@@ -136,7 +136,7 @@ describe("WorkBuddy private ACP client", () => {
         },
         {
           id: "workbuddy:reasoning:message-2",
-          position: "0.4",
+          position: "9000000000.4",
           parentId: null,
           kind: "reasoning",
           text: "considering",
@@ -145,7 +145,7 @@ describe("WorkBuddy private ACP client", () => {
         },
         {
           id: "workbuddy:assistant:message-2",
-          position: "0.5",
+          position: "9000000000.5",
           parentId: null,
           kind: "assistant",
           text: "remembered",
@@ -511,7 +511,7 @@ describe("WorkBuddy private ACP client", () => {
     });
 
     await expect(
-      verifyWorkBuddyAiEndpoint({ endpoint, taskId, workspace, acpVersion: 1 }, 25, async () => ({
+      verifyWorkBuddyAiEndpoint({ endpoint, taskId, workspace, acpVersion: 1 }, 500, async () => ({
         pid: 120,
         parentPid: 110,
         executablePath: `${applicationPath}/Contents/MacOS/Electron`,
@@ -637,7 +637,7 @@ describe("WorkBuddy private ACP client", () => {
     );
     expect(finalAssistant).toHaveLength(1);
     expect(finalAssistant[0]?.text).toBe("The answer is cobalt.");
-    expect(finalAssistant[0]?.position).toBe("1.5");
+    expect(finalAssistant[0]?.position).toBe("9000000001.5");
 
     const secondActivities: RuntimeActivity[] = [];
     for await (const activity of attachment.prompt({
@@ -652,12 +652,12 @@ describe("WorkBuddy private ACP client", () => {
     })) {
       secondActivities.push(activity);
     }
-    expect(secondActivities.find((activity) => activity.kind === "user")?.position).toBe("2.1");
+    expect(secondActivities.find((activity) => activity.kind === "user")?.position).toBe("9000000002.1");
     expect(
       secondActivities.find(
         (activity) => activity.id === "workbuddy:assistant:turn-agent-2" && activity.state === "complete",
       )?.position,
-    ).toBe("2.5");
+    ).toBe("9000000002.5");
 
     await attachment.close();
     await attachment.close();
@@ -1932,7 +1932,7 @@ function writeHeartbeatSse(socket: Socket, requestId: number): void {
   socket.write(
     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n",
   );
-  for (const delay of [10, 20, 30, 40]) {
+  for (const delay of [100, 200, 300, 400]) {
     setTimeout(() => {
       const heartbeat = ": heartbeat\n\n";
       socket.write(`${Buffer.byteLength(heartbeat).toString(16)}\r\n${heartbeat}\r\n`);
@@ -1946,7 +1946,7 @@ function writeHeartbeatSse(socket: Socket, requestId: number): void {
     ];
     const payload = values.map((value) => `data: ${JSON.stringify(value)}\n\n`).join("");
     socket.write(`${Buffer.byteLength(payload).toString(16)}\r\n${payload}\r\n0\r\n\r\n`);
-  }, 50);
+  }, 450);
 }
 
 function jsonResponse(value: unknown, fragmented = false, statusCode = 200): FakeResponse {

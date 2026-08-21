@@ -28,10 +28,13 @@ import {
   workBuddyProfileCompatibility,
 } from "./workbuddy-task-discovery";
 
+const WORKBUDDY_UNSEQUENCED_TURN_BASE = 9_000_000_000;
+
 export interface WorkBuddyAcpTaskAttachment extends ConnectRuntimeSession {
   readonly verification: WorkBuddyEndpointVerification;
   readonly catalog?: WorkBuddyTaskCatalog;
   onCatalogChanged?(listener: () => void): () => void;
+  isAvailable?(): boolean;
 }
 
 export interface WorkBuddySlashCatalogEntry {
@@ -261,6 +264,7 @@ export async function openWorkBuddyTaskEndpoint(
         return catalogState.snapshot();
       },
       onCatalogChanged: (listener) => catalogState.onChanged(listener),
+      isAvailable: () => connection.isOpen(),
       prompt: (promptInput) => {
         if (closed) throw new Error("WorkBuddy Task Attachment is closed");
         if (activePrompt) throw new Error("WorkBuddy Task already has an active Connect prompt");
@@ -785,7 +789,7 @@ function replayActivities(messages: ReplayMessage[]): import("./types").RuntimeA
     const inputIdentity = message.kind === "user" ? runtimeInputIdentity(message.text) : null;
     return {
       id: `workbuddy:${message.kind}:${message.id}`,
-      position: `${turn}.${item}`,
+      position: `${WORKBUDDY_UNSEQUENCED_TURN_BASE + turn}.${item}`,
       parentId: null,
       kind: message.kind,
       text: message.text,

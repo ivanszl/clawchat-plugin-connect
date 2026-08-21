@@ -325,6 +325,7 @@ export interface RuntimeLifecycleCapabilities {
   archive: boolean;
   restore: boolean;
   delete: boolean;
+  recoverMissing?: boolean;
 }
 
 export type RuntimeLifecycleErrorCode = "not-found" | "conflict" | "unsupported";

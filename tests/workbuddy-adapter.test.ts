@@ -844,6 +844,163 @@ describe("WorkBuddy Runtime Adapter", () => {
     ]);
   });
 
+  it("reattaches the immutable Task before prompting when a native client selection closes its endpoint", async () => {
+    let attachmentGeneration = 0;
+    let firstAttachmentAvailable = true;
+    let accepted = 0;
+    const promptCalls: string[] = [];
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      ...source(),
+      startTask: async () => {
+        attachmentGeneration += 1;
+        const generation = attachmentGeneration;
+        return {
+          verification: verifiedHistory(),
+          isAvailable: () => generation !== 1 || firstAttachmentAvailable,
+          async *prompt(prompt): AsyncIterable<RuntimeActivity> {
+            promptCalls.push(`${generation}:${prompt.prompt}`);
+            if (generation === 1) throw new Error("stale native-client endpoint received a prompt");
+            await prompt.onAccepted?.();
+            yield {
+              id: "workbuddy:assistant:selection-independent",
+              position: "1.1",
+              parentId: null,
+              kind: "assistant",
+              text: "continued on the immutable Task",
+              state: "complete",
+              source: "live",
+            };
+          },
+          close: async () => undefined,
+        };
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const session = await adapter.start(binding, {
+      agentId: "desktop",
+      chatId: "client",
+      sessionId: "connect-session",
+      runtimeSessionId: taskId,
+      configPath: "/private/tmp/connect.json",
+      stateDbPath: "/private/tmp/connect.sqlite",
+      onRuntimeSessionId: async () => undefined,
+    });
+    firstAttachmentAvailable = false;
+
+    const activities = await collect(
+      session.prompt({
+        prompt: "continue Task A while another native client displays Task B",
+        turnId: "selection-independent",
+        onAccepted: async () => {
+          accepted += 1;
+        },
+        workspace: {
+          workspaceRef: "WSDEFALT",
+          workingDirectory: workspace,
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+
+    expect(promptCalls).toEqual(["2:continue Task A while another native client displays Task B"]);
+    expect(attachmentGeneration).toBe(2);
+    expect(accepted).toBe(1);
+    expect(activities.at(-1)).toMatchObject({
+      kind: "assistant",
+      text: "continued on the immutable Task",
+      state: "complete",
+    });
+  });
+
+  it("continues the same Task after restart with externally appended native history", async () => {
+    let attachmentGeneration = 0;
+    let firstAttachmentAvailable = true;
+    let accepted = 0;
+    const promptCalls: string[] = [];
+    const nativeUiActivities: RuntimeActivity[] = [
+      {
+        id: "workbuddy:user:native-client-after-restart",
+        position: "1.1",
+        parentId: null,
+        kind: "user",
+        text: "native client continuation",
+        state: "complete",
+        source: "history",
+      },
+      {
+        id: "workbuddy:assistant:native-client-after-restart",
+        position: "1.2",
+        parentId: null,
+        kind: "assistant",
+        text: "native client result",
+        state: "complete",
+        source: "history",
+      },
+    ];
+    const runtimeSource: WorkBuddyRuntimeSource = {
+      ...source(),
+      startTask: async () => {
+        attachmentGeneration += 1;
+        const generation = attachmentGeneration;
+        return {
+          verification: verifiedHistory(generation === 1 ? history.activities : nativeUiActivities),
+          isAvailable: () => generation !== 1 || firstAttachmentAvailable,
+          async *prompt(prompt): AsyncIterable<RuntimeActivity> {
+            promptCalls.push(`${generation}:${prompt.prompt}`);
+            await prompt.onAccepted?.();
+            yield {
+              id: "workbuddy:assistant:post-restart",
+              position: "2.1",
+              parentId: null,
+              kind: "assistant",
+              text: "continued after restart",
+              state: "complete",
+              source: "live",
+            };
+          },
+          close: async () => undefined,
+        };
+      },
+    };
+    const adapter = createWorkBuddyRuntimeAdapter({ createSource: () => runtimeSource });
+    const session = await adapter.start(binding, {
+      agentId: "desktop",
+      chatId: "client",
+      sessionId: "connect-session",
+      runtimeSessionId: taskId,
+      configPath: "/private/tmp/connect.json",
+      stateDbPath: "/private/tmp/connect.sqlite",
+      onRuntimeSessionId: async () => undefined,
+    });
+    firstAttachmentAvailable = false;
+
+    const activities = await collect(
+      session.prompt({
+        prompt: "continue after the native client and runtime restart",
+        turnId: "post-restart",
+        onAccepted: async () => {
+          accepted += 1;
+        },
+        workspace: {
+          workspaceRef: "WSDEFALT",
+          workingDirectory: workspace,
+          skipGitRepoCheck: false,
+        },
+      }),
+    );
+
+    expect(promptCalls).toEqual(["2:continue after the native client and runtime restart"]);
+    expect(attachmentGeneration).toBe(2);
+    expect(accepted).toBe(1);
+    expect(activities.map((activity) => activity.id)).toEqual([
+      "workbuddy:user:native-client-after-restart",
+      "workbuddy:assistant:native-client-after-restart",
+      "workbuddy:assistant:post-restart",
+    ]);
+    expect(activities[0]?.data).toMatchObject({ deliveryDisposition: "projection-only" });
+    expect(activities[1]?.data).toMatchObject({ deliveryDisposition: "projection-only" });
+  });
+
   it("reconciles an accepted prompt from rotated Task history without resubmitting it", async () => {
     const promptCalls: string[] = [];
     let attachmentGeneration = 0;

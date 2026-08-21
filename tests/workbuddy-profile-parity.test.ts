@@ -503,7 +503,8 @@ it("fails closed instead of replacing an existing WorkBuddy-owned Task runtime",
   await expect(
     reconcileWorkBuddyTaskRuntime(profile, request, 5_000, async (method, _timeoutMs, params) => {
       calls.push({ method, params });
-      if (method === "session.list") return [{ sessionId: taskId }];
+      if (method === "session.list")
+        return [{ sessionId: taskId, pid: 41001, acpEndpoint: "http://127.0.0.1:41001/api/v1/acp" }];
       return { ok: true };
     }),
   ).rejects.toMatchObject({ code: "endpoint-stale" });

@@ -183,7 +183,7 @@ export function createWorkBuddyRuntimeAdapter(options: WorkBuddyRuntimeAdapterOp
     },
     modesFor: (_binding, scope) =>
       scope?.runtimeThreadId ? (catalogs.get(scope.runtimeThreadId)?.modes.map((mode) => mode.id) ?? []) : [],
-    lifecycleCapabilities: { archive: false, restore: false, delete: false },
+    lifecycleCapabilities: { archive: false, restore: false, delete: false, recoverMissing: true },
     listModels: async (binding, scope) => (await catalogFor(binding, scope)).models,
     listSessionOptions: async (binding, _workspace, scope) => (await catalogFor(binding, scope)).configOptions,
     listSkills: async (binding, workspace, listOptions) =>
@@ -394,6 +394,11 @@ function recoverableSession(
   return {
     prompt: async function* (input) {
       if (closed) throw new Error("WorkBuddy Task Attachment is closed");
+      if (session?.isAvailable?.() === false) {
+        const unavailable = session;
+        session = null;
+        await unavailable.close().catch(() => undefined);
+      }
       const connectionWasLost = session === null;
       const active = session ?? (await reconnect());
       session = active;

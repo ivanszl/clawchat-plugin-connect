@@ -769,7 +769,7 @@ describe("Session Catalog workspace grouping", () => {
     await expect(catalog.sessionView("ABCDEFGH")).resolves.toMatchObject({ activeTurnId: "turn-active" });
   });
 
-  it("derives lifecycle actions from Runtime Adapter capabilities and Runtime Thread availability", async () => {
+  it("keeps immutable mapped Sessions sendable when current native discovery temporarily omits their Thread", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-capabilities-"));
     const refs = ["ABCDEFGH", "JKLMNPQR", "STUVWXYZ"];
     const store = createStateStore({
@@ -795,18 +795,18 @@ describe("Session Catalog workspace grouping", () => {
       isCurrent: true,
     });
     await store.upsertRuntimeSession({
-      chatId: "chat-missing",
-      sessionId: "session-missing",
+      chatId: "chat-temporarily-absent",
+      sessionId: "session-temporarily-absent",
       agentId: "codex",
-      runtimeSessionId: "thread-deleted-externally",
-      name: "Missing thread",
+      runtimeSessionId: "thread-temporarily-absent",
+      name: "Temporarily absent thread",
       hasMessages: true,
       isCurrent: true,
     });
     const adapter: ConnectRuntimeAdapter = {
       kind: "codex",
       modes: ["workspace-write"],
-      lifecycleCapabilities: { archive: false, restore: false, delete: false },
+      lifecycleCapabilities: { archive: false, restore: false, delete: false, recoverMissing: true },
       listModels: async () => [
         {
           id: "test/model",
@@ -836,8 +836,8 @@ describe("Session Catalog workspace grouping", () => {
           },
         ]),
       readActivity: async (_binding, runtimeThreadId) => {
-        if (runtimeThreadId === "thread-deleted-externally") {
-          throw new Error(`OpenCode Session was not found: ${runtimeThreadId}`);
+        if (runtimeThreadId === "thread-temporarily-absent") {
+          throw new Error(`Native Runtime Thread is temporarily unavailable: ${runtimeThreadId}`);
         }
         return { activities: [], completeness: "complete", limitations: [] };
       },
@@ -856,7 +856,10 @@ describe("Session Catalog workspace grouping", () => {
     const entries = (await catalog.view()).bindings[0]?.entries ?? [];
     expect(entries.find((entry) => entry.name === "Empty")?.allowedActions).toEqual(["open", "send"]);
     expect(entries.find((entry) => entry.name === "Thread")?.allowedActions).toEqual(["open", "send", "cancel"]);
-    expect(entries.find((entry) => entry.name === "Missing thread")?.allowedActions).toEqual(["open"]);
+    expect(entries.find((entry) => entry.name === "Temporarily absent thread")?.allowedActions).toEqual([
+      "open",
+      "send",
+    ]);
     await expect(catalog.sessionView("ABCDEFGH")).resolves.toMatchObject({ allowedActions: ["send"] });
     await expect(catalog.sessionView("ABCDEFGH")).resolves.toMatchObject({
       turnSubmissionCapability: {
@@ -866,7 +869,8 @@ describe("Session Catalog workspace grouping", () => {
     await expect(catalog.sessionView("JKLMNPQR")).resolves.toMatchObject({ allowedActions: ["send", "cancel"] });
     await expect(catalog.sessionView("STUVWXYZ")).resolves.toMatchObject({
       runtimeThreadAvailable: false,
-      allowedActions: [],
+      allowedActions: ["send"],
+      turnSubmissionCapability: { prompt: { allowed: true } },
     });
     await expect(catalog.ensureProjection("STUVWXYZ", true)).resolves.toBe(true);
     await expect(catalog.archive("JKLMNPQR")).rejects.toMatchObject({ code: "session-action-unsupported" });

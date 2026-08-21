@@ -194,20 +194,32 @@ export async function discoverWorkBuddyTask(
   input: WorkBuddyTaskDiscoveryInput,
   source: WorkBuddyTaskDiscoverySource,
 ): Promise<DiscoveredWorkBuddyTask> {
-  return (await verifyWorkBuddyTask(input, source)).discovered;
+  return (await verifyDiscoverableWorkBuddyTask(input, source)).discovered;
 }
 
 export async function attachWorkBuddyTask(
   input: WorkBuddyTaskDiscoveryInput,
   source: WorkBuddyTaskDiscoverySource,
 ): Promise<RuntimeActivitySnapshot> {
-  const { verification } = await verifyWorkBuddyTask(input, source);
+  const { verification } = await verifyDiscoverableWorkBuddyTask(input, source);
   return {
     activities: verification.activities,
     completeness: "complete",
     limitations: [],
     ...(verification.catalog ? { catalog: verification.catalog } : {}),
   };
+}
+
+async function verifyDiscoverableWorkBuddyTask(
+  input: WorkBuddyTaskDiscoveryInput,
+  source: WorkBuddyTaskDiscoverySource,
+) {
+  try {
+    return await verifyWorkBuddyTask(input, source);
+  } catch (error) {
+    if (!source.prepareEndpoint || !isReplayFingerprintMismatch(error)) throw error;
+    return await verifyWorkBuddyTask(input, source, source.verifyEndpoint, "host");
+  }
 }
 
 export async function connectWorkBuddyTask(
@@ -235,7 +247,15 @@ export async function connectWorkBuddyTask(
         if (!attachment) throw new Error("WorkBuddy Task Attachment was not established");
         return attachment;
       } catch (error) {
-        if (attachment || !isMissingExactTaskEndpoint(error)) throw error;
+        const failedAttachment = attachment as WorkBuddyAcpTaskAttachment | null;
+        attachment = null;
+        await failedAttachment?.close().catch(() => undefined);
+        if (failedAttachment && isReplayFingerprintMismatch(error)) {
+          await connectSelectedEndpoint("host");
+          if (!attachment) throw new Error("WorkBuddy Task Attachment was not established");
+          return attachment;
+        }
+        if (failedAttachment || !isMissingExactTaskEndpoint(error)) throw error;
       }
 
       // No WorkBuddy-owned Task endpoint exists. Authenticate the native Task through
@@ -259,6 +279,14 @@ export async function connectWorkBuddyTask(
     await (attachment as WorkBuddyAcpTaskAttachment | null)?.close();
     throw error;
   }
+}
+
+function isReplayFingerprintMismatch(error: unknown): boolean {
+  return (
+    error instanceof WorkBuddyDiscoveryError &&
+    error.code === "task-identity-mismatch" &&
+    error.details.mismatchKind === "replay-fingerprint"
+  );
 }
 
 function isMissingExactTaskEndpoint(error: unknown): boolean {
@@ -477,6 +505,7 @@ async function verifyWorkBuddyTask(
   if (verification.replayFingerprint !== task.replayFingerprint) {
     throw failure("task-identity-mismatch", `The ACP replay does not match ${product}'s native Task transcript.`, {
       taskId: task.id,
+      mismatchKind: "replay-fingerprint",
     });
   }
 

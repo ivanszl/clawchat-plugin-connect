@@ -201,10 +201,10 @@ export class SessionCatalog {
     const session = await this.options.stateStore.getRuntimeSessionByRef(normalized);
     const target = session ? null : await this.options.stateStore.getSessionRefTarget(normalized);
     const hasMappedRuntimeThread = Boolean(session?.runtimeSessionId || target?.runtimeSessionId);
+    const hasPersistedMappedSession = Boolean(session?.runtimeSessionId);
     const runtimeThreadPresent = hasMappedRuntimeThread && catalogState.runtimeRevisionByRef.has(normalized);
     const runtimeThreadAvailable = runtimeThreadPresent && entry.runtimeThreadUnavailableReason === null;
     const runtimeThreadMissing = hasMappedRuntimeThread && !runtimeThreadPresent;
-    const canSubmit = !hasMappedRuntimeThread || runtimeThreadAvailable;
     const bindingLockReason = session
       ? await this.options.stateStore.sessionBindingLock(normalized)
       : hasMappedRuntimeThread
@@ -295,6 +295,8 @@ export class SessionCatalog {
     const lifecycleCapabilities = providerAvailable
       ? this.options.runtimeAdapters.lifecycleCapabilities(binding)
       : { archive: false, restore: false, delete: false };
+    const recoverableMappedSession = hasPersistedMappedSession && lifecycleCapabilities.recoverMissing === true;
+    const canSubmit = !hasMappedRuntimeThread || runtimeThreadAvailable || recoverableMappedSession;
     const effectiveModelOption =
       modelOptions.find((candidate) => runtimeModelSelectionsEqual(candidate.selection, effectiveModel)) ??
       modelOptions.find((candidate) => candidate.isDefault) ??
@@ -336,7 +338,7 @@ export class SessionCatalog {
         modelAvailable && runtimeOperational && canSubmit,
       ),
       allowedActions:
-        runtimeOperational && !runtimeThreadMissing
+        runtimeOperational && (!runtimeThreadMissing || recoverableMappedSession)
           ? sessionActions(entry.isArchived, runtimeThreadPresent, activity, lifecycleCapabilities).filter(
               (action) => canSubmit || (action !== "send" && action !== "cancel"),
             )
@@ -737,8 +739,9 @@ function managedEntry(
     runtimeThread?.adoption.status === "unavailable"
       ? { reason: runtimeThread.adoption.reason, detail: runtimeThread.adoption.detail ?? null }
       : null;
+  const canRecoverMissing = Boolean(session.runtimeSessionId && lifecycleCapabilities.recoverMissing);
   const allowedActions =
-    session.runtimeSessionId && !runtimeThread
+    session.runtimeSessionId && !runtimeThread && !canRecoverMissing
       ? (["open"] as SessionCatalogAction[])
       : catalogActions(
           runtimeThread?.isArchived === true,

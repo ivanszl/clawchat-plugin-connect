@@ -114,6 +114,10 @@ export class PersistentHttpConnection {
     return { localAddress, localPort, remoteAddress, remotePort };
   }
 
+  isOpen(): boolean {
+    return !this.closed && !this.socket.destroyed;
+  }
+
   async request(
     method: "POST" | "DELETE",
     pathname: string,

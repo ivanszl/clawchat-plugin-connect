@@ -60,15 +60,16 @@ export async function readWorkBuddyTaskTranscriptIdentity(
   if (!transcript) return mismatch();
 
   const canonicalWorkspace = await canonicalPathOrSelf(workspace);
-  const messageIds: string[] = [];
-  const messageIdSet = new Set<string>();
   let observedTaskId = false;
   let observedWorkspace = false;
   try {
-    const records = (await readFile(transcript, "utf8")).split("\n").filter(Boolean);
-    for (const record of records) {
-      const parsed = parseRecord(record);
-      if (!parsed) return mismatch();
+    const records = (await readFile(transcript, "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((record) => parseRecord(record));
+    if (records.some((record) => record === null)) return mismatch();
+    const parsedRecords = records as Record<string, unknown>[];
+    for (const parsed of parsedRecords) {
       if (parsed.sessionId !== undefined) {
         if (parsed.sessionId !== taskId) return mismatch();
         observedTaskId = true;
@@ -79,30 +80,80 @@ export async function readWorkBuddyTaskTranscriptIdentity(
         }
         observedWorkspace = true;
       }
-      if (parsed.type === "message" && (parsed.role === "user" || parsed.role === "assistant")) {
-        if (
-          typeof parsed.id !== "string" ||
+      if (
+        parsed.type === "message" &&
+        (parsed.role === "user" || parsed.role === "assistant") &&
+        (typeof parsed.id !== "string" ||
           !parsed.id ||
           parsed.sessionId !== taskId ||
-          typeof parsed.cwd !== "string"
-        ) {
-          return mismatch();
-        }
-        const messageId = nativeReplayMessageId(parsed, profile);
-        if (!messageId) return mismatch();
-        if (!messageIdSet.has(messageId)) {
-          messageIdSet.add(messageId);
-          messageIds.push(messageId);
-        }
+          typeof parsed.cwd !== "string" ||
+          !nativeReplayMessageId(parsed, profile))
+      ) {
+        return mismatch();
       }
     }
+
+    const messageIds = transcriptMessageIds(parsedRecords, profile);
+    if (!messageIds) return mismatch();
+    return {
+      transcriptIdentityMatches: observedTaskId && observedWorkspace,
+      replayFingerprint: replayFingerprint(messageIds),
+    };
   } catch {
     return mismatch();
   }
-  return {
-    transcriptIdentityMatches: observedTaskId && observedWorkspace,
-    replayFingerprint: replayFingerprint(messageIds),
+}
+
+function transcriptMessageIds(
+  records: ReadonlyArray<Record<string, unknown>>,
+  profile: WorkBuddyProfile,
+): string[] | null {
+  const isTranscriptMessage = (record: Record<string, unknown>) =>
+    record.type === "message" && (record.role === "user" || record.role === "assistant");
+  const appendIdentity = (messageIds: string[], seen: Set<string>, record: Record<string, unknown>) => {
+    const messageId = nativeReplayMessageId(record, profile);
+    if (!messageId || seen.has(messageId)) return;
+    seen.add(messageId);
+    messageIds.push(messageId);
   };
+  const settledAssistant = records.findLast(
+    (record) => record.type === "message" && record.role === "assistant" && record.status !== "incomplete",
+  );
+  if (!settledAssistant) return [];
+  if (!records.some((record) => record.parentId !== undefined)) {
+    const messageIds: string[] = [];
+    const seen = new Set<string>();
+    for (const record of records) {
+      if (isTranscriptMessage(record)) appendIdentity(messageIds, seen, record);
+      if (record === settledAssistant) break;
+    }
+    return messageIds;
+  }
+
+  const recordsById = new Map<string, Record<string, unknown>>();
+  for (const record of records) {
+    if (typeof record.id === "string" && record.id) recordsById.set(record.id, record);
+  }
+  const leaf = settledAssistant;
+  const activeRecords: Record<string, unknown>[] = [];
+  const visited = new Set<string>();
+  let current: Record<string, unknown> | undefined = leaf;
+  while (current) {
+    const recordId = current.id;
+    if (typeof recordId !== "string" || !recordId || visited.has(recordId)) return null;
+    visited.add(recordId);
+    if (isTranscriptMessage(current)) activeRecords.push(current);
+    const parentId = current.parentId;
+    if (parentId === undefined || parentId === null) break;
+    if (typeof parentId !== "string" || !parentId) return null;
+    current = recordsById.get(parentId);
+    if (!current) return null;
+  }
+
+  const messageIds: string[] = [];
+  const seen = new Set<string>();
+  for (const record of activeRecords.reverse()) appendIdentity(messageIds, seen, record);
+  return messageIds;
 }
 
 function nativeReplayMessageId(record: Record<string, unknown>, profile: WorkBuddyProfile): string | null {

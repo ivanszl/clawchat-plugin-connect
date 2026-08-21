@@ -55,6 +55,91 @@ describe("WorkBuddy native Task transcript identity", () => {
     });
   });
 
+  it("fingerprints only the active native branch when another client starts a new root", async () => {
+    const configDirectory = await fixture([
+      { type: "message", id: "old-user", role: "user", sessionId: taskId, cwd: workspace },
+      {
+        type: "message",
+        id: "old-tool",
+        parentId: "old-user",
+        role: "tool",
+        sessionId: taskId,
+        cwd: workspace,
+      },
+      {
+        type: "message",
+        id: "old-assistant",
+        parentId: "old-tool",
+        role: "assistant",
+        sessionId: taskId,
+        cwd: workspace,
+      },
+      { type: "message", id: "new-user", role: "user", sessionId: taskId, cwd: workspace },
+      {
+        type: "message",
+        id: "new-assistant",
+        parentId: "new-user",
+        role: "assistant",
+        sessionId: taskId,
+        cwd: workspace,
+      },
+    ]);
+
+    await expect(readWorkBuddyTaskTranscriptIdentity(configDirectory, taskId, workspace)).resolves.toEqual({
+      transcriptIdentityMatches: true,
+      replayFingerprint: fingerprint(["new-user", "new-assistant"]),
+    });
+  });
+
+  it("excludes a trailing native-client user record that has no replayed assistant settlement", async () => {
+    const configDirectory = await fixture([
+      { type: "message", id: "settled-user", role: "user", sessionId: taskId, cwd: workspace },
+      {
+        type: "message",
+        id: "settled-assistant",
+        parentId: "settled-user",
+        role: "assistant",
+        status: "completed",
+        sessionId: taskId,
+        cwd: workspace,
+      },
+      {
+        type: "message",
+        id: "unsettled-user",
+        parentId: "settled-assistant",
+        role: "user",
+        sessionId: taskId,
+        cwd: workspace,
+      },
+    ]);
+
+    await expect(readWorkBuddyTaskTranscriptIdentity(configDirectory, taskId, workspace)).resolves.toEqual({
+      transcriptIdentityMatches: true,
+      replayFingerprint: fingerprint(["settled-user", "settled-assistant"]),
+    });
+  });
+
+  it.each([
+    ["linked", { parentId: null }],
+    ["legacy", {}],
+  ] as const)("treats a %s user-only native turn as unsettled history", async (_shape, fields) => {
+    const configDirectory = await fixture([
+      {
+        type: "message",
+        id: "unsettled-user",
+        role: "user",
+        sessionId: taskId,
+        cwd: workspace,
+        ...fields,
+      },
+    ]);
+
+    await expect(readWorkBuddyTaskTranscriptIdentity(configDirectory, taskId, workspace)).resolves.toEqual({
+      transcriptIdentityMatches: true,
+      replayFingerprint: fingerprint([]),
+    });
+  });
+
   it("uses mainland provider message identity for assistant replay parity", async () => {
     const configDirectory = await fixture([
       { type: "message", id: "user-record", role: "user", sessionId: taskId, cwd: workspace },

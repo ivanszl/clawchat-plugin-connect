@@ -154,28 +154,31 @@ export function createWorkBuddyMacosDiscoverySource(
   const configDirectory = compatibility.configDirectory;
   const commandTimeoutMs = options.commandTimeoutMs ?? 5_000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+  const prepareRuntime = async (
+    input: WorkBuddyTaskDiscoveryInput,
+    sidecarIdentity: WorkBuddySidecarPreparationIdentity,
+  ) => {
+    if (input.profile !== profile) throw wrongDiscoverySource(profile, input.profile);
+    const selectionInput = { profile, configDirectory, taskId: input.taskId };
+    const selection = options.readTaskRuntimeSelection
+      ? await options.readTaskRuntimeSelection(selectionInput)
+      : await readWorkBuddyTaskRuntimeSelection(selectionInput);
+    await (options.prepareTaskRuntime ?? prepareWorkBuddyTaskRuntime)({
+      profile,
+      applicationPath,
+      configDirectory,
+      dataFolderName: compatibility.dataFolderName,
+      resourcesPath: join(applicationPath, "Contents", "Resources"),
+      taskId: input.taskId,
+      workspace: await realpath(input.expectedWorkspace),
+      selection,
+      commandTimeoutMs,
+      sidecarIdentity,
+    });
+  };
   return {
-    prepareEndpoint: async (
-      input: WorkBuddyTaskDiscoveryInput,
-      sidecarIdentity: WorkBuddySidecarPreparationIdentity,
-    ) => {
-      if (input.profile !== profile) throw wrongDiscoverySource(profile, input.profile);
-      const selectionInput = { profile, configDirectory, taskId: input.taskId };
-      const selection = options.readTaskRuntimeSelection
-        ? await options.readTaskRuntimeSelection(selectionInput)
-        : await readWorkBuddyTaskRuntimeSelection(selectionInput);
-      await (options.prepareTaskRuntime ?? prepareWorkBuddyTaskRuntime)({
-        profile,
-        applicationPath,
-        configDirectory,
-        dataFolderName: compatibility.dataFolderName,
-        resourcesPath: join(applicationPath, "Contents", "Resources"),
-        taskId: input.taskId,
-        workspace: await realpath(input.expectedWorkspace),
-        selection,
-        commandTimeoutMs,
-        sidecarIdentity,
-      });
+    prepareEndpoint: async (input, sidecarIdentity) => {
+      await prepareRuntime(input, sidecarIdentity);
     },
     canonicalizeWorkspace: async (workspace) => await realpath(workspace),
     inspect: async (input, endpointSelection = "any") => {
@@ -850,20 +853,10 @@ function assertTaskRuntimeComposition(input: WorkBuddyTaskRuntimeRequestInput): 
   }
 }
 
-function isRuntimeSessionInventory(value: unknown): value is Array<{ sessionId: string }> {
-  if (!Array.isArray(value)) return false;
-  for (const entry of value) {
-    if (
-      entry === null ||
-      typeof entry !== "object" ||
-      !("sessionId" in entry) ||
-      typeof entry.sessionId !== "string" ||
-      entry.sessionId.length === 0
-    ) {
-      return false;
-    }
-  }
-  return true;
+function isRuntimeSessionInventory(
+  value: unknown,
+): value is Array<{ sessionId: string; pid: number; acpEndpoint: string }> {
+  return Array.isArray(value) && value.every(isSidecarSession);
 }
 
 async function sidecarRpc<Result>(

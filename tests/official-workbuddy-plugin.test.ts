@@ -253,11 +253,17 @@ describe("official WorkBuddy Runtime Plugin", () => {
     const mainlandBinding = pluginBinding("workbuddy-cn");
     try {
       await expect(host.install({ source: initial.outputPath })).resolves.toMatchObject({ status: "active" });
-      expect(registry.lifecycleCapabilities(aiBinding)).toEqual({ archive: false, restore: false, delete: false });
+      expect(registry.lifecycleCapabilities(aiBinding)).toEqual({
+        archive: false,
+        restore: false,
+        delete: false,
+        recoverMissing: true,
+      });
       expect(registry.lifecycleCapabilities(mainlandBinding)).toEqual({
         archive: false,
         restore: false,
         delete: false,
+        recoverMissing: true,
       });
       expect(() =>
         registry.lifecycleCapabilities(

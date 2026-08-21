@@ -259,6 +259,88 @@ describe("WorkBuddy Task discovery contract", () => {
     await attachment.close();
   });
 
+  it("uses the verified host Attachment when an exact Task endpoint has stale replay", async () => {
+    const calls: string[] = [];
+    const hostEndpoint = "http://127.0.0.1:43130/api/v1/acp";
+    const discoverySource = source();
+    discoverySource.prepareEndpoint = async () => {
+      calls.push("prepare");
+    };
+    const inspect = discoverySource.inspect;
+    discoverySource.inspect = async (input, endpointSelection) => {
+      calls.push(`inspect:${endpointSelection}`);
+      const value = await inspect(input, endpointSelection);
+      if (value.endpointSession && endpointSelection === "host") {
+        value.endpointSession = {
+          ...value.endpointSession,
+          sessionId: "__workbuddy_cli_host__-2-048fa1ff",
+          endpoint: hostEndpoint,
+        };
+      }
+      return value;
+    };
+    discoverySource.connectEndpoint = async (input) => {
+      const endpointKind = input.endpoint === hostEndpoint ? "host" : "task";
+      calls.push(`connect:${endpointKind}`);
+      return {
+        verification: {
+          taskId,
+          replayFingerprint:
+            endpointKind === "host" ? nativeReplayFingerprint : replayFingerprint(["stale-active-branch"]),
+          replayStarted: true,
+          replayCompleted: true,
+          activities: [],
+          connectionOwner: observation().endpointOwner,
+        },
+        prompt: async function* () {
+          yield* [];
+        },
+        close: async () => {
+          calls.push(`close:${endpointKind}`);
+        },
+      };
+    };
+
+    const attachment = await connectWorkBuddyTask(
+      { profile: "workbuddy-ai", taskId, expectedWorkspace: workspace },
+      discoverySource,
+    );
+
+    expect(calls).toEqual(["inspect:task", "connect:task", "close:task", "inspect:host", "connect:host"]);
+    await attachment.close();
+  });
+
+  it("uses current host replay for discovery when an exact Task endpoint is stale", async () => {
+    const hostEndpoint = "http://127.0.0.1:43130/api/v1/acp";
+    const discoverySource = source();
+    discoverySource.prepareEndpoint = async () => undefined;
+    const inspect = discoverySource.inspect;
+    discoverySource.inspect = async (input, endpointSelection) => {
+      const value = await inspect(input, endpointSelection);
+      if (value.endpointSession && endpointSelection === "host") {
+        value.endpointSession = {
+          ...value.endpointSession,
+          sessionId: "__workbuddy_cli_host__-2-048fa1ff",
+          endpoint: hostEndpoint,
+        };
+      }
+      return value;
+    };
+    discoverySource.verifyEndpoint = async (input) => ({
+      taskId,
+      replayFingerprint:
+        input.endpoint === hostEndpoint ? nativeReplayFingerprint : replayFingerprint(["stale-active-branch"]),
+      replayStarted: true,
+      replayCompleted: true,
+      activities: [],
+      connectionOwner: observation().endpointOwner,
+    });
+
+    await expect(
+      discoverWorkBuddyTask({ profile: "workbuddy-ai", taskId, expectedWorkspace: workspace }, discoverySource),
+    ).resolves.toMatchObject({ task: { id: taskId }, endpoint: hostEndpoint });
+  });
+
   it.each([
     {
       case: "refused",
