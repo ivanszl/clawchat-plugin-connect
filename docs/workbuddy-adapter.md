@@ -73,7 +73,7 @@ Connect adopts or recovers a Task only from complete `session/load` replay. `ses
 
 The currently qualified native Tasks select `bypassPermissions`. They execute without emitting `session/request_permission`, so Connect neither synthesizes an approval nor advertises approval Interaction support for that attachment. This is an honest capability and installed-qualification downgrade, not a new Connect code capability. Native WorkBuddy must provide a non-bypass mode and emit the real request before approval Interaction can be qualified.
 
-Native replay freshness immediately after a WorkBuddy UI write, sidecar health and publication across restart, complete mode/Command/Skill catalogs, and the clean simultaneous two-distribution installed matrix remain WorkBuddy-owned limitations or QA gaps. Connect fails closed rather than accepting replay or catalog subsets.
+Current installed `workbuddy-ai` qualification observed a complete Task-owned catalog: five text-only models, six modes, three Session options, 40 Runtime Commands, and 32 Runtime Skills. These counts are diagnostics, not an allowlist. Native replay freshness immediately after a WorkBuddy UI write, sidecar health and publication across restart, the complete current `workbuddy-cn` catalog, and the clean simultaneous two-distribution installed matrix remain WorkBuddy-owned limitations or QA gaps. Connect fails closed rather than accepting replay or catalog subsets.
 
 ## Recovery behavior
 
