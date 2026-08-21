@@ -269,6 +269,10 @@ _Avoid_: Deleted Session, Closed Session
 The external agent runtime's resumable conversation associated with a Session. Its identity is owned by the runtime and referenced by Connect.
 _Avoid_: Session, Workspace
 
+**Native Runtime Client**:
+A runtime-owned TUI, desktop application, IDE extension, or other user interface that operates Runtime Threads and Workspaces independently of Connect. It is neither an Agent Binding nor a Session, and its process, window, current selection, and lifecycle are not Connect routing identity.
+_Avoid_: Agent Binding, Connect Client, Turn Surface, Runtime Adapter
+
 **WorkBuddy Distribution**:
 The mainland China WorkBuddy desktop product. It bundles its own product-configured CodeBuddy Runtime and remains isolated from the separately versioned WorkBuddy AI Distribution.
 _Avoid_: WorkBuddy AI Distribution, CodeBuddy Runtime
@@ -298,7 +302,7 @@ A private desktop-owned ACP service for one active WorkBuddy Task through which 
 _Avoid_: Public WorkBuddy API, direct CodeBuddy ACP
 
 **WorkBuddy Task Attachment**:
-A verified relationship in which one Agent Binding operates an existing WorkBuddy Task through its WorkBuddy Task ACP Endpoint and shares the Task's conversation and visible outputs with WorkBuddy Desktop. Its connection and authorization state are ephemeral and must be rediscovered and reverified after loss or rotation.
+A verified relationship in which one Agent Binding operates an existing WorkBuddy Task through its WorkBuddy Task ACP Endpoint while retaining the Task's native conversation. Its connection and authorization state are ephemeral, and neither the WorkBuddy Desktop process nor its current UI selection owns the Attachment or its routing.
 _Avoid_: WorkBuddy Task, Runtime Thread mapping, CodeBuddy Session, direct ACP session
 
 **WorkBuddy Automation**:
@@ -398,7 +402,9 @@ _Avoid_: Approval, when structured questions are also included; Control Message
 - Sessions are scoped by ClawChat conversation and Agent Binding.
 - A Session uses exactly one Workspace. After its first accepted Turn or native Runtime Thread adoption, it never changes Agent Binding, Runtime Plugin capability, or Workspace; choosing another Agent or Workspace creates a new Session without transferring Runtime Thread context.
 - A Runtime Thread is associated with at most one Session for an Agent Binding. Connect Client and ClawChat operate that same Session rather than creating separate Session copies for one native thread.
-- A WorkBuddy Agent Binding has two explicit Runtime Thread targets: a namespaced CodeBuddy Session or a stable WorkBuddy Task ID. Both remain selectable in ClawChat and use the ordinary Workspace model; only the WorkBuddy Task targets WorkBuddy Desktop-owned native state. This does not promise live message mirroring between ClawChat, Connect Client, and WorkBuddy Desktop.
+- Agent Bindings and Sessions never bind to a Native Runtime Client instance. A Session targets its immutable Agent Binding, Workspace, and optional Runtime Thread; opening, closing, or changing the selection in any native TUI or desktop application must not detach, suspend, or reroute that target.
+- Multiple Native Runtime Clients and Connect Sessions may operate the same Workspace concurrently. Sharing a Workspace does not merge their Session or Runtime Thread identities; concurrency against one deliberately shared Runtime Thread follows the runtime's declared native policy.
+- A WorkBuddy Agent Binding has two explicit Runtime Thread targets: a namespaced CodeBuddy Session or a stable WorkBuddy Task ID. Both remain selectable in ClawChat and use the ordinary Workspace model; only the WorkBuddy Task uses WorkBuddy Desktop-owned native state. The desktop application is a Native Runtime Client and private transport provider, not the Attachment's owner or routing target, and no live message mirroring is promised.
 - A persisted WorkBuddy Task mapping retains only the selected distribution profile, stable WorkBuddy Task ID, and ordinary Session data. A persisted CodeBuddy Session mapping retains only its namespaced native Session ID and ordinary Session data. Process IDs, service endpoints, connections, credentials, tokens, passwords, and authorization values remain runtime-local and ephemeral.
 - Every new or recovered WorkBuddy Task Attachment rediscovers and reverifies the Task's profile, process, workspace, and authoritative Runtime Transcript. WorkBuddy UI selection is presentation-only: switching from Task A to Task B does not alter, detach, suspend, or reroute an adopted Task A Attachment, and later ClawChat or Connect Client Turns continue targeting Task A.
 - WorkBuddy prompts with uncertain native acceptance are never automatically resubmitted. Recovery reconciles the authoritative Runtime Transcript, projects WorkBuddy-native turns committed while disconnected exactly once, and prevents those recovered turns from being republished to ClawChat as new inbound requests.

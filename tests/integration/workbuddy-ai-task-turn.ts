@@ -4,7 +4,6 @@ import { workBuddyProfileCompatibility } from "../../src/runtime/workbuddy-task-
 import { readWorkBuddyTaskRuntimeSelection } from "../../src/runtime/workbuddy-task-discovery-macos";
 import { inspectInstalledWorkBuddyTaskTranscript } from "../../src/runtime/workbuddy-task-transcript";
 import { createInstalledWorkBuddyPluginRuntime } from "./workbuddy-installed-plugin";
-import { verifyInstalledWorkBuddyNativeUi, verifyInstalledWorkBuddyNativeUiLive } from "./workbuddy-native-ui";
 import {
   requiredWorkBuddyTestEnv,
   workBuddyTestBindingId,
@@ -19,15 +18,11 @@ const {
   PRIOR_ASSISTANT_MARKER: priorAssistantMarker,
 } = requiredWorkBuddyTestEnv(
   ["TASK_ID", "TASK_WORKSPACE", "PRIOR_USER_MARKER", "PRIOR_ASSISTANT_MARKER"],
-  "verify context, persistence, and UI synchronization",
+  "verify context and native persistence",
 );
 
 const canonicalWorkspace = await realpath(workspace);
 const turnMarker = workBuddyTestEnv("TURN_MARKER") ?? `WB_CONNECT_TURN_${Date.now()}`;
-const { UI_TASK_TITLE: uiTaskTitle, UI_RESTORE_TASK_TITLE: uiRestoreTaskTitle } = requiredWorkBuddyTestEnv(
-  ["UI_TASK_TITLE", "UI_RESTORE_TASK_TITLE"],
-  "verify native UI synchronization and restore the prior application view",
-);
 const before = await inspectInstalledWorkBuddyTaskTranscript(taskId, "", workBuddyTestProfile);
 const selectedModel = (
   await readWorkBuddyTaskRuntimeSelection({
@@ -134,19 +129,6 @@ if (persistedModel !== selectedModel) {
   );
 }
 
-await verifyInstalledWorkBuddyNativeUiLive({
-  compatibility: workBuddyProfileCompatibility(workBuddyTestProfile),
-  taskTitle: uiTaskTitle,
-  marker: turnMarker,
-  restoreTaskTitle: uiRestoreTaskTitle,
-});
-await installedPlugin.close();
-await verifyInstalledWorkBuddyNativeUi({
-  compatibility: workBuddyProfileCompatibility(workBuddyTestProfile),
-  taskTitle: uiTaskTitle,
-  marker: turnMarker,
-  restoreTaskTitle: uiRestoreTaskTitle,
-});
 console.log(
   JSON.stringify(
     {
@@ -165,9 +147,6 @@ console.log(
       activityCount: activities.length,
       replayActivityCount: replay.activities.length,
       nativeRecordDelta: after.recordCount - before.recordCount,
-      nativeUiLiveVerified: true,
-      nativeUiRestartVerified: true,
-      priorApplicationViewRestored: uiRestoreTaskTitle,
     },
     null,
     2,

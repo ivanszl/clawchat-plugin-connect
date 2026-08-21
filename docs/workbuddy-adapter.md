@@ -2,10 +2,12 @@
 
 The WorkBuddy Runtime Adapter has two explicit Runtime Thread targets backed by the selected Tencent WorkBuddy distribution:
 
-- a **WorkBuddy Task Attachment** adopts an existing desktop Task through its pinned private Task ACP interface and stays synchronized with WorkBuddy Desktop;
+- a **WorkBuddy Task Attachment** adopts an existing desktop-owned Task through its pinned private Task ACP interface and retains that Task's native identity and history independently of the desktop's current selection;
 - a **CodeBuddy Session** starts or loads the distribution's embedded CodeBuddy CLI over stdio ACP. It is owned by Connect and does not appear in WorkBuddy Desktop.
 
 The two targets share one Agent Binding and its Workspace Catalog, but never silently fall back to one another.
+
+WorkBuddy Desktop is a native runtime client and private endpoint provider, not the owner or routing target of an Agent Binding or Session. Switching the desktop from Task A to Task B must not detach, suspend, or redirect an existing Task A Attachment. As with two native TUIs operating the same Workspace, sharing a Workspace does not merge their Runtime Threads, and no cross-client live message mirroring is implied.
 
 ## Qualified distributions
 
@@ -20,7 +22,7 @@ These versions record the installed products used for qualification; they are ob
 
 - macOS must have the selected distribution installed at its expected application path. Its embedded CodeBuddy CLI must negotiate ACP v1 and the capabilities required for the selected operation.
 - `/new [name]` creates a Connect-owned CodeBuddy Session on the next real message. The response explicitly warns that this Session will not appear in WorkBuddy Desktop.
-- To use desktop history and synchronization, create or select a WorkBuddy Task, open it, and complete one native turn if it has no active private endpoint yet. WorkBuddy Desktop must be running while Connect attaches to that Task.
+- To adopt desktop-owned Task history, create or select a WorkBuddy Task, open it, and complete one native turn if it has no active private endpoint yet. This materializes transport for initial adoption only; after adoption, the desktop's selected Task is not Attachment state or routing identity.
 - Install `clawling.runtime.workbuddy` from the release-bundled official Plugin registry, then create each Agent Binding against one explicit named capability:
 
   ```bash
@@ -31,7 +33,7 @@ These versions record the installed products used for qualification; they are ob
 
   The two capability schemas accept no profile override. Selecting `workbuddy-ai` or `workbuddy-cn` fixes the distribution for that Binding, and each Binding creates an independent Runtime Adapter, ACP client, process, catalog cache, and recovery state.
 
-- Discover and adopt an existing Task from Connect Client or the ordinary Session catalog before submitting a desktop-synchronized turn.
+- Discover and adopt an existing Task from Connect Client or the ordinary Session catalog before submitting a Turn to that Task Attachment.
 
 ClawChat `/sessions` lists both target kinds in the current Workspace. `/switch <session-ref>` can select either kind. Selecting a Workspace remains independent of target kind; `/new` inherits the selected Workspace.
 
@@ -119,7 +121,7 @@ When a maintainer needs to investigate or manually exercise both exact distribut
 bun run check:release:workbuddy
 ```
 
-This optional diagnostic command exercises discovery, adoption/replay, context/model/native-persistence/UI synchronization, cancellation, application restart, endpoint rotation, and recovery for both profiles, then runs the repository's non-browser quality gate. Approval Interaction is exercised only when the native Task emits a real permission request; `bypassPermissions` is recorded as no approval capability, never replaced by a synthesized approval. The result is useful task evidence, but it does not block creating or publishing a release tag. It does not install Chromium or use the standalone Connect Client as a substitute for WorkBuddy or ClawChat Liveware verification. Browser checks for the loopback Connect Client remain in the ordinary repository `bun run check` gate; any manual Liveware verification must open the registered App inside ClawChat.
+This optional diagnostic command exercises discovery, adoption/replay, context/model/native persistence, native-client selection independence, cancellation, application restart, endpoint rotation, and recovery for both profiles, then runs the repository's non-browser quality gate. Approval Interaction is exercised only when the native Task emits a real permission request; `bypassPermissions` is recorded as no approval capability, never replaced by a synthesized approval. The result is useful task evidence, but it does not block creating or publishing a release tag. It does not install Chromium or require cross-client live message mirroring. Browser checks for the loopback Connect Client remain in the ordinary repository quality gate.
 
 Use dedicated test Tasks only. For each `WORKBUDDY_AI_TEST_` and `WORKBUDDY_CN_TEST_` prefix, set:
 
@@ -127,7 +129,7 @@ Use dedicated test Tasks only. For each `WORKBUDDY_AI_TEST_` and `WORKBUDDY_CN_T
 - `TASK_ID`, `TASK_WORKSPACE`;
 - `USER_MARKER`, `ASSISTANT_MARKER` for a unique UI-seeded turn;
 - `PRIOR_USER_MARKER`, `PRIOR_ASSISTANT_MARKER` for context continuation;
-- `UI_TASK_TITLE`, `UI_RESTORE_TASK_TITLE` so UI verification restores the prior application view even on failure;
+- `UI_TASK_TITLE`, `UI_RESTORE_TASK_TITLE` so native-client selection checks restore the prior application view even on failure;
 - `UI_BACKGROUND_TASK_TITLE` for a second dedicated Task used to prove the Attachment remains bound while the application displays another Task;
 - `UI_ORIGINATED_USER_MARKER`, `UI_ORIGINATED_ASSISTANT_MARKER` for the native UI turn performed while Connect holds the Attachment;
 - `INTERACTION_PROMPT`, a safe permission probe; `bypassPermissions` must produce no approval request and is recorded as a capability downgrade;
@@ -135,6 +137,6 @@ Use dedicated test Tasks only. For each `WORKBUDDY_AI_TEST_` and `WORKBUDDY_CN_T
 
 Optional `TURN_MARKER` and `RECOVERY_MARKER` values make a diagnostic run reproducible; otherwise the suite generates unique markers. The scripts use temporary Connect databases and delete them. Native prompt markers intentionally remain in the dedicated WorkBuddy test Tasks as diagnostic evidence; the JSON result discloses them. Clean up only those dedicated Tasks through WorkBuddy after recording the result. Never point the suite at an unrelated Task.
 
-The preflight requires both configured applications to be running simultaneously and resolves each Task only through its selected profile. The UI step switches to the dedicated Task, verifies the synchronized marker, and restores `UI_RESTORE_TASK_TITLE`. The concurrency/restart step asks the operator to complete one marked native UI turn while Connect holds the Attachment, switches the application to `UI_BACKGROUND_TASK_TITLE`, then deliberately asks the operator to restart only the selected distribution. Those observations contribute evidence; replay freshness, sidecar health, and the simultaneous matrix remain unqualified until every required row passes.
+The preflight requires both configured applications to be running simultaneously and resolves each Task only through its selected profile. The UI step selects the dedicated Task only to establish native state, then restores `UI_RESTORE_TASK_TITLE`; a Connect-originated marker is not required to render live in that client. The concurrency/restart step asks the operator to complete one marked native UI turn while Connect holds the Attachment, switches the application to `UI_BACKGROUND_TASK_TITLE`, then deliberately asks the operator to restart only the selected distribution. Those observations contribute evidence; authoritative replay freshness, sidecar health, native-client selection independence, and the simultaneous matrix remain unqualified until every required row passes.
 
 The tag-triggered GitHub release workflow cannot run signed-in WorkBuddy, ClawChat, or Liveware UI qualification on clean hosted runners. Native replay freshness, sidecar health, complete catalogs, and the simultaneous two-distribution matrix therefore remain explicit installed-product QA gaps until separately evidenced on clean Tasks. Release claims must not replace those scenarios with mocks or unauthenticated browser probes.
