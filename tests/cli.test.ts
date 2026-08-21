@@ -24,6 +24,7 @@ import {
 } from "../src/plugin/sdk";
 import { currentConnectPluginTarget, installPluginBundle, setInstalledPluginStatus } from "../src/plugin/store";
 import type { SelectableRuntimeThread } from "../src/runtime/types";
+import { WorkBuddyDiscoveryError, type WorkBuddyDiscoveryFailureCode } from "../src/runtime/workbuddy-task-discovery";
 import { runConnectCli } from "../src/service/cli";
 import { CONNECT_VERSION } from "../src/service/version";
 import type { AgentBindingConfig } from "../src/types";
@@ -180,6 +181,16 @@ function message(text: string, chatType: "direct" | "group" = "direct"): Normali
     raw: {} as never,
   };
 }
+const WORKBUDDY_COMMAND_FAILURES = [
+  ["application-stopped", "unavailable", "WorkBuddy is not running; open it and retry."],
+  ["endpoint-stale", "unavailable", "The WorkBuddy Task endpoint changed; retry after WorkBuddy finishes restarting."],
+  ["recycled-endpoint", "unavailable", "The WorkBuddy Task endpoint changed owner; rediscover the exact Task."],
+  [
+    "protocol-incompatible",
+    "unsupported",
+    "WorkBuddy ACP does not advertise session/load; update WorkBuddy before retrying Task discovery.",
+  ],
+] satisfies Array<[WorkBuddyDiscoveryFailureCode, "unavailable" | "unsupported", string]>;
 
 describe("runConnectCli", () => {
   it("reports the build version pinned by the release manifest", async () => {
@@ -1591,6 +1602,205 @@ describe("handleChatCommand", () => {
       sessionId: "session-desktop-task",
       runtimeSessionId: "task-native-1",
     });
+    await store.close();
+  });
+
+  it.each(WORKBUDDY_COMMAND_FAILURES)(
+    "keeps durable /sessions output usable when WorkBuddy Task discovery reports %s",
+    async (code, availability, detail) => {
+      const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-workbuddy-session-unavailable-"));
+      const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+      const workspaces = new WorkspaceCatalog(store);
+      const workspace = await workspaces.ensureDefault("workbuddy");
+      const config = upsertAgentBinding(defaultConfig(), "workbuddy", testBinding({ profile: "workbuddy-ai" }));
+      await store.upsertRuntimeSession({
+        chatId: "chat-1",
+        sessionId: "session-durable",
+        agentId: "workbuddy",
+        runtimeSessionId: "task-durable",
+        name: "Stored WorkBuddy Task",
+        workspaceRef: workspace.workspaceRef,
+        isCurrent: true,
+      });
+      const durable = (await store.listRuntimeSessions("chat-1", "workbuddy"))[0];
+      if (!durable) throw new Error("expected durable WorkBuddy Session");
+      const discoverRuntimeThreads = mock(async (): Promise<SelectableRuntimeThread[]> => {
+        throw new WorkBuddyDiscoveryError(code, detail);
+      });
+
+      const listed = await handleChatCommand({
+        message: message("/sessions"),
+        agentId: "workbuddy",
+        ownerUserId: "usr",
+        config,
+        stateStore: store,
+        workspaces,
+        discoverRuntimeThreads,
+        runtimeFamilyFor: () => "workbuddy",
+      });
+
+      expect(listed.handled).toBe(true);
+      expect(listed.text).toContain("Stored WorkBuddy Task");
+      expect(listed.text).toContain(durable.sessionRef);
+      expect(listed.text).toContain("WorkBuddy Task discovery");
+      expect(listed.text?.toLowerCase()).toContain(availability);
+      expect(listed.text).toContain(detail);
+      expect(discoverRuntimeThreads).toHaveBeenCalledTimes(1);
+      await store.close();
+    },
+  );
+
+  it.each(WORKBUDDY_COMMAND_FAILURES)(
+    "handles /switch without changing the durable selection when WorkBuddy Task discovery reports %s",
+    async (code, availability, detail) => {
+      const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-workbuddy-switch-unavailable-"));
+      const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+      const workspaces = new WorkspaceCatalog(store);
+      const workspace = await workspaces.ensureDefault("workbuddy");
+      const config = upsertAgentBinding(defaultConfig(), "workbuddy", testBinding({ profile: "workbuddy-ai" }));
+      await store.upsertRuntimeSession({
+        chatId: "chat-1",
+        sessionId: "session-current",
+        agentId: "workbuddy",
+        runtimeSessionId: "task-current",
+        name: "Current WorkBuddy Task",
+        workspaceRef: workspace.workspaceRef,
+        isCurrent: true,
+      });
+      const closeRuntimeSession = mock(async () => true);
+      const discoverRuntimeThreads = mock(async (): Promise<SelectableRuntimeThread[]> => {
+        throw new WorkBuddyDiscoveryError(code, detail);
+      });
+
+      const switched = await handleChatCommand({
+        message: message("/switch Desktop-only Task"),
+        agentId: "workbuddy",
+        ownerUserId: "usr",
+        config,
+        stateStore: store,
+        workspaces,
+        closeRuntimeSession,
+        discoverRuntimeThreads,
+        runtimeFamilyFor: () => "workbuddy",
+      });
+
+      expect(switched.handled).toBe(true);
+      expect(switched.text).toContain("WorkBuddy Task discovery");
+      expect(switched.text?.toLowerCase()).toContain(availability);
+      expect(switched.text).toContain(detail);
+      expect(closeRuntimeSession).not.toHaveBeenCalled();
+      await expect(store.getCurrentRuntimeSession("chat-1", "workbuddy")).resolves.toMatchObject({
+        sessionId: "session-current",
+        runtimeSessionId: "task-current",
+      });
+      await store.close();
+    },
+  );
+
+  it.each(WORKBUDDY_COMMAND_FAILURES)(
+    "handles /model without replacing the stored selection when the WorkBuddy model catalog reports %s",
+    async (code, availability, detail) => {
+      const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-workbuddy-model-unavailable-"));
+      const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+      const workspaces = new WorkspaceCatalog(store);
+      const workspace = await workspaces.ensureDefault("workbuddy");
+      const config = upsertAgentBinding(defaultConfig(), "workbuddy", testBinding({ profile: "workbuddy-ai" }));
+      await store.upsertRuntimeSession({
+        chatId: "chat-1",
+        sessionId: "session-current",
+        agentId: "workbuddy",
+        runtimeSessionId: "task-current",
+        name: "Current WorkBuddy Task",
+        workspaceRef: workspace.workspaceRef,
+        model: { model: "model-current" },
+        reasoningEffort: "high",
+        isCurrent: true,
+      });
+      const listRuntimeModels = mock(async () => {
+        throw new WorkBuddyDiscoveryError(code, detail);
+      });
+
+      const selected = await handleChatCommand({
+        message: message("/model model-replacement high"),
+        agentId: "workbuddy",
+        ownerUserId: "usr",
+        config,
+        stateStore: store,
+        workspaces,
+        listRuntimeModels,
+        runtimeFamilyFor: () => "workbuddy",
+      });
+
+      expect(selected.handled).toBe(true);
+      expect(selected.text).toContain("WorkBuddy");
+      expect(selected.text?.toLowerCase()).toContain("model");
+      expect(selected.text?.toLowerCase()).toContain(availability);
+      expect(selected.text).toContain(detail);
+      await expect(store.getCurrentRuntimeSession("chat-1", "workbuddy")).resolves.toMatchObject({
+        sessionId: "session-current",
+        model: { model: "model-current" },
+        reasoningEffort: "high",
+      });
+      await store.close();
+    },
+  );
+
+  it("keeps independent WorkBuddy commands usable while discovery and the model catalog are unavailable", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-workbuddy-independent-commands-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const workspaces = new WorkspaceCatalog(store);
+    const workspace = await workspaces.ensureDefault("workbuddy");
+    const config = upsertAgentBinding(defaultConfig(), "workbuddy", testBinding({ profile: "workbuddy-ai" }));
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-current",
+      agentId: "workbuddy",
+      runtimeSessionId: "task-current",
+      name: "Current WorkBuddy Task",
+      workspaceRef: workspace.workspaceRef,
+      isCurrent: true,
+    });
+    const discoverRuntimeThreads = mock(async (): Promise<SelectableRuntimeThread[]> => {
+      throw new WorkBuddyDiscoveryError("application-stopped", "WorkBuddy is not running.");
+    });
+    const listRuntimeModels = mock(async () => {
+      throw new WorkBuddyDiscoveryError("protocol-incompatible", "WorkBuddy ACP model discovery is unsupported.");
+    });
+    const closeRuntimeSession = mock(async () => true);
+    const cancelRuntimeTurn = mock(async () => true);
+    const context = {
+      agentId: "workbuddy",
+      ownerUserId: "usr",
+      config,
+      stateStore: store,
+      workspaces,
+      discoverRuntimeThreads,
+      listRuntimeModels,
+      closeRuntimeSession,
+      cancelRuntimeTurn,
+      runtimeFamilyFor: () => "workbuddy",
+    };
+
+    await expect(handleChatCommand({ ...context, message: message("/help") })).resolves.toMatchObject({
+      handled: true,
+      text: expect.stringContaining("ClawChat Connect commands"),
+    });
+    await expect(handleChatCommand({ ...context, message: message("/status") })).resolves.toMatchObject({
+      handled: true,
+      text: expect.stringContaining("ClawChat Connect status"),
+    });
+    await expect(handleChatCommand({ ...context, message: message("/new Still usable") })).resolves.toMatchObject({
+      handled: true,
+      text: expect.stringContaining("CodeBuddy Session `Still usable`"),
+    });
+    await expect(handleChatCommand({ ...context, message: message("/cancel") })).resolves.toMatchObject({
+      handled: true,
+      text: "Cancelled the active ClawChat Connect turn.",
+    });
+    expect(discoverRuntimeThreads).not.toHaveBeenCalled();
+    expect(listRuntimeModels).toHaveBeenCalledTimes(1);
+    expect(closeRuntimeSession).toHaveBeenCalledTimes(1);
+    expect(cancelRuntimeTurn).toHaveBeenCalledTimes(1);
     await store.close();
   });
 });

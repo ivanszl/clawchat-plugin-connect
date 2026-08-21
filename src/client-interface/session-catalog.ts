@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type {
   QueuedTurnView,
+  RuntimeThreadUnavailableReasonView,
   SessionAction,
   SessionCatalogAction,
   SessionCatalogBindingView,
@@ -21,7 +22,9 @@ import type {
   RuntimeThreadCandidate,
   RuntimeThreadDiscoverySnapshot,
 } from "../runtime/types";
+import { workBuddyCapabilityAvailability } from "../runtime/workbuddy-availability";
 import { isCodeBuddySessionRuntimeTarget } from "../runtime/workbuddy-runtime-target";
+import { WorkBuddyDiscoveryError } from "../runtime/workbuddy-task-discovery";
 import type {
   AgentBindingConfig,
   ConnectConfig,
@@ -143,12 +146,15 @@ export class SessionCatalog {
             entries: await Promise.all(
               binding.entries.map(async (entry) => ({
                 ...entry,
-                status: providerAvailable
-                  ? sessionStatus(
-                      runtimeStatus,
-                      (await this.options.sessionActivity?.(binding.bindingId, entry.sessionRef)) ?? "idle",
-                    )
-                  : "offline",
+                status:
+                  entry.status === "offline" || entry.status === "error"
+                    ? entry.status
+                    : providerAvailable
+                      ? sessionStatus(
+                          runtimeStatus,
+                          (await this.options.sessionActivity?.(binding.bindingId, entry.sessionRef)) ?? "idle",
+                        )
+                      : "offline",
               })),
             ),
           };
@@ -208,8 +214,15 @@ export class SessionCatalog {
     const runtimeWorkspace = session ? await this.workspaces.resolveWorkspace(session) : undefined;
     const catalogScope = { runtimeThreadId, workspace: runtimeWorkspace };
     const providerAvailable = this.options.runtimeAdapters.hasProvider(binding);
+    const runtimeOperational =
+      providerAvailable &&
+      runtimeStatus?.runtimeAvailability !== "startup-unavailable" &&
+      runtimeStatus?.websocketConnected !== false &&
+      entry.status !== "offline" &&
+      entry.status !== "error" &&
+      (entry.runtimeThreadUnavailableReason === null || entry.runtimeThreadUnavailableReason === "archived");
     let advertisedModels: Awaited<ReturnType<RuntimeAdapterRegistry["listModels"]>> = null;
-    if (providerAvailable) {
+    if (runtimeOperational) {
       try {
         advertisedModels = await this.options.runtimeAdapters.listModels(binding, catalogScope);
       } catch (error) {
@@ -222,7 +235,7 @@ export class SessionCatalog {
       ...(session?.sessionOptions ?? {}),
     };
     let advertisedSessionOptions: Awaited<ReturnType<RuntimeAdapterRegistry["listSessionOptions"]>> = [];
-    if (session && runtimeWorkspace && providerAvailable) {
+    if (session && runtimeWorkspace && runtimeOperational) {
       try {
         advertisedSessionOptions = await this.options.runtimeAdapters.listSessionOptions(
           binding,
@@ -302,9 +315,10 @@ export class SessionCatalog {
       effectiveModel,
       effectiveReasoningEffort,
       modelSource,
+      status:
+        entry.status === "error" ? "error" : runtimeOperational ? sessionStatus(runtimeStatus, activity) : "offline",
       modelAvailable,
       modelOptions,
-      status: providerAvailable ? sessionStatus(runtimeStatus, activity) : "offline",
       runtimeThreadAvailable,
       runtimeThreadUnavailableReason: entry.runtimeThreadUnavailableReason,
       runtimeThreadUnavailableDetail: entry.runtimeThreadUnavailableDetail,
@@ -316,10 +330,10 @@ export class SessionCatalog {
       pendingInteractions,
       turnSubmissionCapability: clientTurnSubmissionCapability(
         effectiveModelOption,
-        modelAvailable && providerAvailable,
+        modelAvailable && runtimeOperational && canSubmit,
       ),
       allowedActions:
-        providerAvailable && !runtimeThreadMissing
+        runtimeOperational && !runtimeThreadMissing
           ? sessionActions(entry.isArchived, runtimeThreadPresent, activity, lifecycleCapabilities).filter(
               (action) => canSubmit || (action !== "send" && action !== "cancel"),
             )
@@ -335,33 +349,49 @@ export class SessionCatalog {
     if (!entry) return false;
     const runtimeRevision = state.runtimeRevisionByRef.get(normalized);
     const sourceRevision = runtimeRevision ?? entry.updatedAt;
-    const session = await this.options.stateStore.getRuntimeSessionByRef(normalized);
-    if (session) {
-      if (session.runtimeSessionId && !runtimeRevision) return true;
-      await this.options.transcriptProjection.reconcile(session, sourceRevision);
+    try {
+      const session = await this.options.stateStore.getRuntimeSessionByRef(normalized);
+      if (session) {
+        if (session.runtimeSessionId && !runtimeRevision) return true;
+        await this.options.transcriptProjection.reconcile(session, sourceRevision);
+        return true;
+      }
+      const target = await this.options.stateStore.getSessionRefTarget(normalized);
+      if (!target?.runtimeSessionId) return false;
+      await this.options.transcriptProjection.reconcile(
+        {
+          chatId: target.chatId,
+          sessionId: "",
+          sessionRef: normalized,
+          agentId: target.agentId,
+          runtimeSessionId: target.runtimeSessionId,
+          workspaceRef: entry.workspaceRef,
+          name: entry.name,
+          mode: null,
+          model: null,
+          reasoningEffort: null,
+          hasMessages: true,
+          isCurrent: false,
+          updatedAt: Date.parse(entry.updatedAt) || Date.now(),
+        },
+        sourceRevision,
+      );
+      return true;
+    } catch (error) {
+      if (!(error instanceof WorkBuddyDiscoveryError)) throw error;
+      this.options.transcriptProjection.invalidate(normalized);
+      entry.runtimeThreadUnavailableReason = projectionFailureReason(error);
+      entry.runtimeThreadUnavailableDetail = projectionFailureDetail(entry.runtimeThreadUnavailableDetail, error);
+      entry.status =
+        entry.runtimeThreadUnavailableReason === "native-state-corrupt" ||
+        entry.runtimeThreadUnavailableReason === "runtime-incompatible"
+          ? "error"
+          : "offline";
+      entry.allowedActions = entry.allowedActions.filter(
+        (action) => action !== "send" && action !== "cancel" && action !== "adopt",
+      );
       return true;
     }
-    const target = await this.options.stateStore.getSessionRefTarget(normalized);
-    if (!target?.runtimeSessionId) return false;
-    await this.options.transcriptProjection.reconcile(
-      {
-        chatId: target.chatId,
-        sessionId: "",
-        sessionRef: normalized,
-        agentId: target.agentId,
-        runtimeSessionId: target.runtimeSessionId,
-        workspaceRef: entry.workspaceRef,
-        name: entry.name,
-        mode: null,
-        model: null,
-        reasoningEffort: null,
-        hasMessages: true,
-        isCurrent: false,
-        updatedAt: Date.parse(entry.updatedAt) || Date.now(),
-      },
-      sourceRevision,
-    );
-    return true;
   }
 
   async runtimeThreadId(sessionRef: string): Promise<string | null> {
@@ -465,12 +495,12 @@ export class SessionCatalog {
       const status = await this.options.stateStore.getRuntimeStatus(bindingId);
       const runtimeUnavailable =
         status?.runtimeAvailability === "startup-unavailable" || !this.options.runtimeAdapters.hasProvider(binding);
-      const lifecycleCapabilities = runtimeUnavailable
-        ? { archive: false, restore: false, delete: false }
-        : this.options.runtimeAdapters.lifecycleCapabilities(binding);
       const family = runtimeUnavailable
         ? ((await this.options.runtimeFamily?.(binding)) ?? "unavailable")
         : this.options.runtimeAdapters.familyFor(binding);
+      const advertisedLifecycleCapabilities = runtimeUnavailable
+        ? { archive: false, restore: false, delete: false }
+        : this.options.runtimeAdapters.lifecycleCapabilities(binding);
       const managed = sessions.filter((session) => session.agentId === bindingId);
       const managedRuntimeIds = new Set(
         managed.map((session) => session.runtimeSessionId).filter((id): id is string => Boolean(id)),
@@ -480,17 +510,36 @@ export class SessionCatalog {
         threads: [],
         limitations: ["runtime-unavailable"],
       };
-      const activeSnapshot = runtimeUnavailable
-        ? unavailableDiscovery
-        : await this.options.runtimeAdapters.discoverAllThreads(getAgentBinding(this.options.config, bindingId));
-      const archivedSnapshot = runtimeUnavailable
-        ? unavailableDiscovery
-        : await this.options.runtimeAdapters.discoverArchivedThreads(getAgentBinding(this.options.config, bindingId));
+      let activeDiscoveryFailed = false;
+      let activeSnapshot = unavailableDiscovery;
+      let archivedSnapshot = unavailableDiscovery;
+      if (!runtimeUnavailable) {
+        try {
+          activeSnapshot = await this.options.runtimeAdapters.discoverAllThreads(
+            getAgentBinding(this.options.config, bindingId),
+          );
+        } catch (error) {
+          if (family !== "workbuddy" || !(error instanceof WorkBuddyDiscoveryError)) throw error;
+          activeDiscoveryFailed = true;
+        }
+        try {
+          archivedSnapshot = await this.options.runtimeAdapters.discoverArchivedThreads(
+            getAgentBinding(this.options.config, bindingId),
+          );
+        } catch (error) {
+          if (family !== "workbuddy" || !(error instanceof WorkBuddyDiscoveryError)) throw error;
+        }
+      }
+      const bindingUnavailable = runtimeUnavailable || activeDiscoveryFailed;
+      const bindingDisconnected = bindingUnavailable || status?.websocketConnected === false;
+      const lifecycleCapabilities = bindingDisconnected
+        ? { archive: false, restore: false, delete: false }
+        : advertisedLifecycleCapabilities;
       const discoveredActive = activeSnapshot.threads.filter((thread) => !thread.parentRuntimeThreadId);
       const discoveredArchived = archivedSnapshot.threads.filter((thread) => !thread.parentRuntimeThreadId);
       let workspaces: WorkspaceRecord[];
       try {
-        const snapshot = runtimeUnavailable
+        const snapshot = bindingUnavailable
           ? { status: "unavailable" as const, identities: [] }
           : await this.options.runtimeAdapters.discoverWorkspaces(getAgentBinding(this.options.config, bindingId));
         workspaces = (
@@ -616,9 +665,9 @@ export class SessionCatalog {
           entry.pendingInteractionCount = (
             await this.options.stateStore.listPendingRuntimeInteractions(entry.sessionRef)
           ).length;
-          if (runtimeUnavailable) {
+          if (bindingDisconnected) {
             entry.status = "offline";
-            entry.allowedActions = [];
+            entry.allowedActions = ["open"];
           }
         }),
       );
@@ -628,14 +677,7 @@ export class SessionCatalog {
         bindingId,
         displayName: binding.displayName || bindingId,
         kind: family,
-        status:
-          runtimeUnavailable ||
-          status?.runtimeAvailability === "startup-unavailable" ||
-          status?.websocketConnected === false
-            ? "disconnected"
-            : status?.websocketConnected === true
-              ? "connected"
-              : "unknown",
+        status: bindingDisconnected ? "disconnected" : status?.websocketConnected === true ? "connected" : "unknown",
         entries,
       });
     }
@@ -755,6 +797,46 @@ function catalogActions(
   if (activity === "idle" && hasRuntimeThread && capabilities.archive) actions.push("archive");
   if (activity === "idle" && hasRuntimeThread && capabilities.delete) actions.push("delete");
   return actions;
+}
+
+function projectionFailureDetail(existing: string | null, error: WorkBuddyDiscoveryError): string {
+  const availability = workBuddyCapabilityAvailability(error.code);
+  if (availability === "unavailable") {
+    const detail = existing ?? error.message;
+    return boundedProjectionFailureDetail(
+      /\bretry\b/iu.test(detail) ? detail : `${detail} Retry this exact WorkBuddy Task when its endpoint is available.`,
+    );
+  }
+  if (availability === "unsupported") {
+    return boundedProjectionFailureDetail(
+      `${error.message} This WorkBuddy Runtime Capability is unsupported; stored Transcript data remains readable.`,
+    );
+  }
+  const conflictDetail =
+    existing && !/\bretry\b/iu.test(existing) && /(?:identity|replay|different\s+task)/iu.test(existing)
+      ? existing
+      : `${error.message} Stored Transcript data remains readable, but adoption and send stay blocked.`;
+  return boundedProjectionFailureDetail(conflictDetail);
+}
+
+function projectionFailureReason(error: WorkBuddyDiscoveryError): RuntimeThreadUnavailableReasonView {
+  const availability = workBuddyCapabilityAvailability(error.code);
+  if (availability === "unsupported") return "runtime-incompatible";
+  if (availability === "unavailable") return "external-ownership-unverifiable";
+  if (
+    error.code === "task-identity-mismatch" ||
+    error.code === "task-replay-incomplete" ||
+    error.code === "workspace-identity-mismatch" ||
+    error.code === "task-not-found"
+  ) {
+    return "native-state-corrupt";
+  }
+  return "external-ownership-unverifiable";
+}
+
+function boundedProjectionFailureDetail(detail: string): string {
+  const suffix = "…[TRUNCATED]";
+  return detail.length <= 512 ? detail : `${detail.slice(0, 512 - suffix.length)}${suffix}`;
 }
 
 function sessionStatus(status: RuntimeStatus | null, activity: SessionActivity): SessionCatalogEntryView["status"] {

@@ -37,6 +37,20 @@ ClawChat `/sessions` lists both target kinds in the current Workspace. `/switch 
 
 Release-bundled discovery preselects the WorkBuddy Plugin when either supported macOS application is present. Runtime activation validates the selected distribution and fails closed unless Task endpoint initialization negotiates ACP v1 and advertises `agentCapabilities.loadSession === true`. Connect does not call `session/load` when that capability is absent or false. Endpoints, ports, process identifiers, connection identifiers, tokens, passwords, authorization values, product configuration, executable overrides, version overrides, and profile overrides remain desktop-owned and are rejected.
 
+## ClawChat and Liveware availability
+
+A WorkBuddy availability error during initial Runtime preparation does not close the signed-in ClawChat Binding WebSocket or its control commands. Typed retryable failures recover through Core's background preparation retry; typed unsupported failures do not enter that retry loop. If a later retry reports an untyped Core/runtime failure, Core shuts down that Binding rather than exposing a partially prepared Runtime. Other Bindings remain independent.
+
+The shared Liveware Client catalog contains a WorkBuddy discovery failure to the affected Binding. Existing durable Session entries and their stored Transcripts remain open and readable, and Runtime-independent Binding controls remain available. The failed discovery does not make a native Task usable: adoption, prompt submission, cancellation, and unsafe lifecycle actions stay disabled until safe discovery and preparation succeed.
+
+Slash capability discovery returns a scoped empty result rather than an HTTP 500 when WorkBuddy cannot supply suggestions. Its availability distinguishes:
+
+- `unsupported` — the selected Runtime capability or negotiated protocol cannot provide the feature; it is not retried in the background;
+- `unavailable` — the capability is supported but its application, endpoint, authentication, or discovery state is temporarily unavailable;
+- `conflict` — Task identity, workspace, replay, or other fail-closed state prevents safe use.
+
+These states never authorize adoption or prompt submission. Restore an `unavailable` Runtime and retry the command; update an `unsupported` capability; resolve the exact Task identity or replay problem for a `conflict`.
+
 ## Security and ownership boundary
 
 Every attachment reacquires ephemeral connection data and verifies all of the following before Task content is exchanged:

@@ -9,6 +9,7 @@ import { type ConnectStateStore, createStateStore } from "../src/persistence/sta
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { type ConnectRuntimeAdapter, completeRuntimeThreadDiscovery } from "../src/runtime/types";
 import { encodeCodeBuddySessionId } from "../src/runtime/workbuddy-runtime-target";
+import { WorkBuddyDiscoveryError } from "../src/runtime/workbuddy-task-discovery";
 import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 const stores: ConnectStateStore[] = [];
@@ -23,26 +24,224 @@ const persistentWorkspace = (rootPath: string) => ({
 });
 
 describe("Session Catalog workspace grouping", () => {
-  it("does not rediscover a Runtime Binding that failed during startup", async () => {
+  it("keeps startup-unavailable WorkBuddy Sessions openable without advertising turn submission", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-unavailable-"));
-    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const store = createStateStore({
+      dbPath: join(directory, "state.sqlite"),
+      sessionRefFactory: () => "ABCDEFGH",
+    });
     stores.push(store);
-    await store.setRuntimeAvailability("codex", "startup-unavailable", "Codex executable was not found");
+    await store.upsertRuntimeSession({
+      chatId: "chat-1",
+      sessionId: "session-1",
+      agentId: "desktop",
+      runtimeSessionId: "task-unavailable",
+      workspaceRef: null,
+      name: "Unavailable WorkBuddy Task",
+      hasMessages: true,
+      isCurrent: true,
+    });
+    await store.setRuntimeAvailability("desktop", "startup-unavailable", "WorkBuddy is not running");
     let discoveryCalls = 0;
     const adapter: ConnectRuntimeAdapter = {
-      kind: "codex",
-      modes: ["workspace-write"],
+      kind: "workbuddy",
+      modes: [],
       discoverAllThreads: async () => {
         discoveryCalls += 1;
-        throw new Error("must not probe unavailable Codex");
+        throw new Error("must not probe unavailable WorkBuddy");
       },
       discoverArchivedThreads: async () => {
         discoveryCalls += 1;
-        throw new Error("must not probe unavailable Codex");
+        throw new Error("must not probe unavailable WorkBuddy");
       },
       start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
     };
     const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
+    const config = defaultConfig();
+    config.agents = { desktop: pluginBinding({ profile: "workbuddy-cn" }, { displayName: "WorkBuddy" }) };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+
+    await expect(catalog.view()).resolves.toMatchObject({
+      bindings: [
+        {
+          bindingId: "desktop",
+          status: "disconnected",
+          entries: [
+            {
+              sessionRef: "ABCDEFGH",
+              name: "Unavailable WorkBuddy Task",
+              status: "offline",
+              allowedActions: ["open"],
+            },
+          ],
+        },
+      ],
+    });
+    await expect(catalog.sessionView("ABCDEFGH")).resolves.toMatchObject({
+      sessionRef: "ABCDEFGH",
+      name: "Unavailable WorkBuddy Task",
+      status: "offline",
+      runtimeThreadAvailable: false,
+      allowedActions: [],
+      turnSubmissionCapability: {
+        prompt: { allowed: false },
+        attachments: {
+          allowedKinds: [],
+          allowedMediaTypes: [],
+          maxCount: 0,
+        },
+      },
+    });
+    expect(discoveryCalls).toBe(0);
+  });
+
+  it("isolates a failed WorkBuddy discovery from a healthy Binding and keeps durable Sessions openable", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-binding-isolation-"));
+    const refs = ["ABCDEFGH", "JKLMNPQR"];
+    const store = createStateStore({
+      dbPath: join(directory, "state.sqlite"),
+      sessionRefFactory: () => refs.shift() ?? "STUVWXYZ",
+    });
+    stores.push(store);
+    await store.upsertRuntimeSession({
+      chatId: "chat-offline",
+      sessionId: "session-offline",
+      agentId: "workbuddy-offline",
+      runtimeSessionId: "task-offline",
+      workspaceRef: null,
+      name: "Durable Offline Task",
+      hasMessages: true,
+      isCurrent: true,
+    });
+    await store.setRuntimeConnectionStatus("workbuddy-offline", false, "WorkBuddy is temporarily unavailable");
+    await store.setRuntimeConnectionStatus("workbuddy-healthy", true, null);
+    const adapter: ConnectRuntimeAdapter = {
+      kind: "workbuddy",
+      modes: [],
+      discoverAllThreads: async (binding) => {
+        if (binding.runtimeConfig.profile === "offline") {
+          throw new WorkBuddyDiscoveryError(
+            "application-stopped",
+            "WorkBuddy discovery endpoint is temporarily unavailable",
+          );
+        }
+        return completeRuntimeThreadDiscovery([
+          {
+            runtimeThreadId: "task-healthy",
+            name: "Healthy WorkBuddy Task",
+            updatedAt: 2,
+            workspaceIdentity: persistentWorkspace(directory),
+          },
+        ]);
+      },
+      discoverArchivedThreads: async () => completeRuntimeThreadDiscovery([], { reason: "archived" }),
+      start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+    };
+    const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter)]);
+    const config = defaultConfig();
+    config.agents = {
+      "workbuddy-offline": pluginBinding({ profile: "offline" }, { displayName: "Offline WorkBuddy" }),
+      "workbuddy-healthy": pluginBinding({ profile: "healthy" }, { displayName: "Healthy WorkBuddy" }),
+    };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+
+    const view = await catalog.view();
+    expect(view.bindings.find((binding) => binding.bindingId === "workbuddy-healthy")).toMatchObject({
+      status: "connected",
+      entries: [{ name: "Healthy WorkBuddy Task", status: "idle" }],
+    });
+    expect(view.bindings.find((binding) => binding.bindingId === "workbuddy-offline")).toMatchObject({
+      status: "disconnected",
+      entries: [
+        {
+          sessionRef: "ABCDEFGH",
+          name: "Durable Offline Task",
+          status: "offline",
+          allowedActions: ["open"],
+        },
+      ],
+    });
+    await expect(catalog.sessionView("ABCDEFGH")).resolves.toMatchObject({
+      name: "Durable Offline Task",
+      status: "offline",
+      runtimeThreadAvailable: false,
+      allowedActions: [],
+      turnSubmissionCapability: {
+        prompt: { allowed: false },
+        attachments: { allowedKinds: [], maxCount: 0 },
+      },
+    });
+  });
+
+  it("keeps active WorkBuddy Tasks online when only archived discovery is unavailable", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-archived-unavailable-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    stores.push(store);
+    await store.setRuntimeConnectionStatus("workbuddy", true, null);
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "workbuddy",
+        modes: [],
+        discoverAllThreads: async () =>
+          completeRuntimeThreadDiscovery([
+            {
+              runtimeThreadId: "task-active",
+              name: "Active WorkBuddy Task",
+              updatedAt: 2,
+              workspaceIdentity: persistentWorkspace(directory),
+            },
+          ]),
+        discoverArchivedThreads: async () => {
+          throw new WorkBuddyDiscoveryError("endpoint-unavailable", "Archived Task discovery is unavailable");
+        },
+        start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+      }),
+    ]);
+    const config = defaultConfig();
+    config.agents = { workbuddy: pluginBinding({}, { displayName: "WorkBuddy" }) };
+    const catalog = new SessionCatalog({
+      config,
+      stateStore: store,
+      runtimeAdapters,
+      transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
+    });
+
+    await expect(catalog.view()).resolves.toMatchObject({
+      bindings: [
+        {
+          bindingId: "workbuddy",
+          status: "connected",
+          entries: [{ name: "Active WorkBuddy Task", status: "idle", allowedActions: ["open", "adopt"] }],
+        },
+      ],
+    });
+  });
+
+  it("propagates non-WorkBuddy discovery failures instead of masking provider defects", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-session-catalog-provider-failure-"));
+    const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    stores.push(store);
+    await store.setRuntimeConnectionStatus("codex", true, null);
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "codex",
+        modes: [],
+        discoverAllThreads: async () => {
+          throw new Error("Codex discovery invariant failed");
+        },
+        start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+      }),
+    ]);
     const config = defaultConfig();
     config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
     const catalog = new SessionCatalog({
@@ -52,10 +251,7 @@ describe("Session Catalog workspace grouping", () => {
       transcriptProjection: new TranscriptProjection({ config, stateStore: store, runtimeAdapters }),
     });
 
-    await expect(catalog.view()).resolves.toMatchObject({
-      bindings: [{ bindingId: "codex", status: "disconnected", entries: [] }],
-    });
-    expect(discoveryCalls).toBe(0);
+    await expect(catalog.view()).rejects.toThrow("Codex discovery invariant failed");
   });
 
   it("keeps Sessions inspectable and offline when their installed Runtime Plugin is inactive", async () => {
@@ -93,7 +289,7 @@ describe("Session Catalog workspace grouping", () => {
     expect(entry).toMatchObject({
       name: "Archived Plugin Session",
       status: "offline",
-      allowedActions: [],
+      allowedActions: ["open"],
     });
     await expect(catalog.sessionView(entry?.sessionRef ?? "")).resolves.toMatchObject({
       status: "offline",

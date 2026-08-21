@@ -32,6 +32,8 @@ import {
   type RuntimeSlashSelection,
   runtimeInputIdentityContains,
 } from "../runtime/types";
+import { workBuddyCapabilityAvailability } from "../runtime/workbuddy-availability";
+import { WorkBuddyDiscoveryError } from "../runtime/workbuddy-task-discovery";
 import type { ActivationCredentials, ConnectConfig } from "../types";
 import {
   createSessionContinuity,
@@ -39,6 +41,8 @@ import {
   type SessionContinuityModule,
 } from "../workspaces/session-continuity";
 import type { WorkspaceCatalog } from "../workspaces/workspaces";
+
+const DEFAULT_RUNTIME_PREPARATION_RETRY_MS = 5_000;
 
 export interface BindingRuntimeOptions {
   agentId: string;
@@ -58,6 +62,7 @@ export interface BindingRuntimeOptions {
   clawChatApi?: ClawChatApiClient;
   groupIntakeClock?: GroupIntakeClock;
   protocolEventHandlers?: BindingProtocolEventHandlers;
+  runtimePreparationRetryMs?: number;
   verifyInstalledSkills?: () => Promise<void>;
   writeError: (message: string) => void;
 }
@@ -117,6 +122,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   const execution = options.execution;
   const runtimeAdapters = execution?.runtimeAdapters ?? options.runtimeAdapters;
   if (!runtimeAdapters) throw new Error("Runtime Adapter coordination is required");
+  const workBuddyRuntime = runtimeAdapters.familyFor(binding) === "workbuddy";
   const transcriptProjection = execution?.transcriptProjection ?? options.transcriptProjection;
   const runtimeInteractions = execution?.runtimeInteractions ?? options.runtimeInteractions;
   const runtimeConfig: ConnectConfig = {
@@ -157,6 +163,26 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   let interactionRouter: RuntimeInteractionRouter;
   let groupIntake: GroupIntakeCoordinator;
   let runtimeWorkspaceSynchronization = Promise.resolve();
+  let runtimeStartupUnavailableDetail: string | null = null;
+  let runtimePreparationRetryable = false;
+  let runtimeWorkspaceSynchronizationStarted = false;
+  let runtimePreparationRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let runtimePreparationRetryTask: Promise<void> | null = null;
+  let runtimeClosing = false;
+  let runtimeShutdown: Promise<void> | null = null;
+  const recordRuntimeConnectionStatus = async (
+    websocketConnected: boolean,
+    recentError: string | null,
+  ): Promise<void> => {
+    await recordConnectionStatus(options, websocketConnected, recentError);
+    if (runtimeStartupUnavailableDetail) {
+      await options.stateStore.setRuntimeAvailability(
+        options.agentId,
+        "startup-unavailable",
+        runtimeStartupUnavailableDetail,
+      );
+    }
+  };
   wsClient = new ConnectWsClient({
     agentId: options.agentId,
     url: options.config.websocketUrl,
@@ -300,7 +326,102 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     const groupRecovery = groupRecoveryAfterSettings;
     if (groupRecovery) await Promise.allSettled([groupRecovery]);
   };
+  const shutdownBinding = (recentError: string | null): Promise<void> => {
+    runtimeClosing = true;
+    if (runtimePreparationRetryTimer) {
+      clearTimeout(runtimePreparationRetryTimer);
+      runtimePreparationRetryTimer = null;
+    }
+    if (runtimeShutdown) {
+      return recentError
+        ? runtimeShutdown.then(async () => await recordConnectionStatus(options, false, recentError))
+        : runtimeShutdown;
+    }
+    wsClient.close();
+    const preparation = runtimePreparationRetryTask;
+    runtimeShutdown = (async () => {
+      await Promise.all([closeInboundProcessing(), groupIntake.close(), ...(preparation ? [preparation] : [])]);
+      await interactionRouter.close();
+      await runtimeWorkspaceSynchronization;
+      await runtime.dispose();
+      if (recentError) await recordConnectionStatus(options, false, recentError);
+      else await recordRuntimeConnectionStatus(false, null);
+    })();
+    return runtimeShutdown;
+  };
   wireQuarantineEvents(wsClient, options);
+  const synchronizeRuntimeWorkspaces = (): void => {
+    if (runtimeWorkspaceSynchronizationStarted) return;
+    runtimeWorkspaceSynchronizationStarted = true;
+    runtimeWorkspaceSynchronization = runtime
+      .synchronizeRuntimeWorkspaces()
+      .then((synchronization) => {
+        for (const failure of synchronization.failures) {
+          options.writeError(`${options.agentId}: Workspace synchronization skipped ${failure}\n`);
+        }
+      })
+      .catch((error) => {
+        options.writeError(
+          `${options.agentId}: Workspace synchronization unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
+  };
+  const isWorkBuddyRuntimeUnavailable = (error: unknown): error is WorkBuddyDiscoveryError =>
+    workBuddyRuntime && error instanceof WorkBuddyDiscoveryError;
+  const isRetryableWorkBuddyPreparationError = (error: WorkBuddyDiscoveryError): boolean =>
+    workBuddyCapabilityAvailability(error.code) === "unavailable";
+  const retryRuntimePreparation = async (): Promise<void> => {
+    try {
+      await runtimeAdapters.prepare(binding);
+    } catch (error) {
+      if (!isWorkBuddyRuntimeUnavailable(error)) {
+        const detail = error instanceof Error ? error.message : String(error);
+        options.writeError(`${options.agentId}: Runtime preparation retry failed fatally: ${detail}\n`);
+        void shutdownBinding(detail).catch((shutdownError) =>
+          options.writeError(
+            `${options.agentId}: Binding shutdown failed: ${shutdownError instanceof Error ? shutdownError.message : String(shutdownError)}\n`,
+          ),
+        );
+        return;
+      }
+      if (runtimeClosing) return;
+      runtimeStartupUnavailableDetail = error.message;
+      runtimePreparationRetryable = isRetryableWorkBuddyPreparationError(error);
+      await options.stateStore.setRuntimeAvailability(
+        options.agentId,
+        "startup-unavailable",
+        runtimeStartupUnavailableDetail,
+      );
+      if (runtimePreparationRetryable) scheduleRuntimePreparationRetry();
+      return;
+    }
+    if (runtimeClosing) return;
+    runtimePreparationRetryable = false;
+    runtimeStartupUnavailableDetail = null;
+    await options.stateStore.setRuntimeAvailability(options.agentId, "available", null);
+    synchronizeRuntimeWorkspaces();
+  };
+  const scheduleRuntimePreparationRetry = (): void => {
+    if (
+      runtimeClosing ||
+      !runtimePreparationRetryable ||
+      !runtimeStartupUnavailableDetail ||
+      runtimePreparationRetryTimer
+    )
+      return;
+    runtimePreparationRetryTimer = setTimeout(() => {
+      runtimePreparationRetryTimer = null;
+      const preparation = retryRuntimePreparation().catch((error) => {
+        options.writeError(
+          `${options.agentId}: Runtime preparation retry failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
+      runtimePreparationRetryTask = preparation;
+      void preparation.then(() => {
+        if (runtimePreparationRetryTask === preparation) runtimePreparationRetryTask = null;
+      });
+    }, options.runtimePreparationRetryMs ?? DEFAULT_RUNTIME_PREPARATION_RETRY_MS);
+  };
   wsClient.on("error", (error: unknown) => {
     const detail = error instanceof Error ? error.message : String(error);
     options.writeError(`${options.agentId}: ${detail}\n`);
@@ -311,7 +432,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   });
   wsClient.on("state", (state: string) => {
     if (state === "connected") {
-      void recordConnectionStatus(options, true, null).catch(() => undefined);
+      void recordRuntimeConnectionStatus(true, null).catch(() => undefined);
       void inboundMessages
         .recover("direct")
         .catch((error) =>
@@ -324,10 +445,18 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
           `${options.agentId}: group inbound recovery failed: ${error instanceof Error ? error.message : String(error)}\n`,
         ),
       );
-    } else if (state === "disconnected") void recordConnectionStatus(options, false, null).catch(() => undefined);
+    } else if (state === "disconnected" && !runtimeClosing) {
+      void recordRuntimeConnectionStatus(false, null).catch(() => undefined);
+    }
   });
   try {
-    await runtimeAdapters.prepare(binding);
+    try {
+      await runtimeAdapters.prepare(binding);
+    } catch (error) {
+      if (!isWorkBuddyRuntimeUnavailable(error)) throw error;
+      runtimeStartupUnavailableDetail = error.message;
+      runtimePreparationRetryable = isRetryableWorkBuddyPreparationError(error);
+    }
     await wsClient.connect();
     void resolveSenderDisplayName(options.activation.ownerUserId)
       .then(async (ownerDisplayName) => {
@@ -347,25 +476,12 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
           `${options.agentId}: direct inbound recovery failed: ${error instanceof Error ? error.message : String(error)}\n`,
         ),
       );
-    await recordConnectionStatus(options, true, null);
-    runtimeWorkspaceSynchronization = runtime
-      .synchronizeRuntimeWorkspaces()
-      .then((synchronization) => {
-        for (const failure of synchronization.failures) {
-          options.writeError(`${options.agentId}: Workspace synchronization skipped ${failure}\n`);
-        }
-      })
-      .catch((error) => {
-        options.writeError(
-          `${options.agentId}: Workspace synchronization unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
-        );
-      });
+    await recordRuntimeConnectionStatus(true, null);
+    if (runtimeStartupUnavailableDetail) {
+      if (runtimePreparationRetryable) scheduleRuntimePreparationRetry();
+    } else synchronizeRuntimeWorkspaces();
   } catch (error) {
-    wsClient.close();
-    await Promise.all([closeInboundProcessing(), groupIntake.close()]);
-    await interactionRouter.close();
-    await runtime.dispose();
-    await recordConnectionStatus(options, false, error instanceof Error ? error.message : String(error));
+    await shutdownBinding(error instanceof Error ? error.message : String(error));
     throw error;
   }
   return {
@@ -406,12 +522,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       return await executeConnectTool(toolName, input, toolOptions);
     },
     async close() {
-      wsClient.close();
-      await Promise.all([closeInboundProcessing(), groupIntake.close()]);
-      await interactionRouter.close();
-      await runtimeWorkspaceSynchronization;
-      await runtime.dispose();
-      await recordConnectionStatus(options, false, null);
+      await shutdownBinding(null);
     },
   };
 }
@@ -530,6 +641,11 @@ class InboundMessageProcessor {
         continue;
       }
       if (!this.accepting) return;
+      if (isConnectControlMessage(message.text)) {
+        this.unknownRecoveryKeys.delete(key);
+        this.accept(message);
+        continue;
+      }
       const reconciliation = await this.reconcileInboundMessage(message, receiptSnapshots);
       if (!this.accepting) return;
       if (reconciliation.outcome === "accepted") {

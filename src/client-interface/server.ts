@@ -57,6 +57,8 @@ import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { RuntimeSlashSelection } from "../runtime/types";
+import { workBuddyCapabilityAvailability } from "../runtime/workbuddy-availability";
+import { WorkBuddyDiscoveryError } from "../runtime/workbuddy-task-discovery";
 import type { BindingRuntimeHandle } from "../service/binding-runtime";
 import type { AgentBindingConfig, ConnectConfig, RuntimeModelSelection } from "../types";
 import {
@@ -863,19 +865,25 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           const sessionRef = normalizeSessionRef(slashSuggestionsMatch[1] ?? "");
           if (!sessionRef) return errorResponse(400, "invalid-session-ref", "Invalid Session Ref");
           const refresh = url.searchParams.get("refresh") === "1";
-          const [commands, skills] = await Promise.all([
-            sessionCommands(sessionRef, catalog, options, refresh),
-            sessionSkills(sessionRef, catalog, options, refresh),
-          ]);
-          if (commands === undefined || skills === undefined)
-            return errorResponse(404, "session-not-found", "Session was not found");
-          return jsonResponse({
-            supported: commands !== null || skills !== null,
-            entries: [
-              ...(commands ?? []).map((command) => ({ ...command, kind: "command" as const })),
-              ...(skills ?? []).map((skill) => ({ ...skill, kind: "skill" as const })),
-            ],
-          });
+          try {
+            const [commands, skills] = await Promise.all([
+              sessionCommands(sessionRef, catalog, options, refresh),
+              sessionSkills(sessionRef, catalog, options, refresh),
+            ]);
+            if (commands === undefined || skills === undefined)
+              return errorResponse(404, "session-not-found", "Session was not found");
+            return jsonResponse({
+              supported: commands !== null || skills !== null,
+              entries: [
+                ...(commands ?? []).map((command) => ({ ...command, kind: "command" as const })),
+                ...(skills ?? []).map((skill) => ({ ...skill, kind: "skill" as const })),
+              ],
+            });
+          } catch (error) {
+            if (!(error instanceof WorkBuddyDiscoveryError)) throw error;
+            const availability = workBuddyCapabilityAvailability(error.code);
+            return jsonResponse({ supported: false, entries: [], availability, detail: error.message });
+          }
         }
         const sessionMatch = url.pathname.match(/^\/client\/v1\/sessions\/([^/]+)$/u);
         if (sessionMatch && request.method === "GET") {

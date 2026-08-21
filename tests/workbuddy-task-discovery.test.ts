@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
+import { workBuddyCapabilityAvailability } from "../src/runtime/workbuddy-availability";
 import {
   attachWorkBuddyTask,
   connectWorkBuddyTask,
   discoverWorkBuddyTask,
   WorkBuddyDiscoveryError,
+  type WorkBuddyDiscoveryFailureCode,
   type WorkBuddyDiscoveryObservation,
   type WorkBuddyEndpointVerification,
   type WorkBuddyProcessIdentity,
@@ -78,6 +80,40 @@ async function failureCode(discoverySource: WorkBuddyTaskDiscoverySource, expect
   }
   return "success";
 }
+
+describe("WorkBuddy capability availability", () => {
+  it.each([
+    ["application-absent"],
+    ["wrong-distribution"],
+    ["incompatible-version"],
+    ["protocol-incompatible"],
+  ] satisfies Array<[WorkBuddyDiscoveryFailureCode]>)("classifies %s as unsupported", (code) => {
+    expect(workBuddyCapabilityAvailability(code)).toBe("unsupported");
+  });
+
+  it.each([
+    ["application-stopped"],
+    ["discovery-failed"],
+    ["endpoint-unavailable"],
+    ["endpoint-stale"],
+    ["recycled-endpoint"],
+    ["authentication-failed"],
+  ] satisfies Array<[WorkBuddyDiscoveryFailureCode]>)("classifies %s as unavailable", (code) => {
+    expect(workBuddyCapabilityAvailability(code)).toBe("unavailable");
+  });
+
+  it.each([
+    ["task-not-found"],
+    ["workspace-identity-mismatch"],
+    ["non-loopback-endpoint"],
+    ["wrong-owning-process"],
+    ["task-identity-mismatch"],
+    ["task-replay-incomplete"],
+    ["endpoint-verification-failed"],
+  ] satisfies Array<[WorkBuddyDiscoveryFailureCode]>)("classifies %s as conflict", (code) => {
+    expect(workBuddyCapabilityAvailability(code)).toBe("conflict");
+  });
+});
 
 describe("WorkBuddy Task discovery contract", () => {
   it("reports arbitrary observed WorkBuddy AI and CodeBuddy versions after verified WorkBuddy-owned discovery", async () => {

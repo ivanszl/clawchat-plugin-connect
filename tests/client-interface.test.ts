@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 import { mkdir, mkdtemp, readdir, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SessionCatalogView, SessionView } from "../src/client-contract";
 import { type ClientInterfaceHandle, startClientInterface } from "../src/client-interface/server";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { ConnectConfigMutationCoordinator, defaultConfig, loadConfig } from "../src/config";
@@ -15,6 +16,7 @@ import {
   completeRuntimeThreadDiscovery,
   type RuntimeModelOption,
 } from "../src/runtime/types";
+import { WorkBuddyDiscoveryError, type WorkBuddyDiscoveryFailureCode } from "../src/runtime/workbuddy-task-discovery";
 import type { BindingRuntimeHandle } from "../src/service/binding-runtime";
 import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
@@ -121,12 +123,25 @@ describe("Connect Client Interface", () => {
     }
   });
 
-  it("closes an early Client listener when catalog initialization fails", async () => {
+  it("closes an early Client listener when core initialization fails", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-readiness-failure-"));
     const assetsPath = join(directory, "assets");
     await mkdir(assetsPath);
     await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Connect readiness failure</title>");
     const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    let publishCoreInitializationStarted: () => void = () => undefined;
+    const coreInitializationStarted = new Promise<void>((resolve) => {
+      publishCoreInitializationStarted = resolve;
+    });
+    let releaseCoreInitialization: () => void = () => undefined;
+    const coreInitializationGate = new Promise<void>((resolve) => {
+      releaseCoreInitialization = resolve;
+    });
+    store.listRecoverableTurnOutbox = mock(async () => {
+      publishCoreInitializationStarted();
+      await coreInitializationGate;
+      throw new Error("Client core initialization failed");
+    });
     await store.upsertActivation({
       localAgentId: "codex",
       accessToken: "token-codex",
@@ -139,23 +154,11 @@ describe("Connect Client Interface", () => {
     const config = defaultConfig();
     config.defaultAgent = "codex";
     config.agents = { codex: pluginBinding({}, { displayName: "Codex" }) };
-    let publishDiscoveryStarted: () => void = () => undefined;
-    const discoveryStarted = new Promise<void>((resolve) => {
-      publishDiscoveryStarted = resolve;
-    });
-    let releaseDiscovery: () => void = () => undefined;
-    const discoveryGate = new Promise<void>((resolve) => {
-      releaseDiscovery = resolve;
-    });
     const registry = new RuntimeAdapterRegistry([
       fixedRuntimeAdapter({
         kind: "codex",
         modes: ["read-only"],
-        discoverAllThreads: async () => {
-          publishDiscoveryStarted();
-          await discoveryGate;
-          throw new Error("catalog discovery failed");
-        },
+        discoverAllThreads: async () => completeRuntimeThreadDiscovery([]),
         discoverArchivedThreads: async () => completeRuntimeThreadDiscovery([], { reason: "archived" }),
         start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
       }),
@@ -185,18 +188,18 @@ describe("Connect Client Interface", () => {
         return { stop };
       },
     });
-    await discoveryStarted;
+    await coreInitializationStarted;
 
     try {
       if (!fetchHandler) throw new Error("Client listener was not created before failing initialization");
       const document = await localRequest(fetchHandler, `http://127.0.0.1:${port}`, "/");
       expect(document.status).toBe(200);
-      releaseDiscovery();
-      await expect(starting).rejects.toThrow("catalog discovery failed");
+      releaseCoreInitialization();
+      await expect(starting).rejects.toThrow("Client core initialization failed");
       expect(stop).toHaveBeenCalledTimes(1);
       expect(stop).toHaveBeenCalledWith(true);
     } finally {
-      releaseDiscovery();
+      releaseCoreInitialization();
       await starting.catch(() => undefined);
       await registry.close();
       await store.close();
@@ -1425,6 +1428,198 @@ describe("Connect Client Interface", () => {
     expect([...runtimeBindingIds]).toEqual(["codex"]);
     await expect(store.getSessionRefTarget(session.sessionRef)).resolves.toBeNull();
   });
+
+  it.each([
+    {
+      caseName: "temporarily unavailable",
+      failureCode: "endpoint-unavailable",
+      failureMessage: "WorkBuddy Task endpoint is temporarily unavailable",
+      unavailableDetail: "WorkBuddy Task endpoint is temporarily unavailable; retry this exact Task.",
+      retryable: true,
+      unavailableReason: "external-ownership-unverifiable",
+      expectedStatus: "offline",
+    },
+    {
+      caseName: "in identity/replay conflict",
+      failureCode: "task-identity-mismatch",
+      failureMessage: "WorkBuddy ACP replay belongs to a different Task",
+      unavailableDetail: "WorkBuddy Task identity/replay conflict; adoption and send remain blocked.",
+      retryable: false,
+      unavailableReason: "native-state-corrupt",
+      expectedStatus: "error",
+    },
+  ] satisfies ReadonlyArray<{
+    caseName: string;
+    failureCode: WorkBuddyDiscoveryFailureCode;
+    failureMessage: string;
+    unavailableDetail: string;
+    retryable: boolean;
+    unavailableReason: SessionView["runtimeThreadUnavailableReason"];
+    expectedStatus: SessionView["status"];
+  }>)(
+    "serves stored Session and Transcript views when WorkBuddy replay is $caseName",
+    async ({ failureCode, failureMessage, unavailableDetail, unavailableReason, expectedStatus, retryable }) => {
+      const directory = await mkdtemp(join(tmpdir(), `connect-client-workbuddy-${failureCode}-`));
+      const assetsPath = join(directory, "assets");
+      const workspaceRoot = join(directory, "workspace");
+      await Promise.all([mkdir(assetsPath), mkdir(workspaceRoot)]);
+      await Bun.write(join(assetsPath, "index.html"), "<!doctype html><title>Stored WorkBuddy transcript</title>");
+      const store = createStateStore({ dbPath: join(directory, "state.sqlite") });
+      openStores.push(store);
+      const runtimeFailure = () => new WorkBuddyDiscoveryError(failureCode, failureMessage, { taskId: "task-native" });
+      const readActivity = mock(async () => {
+        throw runtimeFailure();
+      });
+      const registry = new RuntimeAdapterRegistry([
+        fixedRuntimeAdapter({
+          kind: "workbuddy",
+          modes: [],
+          discoverAllThreads: async () =>
+            completeRuntimeThreadDiscovery(
+              [
+                {
+                  runtimeThreadId: "task-native",
+                  name: "Stored WorkBuddy Task",
+                  updatedAt: 2,
+                  workspaceIdentity: {
+                    key: workspaceRoot,
+                    kind: "persistent",
+                    localRoot: workspaceRoot,
+                  },
+                },
+              ],
+              {
+                reason: "external-ownership-unverifiable",
+                detail: unavailableDetail,
+              },
+            ),
+          listCommands: async () => {
+            throw runtimeFailure();
+          },
+          listSkills: async () => {
+            throw runtimeFailure();
+          },
+          readActivity,
+          start: async () => ({ prompt: async function* () {}, close: async () => undefined }),
+        }),
+      ]);
+      const config = defaultConfig();
+      config.defaultAgent = "desktop";
+      config.agents = {
+        desktop: pluginBinding({ profile: "workbuddy-cn" }, { displayName: "WorkBuddy" }),
+      };
+      config.stateDbPath = store.dbPath;
+      const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
+      const enqueueClientTurn = mock(async (sessionRef: string) => ({ turnId: "unsafe-turn", sessionRef }));
+      let fetchHandler: ((request: Request) => Response | Promise<Response>) | null = null;
+      const port = 47_896;
+      const handle = await startClientInterface({
+        config,
+        configPath: join(directory, "config.json"),
+        stateStore: store,
+        runtimeAdapters: registry,
+        transcriptProjection: projection,
+        runtimes: [
+          {
+            agentId: "desktop",
+            websocketUrl: config.websocketUrl,
+            deviceId: `device-${failureCode}`,
+            enqueueClientTurn,
+            close: async () => undefined,
+          },
+        ],
+        assetsPath,
+        port,
+        serverFactory: (options) => {
+          fetchHandler = options.fetch;
+          return { stop: async () => undefined };
+        },
+      });
+      openHandles.push(handle);
+      if (!fetchHandler) throw new Error("test Client Interface did not expose a request handler");
+      const catalogResponse = await localRequest(fetchHandler, handle.origin, "/client/v1/session-catalog");
+      expect(catalogResponse.status).toBe(200);
+      const catalog = (await catalogResponse.json()) as SessionCatalogView;
+      const entry = catalog.bindings.find((binding) => binding.bindingId === "desktop")?.entries[0];
+      if (!entry) throw new Error("WorkBuddy Task was not published to the Client catalog");
+      expect(entry.allowedActions).not.toContain("adopt");
+      expect(entry.runtimeThreadUnavailableDetail).toBe(unavailableDetail);
+
+      const storedBlockId = `stored-${failureCode}`;
+      await projection.appendUserMessage({
+        sessionRef: entry.sessionRef,
+        text: "Stored ClawChat message remains readable",
+        origin: "clawchat",
+        author: "usr_owner",
+        id: storedBlockId,
+      });
+
+      const sessionResponse = await localRequest(
+        fetchHandler,
+        handle.origin,
+        `/client/v1/sessions/${entry.sessionRef}`,
+      );
+      expect(sessionResponse.status).toBe(200);
+      const sessionView = (await sessionResponse.json()) as SessionView;
+      expect(sessionView).toMatchObject({
+        sessionRef: entry.sessionRef,
+        runtimeThreadAvailable: false,
+        runtimeThreadUnavailableReason: unavailableReason,
+        runtimeThreadUnavailableDetail: unavailableDetail,
+        status: expectedStatus,
+      });
+      expect(sessionView.allowedActions).not.toContain("send");
+      if (retryable) expect(sessionView.runtimeThreadUnavailableDetail).toMatch(/retry/iu);
+      else expect(sessionView.runtimeThreadUnavailableDetail).not.toMatch(/retry/iu);
+
+      const transcriptResponse = await localRequest(
+        fetchHandler,
+        handle.origin,
+        `/client/v1/sessions/${entry.sessionRef}/transcript`,
+      );
+      expect(transcriptResponse.status).toBe(200);
+      await expect(transcriptResponse.json()).resolves.toMatchObject({
+        sessionRef: entry.sessionRef,
+        blocks: [
+          {
+            id: storedBlockId,
+            origin: "clawchat",
+            plainText: "Stored ClawChat message remains readable",
+          },
+        ],
+      });
+
+      const slashSuggestions = await localRequest(
+        fetchHandler,
+        handle.origin,
+        `/client/v1/sessions/${entry.sessionRef}/slash-suggestions`,
+      );
+      expect(slashSuggestions.status).toBe(200);
+      await expect(slashSuggestions.json()).resolves.toMatchObject({
+        supported: false,
+        entries: [],
+        availability: retryable ? "unavailable" : "conflict",
+        detail: failureMessage,
+      });
+
+      const unsafeTurnBody = new FormData();
+      unsafeTurnBody.append("prompt", "must remain blocked");
+      const unsafeTurn = await localRequest(
+        fetchHandler,
+        handle.origin,
+        `/client/v1/sessions/${entry.sessionRef}/turn-submissions/unsafe_${failureCode}`,
+        {
+          method: "POST",
+          headers: { origin: handle.origin },
+          body: unsafeTurnBody,
+        },
+      );
+      expect(unsafeTurn.status).toBe(409);
+      await expect(unsafeTurn.json()).resolves.toMatchObject({ error: { code: "session-state-conflict" } });
+      expect(enqueueClientTurn).not.toHaveBeenCalled();
+      expect(readActivity).toHaveBeenCalled();
+    },
+  );
 
   it("rolls back a Session when its response view cannot be built", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-create-retry-"));

@@ -601,6 +601,8 @@ export interface SlashSuggestionView {
 export interface SlashSuggestionListView {
   supported: boolean;
   entries: SlashSuggestionView[];
+  availability?: "supported" | "unsupported" | "unavailable" | "conflict";
+  detail?: string | null;
 }
 
 export interface ClientMediaAttachment {

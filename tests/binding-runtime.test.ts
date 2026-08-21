@@ -14,7 +14,12 @@ import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { type ConnectRuntimePrompt, completeRuntimeThreadDiscovery } from "../src/runtime/types";
-import { type BindingProtocolEvent, startBindingRuntime } from "../src/service/binding-runtime";
+import { WorkBuddyDiscoveryError } from "../src/runtime/workbuddy-task-discovery";
+import {
+  type BindingProtocolEvent,
+  type BindingRuntimeHandle,
+  startBindingRuntime,
+} from "../src/service/binding-runtime";
 import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
@@ -49,6 +54,31 @@ async function flush(): Promise<void> {
 async function waitForTransport(transport: MemoryTransport): Promise<void> {
   for (let attempt = 0; attempt < 50 && !transport.handlers; attempt += 1) await Bun.sleep(1);
   if (!transport.handlers) throw new Error("Binding transport did not start");
+}
+async function completeBindingHandshake(
+  transport: MemoryTransport,
+  starting: Promise<BindingRuntimeHandle>,
+  ackEpoch: string,
+): Promise<BindingRuntimeHandle> {
+  await waitForTransport(transport);
+  transport.receive({
+    version: "2",
+    event: EVENT.CONNECT_CHALLENGE,
+    trace_id: "challenge",
+    emitted_at: 1,
+    payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+  });
+  await flush();
+  const connect = transport.sent.find((event) => event.event === EVENT.CONNECT);
+  if (!connect) throw new Error("connect frame was not sent");
+  transport.receive({
+    version: "2",
+    event: EVENT.HELLO_OK,
+    trace_id: connect.trace_id,
+    emitted_at: 2,
+    payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: ackEpoch },
+  });
+  return await starting;
 }
 
 describe("Binding Runtime Protocol v2 assembly", () => {
@@ -519,6 +549,359 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     } finally {
       releaseReceiptScan();
       await observed;
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("recovers WorkBuddy preparation without restarting live Binding intake", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-workbuddy-startup-unavailable-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "workbuddy";
+    config.agents = { workbuddy: pluginBinding({}, { displayName: "Alice" }) };
+    let publishRuntimeAvailable: () => void = () => undefined;
+    const runtimeAvailable = new Promise<void>((resolve) => {
+      publishRuntimeAvailable = resolve;
+    });
+    const setRuntimeAvailability = stateStore.setRuntimeAvailability.bind(stateStore);
+    stateStore.setRuntimeAvailability = async (agentId, availability, recentError) => {
+      await setRuntimeAvailability(agentId, availability, recentError);
+      if (availability === "available") publishRuntimeAvailable();
+    };
+    let publishPreparationRetry: () => void = () => undefined;
+    const preparationRetryStarted = new Promise<void>((resolve) => {
+      publishPreparationRetry = resolve;
+    });
+    let releasePreparationRetry: () => void = () => undefined;
+    const preparationRetryGate = new Promise<void>((resolve) => {
+      releasePreparationRetry = resolve;
+    });
+    let preparationAttempts = 0;
+    let publishWorkspaceSynchronization: () => void = () => undefined;
+    const workspaceSynchronizationStarted = new Promise<void>((resolve) => {
+      publishWorkspaceSynchronization = resolve;
+    });
+    let workspaceSynchronizationCalls = 0;
+    let runtimeStarts = 0;
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "workbuddy",
+        modes: ["read-only"],
+        prepare: async () => {
+          preparationAttempts += 1;
+          if (preparationAttempts === 1) {
+            throw new WorkBuddyDiscoveryError(
+              "application-stopped",
+              "WorkBuddy AI is installed but not running; open it before discovering Tasks.",
+            );
+          }
+          publishPreparationRetry();
+          await preparationRetryGate;
+        },
+        discoverWorkspaces: async () => {
+          workspaceSynchronizationCalls += 1;
+          publishWorkspaceSynchronization();
+          return { status: "complete", identities: [] };
+        },
+        start: async () => {
+          runtimeStarts += 1;
+          throw new Error("help intake must not start an unavailable WorkBuddy Runtime");
+        },
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "workbuddy",
+      activation: {
+        localAgentId: "workbuddy",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      workspaces: new WorkspaceCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      runtimePreparationRetryMs: 0,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    const observed = starting.then(
+      () => "resolved" as const,
+      (error: unknown) => error,
+    );
+    let handle: BindingRuntimeHandle | null = null;
+
+    try {
+      await waitForTransport(transport);
+      let startupSettled = false;
+      void observed.then(() => {
+        startupSettled = true;
+      });
+      await flush();
+      expect(startupSettled).toBe(false);
+      expect(transport.state).toBe("open");
+
+      let publishConnect: (event: Envelope) => void = () => undefined;
+      const connectSent = new Promise<Envelope>((resolve) => {
+        publishConnect = resolve;
+      });
+      const sendBeforeConnect = transport.send.bind(transport);
+      transport.send = (data) => {
+        sendBeforeConnect(data);
+        const sent = transport.sent.at(-1);
+        if (sent?.event === EVENT.CONNECT) publishConnect(sent);
+      };
+      transport.receive({
+        version: "2",
+        event: EVENT.CONNECT_CHALLENGE,
+        trace_id: "challenge",
+        emitted_at: 1,
+        payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+      });
+      const connect = await connectSent;
+      transport.receive({
+        version: "2",
+        event: EVENT.HELLO_OK,
+        trace_id: connect.trace_id,
+        emitted_at: 2,
+        payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AW" },
+      });
+      handle = await starting;
+
+      await expect(stateStore.getRuntimeStatus("workbuddy")).resolves.toMatchObject({
+        runtimeAvailability: "startup-unavailable",
+        websocketConnected: true,
+        recentError: expect.stringContaining("installed but not running"),
+      });
+
+      let publishHelpReply: (reply: Envelope) => void = () => undefined;
+      const helpReplySent = new Promise<Envelope>((resolve) => {
+        publishHelpReply = resolve;
+      });
+      const sendTransport = transport.send.bind(transport);
+      transport.send = (data) => {
+        sendTransport(data);
+        const sent = transport.sent.at(-1);
+        if (sent?.event === EVENT.MESSAGE_REPLY && sent.chat_id === "chat-help") publishHelpReply(sent);
+      };
+      transport.receive({
+        version: "2",
+        event: EVENT.MESSAGE_SEND,
+        trace_id: "workbuddy-unavailable-help",
+        emitted_at: 3,
+        dseq: 1,
+        chat_id: "chat-help",
+        chat_type: "direct",
+        sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
+        payload: {
+          message_id: "msg-workbuddy-unavailable-help",
+          message_mode: "normal",
+          message: {
+            body: { fragments: [{ kind: "text", text: "/help" }] },
+            context: { mentions: [], reply: null },
+            streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+          },
+        },
+      });
+      const reply = await helpReplySent;
+      expect(runtimeStarts).toBe(0);
+      expect(reply?.payload).toMatchObject({
+        message: {
+          body: {
+            fragments: [
+              expect.objectContaining({ kind: "text", text: expect.stringContaining("ClawChat Connect commands") }),
+            ],
+          },
+        },
+      });
+      if (!reply) throw new Error("help reply was not sent");
+      transport.receive({
+        version: "2",
+        event: EVENT.MESSAGE_ACK,
+        trace_id: reply.trace_id,
+        emitted_at: 4,
+        chat_id: "chat-help",
+        payload: { message_id: "reply-workbuddy-unavailable-help", accepted_at: 4 },
+      });
+      await flush();
+      await preparationRetryStarted;
+      releasePreparationRetry();
+      await runtimeAvailable;
+      await workspaceSynchronizationStarted;
+      expect(preparationAttempts).toBe(2);
+      expect(workspaceSynchronizationCalls).toBe(1);
+      await expect(stateStore.getRuntimeStatus("workbuddy")).resolves.toMatchObject({
+        runtimeAvailability: "available",
+        websocketConnected: true,
+        recentError: null,
+      });
+
+      const closing = handle.close();
+      handle = null;
+      await expect(closing).resolves.toBeUndefined();
+      expect(transport.state).toBe("closed");
+      await expect(stateStore.getRuntimeStatus("workbuddy")).resolves.toMatchObject({
+        runtimeAvailability: "available",
+        websocketConnected: false,
+      });
+      expect(workspaceSynchronizationCalls).toBe(1);
+    } finally {
+      releasePreparationRetry();
+      if (handle) await handle.close();
+      await observed;
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("keeps unsupported WorkBuddy preparation live without retrying", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-workbuddy-unsupported-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "workbuddy";
+    config.agents = { workbuddy: pluginBinding() };
+    let preparationAttempts = 0;
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "workbuddy",
+        modes: [],
+        prepare: async () => {
+          preparationAttempts += 1;
+          throw new WorkBuddyDiscoveryError(
+            "protocol-incompatible",
+            "WorkBuddy AI does not expose a supported Task Attachment protocol.",
+          );
+        },
+        start: async () => {
+          throw new Error("not used by unsupported preparation test");
+        },
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const starting = startBindingRuntime({
+      agentId: "workbuddy",
+      activation: {
+        localAgentId: "workbuddy",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      workspaces: new WorkspaceCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      runtimePreparationRetryMs: 0,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    const handle = await completeBindingHandshake(transport, starting, "01JXYZ8K3MNPQRSTVWXYZ0AX");
+
+    try {
+      await flush();
+      expect(preparationAttempts).toBe(1);
+      expect(transport.state).toBe("open");
+      await expect(stateStore.getRuntimeStatus("workbuddy")).resolves.toMatchObject({
+        runtimeAvailability: "startup-unavailable",
+        websocketConnected: true,
+        recentError: expect.stringContaining("does not expose a supported"),
+      });
+    } finally {
+      await handle.close();
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("shuts down a live Binding when a WorkBuddy preparation retry fails fatally", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-workbuddy-retry-fatal-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const config = defaultConfig();
+    config.defaultAgent = "workbuddy";
+    config.agents = { workbuddy: pluginBinding() };
+    let publishFatalRetry: () => void = () => undefined;
+    const fatalRetryStarted = new Promise<void>((resolve) => {
+      publishFatalRetry = resolve;
+    });
+    let publishFatalStatus: () => void = () => undefined;
+    const fatalStatusRecorded = new Promise<void>((resolve) => {
+      publishFatalStatus = resolve;
+    });
+    const setRuntimeConnectionStatus = stateStore.setRuntimeConnectionStatus.bind(stateStore);
+    stateStore.setRuntimeConnectionStatus = async (agentId, websocketConnected, recentError) => {
+      await setRuntimeConnectionStatus(agentId, websocketConnected, recentError);
+      if (!websocketConnected && recentError?.includes("preparation core failed")) publishFatalStatus();
+    };
+    let preparationAttempts = 0;
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "workbuddy",
+        modes: [],
+        prepare: async () => {
+          preparationAttempts += 1;
+          if (preparationAttempts === 1) {
+            throw new WorkBuddyDiscoveryError("endpoint-unavailable", "WorkBuddy AI endpoint is unavailable.");
+          }
+          publishFatalRetry();
+          throw new Error("Runtime preparation core failed");
+        },
+        start: async () => {
+          throw new Error("not used by fatal preparation retry test");
+        },
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    const errors: string[] = [];
+    const starting = startBindingRuntime({
+      agentId: "workbuddy",
+      activation: {
+        localAgentId: "workbuddy",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      workspaces: new WorkspaceCatalog(stateStore),
+      runtimeAdapters,
+      wsTransport: transport,
+      runtimePreparationRetryMs: 0,
+      verifyInstalledSkills: async () => undefined,
+      writeError: (message) => errors.push(message),
+    });
+    const handle = await completeBindingHandshake(transport, starting, "01JXYZ8K3MNPQRSTVWXYZ0AY");
+
+    try {
+      await fatalRetryStarted;
+      await fatalStatusRecorded;
+      expect(preparationAttempts).toBe(2);
+      expect(transport.state).toBe("closed");
+      expect(errors).toContainEqual(expect.stringContaining("preparation retry failed fatally"));
+      await expect(stateStore.getRuntimeStatus("workbuddy")).resolves.toMatchObject({
+        websocketConnected: false,
+        recentError: "Runtime preparation core failed",
+      });
+      await expect(handle.close()).resolves.toBeUndefined();
+    } finally {
+      await handle.close();
       await runtimeAdapters.close();
       await stateStore.close();
     }
@@ -1436,6 +1819,178 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     } finally {
       releaseFirstPrompt?.();
       await handle.close();
+      await runtimeAdapters.close();
+      await stateStore.close();
+    }
+  });
+
+  it("recovers persisted WorkBuddy control commands without reconciling Task receipts", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-workbuddy-control-recovery-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const workspaces = new WorkspaceCatalog(stateStore);
+    const workspace = await workspaces.ensureDefault("workbuddy");
+    const config = defaultConfig();
+    config.defaultAgent = "workbuddy";
+    config.agents = { workbuddy: pluginBinding({ profile: "workbuddy-ai" }, { displayName: "Alice" }) };
+    const envelope: Envelope = {
+      version: "2",
+      event: EVENT.MESSAGE_SEND,
+      trace_id: "workbuddy-control-recovery",
+      emitted_at: 1,
+      chat_id: "chat-workbuddy-control",
+      chat_type: "direct",
+      sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
+      payload: {
+        message_id: "msg-workbuddy-control",
+        message_mode: "normal",
+        message: {
+          body: { fragments: [{ kind: "text", text: "/help" }] },
+          context: { mentions: [], reply: null },
+          streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+        },
+      },
+    };
+    await stateStore.upsertInboundMessage({
+      agentId: "workbuddy",
+      direction: "inbound",
+      kind: "message",
+      eventType: EVENT.MESSAGE_SEND,
+      traceId: envelope.trace_id,
+      chatId: envelope.chat_id,
+      messageId: "msg-workbuddy-control",
+      text: "/help",
+      raw: envelope,
+    });
+    await stateStore.upsertRuntimeSession({
+      chatId: "chat-workbuddy-control",
+      sessionId: "session-workbuddy-task",
+      agentId: "workbuddy",
+      runtimeSessionId: "task-native-1",
+      workspaceRef: workspace.workspaceRef,
+      name: "Materialized WorkBuddy Task",
+      isCurrent: true,
+      hasMessages: true,
+    });
+
+    let publishHelpHandled: () => void = () => undefined;
+    const helpHandled = new Promise<void>((resolve) => {
+      publishHelpHandled = resolve;
+    });
+    const markInboundMessageHandled = stateStore.markInboundMessageHandled.bind(stateStore);
+    stateStore.markInboundMessageHandled = async (agentId, messageId, raw, outcome) => {
+      await markInboundMessageHandled(agentId, messageId, raw, outcome);
+      if (messageId === "msg-workbuddy-control") publishHelpHandled();
+    };
+
+    let reconcileAttempts = 0;
+    let runtimeStarts = 0;
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "workbuddy",
+        modes: ["read-only"],
+        reconcileInput: async () => {
+          reconcileAttempts += 1;
+          return { outcome: "unknown" };
+        },
+        start: async () => {
+          runtimeStarts += 1;
+          throw new Error("local control recovery must not start the materialized WorkBuddy Task");
+        },
+      }),
+    ]);
+    const transport = new MemoryTransport();
+    let publishTransportConnected: () => void = () => undefined;
+    const transportConnected = new Promise<void>((resolve) => {
+      publishTransportConnected = resolve;
+    });
+    const connectTransport = transport.connect.bind(transport);
+    transport.connect = async (url, handlers) => {
+      await connectTransport(url, handlers);
+      publishTransportConnected();
+    };
+    let publishConnect: (event: Envelope) => void = () => undefined;
+    const connectSent = new Promise<Envelope>((resolve) => {
+      publishConnect = resolve;
+    });
+    let publishHelpReply: (event: Envelope) => void = () => undefined;
+    const helpReplySent = new Promise<Envelope>((resolve) => {
+      publishHelpReply = resolve;
+    });
+    const sendTransport = transport.send.bind(transport);
+    transport.send = (data) => {
+      sendTransport(data);
+      const sent = transport.sent.at(-1);
+      if (sent?.event === EVENT.CONNECT) publishConnect(sent);
+      if (sent?.event === EVENT.MESSAGE_REPLY && sent.chat_id === "chat-workbuddy-control") publishHelpReply(sent);
+    };
+    const starting = startBindingRuntime({
+      agentId: "workbuddy",
+      activation: {
+        localAgentId: "workbuddy",
+        accessToken: "token",
+        refreshToken: null,
+        serverAgentId: "agt_server",
+        userId: "usr_alice",
+        ownerUserId: "usr_owner",
+        conversationId: "chat-owner",
+      },
+      config,
+      configPath: join(directory, "config.json"),
+      deviceId: "device-local",
+      stateStore,
+      workspaces,
+      runtimeAdapters,
+      wsTransport: transport,
+      verifyInstalledSkills: async () => undefined,
+      writeError: () => undefined,
+    });
+    let handle: BindingRuntimeHandle | null = null;
+
+    try {
+      await transportConnected;
+      transport.receive({
+        version: "2",
+        event: EVENT.CONNECT_CHALLENGE,
+        trace_id: "challenge",
+        emitted_at: 2,
+        payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+      });
+      const connect = await connectSent;
+      transport.receive({
+        version: "2",
+        event: EVENT.HELLO_OK,
+        trace_id: connect.trace_id,
+        emitted_at: 3,
+        payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AX" },
+      });
+      handle = await starting;
+
+      const reply = await helpReplySent;
+      expect(reply.payload).toMatchObject({
+        message: {
+          body: {
+            fragments: [
+              expect.objectContaining({ kind: "text", text: expect.stringContaining("ClawChat Connect commands") }),
+            ],
+          },
+        },
+      });
+      transport.receive({
+        version: "2",
+        event: EVENT.MESSAGE_ACK,
+        trace_id: reply.trace_id,
+        emitted_at: 4,
+        chat_id: "chat-workbuddy-control",
+        payload: { message_id: "reply-workbuddy-control", accepted_at: 4 },
+      });
+      await helpHandled;
+      await expect(stateStore.hasHandledInboundMessage("workbuddy", "msg-workbuddy-control", envelope)).resolves.toBe(
+        true,
+      );
+      expect(reconcileAttempts).toBe(0);
+      expect(runtimeStarts).toBe(0);
+    } finally {
+      if (handle) await handle.close();
       await runtimeAdapters.close();
       await stateStore.close();
     }

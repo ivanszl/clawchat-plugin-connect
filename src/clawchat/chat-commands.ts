@@ -8,7 +8,9 @@ import {
   runtimeModelSelectionLabel,
 } from "../runtime/model-selection";
 import type { RuntimeModelOption, SelectableRuntimeThread } from "../runtime/types";
+import { workBuddyCapabilityAvailability } from "../runtime/workbuddy-availability";
 import { workBuddyRuntimeTargetKind } from "../runtime/workbuddy-runtime-target";
+import { WorkBuddyDiscoveryError } from "../runtime/workbuddy-task-discovery";
 import type {
   AgentBindingConfig,
   ConnectConfig,
@@ -169,6 +171,22 @@ function invalidCommandUsage(message: NormalizedInboundMessage, command: string,
   return valid ? null : commandUsage(message.chatType, command);
 }
 
+function workBuddyCapabilityFailureText(
+  error: unknown,
+  capability: "Task discovery" | "model catalog",
+  retryCommand: "/sessions" | "/switch" | "/model",
+): string | null {
+  if (!(error instanceof WorkBuddyDiscoveryError)) return null;
+  const state = workBuddyCapabilityAvailability(error.code);
+  const action =
+    state === "unsupported"
+      ? `Update the selected WorkBuddy Runtime Capability before retrying \`${retryCommand}\`.`
+      : state === "unavailable"
+        ? `Restore WorkBuddy, then retry \`${retryCommand}\`.`
+        : `Open the exact WorkBuddy Task and resolve its identity or replay conflict before retrying \`${retryCommand}\`.`;
+  return `WorkBuddy ${capability} is ${state === "conflict" ? "conflicted" : state}: ${error.message}\n${action}`;
+}
+
 async function handleOutput(ctx: ChatCommandContext, rawMode: string | undefined): Promise<ChatCommandResult> {
   const mode = parseOutputVisibility(rawMode);
   if (!mode) return { handled: true, text: commandUsage(ctx.message.chatType, "/clawchat-output") };
@@ -258,7 +276,14 @@ async function handleNew(ctx: ChatCommandContext, name: string): Promise<ChatCom
 async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
   const binding = getAgentBinding(ctx.config, ctx.agentId);
   const intent = await ctx.stateStore.getSessionIntent(ctx.message.chatId, ctx.agentId);
-  const discovered = (await ctx.discoverRuntimeThreads?.(ctx.message.chatId)) ?? [];
+  let discovered: SelectableRuntimeThread[] = [];
+  let discoveryFailure: string | null = null;
+  try {
+    discovered = (await ctx.discoverRuntimeThreads?.(ctx.message.chatId)) ?? [];
+  } catch (error) {
+    discoveryFailure = workBuddyCapabilityFailureText(error, "Task discovery", "/sessions");
+    if (!discoveryFailure) throw error;
+  }
   const sessions = sessionsInCurrentWorkspace(
     await ctx.stateStore.listRuntimeSessions(ctx.message.chatId, ctx.agentId),
     intent,
@@ -270,7 +295,10 @@ async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
       : await ctx.workspaces.ensureDefault(ctx.agentId);
     return {
       handled: true,
-      text: `No Sessions in Workspace \`${workspace?.name ?? "unknown"}\`. Send a message to start one.`,
+      text: [
+        `No Sessions in Workspace \`${workspace?.name ?? "unknown"}\`. Send a message to start one.`,
+        ...(discoveryFailure ? ["", discoveryFailure] : []),
+      ].join("\n"),
     };
   }
   const workspaces = new Map(
@@ -296,6 +324,7 @@ async function handleList(ctx: ChatCommandContext): Promise<ChatCommandResult> {
             ctx.runtimeFamilyFor(binding) === "workbuddy" ? "WorkBuddy Task · desktop-synchronized" : "Runtime Thread"
           }`,
       ),
+      ...(discoveryFailure ? ["", discoveryFailure] : []),
     ].join("\n"),
   };
 }
@@ -344,7 +373,14 @@ async function handleSwitch(ctx: ChatCommandContext, rawReference: string | unde
     }
   }
 
-  const discovered = (await ctx.discoverRuntimeThreads?.(ctx.message.chatId)) ?? [];
+  let discovered: SelectableRuntimeThread[];
+  try {
+    discovered = (await ctx.discoverRuntimeThreads?.(ctx.message.chatId)) ?? [];
+  } catch (error) {
+    const discoveryFailure = workBuddyCapabilityFailureText(error, "Task discovery", "/switch");
+    if (!discoveryFailure) throw error;
+    return { handled: true, text: discoveryFailure };
+  }
   const threadMatches = matchingRuntimeThreads(discovered, reference);
   if (threadMatches.length > 1) return { handled: true, text: ambiguousRuntimeThreadText(reference, threadMatches) };
   const thread = threadMatches[0];
@@ -460,7 +496,14 @@ async function handleModel(ctx: ChatCommandContext, args: string[]): Promise<Cha
     return { handled: true, text: "Session model now inherits the Agent Binding or runtime default." };
   }
 
-  const models = (await ctx.listRuntimeModels?.(binding, current ?? intent)) ?? null;
+  let models: RuntimeModelOption[] | null;
+  try {
+    models = (await ctx.listRuntimeModels?.(binding, current ?? intent)) ?? null;
+  } catch (error) {
+    const catalogFailure = workBuddyCapabilityFailureText(error, "model catalog", "/model");
+    if (!catalogFailure) throw error;
+    return { handled: true, text: catalogFailure };
+  }
   if (!models)
     return {
       handled: true,

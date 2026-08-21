@@ -15,6 +15,8 @@ All notable changes to ClawChat Connect are documented in this file.
 - Required WorkBuddy ACP initialization to advertise `agentCapabilities.loadSession === true` before Connect calls `session/load`; `session/resume` is never treated as replay.
 - Classified connection refusal or closure from the discovered exact Task socket as `endpoint-stale`, without falling back to another endpoint or creating a replacement.
 - Downgraded native `bypassPermissions` Tasks to no approval Interaction capability because they execute without emitting an ACP permission request; Connect does not synthesize one.
+- Kept each ClawChat Binding's signed-in WebSocket and control commands available when WorkBuddy preparation reports an availability error, recovering retryable failures in the background without retrying unsupported capabilities; a later Core retry failure still shuts down only that Binding.
+- Isolated WorkBuddy discovery failures per Binding in the shared Liveware catalog, preserving durable Session entries and stored Transcript reads while disabling adoption, prompt submission, and unsafe actions, and reporting scoped `unsupported`, `unavailable`, or `conflict` slash capability instead of a server error.
 
 ## [0.1.0-beta.8] - 2026-08-17
 

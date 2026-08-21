@@ -198,7 +198,6 @@ export async function mountMandatorySurfaceModules(
               writeError: options.writeError,
             });
             handles.push(handle);
-            await ctx.connectAgentBindings.setRuntimeAvailability(agentId, "available", null).catch(() => undefined);
             options.writeOutput(
               `Connected Agent Binding ${agentId} to ${handle.websocketUrl} as ${handle.deviceId}.\n`,
             );

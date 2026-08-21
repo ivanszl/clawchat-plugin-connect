@@ -241,7 +241,11 @@ function SessionPage() {
               capability={view.turnSubmissionCapability}
               slashSuggestions={slashSuggestions.data?.entries ?? []}
               queuedTurns={view.queuedTurns}
-              slashSuggestionsError={slashSuggestions.isError}
+              slashSuggestionsError={
+                slashSuggestions.isError ||
+                slashSuggestions.data?.availability === "unavailable" ||
+                slashSuggestions.data?.availability === "conflict"
+              }
               hasPendingInteraction={view.pendingInteractions.length > 0}
               modelControl={<SessionModelControls view={view} />}
             />
