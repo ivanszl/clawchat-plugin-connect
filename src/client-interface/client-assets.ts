@@ -1,5 +1,7 @@
-import { access } from "node:fs/promises";
-import { dirname, extname, join, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { access, readFile } from "node:fs/promises";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { walkRegularFiles } from "../regular-file-walker";
 import { securityHeaders } from "./client-http";
 
 export async function staticResponse(assetsRoot: string, pathname: string, head: boolean): Promise<Response> {
@@ -41,6 +43,42 @@ export async function resolveClientAssetsPath(): Promise<string> {
     }
   }
   return candidates[0] ?? resolve(process.cwd(), "dist/client");
+}
+export async function verifyClientAssetGraph(
+  assetsRoot: string,
+  integrityManifestPath: string,
+  entryPrefix = "client",
+): Promise<void> {
+  const parsed: unknown = JSON.parse(await readFile(integrityManifestPath, "utf8"));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Connect Client asset integrity manifest is malformed");
+  }
+  const expected = new Map<string, string>();
+  for (const [entry, integrity] of Object.entries(parsed as Record<string, unknown>)) {
+    const prefix = `${entryPrefix.replace(/\/+$/u, "")}/`;
+    if (!entry.startsWith(prefix) || typeof integrity !== "string" || !/^sha256-[A-Za-z0-9+/]{43}=$/u.test(integrity)) {
+      throw new Error(`Connect Client asset integrity entry is malformed: ${entry}`);
+    }
+    const relativeEntry = entry.slice(prefix.length);
+    if (!relativeEntry || relativeEntry.startsWith("/") || relativeEntry.split("/").includes("..")) {
+      throw new Error(`Connect Client asset integrity entry escapes its root: ${entry}`);
+    }
+    expected.set(relativeEntry, integrity);
+  }
+  const actual = await walkRegularFiles(assetsRoot, {
+    symbolicLink: "Connect Client asset graph contains a symbolic link",
+    unsupportedEntry: "Connect Client asset graph contains an unsupported entry",
+  });
+  if (actual.length !== expected.size) {
+    throw new Error("Connect Client asset graph does not match its integrity manifest");
+  }
+  for (const path of actual) {
+    const entry = relative(assetsRoot, path).split(sep).join("/");
+    const integrity = expected.get(entry);
+    if (!integrity) throw new Error(`Connect Client asset is not integrity-covered: ${entry}`);
+    const received = `sha256-${createHash("sha256").update(await readFile(path)).digest("base64")}`;
+    if (received !== integrity) throw new Error(`Connect Client asset failed integrity verification: ${entry}`);
+  }
 }
 
 export function isKnownStaticFile(path: string): boolean {

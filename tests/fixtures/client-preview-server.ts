@@ -2,12 +2,16 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startClientInterface } from "../../src/client-interface/server";
+import {
+  createCoreConnectClientApplicationPort,
+  startClientInterface,
+} from "../../src/client-interface/server";
 import { TranscriptProjection } from "../../src/client-interface/transcript-projection";
 import { defaultConfig } from "../../src/config";
 import { createStateStore } from "../../src/persistence/state";
 import type { ConnectPluginHost, ManagePluginOptions } from "../../src/plugin/host";
 import type { OfficialPluginDiscovery } from "../../src/plugin/official-registry";
+import { CONNECT_CLIENT_MANAGED_WEB_APP_REF } from "../../src/plugin/official/connect-client-manifest";
 import type { InstalledPluginLockEntry } from "../../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../../src/runtime/runtime-interaction-coordinator";
@@ -290,8 +294,9 @@ function previewActivity(
   };
 }
 
+const previewHostname = "127.0.0.1";
+const previewPort = Number(process.env.CONNECT_CLIENT_PREVIEW_PORT ?? 47_893);
 const config = defaultConfig();
-config.clientPort = Number(process.env.CONNECT_CLIENT_PREVIEW_PORT ?? 47_893);
 config.stateDbPath = stateStore.dbPath;
 config.defaultAgent = "codex";
 config.agents = { codex: pluginBinding({}, { displayName: "Codex · Local" }) };
@@ -389,18 +394,14 @@ async function createPreviewClientExtension(): Promise<InstalledPluginLockEntry>
     dependencies: [],
     installationConfigurationSchema: { type: "object", properties: {}, additionalProperties: false },
     capabilities: [
-      {
-        id: "client",
-        type: "client-extension",
-        interfaceVersion: "1",
-        configurationSchema: { type: "object", properties: {}, additionalProperties: false },
-        browser: {
-          entry: "browser.mjs",
-          integrity: sha256Integrity(browser),
-          styles: [],
-          slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 10 }],
-        },
-      },
+      { id: "client", type: "client-extension", managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }, interfaceVersion: "1",
+      configurationSchema: { type: "object", properties: {}, additionalProperties: false },
+      browser: {
+        entry: "browser.mjs",
+        integrity: sha256Integrity(browser),
+        styles: [],
+        slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 10 }],
+      }, },
     ],
     artifacts: [{ target: "preview-target", entry: "entry.mjs", integrity: sha256Integrity(host) }],
   };
@@ -442,18 +443,14 @@ async function createPreviewFailingClientExtension(): Promise<InstalledPluginLoc
     dependencies: [],
     installationConfigurationSchema: { type: "object", properties: {}, additionalProperties: false },
     capabilities: [
-      {
-        id: "client",
-        type: "client-extension",
-        interfaceVersion: "1",
-        configurationSchema: { type: "object", properties: {}, additionalProperties: false },
-        browser: {
-          entry: "browser.mjs",
-          integrity: sha256Integrity(browser),
-          styles: [],
-          slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 5 }],
-        },
-      },
+      { id: "client", type: "client-extension", managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }, interfaceVersion: "1",
+      configurationSchema: { type: "object", properties: {}, additionalProperties: false },
+      browser: {
+        entry: "browser.mjs",
+        integrity: sha256Integrity(browser),
+        styles: [],
+        slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 5 }],
+      }, },
     ],
     artifacts: [{ target: "preview-target", entry: "entry.mjs", integrity: sha256Integrity(host) }],
   };
@@ -648,15 +645,20 @@ const previewPluginManager = {
   },
 } as unknown as ConnectPluginHost;
 const clientInterface = await startClientInterface({
-  config,
-  configPath: join(directory, "config.json"),
-  stateStore,
-  runtimeAdapters,
-  transcriptProjection,
-  runtimeInteractions,
-  runtimes: [runtime],
-  pluginManager: previewPluginManager,
+  applicationPort: createCoreConnectClientApplicationPort(() => ({
+    config,
+    configPath: join(directory, "config.json"),
+    stateStore,
+    runtimeAdapters,
+    transcriptProjection,
+    runtimeInteractions,
+    runtimes: [runtime],
+    pluginManager: previewPluginManager,
+  })),
   assetsPath: join(repositoryRoot, "dist/client"),
+  hostname: previewHostname,
+  port: previewPort,
+  managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
   serverFactory: (options) =>
     Bun.serve({
       ...options,

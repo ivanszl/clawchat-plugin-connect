@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ClientExtensionGraphView, ClientExtensionView } from "../client-contract";
-import type { ConnectPluginClientExtensionCapabilityManifest } from "./sdk";
+import type { ConnectPluginClientExtensionCapabilityManifest, RuntimeCapabilityRef } from "./sdk";
 import type { InstalledPluginLockEntry } from "./store";
 
 export const CLIENT_EXTENSION_ARTIFACT_PREFIX = "/client/v1/plugin-artifacts";
@@ -12,17 +12,21 @@ export interface ResolvedClientExtensionArtifact {
   readonly contentType: "text/css; charset=utf-8" | "text/javascript; charset=utf-8";
 }
 
-export function deriveClientExtensionGraph(installed: readonly InstalledPluginLockEntry[]): ClientExtensionGraphView {
+export function deriveClientExtensionGraph(
+  installed: readonly InstalledPluginLockEntry[],
+  managedWebApp: Readonly<RuntimeCapabilityRef>,
+): ClientExtensionGraphView {
   const activePlugins = installed.filter((plugin) => plugin.status === "active");
   const extensions = activePlugins
     .flatMap((plugin) =>
       plugin.manifest.capabilities
         .filter(
           (capability): capability is ConnectPluginClientExtensionCapabilityManifest =>
-            capability.type === "client-extension",
+            capability.type === "client-extension" &&
+            sameCapabilityRef(capability.managedWebApp, managedWebApp),
         )
         .map((capability): ClientExtensionView => {
-          const artifactBase = `${CLIENT_EXTENSION_ARTIFACT_PREFIX}/${encodeURIComponent(plugin.pluginId)}/${plugin.activationGeneration}/${encodeURIComponent(capability.id)}`;
+          const artifactBase = `${CLIENT_EXTENSION_ARTIFACT_PREFIX}/${encodeURIComponent(managedWebApp.pluginId)}/${encodeURIComponent(managedWebApp.capabilityId)}/${encodeURIComponent(plugin.pluginId)}/${plugin.activationGeneration}/${encodeURIComponent(capability.id)}`;
           return {
             pluginId: plugin.pluginId,
             capabilityId: capability.id,
@@ -50,7 +54,13 @@ export function deriveClientExtensionGraph(installed: readonly InstalledPluginLo
     )
     .sort(compareClientExtensions);
   const selectedBundles = activePlugins
-    .filter((plugin) => plugin.manifest.capabilities.some((capability) => capability.type === "client-extension"))
+    .filter((plugin) =>
+      plugin.manifest.capabilities.some(
+        (capability) =>
+          capability.type === "client-extension" &&
+          sameCapabilityRef(capability.managedWebApp, managedWebApp),
+      ),
+    )
     .map((plugin) => ({
       pluginId: plugin.pluginId,
       version: plugin.version,
@@ -61,8 +71,10 @@ export function deriveClientExtensionGraph(installed: readonly InstalledPluginLo
         .digest("base64")}`,
     }))
     .sort((left, right) => left.pluginId.localeCompare(right.pluginId));
-  const hash = `sha256-${createHash("sha256").update(canonicalJson({ selectedBundles, extensions })).digest("base64")}`;
-  return { hash, epoch: hash, extensions };
+  const hash = `sha256-${createHash("sha256")
+    .update(canonicalJson({ managedWebApp, selectedBundles, extensions }))
+    .digest("base64")}`;
+  return { managedWebApp: { ...managedWebApp }, hash, epoch: hash, extensions };
 }
 
 export function assertCurrentClientExtensionEpoch(graph: ClientExtensionGraphView, receivedEpoch: string): void {
@@ -73,6 +85,7 @@ export function assertCurrentClientExtensionEpoch(graph: ClientExtensionGraphVie
 
 export function resolveClientExtensionArtifact(
   installed: readonly InstalledPluginLockEntry[],
+  managedWebApp: Readonly<RuntimeCapabilityRef>,
   pluginId: string,
   activationGeneration: number,
   capabilityId: string,
@@ -89,7 +102,7 @@ export function resolveClientExtensionArtifact(
     (candidate): candidate is ConnectPluginClientExtensionCapabilityManifest =>
       candidate.id === capabilityId && candidate.type === "client-extension",
   );
-  if (!capability) return null;
+  if (!capability || !sameCapabilityRef(capability.managedWebApp, managedWebApp)) return null;
   const style = capability.browser.styles.find((candidate) => candidate.entry === artifactEntry);
   const integrity = artifactEntry === capability.browser.entry ? capability.browser.integrity : style?.integrity;
   if (!integrity) return null;
@@ -102,6 +115,13 @@ export function resolveClientExtensionArtifact(
     integrity,
     contentType: style ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8",
   };
+}
+
+function sameCapabilityRef(
+  left: Readonly<RuntimeCapabilityRef>,
+  right: Readonly<RuntimeCapabilityRef>,
+): boolean {
+  return left.pluginId === right.pluginId && left.capabilityId === right.capabilityId;
 }
 
 function compareClientExtensions(left: ClientExtensionView, right: ClientExtensionView): number {

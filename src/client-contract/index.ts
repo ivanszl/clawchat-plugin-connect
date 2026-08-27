@@ -34,7 +34,7 @@ export interface PluginCapabilityInstanceView {
 
 export interface PluginCapabilityView {
   id: string;
-  type: "runtime" | "exposure" | "client-extension";
+  type: "runtime" | "managed-web-app" | "exposure" | "client-extension";
   family: string | null;
   configurationSchema: PluginJsonSchemaView;
   instances: PluginCapabilityInstanceView[];
@@ -86,7 +86,7 @@ export interface AvailablePluginView {
   installationConfigurationSchema: PluginJsonSchemaView | null;
   installationConfiguration: Record<string, unknown>;
   capabilities: PluginCapabilityView[];
-  classification: "runtime" | "client-exposure";
+  classification: "runtime" | "managed-web-app" | "exposure";
   selected: boolean;
   diagnostics: PluginDiagnosticView[];
 }
@@ -526,6 +526,10 @@ export interface ClientExtensionView {
 }
 
 export interface ClientExtensionGraphView {
+  managedWebApp: {
+    pluginId: string;
+    capabilityId: string;
+  };
   hash: string;
   epoch: string;
   extensions: ClientExtensionView[];

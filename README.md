@@ -1,638 +1,179 @@
 <div align="center">
   <p><strong>English</strong> | <a href="./README_zh.md">中文</a></p>
   <h1>ClawChat Connect</h1>
-  <p><strong>Bring a coding agent running on your computer into any ClawChat conversation.</strong></p>
-  <p>
-    <a href="https://clawling.com/u/usr_01KPSPM0D3FFERFTYPY0PF8J2J"><img src="./docs/assets/clawchat.svg" alt="ClawChat" width="24" /></a><br />
-    Author: <a href="https://clawling.com/u/usr_01KPSPM0D3FFERFTYPY0PF8J2J">Contact on ClawChat</a>
-  </p>
-  <p>
-    <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub release" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
-    <a href="./LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
-    <img alt="Platform: macOS Apple silicon" src="https://img.shields.io/badge/platform-macOS%20Apple%20silicon-59636e?style=flat-square">
-    <img alt="Runtimes: Codex, OpenCode, WorkBuddy, and DeepSeek Harness" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode%20%7C%20WorkBuddy%20%7C%20DeepSeek%20Harness-f97316?style=flat-square">
-  </p>
-  <p>
-    <a href="#features">Features</a> ·
-    <a href="#quick-start">Quick start</a> ·
-    <a href="#working-with-a-repository">Workspaces</a> ·
-    <a href="#connect-client">Connect Client</a> ·
-    <a href="#configuration">Configuration</a> ·
-    <a href="#development">Development</a>
-  </p>
+  <p><strong>Run local coding-agent Runtimes from ClawChat, with independently managed Web Apps when you choose them.</strong></p>
 </div>
 
----
+ClawChat Connect is a local Core service and Plugin host. Core owns Agent Bindings, ClawChat transport, Workspace and Connect Session records, Runtime dispatch, Plugin lifecycle, and command-line administration. Runtime Plugins own their native runtime protocols. Managed Web App Plugins own complete Web products. The optional Liveware Plugin exposes a selected App to its Binding; Core does not ship or serve an unconditional browser application.
 
-ClawChat Connect is a local bridge between ClawChat and coding-agent runtimes. It keeps the agent, its credentials, project files, and runtime history on your computer while making the same persistent Sessions available from ClawChat and the browser-based Connect Client.
+## Product model
 
-<p align="center">
-  <img src="./docs/assets/clawchat-agent-conversation.png" alt="A ClawChat conversation with a connected local coding agent" width="60%" />
-</p>
-
-<p align="center">
-  <img src="./docs/assets/connect-client-liveware-empty.png" alt="ClawChat Connect Client Liveware empty state" width="100%" />
-</p>
-
-<p align="center">
-  <img src="./docs/assets/connect-client-liveware-session.png" alt="ClawChat Connect Client Liveware active Codex Session" width="100%" />
-</p>
-
-## Features
-
-| Area | What Connect provides |
-| --- | --- |
-| Runtime Adapters | Connects to user-installed Codex, OpenCode, WorkBuddy, or DeepSeek Harness runtimes without taking over runtime login, providers, plugins, or MCP configuration. |
-| Persistent work | Resumes native Runtime Threads through stable Connect Sessions and Binding-scoped Workspaces. |
-| Shared conversation | Orders ClawChat and Connect Client turns in the same per-Session queue; separate Sessions can run concurrently. |
-| Runtime controls | Discovers runtime-provided models and options, routes approvals and questions back to the originating surface, and supports cancellation. |
-| Skill discovery | Shows supported runtime Skills in the Connect Client slash picker and preserves explicit Skill invocation as part of the submitted turn. |
-| Rich input and output | Accepts images, audio, files, and video references from ClawChat, and safely returns supported local image output. |
-| Multiple Agent Bindings | Keeps credentials, Sessions, Runtime instances, defaults, output visibility, and Liveware access isolated per Binding. |
-| Local-first access | Runs as a native user service with a loopback Client by default, optional trusted-LAN access, and an optional official Liveware Client Exposure. |
-| Agent-callable ClawChat operations | Separately ships tools and managed Agent skills for profile, social, messaging, Moments, and Liveware workflows. |
-
-### Inside ClawChat
-
-- **Start work from a conversation.** Send an ordinary message in a direct chat, or address the Agent with a structured mention in a group.
-- **Control the active Session.** Create, list, and switch Sessions; select a Workspace; inspect status; choose runtime model and mode; cancel an active turn; and control output visibility with slash commands.
-- **Continue persistent runtime work.** Each ClawChat conversation and Agent Binding keeps its own current Session while native Runtime Threads remain resumable.
-- **Handle runtime interactions in place.** Approvals and agent questions return to the direct or group conversation that started the turn.
-- **Send and receive rich context.** ClawChat images, audio, files, and videos stay structured, and supported local image results are uploaded safely in the reply.
-- **Use Connect Client without leaving ClawChat.** The official Liveware Plugin can publish one private App per activated Binding; every App opens the shared installation-wide Client.
-
-The ClawChat surface is for conversation-scoped work. Workspace registration, service administration, and other machine-level configuration stay in the terminal or Connect Client.
-
-### Runtime support
-
-| Runtime | What Connect can do | Important limits |
+| Product | Owner | Boundary |
 | --- | --- | --- |
-| Codex | Start or resume Sessions, choose available model/reasoning and sandbox options, cancel work, and manage supported Session lifecycle actions. | Requires a user-installed Codex. Connect shows only the controls that Codex makes available. |
-| OpenCode | Connect to a running OpenCode server, discover or resume Sessions, choose available agents/models/variants, cancel work, and delete supported Sessions. | `opencode serve` must be running. Archive and restore are not available. |
-| WorkBuddy | Open and continue an existing Task, preserve its history, keep working when the Desktop switches Tasks, recover after restart, and cancel work. | No image/media input. No approval prompt when the Task skips permission checks. Archive, restore, and delete are not available. |
-| DeepSeek Harness | Start or resume Sessions with the selected Profile, use available presets/Commands/Skills, cancel work, and archive when the Profile supports it. | Available features and lifecycle actions depend on the selected DeepSeek Harness Profile. |
+| Connect Core | `clawchat-connect` | Agent Bindings, ClawChat transport, Workspace/Session records, Plugin authority, CLI recovery. |
+| Runtime Plugin | The exact installed Plugin capability | Runtime process/protocol, native login, models, tools, approvals, and native Thread storage. |
+| Managed Web App | Its Provider Plugin | Web server, browser assets/protocol, authentication, Web Sessions, Interactions, reconnect behavior, and presentation. |
+| Web App Exposure | Official `clawling.exposure.liveware` Plugin | One private Binding publication of an opaque leased loopback App upstream. |
 
-Connect uses the runtimes you install and leaves their login, models, providers, plugins, tools, credentials, sandbox, and approval settings under your control. It does not install or upgrade runtimes. See [Runtime Adapters](./docs/runtime-adapters.md) for compatibility details.
+These are independent products. A Runtime can remain healthy while its selected App is unavailable, and an App can be healthy while a Binding Runtime is stopped. Connect never represents those health domains as one status.
 
-#### WorkBuddy support boundary
+There is no cross-product Session continuity promise. A ClawChat Connect Session, `dsh web` Session, `opencode web` Session, and optional Connect Client Session may refer to the same repository and still have independent authentication, history, Interaction state, and reconnect behavior. Connect does not copy conversation or tool context between them.
 
-| Status | Boundary |
+## Managed Web App selection
+
+Selection is deterministic and exact:
+
+1. If the Binding's exact Runtime capability declares a native Managed Web App, select it.
+2. Otherwise, select an installed compatible Managed Web App that explicitly names that exact `pluginId` and `capabilityId`.
+3. Otherwise, the Binding has no App.
+
+Temporary unavailability never changes the selection and never triggers a compatibility proxy, fallback page, or hidden Client endpoint.
+
+Official mappings:
+
+| Runtime capability | Selected App |
 | --- | --- |
-| **Supported** | Open an existing WorkBuddy Task in Connect, continue it with text, keep its Task history, switch the Task shown in WorkBuddy without changing Connect's Task, resume after WorkBuddy restarts, and cancel running work. |
-| **Depends on WorkBuddy** | Models, permission modes, Commands, and Skills are available only when the selected WorkBuddy Task offers them. |
-| **Temporarily unavailable** | If WorkBuddy is closed or the selected Task is not ready, only that WorkBuddy connection pauses. Other connected Agents keep working and existing history stays readable. Reopen WorkBuddy and retry the same Task. |
-| **Unsupported** | Image or other media input; approval prompts for WorkBuddy Tasks configured to skip permission checks; archive, restore, or delete; and modes, Commands, or Skills that WorkBuddy does not offer. |
+| `clawling.runtime.deepseek-harness/deepseek-harness` | Native DSH Web (`dsh web`). |
+| `clawling.runtime.opencode/opencode` | Native OpenCode Web (`opencode web`). |
+| Codex and both WorkBuddy capabilities | Optional `clawling.web.connect-client/connect-client`, only when that complete Plugin is explicitly installed. |
 
-> [!WARNING]
-> **WorkBuddy approvals:** a WorkBuddy Task can be configured to skip permission checks. When it is, Connect cannot show approval buttons in ClawChat or Connect Client, and WorkBuddy runs actions according to its own settings. If you require human approval, choose a WorkBuddy permission mode that asks before acting. Connect will not change that setting for you.
-
-See [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md) for details.
-
-> [!IMPORTANT]
-> ClawChat Connect is beta software. Review [Local data and security](#local-data-and-security) before enabling trusted-LAN or private Liveware access.
+A CLI-only installation is valid. Runtime setup and Agent Binding activation never install the optional Connect Client Plugin implicitly. Liveware publishes nothing for a Binding with no selected App.
 
 ## Requirements
 
-Before installing Connect, you need:
-
-1. A ClawChat account and an Agent invite code.
-2. At least one supported coding-agent runtime installed and authenticated on the same computer.
-3. macOS on Apple silicon (`darwin-arm64`). Other operating systems and architectures are deferred from the current beta release.
-
-Check the runtime you plan to use:
-
-```bash
-codex --version
-# or
-opencode --version
-# or, for DeepSeek Harness, verify that dsh is on PATH
-command -v dsh
-```
-
-Connect uses the runtime's existing login, configuration, providers, plugins, MCP servers, and native Session storage. Codex must expose the required app-server interface; OpenCode must be version `1.18.10` or `1.18.13`. For DeepSeek Harness, Connect performs no DSH version or internal component-graph check. It uses the configured Profile when present; otherwise it omits the Profile argument and preserves DSH's native default-or-error behavior. Connect does not install, authenticate, or reconfigure any runtime.
+Current beta archives support macOS on Apple silicon. You need a ClawChat account, an Agent invite code, and at least one supported runtime already installed and authenticated. Connect does not install, upgrade, authenticate, or reconfigure Codex, OpenCode, WorkBuddy, or DeepSeek Harness.
 
 ## Quick start
 
-### Install with an Agent
-
-Copy and send this prompt to your coding Agent:
-
-```text
-Install the current beta-channel ClawChat Connect release on this computer. Read and follow https://github.com/XMethues/clawchat-plugin-connect/blob/main/install.md before taking action. Reuse an existing configuration when present; do not overwrite it. Install and start the native Connect Service, select the official Liveware Plugin if remote Client access is required, then verify doctor, service status, Runtime connection, and private Liveware publication. Ask me for an Agent invite code only if activation is required, and never print, store, or commit the invite code.
-```
-
-### 1. Install Connect
-
-On macOS Apple silicon, the standalone installer does not require Bun or Node.js:
+### Install Core
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
-```
-
-Standalone releases embed the pinned, unmodified platform companion inside the release-verified official Liveware Plugin Bundle. The installer carries that Bundle and removes obsolete sibling `liveware` executables; no separate Liveware repository checkout, build, login, or installation is required.
-
-The installer resolves the current beta-channel GitHub release at runtime through `release-channel/latest-beta.txt`. Pass a version explicitly only when you need to pin an installation.
-
-The default executable location is `~/.local/bin`. If it is not already on `PATH`:
-
-```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-To install a specific release or choose another directory:
+The installer verifies the release archive against `checksums.txt`, installs Core, official Plugin Bundles, skills, and notices, and removes obsolete root `liveware` and `clawchat-connect-client` payloads. An archive may include or omit the optional Connect Client Plugin and remains valid. Browser assets, when present, exist only inside that integrity-covered Plugin Bundle.
+
+The current beta pointer is `release-channel/latest-beta.txt`. Pin a release with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-beta.8
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh -s -- v0.1.0-beta.8
 ```
 
-The current beta channel publishes only the qualified `darwin-arm64` archive. Linux, Windows, and Intel macOS release artifacts are deferred until their native qualification resumes.
-
-Developers may install the Bun package instead:
+### Initialize and install a Runtime Plugin
 
 ```bash
-bun add --global @clawling/clawchat-plugin-connect
-```
-
-Update an existing installation to the current beta-channel release:
-
-```bash
-clawchat-connect update
-```
-
-Use `clawchat-connect update --version v0.1.0-beta.8` to install a specific release. The update command preserves the existing configuration and refreshes the native Connect Service. Historical versions remain installable when explicitly specified.
-
-### 2. Install a Runtime Plugin and create the first Agent Binding
-
-`work` is a local name; choose any short name you want. Initialize Connect, activate the official Runtime Plugin
-Bundle, then bind the exact Plugin capability:
-
-```bash
-# Codex
 clawchat-connect init
+
+# choose one or more exact Runtime Plugins
 clawchat-connect plugin setup --non-interactive --select clawling.runtime.codex
 clawchat-connect agent add work --plugin clawling.runtime.codex --capability codex
-
-# OpenCode
-clawchat-connect init
-clawchat-connect plugin setup --non-interactive --select clawling.runtime.opencode
-clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
-
-# DeepSeek Harness
-clawchat-connect init
-clawchat-connect plugin setup --non-interactive --select clawling.runtime.deepseek-harness
-clawchat-connect agent add work --plugin clawling.runtime.deepseek-harness --capability deepseek-harness
-```
-
-Runtime-specific settings belong to the selected capability's validated `runtimeConfig`. For example:
-
-```bash
-clawchat-connect agent add work \
-  --plugin clawling.runtime.codex \
-  --capability codex \
-  --runtime-config-json '{"executablePathOverride":"/absolute/path/to/codex"}'
-```
-
-For DeepSeek Harness, `homePath`, `profile`, `executablePathOverride`, `outputVisibility`, and `displayName` are optional. Omitting `profile` passes no `--profile` flag, so the installed DSH version either applies its native default or reports its native configuration error; Connect does not synthesize a Profile:
-
-```bash
-clawchat-connect agent add work \
-  --plugin clawling.runtime.deepseek-harness \
-  --capability deepseek-harness \
-  --runtime-config-json '{"homePath":"/absolute/path/to/.dsh","profile":"my-profile"}'
-```
-
-`init` creates a new Plugin-free configuration. On an existing installation, use `agent add` to create or update a
-Binding after its provider Bundle is installed and active.
-
-`plugin setup` uses the running Plugin Manager when available. If Connect Service is stopped, the CLI reads the release-bundled official Plugin registry and installs the selected local Bundles without network Catalog authentication or a Service restart.
-
-### 3. Activate the Binding
-
-Use the invite code issued by ClawChat:
-
-```bash
 clawchat-connect activate work YOUR_INVITE_CODE
-```
 
-Connect stores the returned credentials, not the invite code, and updates the ClawChat Profile nickname to the Binding ID (`work` in this example).
-
-One Connect installation has one Installation Owner. It can activate multiple Agent Bindings owned by that same ClawChat account and use capabilities from several Runtime Plugins:
-
-```bash
-clawchat-connect plugin setup --non-interactive \
-  --select clawling.runtime.codex,clawling.runtime.opencode
-clawchat-connect agent add personal --plugin clawling.runtime.codex --capability codex
-clawchat-connect activate personal PERSONAL_AGENT_INVITE_CODE
-
-clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
-clawchat-connect activate work WORK_AGENT_INVITE_CODE
-clawchat-connect service restart
-```
-
-Each Binding owns independent credentials, Sessions, Runtime instance, and Binding-scoped Workspace Catalog. Every Binding must resolve to the same Installation Owner; a different Owner is rejected without changing the existing installation. The official Liveware Plugin owns one installation-scoped Client Exposure and manages one independent Binding Liveware Publication for each activated Binding.
-
-When the official Liveware Plugin is active with `accessPolicy: "private"`, it provisions or adopts one Binding-named `ClawChat Connect · <binding-id>` App per activated Binding. Every Binding Liveware Publication tunnels to the same Core-owned Shared Client Gateway. Only the Installation Owner can open these Apps; activation itself never publishes the Client port.
-
-One ClawChat account may own multiple Agent Bindings in an installation. Reactivating the same Binding with the same account refreshes its credentials.
-For an occupied Binding, Connect sends the stored Agent user ID through ClawChat's atomic re-pair path; a code from another Owner is rejected by ClawChat before it is consumed, and Connect preserves the existing local credentials if the returned identity violates that contract.
-
-### 4. Install the background service
-
-```bash
 clawchat-connect service install
 clawchat-connect service status
-```
-
-Installation starts Connect immediately and enables it for future logins as a native per-user macOS LaunchAgent; administrator/root access is not required.
-
-There is no foreground `run` command. The background service owns the ClawChat WebSocket connection, Runtime Adapter processes, Shared Client Gateway, and every active Plugin lifecycle; the official Liveware companion runs only when its Plugin is installed and active.
-
-### 5. Send a message
-
-Open the activated Agent conversation in ClawChat and send an ordinary message. Connect uses that Binding's Default Workspace under `~/.clawchat-connect/workspaces/` and starts a persistent runtime Session automatically.
-
-For example:
-
-```text
-Explain what this repository does and suggest the first improvement.
-```
-
-## Working with a repository
-
-Workspace paths are local-machine administration, so register them in the terminal or Connect Client—not in ClawChat:
-
-```bash
-clawchat-connect workspace add codex /absolute/path/to/clawchat-plugin-connect
-clawchat-connect workspace list codex
-```
-
-Connect Client can browse directories on the Connect Service host, create a folder, and register it as a Workspace for the selected Agent Binding. The new-Session dialog can stage the same operation and creates the folder, Workspace, and Session only when you confirm the Session. Then select the Workspace and Session options in ClawChat:
-
-The directory picker exposes host directory names and structure, but not file contents, to anyone who can open the Client. This includes the Installation Owner through a private Liveware Publication and peers admitted through trusted-LAN access.
-
-```text
-/workspace ABCDEFGH
-/new Review authentication
-/mode workspace-write
-/model
-/model MODEL_ID high
-Review the authentication implementation and report any security issues.
-```
-
-`/workspace`, `/new`, `/mode`, and `/model` prepare a Session Intent. The first ordinary message atomically creates the Session and starts its native Runtime Thread. `/model` with no argument lists the models and reasoning options advertised by the selected Runtime Adapter. Runtime-specific options such as an OpenCode agent or variant are also available in Connect Client.
-
-Local Workspace administration:
-
-| Command | Purpose |
-| --- | --- |
-| `clawchat-connect workspace add <binding-id> <absolute-path>` | Register a root-named Workspace in one Binding's Catalog. |
-| `clawchat-connect workspace list <binding-id>` | List that Binding's Workspaces with their local paths. |
-| `clawchat-connect workspace remove <binding-id> <workspace-ref>` | Remove an unused Workspace definition; files and Runtime Threads are never deleted. |
-
-A Workspace cannot be removed while a Session or pending Session selection references it.
-
-## Sessions and chat commands
-
-Connect keeps one current Session per ClawChat conversation and Agent Binding. A Session owns a stable eight-character Ref and, once started, a resumable native Runtime Thread.
-
-Send these as standalone ClawChat messages. In a direct conversation, use the forms shown below. In a group, prefix a command with a leading structured mention of the Agent and one space, for example `@Agent /help`. A group slash command without that addressing mention is ignored as a command and may be handled as ordinary Agent input.
-
-| Command | Purpose |
-| --- | --- |
-| `/help` | Show the command summary. |
-| `/status` | Show the current/pending Session, effective options, connection, and turn status. |
-| `/new [name]` | Prepare a new Session for the next ordinary message. |
-| `/sessions` | List Sessions and available Runtime Threads in the selected workspace. |
-| `/switch <name-or-ref>` | Resume a Session or adopt an available Runtime Thread. |
-| `/workspace [workspace-ref]` | Show synchronized Workspaces, select one by Workspace Ref, or restore the Binding Default Workspace. |
-| `/model [model-id [reasoning-effort]\|default]` | Show or set the Session model and effort; `default` restores inheritance. |
-| `/mode [mode\|default]` | Show or set a mode advertised by the Runtime Adapter; `default` restores inheritance. Codex provides `read-only`, `workspace-write`, and `danger-full-access`. |
-| `/cancel` | Interrupt the active runtime turn when possible. |
-| `/clawchat-output <mode>` | Set ClawChat output to `minimal`, `normal`, or `full`. |
-
-`/help` is available to every participant. Other Connect control commands require the Installation Owner. Unsupported legacy control forms fail with a pointer to `/help`; they are not forwarded to the coding agent. Unknown `/clawchat-*` commands show Connect help, while unrelated slash commands are passed through.
-
-Output visibility is scoped to the Agent Binding: a chat override applies only to that Binding even when another Agent is present in the same ClawChat conversation. Binding settings inherit the installation default until explicitly changed.
-
-Runtime approvals and questions stay in the direct or group conversation whose turn created them. Direct responses use `/approve`, `/approve session`, `/deny`, `/N`, or `/answer <text>`; group responses use the same exact lowercase, single-line forms after `@Agent `. For now, any participant in the originating group may answer an Interaction, including a Session-level approval. Connect controls remain restricted to the Installation Owner.
-
-The effective model is resolved for every turn: Session override → Agent Binding default → Runtime Adapter default. The secondary model option is Codex reasoning effort or OpenCode variant. An unavailable saved Session selection fails visibly instead of silently falling back. Changing an in-place model option keeps the same Runtime Thread; changing a boundary-forming mode starts a new Runtime Thread.
-
-Output modes:
-
-| Mode | ClawChat receives |
-| --- | --- |
-| `minimal` | Final answer only. |
-| `normal` | Final answer and assistant-visible output. |
-| `full` | Tool, progress, reasoning, assistant, and final output. |
-
-Failures and required control messages remain visible in every mode.
-
-## Connect Client
-
-The service exposes a browser client at `http://127.0.0.1:47823/` by default:
-
-```bash
-clawchat-connect web
-```
-
-Use `--no-open` to print the URL without opening a browser:
-
-```bash
-clawchat-connect web --no-open
-```
-
-The browser client can:
-
-- create and switch Sessions, select Workspaces, and inspect native runtime transcripts;
-- choose the Runtime Adapter's model, mode, agent, effort, or variant options;
-- discover runtime commands and Skills from the composer's slash picker;
-- attach supported media, submit follow-up turns, and withdraw a queued turn back into the composer;
-- archive, restore, or permanently delete Sessions when the selected Runtime Adapter supports that action.
-- install trusted Plugin Bundles and create or edit unactivated Agent Bindings by selecting one exact active Runtime Plugin capability and completing its schema-defined configuration.
-
-Browser-originated turns stay local to Connect and are not posted into ClawChat.
-
-Browser and ClawChat turns targeting the same Session are strictly ordered. Different Sessions may run concurrently, including two Sessions associated with one ClawChat conversation, up to `maxConcurrentTurns`.
-
-### ClawChat access through Liveware
-
-The local loopback Client and every private Liveware publication open the same installation-wide Client. Workspaces remain Binding-scoped even when two Catalog entries resolve to the same filesystem root; Sessions, transcripts, messages, events, and Runtime state do not cross Binding boundaries.
-
-Set the official Liveware Plugin's `liveware` capability configuration in Connect Client:
-
-- `accessPolicy: "private"` publishes one owner-only App per activated Binding.
-- `accessPolicy: "off"` retires every Binding Liveware Publication and releases its Shared Client Gateway lease.
-
-The initial Plugin setup preselects the official Liveware candidate when available. Installed local, npm, GitHub, and official Plugins may contribute Client Exposure through the same trusted in-process Plugin model. The Host keeps gateway policy, raw credentials, and Plugin administration outside that narrow capability; the official Liveware capability supports private access only.
-
-To remove a Binding, its Liveware App and local history, stop using its ID and confirm the destructive command:
-
-```bash
-clawchat-connect agent remove work --yes
-```
-
-Removal stops Connect Service, retires only that Binding's Liveware Publication, deletes its credentials and Binding-scoped Connect records, and preserves Workspace file contents plus other Bindings. The Binding ID may then be reused.
-
-### Trusted LAN access
-
-To make the browser client reachable from another device on a trusted private network:
-
-```bash
-clawchat-connect config set clientHost 0.0.0.0
-clawchat-connect service restart
-```
-
-Then open `http://<computer-LAN-IP>:47823/`.
-
-LAN mode has no authentication or TLS. Anyone who can reach the port can enumerate host directory names and structure, read Sessions, manage Workspace paths and runtime preferences, and submit local coding-agent turns. Plugin administration remains restricted to an actual loopback connection, including the private loopback Liveware gateway; forwarded headers cannot grant it to a LAN peer. Never expose LAN mode to the internet. Return to loopback mode with:
-
-```bash
-clawchat-connect config set clientHost 127.0.0.1
-clawchat-connect service restart
-```
-
-Set a different port with `clawchat-connect config set clientPort 47824` (allowed range: 1024–65535).
-
-## Media support
-
-Incoming ClawChat media remains structured:
-
-- images, audio, files, and videos are downloaded to the Connect-owned cache with their MIME type and safe filename;
-- the selected Runtime Adapter submits supported media as native inputs and surfaces model/provider rejection without silent conversion;
-- each download is limited to 100 MiB;
-- the cache is limited to 512 MiB and expires files after 15 days without access.
-
-When a runtime returns a local Markdown image, Connect uploads it to ClawChat if:
-
-- it is inside the resolved Workspace root or the Connect media cache; and
-- its extension and file signature identify PNG, JPEG, GIF, or WebP content.
-
-Other local paths remain text and are not uploaded.
-
-Untrusted media URLs must use HTTPS and resolve to public addresses. Redirects are revalidated. The configured ClawChat API and media origins are trusted explicitly so private self-hosted deployments continue to work.
-
-## Configuration
-
-The default configuration file is `~/.clawchat-connect/config.json`. Inspect it with:
-
-```bash
-clawchat-connect config get
-clawchat-connect config get agents.work.runtime
-```
-
-Installation-wide and generic Binding preferences can be changed from the CLI:
-
-```bash
-clawchat-connect config set agents.work.outputVisibility normal
-clawchat-connect config set agents.work.model YOUR_MODEL_ID
-clawchat-connect config set agents.work.modelReasoningEffort high
-clawchat-connect service restart
-```
-
-Runtime-specific configuration is validated against the installed capability manifest. Update it through Runtime
-Plugin configuration surfaces or recreate the Binding with `agent add --runtime-config-json`.
-
-Installation-wide values:
-
-| Setting | Values |
-| --- | --- |
-| `clientHost` | `127.0.0.1`, `0.0.0.0` |
-| `clientPort` | `1024`–`65535` |
-
-Every Binding persists an exact `runtime.pluginId` and `runtime.capabilityId`, a capability-owned `runtimeConfig`,
-and generic preferences such as `displayName`, output visibility, model selection, environment, Session options,
-and additional directories. Runtime family is provider metadata and is never persisted on the Binding.
-
-Example with two official Runtime Plugin capabilities:
-
-```json
-{
-  "defaultAgent": "work",
-  "maxConcurrentTurns": 4,
-  "maxPendingPerSession": 20,
-  "agents": {
-    "work": {
-      "runtime": {
-        "pluginId": "clawling.runtime.codex",
-        "capabilityId": "codex"
-      },
-      "runtimeConfig": {
-        "executablePathOverride": "/absolute/path/to/codex",
-        "sandboxMode": "workspace-write",
-        "approvalPolicy": "on-request",
-        "webSearchMode": "live",
-        "networkAccessEnabled": true
-      },
-      "displayName": "Work Codex",
-      "modelReasoningEffort": "high"
-    },
-    "personal": {
-      "runtime": {
-        "pluginId": "clawling.runtime.opencode",
-        "capabilityId": "opencode"
-      },
-      "runtimeConfig": {
-        "executablePathOverride": "/absolute/path/to/opencode",
-        "sessionOptions": {
-          "agent": "YOUR_OPENCODE_AGENT"
-        }
-      },
-      "displayName": "Personal OpenCode"
-    }
-  }
-}
-```
-
-Restart the service after changing runtime or endpoint configuration.
-
-### Self-hosted ClawChat
-
-Configure the HTTP and WebSocket endpoints before activation:
-
-```bash
-clawchat-connect config set baseUrl https://clawchat.example.com
-clawchat-connect config set websocketUrl wss://clawchat.example.com/ws
-```
-
-`mediaUploadUrl` defaults to `/media/upload` on `baseUrl`. Override it only when media is served separately:
-
-```bash
-clawchat-connect config set mediaUploadUrl https://media.example.com/media/upload
-```
-
-## Service and account commands
-
-| Command | Purpose |
-| --- | --- |
-| `clawchat-connect status [--agent <id>]` | Show activation, runtime, and Liveware Exposure status. |
-| `clawchat-connect doctor` | Check the active configuration and installed Connect Agent Skills. |
-| `clawchat-connect tool list` | List the 24 Agent-callable ClawChat tool names. |
-| `clawchat-connect tool describe <name>` | Show one tool's generated input schema. |
-| `clawchat-connect tool call <name> --input-json <json-or->` | Submit one at-most-once tool request to the running Service. |
-| `clawchat-connect liveware app ...` | Manage an additional Agent-owned Liveware App through the Service. |
-| `clawchat-connect liveware tunnel ...` | Bind or unbind a loopback service and synchronize its ClawChat registration. |
-| `clawchat-connect skills install` | Force-repair the two bundled user-scope Agent skills. |
-| `clawchat-connect agent list` | List configured Agent Bindings. |
-| `clawchat-connect agent remove <id>` | Remove a local Binding configuration. |
-| `clawchat-connect service start` | Start the installed service. |
-| `clawchat-connect service stop` | Stop it without uninstalling it. |
-| `clawchat-connect service restart` | Restart after configuration changes. |
-| `clawchat-connect service status` | Show native service status. |
-| `clawchat-connect service logs` | Show recent logs. |
-| `clawchat-connect service logs --lines 250 --follow` | Follow service logs. |
-
-Update the activated ClawChat Profile with at least one field:
-
-```bash
-clawchat-connect profile update --agent work --nickname Luna
-clawchat-connect profile update --agent work --avatar-url https://example.com/luna.png --bio "Local coding agent"
-```
-
-`service install` captures the current executable path and `PATH`. Run it again after moving Connect or changing the `PATH` needed to find a configured runtime.
-
-## Troubleshooting
-
-Start with:
-
-```bash
 clawchat-connect doctor
-clawchat-connect status
+```
+
+Equivalent Runtime selections include `clawling.runtime.opencode/opencode`, `clawling.runtime.deepseek-harness/deepseek-harness`, and the supported WorkBuddy capabilities. Runtime configuration belongs to the exact capability's schema:
+
+```bash
+clawchat-connect agent add work \
+  --plugin clawling.runtime.opencode \
+  --capability opencode \
+  --runtime-config-json '{"serverUrl":"http://127.0.0.1:4096"}'
+```
+
+`plugin setup` works through the running Plugin Manager when available. With the service stopped, the CLI can install a selected release-bundled Plugin directly. This headless path is the recovery and administration boundary; no Web App is required.
+
+### Optional compatible Connect Client
+
+Install it in a separate, explicit operation only if Codex or WorkBuddy browser administration is wanted:
+
+```bash
+clawchat-connect plugin setup --non-interactive --select clawling.web.connect-client
+```
+
+The Connect Client Bundle contains its complete server entry, complete browser graph, and a canonical integrity manifest covering every auxiliary browser asset. It is removable independently of Core and Runtime Plugins. Client Extensions target an exact Managed Web App with `managedWebApp.pluginId` plus `managedWebApp.capabilityId`; they are App-scoped, never installation-global.
+
+### Optional private Liveware exposure
+
+```bash
+clawchat-connect plugin setup --non-interactive --select clawling.exposure.liveware
+```
+
+Liveware is Web App Exposure, not a Client and not a Runtime. For each eligible activated Binding it publishes the already selected Managed Web App. Each Binding owns an independent private ClawChat App, tunnel, registration, and retirement state.
+
+A Provider returns only an exact loopback HTTP upstream. Core validates it, associates it with the committed Plugin Activation Generation, and grants a lease to Liveware. Provider-owned native scope determines the Managed Web App Instance key, so several Bindings may lease one Instance. Releasing the final lease stops it. A stale generation cannot acquire, renew, or publish an Instance. The selected Provider never receives ClawChat credentials or a forwarded Liveware principal.
+
+## Workspaces and Sessions
+
+```bash
+clawchat-connect workspace add work /absolute/path/to/project
+clawchat-connect workspace list work
+```
+
+Core Sessions remain fixed to one Agent Binding, exact Runtime capability, and Workspace. Runtime-native Thread IDs remain private to the Runtime Adapter. In ClawChat, use `/new`, `/workspace`, `/sessions`, `/switch`, `/model`, `/mode`, `/cancel`, and `/status` as supported by the exact Runtime.
+
+Opening a native or compatible Web App does not resume the ClawChat Connect Session. Continue work in that product according to its own Session and authentication model.
+
+## Operations and recovery
+
+```bash
 clawchat-connect service status
-clawchat-connect service logs --lines 250
+clawchat-connect doctor
+clawchat-connect plugin list
+clawchat-connect agent list
+clawchat-connect workspace list work
 ```
 
-Common causes:
+Operate in this order:
 
-- **A runtime cannot start:** run `codex --version` or `opencode --version`, confirm the runtime is authenticated, and inspect the initialization error. Set `agents.<id>.runtimeConfig.executablePathOverride` when the selected Runtime Plugin capability should launch a different executable.
-- **A runtime works in a terminal but not in Connect:** reinstall the service so it captures the current `PATH`.
-- **OpenCode reports a version mismatch:** install a supported OpenCode version (`1.18.13` recommended; `1.18.10` retained for compatibility). Other OpenCode versions are not supported.
-- **Configuration changed but behavior did not:** restart the service.
-- **Browser client does not open:** confirm the service is running, then use `clawchat-connect web --no-open` and open the printed URL.
-- **ClawChat does not show `ClawChat Connect`:** run `clawchat-connect status`, then restart the service and inspect its logs for `Liveware Exposure`.
-- **Local Connect works but Liveware does not:** this is intentional failure isolation. Run `clawchat-connect doctor` to verify the official Bundle, then restart the service to retry registration and the tunnel.
-- **A Workspace cannot be removed:** switch away from it and remove any pending/current Session references first.
+1. Check Core service and ClawChat Binding health.
+2. Check the exact Runtime capability and its native dependency.
+3. Check Managed Web App selection and Instance health.
+4. Check the Binding's Liveware Publication separately.
 
-## Local data and security
+An App failure does not stop Runtime turns. A Runtime failure does not authorize App reselection. A Publication failure does not change either one. If the Web App is unavailable, use the CLI to inspect, install, enable, disable, or replace Plugins and to repair Bindings; Core exposes no secret fallback Web administration endpoint.
 
-| Data | Default location |
-| --- | --- |
-| Configuration | `~/.clawchat-connect/config.json` |
-| SQLite state and credentials | `~/.clawchat-connect/state.sqlite` |
-| Service logs on macOS | `~/.clawchat-connect/logs/` |
-| Binding Default Workspaces | `~/.clawchat-connect/workspaces/` |
-| Downloaded media cache | `~/.clawchat-connect/media-cache/` |
-| Native Runtime Threads | Runtime-owned storage, such as `~/.codex/sessions/` for Codex |
+## Security boundary
 
+- Plugin installation is trusted in-process code execution. Install only reviewed Bundles and verify provenance.
+- Official release archives are SHA-256 checked before extraction. Official Plugin entry artifacts and auxiliary assets are release-pinned with SHA-256 SRI.
+- Managed Web App upstreams must be exact loopback HTTP origins. User-supplied endpoints and LAN/native upstreams are rejected.
+- Liveware receives only an opaque upstream lease. Core keeps Plugin authority, Activation Generation fencing, Binding credentials, and managed-resource retirement.
+- Managed Web Apps own their authentication. Core does not inject ClawChat identity, cookies, credentials, or Session state into them.
+- Private Liveware publication remains owner-only, but the exposed App retains its own security model.
+- CLI administration remains available with no App installed and is the recovery surface for broken Web products.
 
-Invite codes are not persisted. Connect does not expose its ClawChat tools to the coding-agent runtime, run an MCP server, or inject MCP configuration. MCP servers already configured in the selected runtime remain under that runtime's ownership.
+See [Installation guide](./install.md), [Architecture](./docs/architecture.md), [Runtime Adapter contract](./docs/runtime-adapters.md), and [Plugin authoring](./docs/plugin-authoring.md).
 
-See [docs/architecture.md](docs/architecture.md) for protocol, reliability, and module design details.
+## Plugin author contract
 
-## Authoring Plugin Bundles
+A complete Managed Web App capability declares:
 
-Install the npm package in a normal TypeScript project, bundle the Plugin entry as self-contained ESM, then create
-one target-specific `.connect-plugin` file:
+- type `managed-web-app` and the current capability interface version;
+- either `nativeRuntimeCapabilityIds` for same-Plugin native ownership or exact `compatibleRuntimes` references;
+- an App-owned Provider that produces a stable native-scope Instance key;
+- an exact loopback upstream plus readiness, health, release, and final-lease shutdown behavior;
+- complete server and browser assets inside its Bundle, with all auxiliary assets integrity-covered;
+- App-scoped Client Extensions, if supported, fenced by the selected App graph and Activation Generation.
+
+Do not proxy another product, reuse a Binding Runtime merely to reduce process count, claim Session continuity, accept an unmanaged endpoint, or expose a partial browser payload.
+
+## Development and release
 
 ```bash
-clawchat-connect-plugin build \
-  --manifest ./connect-plugin.manifest.json \
-  --target linux-x64 \
-  --artifact ./dist/plugin.mjs \
-  --artifact-entry plugin.mjs \
-  --output ./dist/example-linux-x64.connect-plugin
-```
-
-The manifest contains the author-owned fields through `capabilities`; the builder generates `artifacts` and exact
-SHA-256 integrity values from the entry file. Its machine-readable schema is exported as
-`@clawling/clawchat-plugin-connect/plugin-manifest.schema.json`.
-
-The same supported path is available as an API:
-
-```ts
-import { writeConnectPluginBundle } from "@clawling/clawchat-plugin-connect";
-
-await writeConnectPluginBundle({
-  manifest,
-  target: "linux-x64",
-  artifactPath: "./dist/plugin.mjs",
-  artifactEntry: "plugin.mjs",
-  outputPath: "./dist/example-linux-x64.connect-plugin",
-});
-```
-
-Both paths accept only prebuilt ESM. The output is round-tripped through Connect's production Bundle parser and
-integrity verifier before it is returned or written.
-
-## Development
-
-Development requires the Bun version pinned in `package.json`:
-
-```bash
-bun install --frozen-lockfile
+bun install
+bun run dev
 bun run check
-bun run clean && bun run build
+bun run build
 ```
 
-Run the real Codex model-catalog and same-Runtime-Thread model-switch test with:
+`bun run build` emits Core under `dist/src` and official Bundles under `dist/official-plugins`; it does not publish `dist/client` as a root package payload. Official DSH and OpenCode Bundles include their native Managed Web App contributions. The optional Connect Client Bundle includes its complete browser graph. Release archives copy the Bundle directory as-is, so a qualified archive with or without the optional Client remains valid.
 
-```bash
-CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
-```
-
-Run the OpenCode capability and native Session lifecycle integration with:
-
-```bash
-OPENCODE_EXECUTABLE=/absolute/path/to/opencode bun run test:integration:opencode
-```
-
-Create a lighter, unpackaged standalone build with `bun run build:binary`; it builds the Connect executable and self-contained official Plugin Bundles under `dist/`, including the release-verified Liveware Bundle's SHA-256-verified Darwin arm64 companion. Preview the browser client with `bun run preview:web`.
-
-Create the current distributable release on Apple silicon with `bun run build:release`. It writes the Darwin arm64 archive, `install.sh`, `CHANGELOG.md`, and SHA-256 checksums under `build/release/`; other targets fail before the output directory is mutated.
-
-Version tags such as `v0.1.0-beta.8` run the beta release workflow. Tags matching `v*-beta.*` run [`.github/workflows/release-beta.yml`](.github/workflows/release-beta.yml), which checks the tag against `package.json`, runs the release gate on a native Apple silicon runner, and publishes only the qualified Darwin arm64 archive and POSIX installer. Local installed-product qualification is optional and does not block tagging; WorkBuddy Task configuration is never sent to GitHub Actions. After every release asset is published, the workflow advances the `release-channel/latest-beta.txt` pointer used by default installs and updates through the [beta channel artifact](https://github.com/XMethues/clawchat-plugin-connect/releases/download/channel-beta/latest-beta.txt).
+Version tags matching `v*-beta.*` run [the beta release workflow](.github/workflows/release-beta.yml). The workflow publishes the archive, installer support files, checksums, release notes, and the `release-channel/latest-beta.txt` pointer. Local installed-product qualification is optional and does not block tagging.
 
 ## License
 
-ClawChat Connect is available under the [MIT License](LICENSE).
+[MIT](./LICENSE)

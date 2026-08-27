@@ -65,7 +65,7 @@ describe("Runtime Interaction surface routing", () => {
     const clientRequest = mock(async () => ({ kind: "approval" as const, optionId: "approve-once" as const }));
     const sendClawChatMessage = mock(async (_delivery: { fragments: Fragment[] }) => undefined);
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: clientRequest },
+      clientInteractions: { request: clientRequest },
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       sendClawChatMessage,
@@ -87,7 +87,7 @@ describe("Runtime Interaction surface routing", () => {
     const controller = new AbortController();
     const sendClawChatMessage = mock(async (_delivery: { fragments: Fragment[] }) => undefined);
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       sendClawChatMessage,
@@ -118,7 +118,7 @@ describe("Runtime Interaction surface routing", () => {
       throw new Error("Unexpected presentation");
     });
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       sendClawChatMessage,
@@ -138,7 +138,7 @@ describe("Runtime Interaction surface routing", () => {
   it("renders sanitized direct ClawChat approval commands and accepts only the owner's matching reply", async () => {
     const sent: Fragment[][] = [];
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       sendClawChatMessage: async (delivery) => {
@@ -180,7 +180,7 @@ describe("Runtime Interaction surface routing", () => {
       fragments: Fragment[];
     }> = [];
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",
@@ -246,7 +246,7 @@ describe("Runtime Interaction surface routing", () => {
   it("resolves an opaque group responder id before publishing approval confirmation", async () => {
     const sent: Array<{ fragments: Fragment[] }> = [];
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",
@@ -289,7 +289,7 @@ describe("Runtime Interaction surface routing", () => {
       fragments: Fragment[];
     }> = [];
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",
@@ -377,7 +377,7 @@ describe("Runtime Interaction surface routing", () => {
       confirmDelivery = resolve;
     });
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",
@@ -420,7 +420,7 @@ describe("Runtime Interaction surface routing", () => {
       confirmDelivery = resolve;
     });
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",
@@ -506,7 +506,7 @@ describe("Runtime Interaction surface routing", () => {
       rejectDelivery = reject;
     });
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",
@@ -542,7 +542,7 @@ describe("Runtime Interaction surface routing", () => {
   it("does not guess between multiple compatible group approvals", async () => {
     const sent: Array<{ fragments: Fragment[] }> = [];
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",
@@ -589,7 +589,7 @@ describe("Runtime Interaction surface routing", () => {
   it("reserves group response commands when no Interaction is pending", async () => {
     const sent: Array<{ fragments: Fragment[] }> = [];
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",
@@ -614,7 +614,7 @@ describe("Runtime Interaction surface routing", () => {
   it("rejects non-canonical approval command casing without settling", async () => {
     const sent: Array<{ fragments: Fragment[] }> = [];
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",
@@ -656,7 +656,7 @@ describe("Runtime Interaction surface routing", () => {
   it("collects multi-step Agent answers in ClawChat before resuming Codex", async () => {
     const sent: Fragment[][] = [];
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       sendClawChatMessage: async (delivery) => {
@@ -723,7 +723,7 @@ describe("Runtime Interaction surface routing", () => {
   it("accepts an explicit custom answer when the current choice allows Other", async () => {
     const sent: Fragment[][] = [];
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       sendClawChatMessage: async (delivery) => {
@@ -772,7 +772,7 @@ describe("Runtime Interaction surface routing", () => {
     const sent: Array<{ chatId: string; fragments: Fragment[] }> = [];
     const controller = new AbortController();
     const router = new RuntimeInteractionRouter({
-      clientPort: { request: mock() } as RuntimeInteractionPort,
+      clientInteractions: { request: mock() } as RuntimeInteractionPort,
       ownerUserId: "owner-1",
       ownerConversationId: "owner-conversation",
       agentUserId: "agent-1",

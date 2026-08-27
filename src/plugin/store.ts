@@ -701,6 +701,7 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
     assertOnlyKeys(candidate, ["type", "id", "interfaceVersion"], `Plugin ${pluginId} Host Capability dependency`);
     if (
       candidate.id !== "runtime-provider" &&
+      candidate.id !== "managed-web-app-provider" &&
       candidate.id !== "durable-state" &&
       candidate.id !== "exposure-provider"
     ) {
@@ -727,16 +728,32 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
   const capabilityIds = new Set<string>();
   const capabilities = value.capabilities.map((candidate): ConnectPluginCapabilityManifest => {
     if (!isRecord(candidate)) throw new Error(`Plugin ${pluginId} capability is malformed`);
-    if (candidate.type !== "runtime" && candidate.type !== "exposure" && candidate.type !== "client-extension") {
+    if (
+      candidate.type !== "runtime" &&
+      candidate.type !== "managed-web-app" &&
+      candidate.type !== "exposure" &&
+      candidate.type !== "client-extension"
+    ) {
       throw new Error(`Plugin ${pluginId} declares unsupported capability type: ${String(candidate.type)}`);
     }
     assertOnlyKeys(
       candidate,
       candidate.type === "runtime"
         ? ["id", "type", "interfaceVersion", "family", "configurationSchema", "durableState"]
-        : candidate.type === "client-extension"
-          ? ["id", "type", "interfaceVersion", "configurationSchema", "browser", "durableState"]
-          : ["id", "type", "interfaceVersion", "configurationSchema", "durableState"],
+        : candidate.type === "managed-web-app"
+          ? [
+              "id",
+              "type",
+              "interfaceVersion",
+              "configurationSchema",
+              "displayName",
+              "description",
+              "nativeRuntimeCapabilityIds",
+              "compatibleRuntimes",
+            ]
+          : candidate.type === "client-extension"
+            ? ["id", "type", "interfaceVersion", "configurationSchema", "managedWebApp", "browser", "durableState"]
+            : ["id", "type", "interfaceVersion", "configurationSchema", "durableState"],
       `Plugin ${pluginId} ${candidate.type} capability`,
     );
     const id = requireIdentity(candidate.id, "Capability ID");
@@ -750,9 +767,11 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
     const requiredHostCapability =
       candidate.type === "runtime"
         ? "runtime-provider"
-        : candidate.type === "exposure"
-          ? "exposure-provider"
-          : undefined;
+        : candidate.type === "managed-web-app"
+          ? "managed-web-app-provider"
+          : candidate.type === "exposure"
+            ? "exposure-provider"
+            : undefined;
     if (requiredHostCapability && !dependencyIds.has(requiredHostCapability)) {
       throw new Error(`Plugin ${pluginId}/${id} must declare Host Capability ${requiredHostCapability}`);
     }
@@ -780,12 +799,77 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
         ...(durableState ? { durableState } : {}),
       };
     }
+    if (candidate.type === "managed-web-app") {
+      if (!Array.isArray(candidate.nativeRuntimeCapabilityIds) || !Array.isArray(candidate.compatibleRuntimes)) {
+        throw new Error(
+          `Plugin ${pluginId}/${id} Managed Web App must declare nativeRuntimeCapabilityIds and compatibleRuntimes`,
+        );
+      }
+      const nativeRuntimeCapabilityIds = candidate.nativeRuntimeCapabilityIds.map((runtimeId) =>
+        requireIdentity(runtimeId, `Plugin ${pluginId}/${id} native Runtime capability ID`),
+      );
+      if (new Set(nativeRuntimeCapabilityIds).size !== nativeRuntimeCapabilityIds.length) {
+        throw new Error(`Plugin ${pluginId}/${id} declares duplicate native Runtime capability IDs`);
+      }
+      const compatibleRuntimes = candidate.compatibleRuntimes.map((runtimeRef) => {
+        if (!isRecord(runtimeRef)) {
+          throw new Error(`Plugin ${pluginId}/${id} compatible Runtime reference is malformed`);
+        }
+        assertOnlyKeys(runtimeRef, ["pluginId", "capabilityId"], `Plugin ${pluginId}/${id} compatible Runtime`);
+        const runtimePluginId = requireIdentity(runtimeRef.pluginId, "Compatible Runtime Plugin ID");
+        const capabilityId = requireIdentity(runtimeRef.capabilityId, "Compatible Runtime capability ID");
+        if (runtimePluginId === pluginId) {
+          throw new Error(
+            `Plugin ${pluginId}/${id} must declare same-Bundle Runtime ${capabilityId} as native, not compatible`,
+          );
+        }
+        return { pluginId: runtimePluginId, capabilityId };
+      });
+      const compatibleIdentities = compatibleRuntimes.map(
+        (runtime) => `${runtime.pluginId}\0${runtime.capabilityId}`,
+      );
+      if (new Set(compatibleIdentities).size !== compatibleIdentities.length) {
+        throw new Error(`Plugin ${pluginId}/${id} declares duplicate compatible Runtime references`);
+      }
+      if (nativeRuntimeCapabilityIds.length === 0 && compatibleRuntimes.length === 0) {
+        throw new Error(`Plugin ${pluginId}/${id} Managed Web App must support at least one exact Runtime`);
+      }
+      return {
+        id,
+        type: "managed-web-app",
+        interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+        configurationSchema,
+        displayName: requireText(candidate.displayName, `Plugin ${pluginId}/${id} Managed Web App display name`),
+        description: requireText(candidate.description, `Plugin ${pluginId}/${id} Managed Web App description`),
+        nativeRuntimeCapabilityIds,
+        compatibleRuntimes,
+      };
+    }
     if (candidate.type === "client-extension") {
+      if (!isRecord(candidate.managedWebApp)) {
+        throw new Error(`Plugin ${pluginId}/${id} Client Extension Managed Web App reference is malformed`);
+      }
+      assertOnlyKeys(
+        candidate.managedWebApp,
+        ["pluginId", "capabilityId"],
+        `Plugin ${pluginId}/${id} Client Extension Managed Web App`,
+      );
+      const managedWebApp = {
+        pluginId: requireIdentity(
+          candidate.managedWebApp.pluginId,
+          `Plugin ${pluginId}/${id} Client Extension Managed Web App Plugin ID`,
+        ),
+        capabilityId: requireIdentity(
+          candidate.managedWebApp.capabilityId,
+          `Plugin ${pluginId}/${id} Client Extension Managed Web App capability ID`,
+        ),
+      };
       return {
         id,
         type: "client-extension",
         interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
         configurationSchema,
+        managedWebApp,
         browser: validateClientExtensionBrowserManifest(candidate.browser, pluginId, id),
         ...(durableState ? { durableState } : {}),
       };
@@ -798,6 +882,31 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
       ...(durableState ? { durableState } : {}),
     };
   });
+  const runtimeCapabilityIds = new Set(
+    capabilities.filter((capability) => capability.type === "runtime").map((capability) => capability.id),
+  );
+  for (const capability of capabilities) {
+    if (capability.type !== "managed-web-app") continue;
+    for (const runtimeCapabilityId of capability.nativeRuntimeCapabilityIds) {
+      if (!runtimeCapabilityIds.has(runtimeCapabilityId)) {
+        throw new Error(
+          `Plugin ${pluginId}/${capability.id} declares missing native Runtime capability ${runtimeCapabilityId}`,
+        );
+      }
+    }
+  }
+  for (const capability of capabilities) {
+    if (capability.type !== "client-extension" || capability.managedWebApp.pluginId !== pluginId) continue;
+    const target = capabilities.find(
+      (candidate) =>
+        candidate.id === capability.managedWebApp.capabilityId && candidate.type === "managed-web-app",
+    );
+    if (!target) {
+      throw new Error(
+        `Plugin ${pluginId}/${capability.id} targets missing same-Bundle Managed Web App ${capability.managedWebApp.capabilityId}`,
+      );
+    }
+  }
   if (!Array.isArray(value.artifacts) || value.artifacts.length === 0) {
     throw new Error("Connect Plugin must declare at least one target artifact");
   }
@@ -1222,7 +1331,10 @@ function validateCapabilityConfigurations(
 ): Readonly<Record<string, ConnectPluginConfiguration>> {
   if (!isRecord(value)) throw new Error(`Plugin ${manifest.pluginId} capability configurations must be a JSON object`);
   const capabilities = manifest.capabilities.filter(
-    (capability) => capability.type === "exposure" || capability.type === "client-extension",
+    (capability) =>
+      capability.type === "managed-web-app" ||
+      capability.type === "exposure" ||
+      capability.type === "client-extension",
   );
   const declared = new Set(capabilities.map((capability) => capability.id));
   for (const capabilityId of Object.keys(value)) {
@@ -1236,7 +1348,13 @@ function validateCapabilityConfigurations(
       validatePluginConfiguration(
         capability.configurationSchema,
         value[capability.id] ?? {},
-        `Plugin ${manifest.pluginId}/${capability.id} ${capability.type === "exposure" ? "Exposure" : "Client Extension"} configuration`,
+        `Plugin ${manifest.pluginId}/${capability.id} ${
+          capability.type === "managed-web-app"
+            ? "Managed Web App"
+            : capability.type === "exposure"
+              ? "Exposure"
+              : "Client Extension"
+        } configuration`,
       ),
     ]),
   );

@@ -23,9 +23,19 @@ import {
   CONNECT_PLUGIN_MANIFEST_VERSION,
 } from "../src/plugin/sdk";
 import { currentConnectPluginTarget, installPluginBundle, setInstalledPluginStatus } from "../src/plugin/store";
+import {
+  CONNECT_CLIENT_MANAGED_WEB_APP_CAPABILITY_ID,
+  CONNECT_CLIENT_PLUGIN_ID,
+} from "../src/plugin/official/connect-client-manifest";
+import { ConnectBindingLivewarePublicationStateStore } from "../src/plugin/official/liveware-publication-state";
 import type { SelectableRuntimeThread } from "../src/runtime/types";
 import { WorkBuddyDiscoveryError, type WorkBuddyDiscoveryFailureCode } from "../src/runtime/workbuddy-task-discovery";
 import { runConnectCli } from "../src/service/cli";
+import {
+  CORE_CLIENT_PATH,
+  CORE_CONTROL_CONFIG_HEADER,
+  CORE_CONTROL_ORIGIN,
+} from "../src/service/core-control";
 import { CONNECT_VERSION } from "../src/service/version";
 import type { AgentBindingConfig } from "../src/types";
 import { WorkspaceCatalog } from "../src/workspaces/workspaces";
@@ -150,6 +160,41 @@ export default {
           type: "exposure",
           interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
           configurationSchema: { type: "object", additionalProperties: false },
+        },
+      ],
+      artifacts: [{ target: currentConnectPluginTarget(), entry: "plugin.mjs", integrity }],
+    },
+    files: { "plugin.mjs": { encoding: "utf8", content: source } },
+  };
+}
+function cliClientBundle(): ConnectPluginBundleV1 {
+  const source = "export default { activate() {} };";
+  const integrity = `sha256-${createHash("sha256").update(source).digest("base64")}`;
+  return {
+    format: CONNECT_PLUGIN_BUNDLE_FORMAT,
+    manifest: {
+      manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
+      interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
+      pluginId: CONNECT_CLIENT_PLUGIN_ID,
+      version: "1.0.0",
+      dependencies: [
+        {
+          type: "host",
+          id: "managed-web-app-provider",
+          interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+        },
+      ],
+      installationConfigurationSchema: { type: "object", additionalProperties: false },
+      capabilities: [
+        {
+          id: CONNECT_CLIENT_MANAGED_WEB_APP_CAPABILITY_ID,
+          type: "managed-web-app",
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          displayName: "ClawChat Connect Client",
+          description: "ClawChat Connect's local browser client",
+          configurationSchema: { type: "object", additionalProperties: false },
+          nativeRuntimeCapabilityIds: [],
+          compatibleRuntimes: [{ pluginId: CLI_PLUGIN_ID, capabilityId: "exact-runtime" }],
         },
       ],
       artifacts: [{ target: currentConnectPluginTarget(), entry: "plugin.mjs", integrity }],
@@ -415,8 +460,8 @@ describe("runConnectCli", () => {
 
     await expect(
       runConnectCli(["config", "set", "clientHost", "0.0.0.0", "--config", path], output.deps),
-    ).resolves.toBe(0);
-    await expect(loadConfig(path)).resolves.toMatchObject({ clientHost: "0.0.0.0" });
+    ).resolves.toBe(1);
+    expect(output.stderr.join("")).toContain("Unsupported config key: clientHost");
 
     await expect(
       runConnectCli(
@@ -438,7 +483,7 @@ describe("runConnectCli", () => {
     expect(output.stdout).toEqual([`${JSON.stringify(stateDbPath)}\n`]);
   });
 
-  it("reports the selected Plugin Runtime capability and latest bounded operator diagnostic", async () => {
+  it("reports the headless Runtime and queries Managed Web App state through Core control", async () => {
     const path = await tempConfig();
     const config = defaultConfig();
     config.defaultAgent = "desktop";
@@ -456,11 +501,79 @@ describe("runConnectCli", () => {
     await store.setRuntimeConnectionStatus("desktop", false, "Runtime temporarily unavailable.");
     await store.close();
     const output = io();
+    const pluginManagementFetch = mock(async (_input: string | URL | Request, _init?: RequestInit) =>
+      Response.json({ bindingId: "desktop", selection: null, instance: null }),
+    );
 
-    await expect(runConnectCli(["status", "--config", path], output.deps)).resolves.toBe(0);
+    await expect(
+      runConnectCli(["status", "--config", path], { ...output.deps, pluginManagementFetch }),
+    ).resolves.toBe(0);
 
     expect(output.stdout.join("")).toContain(`runtime capability: example (${CLI_PLUGIN_ID}/exact-runtime)`);
     expect(output.stdout.join("")).toContain("recent diagnostic: Runtime temporarily unavailable.");
+    expect(output.stdout.join("")).toContain("managed app: absence (no eligible app)");
+    expect(output.stdout.join("")).toContain("app instance: absence");
+    expect(pluginManagementFetch).toHaveBeenCalledWith(
+      `${CORE_CONTROL_ORIGIN}/core/v1/status?bindingId=desktop`,
+      { headers: { [CORE_CONTROL_CONFIG_HEADER]: path } },
+    );
+  });
+
+  it("prints the exact durable Publication transition with secret-safe diagnostics", async () => {
+    const path = await tempConfig();
+    const config = defaultConfig();
+    config.defaultAgent = "desktop";
+    config.agents = {
+      desktop: createAgentBinding({
+        pluginId: CLI_PLUGIN_ID,
+        capabilityId: "exact-runtime",
+        configuration: { endpoint: "https://runtime.example" },
+      }),
+    };
+    config.stateDbPath = `${path}.sqlite`;
+    await saveConfig(config, path);
+    await installCliPlugin(path);
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    await new ConnectBindingLivewarePublicationStateStore(
+      store,
+      async () => undefined,
+      3,
+    ).compareAndSwap("desktop", null, {
+      bindingId: "desktop",
+      activationGeneration: 3,
+      desired: "private",
+      status: "degraded",
+      transition: "bind-tunnel",
+      selectedApp: {
+        pluginId: "example.web",
+        capabilityId: "web",
+        activationGeneration: 2,
+        instanceKey: "desktop-web",
+        displayName: "Example Web",
+        description: "Example browser interface",
+      },
+      correlationKey: "Example Web · desktop",
+      appId: "app-desktop",
+      publicUrl: null,
+      registrationId: null,
+      diagnostic: "Tunnel failed token=private-value",
+    });
+    await store.close();
+    const output = io();
+
+    await expect(
+      runConnectCli(["status", "--config", path], {
+        ...output.deps,
+        pluginManagementFetch: async () =>
+          Response.json({ bindingId: "desktop", selection: null, instance: null }),
+      }),
+    ).resolves.toBe(0);
+
+    const rendered = output.stdout.join("");
+    expect(rendered).toContain("publication: degraded");
+    expect(rendered).toContain("publication transition: bind-tunnel");
+    expect(rendered).toContain("publication diagnostic: Tunnel failed token=[redacted]");
+    expect(rendered).not.toContain("private-value");
   });
 
   it("checks the remaining mandatory installation diagnostics", async () => {
@@ -562,28 +675,57 @@ describe("runConnectCli", () => {
     expect(output.stdout.join("")).not.toContain("run [--config");
   });
 
-  it("opens the fixed loopback Connect Client URL", async () => {
+  it("reports an actionable absence instead of opening a hidden Core browser listener", async () => {
     const path = await tempConfig();
     const config = defaultConfig();
     config.stateDbPath = `${path}.sqlite`;
-    config.clientPort = 49_123;
     await saveConfig(config, path);
     const output = io();
     const openUrl = mock(async (_url: string) => undefined);
 
-    await expect(runConnectCli(["web", "--config", path], { ...output.deps, openUrl })).resolves.toBe(0);
-    expect(openUrl).toHaveBeenCalledTimes(1);
-    expect(openUrl).toHaveBeenCalledWith("http://127.0.0.1:49123/");
-    expect(output.stdout.join("")).toContain("Connect Client URL: http://127.0.0.1:49123/");
+    await expect(runConnectCli(["web", "--config", path], { ...output.deps, openUrl })).resolves.toBe(1);
+    expect(openUrl).not.toHaveBeenCalled();
+    expect(output.stdout.join("")).not.toContain("Connect Client URL:");
+    expect(output.stderr.join("")).toContain(
+      "Connect Client is unavailable: install and enable the optional clawling.web.connect-client Plugin",
+    );
+  });
 
-    await expect(runConnectCli(["web", "--no-open", "--config", path], { ...output.deps, openUrl })).resolves.toBe(0);
-    expect(openUrl).toHaveBeenCalledTimes(1);
-
-    config.clientHost = "0.0.0.0";
+  it("acquires and opens the optional Client through Core control when Liveware is off", async () => {
+    const path = await tempConfig();
+    const config = upsertAgentBinding(
+      { ...defaultConfig(), stateDbPath: `${path}.sqlite` },
+      "desktop",
+      createAgentBinding({
+        pluginId: CLI_PLUGIN_ID,
+        capabilityId: "exact-runtime",
+        configuration: { endpoint: "https://runtime.example" },
+      }),
+    );
     await saveConfig(config, path);
-    output.stdout.length = 0;
-    await expect(runConnectCli(["web", "--no-open", "--config", path], { ...output.deps, openUrl })).resolves.toBe(0);
-    expect(output.stdout.join("")).toContain("LAN Host mode is enabled on 0.0.0.0:49123");
+    await installCliPlugin(path, cliClientBundle());
+    const output = io();
+    const openUrl = mock(async (_url: string) => undefined);
+    const fetchTarget = mock(async () => Response.json({ origin: "http://127.0.0.1:47999" }));
+
+    await expect(
+      runConnectCli(["web", "--config", path], {
+        ...output.deps,
+        openUrl,
+        pluginManagementFetch: fetchTarget,
+      }),
+    ).resolves.toBe(0);
+
+    expect(fetchTarget).toHaveBeenCalledWith(`${CORE_CONTROL_ORIGIN}${CORE_CLIENT_PATH}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [CORE_CONTROL_CONFIG_HEADER]: path,
+      },
+      body: JSON.stringify({ bindingId: "desktop" }),
+    });
+    expect(openUrl).toHaveBeenCalledWith("http://127.0.0.1:47999/");
+    expect(output.stdout.join("")).toContain("Connect Client URL: http://127.0.0.1:47999/");
   });
 
   it("manages one native background service for the complete Connect installation", async () => {

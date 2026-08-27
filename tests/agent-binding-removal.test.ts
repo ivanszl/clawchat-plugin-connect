@@ -119,7 +119,18 @@ describe("Agent Binding removal", () => {
     await expect(store.getRuntimeStatus("work")).resolves.toBeNull();
     await expect(publicationState.read("work")).resolves.toBeNull();
     await expect(publicationState.read("personal")).resolves.toMatchObject({
-      value: { appId: "app-personal", bindingId: "personal" },
+      value: {
+        appId: "app-personal",
+        bindingId: "personal",
+        selectedApp: {
+          pluginId: "fixture.managed-web-app",
+          capabilityId: "web",
+          activationGeneration: 1,
+          instanceKey: "managed-web-app:personal",
+          displayName: "Fixture Web",
+          description: "Fixture browser interface",
+        },
+      },
     });
     await expect(store.getClientCommandOutcome("work-command")).resolves.toEqual({ state: "missing" });
     await expect(store.getClientCommandOutcome("personal-command")).resolves.toMatchObject({ state: "pending" });
@@ -133,6 +144,80 @@ describe("Agent Binding removal", () => {
       sessionRef: personalSession.sessionRef,
     });
     await expect(store.listWorkspaces()).resolves.toHaveLength(1);
+    await store.close();
+  });
+
+  it("retains the Binding credential, config, durable retirement transition, and service retry path after cleanup fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-remove-binding-retry-"));
+    const configPath = join(directory, "config.json");
+    const config = defaultConfig();
+    config.agents = { work: pluginBinding() };
+    config.defaultAgent = "work";
+    config.stateDbPath = join(directory, "state.sqlite");
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    const publicationState = new ConnectBindingLivewarePublicationStateStore(store);
+    await store.upsertActivation(activation("work"));
+    await publicationState.compareAndSwap("work", null, publication("work"));
+    const actions: string[] = [];
+
+    await expect(
+      removeAgentBinding(
+        { agentId: "work", configPath },
+        {
+          store,
+          getServiceStatus: async () => {
+            actions.push("status");
+            return { running: true };
+          },
+          stopService: async () => {
+            actions.push("stop");
+          },
+          startService: async () => {
+            actions.push("start");
+          },
+          retireLivewarePublications: async () => {
+            actions.push("retire");
+            const current = await publicationState.read("work");
+            if (!current) throw new Error("expected publication state");
+            await publicationState.compareAndSwap("work", current.revision, {
+              ...current.value,
+              desired: "retired",
+              status: "retiring",
+              transition: "delete-app",
+              diagnostic: "remote App deletion failed",
+            });
+            throw new Error("remote App deletion failed");
+          },
+        },
+      ),
+    ).rejects.toThrow("remote App deletion failed");
+
+    expect(actions).toEqual(["status", "stop", "retire", "start"]);
+    await expect(loadConfig(configPath)).resolves.toMatchObject({
+      defaultAgent: "work",
+      agents: { work: pluginBinding() },
+    });
+    await expect(store.getActivation("work")).resolves.toMatchObject({
+      localAgentId: "work",
+      accessToken: "token-work",
+    });
+    await expect(publicationState.read("work")).resolves.toMatchObject({
+      value: {
+        desired: "retired",
+        status: "retiring",
+        transition: "delete-app",
+        diagnostic: "remote App deletion failed",
+        selectedApp: {
+          pluginId: "fixture.managed-web-app",
+          capabilityId: "web",
+          activationGeneration: 1,
+          instanceKey: "managed-web-app:work",
+          displayName: "Fixture Web",
+          description: "Fixture browser interface",
+        },
+      },
+    });
     await store.close();
   });
 });
@@ -179,6 +264,14 @@ function publication(bindingId: string) {
     desired: "private" as const,
     status: "active" as const,
     transition: null,
+    selectedApp: {
+      pluginId: "fixture.managed-web-app",
+      capabilityId: "web",
+      activationGeneration: 1,
+      instanceKey: `managed-web-app:${bindingId}`,
+      displayName: "Fixture Web",
+      description: "Fixture browser interface",
+    },
     correlationKey: `publication:${bindingId}`,
     appId: `app-${bindingId}`,
     publicUrl: `https://${bindingId}.apps.example`,

@@ -1,261 +1,212 @@
 # ClawChat Connect Architecture
 
-## Process model
+## System boundary
 
-`clawchat-connect` is a Bun-native CLI package whose public lifecycle interface is the native per-user background service:
+ClawChat Connect is a Core service and trusted Plugin host, not a unified Web product:
 
 ```text
-clawchat-connect service install|start|stop|restart|status|logs
-  launchd / systemd user service / Windows current-user scheduled task
-    every activated Agent Binding
-      ClawChat Protocol v2 WebSocket client
-      inbound message normalization
-      chat command routing
-      Workspace/Session target resolution
-      exact Runtime Plugin capability dispatch
-      materialized message replies
-    Core-owned Shared Client Gateway → Connect Client SPA
-    optional official Liveware Plugin → one private Publication per Binding → the same Shared Client Gateway
-
-clawchat-connect profile update --agent <bindingId> [fields]
-  authenticated ClawChat Profile update
-
-clawchat-connect web
-  open the configured local Connect Client URL
+ClawChat
+  │ Protocol v2
+  ▼
+Connect Core
+  ├─ Installation Owner / Agent Bindings / credentials
+  ├─ Workspace Catalogs / Connect Sessions / Runtime dispatch
+  ├─ Plugin install, lock, Activation Generation, Durable State
+  ├─ CLI administration and recovery
+  └─ Managed Web App selection and opaque upstream leasing
+       │
+       ├─ Runtime Plugin native Managed Web App
+       ├─ compatible Managed Web App Plugin
+       └─ no App (valid)
+            │ optional opaque lease
+            ▼
+       Liveware Web App Exposure
 ```
 
-The generated native service definition owns the internal process entry. Connect does not expose a foreground run command.
+Core owns no mandatory browser application, Shared Client Gateway, hidden fallback endpoint, Web authentication scheme, or installation-wide Client Extension graph.
 
-Connect does not expose tools, run an MCP server, or inject an MCP server into Codex Sessions.
+## Independent products and health domains
 
-## Domain model
+Four domains must remain independent:
+
+1. **Core and Binding health**: service lifecycle, ClawChat connection, credentials, persistence, command routing.
+2. **Runtime health**: the exact Runtime Plugin capability, its Binding-scoped process/protocol, and native dependency.
+3. **Managed Web App health**: a Provider-owned Web server, browser protocol/assets, authentication, Sessions, Interactions, and reconnect behavior.
+4. **Publication health**: a Binding-owned Liveware App, tunnel, registration, and retirement lifecycle.
+
+Failure in one domain does not rewrite another domain. App failure does not stop Runtime turns or cause App reselection. Runtime failure does not stop an independently keyed App. Publication failure changes neither the App selection nor Runtime. A no-App Binding is healthy when its other domains are healthy.
+
+Products do not promise Session continuity. Connect Sessions and Runtime Threads support the ClawChat path. DSH Web, OpenCode Web, and the optional Connect Client each retain their own Session and Interaction state. Sharing a Workspace path is not transfer of conversation, tool state, authentication, or reconnect state.
+
+## Core domain model
 
 ```text
 Installation Owner
-      │
-      ├── Agent Binding ── exact pluginId + capabilityId ── Binding Runtime Instance
-      │         │
-      │         └── Binding-scoped Workspace Catalog ── Workspace Ref
-      │
-      └── Session Intent ── first ordinary message ── Session ── Runtime Thread
-                              exact Binding + Workspace
+  └─ Agent Binding
+      ├─ exact Runtime Ref: pluginId + capabilityId
+      ├─ Binding credentials
+      ├─ Binding-scoped Workspace Catalog
+      ├─ Connect Sessions → private Runtime Thread IDs
+      └─ optional Binding Liveware Publication
+
+Installed Plugin
+  └─ selected version + validated configuration + Activation Generation
+      ├─ Runtime capability
+      ├─ Managed Web App capability
+      ├─ Exposure capability
+      └─ App-scoped Client Extension capability
 ```
 
-- The first successful Agent Binding activation establishes one **Installation Owner**. Later activations must return the same ClawChat owner identity.
-- An **Agent Binding** is a locally named association between Connect and one exact installed Runtime Plugin capability. Its persisted provider identity is `pluginId` plus `capabilityId`.
-- A **Runtime Adapter** is one Binding-scoped instance created by that capability provider. Runtime family is metadata; several installed capabilities may advertise the same family.
-- A **Workspace Catalog** belongs to one Agent Binding. Core creates one Default Workspace, assigns stable Workspace Refs, and merges Runtime Adapter-reported Workspace identities without sharing identity across Bindings.
-- A **Session Intent** is the pending Workspace Ref, mode, model, reasoning effort, and optional name for the next Session. It has no Session Ref or Runtime Thread.
-- A **Session** owns Connect conversation continuity and remains fixed to one Agent Binding, one Runtime Adapter capability, and exactly one Workspace. It may have a human-readable Session Name and has a stable eight-character Session Ref.
-- A **Runtime Thread** is the external runtime's resumable conversation ID persisted on one Session.
-- A **Session Ref** is the Connect-owned selector for a Session or discovered Runtime Thread; native IDs are never used as user-facing selectors.
+An Agent Binding never selects a Runtime by family alone. The exact Plugin and capability own configuration validation and Provider construction. A Connect Session remains fixed to one Binding, exact Runtime capability, and Workspace. Runtime family is presentation metadata, not provider identity.
 
-`/new` and `/workspace <workspace-ref>` create or replace a Session Intent. The first ordinary ClawChat message materializes it. Connect Client may create an empty Session only after the server validates the selected Binding and Workspace Ref. Adopting a discovered Runtime Thread creates a Session immediately. Continuing with another Agent creates a new Session against a Workspace resolved independently in the target Binding; it transfers no conversation or tool context and leaves the original Session unchanged.
+## Managed Web App selection
 
-## Plugin composition and activation
+For an exact Runtime capability, Core computes one stable selection:
 
-One Cordis root owns mandatory internal modules and user-installed Plugin lifecycles. Persistence initializes first; Workspace Catalog, Session Continuity, Session Queue, Client Interface, Plugin Host, and transport surfaces do not have a parallel manual composition path.
+1. choose a same-Plugin Managed Web App whose `nativeRuntimeCapabilityIds` contains the Runtime capability ID;
+2. otherwise choose an installed Managed Web App whose `compatibleRuntimes` contains the exact Runtime `pluginId` and `capabilityId`;
+3. otherwise select no App.
 
-Plugin replacement uses one prepare/commit/start boundary. Import, contribution registration, configuration validation, and copied Durable State migration run without published contributions or external-effect capabilities. Core then atomically commits the selected version, validated configuration, migrated state revision, and next Activation Generation; old-generation dispatch is revoked before disposal, and only the committed generation may register providers, mutate Durable State, publish remote resources, or contribute Client effects. A precommit failure preserves the old generation. A postcommit disposal or start failure leaves the selected generation visible as erroneous and does not restore revoked authority.
+A native contribution always wins over a compatibility contribution. Selection changes only when the installed/active Plugin graph or validated configuration changes. Readiness and transient health never affect selection, so Core cannot silently switch products while a user is working.
 
-The public SDK exposes Runtime Adapter, Client Exposure, and Client Extension capabilities through a narrow Plugin Context; it exposes neither raw Cordis nor mutable Core domain state. Every supported Bundle source uses the same validation and Activation Generation fence. Plugin installation is trusted in-process code execution, not an OS sandbox, so Catalog provenance is discovery metadata rather than capability authorization.
+Official native Providers:
 
-## Client Exposure and Liveware publication
+- the DeepSeek Harness Runtime Bundle contributes a DSH Web Provider that owns a separate `dsh web` process;
+- the OpenCode Runtime Bundle contributes an OpenCode Web Provider that owns a separate `opencode web` process.
 
-Core owns one installation-wide Shared Client Gateway and gives every active Client Exposure a generation-fenced Core-mediated Client fetch facade without gateway configuration, raw credentials, or forwarded-principal authority. The official Liveware Plugin additionally manages one independent **Binding Liveware Publication** per activated Binding. Each Publication has its own correlation key, private App, tunnel, registration, and persisted lifecycle state; creation recovery performs authoritative correlation lookup before retry. Retirement intent is durable and prevents automatic reprovisioning until retirement completes.
+Those Web processes are independent of the Binding Runtime processes used for ClawChat execution. They retain upstream authentication, Sessions, Interactions, and presentation.
 
-The capability configuration accepts only `private` or `off`. `private` reconciles one owner-only Publication per Binding; `off` retires all Publications and releases the gateway lease. Removing one Binding retires only its Publication. The loopback Client remains available when the optional Plugin is missing or erroneous.
+The optional `clawling.web.connect-client/connect-client` capability is a complete compatible Managed Web App for exact Codex and WorkBuddy capabilities. It is neither a Core module nor implicitly installed with those Runtimes.
 
-## Runtime Adapter seam
+## Managed Web App Provider contract
 
-The shared runtime seam lives in `src/runtime/types.ts`:
+A Provider is activated as trusted Plugin code through the public Plugin SDK. For an eligible Runtime scope it must:
+
+- derive a stable **Instance key** from Provider-owned native scope, not from a transient port and not necessarily from a Binding;
+- start or adopt the complete App product independently of the Binding Runtime;
+- return one exact `http://127.0.0.1:<port>` upstream;
+- expose readiness and health without translating App semantics into Runtime health;
+- reference-count leases and stop the Instance after the final release;
+- fence all acquisition and release work to the committed Plugin Activation Generation.
+
+Several Bindings may lease one Provider Instance when they resolve to the same native scope. Every Binding still receives an independent Publication. Core validates loopback origin syntax and lease generation but treats the upstream as opaque: it does not proxy product APIs, inject credentials, reinterpret cookies, or forward a ClawChat principal.
+
+An unavailable Provider returns failure through App health. Core does not insert a compatibility proxy or fallback page. Liveware owns unavailable-upstream presentation for a Publication whose selected App cannot currently serve.
+
+## Liveware as Web App Exposure
+
+The official Liveware Plugin contributes an `exposure` capability. It consumes the Binding's selected App lease and manages one independent private Publication per eligible activated Binding:
 
 ```text
-Installed Runtime Plugin Bundle
-      ↓ exact pluginId + capabilityId
-RuntimeAdapterRegistry → per-Binding Runtime Adapter → private native runtime protocol
+Binding
+  └─ Publication correlation key
+      ├─ private ClawChat App
+      ├─ Liveware tunnel → opaque loopback upstream
+      ├─ ClawChat Liveware registration
+      └─ durable reconcile / retirement state
 ```
 
-- `src/plugin/host.ts` activates installed Plugin Bundles and publishes their exact Runtime capability providers.
-- `src/runtime/registry.ts` starts empty, keys providers by `pluginId/capabilityId`, derives Runtime family from provider
-  metadata, and owns one Adapter instance per Agent Binding.
-- Runtime-specific process implementations are private to the official Plugin Bundle entry bridges.
-- `src/runtime/codex-rollout.ts` supplements persisted app-server history with displayable raw tool calls omitted by that API. It is a read-only, pinned-version fallback inside the Codex Adapter and never exposes raw rollout records across the runtime seam.
-- The Codex Runtime Adapter filters child threads from discovery and translates parent `subAgentActivity` items plus
-  child history into recursive Runtime Activities.
-- The Connect Service composition root creates and closes one initially empty Runtime Adapter registry. Installed Plugin Bundles publish providers before surfaces start. Binding runtimes close only their own Sessions, while Bundle replacement quiesces and replaces every dependent Binding instance.
-- `ConnectRuntime` depends only on the provider-backed Runtime Adapter registry and has no runtime-specific construction path.
-- The planned DeepSeek Harness Adapter starts one Binding-owned DSH process and mounts its paired Bridge through the final
-  `--patch` layer. Two inherited anonymous pipes carry the Connect-owned, versioned protocol; DSH stdout/stderr remain
-  diagnostics. The selected Profile must itself publish the native services it claims. DSH rc.7 discovery is read-only
-  for persisted Sessions: they remain visible, but adoption/restart-resume is unavailable because the current published graph has no
-  cross-process Session owner/busy signal and permits two processes to resume the same Session.
-- `ConnectRuntime` owns turn queueing and exposes a narrow lifecycle claim that drains/cancels work and releases the
-  in-memory handle. Session Continuity retains lifecycle validation, journaling, native mutation, and local commit.
-- Runtime Adapters may expose a runtime-neutral model catalog. Connect resolves model inheritance as Session → Agent Binding → Runtime default. Reasoning effort resolves independently as strict Session effort → valid Agent Binding effort → the effective model's advertised default. Codex-native `model/list` pagination stays private to the Codex Adapter.
-- ClawChat media fragments remain structured across `ConnectRuntimePrompt`: the Codex Adapter downloads media into the Connect-owned cache, submits images and audio as native local app-server inputs, and submits files and videos as local file mentions. Configured API/media origins are trusted for private self-hosting; other URLs require HTTPS and public DNS answers. Every redirect is revalidated. Downloads are capped at 100 MiB and use path-safe cached names. The cache is bounded to 512 MiB, refreshes access time on reuse, evicts least-recently-used files when full, and expires files after 15 days without access.
-- Adapters receive a resolved `RuntimeWorkspace` and never access SQLite directly. They may discover resumable Runtime Threads scoped to that workspace through the same seam.
+Creation recovery uses authoritative correlation before retry. Retirement intent is durable and blocks reprovisioning until cleanup completes. Removing a Binding retires only that Binding's Publication. Owner Reset retires managed resources before credentials are removed.
 
-Future coding clients must ship as Runtime Plugin Bundles that contribute Runtime Adapters behind the same seam rather than adding host-owned Adapter construction or changing Agent Binding or `ConnectRuntime` semantics. Every released capability must maintain a complete profile against the [normative Runtime Adapter standard](runtime-adapters.md#normative-runtime-adapter-standard) and pass its shared conformance requirements; native feature absence is represented as an explicit capability or limitation rather than an Adapter-specific semantic exception.
+Liveware never chooses an App and never publishes a user-supplied endpoint. With no selected App, there is no Publication. Removing Liveware leaves Core, Runtime operation, and any locally managed App lifecycle valid.
 
-## Connect Client boundary
+## Plugin activation and generation fencing
 
-Connect Client is a browser-only React SPA served by the Connect Service. The browser never launches, authenticates to, or speaks a native agent protocol:
+One Cordis root owns mandatory Core modules and installed Plugin lifecycles. Plugin replacement has one prepare/commit/start boundary:
+
+1. validate the Bundle, manifest, exact configuration schemas, dependency graph, and copied Durable State migration;
+2. commit selected version, configuration, Durable State revision, lock entry, and next Activation Generation atomically;
+3. revoke old-generation dispatch before disposal;
+4. allow only the committed generation to register Providers, acquire App Instances, mutate Durable State, or publish remote resources.
+
+A precommit failure preserves the old generation. A postcommit start failure leaves the committed generation visible as erroneous rather than restoring revoked authority. Instance leases, host facades, and App-scoped extension mutations carry the generation; stale generations are rejected.
+
+Plugin installation is trusted in-process code execution, not an OS sandbox. Catalog provenance assists discovery but is not authorization.
+
+## Runtime seam
 
 ```text
-React + Astryx + TanStack
-        │
-        │ same-origin HTTP snapshots/commands + one SSE stream
-        ▼
-Client Interface ── Session Catalog / Transcript Projection / safe preferences
-        │
-        ├── SQLite projection and event cursor
-        └── RuntimeAdapterRegistry ── selected Plugin capability instance
+Agent Binding
+  → exact pluginId/capabilityId
+  → RuntimeAdapterRegistry
+  → one Binding-scoped Runtime Adapter
+  → private native Runtime protocol
 ```
 
-`src/client-contract` is browser-safe and contains only Connect-owned versioned views and intents. `src/client-interface` owns static serving, Host/Origin request checks, catalog construction, transcript reconciliation, commands, and event delivery. Native app-server types remain private to `src/runtime/codex-app-server.ts` and `src/runtime/codex-adapter.ts`.
+Core surfaces only runtime-neutral prompts, Activities, catalogs, lifecycle claims, and Interactions. Codex app-server, OpenCode server, WorkBuddy desktop, and DSH bridge details remain private to their official Plugin contributions. Native login, providers, plugins, MCP configuration, models, tools, approval behavior, and Thread storage remain upstream-owned.
 
-The Client catalog is installation-wide but every Workspace Catalog is Binding-scoped. It merges Connect Sessions with Runtime Adapter thread discovery, retains one stable Session Ref for each unadopted Runtime Thread, and groups entries beneath their validated Workspace. Runtime Adapter snapshots report `complete`, `partial`, or `unavailable`: a complete omission prevents new selection of an earlier runtime-reported Workspace, while partial or unavailable discovery preserves earlier associations. A first Web send may adopt an unclaimed thread without replacing native identity. Host-directory browsing exposes directory names and structure but never file contents; a staged directory becomes a Workspace only when Session creation is confirmed and server validation succeeds.
+Runtime lifecycle and Web App lifecycle deliberately do not share a process merely to reduce resource count. Reusing the Binding Runtime for a Web product would couple independent health, authentication, and Session state machines.
 
-The Runtime Transcript remains authoritative for agent context and resume. The Transcript Projection is a SQLite
-materialized view for the browser: it keeps normalized message, plan, reasoning-summary, command, file-change, tool,
-progress, usage, interaction, error, and unknown blocks. Runtime Adapters translate live notifications, history, and
-fallback records into the same Runtime Activity contract before crossing the seam. Adapter-owned IDs, positions, and
-aliases become stable block identity and ordering; Projection never correlates runtime output by rendered text.
-Codex positions use native turn and item ordinals across live and historical Activity, and Projection reserves
-per-turn sequence ranges so replay or out-of-order delivery converges to the same order. All Adapters use the
-runtime-neutral `<turn ordinal>.<item ordinal>` decimal position syntax; item `0` is reserved for turn-level Activity.
-Adapters report `complete`, `partial`, or `live-only` completeness plus explicit identity, correlation, or ordering
-limitations. Session snapshot polling reconciles work performed by another Codex surface, while live Connect turns
-publish the same Activity upserts immediately through SSE.
+## Connect Sessions and Workspaces
 
-Client-local turns and ClawChat turns share the logical Session queue. Only ClawChat-originated turns pass through reply materialization and the ClawChat WebSocket. Client-local output remains in the projection and SSE stream.
+Every Binding owns a Workspace Catalog. Workspace Refs are Core-owned and Binding-scoped even when two entries resolve to the same filesystem path. Runtime Plugins may report discovery snapshots but cannot allocate Refs or merge catalogs.
 
-Runtime approvals and Agent questions follow the same origin boundary. Web-originated turns render and resolve their interactions only in Connect Client. ClawChat-originated turns send plain-text prompts to the owner's direct conversation: `/approve`, `/approve session`, and `/deny` settle approvals, numbered replies such as `/1` and `/2` select question options, and free-text questions consume the owner's next direct reply. They do not create Web interaction cards. Session activity is derived from the per-Session queue, so an active turn never marks unrelated Sessions as working.
+A Session Intent becomes a Connect Session on the first ordinary ClawChat turn. Each Session keeps one stable Ref, exact Binding, exact Runtime capability, Workspace, and optional private Runtime Thread ID. Runtime Thread discovery and resume occur behind the Runtime Adapter seam.
 
-Connect Client deliberately has no local login or browser session. It binds to `127.0.0.1` by default. An explicit `clientHost: "0.0.0.0"` setting exposes the same unauthenticated interface to a trusted IPv4 LAN. Loopback mode validates one exact Host; LAN mode accepts only IPv4-literal Hosts on the configured port. Both modes require mutations to match the request Host's exact Origin and validate Fetch Metadata, request sizes, asset paths, and CSP. Plugin administration is a narrower host-trust boundary: when wildcard-bound, every Plugin read and mutation requires Bun's socket peer to be loopback; forwarded headers never grant authority. A private official Liveware Publication reaches the same loopback Shared Client Gateway and is owner-only. Anyone with LAN access can enumerate host directory names and structure, manage Workspace paths, select advertised Session modes including `danger-full-access`, change model preferences, and submit turns. LAN mode provides neither TLS nor remote identity and must never be internet-exposed.
+Continuing from another product creates that product's own Session. Core never claims that opening DSH Web, OpenCode Web, or Connect Client resumes a Connect Session. Cross-product continuation, if a product independently offers it, is governed only by that product's native contract.
 
-The SPA uses TanStack Router file routes, TanStack Query for snapshots/commands, and TanStack Virtual as the sole transcript scroll owner. Astryx supplies the accessible application shell, navigation, chat, forms, banners, Markdown, and structured-output primitives. Astryx implements dynamic dimensions and positioned layers with React style attributes, so the production CSP permits `style-src-attr` while keeping `style-src-elem` and scripts self-only and blocking script attributes. The virtual viewport uses HTML/SVG layout attributes for dynamic spacers and does not broaden that exception.
+## Optional Connect Client Plugin
 
-The non-replaceable Client Kernel owns routing, bootstrap, scoped services, the browser Cordis root, and fallback rendering. It derives one graph hash and epoch from the exact selected Client Extension artifacts. A graph change disposes all old components, slots, styles, subscriptions, timers, and scoped effects before replacement; inability to prove clean replacement forces a full-page reload. Extension service mutations carry the epoch, stale epochs are rejected, and one failing Extension cannot replace Kernel recovery.
-
-## Workspace resolution
-
-`WorkspaceCatalog` is the sole Workspace interface used by CLI and Client administration, ClawChat selection commands, Session creation, and `ConnectRuntime`.
-
-Every Agent Binding receives one Default Workspace under `<state-dir>/workspaces/<binding>`. Core assigns every Workspace Ref and owns the mapping from Runtime Adapter-reported stable Workspace identities to canonical local roots. Runtime Plugins report discovery snapshots but cannot allocate Refs, merge Catalogs, or mutate Session targets.
-
-Session creation resolves its Workspace Ref in the selected Binding's Catalog, verifies the canonical root still exists, and passes the resulting `RuntimeWorkspace` to the Adapter. A Session stores that exact Binding and Workspace identity for its lifetime. Two Bindings may resolve different Workspace Refs to the same filesystem root without sharing Workspace identity or runtime context.
-
-Complete discovery removes omitted runtime-reported Workspaces from new selection while preserving existing Session identity. Partial or unavailable discovery never erases an earlier association. Removing a Workspace record never deletes files or runtime-native Threads. The runtime never uses `process.cwd()` as an implicit Workspace.
-
-## Runtime Thread lifecycle
-
-The Codex adapter creates or resumes one app-server thread handle per logical Connect Session while every handle shares one process:
+The optional Connect Client is packaged as one complete official Plugin Bundle:
 
 ```text
-Session Ref (display/select) → Connect Session ID (internal)
-                                      │
-                                      ▼
-                           SQLite runtime_session_id
-                                      │
-                                      ▼
-                  app-server thread/resume(threadId, workspace options)
-                                      │
-                                      ▼
-                              ~/.codex/sessions
+clawling.web.connect-client
+  ├─ Managed Web App server entry
+  ├─ complete browser asset graph
+  ├─ canonical client-assets.json integrity manifest
+  ├─ Connect-owned Web API and authentication boundary
+  └─ App-scoped Client Extension graph
 ```
 
-`thread/start`, `thread/resume`, and `turn/start` receive the resolved Workspace, sandbox, additional writable roots, network policy, model, reasoning effort, approval policy, and web-search settings. Model resolution runs for each turn in Session → Agent Binding → Runtime Adapter default order. Reasoning effort uses a strict Session value when present, otherwise a Binding value only when the effective model supports it, otherwise the advertised model default. A missing stored model fails visibly. Workspace changes create a Session Intent; `/switch`, in-place model changes, and process restarts preserve and resume the existing Runtime Thread ID, while a boundary-forming mode change invalidates it.
+Core/npm/release roots do not contain `dist/client` or `clawchat-connect-client`. The Bundle can be present or omitted without invalidating Core packaging or installation. Runtime setup never selects it as a side effect.
 
-The Codex adapter calls app-server `thread/list`, filters by the resolved Workspace, opts into every source kind, and uses the native name or preview as the Session Name. It reads rollout JSONL only inside its pinned-version transcript fallback when app-server history omits displayable tool calls. `ConnectRuntime` and the Client Interface never interpret rollout files. `/sessions` shows Connect Sessions in that Workspace plus unclaimed Runtime Threads; `/switch <name-or-ref>` creates a Connect Session that owns the selected Runtime Thread and preserves its Ref. Connect Client may create a Workspace from an explicitly confirmed host directory in the selected Binding's Catalog. Ambiguous names require a Ref.
+Client Extensions declare the exact target `managedWebApp.pluginId` and `managedWebApp.capabilityId`. Their graph, styles, services, and epoch belong to that selected App only. No installation-wide Client Kernel or extension graph exists. An extension for one App cannot affect a native DSH or OpenCode App.
 
-Session Refs use eight characters from an unambiguous Base32 alphabet and contain 40 random bits. SQLite enforces global Ref uniqueness and stores mappings to both Connect Sessions and Runtime Threads. When a discovered Runtime Thread is adopted, its mapping attaches to the new Session; when a Session invalidates its Runtime Thread, the Session keeps its Ref and later rediscovery of the old Thread receives a different Ref.
+## Headless administration and recovery
 
-Runtime-ID callbacks are accepted only while the originating in-memory Session still owns its key, preventing a cancelled or stale turn from repopulating an invalidated ID. Cancellation calls app-server `turn/interrupt` with the active native thread and turn IDs.
-
-Session lifecycle uses an explicit acquire/release claim. The claim rejects new turns immediately, cancels and drains
-an active turn, releases its Runtime handle, and remains held while Session Continuity performs its journaled
-native/local operation. Discovered but unadopted Runtime Threads use the same per-Ref serialization key. Adapter
-lifecycle failures are normalized to stable not-found, conflict, or unsupported errors before reaching the Client.
-
-## Codex output mapping
-
-Stable app-server turn/item notifications are normalized inside the Codex Adapter into complete current-state Runtime
-Activities:
-
-- completed agent messages → `assistant`
-- reasoning → `reasoning`
-- commands → `command`
-- file changes → `file-change`
-- web searches and MCP calls → `tool`
-- task lists and lifecycle/usage → `plan` or `progress`
-- app-server and turn failures → `error`
-
-The Adapter attaches the output-visibility category used for ClawChat materialization as Activity metadata; it is not a
-second projection representation.
-
-The runtime applies `minimal`, `normal`, or `full` visibility and sends complete ClawChat `message.reply` frames. Direct-message responses do not quote the triggering message. Group responses retain that reply context. Group messages enter Runtime routing according to the conversation's Group Intake Policy: mention-only requires a structured Agent Mention, while `all` uses the configured delayed or real-time Group Message Batch window; mute suppresses routing. Protocol streaming lifecycle events are not used.
-
-Local Markdown images become outbound media only when their canonical path is inside the media cache or resolved Runtime Workspace and their extension plus binary signature identify PNG, JPEG, GIF, or WebP content. Arbitrary Markdown file references remain text.
-
-## Reliable inbound processing
-
-Protocol v2 frames and materialized messages are recorded before dispatch. Once a materialized message has been durably handed to the recoverable inbound processor, Connect may advance the live ACK without waiting for a long command or Runtime turn. The processor stores a content-specific completion marker after processing and scans persisted rows without a matching marker at startup and after reconnect. Before retrying an unfinished row, Connect asks every candidate Runtime Thread for an authoritative receipt keyed by the ClawChat message ID and canonical delivery-content digest. An exact accepted receipt atomically completes every matching actionable Batch and consumed-context row; only authoritative absence permits another submission. Incomplete or failed native history is `unknown`, leaves the row pending, and is retried with bounded backoff. A coalesced update with the same message ID but a different digest remains new input. See ADR-0039.
-
-## External capability policy
-
-- Connect has no dynamic tool registry, local memory tools, or MCP entrypoint.
-- The Codex adapter does not inject tool or MCP configuration.
-- Profile updates are explicit CLI operations through `src/account/profile.ts`.
-- The REST client retains only activation and Profile-update operations required by Connect.
-- MCP servers configured independently in the user's Codex environment remain outside Connect's ownership.
-
-## Layering
+CLI administration is mandatory Core behavior and remains available with no Managed Web App:
 
 ```text
-src/bin.ts                Executable entrypoint
-src/index.ts              Package exports
-src/account/              Activation, Binding removal, and Profile updates
-src/agent/                Agent-callable Skills, tools, and Liveware commands
-src/clawchat/             Protocol v2, WebSocket transport, media, intake, and commands
-src/workspaces/           Workspace Catalog, Session continuity, and host-directory behavior
-src/persistence/          SQLite adapter, schema, codecs, Session Refs, and state Interface
-src/service/              CLI, process startup, Binding runtime, Shared Client Gateway, and updates
-src/runtime/types.ts      Direct Runtime Adapter seam
-src/runtime/registry.ts   Exact Plugin capability provider selection
-src/runtime/*-adapter.ts  Runtime-specific implementations used by official Plugin Bundle entries
-src/client-contract/      Browser-safe versioned Client views and intents
-src/client-interface/     HTTP/SSE interface, catalog, transcript projection, and commands
-web/src/                  React/Astryx/TanStack Connect Client
+service status/logs/restart
+plugin list/setup/install/enable/disable/remove
+agent list/add/remove
+workspace list/add/remove
+doctor
 ```
 
-## Command authorization and ordering
+When the service is stopped, CLI Plugin setup can use release-bundled official Bundles. This path repairs broken App or Exposure Plugins without starting a browser surface. Core must never create a secret fallback Web endpoint for recovery.
 
-All Connect control commands except help require `message.sender.id` to match the Installation Owner. ClawChat selects a registered Workspace by Ref and never accepts or displays host paths; Workspace administration belongs to the local CLI and Connect Client.
+## Security model
 
-Runtime turns are queued by Connect Session ID. ClawChat and Client turns for one Session never overlap, while different Sessions may run concurrently up to `maxConcurrentTurns`. A short per-conversation routing gate atomically targets first messages and orders selection-changing commands behind the previously selected Session without holding the gate during Runtime Adapter execution. The pending limit is `maxPendingPerSession`; the removed conversation-named setting is not accepted. `/cancel` deliberately bypasses both queues so it can abort the selected Session's active turn. Runtime status counts actual running turns and distinct active ClawChat conversations separately.
+### Integrity and packaging
 
-## Output policy
+- Release archives are checked against SHA-256 `checksums.txt` before extraction.
+- Official Plugin entry artifacts use release-pinned SHA-256 SRI.
+- Auxiliary binaries use release-pinned SRI.
+- Complete browser graphs carry a canonical integrity manifest; the manifest itself is release-pinned and every listed asset is verified.
+- DSH/OpenCode native contributions and optional Connect Client assets travel inside their owning Bundles.
+- Root Core package/archive payloads contain no unconditional browser tree.
 
-Output visibility is resolved in this order:
+### Network and identity
 
-1. per-chat override from SQLite;
-2. JSON config default;
-3. `normal`.
+- Managed Web App upstreams are exact loopback HTTP origins; arbitrary URLs, forwarded-host authority, and unmanaged LAN upstreams are rejected.
+- Core grants an opaque lease, not raw Binding credentials or a forwarded Liveware principal.
+- Managed Web Apps own authentication, cookies, CSRF policy, Web Sessions, and Interactions.
+- A private owner-only Liveware App restricts publication access but does not merge App and ClawChat authentication models.
+- Activation Generation fencing prevents replaced Plugin code from renewing leases, changing extension graphs, or publishing resources.
 
-Required controls always remain visible. In group chats, required controls route to the owner direct route and never silently fall back to group delivery.
+### Operational isolation
 
-## Persistence
+- App, Runtime, Core, and Publication diagnostics are reported separately.
+- Failure never authorizes native-to-compatible failover.
+- Removing an App does not remove Runtime state or Connect Sessions.
+- Removing a Publication does not terminate an independently leased App until its final lease is released.
+- Managed-resource retirement precedes Binding credential removal or Owner Reset.
 
-JSON configuration stores Agent Bindings, exact Runtime capability references, schema-validated Binding runtime configuration, and installation defaults. Binding-scoped Workspace records remain operational domain data in SQLite. `stateDbPath` and configured additional directories must be absolute, so Workspace behavior never depends on the launcher process's current directory.
+## Release assembly
 
-Bun's built-in `bun:sqlite` stores the Installation Owner, Binding credentials, Binding-scoped Workspace Catalogs, Session Intents, Sessions, Runtime Thread mappings, output visibility, idempotency records, Runtime status, Client command state, Transcript blocks, Client events, Binding Liveware Publication lifecycle, and generation-scoped Plugin Durable State. Incompatible legacy Connect-owned schemas are reset or rejected at startup; filesystem-owned Workspace contents and runtime-native Threads remain untouched. The mandatory SQLite provider initializes and validates persistence before downstream Cordis modules activate. Public Plugins receive only namespaced, bounded Durable State operations and never SQL or Core records.
+Bun builds Core entrypoints under `dist/src`. `scripts/build-official-plugins.ts` discovers official descriptors and builds target-specific self-contained Bundles under `dist/official-plugins`. Directory assets are copied recursively, a canonical path-to-SRI manifest is generated, and release registry checks pin that manifest plus every described asset.
 
-Do not add `sqlite`, `sqlite3`, `node:sqlite`, or `better-sqlite3`.
+Archive scripts require the platform's Core Runtime/Exposure Bundles, copy `official-plugins` as a unit, and treat `clawling.web.connect-client` as optional. Installers verify the archive checksum, replace official Bundles transactionally, and clean obsolete root Client/Liveware payloads. They copy Bundles but do not activate the Client with Runtime setup.
 
-## Build and quality tooling
-
-Bun owns dependency installation (`bun.lock`), TypeScript execution, `bun:test`, and service bundling. Vite builds the browser-only SPA to `dist/client`; `bun build --target=bun --packages=external` emits service entrypoints under `dist/src`. Current release assembly builds and verifies self-contained Darwin arm64 official Plugin Bundles, includes the official Liveware Bundle's pinned Apple silicon companion, and packages one qualified macOS Apple silicon standalone archive. Runtime and Client Extension artifacts remain independently installable Plugin assets rather than unconditional Core startup payloads.
-
-Biome owns formatting, import organization, and linting. `tsc --noEmit` remains the independent type check. Generated `dist/` artifacts stay ignored and outside Git history.
+Generated `dist/` and release artifacts remain outside Git history. Hard-coded official SRI values are updated from a clean all-target build integrity report before release qualification.

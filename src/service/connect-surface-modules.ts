@@ -3,12 +3,6 @@ import { isAgentLivewareOperation } from "../agent/agent-liveware";
 import { verifyInstalledSkills } from "../agent/skills";
 import { getConnectTool } from "../agent/tool-catalog";
 import { isIndeterminateToolError } from "../agent/tool-executor";
-import { resolveClientAssetsPath } from "../client-interface/client-assets";
-import {
-  type ClientInterfaceHandle,
-  type ClientInterfaceOptions,
-  startClientInterface,
-} from "../client-interface/server";
 import type { ConnectStateStore } from "../persistence/state";
 import type { ToolRequestRecord } from "../persistence/state-types";
 import type { ConnectExecutionCapabilities } from "../runtime/execution-capabilities";
@@ -30,9 +24,6 @@ interface ClawChatTransportModule {
   retireBindings(bindingIds: readonly string[]): Promise<void>;
 }
 
-interface ClientAssetsModule {
-  readonly path: string;
-}
 
 interface ToolRequestWorkerModule {
   readonly active: true;
@@ -44,8 +35,6 @@ declare module "cordis" {
   interface Context {
     connectTurnSurfaces: ConnectTurnSurfaceCapabilities;
     connectClawChatTransports: ClawChatTransportModule;
-    connectClientAssets: ClientAssetsModule;
-    connectClientInterface: ClientInterfaceHandle;
     connectToolRequestWorkers: ToolRequestWorkerModule;
   }
 }
@@ -60,8 +49,6 @@ export interface ConnectSurfaceOptions {
 
 export interface ConnectSurfaceDependencies {
   startBindingRuntime?: (options: BindingRuntimeOptions) => Promise<BindingRuntimeHandle>;
-  startClientInterface?: (options: ClientInterfaceOptions) => Promise<ClientInterfaceHandle>;
-  resolveClientAssetsPath?: () => Promise<string>;
   verifyInstalledSkills?: () => Promise<void>;
 }
 
@@ -93,9 +80,7 @@ export async function mountMandatorySurfaceModules(
     detachRetirement = () => undefined;
     const order = [
       "connect-tool-request-workers",
-      "connect-client-interface",
       "connect-clawchat-transports",
-      "connect-client-assets",
       "connect-turn-surfaces",
     ];
     for (const name of order) {
@@ -134,16 +119,6 @@ export async function mountMandatorySurfaceModules(
     },
   } satisfies Plugin;
 
-  const clientAssetsPlugin = {
-    name: "connect-client-assets",
-    provide: "connectClientAssets",
-    apply: async (ctx) => {
-      const assets = {
-        path: await (dependencies.resolveClientAssetsPath ?? resolveClientAssetsPath)(),
-      };
-      ctx.provide("connectClientAssets", assets);
-    },
-  } satisfies Plugin;
 
   const clawChatTransportPlugin = {
     name: "connect-clawchat-transports",
@@ -261,65 +236,16 @@ export async function mountMandatorySurfaceModules(
     },
   } satisfies Plugin;
 
-  const clientInterfacePlugin = {
-    name: "connect-client-interface",
-    inject: [
-      "connectPersistence",
-      "connectWorkspaces",
-      "connectSessionContinuity",
-      "connectRuntimeAdapters",
-      "connectTranscriptProjection",
-      "connectRuntimeInteractions",
-      "connectClawChatTransports",
-      "connectTurnSurfaces",
-      "connectClientAssets",
-      "connectPluginHost",
-    ],
-    provide: "connectClientInterface",
-    apply: async (ctx) => {
-      const clientInterface = await (dependencies.startClientInterface ?? startClientInterface)({
-        config: options.config,
-        configPath: options.configPath,
-        stateStore: ctx.connectPersistence.state,
-        runtimeAdapters: ctx.connectRuntimeAdapters,
-        transcriptProjection: ctx.connectTranscriptProjection,
-        runtimeInteractions: ctx.connectRuntimeInteractions,
-        workspaces: ctx.connectWorkspaces,
-        sessionContinuityModule: ctx.connectSessionContinuity,
-        pluginManager: ctx.connectPluginHost,
-        runtimes: ctx.connectClawChatTransports.handles,
-        assetsPath: ctx.connectClientAssets.path,
-      });
-      const unbindPluginClient = await ctx.connectPluginHost.bindClientInterface(clientInterface);
-      ctx.provide("connectClientInterface", clientInterface);
-      options.writeOutput(`Connect Client is available at ${clientInterface.origin}.\n`);
-      if (options.config.clientHost === "0.0.0.0") {
-        options.writeOutput(
-          `WARNING: Connect Client is exposed on all IPv4 interfaces without authentication; use port ${options.config.clientPort} only on a trusted LAN.\n`,
-        );
-      }
-      return async () => {
-        unbindPluginClient();
-        try {
-          await clientInterface.stop();
-        } catch (error) {
-          reportDisposalFailure(error);
-        }
-      };
-    },
-  } satisfies Plugin;
 
   try {
     await mount(turnSurfacePlugin);
-    await mount(clientAssetsPlugin);
     await mount(clawChatTransportPlugin);
     await mount(toolRequestWorkerPlugin);
-    await mount(clientInterfacePlugin);
+    await root.connectPluginHost.activateOptionalSurfaces(root.connectClawChatTransports.handles);
     detachRetirement = bindingRuntimeLifecycle.attachRetirement(
       async (bindingIds) =>
         await retireBindingRuntimeSurfaces(bindingIds, [
           root.connectToolRequestWorkers,
-          root.connectClientInterface,
           {
             retireBindings: async (retiredBindingIds) => {
               root.connectSessionQueue.retainBindings(retiredBindingIds);

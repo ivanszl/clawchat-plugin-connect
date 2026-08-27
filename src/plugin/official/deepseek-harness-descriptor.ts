@@ -12,6 +12,8 @@ import {
   DEEPSEEK_HARNESS_OFFICIAL_CAPABILITY_ID,
   DEEPSEEK_HARNESS_OFFICIAL_PLUGIN_ID,
   DEEPSEEK_HARNESS_OFFICIAL_RUNTIME_FAMILY,
+  DEEPSEEK_HARNESS_WEB_APP_CAPABILITY_ID,
+  DEEPSEEK_HARNESS_WEB_APP_CONFIGURATION_SCHEMA,
 } from "./deepseek-harness-manifest";
 
 const bridgeSources = Object.fromEntries(
@@ -33,6 +35,11 @@ const descriptor: OfficialPluginDescriptor = {
         id: "runtime-provider",
         interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
       },
+      {
+        type: "host",
+        id: "managed-web-app-provider",
+        interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+      },
     ],
     installationConfigurationSchema: DEEPSEEK_HARNESS_INSTALLATION_CONFIGURATION_SCHEMA,
     capabilities: [
@@ -42,6 +49,16 @@ const descriptor: OfficialPluginDescriptor = {
         interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
         family: DEEPSEEK_HARNESS_OFFICIAL_RUNTIME_FAMILY,
         configurationSchema: DEEPSEEK_HARNESS_BINDING_CONFIGURATION_SCHEMA,
+      },
+      {
+        id: DEEPSEEK_HARNESS_WEB_APP_CAPABILITY_ID,
+        type: "managed-web-app",
+        interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+        configurationSchema: DEEPSEEK_HARNESS_WEB_APP_CONFIGURATION_SCHEMA,
+        displayName: "DeepSeek Harness Web",
+        description: "DeepSeek Harness's native Web interface",
+        nativeRuntimeCapabilityIds: [DEEPSEEK_HARNESS_OFFICIAL_CAPABILITY_ID],
+        compatibleRuntimes: [],
       },
     ],
   },

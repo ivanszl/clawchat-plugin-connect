@@ -11,6 +11,8 @@ import {
   DEEPSEEK_HARNESS_BINDING_CONFIGURATION_SCHEMA,
   DEEPSEEK_HARNESS_OFFICIAL_CAPABILITY_ID,
   DEEPSEEK_HARNESS_OFFICIAL_PLUGIN_ID,
+  DEEPSEEK_HARNESS_WEB_APP_CAPABILITY_ID,
+  DEEPSEEK_HARNESS_WEB_APP_CONFIGURATION_SCHEMA,
 } from "../src/plugin/official/deepseek-harness-manifest";
 import {
   createDeepSeekHarnessRuntimeAdapter,
@@ -84,6 +86,13 @@ describe("DeepSeek Harness Runtime Adapter", () => {
           type: "runtime",
           family: "deepseek-harness",
           configurationSchema: DEEPSEEK_HARNESS_BINDING_CONFIGURATION_SCHEMA,
+        },
+        {
+          id: DEEPSEEK_HARNESS_WEB_APP_CAPABILITY_ID,
+          type: "managed-web-app",
+          configurationSchema: DEEPSEEK_HARNESS_WEB_APP_CONFIGURATION_SCHEMA,
+          nativeRuntimeCapabilityIds: [DEEPSEEK_HARNESS_OFFICIAL_CAPABILITY_ID],
+          compatibleRuntimes: [],
         },
       ],
       artifacts: [{ target, entry: `artifacts/${target}.mjs`, integrity: expect.stringMatching(/^sha256-/u) }],

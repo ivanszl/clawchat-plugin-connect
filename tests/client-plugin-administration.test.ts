@@ -8,7 +8,10 @@ import {
   type ClientHttpServerOptions,
   type ClientHttpServerRequestContext,
   type ClientInterfaceHandle,
-  startClientInterface,
+  type ConnectClientApplicationServices,
+  type ConnectClientOwnedInterfaceOptions,
+  createCoreConnectClientApplicationPort,
+  startClientInterface as startOwnedClientInterface,
 } from "../src/client-interface/server";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { defaultConfig, getAgentBinding, loadConfig, saveConfig } from "../src/config";
@@ -21,6 +24,7 @@ import {
   type ManagePluginOptions,
 } from "../src/plugin/host";
 import type { OfficialPluginDiscovery } from "../src/plugin/official-registry";
+import { CONNECT_CLIENT_MANAGED_WEB_APP_REF } from "../src/plugin/official/connect-client-manifest";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_BUNDLE_FORMAT,
@@ -42,6 +46,20 @@ import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 const handles: ClientInterfaceHandle[] = [];
 const stores: ConnectStateStore[] = [];
 
+async function startClientInterface(
+  options: ConnectClientApplicationServices & Omit<ConnectClientOwnedInterfaceOptions, "applicationPort">,
+): Promise<ClientInterfaceHandle> {
+  const { assetsPath, hostname, port, managedWebApp, serverFactory, ...services } = options;
+  return await startOwnedClientInterface({
+    applicationPort: createCoreConnectClientApplicationPort(() => services),
+    assetsPath,
+    hostname,
+    port,
+    managedWebApp,
+    ...(serverFactory ? { serverFactory } : {}),
+  });
+}
+
 afterEach(async () => {
   await Promise.all(handles.splice(0).map(async (handle) => await handle.stop()));
   await Promise.all(stores.splice(0).map(async (store) => await store.close()));
@@ -54,7 +72,7 @@ describe("Connect Client trusted Plugin administration", () => {
     await mkdir(configPath);
     const config = defaultConfig();
     config.stateDbPath = join(directory, "state.sqlite");
-    config.clientPort = 47_896;
+    const port = 47_896;
     config.agents["plugin-binding"] = {
       ...createAgentBinding({
         pluginId: "test.healthy",
@@ -195,7 +213,9 @@ describe("Connect Client trusted Plugin administration", () => {
       pluginManager,
       runtimes: [],
       assetsPath: directory,
-      port: config.clientPort,
+      hostname: "127.0.0.1",
+      port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop: async () => undefined };
@@ -568,7 +588,7 @@ describe("Connect Client trusted Plugin administration", () => {
     const configPath = join(directory, "config.json");
     const config = defaultConfig();
     config.stateDbPath = join(directory, "state.sqlite");
-    config.clientPort = 47_898;
+    const port = 47_898;
     await saveConfig(config, configPath);
     const store = createStateStore({ dbPath: config.stateDbPath });
     stores.push(store);
@@ -586,7 +606,9 @@ describe("Connect Client trusted Plugin administration", () => {
       pluginManager: host,
       runtimes: [],
       assetsPath: directory,
-      port: config.clientPort,
+      hostname: "127.0.0.1",
+      port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop: async () => undefined };
@@ -685,7 +707,7 @@ describe("Connect Client trusted Plugin administration", () => {
     const executablePath = join(directory, "codex-installed-later");
     const config = defaultConfig();
     config.stateDbPath = join(directory, "state.sqlite");
-    config.clientPort = 47_899;
+    const port = 47_899;
     await saveConfig(config, configPath);
     const store = createStateStore({ dbPath: config.stateDbPath });
     stores.push(store);
@@ -707,7 +729,9 @@ describe("Connect Client trusted Plugin administration", () => {
       pluginManager: host,
       runtimes: [],
       assetsPath: directory,
-      port: config.clientPort,
+      hostname: "127.0.0.1",
+      port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop: async () => undefined };
@@ -788,8 +812,7 @@ describe("Connect Client trusted Plugin administration", () => {
     const configPath = join(directory, "config.json");
     const config = defaultConfig();
     config.stateDbPath = join(directory, "state.sqlite");
-    config.clientHost = "0.0.0.0";
-    config.clientPort = 47_897;
+    const port = 47_897;
     config.agents["private-binding"] = createAgentBinding({
       pluginId: "test.private-liveware",
       capabilityId: "runtime",
@@ -830,6 +853,9 @@ describe("Connect Client trusted Plugin administration", () => {
       pluginManager,
       runtimes: [],
       assetsPath: directory,
+      hostname: "0.0.0.0",
+      port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop: async () => undefined };
@@ -838,7 +864,7 @@ describe("Connect Client trusted Plugin administration", () => {
     handles.push(handle);
     if (!fetchHandler) throw new Error("Client Interface did not expose its request handler");
 
-    const lanOrigin = `http://192.168.1.20:${config.clientPort}`;
+    const lanOrigin = `http://192.168.1.20:${port}`;
     const remotePeer: ClientHttpServerRequestContext = {
       requestIP: () => ({ address: "192.168.1.40" }),
     };

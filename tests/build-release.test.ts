@@ -55,7 +55,6 @@ test("release payload is complete", () => {
   const target = resolveReleaseTarget("darwin", "arm64");
   expect(releasePayload(target).entries).toEqual([
     "clawchat-connect",
-    "clawchat-connect-client",
     "official-plugins",
     "skills",
     "CHANGELOG.md",
@@ -89,7 +88,7 @@ test("builds the Darwin arm64 official Plugin payload", () => {
     "--target",
     "darwin-arm64",
   ]);
-  expect(packagePhase?.command?.at(-1)).toBe("darwin-arm64");
+  expect(packagePhase?.command?.slice(-2)).toEqual(["build/release/clawchat-connect-darwin-arm64.tar.gz", "darwin-arm64"]);
 });
 
 test("checksums cover the archive and copied support files", async () => {

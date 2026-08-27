@@ -26,6 +26,7 @@ import {
   type ConnectPluginClientExtensionSlotId,
   type ConnectPluginDisposer,
 } from "../../../src/plugin/sdk";
+import { CONNECT_CLIENT_MANAGED_WEB_APP_REF } from "../../../src/plugin/official/connect-client-manifest";
 import { clientFetch, requestId } from "../client-interface/http";
 
 interface SlotContribution {
@@ -215,6 +216,12 @@ class RenderBoundary extends Component<{ children: ReactNode; fallback: ReactNod
 }
 
 async function activateGraph(graph: ClientExtensionGraphView, registry: SlotRegistry): Promise<ActiveGraph> {
+  if (
+    graph.managedWebApp.pluginId !== CONNECT_CLIENT_MANAGED_WEB_APP_REF.pluginId ||
+    graph.managedWebApp.capabilityId !== CONNECT_CLIENT_MANAGED_WEB_APP_REF.capabilityId
+  ) {
+    throw new Error("Client Extension graph targets a different Managed Web App");
+  }
   const graphDisposers: ConnectPluginDisposer[] = [];
   registry.beginBatch();
   try {

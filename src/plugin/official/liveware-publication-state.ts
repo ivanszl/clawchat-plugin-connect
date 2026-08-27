@@ -82,7 +82,16 @@ export class ConnectBindingLivewarePublicationStateStore implements BindingLivew
     const record = await this.state.readPluginDurableState(publicationNamespace(bindingId, activationGeneration));
     if (!record) return null;
     if (record.schemaVersion !== LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION) {
-      throw new Error(`Binding Liveware Publication ${bindingId} state schema ${record.schemaVersion} is unsupported`);
+      const reset = await this.state.compareAndSwapPluginDurableState(
+        publicationNamespace(bindingId, activationGeneration),
+        record.revision,
+        LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
+        resetBindingLivewarePublicationState(bindingId, activationGeneration),
+      );
+      return {
+        revision: reset.revision,
+        value: publicationState(reset.value, bindingId),
+      };
     }
     return {
       revision: record.revision,
@@ -116,13 +125,21 @@ export class DeclaredBindingLivewarePublicationStateStore implements BindingLive
   constructor(
     private readonly durableState: ConnectDurableStateHostCapability,
     private readonly capabilityId: string,
+    private readonly activationGeneration: number,
   ) {}
 
   async read(bindingId: string): Promise<BindingLivewarePublicationStateRecord | null> {
     const record = await this.stateFor(bindingId).read();
     if (!record) return null;
     if (record.schemaVersion !== LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION) {
-      throw new Error(`Binding Liveware Publication ${bindingId} state schema ${record.schemaVersion} is unsupported`);
+      const reset = await this.stateFor(bindingId).compareAndSwap(
+        record.revision,
+        resetBindingLivewarePublicationState(bindingId, this.activationGeneration),
+      );
+      return {
+        revision: reset.revision,
+        value: publicationState(reset.value, bindingId),
+      };
     }
     return {
       revision: record.revision,
@@ -191,6 +208,7 @@ function publicationState(value: unknown, bindingId: string): BindingLivewarePub
     desired,
     status: status as BindingLivewarePublicationStatus,
     transition: transition as BindingLivewarePublicationTransition,
+    selectedApp: selectedAppState(value.selectedApp, bindingId),
     correlationKey: requiredText(value.correlationKey, "publication correlation key"),
     appId: optionalText(value.appId, "Liveware App identity"),
     publicUrl: optionalText(value.publicUrl, "Liveware public URL"),
@@ -205,6 +223,62 @@ export function validateBindingLivewarePublicationState(
 ): BindingLivewarePublicationState {
   return publicationState(value, bindingId);
 }
+export function resetBindingLivewarePublicationState(
+  bindingId: string,
+  activationGeneration: number,
+): BindingLivewarePublicationState {
+  const exactBindingId = requiredText(bindingId, "Agent Binding identity");
+  if (!Number.isSafeInteger(activationGeneration) || activationGeneration < 1) {
+    throw new Error(`Binding Liveware Publication ${bindingId} state has an invalid Activation Generation`);
+  }
+  return {
+    bindingId: exactBindingId,
+    activationGeneration,
+    desired: "private",
+    status: "absent",
+    transition: null,
+    selectedApp: null,
+    correlationKey: `ClawChat Connect · ${exactBindingId}`,
+    appId: null,
+    publicUrl: null,
+    registrationId: null,
+    diagnostic: null,
+  };
+}
+
+function selectedAppState(
+  value: unknown,
+  bindingId: string,
+): BindingLivewarePublicationState["selectedApp"] {
+  if (value === null) return null;
+  if (!isRecord(value)) {
+    throw new Error(`Binding Liveware Publication ${bindingId} state has no exact selected Managed Web App`);
+  }
+  const allowed: Readonly<Record<string, true>> = {
+    pluginId: true,
+    capabilityId: true,
+    activationGeneration: true,
+    instanceKey: true,
+    displayName: true,
+    description: true,
+  };
+  if (Object.keys(value).some((key) => !Object.hasOwn(allowed, key))) {
+    throw new Error(`Binding Liveware Publication ${bindingId} selected Managed Web App state is obsolete`);
+  }
+  const generation = value.activationGeneration;
+  if (!Number.isSafeInteger(generation) || Number(generation) < 1) {
+    throw new Error(`Binding Liveware Publication ${bindingId} selected Managed Web App generation is invalid`);
+  }
+  return {
+    pluginId: requiredText(value.pluginId, "selected Managed Web App Plugin identity"),
+    capabilityId: requiredText(value.capabilityId, "selected Managed Web App capability identity"),
+    activationGeneration: Number(generation),
+    instanceKey: requiredText(value.instanceKey, "selected Managed Web App Instance identity"),
+    displayName: requiredText(value.displayName, "selected Managed Web App display name"),
+    description: requiredText(value.description, "selected Managed Web App description"),
+  };
+}
+
 
 function requiredText(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim() || value !== value.trim()) {

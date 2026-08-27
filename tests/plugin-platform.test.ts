@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClawChatApiClient } from "../src/clawchat/api-client";
@@ -11,8 +11,6 @@ import {
   type TransportEvents,
   type TransportState,
 } from "../src/clawchat/protocol";
-import { BINDING_SCOPE_HEADER, PLUGIN_MANAGER_CONFIG_HEADER } from "../src/client-contract";
-import { type ClientHttpServerOptions, startClientInterface } from "../src/client-interface/server";
 import { defaultConfig, getAgentBinding, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
@@ -41,9 +39,6 @@ interface ReferenceExposureFixture {
   readonly activationKeys: string[];
   readonly activationFrozen: boolean;
   readonly configurationFrozen: boolean;
-  readonly clientKeys: string[];
-  readonly clientFrozen: boolean;
-  fetch(request: Request): Promise<Response>;
 }
 
 function referenceExposure(): ReferenceExposureFixture {
@@ -104,17 +99,6 @@ function activation(agentId: string): ActivationCredentials {
   };
 }
 
-async function localRequest(
-  fetchHandler: ClientHttpServerOptions["fetch"],
-  origin: string,
-  path: string,
-  init: RequestInit = {},
-): Promise<Response> {
-  const headers = new Headers(init.headers);
-  headers.set("host", new URL(origin).host);
-  if (!headers.has("origin")) headers.set("origin", origin);
-  return await fetchHandler(new Request(new URL(path, origin), { ...init, headers }));
-}
 
 async function installOfficialFixture(configPath: string, bundlePath: string) {
   const bundle = await readConnectPluginBundle(bundlePath);
@@ -128,7 +112,7 @@ async function installOfficialFixture(configPath: string, bundlePath: string) {
 }
 
 describe("official multi-capability Plugin platform", () => {
-  it("runs class-instance Plugin providers through activation, Client Turn start, and disposal", async () => {
+  it("runs class-instance Plugin providers through headless service activation and disposal", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-platform-"));
     Reflect.deleteProperty(globalThis, "__connectReferenceExposure");
     Reflect.deleteProperty(globalThis, "__connectReferenceExposureEffects");
@@ -148,8 +132,6 @@ describe("official multi-capability Plugin platform", () => {
 
     let config = defaultConfig();
     config.stateDbPath = stateStore.dbPath;
-    config.clientHost = "127.0.0.1";
-    config.clientPort = 47_823;
     config = upsertAgentBinding(
       config,
       "trace-alpha",
@@ -172,17 +154,13 @@ describe("official multi-capability Plugin platform", () => {
     await stateStore.upsertActivation(activation("trace-alpha"));
     await stateStore.upsertActivation(activation("trace-beta"));
     const serviceErrors: string[] = [];
-    let resolveFetchHandler!: (handler: ClientHttpServerOptions["fetch"]) => void;
-    const fetchHandlerReady = new Promise<ClientHttpServerOptions["fetch"]>((resolve) => {
-      resolveFetchHandler = resolve;
-    });
     let resolveRuntimeAdapters!: (registry: RuntimeAdapterRegistry) => void;
     const runtimeAdaptersReady = new Promise<RuntimeAdapterRegistry>((resolve) => {
       resolveRuntimeAdapters = resolve;
     });
-    let resolveClientBound!: () => void;
-    const clientBoundReady = new Promise<void>((resolve) => {
-      resolveClientBound = resolve;
+    let resolveServiceReady!: () => void;
+    const serviceReady = new Promise<void>((resolve) => {
+      resolveServiceReady = resolve;
     });
     let releaseService: (() => void) | undefined;
     const shutdown = new Promise<void>((resolve) => {
@@ -193,10 +171,11 @@ describe("official multi-capability Plugin platform", () => {
         config,
         configPath,
         stateStore,
-        waitUntilShutdown: async () => await shutdown,
-        writeOutput: (message) => {
-          if (message.startsWith("Connect Client is available at ")) resolveClientBound();
+        waitUntilShutdown: async () => {
+          resolveServiceReady();
+          await shutdown;
         },
+        writeOutput: () => undefined,
         writeError: (message) => serviceErrors.push(message),
       },
       {
@@ -206,11 +185,6 @@ describe("official multi-capability Plugin platform", () => {
           return registry;
         },
         verifyInstalledSkills: async () => undefined,
-        resolveClientAssetsPath: async () => {
-          const assets = join(directory, "assets");
-          await mkdir(assets, { recursive: true });
-          return assets;
-        },
         startBindingRuntime: async (options) => {
           const clawChatApi: ClawChatApiClient = {
             agentsConnect: async () => {
@@ -227,115 +201,31 @@ describe("official multi-capability Plugin platform", () => {
             verifyInstalledSkills: async () => undefined,
           });
         },
-        startClientInterface: async (options) =>
-          await startClientInterface({
-            ...options,
-            serverFactory: (serverOptions) => {
-              resolveFetchHandler(serverOptions.fetch);
-              return { port: serverOptions.port, stop: () => undefined };
-            },
-          }),
       },
     );
 
-    const [handler, registry] = await Promise.race([
-      Promise.all([fetchHandlerReady, runtimeAdaptersReady, clientBoundReady]),
+    const registry = await Promise.race([
+      Promise.all([runtimeAdaptersReady, serviceReady]).then(([readyRegistry]) => readyRegistry),
       service.then(() => {
-        throw new Error("Connect Service stopped before the Plugin test surfaces became ready");
+        throw new Error("Connect Service stopped before the headless Plugin surfaces became ready");
       }),
     ]);
+    expect(serviceErrors).toEqual([]);
     const exposure = referenceExposure();
     expect(exposure).toMatchObject({
-      activationKeys: ["activationGeneration", "client", "configuration"],
+      activationKeys: ["activationGeneration", "configuration"],
       activationFrozen: true,
       configurationFrozen: true,
-      clientKeys: ["fetch"],
-      clientFrozen: true,
     });
     expect(Reflect.get(globalThis, "__connectReferenceExposureEffects")).toEqual([
       "activate:private",
       "activate:private",
     ]);
-    const exposedBootstrapResponse = await exposure.fetch(
-      new Request("https://external-exposure.example/client/v1/bootstrap", {
-        headers: {
-          [BINDING_SCOPE_HEADER]: "trace-alpha",
-          [PLUGIN_MANAGER_CONFIG_HEADER]: "/unrelated/connect/config.json",
-        },
-      }),
-    );
-    expect(exposedBootstrapResponse.status).toBe(200);
-    const exposedBootstrap = (await exposedBootstrapResponse.json()) as {
-      bindings: Array<{ bindingId: string }>;
-    };
-    expect(exposedBootstrap.bindings.map(({ bindingId }) => bindingId).sort()).toEqual(["trace-alpha", "trace-beta"]);
     expect(registry.modesFor(getAgentBinding(config, "trace-alpha"))).toEqual(["trace"]);
     expect(registry.modesFor(getAgentBinding(config, "trace-beta"))).toEqual(["trace"]);
+    await expect(stateStore.getRuntimeStatus("trace-alpha")).resolves.toMatchObject({ websocketConnected: true });
+    await expect(stateStore.getRuntimeStatus("trace-beta")).resolves.toMatchObject({ websocketConnected: true });
 
-    const workspaceRoot = join(directory, "workspace");
-    await mkdir(workspaceRoot);
-    const projectResponse = await localRequest(handler, "http://127.0.0.1:47823", "/client/v1/workspaces", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        requestId: "plugin_project_create",
-        bindingId: "trace-alpha",
-        directory: { kind: "existing-directory", rootPath: workspaceRoot },
-      }),
-    });
-    expect(projectResponse.status).toBe(201);
-    const project = (await projectResponse.json()) as { workspaceRef: string };
-    const sessionResponse = await localRequest(handler, "http://127.0.0.1:47823", "/client/v1/sessions", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        requestId: "plugin_session_create",
-        bindingId: "trace-alpha",
-        workspace: { kind: "existing", workspaceRef: project.workspaceRef },
-        name: "Plugin tracer",
-        mode: "trace",
-        model: null,
-        reasoningEffort: null,
-      }),
-    });
-    expect(sessionResponse.status).toBe(201);
-    const session = (await sessionResponse.json()) as { sessionRef: string };
-    const turnBody = new FormData();
-    turnBody.append("prompt", "hello plugin");
-    const turnResponse = await localRequest(
-      handler,
-      "http://127.0.0.1:47823",
-      `/client/v1/sessions/${session.sessionRef}/turn-submissions/plugin_turn_1`,
-      { method: "POST", body: turnBody },
-    );
-    if (turnResponse.status !== 202) {
-      throw new Error(
-        `Plugin Turn submission failed (${turnResponse.status}): ${await turnResponse.text()}\n${serviceErrors.join("")}`,
-      );
-    }
-
-    let runtimeThreadId: string | null = null;
-    for (let attempt = 0; attempt < 100 && !runtimeThreadId; attempt += 1) {
-      runtimeThreadId = (await stateStore.getRuntimeSessionByRef(session.sessionRef))?.runtimeSessionId ?? null;
-      if (!runtimeThreadId) await Bun.sleep(1);
-    }
-    expect(runtimeThreadId).toBe("alpha-trace-alpha-thread-1");
-    if (!runtimeThreadId) throw new Error("Reference Runtime did not report Runtime Thread identity");
-    const activity = await registry.readActivity(getAgentBinding(config, "trace-alpha"), runtimeThreadId);
-    expect(activity.activities).toMatchObject([
-      {
-        text: "alpha:hello plugin",
-        data: { contextKeys: [...PUBLIC_CONTEXT_KEYS].sort(), instance: "alpha" },
-      },
-    ]);
-
-    const transcriptResponse = await localRequest(
-      handler,
-      "http://127.0.0.1:47823",
-      `/client/v1/sessions/${session.sessionRef}/transcript`,
-    );
-    expect(transcriptResponse.status).toBe(200);
-    expect(JSON.stringify(await transcriptResponse.json())).toContain("alpha:hello plugin");
 
     const output: string[] = [];
     await expect(

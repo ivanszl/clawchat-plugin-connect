@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BINDING_SCOPE_HEADER, PLUGIN_MANAGER_CONFIG_HEADER } from "../src/client-contract";
 import { defaultConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
@@ -74,120 +73,173 @@ function readGlobalEffects(key: string): string[] | undefined {
   return Reflect.get(globalThis, key) as string[] | undefined;
 }
 
-interface ReferenceExposureFixture {
-  readonly activationKeys: string[];
-  readonly activationFrozen: boolean;
+interface ReferenceManagedWebAppFixture {
+  readonly contextKeys: string[];
+  readonly contextFrozen: boolean;
   readonly configurationFrozen: boolean;
-  readonly clientKeys: string[];
-  readonly clientFrozen: boolean;
-  fetch(request: Request): Promise<Response>;
+  readonly runtimeFrozen: boolean;
+  readonly acquireKeys: string[];
 }
 
-function referenceExposure(): ReferenceExposureFixture {
-  const exposure = Reflect.get(globalThis, "__connectReferenceExposure") as ReferenceExposureFixture | undefined;
-  if (!exposure) throw new Error("Reference Exposure fixture is not active");
-  return exposure;
+function referenceManagedWebApp(): ReferenceManagedWebAppFixture {
+  const app = Reflect.get(globalThis, "__connectReferenceManagedWebApp") as
+    | ReferenceManagedWebAppFixture
+    | undefined;
+  if (!app) throw new Error("Reference Managed Web App fixture is not active");
+  return app;
 }
 
 describe("atomic multi-capability Plugin Bundles", () => {
-  it("stores independent Bundle/Exposure/Binding configuration and activates Runtime plus Exposure together", async () => {
+  it("atomically activates Runtime and Managed Web App providers from one Bundle", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-multi-"));
     const configPath = join(directory, "config.json");
-    Reflect.deleteProperty(globalThis, "__connectReferenceExposureEffects");
-    Reflect.deleteProperty(globalThis, "__connectReferenceExposure");
-    const installed = await installOfficialFixture(configPath);
+    Reflect.deleteProperty(globalThis, "__connectReferenceManagedWebApp");
+    const source = `export default {
+      activate(context) {
+        context.hostCapabilities.get("runtime-provider").register({
+          capabilityId: "reference-runtime",
+          family: "reference",
+          create() {
+            return {
+              modes: [],
+              async start() { throw new Error("unused"); }
+            };
+          }
+        });
+        context.hostCapabilities.get("managed-web-app-provider").register({
+          capabilityId: "reference-web",
+          instanceKey(activation) {
+            globalThis.__connectReferenceManagedWebApp = {
+              contextKeys: Object.keys(activation).sort(),
+              contextFrozen: Object.isFrozen(activation),
+              configurationFrozen: Object.isFrozen(activation.configuration),
+              runtimeFrozen: Object.isFrozen(activation.runtime),
+              acquireKeys: []
+            };
+            return activation.bindingId;
+          },
+          async acquire(activation) {
+            globalThis.__connectReferenceManagedWebApp.acquireKeys = Object.keys(activation).sort();
+            return {
+              upstream: "http://127.0.0.1:47823",
+              async waitUntilReady() {},
+              health() { return "ready"; },
+              onHealthChange() { return () => {}; },
+              onExit() { return () => {}; },
+              async release() {}
+            };
+          }
+        });
+      }
+    };`;
+    const bundlePath = await bundleFixture(
+      directory,
+      "runtime-with-managed-web-app",
+      (bundle) => {
+        bundle.manifest.dependencies = [
+          required(bundle.manifest.dependencies[0], "fixture Runtime dependency"),
+          {
+            type: "host",
+            id: "managed-web-app-provider",
+            interfaceVersion: "1",
+          },
+        ];
+        bundle.manifest.capabilities = [
+          required(bundle.manifest.capabilities[0], "fixture Runtime capability"),
+          {
+            id: "reference-web",
+            type: "managed-web-app",
+            interfaceVersion: "1",
+            configurationSchema: {
+              type: "object",
+              properties: { channel: { type: "string", enum: ["private"] } },
+              additionalProperties: false,
+            },
+            displayName: "Reference Web",
+            description: "Reference browser interface",
+            nativeRuntimeCapabilityIds: ["reference-runtime"],
+            compatibleRuntimes: [],
+          },
+        ];
+      },
+      source,
+    );
+    const installed = await installOfficialFixture(configPath, bundlePath, {
+      "reference-web": { channel: "private" },
+    });
     expect(installed.manifest.capabilities.map(({ id, type }) => [id, type])).toEqual([
       ["reference-runtime", "runtime"],
-      ["reference-exposure", "exposure"],
+      ["reference-web", "managed-web-app"],
     ]);
-    expect(installed.capabilityConfigurations).toEqual({ "reference-exposure": { channel: "private" } });
+    expect(installed.capabilityConfigurations).toEqual({ "reference-web": { channel: "private" } });
 
     const diagnostics: string[] = [];
     const registry = new RuntimeAdapterRegistry([]);
     const host = new ConnectPluginHost(configPath, registry, (_pluginId, error) => diagnostics.push(String(error)));
-    const forwarded: Request[] = [];
-    const unbindClient = await host.bindClientInterface({
-      origin: "http://127.0.0.1:47823",
-      fetch: async (request) => {
-        forwarded.push(request);
-        return new Response("existing Connect Client content");
-      },
-    });
     await host.activateInstalled();
     await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "alpha" }))).resolves.toBeUndefined();
     await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "beta" }))).resolves.toBeUndefined();
-    expect(readGlobalEffects("__connectReferenceExposureEffects")).toEqual(["activate:private"]);
-    const exposure = referenceExposure();
-    expect(exposure).toMatchObject({
-      activationKeys: ["activationGeneration", "client", "configuration"],
-      activationFrozen: true,
-      configurationFrozen: true,
-      clientKeys: ["fetch"],
-      clientFrozen: true,
+    expect(host.managedWebApps.select({ pluginId: installed.pluginId, capabilityId: "reference-runtime" })).toEqual({
+      pluginId: installed.pluginId,
+      capabilityId: "reference-web",
+      activationGeneration: 1,
+      kind: "native",
+      displayName: "Reference Web",
+      description: "Reference browser interface",
     });
-    const exposed = await exposure.fetch(
-      new Request("https://exposure.example/client/v1/bootstrap?source=plugin", {
-        headers: {
-          [BINDING_SCOPE_HEADER]: "private-binding",
-          [PLUGIN_MANAGER_CONFIG_HEADER]: "/other/connect/config.json",
-        },
-      }),
-    );
-    expect(await exposed.text()).toBe("existing Connect Client content");
-    expect(forwarded).toHaveLength(1);
-    expect(forwarded[0]?.url).toBe("http://127.0.0.1:47823/client/v1/bootstrap?source=plugin");
-    expect(forwarded[0]?.headers.get("host")).toBe("127.0.0.1:47823");
-    expect(forwarded[0]?.headers.has(BINDING_SCOPE_HEADER)).toBe(false);
-    expect(forwarded[0]?.headers.has(PLUGIN_MANAGER_CONFIG_HEADER)).toBe(false);
-    const administrationRoutes = [
-      ["GET", "/client/v1/plugins/administration"],
-      ["GET", "/client/v1/plugins/official"],
-      ["PUT", "/client/v1/bindings/reference-binding/provider"],
-      ["GET", "/client/v1/plugins"],
-      ["POST", "/client/v1/plugins/upload"],
-      ["POST", "/client/v1/plugins/official/setup"],
-      ["POST", "/client/v1/plugins"],
-      ["POST", "/client/v1/plugins/reference-plugin/update"],
-      ["POST", "/client/v1/plugins/reference-plugin/reinstall"],
-      ["POST", "/client/v1/plugins/reference-plugin/configure"],
-      ["POST", "/client/v1/plugins/reference-plugin/enable"],
-      ["POST", "/client/v1/plugins/reference-plugin/disable"],
-      ["POST", "/client/v1/plugins/reference-plugin/select"],
-      ["DELETE", "/client/v1/plugins/reference-plugin"],
-    ] as const;
-    const exposureOrigins = [undefined, "https://exposure.example", "http://127.0.0.1:47823"] as const;
-    for (const [method, path] of administrationRoutes) {
-      for (const origin of exposureOrigins) {
-        const response = await exposure.fetch(
-          new Request(`https://exposure.example${path}`, {
-            method,
-            ...(origin ? { headers: { Origin: origin } } : {}),
-          }),
-        );
-        expect(response.status).toBe(404);
-        await expect(response.json()).resolves.toEqual({
-          error: {
-            code: "not-found",
-            message: "Client Interface endpoint was not found",
-            retryable: false,
-          },
-        });
-      }
-    }
-    expect(forwarded).toHaveLength(1);
-    unbindClient();
+    const lease = await host.managedWebApps.acquire({
+      bindingId: "alpha",
+      runtime: { pluginId: installed.pluginId, capabilityId: "reference-runtime" },
+      runtimeConfiguration: { instance: "alpha" },
+    });
+    expect(lease).toMatchObject({
+      instanceKey: "alpha",
+      upstream: "http://127.0.0.1:47823",
+      selection: {
+        pluginId: installed.pluginId,
+        capabilityId: "reference-web",
+        activationGeneration: 1,
+      },
+    });
+    expect(referenceManagedWebApp()).toEqual({
+      contextKeys: [
+        "activationGeneration",
+        "bindingId",
+        "capabilityId",
+        "configuration",
+        "installationConfiguration",
+        "pluginId",
+        "runtime",
+        "runtimeConfiguration",
+      ],
+      contextFrozen: true,
+      configurationFrozen: true,
+      runtimeFrozen: true,
+      acquireKeys: [
+        "activationGeneration",
+        "bindingId",
+        "capabilityId",
+        "configuration",
+        "installationConfiguration",
+        "instanceKey",
+        "pluginId",
+        "runtime",
+        "runtimeConfiguration",
+      ],
+    });
+    await lease?.release();
     expect(diagnostics).toEqual([]);
     expect(host.activePluginIds()).toEqual([installed.pluginId]);
 
     await host.close();
-    expect(readGlobalEffects("__connectReferenceExposureEffects")).toEqual(["activate:private", "dispose"]);
     await expect(registry.prepare(runtimeBinding(installed.pluginId, { instance: "gamma" }))).rejects.toThrow(
       `Runtime Plugin capability ${installed.pluginId}/reference-runtime is not active`,
     );
-    expect(Reflect.get(globalThis, "__connectReferenceExposure")).toBeUndefined();
+    expect(host.managedWebApps.select({ pluginId: installed.pluginId, capabilityId: "reference-runtime" })).toBeNull();
+    Reflect.deleteProperty(globalThis, "__connectReferenceManagedWebApp");
   });
 
-  it("installs a local Bundle that declares Client Exposure without official admission metadata", async () => {
+  it("installs a local Bundle that declares an Exposure without official admission metadata", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-plugin-public-exposure-"));
     const installed = await installLocalPlugin({
       configPath: join(directory, "config.json"),
@@ -231,15 +283,11 @@ describe("atomic multi-capability Plugin Bundles", () => {
       stateStore,
       workspaces: new WorkspaceCatalog(stateStore),
     });
-    await host.bindClientInterface({
-      origin: "http://127.0.0.1:47823",
-      fetch: async () => new Response("unused"),
-    });
     await host.activateInstalled();
+    await host.activateOptionalSurfaces([]);
 
     expect(Reflect.get(globalThis, "__connectSpoofedLivewareActivationKeys")).toEqual([
       "activationGeneration",
-      "client",
       "configuration",
     ]);
     Reflect.deleteProperty(globalThis, "__connectSpoofedLivewareActivationKeys");
@@ -292,15 +340,11 @@ describe("atomic multi-capability Plugin Bundles", () => {
       stateStore,
       workspaces: new WorkspaceCatalog(stateStore),
     });
-    await host.bindClientInterface({
-      origin: "http://127.0.0.1:47823",
-      fetch: async () => new Response("unused"),
-    });
     await host.activateInstalled();
+    await host.activateOptionalSurfaces([]);
 
     expect(Reflect.get(globalThis, "__connectExposureStateActivationKeys")).toEqual([
       "activationGeneration",
-      "client",
       "configuration",
       "durableState",
     ]);
@@ -419,18 +463,14 @@ describe("atomic multi-capability Plugin Bundles", () => {
     {
       name: "unsupported-client-extension-slot",
       mutate: (bundle) => {
-        bundle.manifest.capabilities.push({
-          id: "unsupported-slot",
-          type: "client-extension",
-          interfaceVersion: "1",
-          configurationSchema: { type: "object", additionalProperties: false },
-          browser: {
-            entry: "client.mjs",
-            integrity: required(bundle.manifest.artifacts[0], "fixture artifact").integrity,
-            styles: [],
-            slots: [{ id: "unknown.slot" as never, interfaceVersion: "1", priority: 10 }],
-          },
-        });
+        bundle.manifest.capabilities.push({ id: "unsupported-slot", type: "client-extension", managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }, interfaceVersion: "1",
+        configurationSchema: { type: "object", additionalProperties: false },
+        browser: {
+          entry: "client.mjs",
+          integrity: required(bundle.manifest.artifacts[0], "fixture artifact").integrity,
+          styles: [],
+          slots: [{ id: "unknown.slot" as never, interfaceVersion: "1", priority: 10 }],
+        }, });
       },
       message: "unsupported Client Extension slot unknown.slot",
     },
@@ -632,11 +672,8 @@ describe("atomic multi-capability Plugin Bundles", () => {
     const host = new ConnectPluginHost(configPath, registry, (_id, error) =>
       diagnostics.push(error instanceof Error ? error.message : String(error)),
     );
-    const unbindClient = await host.bindClientInterface({
-      origin: "http://127.0.0.1:47823",
-      fetch: async () => new Response("unused"),
-    });
     await host.activateInstalled();
+    await host.activateOptionalSurfaces([]);
 
     expect(host.activePluginIds()).toEqual([]);
     expect(readGlobalEffects("__connectAtomicEffects")).toEqual(["activate:first", "dispose:first"]);
@@ -647,7 +684,7 @@ describe("atomic multi-capability Plugin Bundles", () => {
     await expect(listInstalledPlugins(configPath)).resolves.toEqual([
       expect.objectContaining({ pluginId: installed.pluginId, status: "error", error: "second contribution failed" }),
     ]);
-    unbindClient();
+    await host.close();
   });
 
   it("rejects invalid per-Binding Runtime configuration before invoking Plugin code", async () => {

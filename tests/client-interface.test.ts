@@ -3,12 +3,20 @@ import { mkdir, mkdtemp, readdir, realpath, stat, symlink, writeFile } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionCatalogView, SessionView } from "../src/client-contract";
-import { type ClientInterfaceHandle, startClientInterface } from "../src/client-interface/server";
+import {
+  type ClientHttpServerOptions,
+  type ClientInterfaceHandle,
+  type ConnectClientApplicationServices,
+  type ConnectClientOwnedInterfaceOptions,
+  createCoreConnectClientApplicationPort,
+  startClientInterface as startOwnedClientInterface,
+} from "../src/client-interface/server";
 import { TranscriptProjection } from "../src/client-interface/transcript-projection";
 import { ConnectConfigMutationCoordinator, defaultConfig, loadConfig } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { agentBindingIdentity } from "../src/plugin/binding";
 import type { ConnectPluginManagement } from "../src/plugin/host";
+import { CONNECT_CLIENT_MANAGED_WEB_APP_REF } from "../src/plugin/official/connect-client-manifest";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { RuntimeInteractionCoordinator } from "../src/runtime/runtime-interaction-coordinator";
 import {
@@ -23,6 +31,20 @@ import { fixedRuntimeAdapter, pluginBinding } from "./runtime-adapter-fixture";
 
 const openHandles: ClientInterfaceHandle[] = [];
 const openStores: ConnectStateStore[] = [];
+
+async function startClientInterface(
+  options: ConnectClientApplicationServices & Omit<ConnectClientOwnedInterfaceOptions, "applicationPort">,
+): Promise<ClientInterfaceHandle> {
+  const { assetsPath, hostname, port, managedWebApp, serverFactory, ...services } = options;
+  return await startOwnedClientInterface({
+    applicationPort: createCoreConnectClientApplicationPort(() => services),
+    assetsPath,
+    hostname,
+    port,
+    managedWebApp,
+    ...(serverFactory ? { serverFactory } : {}),
+  });
+}
 
 afterEach(async () => {
   await Promise.allSettled(openHandles.splice(0).map(async (handle) => await handle.stop()));
@@ -87,7 +109,9 @@ describe("Connect Client Interface", () => {
         },
       ],
       assetsPath,
+      hostname: "127.0.0.1",
       port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop: async () => undefined };
@@ -183,7 +207,9 @@ describe("Connect Client Interface", () => {
         },
       ],
       assetsPath,
+      hostname: "127.0.0.1",
       port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop };
@@ -248,7 +274,9 @@ describe("Connect Client Interface", () => {
       transcriptProjection: projection,
       runtimes: [],
       assetsPath,
+      hostname: "127.0.0.1",
       port: 47_888,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: () => ({ stop }),
     });
     const observed = starting.then(
@@ -517,7 +545,6 @@ describe("Connect Client Interface", () => {
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
     const runtimeInteractions = new RuntimeInteractionCoordinator(projection);
     const port = 47_891;
-    config.clientPort = port;
     const configPath = join(directory, "config.json");
     const configMutations = new ConnectConfigMutationCoordinator(config, configPath);
     let providerMutationStarted = false;
@@ -546,7 +573,9 @@ describe("Connect Client Interface", () => {
       pluginManager,
       runtimes: [runtime],
       assetsPath,
+      hostname: "127.0.0.1",
       port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop: async () => undefined };
@@ -1530,7 +1559,9 @@ describe("Connect Client Interface", () => {
           },
         ],
         assetsPath,
+        hostname: "127.0.0.1",
         port,
+        managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
         serverFactory: (options) => {
           fetchHandler = options.fetch;
           return { stop: async () => undefined };
@@ -1679,7 +1710,9 @@ describe("Connect Client Interface", () => {
         },
       ],
       assetsPath,
+      hostname: "127.0.0.1",
       port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop: async () => undefined };
@@ -1742,7 +1775,9 @@ describe("Connect Client Interface", () => {
       transcriptProjection: projection,
       runtimes: [],
       assetsPath,
+      hostname: "127.0.0.1",
       port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop: async () => undefined };
@@ -1768,7 +1803,6 @@ describe("Connect Client Interface", () => {
     openStores.push(store);
     const config = defaultConfig();
     config.stateDbPath = store.dbPath;
-    config.clientHost = "0.0.0.0";
     const registry = new RuntimeAdapterRegistry([]);
     const projection = new TranscriptProjection({ stateStore: store, config, runtimeAdapters: registry });
     const port = 47_894;
@@ -1782,7 +1816,9 @@ describe("Connect Client Interface", () => {
       transcriptProjection: projection,
       runtimes: [],
       assetsPath,
+      hostname: "0.0.0.0",
       port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         listeningHost = options.hostname;
         fetchHandler = options.fetch;
@@ -1794,10 +1830,11 @@ describe("Connect Client Interface", () => {
     expect(listeningHost).toBe("0.0.0.0");
     expect(handle.origin).toBe(`http://0.0.0.0:${port}`);
 
-    const privateGatewayAdministration = await handle.fetchPrivateGateway(
+    const pluginAdministration = await (fetchHandler as ClientHttpServerOptions["fetch"])(
       new Request(`${handle.origin}/client/v1/plugins`, { headers: { host: `0.0.0.0:${port}` } }),
+      { requestIP: () => ({ address: "127.0.0.1" }) },
     );
-    expect(privateGatewayAdministration.status).toBe(503);
+    expect(pluginAdministration.status).toBe(503);
 
     const lanOrigin = `http://192.168.1.20:${port}`;
     const document = await localRequest(fetchHandler, lanOrigin, "/");
@@ -1950,7 +1987,9 @@ describe("Connect Client Interface", () => {
       runtimeInteractions,
       runtimes: scopedRuntimes,
       assetsPath,
+      hostname: "127.0.0.1",
       port,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop: async () => undefined };
@@ -2225,6 +2264,9 @@ describe("Connect Client Interface", () => {
         },
       ],
       assetsPath,
+      hostname: "127.0.0.1",
+      port: 47_897,
+      managedWebApp: CONNECT_CLIENT_MANAGED_WEB_APP_REF,
       serverFactory: (options) => {
         fetchHandler = options.fetch;
         return { stop: async () => undefined };

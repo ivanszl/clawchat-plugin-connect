@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { OfficialPluginDescriptor } from "../../scripts/build-official-plugins";
 import { OPENCODE_SEMANTIC_VERSION_PATTERN } from "../runtime/opencode-version";
 import codexDescriptor from "./official/codex-descriptor";
+import connectClientDescriptor from "./official/connect-client-descriptor";
 import deepSeekHarnessDescriptor from "./official/deepseek-harness-descriptor";
 import livewareDescriptor from "./official/liveware-descriptor";
 import opencodeDescriptor from "./official/opencode-descriptor";
@@ -14,7 +15,7 @@ import { OFFICIAL_WORKBUDDY_DISTRIBUTIONS } from "./official/workbuddy-manifest"
 import type { ConnectPluginBundleV1, ConnectPluginManifestV1, ConnectPluginSource } from "./sdk";
 import { type PluginSourceResolverOptions, type ResolvedPluginSource, resolvePluginSource } from "./source";
 
-export type OfficialPluginClassification = "runtime" | "client-exposure";
+export type OfficialPluginClassification = "runtime" | "managed-web-app" | "exposure";
 export interface OfficialRuntimeDiscoveryRule {
   readonly executableNames: readonly string[];
   readonly versionCommand?: {
@@ -120,7 +121,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: opencodeDescriptor,
     name: "OpenCode",
-    artifactIntegrity: "sha256-k/Y1Cj0aplq4OG8hioWSNXulokfCJLMPYmmAaGI9cn0=",
+    artifactIntegrity: "sha256-ST8vEaHd6VgS2DM+yavHOLxYy/ywDjd0A0Ev19osFJo=",
     discovery: {
       executableNames: ["opencode"],
       versionCommand: {
@@ -135,7 +136,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: deepSeekHarnessDescriptor,
     name: "DeepSeek Harness",
-    artifactIntegrity: "sha256-e+G+X1YgP9JGNZaW0HL+ZvvFoJ8PrkP22HjoVgEaqoU=",
+    artifactIntegrity: "sha256-juzBS2DHLZUfcnUhGFCn+t2oSj9CEkELNUmOPy0IS2c=",
     assetIntegrities: {
       "artifacts/deepseek-harness-bridge.mjs": {
         "darwin-arm64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
@@ -154,17 +155,33 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: workbuddyDescriptor,
     name: "WorkBuddy",
-    artifactIntegrity: "sha256-opps6frZbUqy9lk/MoS/UA4FLNOTEPcqOlnzv41DZoU=",
+    artifactIntegrity: "sha256-nUppv5vBsmQXru8rgBdVfNNfNV59GXbcOzlWNXm6QfA=",
     classification: "runtime",
     discovery: {
       executableNames: OFFICIAL_WORKBUDDY_DISTRIBUTIONS.map(({ applicationPath }) => applicationPath),
     },
   },
   {
+    descriptor: connectClientDescriptor,
+    name: "Connect Client",
+    artifactIntegrity: "sha256-fndXBTuPduO+ViN2n0WH/sbun47/kgD5jk3ZWTxE72Q=",
+    classification: "managed-web-app",
+    assetIntegrities: {
+      "client-assets.json": {
+        "darwin-arm64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
+        "darwin-x64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
+        "linux-arm64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
+        "linux-x64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
+        "win32-arm64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
+        "win32-x64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
+      },
+    },
+  },
+  {
     descriptor: livewareDescriptor,
     name: "Liveware",
-    artifactIntegrity: "sha256-H2GxdH2i5it4MIyvBGZo5BZUYIGIBCGicpI3lRlqCjM=",
-    classification: "client-exposure",
+    artifactIntegrity: "sha256-cU5kH6LM4v46IGuwAqRCUp8+taK9jnAUr4b4u7kCe6w=",
+    classification: "exposure",
     assetIntegrities: {
       "assets/liveware": {
         "darwin-arm64": "sha256-VvdovxnGns0nO7xvDeLbzuF0C+7w5OjL6mAiR8R8ozY=",
@@ -371,18 +388,45 @@ function assertBundledBundle(
   if (artifact.integrity !== definition.artifactIntegrity) {
     throw new Error("entry artifact does not match the release-pinned integrity");
   }
-  const assetEntries = definition.descriptor.assets?.map(({ entry }) => entry) ?? [];
-  const expectedFiles = [artifact.entry, ...assetEntries].sort();
-  if (!isDeepStrictEqual(Object.keys(bundle.files).sort(), expectedFiles)) {
-    throw new Error("Bundle files do not match the embedded official Plugin descriptor");
-  }
-  for (const assetEntry of assetEntries) {
-    const expected = definition.assetIntegrities?.[assetEntry]?.[target];
-    if (!expected) throw new Error(`has no release-pinned integrity for ${assetEntry} on ${target}`);
-    const file = bundle.files[assetEntry];
+  const expectedFiles = new Set<string>([artifact.entry]);
+  for (const asset of definition.descriptor.assets ?? []) {
+    expectedFiles.add(asset.entry);
+    const expected = definition.assetIntegrities?.[asset.entry]?.[target];
+    if (!expected) throw new Error(`has no release-pinned integrity for ${asset.entry} on ${target}`);
+    const file = bundle.files[asset.entry];
     if (!file || fileIntegrity(file) !== expected) {
-      throw new Error(`${assetEntry} does not match the release-pinned integrity`);
+      throw new Error(`${asset.entry} does not match the release-pinned integrity`);
     }
+  }
+  for (const directory of definition.descriptor.assetDirectories ?? []) {
+    const manifestEntry = directory.integrityManifestEntry;
+    expectedFiles.add(manifestEntry);
+    const expectedManifestIntegrity = definition.assetIntegrities?.[manifestEntry]?.[target];
+    if (!expectedManifestIntegrity) {
+      throw new Error(`has no release-pinned integrity for ${manifestEntry} on ${target}`);
+    }
+    const manifestFile = bundle.files[manifestEntry];
+    if (!manifestFile || fileIntegrity(manifestFile) !== expectedManifestIntegrity) {
+      throw new Error(`${manifestEntry} does not match the release-pinned integrity`);
+    }
+    const integrities = parseAssetIntegrityManifest(fileBytes(manifestFile), manifestEntry);
+    const prefix = `${directory.entryPrefix.replace(/\/+$/u, "")}/`;
+    const actualEntries = Object.keys(bundle.files)
+      .filter((entry) => entry.startsWith(prefix))
+      .sort();
+    if (!isDeepStrictEqual(Object.keys(integrities).sort(), actualEntries)) {
+      throw new Error(`${manifestEntry} does not describe the complete ${prefix} asset graph`);
+    }
+    for (const entry of actualEntries) {
+      expectedFiles.add(entry);
+      const file = bundle.files[entry];
+      if (!file || fileIntegrity(file) !== integrities[entry]) {
+        throw new Error(`${entry} does not match ${manifestEntry}`);
+      }
+    }
+  }
+  if (!isDeepStrictEqual(Object.keys(bundle.files).sort(), [...expectedFiles].sort())) {
+    throw new Error("Bundle files do not match the embedded official Plugin descriptor");
   }
 }
 
@@ -400,11 +444,22 @@ export async function isBundledOfficialPluginInstallation(installed: {
   if (!definition || installed.integrity !== definition.artifactIntegrity) return false;
   try {
     if (bytesIntegrity(await readFile(installed.activeArtifact)) !== definition.artifactIntegrity) return false;
+    const artifactRoot = resolve(dirname(installed.activeArtifact), "..");
     for (const asset of definition.descriptor.assets ?? []) {
       const expected = definition.assetIntegrities?.[asset.entry]?.[installed.target];
       if (!expected) return false;
-      const installedPath = resolve(dirname(installed.activeArtifact), "..", asset.entry);
-      if (bytesIntegrity(await readFile(installedPath)) !== expected) return false;
+      if (bytesIntegrity(await readFile(resolve(artifactRoot, asset.entry))) !== expected) return false;
+    }
+    for (const directory of definition.descriptor.assetDirectories ?? []) {
+      const manifestEntry = directory.integrityManifestEntry;
+      const expectedManifestIntegrity = definition.assetIntegrities?.[manifestEntry]?.[installed.target];
+      if (!expectedManifestIntegrity) return false;
+      const manifestBytes = await readFile(resolve(artifactRoot, manifestEntry));
+      if (bytesIntegrity(manifestBytes) !== expectedManifestIntegrity) return false;
+      const integrities = parseAssetIntegrityManifest(manifestBytes, manifestEntry);
+      for (const [entry, integrity] of Object.entries(integrities)) {
+        if (bytesIntegrity(await readFile(resolve(artifactRoot, entry))) !== integrity) return false;
+      }
     }
     return true;
   } catch {
@@ -413,8 +468,36 @@ export async function isBundledOfficialPluginInstallation(installed: {
 }
 
 function fileIntegrity(file: ConnectPluginBundleV1["files"][string]): string {
-  const bytes = file.encoding === "base64" ? Buffer.from(file.content, "base64") : Buffer.from(file.content);
-  return bytesIntegrity(bytes);
+  return bytesIntegrity(fileBytes(file));
+}
+
+function fileBytes(file: ConnectPluginBundleV1["files"][string]): Uint8Array {
+  return file.encoding === "base64" ? Buffer.from(file.content, "base64") : Buffer.from(file.content);
+}
+
+function parseAssetIntegrityManifest(bytes: Uint8Array, entry: string): Record<string, string> {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch {
+    throw new Error(`${entry} is not a valid UTF-8 JSON integrity manifest`);
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${entry} must be an integrity object`);
+  }
+  const integrities: Record<string, string> = {};
+  for (const [path, integrity] of Object.entries(value)) {
+    if (
+      !path ||
+      typeof integrity !== "string" ||
+      !/^sha256-[A-Za-z0-9+/]{43}=$/u.test(integrity)
+    ) {
+      throw new Error(`${entry} contains an invalid asset integrity`);
+    }
+    integrities[path] = integrity;
+  }
+  if (Object.keys(integrities).length === 0) throw new Error(`${entry} must not be empty`);
+  return integrities;
 }
 
 function bytesIntegrity(bytes: Uint8Array): string {

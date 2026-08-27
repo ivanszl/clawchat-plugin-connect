@@ -60,7 +60,6 @@ describe("Installation Owner Reset", () => {
     let config = upsertAgentBinding(defaultConfig(), "personal", pluginBinding());
     config = upsertAgentBinding(config, "work", pluginBinding());
     config.stateDbPath = stateDbPath;
-    config.clientPort = 49_321;
     config.outputVisibility = "full";
     await saveConfig(config, configPath);
     const pluginPaths = pluginInstallationPaths(configPath);
@@ -223,7 +222,6 @@ describe("Installation Owner Reset", () => {
     const resetConfig = await loadConfig(configPath);
     expect(resetConfig.agents).toEqual({});
     expect(resetConfig.defaultAgent).toBeNull();
-    expect(resetConfig.clientPort).toBe(49_321);
     expect(resetConfig.outputVisibility).toBe("full");
     expect(await readFile(join(workspaceRoot, "workspace.txt"), "utf8")).toBe("preserve project workspace");
     expect(await readFile(join(nativeRoot, "thread-and-transcript.json"), "utf8")).toContain("native-1");
@@ -333,6 +331,82 @@ describe("Installation Owner Reset", () => {
     expect(await Bun.file(activeArtifact).exists()).toBe(true);
     await store.close();
   });
+
+  it("retains every Binding credential and exact durable cleanup transition when external retirement is interrupted", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-owner-reset-retry-"));
+    const configPath = join(directory, "config.json");
+    const stateDbPath = join(directory, "state.sqlite");
+    const config = upsertAgentBinding(defaultConfig(), "personal", pluginBinding());
+    config.stateDbPath = stateDbPath;
+    await saveConfig(config, configPath);
+    const store = createStateStore({ dbPath: stateDbPath });
+    const publicationState = new ConnectBindingLivewarePublicationStateStore(store);
+    await expect(store.commitActivationForInstallationOwner(activation("personal", "token-personal"))).resolves.toBe(
+      "established",
+    );
+    await publicationState.compareAndSwap("personal", null, publication("personal", "app-personal"));
+    const actions: string[] = [];
+
+    await expect(
+      resetInstallationOwner(
+        { configPath },
+        {
+          store,
+          getServiceStatus: async () => {
+            actions.push("status");
+            return { running: true };
+          },
+          stopService: async () => {
+            actions.push("stop");
+          },
+          startService: async () => {
+            actions.push("restart");
+          },
+          retireLivewarePublications: async () => {
+            actions.push("retire");
+            const current = await publicationState.read("personal");
+            if (!current) throw new Error("expected publication state");
+            await publicationState.compareAndSwap("personal", current.revision, {
+              ...current.value,
+              desired: "retired",
+              status: "retiring",
+              transition: "unregister-launcher",
+              diagnostic: "launcher retirement interrupted",
+            });
+            throw new Error("launcher retirement interrupted");
+          },
+        },
+      ),
+    ).rejects.toThrow("launcher retirement interrupted");
+
+    expect(actions).toEqual(["status", "stop", "retire", "restart"]);
+    await expect(loadConfig(configPath)).resolves.toMatchObject({
+      defaultAgent: "personal",
+      agents: { personal: pluginBinding() },
+    });
+    await expect(store.getInstallationOwner()).resolves.toBe("installation-owner");
+    await expect(store.getActivation("personal")).resolves.toMatchObject({
+      localAgentId: "personal",
+      accessToken: "token-personal",
+    });
+    await expect(publicationState.read("personal")).resolves.toMatchObject({
+      value: {
+        desired: "retired",
+        status: "retiring",
+        transition: "unregister-launcher",
+        diagnostic: "launcher retirement interrupted",
+        selectedApp: {
+          pluginId: "fixture.managed-web-app",
+          capabilityId: "web",
+          activationGeneration: 1,
+          instanceKey: "managed-web-app:personal",
+          displayName: "Fixture Web",
+          description: "Fixture browser interface",
+        },
+      },
+    });
+    await store.close();
+  });
 });
 
 function activation(localAgentId: string, accessToken: string): ActivationCredentials {
@@ -354,6 +428,14 @@ function publication(bindingId: string, appId: string) {
     desired: "private" as const,
     status: "active" as const,
     transition: null,
+    selectedApp: {
+      pluginId: "fixture.managed-web-app",
+      capabilityId: "web",
+      activationGeneration: 1,
+      instanceKey: `managed-web-app:${bindingId}`,
+      displayName: "Fixture Web",
+      description: "Fixture browser interface",
+    },
     correlationKey: `publication:${bindingId}`,
     appId,
     publicUrl: `https://${appId}.example.test`,

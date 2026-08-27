@@ -1,6 +1,5 @@
 param(
   [Parameter(Mandatory = $true)][string]$ConnectExecutable,
-  [Parameter(Mandatory = $true)][string]$ClientDirectory,
   [Parameter(Mandatory = $true)][string]$OfficialPluginsDirectory,
   [Parameter(Mandatory = $true)][string]$OutputArchive,
   [Parameter(Mandatory = $true)][ValidateSet("win32-arm64", "win32-x64")][string]$PluginTarget
@@ -12,7 +11,6 @@ $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $SkillsDirectory = Join-Path $RepositoryRoot "skills"
 $Changelog = Join-Path $RepositoryRoot "CHANGELOG.md"
 $License = Join-Path $RepositoryRoot "LICENSE"
-$ClientEntry = Join-Path $ClientDirectory "index.html"
 $OutputArchivePath = [System.IO.Path]::GetFullPath($OutputArchive)
 $OutputDirectory = Split-Path -Parent $OutputArchivePath
 $StagingDirectory = Join-Path (
@@ -22,12 +20,6 @@ $PayloadRoot = Join-Path $StagingDirectory "clawchat-connect"
 
 if (-not (Test-Path -LiteralPath $ConnectExecutable -PathType Leaf)) {
   throw "Connect executable does not exist: $ConnectExecutable"
-}
-if (-not (Test-Path -LiteralPath $ClientDirectory -PathType Container)) {
-  throw "Client directory does not exist: $ClientDirectory"
-}
-if (-not (Test-Path -LiteralPath $ClientEntry -PathType Leaf)) {
-  throw "Client entry point does not exist: $ClientEntry"
 }
 if (-not (Test-Path -LiteralPath $OfficialPluginsDirectory -PathType Container)) {
   throw "Official Plugins directory does not exist: $OfficialPluginsDirectory"
@@ -59,7 +51,6 @@ try {
   New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
   Copy-Item -LiteralPath $ConnectExecutable -Destination (Join-Path $PayloadRoot "clawchat-connect.exe")
-  Copy-Item -LiteralPath $ClientDirectory -Destination (Join-Path $PayloadRoot "clawchat-connect-client") -Recurse
   Copy-Item -LiteralPath $OfficialPluginsDirectory -Destination (Join-Path $PayloadRoot "official-plugins") -Recurse
   Copy-Item -LiteralPath $SkillsDirectory -Destination (Join-Path $PayloadRoot "skills") -Recurse
   Copy-Item -LiteralPath $Changelog -Destination $PayloadRoot

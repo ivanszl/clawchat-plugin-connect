@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import type { AgentBindingConfig, RuntimeModelSelection, RuntimeWorkspace } from "../types";
 import {
   type DshBridgeClient,
@@ -10,6 +9,7 @@ import {
   type StartDshBridgeOptions,
   startDshBridge,
 } from "./deepseek-harness-process";
+import { canonicalDshHome } from "./deepseek-harness-identity";
 import type {
   DshBridgeAdmission,
   DshBridgeCatalogCommand,
@@ -230,7 +230,7 @@ async function prepareHarness(
   binding: DeepSeekHarnessRuntimeAdapterBinding,
   options: DeepSeekHarnessRuntimeAdapterOptions,
 ): Promise<PreparedHarness> {
-  const home = canonicalHome(binding.homePath, binding.env);
+  const home = canonicalDshHome(binding.homePath, binding.env);
   const cwd = process.cwd();
   const executable = (options.probeExecutable ?? requireDshExecutable)(binding.executablePathOverride, binding.env);
   const client = await (options.createBridge ?? startDshBridge)({
@@ -732,18 +732,6 @@ function assertSameBinding(
   ) {
     throw new Error("DeepSeek Harness Runtime Adapter cannot change Home, Profile, or executable after activation");
   }
-}
-
-function canonicalHome(configured: string | undefined, env: Readonly<Record<string, string>> | undefined): string {
-  const native = configured?.trim() || env?.DSH_HOME?.trim() || process.env.DSH_HOME?.trim();
-  const selected = native ? expandHome(native) : join(homedir(), ".dsh");
-  return canonicalPathBestEffort(resolve(selected));
-}
-
-function expandHome(path: string): string {
-  if (path === "~") return homedir();
-  if (path.startsWith("~/") || path.startsWith("~\\")) return join(homedir(), path.slice(2));
-  return path;
 }
 
 function canonicalWorkspace(workspace: RuntimeWorkspace): string {

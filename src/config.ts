@@ -4,14 +4,11 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { identifyAgentBinding, normalizeAgentBinding } from "./plugin/binding";
-import type { AgentBindingConfig, ClientHost, ConnectConfig, OutputVisibility } from "./types";
+import type { AgentBindingConfig, ConnectConfig, OutputVisibility } from "./types";
 
 export const DEFAULT_BASE_URL = "https://app.clawling.com" as const;
 export const DEFAULT_WEBSOCKET_URL = "wss://app.clawling.com/ws" as const;
 export const DEFAULT_MEDIA_UPLOAD_URL = "https://app.clawling.com/media/upload" as const;
-export const DEFAULT_CLIENT_PORT = 47_823 as const;
-export const DEFAULT_CLIENT_HOST = "127.0.0.1" as const;
-const CLIENT_HOSTS = { "127.0.0.1": true, "0.0.0.0": true } satisfies Record<ClientHost, true>;
 
 export function defaultDataDir(): string {
   return join(homedir(), ".clawchat-connect");
@@ -41,16 +38,6 @@ function requireAbsolutePath(value: string, label: string): string {
   return value;
 }
 
-function readOptionalEnum<T extends string>(
-  value: unknown,
-  allowed: Readonly<Record<T, true>>,
-  label: string,
-): T | undefined {
-  if (value === undefined) return undefined;
-  const text = readString(value) as T;
-  if (!Object.hasOwn(allowed, text)) throw new Error(`${label} must be one of: ${Object.keys(allowed).join(", ")}`);
-  return text;
-}
 
 export function defaultConfig(): ConnectConfig {
   return {
@@ -61,8 +48,6 @@ export function defaultConfig(): ConnectConfig {
     defaultAgent: null,
     outputVisibility: "normal",
     agents: {},
-    clientHost: DEFAULT_CLIENT_HOST,
-    clientPort: DEFAULT_CLIENT_PORT,
   };
 }
 
@@ -100,14 +85,6 @@ export function normalizeConfig(raw: unknown): ConnectConfig {
     defaultAgent,
     outputVisibility: isOutputVisibility(record.outputVisibility) ? record.outputVisibility : fallback.outputVisibility,
     agents,
-    clientHost: readOptionalEnum(record.clientHost, CLIENT_HOSTS, "clientHost") ?? fallback.clientHost,
-    clientPort:
-      typeof record.clientPort === "number" &&
-      Number.isInteger(record.clientPort) &&
-      record.clientPort >= 1_024 &&
-      record.clientPort <= 65_535
-        ? record.clientPort
-        : fallback.clientPort,
     ...(typeof record.maxConcurrentTurns === "number" && Number.isFinite(record.maxConcurrentTurns)
       ? { maxConcurrentTurns: Math.max(1, Math.trunc(record.maxConcurrentTurns)) }
       : {}),

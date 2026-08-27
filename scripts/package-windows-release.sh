@@ -3,10 +3,9 @@
 set -eu
 
 connect_binary="${1:?Connect executable is required}"
-client_directory="${2:?Client directory is required}"
-official_plugins_directory="${3:?official Plugins directory is required}"
-archive="${4:?archive path is required}"
-plugin_target="${5:?official Plugin target is required}"
+official_plugins_directory="${2:?official Plugins directory is required}"
+archive="${3:?archive path is required}"
+plugin_target="${4:?official Plugin target is required}"
 script_directory="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 repository_root="$(dirname "$script_directory")"
 staging_directory="$(mktemp -d "${TMPDIR:-/tmp}/clawchat-connect-windows-release.XXXXXX")"
@@ -15,7 +14,6 @@ archive_name="$(basename "$archive")"
 trap 'rm -rf "$staging_directory"' 0 1 2 3 15
 
 test -f "$connect_binary"
-test -f "$client_directory/index.html"
 test -d "$official_plugins_directory"
 case "$plugin_target" in
   win32-arm64 | win32-x64) ;;
@@ -41,7 +39,6 @@ archive_directory="$(CDPATH= cd -- "$archive_directory" && pwd)"
 archive="$archive_directory/$archive_name"
 
 cp "$connect_binary" "$staging_directory/clawchat-connect.exe"
-cp -R "$client_directory" "$staging_directory/clawchat-connect-client"
 cp -R "$official_plugins_directory" "$staging_directory/official-plugins"
 cp -R "$repository_root/skills" "$staging_directory/skills"
 cp "$repository_root/LICENSE" "$repository_root/CHANGELOG.md" "$staging_directory/"
@@ -50,7 +47,6 @@ cp "$repository_root/LICENSE" "$repository_root/CHANGELOG.md" "$staging_director
   cd "$staging_directory"
   zip -q -r "$archive" \
     clawchat-connect.exe \
-    clawchat-connect-client \
     official-plugins \
     skills \
     CHANGELOG.md \

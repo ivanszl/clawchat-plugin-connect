@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ClientInterfaceOptions } from "../src/client-interface/server";
 import { defaultConfig, getAgentBinding, loadConfig, saveConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { ConnectPluginHost } from "../src/plugin/host";
@@ -19,6 +18,7 @@ import { currentConnectPluginTarget } from "../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import type { BindingRuntimeHandle } from "../src/service/binding-runtime";
 import { startConnectService } from "../src/service/connect-service";
+import { CORE_CONTROL_CONFIG_HEADER, CORE_CONTROL_ORIGIN } from "../src/service/core-control";
 import type { ActivationCredentials, ConnectConfig } from "../src/types";
 import { pluginBinding } from "./runtime-adapter-fixture";
 
@@ -33,6 +33,17 @@ function activation(agentId: string, ownerUserId = "owner-1"): ActivationCredent
     conversationId: `chat-${agentId}`,
   };
 }
+async function corePluginRequest(configPath: string, path: string, init: RequestInit = {}): Promise<unknown> {
+  const headers = new Headers(init.headers);
+  headers.set("Origin", CORE_CONTROL_ORIGIN);
+  headers.set(CORE_CONTROL_CONFIG_HEADER, configPath);
+  if (init.body !== undefined) headers.set("Content-Type", "application/json");
+  const response = await fetch(`${CORE_CONTROL_ORIGIN}/core/v1/plugins${path}`, { ...init, headers });
+  const value = (await response.json()) as { error?: { message?: string } };
+  if (!response.ok) throw new Error(value.error?.message ?? `Core control failed with HTTP ${response.status}`);
+  return value;
+}
+
 
 describe("Connect Service", () => {
   it("blocks every downstream module when the mandatory persistence provider fails", async () => {
@@ -79,13 +90,14 @@ describe("Connect Service", () => {
     ).rejects.toThrow("managed skills mismatch");
   });
 
-  it("rejects startup after disposing composition resources that already started", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-startup-failure-"));
+  it("starts and disposes the headless service without a mandatory Client", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-headless-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
     await stateStore.upsertActivation(activation("codex"));
     const config = serviceConfig(["codex"]);
     config.stateDbPath = stateStore.dbPath;
     const events: string[] = [];
+    const output: string[] = [];
 
     await expect(
       startConnectService(
@@ -94,7 +106,7 @@ describe("Connect Service", () => {
           configPath: join(directory, "config.json"),
           stateStore,
           waitUntilShutdown: async () => undefined,
-          writeOutput: () => undefined,
+          writeOutput: (message) => output.push(message),
           writeError: () => undefined,
         },
         {
@@ -106,15 +118,13 @@ describe("Connect Service", () => {
               events.push("binding-close");
             },
           }),
-          startClientInterface: async () => {
-            throw new Error("client bind failed");
-          },
           verifyInstalledSkills: async () => undefined,
         },
       ),
-    ).rejects.toThrow("client bind failed");
+    ).resolves.toEqual({ startedAgentIds: ["codex"] });
 
     expect(events).toEqual(["binding-close"]);
+    expect(output.join("")).not.toContain("Connect Client");
   });
 
   it("starts multiple Agent Bindings for one Binding Owner in one process and closes them together", async () => {
@@ -143,13 +153,6 @@ describe("Connect Service", () => {
         },
       };
     });
-    const stopClientInterface = mock(async () => undefined);
-    const startClientInterface = mock(async (_options: ClientInterfaceOptions) => ({
-      origin: "http://127.0.0.1:47823",
-      fetchPrivateGateway: async () => new Response(null, { status: 204 }),
-      retireBindings: async () => undefined,
-      stop: stopClientInterface,
-    }));
     const closeRuntimeAdapter = mock(async () => undefined);
     const notifyHandler = mock(() => undefined);
     const createRuntimeAdapterRegistry = () =>
@@ -168,7 +171,6 @@ describe("Connect Service", () => {
         },
       ]);
 
-    const clientAssetsPath = join(directory, "production-client");
     const result = await startConnectService(
       {
         config,
@@ -180,9 +182,7 @@ describe("Connect Service", () => {
       },
       {
         startBindingRuntime,
-        startClientInterface,
         createRuntimeAdapterRegistry,
-        resolveClientAssetsPath: async () => clientAssetsPath,
         verifyInstalledSkills: async () => undefined,
       },
     );
@@ -201,17 +201,11 @@ describe("Connect Service", () => {
     expect(turnSurfaces).toBeDefined();
     expect(startBindingRuntime.mock.calls.every(([options]) => options.turnSurfaces === turnSurfaces)).toBe(true);
     expect(startBindingRuntime.mock.calls.every(([options]) => options.runtimeAdapters === undefined)).toBe(true);
-    expect(startClientInterface.mock.calls[0]?.[0].runtimeAdapters).toBe(execution?.runtimeAdapters);
-    expect(startClientInterface.mock.calls[0]?.[0].transcriptProjection).toBe(execution?.transcriptProjection);
-    expect(startClientInterface.mock.calls[0]?.[0].runtimeInteractions).toBe(execution?.runtimeInteractions);
-    expect(startClientInterface.mock.calls[0]?.[0].assetsPath).toBe(clientAssetsPath);
     expect(closed).toEqual(["codex-work", "codex-review"]);
-    expect(startClientInterface).toHaveBeenCalledTimes(1);
-    expect(stopClientInterface).toHaveBeenCalledTimes(1);
     expect(closeRuntimeAdapter).toHaveBeenCalledTimes(2);
   });
 
-  it("retires only dependent Binding transports before force removal purges them", async () => {
+  it("retires dependent Binding transports through the Core control seam before force removal", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-force-removal-"));
     const configPath = join(directory, "config.json");
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
@@ -246,7 +240,6 @@ describe("Connect Service", () => {
     const closeCounts = new Map<string, number>();
     let dependentConfigurationPresentWhenClosed = false;
     let rejectNextDependentClose = true;
-    const lifecycleEvents: string[] = [];
     let enqueueRetiredBinding = async (): Promise<void> => {
       throw new Error("retired queue was not created");
     };
@@ -265,7 +258,6 @@ describe("Connect Service", () => {
         websocketUrl: config.websocketUrl,
         deviceId: "device-1",
         close: async () => {
-          lifecycleEvents.push(`transport:${runtimeOptions.agentId}`);
           if (runtimeOptions.agentId === removedBindingId) {
             dependentConfigurationPresentWhenClosed = config.agents[removedBindingId] !== undefined;
           }
@@ -278,56 +270,56 @@ describe("Connect Service", () => {
         },
       };
     });
-    let signalClientReady: (options: ClientInterfaceOptions) => void = () => undefined;
-    const clientReady = new Promise<ClientInterfaceOptions>((resolve) => {
-      signalClientReady = resolve;
-    });
-    const retireClientBindings = mock(async (bindingIds: readonly string[]) => {
-      lifecycleEvents.push(`client:${bindingIds.join(",")}`);
+    let signalCoreReady: () => void = () => undefined;
+    const coreReady = new Promise<void>((resolve) => {
+      signalCoreReady = resolve;
     });
     let finishShutdown: () => void = () => undefined;
     const shutdown = new Promise<void>((resolve) => {
       finishShutdown = resolve;
     });
+    const waitUntilShutdown = async () => {
+      signalCoreReady();
+      await shutdown;
+    };
     const running = startConnectService(
       {
         config,
         configPath,
         stateStore,
-        waitUntilShutdown: async () => await shutdown,
+        waitUntilShutdown,
         writeOutput: () => undefined,
         writeError: () => undefined,
       },
       {
         startBindingRuntime,
-        startClientInterface: async (options) => {
-          signalClientReady(options);
-          return {
-            origin: "http://127.0.0.1:47823",
-            fetchPrivateGateway: async () => new Response(null, { status: 204 }),
-            retireBindings: retireClientBindings,
-            stop: async () => undefined,
-          };
-        },
         verifyInstalledSkills: async () => undefined,
       },
     );
 
-    const clientOptions = await clientReady;
-    const pluginManager = clientOptions.pluginManager;
-    if (!pluginManager) throw new Error("Expected running Plugin Host");
+    await Promise.race([
+      coreReady,
+      running.then(() => {
+        throw new Error("Connect Service stopped before Core control became ready");
+      }),
+    ]);
     try {
-      await expect(pluginManager.remove(pluginId)).rejects.toThrow("required by Agent Bindings");
+      await expect(
+        corePluginRequest(configPath, `/${encodeURIComponent(pluginId)}`, { method: "DELETE" }),
+      ).rejects.toThrow("required by Agent Bindings");
       expect(connected).toEqual(new Set([removedBindingId, unrelatedBindingId]));
 
-      await expect(pluginManager.remove(pluginId, true)).rejects.toThrow("dependent transport close failed");
+      await expect(
+        corePluginRequest(configPath, `/${encodeURIComponent(pluginId)}?force=1`, { method: "DELETE" }),
+      ).rejects.toThrow("dependent transport close failed");
       expect(config.agents[removedBindingId]).toBeDefined();
       expect(connected).toEqual(new Set([removedBindingId, unrelatedBindingId]));
-      expect(clientOptions.runtimes.map((handle) => handle.agentId)).toEqual([removedBindingId, unrelatedBindingId]);
       await expect(enqueueRetiredBinding()).rejects.toThrow("lifecycle operation");
       await expect(enqueueUnrelatedBinding()).resolves.toBeUndefined();
 
-      await expect(pluginManager.remove(pluginId, true)).rejects.toThrow("dependent Binding purge failed");
+      await expect(
+        corePluginRequest(configPath, `/${encodeURIComponent(pluginId)}?force=1`, { method: "DELETE" }),
+      ).rejects.toThrow("dependent Binding purge failed");
       expect(config.agents[removedBindingId]).toEqual(serviceBinding(pluginId));
       await expect(loadConfig(configPath)).resolves.toMatchObject({
         agents: { [removedBindingId]: serviceBinding(pluginId) },
@@ -335,26 +327,20 @@ describe("Connect Service", () => {
       await expect(stateStore.getActivation(removedBindingId)).resolves.toMatchObject({
         localAgentId: removedBindingId,
       });
-      await expect(pluginManager.list()).resolves.toEqual(
+      await expect(corePluginRequest(configPath, "")).resolves.toEqual(
         expect.arrayContaining([expect.objectContaining({ pluginId, status: "disabled" })]),
       );
 
-      await expect(pluginManager.remove(pluginId, true)).resolves.toMatchObject({ pluginId });
+      await expect(
+        corePluginRequest(configPath, `/${encodeURIComponent(pluginId)}?force=1`, { method: "DELETE" }),
+      ).resolves.toMatchObject({ pluginId });
 
       expect(dependentConfigurationPresentWhenClosed).toBe(true);
       expect(connected).toEqual(new Set([unrelatedBindingId]));
       expect(closeCounts.get(removedBindingId)).toBe(2);
-      expect(retireClientBindings).toHaveBeenCalledTimes(3);
-      expect(retireClientBindings).toHaveBeenNthCalledWith(1, [removedBindingId]);
-      expect(retireClientBindings).toHaveBeenNthCalledWith(2, [removedBindingId]);
-      expect(retireClientBindings).toHaveBeenNthCalledWith(3, [removedBindingId]);
-      expect(clientOptions.runtimes.map((handle) => handle.agentId)).toEqual([unrelatedBindingId]);
       expect(config.agents[removedBindingId]).toBeUndefined();
       expect(config.agents[unrelatedBindingId]).toBeDefined();
       expect(startBindingRuntime).toHaveBeenCalledTimes(2);
-      expect(lifecycleEvents.indexOf(`client:${removedBindingId}`)).toBeLessThan(
-        lifecycleEvents.indexOf(`transport:${removedBindingId}`),
-      );
     } finally {
       finishShutdown();
       await running;
@@ -400,22 +386,12 @@ describe("Connect Service", () => {
               throw new Error("binding cleanup failed");
             },
           }),
-          startClientInterface: async () => ({
-            origin: "http://127.0.0.1:47823",
-            fetchPrivateGateway: async () => new Response(null, { status: 204 }),
-            retireBindings: async () => undefined,
-            stop: async () => {
-              events.push("client-stop");
-              throw new Error("client cleanup failed");
-            },
-          }),
           verifyInstalledSkills: async () => undefined,
         },
       ),
     ).resolves.toEqual({ startedAgentIds: ["codex"] });
 
-    expect(events).toEqual(["client-stop", "binding-close", "store-close"]);
-    expect(errors.join("")).toContain("client cleanup failed");
+    expect(events).toEqual(["binding-close", "store-close"]);
     expect(errors.join("")).toContain("binding cleanup failed");
     expect(errors.join("")).toContain("store cleanup failed");
   });
@@ -437,12 +413,6 @@ describe("Connect Service", () => {
         close: async () => undefined,
       };
     });
-    const startClientInterface = mock(async () => ({
-      origin: "http://127.0.0.1:47823",
-      fetchPrivateGateway: async () => new Response(null, { status: 204 }),
-      retireBindings: async () => undefined,
-      stop: async () => undefined,
-    }));
 
     await expect(
       startConnectService(
@@ -454,7 +424,7 @@ describe("Connect Service", () => {
           writeOutput: () => undefined,
           writeError: (message) => errors.push(message),
         },
-        { startBindingRuntime, startClientInterface, verifyInstalledSkills: async () => undefined },
+        { startBindingRuntime, verifyInstalledSkills: async () => undefined },
       ),
     ).resolves.toEqual({ startedAgentIds: ["healthy"] });
     expect(errors.join("")).toContain("broken: invalid credentials");
@@ -467,12 +437,6 @@ describe("Connect Service", () => {
     const config = serviceConfig(["broken"]);
     config.stateDbPath = stateStore.dbPath;
     const errors: string[] = [];
-    const startClientInterface = mock(async () => ({
-      origin: "http://127.0.0.1:47823",
-      fetchPrivateGateway: async () => new Response(null, { status: 204 }),
-      retireBindings: async () => undefined,
-      stop: async () => undefined,
-    }));
 
     await expect(
       startConnectService(
@@ -488,13 +452,11 @@ describe("Connect Service", () => {
           startBindingRuntime: async () => {
             throw new Error("runtime executable was not found");
           },
-          startClientInterface,
           verifyInstalledSkills: async () => undefined,
         },
       ),
     ).resolves.toEqual({ startedAgentIds: [] });
 
-    expect(startClientInterface).toHaveBeenCalledTimes(1);
     expect(errors.join("")).toContain("runtime executable was not found");
     expect(await stateStore.getRuntimeStatus("broken")).toMatchObject({
       runtimeAvailability: "startup-unavailable",
@@ -544,12 +506,6 @@ describe("Connect Service", () => {
           deviceId: "device-1",
           executeTool: async () => ({ nickname: "work" }),
           close: async () => undefined,
-        }),
-        startClientInterface: async () => ({
-          origin: "http://127.0.0.1:47823",
-          fetchPrivateGateway: async () => new Response(null, { status: 204 }),
-          retireBindings: async () => undefined,
-          stop: async () => undefined,
         }),
         verifyInstalledSkills: async () => undefined,
       },

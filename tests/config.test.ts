@@ -74,9 +74,10 @@ describe("Agent Binding configuration", () => {
     ).toThrow("Agent Binding work contains unsupported field: executablePathOverride, env");
   });
 
-  it("normalizes generic Binding preferences without interpreting Runtime configuration", async () => {
+  it("normalizes generic Binding preferences while discarding removed Core Client fields", async () => {
     const config = normalizeConfig({
       clientHost: "0.0.0.0",
+      clientPort: 49_123,
       mediaUploadUrl: "https://media.example/media/upload",
       defaultAgent: "work",
       agents: {
@@ -109,7 +110,8 @@ describe("Agent Binding configuration", () => {
       modelReasoningEffort: "high",
       sessionOptions: { collaborationMode: "default" },
     });
-    expect(config.clientHost).toBe("0.0.0.0");
+    expect(config).not.toHaveProperty("clientHost");
+    expect(config).not.toHaveProperty("clientPort");
     expect(config.mediaUploadUrl).toBe("https://media.example/media/upload");
 
     const path = await tempConfigPath();
@@ -194,11 +196,7 @@ describe("Agent Binding configuration", () => {
     expect("maxPendingPerChat" in legacy).toBe(false);
   });
 
-  it("rejects invalid host access and relative state paths", () => {
-    expect(() => normalizeConfig({ clientHost: "192.168.1.20" })).toThrow(
-      "clientHost must be one of: 127.0.0.1, 0.0.0.0",
-    );
-    expect(() => normalizeConfig({ clientHost: "toString" })).toThrow("clientHost must be one of: 127.0.0.1, 0.0.0.0");
+  it("rejects relative state paths", () => {
     expect(() => normalizeConfig({ stateDbPath: "./state.sqlite" })).toThrow("stateDbPath must be an absolute path");
   });
 
@@ -207,16 +205,16 @@ describe("Agent Binding configuration", () => {
     const configPath = join(directory, "config-target");
     await mkdir(configPath);
     const config = defaultConfig();
-    const originalPort = config.clientPort;
+    const originalBaseUrl = config.baseUrl;
     const mutations = new ConnectConfigMutationCoordinator(config, configPath);
 
     await expect(
       mutations.mutate((candidate) => {
-        candidate.clientPort = originalPort + 1;
+        candidate.baseUrl = "https://candidate.example";
       }),
     ).rejects.toThrow();
 
-    expect(config.clientPort).toBe(originalPort);
+    expect(config.baseUrl).toBe(originalBaseUrl);
     expect(await readdir(directory)).toEqual(["config-target"]);
   });
 
@@ -225,14 +223,16 @@ describe("Agent Binding configuration", () => {
     const directory = dirname(configPath);
     const candidates = Array.from({ length: 16 }, (_, index) => ({
       ...defaultConfig(),
-      clientPort: 48_000 + index,
+      maxConcurrentTurns: index + 1,
     }));
 
     await expect(
       Promise.all(candidates.map(async (candidate) => await saveConfig(candidate, configPath))),
     ).resolves.toHaveLength(candidates.length);
 
-    expect(candidates.map((candidate) => candidate.clientPort)).toContain((await loadConfig(configPath)).clientPort);
+    const saved = await loadConfig(configPath);
+    if (saved.maxConcurrentTurns === undefined) throw new Error("Expected a saved concurrent Turn limit");
+    expect(candidates.map((candidate) => candidate.maxConcurrentTurns)).toContain(saved.maxConcurrentTurns);
     expect(await readdir(directory)).toEqual(["config.json"]);
   });
 });

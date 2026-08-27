@@ -7,10 +7,22 @@ All notable changes to ClawChat Connect are documented in this file.
 ### Added
 
 - Added the official DeepSeek Harness Runtime Plugin with native Session discovery/resume, model and preset options, approvals/questions, Commands, Skills, cancellation, rich input, runtime-owned Profile composition, and capability-gated archive support.
+- Added native Managed Web App contributions to the official DeepSeek Harness and OpenCode Runtime Bundles, supervising independent `dsh web` and `opencode web` products without merging their authentication, Sessions, or Interactions into Connect.
+- Added the optional complete `clawling.web.connect-client` Plugin Bundle for exact Codex and WorkBuddy compatibility, including its server entry, complete browser graph, App-scoped extensions, and auxiliary asset integrity manifest.
+- Added native-first exact Managed Web App selection, Provider-owned Instance keys, generation-fenced loopback leases, and CLI-only administration for valid headless Bindings.
 
 ### Changed
 
 - Restricted the current beta release, installer, official Bundle inventory, and release workflow to qualified Apple silicon macOS (`darwin-arm64`); Intel macOS, Linux, and Windows release artifacts are deferred until native qualification resumes.
+- Reclassified Liveware as Web App Exposure: every eligible Binding keeps an independent private App, tunnel, registration, and retirement lifecycle for its already selected opaque App upstream.
+- Made Core/npm/archive/install payloads valid with the optional Connect Client Plugin present or omitted. Runtime Plugin setup never installs it implicitly, and installers transactionally remove obsolete root Client payloads.
+- Split Core, Runtime, Managed Web App, and Publication health reporting. Temporary failure never changes App selection or implies cross-product Session continuity.
+- Required release-pinned integrity for complete official auxiliary asset graphs in addition to target entry artifacts and platform binaries.
+
+### Removed
+
+- Removed the mandatory Core-owned Connect Client, Shared Client Gateway, hidden Client endpoint, installation-wide Client Extension graph, and unconditional root `dist/client` / `clawchat-connect-client` release payload.
+- Removed active claims that native and compatible Web products continue ClawChat Connect Sessions; each App retains upstream-owned authentication, Sessions, Interactions, presentation, and reconnect behavior.
 
 ### Fixed
 

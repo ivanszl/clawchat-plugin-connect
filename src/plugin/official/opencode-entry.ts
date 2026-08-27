@@ -4,9 +4,13 @@ import {
   type OpenCodeRuntimeAdapterBinding,
   type OpenCodeRuntimeAdapterOptions,
 } from "../../runtime/opencode-adapter";
+import { canonicalExecutableIdentity } from "../../runtime/executable-identity";
+import { startOpenCodeWebApp } from "../../runtime/opencode-web-process";
 import type {
   ConnectPluginConfiguration,
   ConnectPluginEntry,
+  ConnectPluginManagedWebAppInstanceContext,
+  ConnectPluginManagedWebAppProvider,
   ConnectPluginRuntimeAdapter,
   ConnectPluginRuntimeStartContext,
 } from "../sdk";
@@ -15,6 +19,7 @@ import {
   OPENCODE_OFFICIAL_CAPABILITY_ID,
   OPENCODE_OFFICIAL_PLUGIN_ID,
   OPENCODE_OFFICIAL_RUNTIME_FAMILY,
+  OPENCODE_WEB_APP_CAPABILITY_ID,
 } from "./opencode-manifest";
 
 interface OpenCodeInstallationConfiguration {
@@ -23,6 +28,7 @@ interface OpenCodeInstallationConfiguration {
 
 export interface OpenCodeOfficialPluginEntryOptions {
   runtimeAdapter?: OpenCodeRuntimeAdapterOptions;
+  startWebApp?: typeof startOpenCodeWebApp;
   requireExecutable?: (
     configuredPath: string | undefined,
     env: Readonly<Record<string, string>> | undefined,
@@ -50,7 +56,65 @@ export function createOpenCodeOfficialPluginEntry(
           });
         },
       });
+      context.hostCapabilities
+        .get("managed-web-app-provider")
+        .register(
+          openCodeWebProvider(
+            installation,
+            options.requireExecutable ?? requireCompatibleOpenCodeExecutable,
+            options.startWebApp ?? startOpenCodeWebApp,
+          ),
+        );
     },
+  };
+}
+
+interface OpenCodeWebScope {
+  readonly key: string;
+  readonly executable: CompatibleOpenCodeExecutable;
+}
+
+function openCodeWebProvider(
+  installation: OpenCodeInstallationConfiguration,
+  requireExecutable: (
+    configuredPath: string | undefined,
+    env: Readonly<Record<string, string>> | undefined,
+  ) => CompatibleOpenCodeExecutable,
+  startWebApp: typeof startOpenCodeWebApp,
+): ConnectPluginManagedWebAppProvider {
+  return {
+    capabilityId: OPENCODE_WEB_APP_CAPABILITY_ID,
+    instanceKey(context) {
+      return openCodeWebScope(installation, context, requireExecutable).key;
+    },
+    async acquire(context) {
+      const scope = openCodeWebScope(installation, context, requireExecutable);
+      if (scope.key !== context.instanceKey) {
+        throw new Error("OpenCode Web executable or Web configuration changed during acquisition");
+      }
+      return await startWebApp({ executable: scope.executable });
+    },
+  };
+}
+
+function openCodeWebScope(
+  installation: OpenCodeInstallationConfiguration,
+  context: ConnectPluginManagedWebAppInstanceContext,
+  requireExecutable: (
+    configuredPath: string | undefined,
+    env: Readonly<Record<string, string>> | undefined,
+  ) => CompatibleOpenCodeExecutable,
+): OpenCodeWebScope {
+  const runtime = context.runtimeConfiguration as Partial<OpenCodeRuntimeAdapterBinding>;
+  const compatible = requireExecutable(runtime.executablePathOverride ?? installation.executablePath, undefined);
+  const executable = canonicalExecutableIdentity(compatible.path, "OpenCode");
+  return {
+    key: JSON.stringify({
+      executable: executable.identity,
+      version: compatible.version,
+      web: { hostname: "127.0.0.1", port: 0, mdns: false },
+    }),
+    executable: { path: executable.path, version: compatible.version },
   };
 }
 

@@ -1,3 +1,5 @@
+import type { ManagedWebAppGenerationReference } from "../sdk";
+
 export const LIVEWARE_PUBLICATION_APP_PREFIX = "ClawChat Connect · ";
 export const LIVEWARE_PUBLICATION_SUBTITLE = "Connect Web";
 
@@ -17,12 +19,19 @@ export type BindingLivewarePublicationTransition =
   | "delete-app"
   | null;
 
+export interface SelectedManagedWebAppState extends ManagedWebAppGenerationReference {
+  readonly instanceKey: string;
+  readonly displayName: string;
+  readonly description: string;
+}
+
 export interface BindingLivewarePublicationState extends Readonly<Record<string, unknown>> {
   readonly bindingId: string;
   readonly activationGeneration: number;
   readonly desired: "private" | "retired";
   readonly status: BindingLivewarePublicationStatus;
   readonly transition: BindingLivewarePublicationTransition;
+  readonly selectedApp: SelectedManagedWebAppState | null;
   readonly correlationKey: string;
   readonly appId: string | null;
   readonly publicUrl: string | null;
@@ -84,7 +93,8 @@ export interface LivewarePublicationRegistrationPort {
 
 export interface BindingLivewarePublicationLifecycleOptions {
   readonly activationGeneration: number;
-  readonly upstream: string;
+  readonly upstream?: string;
+  readonly selectedApp?: SelectedManagedWebAppState;
   readonly state: BindingLivewarePublicationStateStore;
   readonly controlPlane: LivewarePublicationControlPlane;
   readonly registrations: LivewarePublicationRegistrationPort;
@@ -105,9 +115,11 @@ export class BindingLivewarePublicationLifecycle {
     if (!Number.isSafeInteger(options.activationGeneration) || options.activationGeneration < 1) {
       throw new Error("Liveware publication Activation Generation must be a positive safe integer");
     }
-    const upstream = new URL(options.upstream);
-    if (upstream.protocol !== "http:" || upstream.hostname !== "127.0.0.1" || !upstream.port) {
-      throw new Error("Liveware publication upstream must be an opaque loopback HTTP endpoint");
+    if (options.upstream !== undefined) {
+      const upstream = new URL(options.upstream);
+      if (upstream.protocol !== "http:" || upstream.hostname !== "127.0.0.1" || !upstream.port) {
+        throw new Error("Liveware publication upstream must be an opaque loopback HTTP endpoint");
+      }
     }
   }
 
@@ -210,12 +222,16 @@ export class BindingLivewarePublicationLifecycle {
     if (record.value.status === "retiring" || record.value.desired === "retired") {
       throw new Error(`Binding Liveware Publication ${target.bindingId} is retiring and cannot be reprovisioned`);
     }
+    if (!this.options.upstream || !this.options.selectedApp) {
+      throw new Error(`Binding Liveware Publication ${target.bindingId} has no selected Managed Web App lease`);
+    }
     if (record.value.status === "active" && this.reconciled.has(target.bindingId)) return record.value;
     const rebind = record.value.status === "active";
     const tunnelMayHaveBeenBound = record.value.appId !== null && record.value.publicUrl === null;
 
     record = await this.commit(record, {
       ...record.value,
+      selectedApp: this.options.selectedApp,
       desired: "private",
       status: "provisioning",
       transition: "create-app",
@@ -291,8 +307,8 @@ export class BindingLivewarePublicationLifecycle {
 
     const registration: LivewarePublicationRegistration = {
       livewareId: app.appId,
-      name: record.value.correlationKey,
-      subtitle: LIVEWARE_PUBLICATION_SUBTITLE,
+      name: `${this.options.selectedApp.displayName} · ${target.bindingId}`,
+      subtitle: this.options.selectedApp.description,
       url: publicUrl,
     };
     let registrations: LivewarePublicationRegistration[];
@@ -335,7 +351,20 @@ export class BindingLivewarePublicationLifecycle {
       if (existing.value.activationGeneration > this.options.activationGeneration) {
         throw new Error(`stale Liveware publication Activation Generation for ${bindingId}`);
       }
-      if (existing.value.activationGeneration === this.options.activationGeneration) return existing;
+      if (existing.value.activationGeneration === this.options.activationGeneration) {
+        if (
+          this.options.selectedApp &&
+          existing.value.status === "absent" &&
+          existing.value.appId === null
+        ) {
+          return await this.options.state.compareAndSwap(bindingId, existing.revision, {
+            ...existing.value,
+            selectedApp: this.options.selectedApp,
+            correlationKey: `${this.options.selectedApp.displayName} · ${bindingId}`,
+          });
+        }
+        return existing;
+      }
       const reactivate = existing.value.status === "retired" && existing.value.desired === "retired";
       return await this.options.state.compareAndSwap(bindingId, existing.revision, {
         ...existing.value,
@@ -349,9 +378,12 @@ export class BindingLivewarePublicationLifecycle {
       bindingId,
       activationGeneration: this.options.activationGeneration,
       desired: "private",
+      selectedApp: this.options.selectedApp ?? null,
       status: "absent",
       transition: null,
-      correlationKey: `${LIVEWARE_PUBLICATION_APP_PREFIX}${bindingId}`,
+      correlationKey: this.options.selectedApp
+        ? `${this.options.selectedApp.displayName} · ${bindingId}`
+        : `${LIVEWARE_PUBLICATION_APP_PREFIX}${bindingId}`,
       appId: null,
       publicUrl: null,
       registrationId: null,

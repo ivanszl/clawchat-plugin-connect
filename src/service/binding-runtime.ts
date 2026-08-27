@@ -219,7 +219,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     },
   });
   interactionRouter = new RuntimeInteractionRouter({
-    clientPort: runtimeInteractions,
+    clientInteractions: runtimeInteractions,
     ownerUserId: options.activation.ownerUserId,
     ownerConversationId: options.activation.conversationId,
     agentUserId: options.activation.userId,

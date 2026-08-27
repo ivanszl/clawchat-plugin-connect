@@ -31,6 +31,7 @@
       "items": {
         "oneOf": [
           { "$ref": "#/$defs/runtimeCapability" },
+          { "$ref": "#/$defs/managedWebAppCapability" },
           { "$ref": "#/$defs/exposureCapability" },
           { "$ref": "#/$defs/clientExtensionCapability" }
         ]
@@ -55,7 +56,7 @@
       "additionalProperties": false,
       "properties": {
         "type": { "const": "host" },
-        "id": { "enum": ["runtime-provider", "exposure-provider", "durable-state"] },
+        "id": { "enum": ["runtime-provider", "managed-web-app-provider", "exposure-provider", "durable-state"] },
         "interfaceVersion": { "const": "1" }
       }
     },
@@ -72,6 +73,59 @@
         "durableState": { "$ref": "#/$defs/durableState" }
       }
     },
+    "runtimeCapabilityRef": {
+      "type": "object",
+      "required": ["pluginId", "capabilityId"],
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": { "$ref": "#/$defs/identity" },
+        "capabilityId": { "$ref": "#/$defs/identity" }
+      }
+    },
+    "managedWebAppCapability": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "interfaceVersion",
+        "configurationSchema",
+        "displayName",
+        "description",
+        "nativeRuntimeCapabilityIds",
+        "compatibleRuntimes"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "nativeRuntimeCapabilityIds": { "type": "array", "minItems": 1 }
+          }
+        },
+        {
+          "properties": {
+            "compatibleRuntimes": { "type": "array", "minItems": 1 }
+          }
+        }
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/identity" },
+        "type": { "const": "managed-web-app" },
+        "interfaceVersion": { "const": "1" },
+        "configurationSchema": { "$ref": "#/$defs/configurationSchema" },
+        "displayName": { "$ref": "#/$defs/nonBlankText" },
+        "description": { "$ref": "#/$defs/nonBlankText" },
+        "nativeRuntimeCapabilityIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/identity" }
+        },
+        "compatibleRuntimes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/runtimeCapabilityRef" }
+        }
+      }
+    },
     "exposureCapability": {
       "type": "object",
       "required": ["id", "type", "interfaceVersion", "configurationSchema"],
@@ -86,13 +140,14 @@
     },
     "clientExtensionCapability": {
       "type": "object",
-      "required": ["id", "type", "interfaceVersion", "configurationSchema", "browser"],
+      "required": ["id", "type", "interfaceVersion", "configurationSchema", "managedWebApp", "browser"],
       "additionalProperties": false,
       "properties": {
         "id": { "$ref": "#/$defs/identity" },
         "type": { "const": "client-extension" },
         "interfaceVersion": { "const": "1" },
         "configurationSchema": { "$ref": "#/$defs/configurationSchema" },
+        "managedWebApp": { "$ref": "#/$defs/runtimeCapabilityRef" },
         "browser": { "$ref": "#/$defs/clientExtensionBrowser" }
       }
     },

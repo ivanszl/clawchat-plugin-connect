@@ -2,8 +2,12 @@ import { chmod } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Context, Plugin } from "cordis";
-import { BINDING_SCOPE_HEADER, CLIENT_API_PREFIX, PLUGIN_MANAGER_CONFIG_HEADER } from "../client-contract";
-import { errorResponse } from "../client-interface/client-http";
+import {
+  type ConnectClientCoreServices,
+  connectClientFacadeScope,
+  createConnectClientHostFacade,
+} from "../client-interface/core-host-facade";
+import { registerConnectClientHostFacade } from "../client-interface/plugin-host-facade";
 import { FileTurnSubmissionStaging } from "../client-interface/turn-submission-staging";
 import { ConnectConfigMutationCoordinator, type LockedConfigMutation, loadConfig } from "../config";
 import type {
@@ -24,15 +28,29 @@ import {
   type LivewareApp,
   type LivewareControlDependencies,
 } from "../service/liveware-control";
+import type { BindingRuntimeHandle } from "../service/binding-runtime";
 import type { AgentBindingConfig, ConnectConfig } from "../types";
 import type { WorkspaceCatalog } from "../workspaces/workspaces";
 import { agentBindingIdentity, normalizeAgentBinding } from "./binding";
+import { RuntimeProviderValidationError } from "./runtime-provider-validation-error";
+import {
+  ManagedWebAppRegistry,
+  type ManagedWebAppLease,
+  type ManagedWebAppProviderDefinition,
+  type ManagedWebAppSelection,
+} from "./managed-web-app-registry";
 import type {
   OfficialLivewareExposureServices,
-  OfficialLivewareGatewayLease,
   OfficialLivewareManagedDisposer,
 } from "./official/liveware-entry";
-import { OFFICIAL_LIVEWARE_CAPABILITY_ID, OFFICIAL_LIVEWARE_PLUGIN_ID } from "./official/liveware-manifest";
+import {
+  CONNECT_CLIENT_MANAGED_WEB_APP_REF,
+  CONNECT_CLIENT_PLUGIN_ID,
+} from "./official/connect-client-manifest";
+import {
+  OFFICIAL_LIVEWARE_CAPABILITY_ID,
+  OFFICIAL_LIVEWARE_PLUGIN_ID,
+} from "./official/liveware-manifest";
 import {
   type BundledOfficialPluginEntry,
   discoverOfficialPlugins,
@@ -43,7 +61,7 @@ import {
 } from "./official-registry";
 import type {
   ConnectExposureProviderHostCapability,
-  ConnectPluginClientExposure,
+  ConnectManagedWebAppProviderHostCapability,
   ConnectPluginContext,
   ConnectPluginEntry,
   ConnectPluginExposureProvider,
@@ -57,7 +75,10 @@ import {
   type ConnectPluginDurableState,
   type ConnectPluginDurableStateManifest,
   type ConnectPluginDurableStateRecord,
+  type ConnectPluginManagedWebAppProvider,
   type ConnectPluginRuntimeInstanceContext,
+  type ManagedWebAppHealth,
+  type ManagedWebAppGenerationReference,
   type ConnectPluginRuntimeProvider,
   type ConnectRuntimeProviderHostCapability,
   type RuntimeCapabilityRef,
@@ -94,9 +115,11 @@ import {
 
 interface ActivePlugin {
   installed: InstalledPluginLockEntry;
+  retireManagedWebApp(reference: ManagedWebAppGenerationReference): Promise<void>;
+  reconcileManagedWebApps(): Promise<void>;
   dispose(): Promise<void>;
   retireManagedResources(): Promise<void>;
-  activateClientExposures(): Promise<void>;
+  activateExposures(): Promise<void>;
   retireBindings(bindingIds: readonly string[]): Promise<void>;
   fenceDurableState(): Promise<() => void>;
 }
@@ -127,6 +150,7 @@ interface ConnectPluginManagementDependencies {
   quiesceRuntimeBindings?<T>(bindingIds: readonly string[], criticalSection: () => Promise<T>): Promise<T>;
   retireRuntimeBindings?(bindingIds: readonly string[]): Promise<void>;
   livewareDependencies?: LivewareControlDependencies;
+  clientInterfaceServices?: Omit<ConnectClientCoreServices, "pluginManager" | "runtimes">;
 }
 
 type PendingProvider =
@@ -135,6 +159,11 @@ type PendingProvider =
       readonly runtime: Readonly<RuntimeCapabilityRef>;
       readonly family: string;
       readonly implementation: ConnectPluginRuntimeProvider;
+    }
+  | {
+      readonly type: "managed-web-app";
+      readonly capabilityId: string;
+      readonly implementation: ConnectPluginManagedWebAppProvider;
     }
   | {
       readonly type: "exposure";
@@ -165,25 +194,21 @@ export interface UpsertBindingProviderResult {
   binding: AgentBindingConfig;
   modes: readonly string[];
 }
-export class RuntimeProviderValidationError extends Error {
-  constructor(message: string, cause: unknown) {
-    super(message, { cause });
-    this.name = "RuntimeProviderValidationError";
-  }
+export interface ManagedWebAppControlStatus {
+  readonly bindingId: string;
+  readonly runtime: Readonly<RuntimeCapabilityRef>;
+  readonly selection: ManagedWebAppSelection | null;
+  readonly instance: Readonly<{
+    instanceKey: string;
+    health: ManagedWebAppHealth;
+    diagnostic: string | null;
+    leaseCount: number;
+  }> | null;
 }
+
 
 export const MAX_CONCURRENT_PLUGIN_UPDATE_CHECKS = 4;
 
-interface ClientExposureTarget {
-  readonly origin: URL;
-  fetch(request: Request): Promise<Response>;
-  fetchPrivateGateway(request: Request): Promise<Response>;
-}
-
-interface SharedClientGateway {
-  readonly server: ReturnType<typeof Bun.serve>;
-  readonly leases: Set<symbol>;
-}
 
 export interface ConnectPluginManagement {
   list(): Promise<InstalledPluginLockEntry[]>;
@@ -213,8 +238,12 @@ export class ConnectPluginHost implements ConnectPluginManagement {
   private readonly operationCoordinator: ConnectConfigMutationCoordinator;
   readonly configMutations: ConnectConfigMutationCoordinator | undefined;
   private readonly officialCandidates = new Map<string, ResolvedOfficialPlugin>();
-  private clientExposureTarget: ClientExposureTarget | undefined;
-  private sharedClientGateway: SharedClientGateway | undefined;
+  private bindingRuntimes: readonly BindingRuntimeHandle[] = [];
+  private optionalSurfacesReady = false;
+  private readonly managedWebAppLeaseRetirers = new Set<
+    (reference: ManagedWebAppGenerationReference) => Promise<void>
+  >();
+  readonly managedWebApps = new ManagedWebAppRegistry();
 
   constructor(
     private readonly configPath: string,
@@ -227,22 +256,13 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     this.configMutations = management ? this.operationCoordinator : undefined;
   }
 
-  async bindClientInterface(client: {
-    readonly origin: string;
-    fetch?(request: Request): Promise<Response>;
-    fetchPrivateGateway?(request: Request): Promise<Response>;
-  }): Promise<() => void> {
-    const fetchClient = client.fetch?.bind(client) ?? (async (request: Request) => await globalThis.fetch(request));
-    const fetchPrivateGateway = client.fetchPrivateGateway?.bind(client) ?? fetchClient;
-    const target: ClientExposureTarget = Object.freeze({
-      origin: new URL(client.origin),
-      fetch: fetchClient,
-      fetchPrivateGateway,
-    });
-    this.clientExposureTarget = target;
+
+  async activateOptionalSurfaces(runtimes: readonly BindingRuntimeHandle[]): Promise<void> {
+    this.bindingRuntimes = runtimes;
+    this.optionalSurfacesReady = true;
     for (const [pluginId, plugin] of [...this.active]) {
       try {
-        await plugin.activateClientExposures();
+        await plugin.activateExposures();
       } catch (error) {
         this.active.delete(pluginId);
         await plugin.dispose().catch(() => undefined);
@@ -251,9 +271,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         this.reportActivationFailure(pluginId, error);
       }
     }
-    return () => {
-      if (this.clientExposureTarget === target) this.clientExposureTarget = undefined;
-    };
   }
 
   async listPublishedClientExtensions(): Promise<InstalledPluginLockEntry[]> {
@@ -267,6 +284,15 @@ export class ConnectPluginHost implements ConnectPluginManagement {
 
   async retireBindings(bindingIds: readonly string[]): Promise<void> {
     for (const plugin of this.active.values()) await plugin.retireBindings(bindingIds);
+  }
+
+  registerManagedWebAppLeaseRetirer(
+    retire: (reference: ManagedWebAppGenerationReference) => Promise<void>,
+  ): ConnectPluginDisposer {
+    this.managedWebAppLeaseRetirers.add(retire);
+    return () => {
+      this.managedWebAppLeaseRetirers.delete(retire);
+    };
   }
 
   async activateInstalled(): Promise<void> {
@@ -296,6 +322,53 @@ export class ConnectPluginHost implements ConnectPluginManagement {
   activePluginIds(): string[] {
     return [...this.active.keys()].sort();
   }
+  managedWebAppStatus(bindingId: string): ManagedWebAppControlStatus {
+    const binding = this.management?.config.agents[bindingId];
+    if (!binding) throw new Error(`Agent Binding ${bindingId} is not configured`);
+    const selection = this.managedWebApps.select(binding.runtime);
+    const snapshot = selection
+      ? this.managedWebApps
+          .snapshots()
+          .find(
+            (candidate) =>
+              candidate.bindingIds.includes(bindingId) &&
+              candidate.selection.pluginId === selection.pluginId &&
+              candidate.selection.capabilityId === selection.capabilityId &&
+              candidate.selection.activationGeneration === selection.activationGeneration,
+          )
+      : undefined;
+    return {
+      bindingId,
+      runtime: Object.freeze({ ...binding.runtime }),
+      selection,
+      instance: snapshot
+        ? Object.freeze({
+            instanceKey: snapshot.instanceKey,
+            health: snapshot.health,
+            diagnostic: snapshot.diagnostic,
+            leaseCount:
+              snapshot.bindingLeases.find((entry) => entry.bindingId === bindingId)?.leaseCount ?? 0,
+          })
+        : null,
+    };
+  }
+
+  async acquireManagedWebApp(
+    bindingId: string,
+    requested?: RuntimeCapabilityRef,
+  ): Promise<ManagedWebAppLease | null> {
+    const binding = this.management?.config.agents[bindingId];
+    if (!binding) throw new Error(`Agent Binding ${bindingId} is not configured`);
+    return await this.managedWebApps.acquire(
+      {
+        bindingId,
+        runtime: binding.runtime,
+        runtimeConfiguration: deepFreeze(structuredClone(binding.runtimeConfig)),
+      },
+      requested,
+    );
+  }
+
 
   async validateRuntimeBinding(binding: AgentBindingConfig): Promise<void> {
     const installed = await this.requireInstalled(binding.runtime.pluginId);
@@ -503,7 +576,10 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         `Plugin ${pluginId} installation configuration`,
       );
       const installationCapabilities = installed.manifest.capabilities.filter(
-        (capability) => capability.type === "exposure" || capability.type === "client-extension",
+        (capability) =>
+          capability.type === "managed-web-app" ||
+          capability.type === "exposure" ||
+          capability.type === "client-extension",
       );
       const installationCapabilityIds = new Set(installationCapabilities.map((capability) => capability.id));
       const unknownCapabilities = Object.keys(options.capabilityConfigurations).filter(
@@ -519,7 +595,11 @@ export class ConnectPluginHost implements ConnectPluginManagement {
             capability.configurationSchema,
             options.capabilityConfigurations[capability.id] ?? {},
             `Plugin ${pluginId}/${capability.id} ${
-              capability.type === "exposure" ? "Exposure" : "Client Extension"
+              capability.type === "managed-web-app"
+                ? "Managed Web App"
+                : capability.type === "exposure"
+                  ? "Exposure"
+                  : "Client Extension"
             } configuration`,
           ),
         ]),
@@ -852,16 +932,25 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     });
   }
 
+  async retireManagedResources(): Promise<void> {
+    for (const plugin of [...this.active.values()].reverse()) {
+      await plugin.retireManagedResources();
+    }
+  }
+
   async close(): Promise<void> {
     this.officialCandidates.clear();
     await this.operationCoordinator.idle();
-    this.clientExposureTarget = undefined;
+    this.optionalSurfacesReady = false;
     const active = [...this.active.values()].reverse();
+    const results: PromiseSettledResult<void>[] = [];
+    results.push(...(await Promise.allSettled([this.retireManagedResources()])));
     this.active.clear();
-    const results = await Promise.allSettled(active.map(async (plugin) => await plugin.dispose()));
-    const gateway = this.sharedClientGateway;
-    this.sharedClientGateway = undefined;
-    if (gateway) results.push(...(await Promise.allSettled([gateway.server.stop(true)])));
+    for (const plugin of active) {
+      results.push(...(await Promise.allSettled([plugin.dispose()])));
+    }
+    results.push(...(await Promise.allSettled([this.managedWebApps.close()])));
+    this.bindingRuntimes = [];
     const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     if (failure) throw failure.reason;
   }
@@ -973,23 +1062,37 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     const dependentBindingIds = this.validateDependentBindings(staged.entry);
     let candidate: ActivatedCandidate | undefined;
     let lockCommitted = false;
-    let restoreOldDurableState: (() => void) | undefined;
+    const oldManagedWebAppReferences = oldActive ? managedWebAppReferences(existing) : [];
     try {
       const activated = await this.activateCandidate(staged.entry, replacedRuntimeRefs, existing.activationGeneration);
       candidate = activated;
       return await this.withBindingQuiescence(dependentBindingIds, async () => {
-        restoreOldDurableState = await oldActive?.fenceDurableState();
         await activated.refreshDurableStateMigrations();
         await this.commitDurableStateMigrations(activated);
         const installed = await commitStagedPlugin(this.configPath, staged, operation);
         lockCommitted = true;
         activated.plugin.installed = installed;
+        if (oldActive) {
+          for (const reference of oldManagedWebAppReferences) this.managedWebApps.fence(reference);
+          await oldActive.fenceDurableState();
+        }
         await activated.revokeRuntime();
+        if (oldActive) {
+          for (const reference of oldManagedWebAppReferences) {
+            for (const retire of this.managedWebAppLeaseRetirers) await retire(reference);
+            for (const activePlugin of this.active.values()) {
+              await activePlugin.retireManagedWebApp(reference);
+            }
+          }
+        }
         this.active.delete(installed.pluginId);
         await oldActive?.dispose();
         await activated.startContributions();
         await activated.publishRuntime();
         this.active.set(installed.pluginId, activated.plugin);
+        for (const activePlugin of this.active.values()) {
+          await activePlugin.reconcileManagedWebApps();
+        }
         return installed;
       });
     } catch (error) {
@@ -1005,7 +1108,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
 
       await candidate?.plugin.dispose().catch(() => undefined);
       if (candidate) await this.discardDurableStateMigrations(candidate).catch(() => undefined);
-      restoreOldDurableState?.();
       await discardStagedPlugin(this.configPath, staged).catch(() => undefined);
       await recordInstalledPluginError(
         this.configPath,
@@ -1417,8 +1519,13 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       }
       const providerRecord = provider as Record<string, unknown>;
       const capabilityId = typeof providerRecord.capabilityId === "string" ? providerRecord.capabilityId.trim() : "";
-      const operation = type === "runtime" ? providerRecord.create : providerRecord.activate;
-      if (!capabilityId || typeof operation !== "function") {
+      const validOperation =
+        type === "runtime"
+          ? typeof providerRecord.create === "function"
+          : type === "managed-web-app"
+            ? typeof providerRecord.instanceKey === "function" && typeof providerRecord.acquire === "function"
+            : typeof providerRecord.activate === "function";
+      if (!capabilityId || !validOperation) {
         throw new Error(`Plugin ${installed.pluginId} registered a malformed ${type} provider`);
       }
       if (pending.has(capabilityId)) {
@@ -1438,6 +1545,17 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         );
         return;
       }
+      if (type === "managed-web-app") {
+        pending.set(
+          capabilityId,
+          Object.freeze({
+            type,
+            capabilityId,
+            implementation: provider as ConnectPluginManagedWebAppProvider,
+          }),
+        );
+        return;
+      }
       pending.set(
         capabilityId,
         Object.freeze({
@@ -1451,6 +1569,10 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
       register: (provider: ConnectPluginRuntimeProvider) => register("runtime", provider),
     });
+    const managedWebAppHostCapability: ConnectManagedWebAppProviderHostCapability = Object.freeze({
+      interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+      register: (provider: ConnectPluginManagedWebAppProvider) => register("managed-web-app", provider),
+    });
     const exposureHostCapability: ConnectExposureProviderHostCapability = Object.freeze({
       interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
       register: (provider: ConnectPluginExposureProvider) => register("exposure", provider),
@@ -1461,11 +1583,14 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         this.createExposureBindingDurableState(installed, capabilityId, bindingId, durableStateGate),
     });
     const hostCapabilities = Object.freeze({
-      get: (id: "runtime-provider" | "durable-state" | "exposure-provider") => {
+      get: (
+        id: "runtime-provider" | "managed-web-app-provider" | "durable-state" | "exposure-provider",
+      ) => {
         if (!declaredHostCapabilities.has(id)) {
           throw new Error(`Plugin ${installed.pluginId} used undeclared Host Capability ${id}`);
         }
         if (id === "runtime-provider") return runtimeHostCapability;
+        if (id === "managed-web-app-provider") return managedWebAppHostCapability;
         if (id === "durable-state") return durableStateHostCapability;
         return exposureHostCapability;
       },
@@ -1479,13 +1604,18 @@ export class ConnectPluginHost implements ConnectPluginManagement {
 
     let pluginDisposer: ConnectPluginDisposer | undefined;
     let replacement: RuntimeAdapterReplacement | undefined;
+    const runtimeDefinitions: RuntimeAdapterDefinition[] = [];
     const stagedExposures: Array<{
       capabilityId: string;
       provider: ConnectPluginExposureProvider;
       configuration: Readonly<Record<string, unknown>>;
       durableState?: ConnectPluginDurableState;
     }> = [];
+    const stagedManagedWebApps: ManagedWebAppProviderDefinition[] = [];
+    let managedWebAppsActivated = false;
     const exposureDisposers: ConnectPluginDisposer[] = [];
+    const clientFacadeDisposers: ConnectPluginDisposer[] = [];
+    const managedDisposers: OfficialLivewareManagedDisposer[] = [];
     const managedRetirements: Array<() => Promise<void>> = [];
     const managedBindingRetirements: Array<(bindingIds: readonly string[]) => Promise<void>> = [];
     let managedResourcesRetired = false;
@@ -1495,7 +1625,10 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       if (typeof activated === "function") pluginDisposer = activated;
       const declared = installed.manifest.capabilities;
       const providerCapabilities = declared.filter(
-        (capability) => capability.type === "runtime" || capability.type === "exposure",
+        (capability) =>
+          capability.type === "runtime" ||
+          capability.type === "managed-web-app" ||
+          capability.type === "exposure",
       );
       if (pending.size !== providerCapabilities.length) {
         throw new Error(
@@ -1503,7 +1636,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         );
       }
 
-      const runtimeDefinitions: RuntimeAdapterDefinition[] = [];
       for (const capability of declared) {
         if (capability.type === "client-extension") continue;
         const registration = pending.get(capability.id);
@@ -1547,6 +1679,24 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           });
           continue;
         }
+        if (capability.type === "managed-web-app") {
+          if (registration.type !== "managed-web-app") {
+            throw new Error(
+              `Plugin ${installed.pluginId}/${capability.id} registered as ${registration.type}, expected ${capability.type}`,
+            );
+          }
+          stagedManagedWebApps.push({
+            pluginId: installed.pluginId,
+            activationGeneration: installed.activationGeneration,
+            manifest: capability,
+            installationConfiguration: deepFreeze(structuredClone(installed.installationConfiguration)),
+            configuration: deepFreeze(
+              structuredClone(installed.capabilityConfigurations[capability.id] ?? {}),
+            ),
+            provider: registration.implementation,
+          });
+          continue;
+        }
         if (registration.type !== "exposure") {
           throw new Error(
             `Plugin ${installed.pluginId}/${capability.id} registered as ${registration.type}, expected ${capability.type}`,
@@ -1564,7 +1714,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           ),
         });
       }
-      replacement = this.runtimeAdapters.replaceAll(runtimeDefinitions, replacedRuntimeRefs ?? []);
     } catch (error) {
       acceptingRegistrations = false;
       await replacement?.rollback().catch(() => undefined);
@@ -1592,22 +1741,10 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         );
       }
     };
-    const clientExposure: ConnectPluginClientExposure = Object.freeze({
-      fetch: async (request: Request): Promise<Response> => {
-        assertActivationLifecycle();
-        const selected = await this.requireInstalled(installed.pluginId);
-        if (selected.status !== "active" || selected.activationGeneration !== installed.activationGeneration) {
-          throw new Error(
-            `Plugin ${installed.pluginId} Client Exposure rejected stale Activation Generation ${installed.activationGeneration}`,
-          );
-        }
-        return await this.fetchClientExposure(request);
-      },
-    });
-    const activateClientExposures = async (): Promise<void> => {
+    const activateExposures = async (): Promise<void> => {
       while (startedExposureCount < stagedExposures.length) {
         const staged = stagedExposures[startedExposureCount];
-        if (!staged) throw new Error("Client Exposure activation index is out of bounds");
+        if (!staged) throw new Error("Exposure activation index is out of bounds");
         const officialLiveware = this.officialLivewareServices(
           installed,
           staged.capabilityId,
@@ -1618,7 +1755,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           Object.freeze({
             activationGeneration: installed.activationGeneration,
             configuration: staged.configuration,
-            client: clientExposure,
             ...(staged.durableState ? { durableState: staged.durableState } : {}),
             ...(officialLiveware ? { officialLiveware } : {}),
           }),
@@ -1628,6 +1764,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           if (isManagedOfficialDisposer(disposer)) {
             managedRetirements.push(async () => await disposer.retire());
             managedBindingRetirements.push(async (bindingIds) => await disposer.retireBindings(bindingIds));
+            managedDisposers.push(disposer);
           }
         }
         startedExposureCount += 1;
@@ -1647,17 +1784,47 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         results.push(
           ...(await Promise.allSettled(exposureDisposers.reverse().map(async (dispose) => await dispose()))),
         );
+        if (managedWebAppsActivated) {
+          results.push(
+            ...(await Promise.allSettled(
+              stagedManagedWebApps.map(
+                async (definition) =>
+                  await this.managedWebApps.remove(managedWebAppReference(definition)),
+              ),
+            )),
+          );
+        }
+        results.push(
+          ...(await Promise.allSettled(clientFacadeDisposers.reverse().map(async (dispose) => await dispose()))),
+        );
         if (pluginDisposer) results.push(...(await Promise.allSettled([pluginDisposer()])));
         const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
         if (failure) throw failure.reason;
       },
       retireManagedResources: async () => {
         if (managedResourcesRetired) return;
+        for (const definition of stagedManagedWebApps) {
+          const reference = managedWebAppReference(definition);
+          for (const retire of this.managedWebAppLeaseRetirers) await retire(reference);
+          for (const activePlugin of this.active.values()) {
+            await activePlugin.retireManagedWebApp(reference);
+          }
+        }
         for (const retire of managedRetirements.toReversed()) await retire();
         managedResourcesRetired = true;
       },
       retireBindings: async (bindingIds) => {
         for (const retire of managedBindingRetirements.toReversed()) await retire(bindingIds);
+      },
+      retireManagedWebApp: async (reference) => {
+        for (const disposer of managedDisposers.toReversed()) {
+          await disposer.retireManagedWebApp(reference);
+        }
+      },
+      reconcileManagedWebApps: async () => {
+        for (const disposer of managedDisposers.toReversed()) {
+          await disposer.reconcileManagedWebApps();
+        }
       },
       fenceDurableState: async () => {
         const previousState = state;
@@ -1672,13 +1839,11 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           state = previousState;
         };
       },
-      activateClientExposures: async () => {
+      activateExposures: async () => {
         if (state !== "started" && state !== "published") {
-          throw new Error(
-            `Plugin ${installed.pluginId} Client Exposures cannot be activated before contribution start`,
-          );
+          throw new Error(`Plugin ${installed.pluginId} Exposures cannot be activated before contribution start`);
         }
-        await activateClientExposures();
+        await activateExposures();
       },
     };
     return {
@@ -1701,7 +1866,18 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         }
         state = "fencing";
         try {
-          await replacement?.revoke();
+          if (
+            durableStateSourceGeneration !== null &&
+            durableStateSourceGeneration !== installed.activationGeneration
+          ) {
+            for (const definition of stagedManagedWebApps) {
+              this.managedWebApps.fence({
+                pluginId: definition.pluginId,
+                capabilityId: definition.manifest.id,
+                activationGeneration: durableStateSourceGeneration,
+              });
+            }
+          }
           state = "fenced";
         } catch (error) {
           state = "failed";
@@ -1715,7 +1891,36 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         }
         state = "starting";
         try {
-          if (this.clientExposureTarget) await activateClientExposures();
+          // Generic Exposures are the first effectful candidate contribution. A
+          // failure must leave Provider registrations and Runtime definitions staged.
+          if (this.optionalSurfacesReady) await activateExposures();
+          if (stagedManagedWebApps.length > 0) {
+            managedWebAppsActivated = true;
+            for (const definition of stagedManagedWebApps) this.managedWebApps.activate(definition);
+          }
+          if (
+            bundledOfficialInstallation &&
+            installed.pluginId === CONNECT_CLIENT_PLUGIN_ID &&
+            this.management?.clientInterfaceServices
+          ) {
+            const definition = stagedManagedWebApps.find(
+              (candidate) => candidate.manifest.id === CONNECT_CLIENT_MANAGED_WEB_APP_REF.capabilityId,
+            );
+            if (!definition) throw new Error("Official Connect Client Plugin did not declare its Managed Web App");
+            const services = this.management.clientInterfaceServices;
+            clientFacadeDisposers.push(
+              registerConnectClientHostFacade(
+                createConnectClientHostFacade(
+                  connectClientFacadeScope(CONNECT_CLIENT_MANAGED_WEB_APP_REF, installed.activationGeneration),
+                  {
+                    ...services,
+                    pluginManager: this,
+                    runtimes: () => this.bindingRuntimes,
+                  },
+                ),
+              ),
+            );
+          }
           state = "started";
         } catch (error) {
           state = "failed";
@@ -1729,6 +1934,8 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         }
         state = "publishing";
         try {
+          replacement = this.runtimeAdapters.replaceAll(runtimeDefinitions, replacedRuntimeRefs ?? []);
+          await replacement.revoke();
           await replacement?.publish();
           state = "published";
         } catch (error) {
@@ -1840,73 +2047,27 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           await (await dependencies()).clawChat.unregister(await activationFor(bindingId), deviceId, livewareId);
         },
       },
-      acquireGateway: async () => {
+      acquireManagedWebApp: async (bindingId) => {
         await assertGeneration();
-        return await this.acquireSharedClientGateway();
+        const binding = management.config.agents[bindingId];
+        if (!binding) throw new Error(`Agent Binding ${bindingId} is not configured`);
+        const lease = await this.managedWebApps.acquire({
+          bindingId,
+          runtime: binding.runtime,
+          runtimeConfiguration: deepFreeze(structuredClone(binding.runtimeConfig)),
+        });
+        if (!lease) return null;
+        return Object.freeze({
+          selection: lease.selection,
+          instanceKey: lease.instanceKey,
+          upstream: lease.upstream,
+          release: async () => await lease.release(),
+        });
       },
     };
   }
-
-  private async acquireSharedClientGateway(): Promise<OfficialLivewareGatewayLease> {
-    let gateway = this.sharedClientGateway;
-    if (!gateway) {
-      gateway = {
-        server: Bun.serve({
-          hostname: "127.0.0.1",
-          port: 0,
-          fetch: async (request) => await this.fetchClientExposure(request, true),
-        }),
-        leases: new Set(),
-      };
-      this.sharedClientGateway = gateway;
-    }
-    const lease = Symbol("official-client-exposure");
-    gateway.leases.add(lease);
-    let released = false;
-    return {
-      upstream: new URL(gateway.server.url).origin,
-      release: async () => {
-        if (released) return;
-        released = true;
-        gateway?.leases.delete(lease);
-        if (gateway && gateway.leases.size === 0 && this.sharedClientGateway === gateway) {
-          this.sharedClientGateway = undefined;
-          await gateway.server.stop(true);
-        }
-      },
-    };
-  }
-
-  private async fetchClientExposure(request: Request, allowPluginAdministration = false): Promise<Response> {
-    const destination = new URL(request.url);
-    if (!allowPluginAdministration && isPluginAdministrationPath(destination.pathname)) {
-      return errorResponse(404, "not-found", "Client Interface endpoint was not found", false);
-    }
-    const target = this.clientExposureTarget;
-    if (!target) {
-      return errorResponse(503, "plugin-client-unavailable", "Connect Client is not available yet", true);
-    }
-    destination.protocol = target.origin.protocol;
-    destination.username = target.origin.username;
-    destination.password = target.origin.password;
-    destination.host = target.origin.host;
-    const forwarded = new Request(destination, request);
-    forwarded.headers.set("origin", target.origin.origin);
-    forwarded.headers.set("host", target.origin.host);
-    forwarded.headers.delete(BINDING_SCOPE_HEADER);
-    forwarded.headers.delete(PLUGIN_MANAGER_CONFIG_HEADER);
-    return await (allowPluginAdministration ? target.fetchPrivateGateway(forwarded) : target.fetch(forwarded));
-  }
 }
 
-function isPluginAdministrationPath(pathname: string): boolean {
-  const pluginsPath = `${CLIENT_API_PREFIX}/plugins`;
-  if (pathname === pluginsPath || pathname.startsWith(`${pluginsPath}/`)) return true;
-  const bindingPath = `${CLIENT_API_PREFIX}/bindings/`;
-  if (!pathname.startsWith(bindingPath)) return false;
-  const segments = pathname.slice(bindingPath.length).split("/");
-  return segments.length === 2 && segments[0] !== "" && segments[1] === "provider";
-}
 
 function toPublicationApp(app: LivewareApp) {
   return {
@@ -1915,9 +2076,38 @@ function toPublicationApp(app: LivewareApp) {
     publicUrl: app.publicUrl || null,
   };
 }
+function managedWebAppReference(
+  definition: ManagedWebAppProviderDefinition,
+): ManagedWebAppGenerationReference {
+  return Object.freeze({
+    pluginId: definition.pluginId,
+    capabilityId: definition.manifest.id,
+    activationGeneration: definition.activationGeneration,
+  });
+}
+
+function managedWebAppReferences(
+  installed: InstalledPluginLockEntry,
+): ManagedWebAppGenerationReference[] {
+  return installed.manifest.capabilities
+    .filter((capability) => capability.type === "managed-web-app")
+    .map((capability) =>
+      Object.freeze({
+        pluginId: installed.pluginId,
+        capabilityId: capability.id,
+        activationGeneration: installed.activationGeneration,
+      }),
+    );
+}
 
 function isManagedOfficialDisposer(disposer: ConnectPluginDisposer): disposer is OfficialLivewareManagedDisposer {
-  return typeof (disposer as Partial<OfficialLivewareManagedDisposer>).retire === "function";
+  const candidate = disposer as Partial<OfficialLivewareManagedDisposer>;
+  return (
+    typeof candidate.retire === "function" &&
+    typeof candidate.retireBindings === "function" &&
+    typeof candidate.retireManagedWebApp === "function" &&
+    typeof candidate.reconcileManagedWebApps === "function"
+  );
 }
 
 export async function validateInstalledRuntimeBinding(configPath: string, binding: AgentBindingConfig): Promise<void> {
@@ -2085,6 +2275,9 @@ export async function mountMandatoryPluginHost(
       "connectSessionTurnExecutor",
       "connectPersistence",
       "connectWorkspaces",
+      "connectTranscriptProjection",
+      "connectRuntimeInteractions",
+      "connectSessionContinuity",
     ],
     provide: "connectPluginHost",
     apply: async (ctx) => {
@@ -2093,6 +2286,16 @@ export async function mountMandatoryPluginHost(
         stateStore: ctx.connectPersistence.state,
         workspaces: ctx.connectWorkspaces,
         retireRuntimeBindings,
+        clientInterfaceServices: {
+          config,
+          configPath,
+          stateStore: ctx.connectPersistence.state,
+          runtimeAdapters: ctx.connectRuntimeAdapters,
+          transcriptProjection: ctx.connectTranscriptProjection,
+          runtimeInteractions: ctx.connectRuntimeInteractions,
+          workspaces: ctx.connectWorkspaces,
+          sessionContinuityModule: ctx.connectSessionContinuity,
+        },
         quiesceRuntimeBindings: async (bindingIds, criticalSection) =>
           await ctx.connectSessionQueue.quiesceBindings(
             bindingIds,

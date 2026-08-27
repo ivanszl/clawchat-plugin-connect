@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { CONNECT_PLUGIN_BUNDLE_FORMAT } from "../src/plugin/sdk";
-import type {
-  ConnectPluginBundleV1,
-  ConnectPluginManifestV1,
+import { assembleAssetDirectories, type AssetDirectoryDescriptor } from "../src/plugin/asset-directory";
+import {
+  CONNECT_PLUGIN_BUNDLE_FORMAT,
+  type ConnectPluginBundleV1,
+  type ConnectPluginManifestV1,
 } from "../src/plugin/sdk";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -37,6 +38,9 @@ export interface OfficialPluginDescriptor {
   readonly manifest: Omit<ConnectPluginManifestV1, "artifacts">;
   readonly entrypoint: string;
   readonly assets?: readonly OfficialPluginAssetDescriptor[];
+  readonly assetDirectories?: readonly AssetDirectoryDescriptor[];
+  /** Produces generated inputs such as a complete browser build before packaging. */
+  readonly prepareAssets?: () => Promise<void>;
 }
 
 export interface BuildOfficialPluginOptions {
@@ -51,6 +55,41 @@ export interface BuiltOfficialPlugin {
   readonly filename: string;
   readonly outputPath: string;
   readonly bundle: ConnectPluginBundleV1;
+}
+
+export interface OfficialPluginIntegrityReportEntry {
+  readonly pluginId: string;
+  readonly version: string;
+  readonly target: string;
+  readonly filename: string;
+  readonly artifactIntegrity: string;
+  readonly fileIntegrities: Readonly<Record<string, string>>;
+}
+
+export function officialPluginIntegrityReport(
+  built: readonly BuiltOfficialPlugin[],
+): readonly OfficialPluginIntegrityReportEntry[] {
+  return built
+    .map(({ bundle, filename, target }) => {
+      const artifact = bundle.manifest.artifacts[0];
+      if (!artifact) throw new Error(`Official Plugin Bundle ${filename} has no entry artifact`);
+      return {
+        pluginId: bundle.manifest.pluginId,
+        version: bundle.manifest.version,
+        target,
+        filename,
+        artifactIntegrity: artifact.integrity,
+        fileIntegrities: Object.fromEntries(
+          Object.entries(bundle.files)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([entry, file]) => [entry, fileIntegrity(file)]),
+        ),
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.pluginId.localeCompare(right.pluginId) || left.target.localeCompare(right.target),
+    );
 }
 
 export function officialPluginSupportsTarget(descriptor: OfficialPluginDescriptor, target: string): boolean {
@@ -81,6 +120,7 @@ export async function buildOfficialPlugin(
   options: BuildOfficialPluginOptions = {},
 ): Promise<BuiltOfficialPlugin> {
   const target = options.target ?? `${process.platform}-${process.arch}`;
+  await descriptor.prepareAssets?.();
   const entry = await bundleModule(descriptor.entrypoint);
   const entryPath = `artifacts/${target}.mjs`;
   const files: ConnectPluginBundleV1["files"] = {
@@ -96,6 +136,10 @@ export async function buildOfficialPlugin(
     const bytes = await readFile(resolve(repositoryRoot, source));
     files[asset.entry] = { encoding: "base64", content: bytes.toString("base64") };
   }
+  await assembleAssetDirectories(files, descriptor.assetDirectories ?? [], {
+    sourceRoot: repositoryRoot,
+    label: "Official Plugin",
+  });
   const bundle: ConnectPluginBundleV1 = {
     format: CONNECT_PLUGIN_BUNDLE_FORMAT,
     manifest: {
@@ -162,17 +206,36 @@ async function bundleModule(entrypoint: string): Promise<string> {
 }
 
 
+function fileIntegrity(file: ConnectPluginBundleV1["files"][string]): string {
+  const bytes = file.encoding === "base64" ? Buffer.from(file.content, "base64") : Buffer.from(file.content);
+  return `sha256-${createHash("sha256").update(bytes).digest("base64")}`;
+}
+
 if (import.meta.main) {
   const targetIndex = process.argv.indexOf("--target");
   const outputIndex = process.argv.indexOf("--output");
+  const reportIndex = process.argv.indexOf("--integrity-report");
   const target = targetIndex >= 0 ? process.argv[targetIndex + 1] : undefined;
   const outputDirectory = outputIndex >= 0 ? process.argv[outputIndex + 1] : undefined;
+  const integrityReportPath = reportIndex >= 0 ? process.argv[reportIndex + 1] : undefined;
   const allTargets = process.argv.includes("--all-targets");
   if (targetIndex >= 0 && !target) throw new Error("--target requires a value");
   if (outputIndex >= 0 && !outputDirectory) throw new Error("--output requires a value");
+  if (reportIndex >= 0 && !integrityReportPath) throw new Error("--integrity-report requires a value");
   const descriptors = await discoverOfficialPluginDescriptors();
+  const allBuilt: BuiltOfficialPlugin[] = [];
   for (const selectedTarget of officialPluginBuildTargets(target, allTargets)) {
     const built = await buildOfficialPlugins(descriptors, { target: selectedTarget, outputDirectory });
+    allBuilt.push(...built);
     for (const plugin of built) console.log(plugin.outputPath);
+  }
+  if (integrityReportPath) {
+    const resolvedReportPath = resolve(integrityReportPath);
+    await mkdir(dirname(resolvedReportPath), { recursive: true });
+    await writeFile(
+      resolvedReportPath,
+      `${JSON.stringify(officialPluginIntegrityReport(allBuilt), null, 2)}\n`,
+    );
+    console.log(resolvedReportPath);
   }
 }

@@ -87,12 +87,10 @@ try {
 
   Expand-Archive -LiteralPath $archivePath -DestinationPath $extractedDirectory
   $connectSource = Join-Path $extractedDirectory "clawchat-connect.exe"
-  $clientSource = Join-Path $extractedDirectory "clawchat-connect-client"
   $officialPluginsSource = Join-Path $extractedDirectory "official-plugins"
   $skillsSource = Join-Path $extractedDirectory "skills"
   foreach ($requiredPath in @(
     $connectSource,
-    (Join-Path $clientSource "index.html"),
     (Join-Path $skillsSource "manifest.json"),
     (Join-Path $extractedDirectory "CHANGELOG.md"),
     (Join-Path $extractedDirectory "LICENSE")
@@ -135,12 +133,6 @@ try {
 
   $connectStaging = "$connectTarget.new"
   Copy-Item -LiteralPath $connectSource -Destination $connectStaging -Force
-  $clientTarget = Join-Path $InstallDirectory "clawchat-connect-client"
-  $clientStaging = "$clientTarget.new"
-  if (Test-Path -LiteralPath $clientStaging) {
-    Remove-Item -LiteralPath $clientStaging -Recurse -Force
-  }
-  Copy-Item -LiteralPath $clientSource -Destination $clientStaging -Recurse
   $officialPluginsTarget = Join-Path $InstallDirectory "official-plugins"
   $officialPluginsStaging = "$officialPluginsTarget.new"
   if (Test-Path -LiteralPath $officialPluginsStaging) {
@@ -180,7 +172,6 @@ try {
     }
   }
   Move-Item -LiteralPath $connectStaging -Destination $connectTarget
-  Move-Item -LiteralPath $clientStaging -Destination $clientTarget
   Move-Item -LiteralPath $officialPluginsStaging -Destination $officialPluginsTarget
   Move-Item -LiteralPath $skillsBundleStaging -Destination $skillsBundleTarget
   New-Item -ItemType Directory -Path (Split-Path -Parent $LicenseDirectory) -Force | Out-Null
@@ -211,10 +202,10 @@ try {
   $env:PATH = "$InstallDirectory;$env:PATH"
 
   Write-Host "Installed clawchat-connect.exe to $connectTarget"
-  Write-Host "Installed Connect Client assets to $clientTarget"
   Write-Host "Installed official Plugin Bundles to $officialPluginsTarget"
   Write-Host "Installed managed Agent skills to $HOME\.agents\skills"
-  Write-Host "Run 'clawchat-connect init', install a Runtime Plugin with 'clawchat-connect plugin setup', then create a Binding with exact --plugin and --capability IDs."
+  Write-Host "Run 'clawchat-connect init', install Runtime Plugins explicitly with 'clawchat-connect plugin setup', then create a Binding with exact --plugin and --capability IDs."
+  Write-Host "The optional clawling.web.connect-client Plugin requires a separate explicit selection."
 } catch {
   if ($transactionStarted -and -not $transactionCommitted) {
     foreach ($entry in $targets) {

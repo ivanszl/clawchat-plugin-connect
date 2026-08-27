@@ -61,6 +61,11 @@ export interface RuntimeCapabilityRef {
   capabilityId: ConnectPluginCapabilityId;
 }
 
+/** Exact immutable identity of one activated Managed Web App Provider generation. */
+export interface ManagedWebAppGenerationReference extends Readonly<RuntimeCapabilityRef> {
+  readonly activationGeneration: number;
+}
+
 interface ConnectPluginCapabilityManifestBase {
   id: ConnectPluginCapabilityId;
   interfaceVersion: typeof CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION;
@@ -71,6 +76,16 @@ interface ConnectPluginCapabilityManifestBase {
 export interface ConnectPluginRuntimeCapabilityManifest extends ConnectPluginCapabilityManifestBase {
   type: "runtime";
   family: string;
+}
+
+export interface ConnectPluginManagedWebAppCapabilityManifest
+  extends Omit<ConnectPluginCapabilityManifestBase, "durableState"> {
+  type: "managed-web-app";
+  /** Product identity presented in launchers and diagnostics. */
+  displayName: string;
+  description: string;
+  nativeRuntimeCapabilityIds: ConnectPluginCapabilityId[];
+  compatibleRuntimes: RuntimeCapabilityRef[];
 }
 
 export interface ConnectPluginExposureCapabilityManifest extends ConnectPluginCapabilityManifestBase {
@@ -98,15 +113,22 @@ export interface ConnectPluginClientExtensionBrowserManifest {
 export interface ConnectPluginClientExtensionCapabilityManifest
   extends Omit<ConnectPluginCapabilityManifestBase, "durableState"> {
   type: "client-extension";
+  /** Exact Managed Web App whose browser owns this extension graph. */
+  managedWebApp: Readonly<RuntimeCapabilityRef>;
   browser: ConnectPluginClientExtensionBrowserManifest;
 }
 
 export type ConnectPluginCapabilityManifest =
   | ConnectPluginRuntimeCapabilityManifest
+  | ConnectPluginManagedWebAppCapabilityManifest
   | ConnectPluginExposureCapabilityManifest
   | ConnectPluginClientExtensionCapabilityManifest;
 
-export type ConnectHostCapabilityId = "runtime-provider" | "exposure-provider" | "durable-state";
+export type ConnectHostCapabilityId =
+  | "runtime-provider"
+  | "managed-web-app-provider"
+  | "exposure-provider"
+  | "durable-state";
 
 export interface ConnectPluginHostCapabilityDependency {
   type: "host";
@@ -235,19 +257,58 @@ export interface ConnectRuntimeProviderHostCapability {
   register(provider: ConnectPluginRuntimeProvider): void;
 }
 
+export type ManagedWebAppHealth = "starting" | "ready" | "restarting" | "error" | "stopped";
+
+/**
+ * Immutable input from which a Provider derives its native instance key.
+ * It deliberately contains no mutable Binding, persistence, or Core service.
+ */
+export interface ConnectPluginManagedWebAppInstanceContext {
+  readonly activationGeneration: number;
+  readonly pluginId: ConnectPluginId;
+  readonly capabilityId: ConnectPluginCapabilityId;
+  readonly bindingId: string;
+  readonly runtime: Readonly<RuntimeCapabilityRef>;
+  readonly installationConfiguration: ConnectPluginConfiguration;
+  readonly configuration: ConnectPluginConfiguration;
+  readonly runtimeConfiguration: ConnectPluginConfiguration;
+}
+
+export interface ConnectPluginManagedWebAppAcquireContext
+  extends ConnectPluginManagedWebAppInstanceContext {
+  readonly instanceKey: string;
+}
+
+/** Provider-owned process/server handle. Core observes it but never interprets its protocol. */
+export interface ConnectPluginManagedWebAppInstance {
+  readonly upstream: string;
+  waitUntilReady(): Promise<void>;
+  health(): ManagedWebAppHealth;
+  onHealthChange(listener: (health: ManagedWebAppHealth) => void): ConnectPluginDisposer;
+  onExit(listener: (error?: unknown) => void): ConnectPluginDisposer;
+  release(): Promise<void>;
+}
+
+export interface ConnectPluginManagedWebAppProvider {
+  readonly capabilityId: ConnectPluginCapabilityId;
+  instanceKey(context: ConnectPluginManagedWebAppInstanceContext): string | Promise<string>;
+  acquire(context: ConnectPluginManagedWebAppAcquireContext): Promise<ConnectPluginManagedWebAppInstance>;
+}
+
+export interface ConnectManagedWebAppProviderHostCapability {
+  readonly interfaceVersion: typeof CONNECT_HOST_CAPABILITY_INTERFACE_VERSION;
+  register(provider: ConnectPluginManagedWebAppProvider): void;
+}
+
 export interface ConnectDurableStateHostCapability {
   readonly interfaceVersion: typeof CONNECT_HOST_CAPABILITY_INTERFACE_VERSION;
   forBinding(capabilityId: ConnectPluginCapabilityId, bindingId: string): ConnectPluginDurableState;
 }
 
-export interface ConnectPluginClientExposure {
-  fetch(request: Request): Promise<Response>;
-}
 
 export interface ConnectPluginExposureActivation {
   readonly activationGeneration: number;
   readonly configuration: ConnectPluginConfiguration;
-  readonly client: ConnectPluginClientExposure;
   readonly durableState?: ConnectPluginDurableState;
 }
 
@@ -300,6 +361,7 @@ export interface ConnectPluginClientExtensionEntry {
 
 export interface ConnectPluginHostCapabilities {
   get(id: "runtime-provider"): ConnectRuntimeProviderHostCapability;
+  get(id: "managed-web-app-provider"): ConnectManagedWebAppProviderHostCapability;
   get(id: "exposure-provider"): ConnectExposureProviderHostCapability;
   get(id: "durable-state"): ConnectDurableStateHostCapability;
 }

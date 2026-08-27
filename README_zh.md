@@ -1,498 +1,178 @@
 <div align="center">
   <p><a href="./README.md">English</a> | <strong>中文</strong></p>
   <h1>ClawChat Connect</h1>
-  <p><strong>把运行在你电脑上的编程 Agent 接入任意 ClawChat 对话。</strong></p>
-  <p>
-    <a href="https://clawling.com/u/usr_01KPSPM0D3FFERFTYPY0PF8J2J"><img src="./docs/assets/clawchat.svg" alt="ClawChat" width="24" /></a><br />
-    作者：<a href="https://clawling.com/u/usr_01KPSPM0D3FFERFTYPY0PF8J2J">在 ClawChat 上联系</a>
-  </p>
-  <p>
-    <a href="https://github.com/XMethues/clawchat-plugin-connect/releases"><img alt="GitHub 版本" src="https://img.shields.io/github/v/release/XMethues/clawchat-plugin-connect?include_prereleases&style=flat-square"></a>
-    <a href="./LICENSE"><img alt="MIT 许可证" src="https://img.shields.io/badge/license-MIT-4c8bf5?style=flat-square"></a>
-    <img alt="支持 Apple silicon macOS" src="https://img.shields.io/badge/platform-macOS%20Apple%20silicon-59636e?style=flat-square">
-    <img alt="运行时：Codex、OpenCode、WorkBuddy 与 DeepSeek Harness" src="https://img.shields.io/badge/runtimes-Codex%20%7C%20OpenCode%20%7C%20WorkBuddy%20%7C%20DeepSeek%20Harness-f97316?style=flat-square">
-  </p>
-  <p>
-    <a href="#功能">功能</a> ·
-    <a href="#快速开始">快速开始</a> ·
-    <a href="#在代码仓库中工作">项目</a> ·
-    <a href="#connect-client">Connect Client</a> ·
-    <a href="#配置">配置</a> ·
-    <a href="#开发">开发</a>
-  </p>
+  <p><strong>从 ClawChat 使用本机编码 Agent Runtime，并按需使用彼此独立的托管 Web App。</strong></p>
 </div>
 
----
+ClawChat Connect 是本机 Core 服务和 Plugin Host。Core 负责 Agent Binding、ClawChat 传输、Workspace 与 Connect Session 记录、Runtime 分派、Plugin 生命周期和命令行管理。Runtime Plugin 负责各自的原生 Runtime 协议；Managed Web App Plugin 负责完整的 Web 产品；可选 Liveware Plugin 把已选 App 暴露给对应 Binding。Core 不再无条件携带或提供浏览器应用。
 
-ClawChat Connect 是连接 ClawChat 与本地编程 Agent 运行时的桥梁。Agent、凭据、项目文件和运行时历史都保留在你的电脑上；你可以从 ClawChat 或浏览器中的 Connect Client 继续同一个持久 Session。
+## 产品模型
 
-## 功能
-
-| 领域 | Connect 提供的能力 |
-| --- | --- |
-| Runtime Adapter | 连接用户自行安装的 Codex、OpenCode、WorkBuddy 或 DeepSeek Harness 运行时，不接管运行时登录、模型供应商、插件和 MCP 配置。 |
-| 持久工作 | 通过稳定的 Connect Session 恢复原生 Runtime Thread，并使用 Binding-scoped Workspace。 |
-| 跨入口对话 | ClawChat 与 Connect Client 的消息进入同一个 Session 队列；不同 Session 可并发运行。 |
-| 运行时控制 | 动态发现模型与选项，将审批和问题送回发起任务的入口，并支持取消任务。 |
-| Skill 发现 | 在 Connect Client 的 slash picker 中展示运行时支持的 Skill，并把显式选择保留在本次任务中。 |
-| 丰富输入输出 | 接收 ClawChat 图片、音频、文件和视频引用，并按安全规则返回本地图片结果。 |
-| 多 Agent Binding | 每个 Binding 独立保存凭据、Session、Runtime 实例、默认设置、输出可见性和 Liveware 访问。 |
-| 本地优先访问 | 默认使用本机 Client，也可显式开放可信局域网或启用官方 Liveware Client Exposure。 |
-| Agent 可调用的 ClawChat 操作 | 另行内置工具和托管 Agent Skill，用于资料、社交、消息、动态和 Liveware 工作流。 |
-
-### 在 ClawChat 中使用 Connect
-
-- **从对话发起任务：** 私聊中直接发送普通消息；群聊中通过结构化 mention 指定 Agent。
-- **控制当前 Session：** 使用 slash 命令创建、列出和切换 Session，选择 Workspace，查看状态，设置运行时模型与 mode，取消当前任务并控制输出可见性。
-- **延续持久运行时工作：** 每个 ClawChat 对话和 Agent Binding 保留独立的当前 Session，原生 Runtime Thread 可继续恢复。
-- **原地处理运行时交互：** 审批和 Agent 问题会返回到发起任务的私聊或群聊。
-- **收发丰富上下文：** ClawChat 图片、音频、文件和视频保持结构化；符合安全规则的本地图片结果会上传到回复中。
-- **不离开 ClawChat 使用 Connect Client：** 官方 Liveware Plugin 可为每个已激活 Binding 发布一个私有 App；所有 App 都打开同一个安装级 Client。
-
-ClawChat 入口负责对话范围内的工作；Workspace 注册、Service 管理和其他本机级配置仍在终端或 Connect Client 中完成。
-
-### Runtime 支持
-
-| Runtime | Connect 可以做什么 | 主要限制 |
+| 产品 | 所有者 | 边界 |
 | --- | --- | --- |
-| Codex | 新建或恢复 Session，选择可用的模型、推理和 sandbox 选项，取消任务，并执行 Codex 支持的 Session 管理操作。 | 需要用户自行安装 Codex。Connect 只显示 Codex 实际提供的控制项。 |
-| OpenCode | 连接正在运行的 OpenCode，发现或恢复 Session，选择可用的 agent、模型和 variant，取消任务并删除受支持的 Session。 | 必须先运行 `opencode serve`。不支持归档和还原。 |
-| WorkBuddy | 打开并继续已有 Task，保留历史；Desktop 切换 Task 后继续原 Task；重启后恢复；取消正在运行的任务。 | 不支持图片/媒体输入；Task 跳过权限确认时无法显示审批提示；不支持归档、还原和删除。 |
-| DeepSeek Harness | 使用所选 Profile 新建或恢复 Session，使用可用的 preset、Command 和 Skill，取消任务，并在 Profile 支持时归档。 | 可用功能和 Session 管理操作取决于所选 DeepSeek Harness Profile。 |
+| Connect Core | `clawchat-connect` | Agent Binding、ClawChat 传输、Workspace/Session 记录、Plugin 权限和 CLI 恢复。 |
+| Runtime Plugin | 已安装的精确 Plugin capability | Runtime 进程/协议、原生登录、模型、工具、审批与原生 Thread 存储。 |
+| Managed Web App | 其 Provider Plugin | Web 服务器、浏览器资产/协议、认证、Web Session、Interaction、重连和界面。 |
+| Web App Exposure | 官方 `clawling.exposure.liveware` Plugin | 将不透明的、已租用的回环 App upstream 私密发布给一个 Binding。 |
 
-Connect 使用你自行安装的运行时，并保留它们自己的登录、模型、供应商、插件、工具、凭据、sandbox 和审批设置。Connect 不会安装或升级运行时。兼容性详情见 [Runtime Adapters](./docs/runtime-adapters.md)。
+这些是彼此独立的产品。Runtime 健康时，其已选 App 可能不可用；Binding Runtime 停止时，App 也可能健康。Connect 不会把这些健康域合并成一个状态。
 
-#### WorkBuddy 支持边界
+产品之间不承诺 Session 连续性。ClawChat Connect Session、`dsh web` Session、`opencode web` Session 和可选 Connect Client Session 即使指向同一仓库，也拥有独立的认证、历史、Interaction 状态和重连行为。Connect 不会在它们之间复制对话或工具上下文。
 
-| 状态 | 边界 |
+## Managed Web App 选择
+
+选择规则是确定且精确的：
+
+1. 若 Binding 的精确 Runtime capability 声明原生 Managed Web App，则选择它。
+2. 否则，只能选择已安装且明确列出该精确 `pluginId` 与 `capabilityId` 的兼容 Managed Web App。
+3. 否则，该 Binding 没有 App。
+
+暂时不可用不会改变选择，也不会触发兼容代理、回退页面或隐藏的 Client endpoint。
+
+官方映射：
+
+| Runtime capability | 已选 App |
 | --- | --- |
-| **支持** | 在 Connect 中打开已有 WorkBuddy Task，继续发送文本并保留 Task 历史；WorkBuddy 切换当前显示的 Task 不会改变 Connect 正在操作的 Task；WorkBuddy 重启后可以继续；也可以取消正在运行的任务。 |
-| **取决于 WorkBuddy** | 只有当前 WorkBuddy Task 本身提供时，Connect 才会显示对应的模型、权限模式、Command 和 Skill。 |
-| **暂时不可用** | 如果 WorkBuddy 已关闭或当前 Task 尚未就绪，只会暂停这个 WorkBuddy 连接。其他已连接 Agent 可以继续工作，已有历史仍可阅读。重新打开 WorkBuddy 后重试同一个 Task 即可。 |
-| **不支持** | 图片或其他媒体输入；为已配置为跳过权限确认的 WorkBuddy Task 提供审批提示；归档、还原或删除；以及 WorkBuddy 本身未提供的 mode、Command 或 Skill。 |
+| `clawling.runtime.deepseek-harness/deepseek-harness` | 原生 DSH Web（`dsh web`）。 |
+| `clawling.runtime.opencode/opencode` | 原生 OpenCode Web（`opencode web`）。 |
+| Codex 与两个 WorkBuddy capability | 仅在完整 Plugin 被显式安装后，使用可选 `clawling.web.connect-client/connect-client`。 |
 
-> [!WARNING]
-> **WorkBuddy 审批：**WorkBuddy Task 可以配置为跳过权限确认。启用这种模式后，Connect 无法在 ClawChat 或 Connect Client 中显示审批按钮，WorkBuddy 会按照自己的设置直接执行操作。如果你的工作流必须人工审批，请在 WorkBuddy 中选择会在执行前询问的权限模式。Connect 不会替你修改这项设置。
+纯 CLI 安装完全有效。安装 Runtime 或激活 Agent Binding 绝不会隐式安装可选 Connect Client Plugin。没有已选 App 的 Binding 不会被 Liveware 发布。
 
-详情见 [WorkBuddy Runtime Adapter](./docs/workbuddy-adapter.md)。
+## 要求
 
-> [!IMPORTANT]
-> ClawChat Connect 仍处于 Beta 阶段，尚未稳定。启用可信局域网或公开 Liveware 访问前，请先阅读[本地数据与安全](#本地数据与安全)。
-
-## 环境要求
-
-安装前需要：
-
-1. ClawChat 账号和 Agent 邀请码；
-2. 已在同一台电脑上安装并登录至少一种受支持的编程 Agent 运行时；
-3. Apple silicon 架构的 macOS（`darwin-arm64`）；其他操作系统与架构暂不进入当前 beta 发行范围。
-
-检查准备使用的运行时：
-
-```bash
-codex --version
-# 或
-opencode --version
-# DeepSeek Harness 只需确认 dsh 在 PATH 中
-command -v dsh
-```
-
-Connect 使用运行时现有的登录状态、配置、模型供应商、插件、MCP Server 与原生 Session 存储。Codex 需要提供 Connect 所需的 app-server 接口；OpenCode 必须为 `1.18.10` 或 `1.18.13`。对于 DeepSeek Harness，Connect 不检查 DSH 版本或内部组件图；配置了 Profile 就使用它，未配置则省略 Profile 参数并保留 DSH 原生的默认选择或错误。Connect 不会安装、登录或重新配置任一运行时。
+当前 beta 归档支持 Apple 芯片 Mac。你需要 ClawChat 账号、Agent 邀请码，以及至少一个已在本机安装并认证的受支持 Runtime。Connect 不会安装、升级、认证或重配置 Codex、OpenCode、WorkBuddy 或 DeepSeek Harness。
 
 ## 快速开始
 
-### 使用 Agent 安装
-
-复制以下提示词并发送给你的编程 Agent：
-
-```text
-在这台电脑上安装 ClawChat Connect 当前 beta 通道版本。开始操作前，先阅读并严格执行 https://github.com/XMethues/clawchat-plugin-connect/blob/main/install.md。若已存在配置，应复用现有配置，不要覆盖；安装并启动系统原生的 Connect Service；如需远程 Client 访问，则选择官方 Liveware Plugin；随后验证 doctor、后台服务状态、Runtime 连接和私有 Liveware Publication。仅在需要激活时向我索取 Agent 邀请码，并且不得打印、保存或提交邀请码。
-```
-
-### 1. 安装 Connect
-
-Apple silicon macOS 的独立安装包不需要 Bun 或 Node.js：
+### 安装 Core
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh
-```
-
-独立发行包把对应平台且固定校验的 Liveware companion 嵌入经发行验证的官方 Liveware Plugin Bundle；安装器只携带该 Bundle，并会删除旧版同级 `liveware` 可执行文件。安装器会在运行时通过 `release-channel/latest-beta.txt` 解析当前 beta 通道版本；只有需要固定版本时才应显式传入版本号。
-
-默认安装目录为 `~/.local/bin`。如果该目录不在 `PATH` 中：
-
-```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-安装指定版本或自定义目录：
+安装器先用 `checksums.txt` 校验发布归档，再安装 Core、官方 Plugin Bundle、skills 与许可说明，并清理旧的根级 `liveware` 和 `clawchat-connect-client` 载荷。归档可包含或省略可选 Connect Client Plugin，两种情况都有效。浏览器资产若存在，只能位于完整性覆盖的 Plugin Bundle 内。
+
+当前 beta 指针为 `release-channel/latest-beta.txt`。固定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | \
-  CLAWCHAT_CONNECT_INSTALL_DIR="$HOME/bin" sh -s -- v0.1.0-beta.8
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh -s -- v0.1.0-beta.8
 ```
 
-当前 beta 通道只发布已经完成验收的 `darwin-arm64` 归档。Linux、Windows 和 Intel macOS 的发行产物延期到恢复对应原生平台验收之后。
-
-开发者也可以安装 Bun 包：
+### 初始化并安装 Runtime Plugin
 
 ```bash
-bun add --global @clawling/clawchat-plugin-connect
-```
-
-将已有安装更新到当前 beta 通道版本：
-
-```bash
-clawchat-connect update
-```
-
-使用 `clawchat-connect update --version v0.1.0-beta.8` 可安装指定版本。更新命令会保留现有配置并刷新系统原生的 Connect Service；明确指定时，历史版本仍可安装。
-
-### 2. 安装 Runtime Plugin 并创建 Agent Binding
-
-`work` 是本地名称，可替换为任意简短名称。先初始化 Connect、激活官方 Runtime Plugin Bundle，再绑定精确的 Plugin capability：
-
-```bash
-# Codex
 clawchat-connect init
+
 clawchat-connect plugin setup --non-interactive --select clawling.runtime.codex
 clawchat-connect agent add work --plugin clawling.runtime.codex --capability codex
-
-# OpenCode
-clawchat-connect init
-clawchat-connect plugin setup --non-interactive --select clawling.runtime.opencode
-clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
-
-# DeepSeek Harness
-clawchat-connect init
-clawchat-connect plugin setup --non-interactive --select clawling.runtime.deepseek-harness
-clawchat-connect agent add work --plugin clawling.runtime.deepseek-harness --capability deepseek-harness
-```
-
-运行时专属设置放在 capability Schema 校验的 `runtimeConfig` 中：
-
-```bash
-clawchat-connect agent add work \
-  --plugin clawling.runtime.codex \
-  --capability codex \
-  --runtime-config-json '{"executablePathOverride":"/absolute/path/to/codex"}'
-```
-
-DeepSeek Harness 的 `homePath`、`profile`、`executablePathOverride`、`outputVisibility` 与 `displayName` 都是可选配置。省略 `profile` 时 Connect 不传 `--profile`，由已安装的 DSH 使用原生默认值或返回原生配置错误；Connect 不会虚构 Profile：
-
-```bash
-clawchat-connect agent add work \
-  --plugin clawling.runtime.deepseek-harness \
-  --capability deepseek-harness \
-  --runtime-config-json '{"homePath":"/absolute/path/to/.dsh","profile":"my-profile"}'
-```
-
-`init` 会创建不含 Runtime Plugin 的空配置；已有安装应在 provider Bundle 安装并激活后使用 `agent add`。
-
-### 3. 激活 Binding
-
-使用 ClawChat 提供的邀请码：
-
-```bash
 clawchat-connect activate work YOUR_INVITE_CODE
-```
 
-Connect 只保存激活后返回的凭据，不会保存邀请码，并把 ClawChat Profile 昵称更新为 Binding ID（本例为 `work`）。
-
-一个 Connect 安装只有一个 Installation Owner；它可以为同一 ClawChat 账号激活多个 Agent Binding，并使用多个 Runtime Plugin 的 capability：
-
-```bash
-clawchat-connect plugin setup --non-interactive \
-  --select clawling.runtime.codex,clawling.runtime.opencode
-clawchat-connect agent add personal --plugin clawling.runtime.codex --capability codex
-clawchat-connect activate personal PERSONAL_AGENT_INVITE_CODE
-
-clawchat-connect agent add work --plugin clawling.runtime.opencode --capability opencode
-clawchat-connect activate work WORK_AGENT_INVITE_CODE
-clawchat-connect service restart
-```
-
-每个 Binding 独立拥有凭据、Session、Runtime 实例和 Binding-scoped Workspace Catalog，但所有 Binding 必须属于同一 Installation Owner；不同 Owner 的激活会在不改变现有状态的情况下被拒绝。官方 Liveware Plugin 提供一个安装级 Client Exposure，并为每个已激活 Binding 管理独立的 Liveware Publication；所有 Publication 都连接同一个 Core-owned Shared Client Gateway，且只有 Installation Owner 能打开相应 App。
-
-### 4. 安装后台服务
-
-```bash
 clawchat-connect service install
 clawchat-connect service status
-```
-
-服务会立即启动，并通过当前用户的 macOS LaunchAgent 在以后登录系统时自动运行；不要求管理员/root 权限。
-
-### 5. 发送消息
-
-在 ClawChat 中打开已激活 Agent 的对话并发送普通消息：
-
-```text
-解释这个仓库的作用，并建议第一项改进。
-```
-
-Connect 会使用该 Binding 位于 `~/.clawchat-connect/workspaces/` 下的 Default Workspace，并自动启动持久 Runtime Session。
-
-## 在代码仓库中工作
-
-Workspace 路径属于本机管理信息，请通过终端或 Connect Client 注册，不要在 ClawChat 消息中注册：
-
-```bash
-clawchat-connect workspace add codex /absolute/path/to/clawchat-plugin-connect
-clawchat-connect workspace list codex
-```
-
-Connect Client 可以浏览 Connect Service 主机上的目录、新建文件夹，并为所选 Agent Binding 注册 Workspace。新建 Session 对话框也支持暂存同一操作，只有确认创建 Session 时才会创建文件夹、Workspace 和 Session。
-
-目录选择器会向所有能打开 Client 的用户展示主机目录名称和结构，但不会展示文件内容；这包括通过私有 Liveware Publication 访问的 Installation Owner，以及可信局域网中的对等端。
-
-```text
-/workspace ABCDEFGH
-/new 审查认证逻辑
-/mode workspace-write
-/model
-/model MODEL_ID high
-审查认证实现并报告安全问题。
-```
-
-`/workspace`、`/new`、`/mode` 和 `/model` 会准备一个 Session Intent。下一条普通消息会以原子方式创建 Session 并启动原生 Runtime Thread。直接发送 `/model` 会列出 Runtime Adapter 提供的模型和推理选项；OpenCode agent、variant 等专属选项也可在 Connect Client 中设置。
-
-本地 Workspace 命令：
-
-| 命令 | 用途 |
-| --- | --- |
-| `clawchat-connect workspace add <binding-id> <absolute-path>` | 在一个 Binding 的 Catalog 中注册以根目录命名的 Workspace。 |
-| `clawchat-connect workspace list <binding-id>` | 列出该 Binding 的 Workspace 及其本地路径。 |
-| `clawchat-connect workspace remove <binding-id> <workspace-ref>` | 移除未使用的 Workspace 定义；不会删除文件或 Runtime Thread。 |
-
-## Session 与聊天命令
-
-Connect 会为每个 ClawChat 对话和 Agent Binding 保留一个当前 Session。Session 具有稳定的 8 位 Ref；启动后会关联一个可恢复的原生 Runtime Thread。
-
-以下命令需要作为独立 ClawChat 消息发送。私聊直接使用表中形式；群聊需要在命令前放置 Agent 的结构化 mention 并保留一个空格，例如 `@Agent /help`。群聊中未使用该寻址 mention 的 slash 内容不会被识别为控制命令，可以作为普通 Agent 输入处理。
-
-| 命令 | 用途 |
-| --- | --- |
-| `/help` | 显示命令摘要。 |
-| `/status` | 显示当前或待创建 Session、有效选项、连接和任务状态。 |
-| `/new [name]` | 为下一条普通消息准备新 Session。 |
-| `/sessions` | 列出所选工作区的 Session 和可用 Runtime Thread。 |
-| `/switch <name-or-ref>` | 恢复 Session 或接管可用 Runtime Thread。 |
-| `/workspace [workspace-ref]` | 查看同步后的 Workspace、按 Workspace Ref 选择，或恢复 Binding Default Workspace。 |
-| `/model [model-id [reasoning-option]\|default]` | 查看或设置 Session 模型及其第二级选项；`default` 恢复继承。 |
-| `/mode [mode\|default]` | 查看或设置 Runtime Adapter 提供的 mode；Codex 支持 `read-only`、`workspace-write`、`danger-full-access`。 |
-| `/cancel` | 尽可能中断当前运行时任务。 |
-| `/clawchat-output <mode>` | 将 ClawChat 输出设为 `minimal`、`normal` 或 `full`。 |
-
-`/help` 对所有参与者开放；其他控制命令仅限 Installation Owner。已废弃的控制形式会返回 `/help` 提示，不会转发给编程 Agent。
-
-输出可见性按 Binding 隔离。有效模型按“Session 覆盖值 → Agent Binding 默认值 → Runtime Adapter 默认值”解析；第二级选项对应 Codex reasoning effort 或 OpenCode variant。不可用的已保存选项会明确报错，不会静默替换。
-
-Runtime 审批和问题只会出现在发起该 Turn 的私聊或群聊中。私聊使用 `/approve`、`/approve session`、`/deny`、`/N` 或 `/answer <文本>`；群聊在这些精确小写、单行形式前加 `@Agent `。当前阶段，原群聊中的任何参与者都可以回答 Interaction，包括 Session 级审批；Connect 控制命令仍然仅限 Connect Owner。
-
-## Connect Client
-
-服务默认在 `http://127.0.0.1:47823/` 提供浏览器 Client：
-
-```bash
-clawchat-connect web
-```
-
-只打印地址而不打开浏览器：
-
-```bash
-clawchat-connect web --no-open
-```
-
-Connect Client 可以：
-
-- 创建和切换 Session、选择 Workspace、查看原生 Runtime transcript；
-- 设置 Runtime Adapter 提供的 model、mode、agent、effort 或 variant；
-- 在 composer 的 slash picker 中发现 Runtime command 与 Skill；
-- 添加受支持的附件、发送后续任务，并把排队中的任务撤回 composer 编辑；
-- 在 Runtime Adapter 支持时归档、还原或永久删除 Session。
-
-由浏览器发起的消息只保留在 Connect 本地，不会发布到 ClawChat。
-
-同一 Session 中，浏览器与 ClawChat 消息会严格排序；不同 Session 可以并发运行，最大并发数由 `maxConcurrentTurns` 控制。
-
-### 通过 Liveware 在 ClawChat 中访问
-
-本机回环 Client 和每个私有 Liveware Publication 都会打开同一个安装级 Client。即使两个 Catalog 条目解析到同一文件系统根目录，Workspace 仍按 Binding 隔离。
-
-请在 Connect Client 的官方 Liveware Plugin 设置中配置 `liveware` capability：
-
-- `accessPolicy: "private"` 为每个已激活 Binding 发布仅 Owner 可访问的 App。
-- `accessPolicy: "off"` 停用所有 Binding Liveware Publication，并释放 Shared Client Gateway lease。
-
-官方 Liveware 候选项随发行包提供，可在 Plugin setup 中手动选择。任何受信任的 Plugin 都可声明 Client Exposure，并仅获得由 Core 中介且带 Activation Generation 防护的 Client fetch facade；完整性固定的官方 Liveware 实现还会获得内部 publication 服务。Liveware 的 public 访问仍不受支持。
-
-删除某个 Binding、它的 Liveware App 与本地历史时，需要显式确认：
-
-```bash
-clawchat-connect agent remove work --yes
-```
-
-删除 Binding 时会清除其 Workspace Catalog 记录，但保留 Workspace 文件内容和其他 Binding。
-
-### 可信局域网访问
-
-要让可信私有网络中的其他设备访问：
-
-```bash
-clawchat-connect config set clientHost 0.0.0.0
-clawchat-connect service restart
-```
-
-然后打开 `http://<电脑局域网-IP>:47823/`。
-
-> [!WARNING]
-> 局域网模式没有身份验证或 TLS。任何能访问该端口的人都可以枚举主机目录名称与结构、读取 Session、管理 Workspace 路径与运行时偏好，并提交本地编程 Agent 任务。插件管理仍仅允许实际的回环连接（包括私有回环 Liveware Gateway）；转发请求头不能向局域网对等端授予该权限。绝对不要暴露到互联网。
-
-恢复仅本机访问：
-
-```bash
-clawchat-connect config set clientHost 127.0.0.1
-clawchat-connect service restart
-```
-
-## 媒体支持
-
-ClawChat 传入的媒体会保留结构化信息：
-
-- 图片、音频、文件和视频会连同 MIME 类型及安全文件名下载到 Connect 管理的缓存；
-- Runtime Adapter 会把受支持的媒体作为原生输入提交，模型或 provider 拒绝时明确报错，不会静默转换；
-- 单个下载上限为 100 MiB；
-- 缓存上限为 512 MiB，文件连续 15 天未访问后过期。
-
-运行时返回本地 Markdown 图片时，只有位于已解析 Workspace 根目录或 Connect 媒体缓存内，且扩展名与文件签名确认为 PNG、JPEG、GIF 或 WebP，Connect 才会上传到 ClawChat。其他本地路径只作为文本返回。
-
-## 配置
-
-默认配置文件为 `~/.clawchat-connect/config.json`：
-
-```bash
-clawchat-connect config get
-clawchat-connect config get agents.work.runtime
-```
-
-CLI 可修改全局设置和通用 Binding 偏好：
-
-```bash
-clawchat-connect config set agents.work.outputVisibility normal
-clawchat-connect config set agents.work.model YOUR_MODEL_ID
-clawchat-connect config set agents.work.modelReasoningEffort high
-clawchat-connect service restart
-```
-
-运行时专属配置根据已安装 capability manifest 校验，应通过 Runtime Plugin 配置界面更新，或使用
-`agent add --runtime-config-json` 重新写入 Binding。
-
-全局设置：
-
-| 设置 | 可选值 |
-| --- | --- |
-| `clientHost` | `127.0.0.1`、`0.0.0.0` |
-| `clientPort` | `1024`–`65535` |
-
-每个 Binding 只持久化精确的 `runtime.pluginId`、`runtime.capabilityId`、capability 所有的
-`runtimeConfig`，以及 `displayName`、输出可见性、模型选择、环境变量、Session 选项和附加目录等通用偏好。
-Runtime family 来自 provider metadata，不会持久化在 Binding 中。
-
-修改运行时或端点配置后需要重启服务。完整 JSON 示例与自托管 ClawChat 配置见[英文文档](./README.md#configuration)。
-
-## 服务与诊断
-
-| 命令 | 用途 |
-| --- | --- |
-| `clawchat-connect status [--agent <id>]` | 显示激活、运行时和 Liveware Exposure 状态。 |
-| `clawchat-connect doctor` | 检查当前配置和已安装的 Connect Agent Skill。 |
-| `clawchat-connect tool list` | 列出 24 个可供 Agent 调用的 ClawChat tool name。 |
-| `clawchat-connect tool describe <name>` | 显示工具的生成输入 Schema。 |
-| `clawchat-connect tool call <name> --input-json <json-or->` | 向运行中的 Service 提交一次至多执行一次的工具请求。 |
-| `clawchat-connect liveware app ...` | 通过 Service 管理额外的 Agent Liveware App。 |
-| `clawchat-connect liveware tunnel ...` | 绑定或解绑本地回环服务并同步 ClawChat 注册。 |
-| `clawchat-connect skills install` | 强制修复内置的两份用户级 Agent skill。 |
-| `clawchat-connect agent list` | 列出 Agent Binding。 |
-| `clawchat-connect agent remove <id> --yes` | 删除一个 Binding、其 Liveware Publication 和 Binding-scoped Connect 记录；保留 Workspace 文件。 |
-| `clawchat-connect service start` | 启动服务。 |
-| `clawchat-connect service stop` | 停止服务但不卸载。 |
-| `clawchat-connect service restart` | 配置变更后重启服务。 |
-| `clawchat-connect service status` | 显示原生服务状态。 |
-| `clawchat-connect service logs --lines 250 --follow` | 持续查看服务日志。 |
-
-遇到问题时先运行：
-
-```bash
 clawchat-connect doctor
-clawchat-connect status
+```
+
+也可选择 `clawling.runtime.opencode/opencode`、`clawling.runtime.deepseek-harness/deepseek-harness` 和受支持的 WorkBuddy capability。Runtime 配置必须符合精确 capability 的 schema：
+
+```bash
+clawchat-connect agent add work \
+  --plugin clawling.runtime.opencode \
+  --capability opencode \
+  --runtime-config-json '{"serverUrl":"http://127.0.0.1:4096"}'
+```
+
+服务运行时，`plugin setup` 通过 Plugin Manager 工作；服务停止时，CLI 可直接安装发布归档中显式选择的 Plugin。这个无界面路径是管理与恢复边界，不需要任何 Web App。
+
+### 可选兼容 Connect Client
+
+只有在 Codex 或 WorkBuddy 需要浏览器管理时，才单独显式安装：
+
+```bash
+clawchat-connect plugin setup --non-interactive --select clawling.web.connect-client
+```
+
+Connect Client Bundle 包含完整服务器入口、完整浏览器资产图，以及覆盖每个辅助浏览器资产的规范完整性清单。它可以独立于 Core 和 Runtime Plugin 删除。Client Extension 必须用 `managedWebApp.pluginId` 与 `managedWebApp.capabilityId` 指向一个精确 Managed Web App；它们是 App 作用域，而不是安装级全局扩展。
+
+### 可选私密 Liveware 暴露
+
+```bash
+clawchat-connect plugin setup --non-interactive --select clawling.exposure.liveware
+```
+
+Liveware 是 Web App Exposure，不是 Client，也不是 Runtime。它为每个符合条件且已激活的 Binding 发布已经选定的 Managed Web App。每个 Binding 拥有独立的私密 ClawChat App、tunnel、registration 和 retirement 状态。
+
+Provider 只返回精确的 HTTP 回环 upstream。Core 校验它，将其绑定到已提交的 Plugin Activation Generation，再把 lease 交给 Liveware。Provider 所有的原生 scope 决定 Managed Web App Instance key，因此多个 Binding 可以租用同一 Instance；最后一个 lease 释放后 Instance 停止。过期 generation 不能获取、续租或发布 Instance。Provider 不会得到 ClawChat 凭据或转发的 Liveware principal。
+
+## Workspace 与 Session
+
+```bash
+clawchat-connect workspace add work /absolute/path/to/project
+clawchat-connect workspace list work
+```
+
+Core Session 始终固定到一个 Agent Binding、精确 Runtime capability 和 Workspace。Runtime 原生 Thread ID 只属于 Runtime Adapter。在 ClawChat 中，可按精确 Runtime 支持情况使用 `/new`、`/workspace`、`/sessions`、`/switch`、`/model`、`/mode`、`/cancel` 和 `/status`。
+
+打开原生或兼容 Web App 不会续接 ClawChat Connect Session。请按该产品自己的 Session 与认证模型继续工作。
+
+## 运维与恢复
+
+```bash
 clawchat-connect service status
-clawchat-connect service logs --lines 250
+clawchat-connect doctor
+clawchat-connect plugin list
+clawchat-connect agent list
+clawchat-connect workspace list work
 ```
 
-常见原因：
+按以下顺序检查：
 
-- **运行时无法启动：** 运行 `codex --version` 或 `opencode --version`，确认已登录并检查初始化错误。需要使用其他可执行文件时，通过 `agents.<id>.executablePathOverride` 指定。
-- **运行时在终端正常，但 Connect 无法启动：** 重新安装服务以捕获当前 `PATH`。
-- **OpenCode 版本不匹配：** 安装受支持的 OpenCode（推荐 `1.18.13`，并保留 `1.18.10` 兼容）。其他 OpenCode 版本当前不支持。
-- **修改配置后未生效：** 重启服务。
-- **浏览器 Client 无法打开：** 确认服务正在运行，再用 `clawchat-connect web --no-open` 获取地址。
-- **ClawChat 中没有 `ClawChat Connect`：** 检查 `status`，重启服务并查看 Liveware 日志。
+1. Core 服务与 ClawChat Binding 健康状态；
+2. 精确 Runtime capability 及其原生依赖；
+3. Managed Web App 选择与 Instance 健康状态；
+4. Binding 的 Liveware Publication 状态。
 
-## 本地数据与安全
+App 故障不会停止 Runtime turn；Runtime 故障不允许重新选择 App；Publication 故障也不会改变前两者。Web App 不可用时，使用 CLI 检查、安装、启用、停用或替换 Plugin，并修复 Binding；Core 不提供秘密的回退 Web 管理 endpoint。
 
-| 数据 | 默认位置 |
-| --- | --- |
-| 配置 | `~/.clawchat-connect/config.json` |
-| SQLite 状态与凭据 | `~/.clawchat-connect/state.sqlite` |
-| macOS 服务日志 | `~/.clawchat-connect/logs/` |
-| Binding Default Workspace | `~/.clawchat-connect/workspaces/` |
-| 媒体缓存 | `~/.clawchat-connect/media-cache/` |
-| 原生 Runtime Thread | 由运行时管理，例如 Codex 使用 `~/.codex/sessions/` |
+## 安全边界
 
+- 安装 Plugin 等同于信任进程内代码执行；只安装经过审查且来源可信的 Bundle。
+- 官方发布归档在解压前进行 SHA-256 校验；官方 Plugin 入口和辅助资产由发布固定的 SHA-256 SRI 覆盖。
+- Managed Web App upstream 必须是精确 HTTP 回环 origin；拒绝用户自定义 endpoint、LAN 或原生非回环 upstream。
+- Liveware 只得到不透明 upstream lease。Core 保留 Plugin 权限、Activation Generation fencing、Binding 凭据和托管资源 retirement。
+- Managed Web App 负责自己的认证。Core 不会向其注入 ClawChat 身份、cookie、凭据或 Session 状态。
+- 私密 Liveware Publication 仍只对 Owner 开放，但被暴露 App 保持自己的安全模型。
+- 未安装 App 时 CLI 管理仍完整可用，也是 Web 产品故障时的恢复界面。
 
-邀请码不会被持久化。Connect 不会把自身的 ClawChat 工具暴露给编程 Agent 运行时、运行 MCP Server 或注入 MCP 配置；运行时中已有的 MCP Server 仍由该运行时管理。
+另见[安装指南](./install.md)、[架构](./docs/architecture.md)、[Runtime Adapter 合约](./docs/runtime-adapters.md)和[Plugin 创作](./docs/plugin-authoring.md)。
 
-协议与模块设计请参阅 [docs/architecture.md](./docs/architecture.md)。
+## Plugin 作者合约
 
-## 开发
+一个完整 Managed Web App capability 必须声明：
 
-开发需使用 `package.json` 中固定的 Bun 版本：
+- 类型 `managed-web-app` 和当前 capability interface version；
+- 同 Plugin 原生所有权使用 `nativeRuntimeCapabilityIds`，兼容 App 使用精确 `compatibleRuntimes` 引用；
+- App 所有的 Provider，产生稳定的原生 scope Instance key；
+- 精确回环 upstream，以及 readiness、health、release 和最后 lease 关闭行为；
+- Bundle 内完整的服务器和浏览器资产，并对所有辅助资产提供完整性覆盖；
+- 若支持 Client Extension，则它们必须限定到已选 App 图，并受 Activation Generation fencing。
+
+不要代理其他产品，不要仅为减少进程数而复用 Binding Runtime，不要声称 Session 连续性，不要接受无人管理的 endpoint，也不要暴露不完整浏览器载荷。
+
+## 开发与发布
 
 ```bash
-bun install --frozen-lockfile
+bun install
+bun run dev
 bun run check
-bun run clean && bun run build
+bun run build
 ```
 
-预览浏览器 Client：
+`bun run build` 将 Core 输出到 `dist/src`，将官方 Bundle 输出到 `dist/official-plugins`；不会把 `dist/client` 发布为根包载荷。官方 DSH 与 OpenCode Bundle 包含各自原生 Managed Web App contribution。可选 Connect Client Bundle 包含完整浏览器资产图。发布归档原样复制 Bundle 目录，所以包含或省略可选 Client 的合格归档都有效。
 
-```bash
-bun run preview:web
-```
+匹配 `v*-beta.*` 的版本 tag 会运行 [beta 发布 workflow](.github/workflows/release-beta.yml)，发布归档、安装支持文件、checksums、release notes 和 `release-channel/latest-beta.txt` 指针。本机已安装产品的资格检查是可选的，不阻塞 tag。
 
-真实 Codex 模型目录与模型切换集成测试：
+## 许可
 
-```bash
-CODEX_INTEGRATION_PATH=/absolute/path/to/codex bun run test:integration:codex
-```
-
-OpenCode 能力与原生 Session 生命周期集成测试：
-
-```bash
-OPENCODE_EXECUTABLE=/absolute/path/to/opencode bun run test:integration:opencode
-```
-
-`bun run build:binary` 会生成较轻量的未打包独立构建，在 `dist/` 中写入 Connect 可执行文件和自包含官方 Plugin Bundle；官方 Liveware Bundle 内含已校验 SHA-256 的 Darwin arm64 companion。
-
-在 Apple silicon 上运行 `bun run build:release` 会生成当前可分发版本，并将 Darwin arm64 归档、`install.sh`、`CHANGELOG.md` 和 SHA-256 校验和写入 `build/release/`；其他目标会在修改输出目录前失败。
-
-匹配 `v*-beta.*` 的标签会运行 [`.github/workflows/release-beta.yml`](./.github/workflows/release-beta.yml)。该工作流校验标签与 `package.json`，在原生 Apple silicon runner 上运行 release gate，并且只发布已验收的 Darwin arm64 归档和 POSIX 安装器。本机已安装产品验收属于任务内验证，不会由 mock 替代。所有资源发布后，工作流会更新供默认安装和更新使用的 [`release-channel/latest-beta.txt`](https://github.com/XMethues/clawchat-plugin-connect/releases/download/channel-beta/latest-beta.txt)。
-
-贡献代码前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)、[CONTEXT.md](./CONTEXT.md) 和相关 [ADR](./docs/adr/)。
-
-## 许可证
-
-ClawChat Connect 使用 [MIT License](./LICENSE)。
-
-> 英文 README 是完整的规范参考。中文文档聚焦安装和日常使用；高级配置和所有边界行为请查阅[英文版本](./README.md)。
+[MIT](./LICENSE)

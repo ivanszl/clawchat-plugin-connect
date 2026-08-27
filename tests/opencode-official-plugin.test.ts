@@ -14,15 +14,19 @@ import {
   OPENCODE_BINDING_CONFIGURATION_SCHEMA,
   OPENCODE_OFFICIAL_CAPABILITY_ID,
   OPENCODE_OFFICIAL_PLUGIN_ID,
+  OPENCODE_WEB_APP_CAPABILITY_ID,
+  OPENCODE_WEB_APP_CONFIGURATION_SCHEMA,
 } from "../src/plugin/official/opencode-manifest";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_INTERFACE_VERSION,
   type ConnectDurableStateHostCapability,
+  type ConnectManagedWebAppProviderHostCapability,
   type ConnectExposureProviderHostCapability,
   type ConnectHostCapabilityId,
   type ConnectPluginContext,
   type ConnectPluginEntry,
+  type ConnectPluginManagedWebAppProvider,
   type ConnectPluginRuntimeProvider,
   type ConnectRuntimeProviderHostCapability,
 } from "../src/plugin/sdk";
@@ -44,6 +48,13 @@ describe("official OpenCode Runtime Plugin", () => {
           type: "runtime",
           family: "opencode",
           configurationSchema: OPENCODE_BINDING_CONFIGURATION_SCHEMA,
+        },
+        {
+          id: OPENCODE_WEB_APP_CAPABILITY_ID,
+          type: "managed-web-app",
+          configurationSchema: OPENCODE_WEB_APP_CONFIGURATION_SCHEMA,
+          nativeRuntimeCapabilityIds: [OPENCODE_OFFICIAL_CAPABILITY_ID],
+          compatibleRuntimes: [],
         },
       ],
       artifacts: [
@@ -196,13 +207,23 @@ async function activateProvider(entry: ConnectPluginEntry) {
       if ("family" in value) provider = value;
     },
   };
+  const managedWebAppHostCapability: ConnectManagedWebAppProviderHostCapability = {
+    interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+    register(_value: ConnectPluginManagedWebAppProvider) {},
+  };
   function getHostCapability(id: "runtime-provider"): ConnectRuntimeProviderHostCapability;
+  function getHostCapability(id: "managed-web-app-provider"): ConnectManagedWebAppProviderHostCapability;
   function getHostCapability(id: "exposure-provider"): ConnectExposureProviderHostCapability;
   function getHostCapability(id: "durable-state"): ConnectDurableStateHostCapability;
   function getHostCapability(
     id: ConnectHostCapabilityId,
-  ): ConnectRuntimeProviderHostCapability | ConnectExposureProviderHostCapability | ConnectDurableStateHostCapability {
+  ):
+    | ConnectRuntimeProviderHostCapability
+    | ConnectManagedWebAppProviderHostCapability
+    | ConnectExposureProviderHostCapability
+    | ConnectDurableStateHostCapability {
     if (id === "runtime-provider") return runtimeHostCapability;
+    if (id === "managed-web-app-provider") return managedWebAppHostCapability;
     throw new Error(`Unexpected Host Capability ${id}`);
   }
   const context: ConnectPluginContext = {

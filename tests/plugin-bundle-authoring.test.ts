@@ -149,18 +149,14 @@ describe("public Plugin Bundle authoring", () => {
       ...authorManifest(),
       dependencies: [],
       capabilities: [
-        {
-          id: "client",
-          type: "client-extension",
-          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-          configurationSchema: { type: "object", additionalProperties: false },
-          browser: {
-            entry: "browser/client.mjs",
-            integrity: integrity(browser),
-            styles: [{ entry: "browser/client.css", integrity: integrity(style) }],
-            slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 20 }],
-          },
-        },
+        { id: "client", type: "client-extension", managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }, interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+        configurationSchema: { type: "object", additionalProperties: false },
+        browser: {
+          entry: "browser/client.mjs",
+          integrity: integrity(browser),
+          styles: [{ entry: "browser/client.css", integrity: integrity(style) }],
+          slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 20 }],
+        }, },
       ],
     };
 
@@ -195,18 +191,14 @@ describe("public Plugin Bundle authoring", () => {
       ...authorManifest(),
       dependencies: [],
       capabilities: [
-        {
-          id: "client",
-          type: "client-extension",
-          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-          configurationSchema: { type: "object", additionalProperties: false },
-          browser: {
-            entry: "browser/client.mjs",
-            integrity: integrity(browser),
-            styles: [{ entry: "browser/client.css", integrity: integrity(style) }],
-            slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 20 }],
-          },
-        },
+        { id: "client", type: "client-extension", managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }, interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+        configurationSchema: { type: "object", additionalProperties: false },
+        browser: {
+          entry: "browser/client.mjs",
+          integrity: integrity(browser),
+          styles: [{ entry: "browser/client.css", integrity: integrity(style) }],
+          slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 20 }],
+        }, },
       ],
     };
     await writeFile(project.manifestPath, JSON.stringify(manifest));
@@ -325,6 +317,71 @@ describe("public Plugin Bundle authoring", () => {
         })),
       }),
     ).toBe(true);
+  });
+
+  it("accepts exact native and external Managed Web App declarations from an external Bundle", async () => {
+    const project = await externalProject();
+    const manifest: ConnectPluginAuthorManifestV1 = {
+      ...authorManifest(),
+      dependencies: [
+        ...authorManifest().dependencies,
+        {
+          type: "host",
+          id: "managed-web-app-provider",
+          interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+        },
+      ],
+      capabilities: [
+        ...authorManifest().capabilities,
+        {
+          id: "web",
+          type: "managed-web-app",
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: { type: "object", additionalProperties: false },
+          displayName: "Example Web",
+          description: "Example browser interface",
+          nativeRuntimeCapabilityIds: ["runtime"],
+          compatibleRuntimes: [{ pluginId: "example.other", capabilityId: "runtime" }],
+        },
+      ],
+    };
+    await writeConnectPluginBundle({
+      manifest,
+      target: "test-target",
+      artifactPath: project.artifactPath,
+      artifactEntry: "entry/plugin.mjs",
+      outputPath: project.outputPath,
+    });
+    const bundle = await readConnectPluginBundle(project.outputPath);
+    expect(bundle.manifest.capabilities).toContainEqual(
+      expect.objectContaining({
+        id: "web",
+        type: "managed-web-app",
+        nativeRuntimeCapabilityIds: ["runtime"],
+        compatibleRuntimes: [{ pluginId: "example.other", capabilityId: "runtime" }],
+      }),
+    );
+    const schema = await Bun.file(
+      new URL("../src/plugin/connect-plugin-manifest.schema.json", import.meta.url),
+    ).json();
+    expect(new Ajv2020({ strict: true }).compile(schema)(manifest)).toBe(true);
+
+    await expect(
+      writeConnectPluginBundle({
+        manifest: {
+          ...manifest,
+          capabilities: manifest.capabilities.map((capability) =>
+            capability.type === "managed-web-app"
+              ? { ...capability, nativeRuntimeCapabilityIds: ["missing"] }
+              : capability,
+          ),
+        },
+        target: "test-target",
+        artifactPath: project.artifactPath,
+        artifactEntry: "entry/plugin.mjs",
+        outputPath: project.outputPath,
+      }),
+    ).rejects.toThrow("declares missing native Runtime capability missing");
   });
 
   it("rejects malformed manifests before writing output", async () => {

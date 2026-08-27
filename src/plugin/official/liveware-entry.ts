@@ -1,4 +1,9 @@
-import type { ConnectPluginDisposer, ConnectPluginEntry, ConnectPluginExposureActivation } from "../sdk";
+import type {
+  ConnectPluginDisposer,
+  ConnectPluginEntry,
+  ConnectPluginExposureActivation,
+  ManagedWebAppGenerationReference,
+} from "../sdk";
 import { OFFICIAL_LIVEWARE_CAPABILITY_ID, type OfficialLivewareAccessPolicy } from "./liveware-manifest";
 import {
   BindingLivewarePublicationLifecycle,
@@ -8,16 +13,26 @@ import {
 } from "./liveware-publication";
 import {
   DeclaredBindingLivewarePublicationStateStore,
+  resetBindingLivewarePublicationState,
   validateBindingLivewarePublicationState,
 } from "./liveware-publication-state";
 
-export interface OfficialLivewareGatewayLease {
+export interface OfficialLivewareManagedWebAppLease {
+  readonly selection: Readonly<
+    ManagedWebAppGenerationReference & {
+      readonly displayName: string;
+      readonly description: string;
+    }
+  >;
+  readonly instanceKey: string;
   readonly upstream: string;
   release(): Promise<void>;
 }
 export interface OfficialLivewareManagedDisposer extends ConnectPluginDisposer {
   retire(): Promise<void>;
   retireBindings(bindingIds: readonly string[]): Promise<void>;
+  retireManagedWebApp(reference: ManagedWebAppGenerationReference): Promise<void>;
+  reconcileManagedWebApps(): Promise<void>;
 }
 
 /**
@@ -29,7 +44,10 @@ export interface OfficialLivewareExposureServices {
   listBindings(): Promise<readonly BindingLivewarePublicationTarget[]>;
   readonly controlPlane: LivewarePublicationControlPlane;
   readonly registrations: LivewarePublicationRegistrationPort;
-  acquireGateway(activationGeneration: number): Promise<OfficialLivewareGatewayLease>;
+  acquireManagedWebApp(
+    bindingId: string,
+    activationGeneration: number,
+  ): Promise<OfficialLivewareManagedWebAppLease | null>;
 }
 
 interface PrivilegedLivewareActivation extends ConnectPluginExposureActivation {
@@ -40,25 +58,36 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
   return {
     migrateDurableStateGeneration(migration) {
       if (migration.capabilityId !== OFFICIAL_LIVEWARE_CAPABILITY_ID) return migration.value;
-      const publication = validateBindingLivewarePublicationState(migration.value, migration.capabilityInstanceId);
-      return {
-        ...publication,
-        activationGeneration: migration.toActivationGeneration,
-        ...(migration.reactivating
-          ? {
-              desired: "private" as const,
-              status: publication.status === "retired" ? ("provisioning" as const) : publication.status,
-              transition: null,
-              diagnostic: null,
-            }
-          : {}),
-      };
+      try {
+        const publication = validateBindingLivewarePublicationState(
+          migration.value,
+          migration.capabilityInstanceId,
+        );
+        return {
+          ...publication,
+          activationGeneration: migration.toActivationGeneration,
+          ...(migration.reactivating
+            ? {
+                desired: "private" as const,
+                status: publication.status === "retired" ? ("provisioning" as const) : publication.status,
+                transition: null,
+                diagnostic: null,
+              }
+            : {}),
+        };
+      } catch {
+        return resetBindingLivewarePublicationState(
+          migration.capabilityInstanceId,
+          migration.toActivationGeneration,
+        );
+      }
     },
     activate(context) {
       const exposures = context.hostCapabilities.get("exposure-provider");
       const state = new DeclaredBindingLivewarePublicationStateStore(
         context.hostCapabilities.get("durable-state"),
         OFFICIAL_LIVEWARE_CAPABILITY_ID,
+        context.activationGeneration,
       );
       exposures.register({
         capabilityId: OFFICIAL_LIVEWARE_CAPABILITY_ID,
@@ -66,42 +95,129 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
           const activation = requirePrivilegedActivation(publicActivation);
           const accessPolicy = readAccessPolicy(activation.configuration);
           const initialTargets = await activation.officialLiveware.listBindings();
-          let lease: OfficialLivewareGatewayLease | undefined;
-          let lifecycle: BindingLivewarePublicationLifecycle | undefined;
-          const releasePublicationResources = async (): Promise<void> => {
-            const selectedLifecycle = lifecycle;
-            lifecycle = undefined;
-            await selectedLifecycle?.dispose();
-            const selectedLease = lease;
-            lease = undefined;
-            await selectedLease?.release();
-          };
-          const ensureLifecycle = async (): Promise<BindingLivewarePublicationLifecycle> => {
-            if (lifecycle) return lifecycle;
-            if (accessPolicy === "private" && !lease) {
-              lease = await activation.officialLiveware.acquireGateway(activation.activationGeneration);
-            }
-            lifecycle = new BindingLivewarePublicationLifecycle({
-              activationGeneration: activation.activationGeneration,
-              upstream: lease?.upstream ?? "http://127.0.0.1:1",
-              state,
-              controlPlane: activation.officialLiveware.controlPlane,
-              registrations: activation.officialLiveware.registrations,
-            });
-            return lifecycle;
-          };
+          const resources = new Map<
+            string,
+            { lease?: OfficialLivewareManagedWebAppLease; lifecycle: BindingLivewarePublicationLifecycle }
+          >();
           const targets = new Map(initialTargets.map((target) => [target.bindingId, target]));
           const remainingBindings = new Set(targets.keys());
           const retiredBindings = new Set<string>();
           let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
           let reconciliation = Promise.resolve();
           let stopping = false;
+
+          const ensureResource = async (
+            target: BindingLivewarePublicationTarget,
+            acquireSelectedApp: boolean,
+          ): Promise<
+            | {
+                lease?: OfficialLivewareManagedWebAppLease;
+                lifecycle: BindingLivewarePublicationLifecycle;
+              }
+            | undefined
+          > => {
+            const current = resources.get(target.bindingId);
+            if (current) return current;
+            const lease = acquireSelectedApp
+              ? ((await activation.officialLiveware.acquireManagedWebApp(
+                  target.bindingId,
+                  activation.activationGeneration,
+                )) ?? undefined)
+              : undefined;
+            const publication = await state.read(target.bindingId);
+            if (!lease && !publication) return undefined;
+            try {
+              const resource = {
+                ...(lease ? { lease } : {}),
+                lifecycle: new BindingLivewarePublicationLifecycle({
+                  activationGeneration: activation.activationGeneration,
+                  ...(lease
+                    ? {
+                        upstream: lease.upstream,
+                        selectedApp: {
+                          ...lease.selection,
+                          instanceKey: lease.instanceKey,
+                        },
+                      }
+                    : {}),
+                  state,
+                  controlPlane: activation.officialLiveware.controlPlane,
+                  registrations: activation.officialLiveware.registrations,
+                }),
+              };
+              resources.set(target.bindingId, resource);
+              return resource;
+            } catch (error) {
+              await lease?.release().catch(() => undefined);
+              throw error;
+            }
+          };
+          const releaseResource = async (bindingId: string): Promise<void> => {
+            const resource = resources.get(bindingId);
+            if (!resource) return;
+            await resource.lifecycle.dispose();
+            await resource.lease?.release();
+            resources.delete(bindingId);
+          };
+          const retireTarget = async (target: BindingLivewarePublicationTarget): Promise<void> => {
+            const resource = await ensureResource(target, false);
+            if (resource) {
+              const publication = await state.read(target.bindingId);
+              if (publication?.value.status !== "retired") await resource.lifecycle.retire(target);
+            }
+            await releaseResource(target.bindingId);
+            remainingBindings.delete(target.bindingId);
+            retiredBindings.add(target.bindingId);
+          };
+          const reactivateTarget = async (
+            target: BindingLivewarePublicationTarget,
+          ): Promise<void> => {
+            retiredBindings.delete(target.bindingId);
+            remainingBindings.add(target.bindingId);
+            const publication = await state.read(target.bindingId);
+            if (
+              publication &&
+              (publication.value.desired === "retired" ||
+                publication.value.status === "retiring" ||
+                publication.value.status === "retired")
+            ) {
+              await state.compareAndSwap(target.bindingId, publication.revision, {
+                ...publication.value,
+                desired: "private",
+                status: "absent",
+                transition: null,
+                selectedApp: null,
+                diagnostic: null,
+              });
+            }
+            await reconcileTarget(target);
+          };
+          async function reconcileTarget(target: BindingLivewarePublicationTarget): Promise<void> {
+            const publication = await state.read(target.bindingId);
+            if (
+              accessPolicy === "private" &&
+              (publication?.value.desired === "retired" ||
+                publication?.value.status === "retiring" ||
+                publication?.value.status === "retired")
+            ) {
+              return;
+            }
+            if (accessPolicy === "off") {
+              await retireTarget(target);
+              return;
+            }
+            const resource = await ensureResource(target, true);
+            if (!resource) return;
+            if (resource.lease) await resource.lifecycle.ensurePrivate(target);
+            else await retireTarget(target);
+          }
           const reconcileBindings = async (): Promise<void> => {
             const listedTargets = await activation.officialLiveware.listBindings();
             const listedBindingIds = new Set(listedTargets.map((target) => target.bindingId));
             for (const bindingId of retiredBindings) {
-              if (listedBindingIds.has(bindingId) && (await state.read(bindingId))) continue;
+              if (listedBindingIds.has(bindingId)) continue;
               retiredBindings.delete(bindingId);
+              remainingBindings.delete(bindingId);
               targets.delete(bindingId);
             }
             const reconcilableTargets = listedTargets.filter((target) => !retiredBindings.has(target.bindingId));
@@ -109,23 +225,10 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
               targets.set(target.bindingId, target);
               remainingBindings.add(target.bindingId);
             }
-            if (reconcilableTargets.length === 0) {
-              if (remainingBindings.size === 0) await releasePublicationResources();
-              return;
-            }
-            const selectedLifecycle = await ensureLifecycle();
-            if (accessPolicy === "private") {
-              await Promise.allSettled(
-                reconcilableTargets.map(async (target) => await selectedLifecycle.ensurePrivate(target)),
-              );
-            } else {
-              await Promise.allSettled(
-                reconcilableTargets.map(async (target) => await selectedLifecycle.retire(target)),
-              );
-            }
+            await Promise.allSettled(reconcilableTargets.map(reconcileTarget));
           };
           const scheduleReconciliation = (): void => {
-            if (stopping) return;
+            if (stopping || accessPolicy !== "private") return;
             reconcileTimer = setTimeout(() => {
               reconciliation = reconcileBindings()
                 .catch(() => undefined)
@@ -135,49 +238,58 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
           };
           const stopReconciliation = async (): Promise<void> => {
             stopping = true;
-            if (reconcileTimer) clearTimeout(reconcileTimer);
+            clearTimeout(reconcileTimer);
             await reconciliation;
           };
-          try {
-            if (targets.size > 0) {
-              const selectedLifecycle = await ensureLifecycle();
-              if (accessPolicy === "private") {
-                await Promise.allSettled(
-                  [...targets.values()].map(async (target) => await selectedLifecycle.ensurePrivate(target)),
-                );
-              } else {
-                await Promise.all([...targets.values()].map(async (target) => await selectedLifecycle.retire(target)));
-              }
+          const retireAll = async (): Promise<void> => {
+            await stopReconciliation();
+            for (const target of targets.values()) {
+              if (!remainingBindings.has(target.bindingId)) continue;
+              await retireTarget(target);
             }
-          } catch (error) {
-            await releasePublicationResources().catch(() => undefined);
-            throw error;
+          };
+
+          if (accessPolicy === "private") {
+            await Promise.allSettled([...targets.values()].map(reconcileTarget));
+            scheduleReconciliation();
+          } else {
+            for (const target of targets.values()) await reconcileTarget(target);
           }
-          scheduleReconciliation();
           const dispose = Object.assign(
             async () => {
-              await stopReconciliation();
-              await releasePublicationResources();
+              await retireAll();
             },
             {
-              retire: async () => {
-                await stopReconciliation();
-                if (targets.size > 0) {
-                  await retireTargets(await ensureLifecycle(), [...targets.values()]);
-                }
-                remainingBindings.clear();
-                await releasePublicationResources();
-              },
+              retire: retireAll,
               retireBindings: async (bindingIds: readonly string[]) => {
                 await reconciliation;
                 const selected = new Set(bindingIds);
                 for (const target of targets.values()) {
                   if (!selected.has(target.bindingId) || !remainingBindings.has(target.bindingId)) continue;
-                  await (await ensureLifecycle()).retire(target);
-                  remainingBindings.delete(target.bindingId);
-                  retiredBindings.add(target.bindingId);
+                  await retireTarget(target);
                 }
-                if (remainingBindings.size === 0) await releasePublicationResources();
+              },
+              retireManagedWebApp: async (reference: ManagedWebAppGenerationReference) => {
+                await reconciliation;
+                for (const [bindingId, resource] of resources) {
+                  const selection = resource.lease?.selection;
+                  if (!selection) continue;
+                  if (
+                    selection.pluginId !== reference.pluginId ||
+                    selection.capabilityId !== reference.capabilityId ||
+                    selection.activationGeneration !== reference.activationGeneration
+                  ) {
+                    continue;
+                  }
+                  const target = targets.get(bindingId);
+                  if (target && remainingBindings.has(bindingId)) await retireTarget(target);
+                }
+              },
+              reconcileManagedWebApps: async () => {
+                await reconciliation;
+                await Promise.allSettled(
+                  [...targets.values()].map(async (target) => await reactivateTarget(target)),
+                );
               },
             },
           ) satisfies OfficialLivewareManagedDisposer;
@@ -188,12 +300,6 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
   };
 }
 
-async function retireTargets(
-  lifecycle: BindingLivewarePublicationLifecycle,
-  targets: readonly BindingLivewarePublicationTarget[],
-): Promise<void> {
-  for (const target of targets) await lifecycle.retire(target);
-}
 
 function requirePrivilegedActivation(activation: ConnectPluginExposureActivation): PrivilegedLivewareActivation {
   const privileged = activation as Partial<PrivilegedLivewareActivation>;
@@ -201,7 +307,7 @@ function requirePrivilegedActivation(activation: ConnectPluginExposureActivation
   if (
     !services ||
     typeof services.listBindings !== "function" ||
-    typeof services.acquireGateway !== "function" ||
+    typeof services.acquireManagedWebApp !== "function" ||
     !services.controlPlane ||
     !services.registrations
   ) {

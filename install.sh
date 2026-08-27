@@ -95,9 +95,8 @@ fi
 [ "$actual_checksum" = "$expected_checksum" ] || fail "checksum verification failed for $asset"
 
 tar -xzf "$tmp_dir/$asset" -C "$tmp_dir" \
-  clawchat-connect clawchat-connect-client official-plugins skills CHANGELOG.md LICENSE
+  clawchat-connect official-plugins skills CHANGELOG.md LICENSE
 [ -f "$tmp_dir/clawchat-connect" ] || fail "release archive does not contain clawchat-connect"
-[ -f "$tmp_dir/clawchat-connect-client/index.html" ] || fail "release archive does not contain Connect Client"
 [ -d "$tmp_dir/official-plugins" ] || fail "release archive does not contain official Plugins"
 for official_plugin_id in $required_official_plugin_ids; do
   official_plugin_found=0
@@ -115,13 +114,11 @@ done
 
 mkdir -p "$install_dir" "$tmp_dir/backup"
 connect_staging="$install_dir/.clawchat-connect.new.$$"
-client_staging="$install_dir/.clawchat-connect-client.new.$$"
 official_plugins_staging="$install_dir/.official-plugins.new.$$"
 skills_staging="$install_dir/.skills.new.$$"
 licenses_staging="$install_dir/.licenses.new.$$"
 cp "$tmp_dir/clawchat-connect" "$connect_staging"
 chmod 755 "$connect_staging"
-cp -R "$tmp_dir/clawchat-connect-client" "$client_staging"
 cp -R "$tmp_dir/official-plugins" "$official_plugins_staging"
 cp -R "$tmp_dir/skills" "$skills_staging"
 mkdir -p "$licenses_staging"
@@ -163,7 +160,6 @@ mkdir -p "$(dirname "$license_dir")"
 rm -rf "$install_dir/clawchat-connect" "$install_dir/liveware" "$install_dir/clawchat-connect-client" \
   "$install_dir/official-plugins" "$install_dir/skills" "$license_dir"
 mv "$connect_staging" "$install_dir/clawchat-connect"
-mv "$client_staging" "$install_dir/clawchat-connect-client"
 mv "$official_plugins_staging" "$install_dir/official-plugins"
 mv "$skills_staging" "$install_dir/skills"
 mv "$licenses_staging" "$license_dir"
@@ -171,7 +167,6 @@ mv "$licenses_staging" "$license_dir"
 transaction_committed=1
 
 printf 'Installed clawchat-connect to %s/clawchat-connect\n' "$install_dir"
-printf 'Installed Connect Client assets to %s/clawchat-connect-client\n' "$install_dir"
 printf 'Installed official Plugin Bundles to %s/official-plugins\n' "$install_dir"
 printf 'Installed managed Agent skills to %s/.agents/skills\n' "$HOME"
 printf 'Installed license notices to %s\n' "$license_dir"

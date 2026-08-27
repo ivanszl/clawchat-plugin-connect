@@ -12,6 +12,8 @@ import {
   OPENCODE_OFFICIAL_CAPABILITY_ID,
   OPENCODE_OFFICIAL_PLUGIN_ID,
   OPENCODE_OFFICIAL_RUNTIME_FAMILY,
+  OPENCODE_WEB_APP_CAPABILITY_ID,
+  OPENCODE_WEB_APP_CONFIGURATION_SCHEMA,
 } from "./opencode-manifest";
 
 const descriptor: OfficialPluginDescriptor = {
@@ -26,6 +28,11 @@ const descriptor: OfficialPluginDescriptor = {
         id: "runtime-provider",
         interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
       },
+      {
+        type: "host",
+        id: "managed-web-app-provider",
+        interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+      },
     ],
     installationConfigurationSchema: OPENCODE_INSTALLATION_CONFIGURATION_SCHEMA,
     capabilities: [
@@ -35,6 +42,16 @@ const descriptor: OfficialPluginDescriptor = {
         interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
         family: OPENCODE_OFFICIAL_RUNTIME_FAMILY,
         configurationSchema: OPENCODE_BINDING_CONFIGURATION_SCHEMA,
+      },
+      {
+        id: OPENCODE_WEB_APP_CAPABILITY_ID,
+        type: "managed-web-app",
+        interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+        configurationSchema: OPENCODE_WEB_APP_CONFIGURATION_SCHEMA,
+        displayName: "OpenCode Web",
+        description: "OpenCode's native Web interface",
+        nativeRuntimeCapabilityIds: [OPENCODE_OFFICIAL_CAPABILITY_ID],
+        compatibleRuntimes: [],
       },
     ],
   },

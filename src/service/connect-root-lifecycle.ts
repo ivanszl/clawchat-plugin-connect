@@ -1,6 +1,6 @@
 import { Context } from "cordis";
 import type { PersistenceService } from "../persistence/service";
-import { mountMandatoryPluginHost } from "../plugin/host";
+import { mountMandatoryPluginHost, type ConnectPluginHost } from "../plugin/host";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { ConnectConfig } from "../types";
 import { createBindingRuntimeLifecycle } from "./binding-runtime-lifecycle";
@@ -12,6 +12,7 @@ import {
   type ConnectSurfaceResult,
   mountMandatorySurfaceModules,
 } from "./connect-surface-modules";
+import { startCoreControl, type CoreControlHandle } from "./core-control";
 
 interface ConnectRootLifecycleOptions {
   persistence: PersistenceService;
@@ -34,6 +35,8 @@ export async function runConnectRootLifecycle(options: ConnectRootLifecycleOptio
   const root = new Context();
   const bindingRuntimeLifecycle = createBindingRuntimeLifecycle();
   let disposeSurfaces: (() => Promise<void>) | undefined;
+  let pluginHost: ConnectPluginHost | undefined;
+  let coreControl: CoreControlHandle | undefined;
 
   try {
     await mountMandatoryDurableModules(root, options.persistence, options.reportDisposalFailure);
@@ -43,7 +46,7 @@ export async function runConnectRootLifecycle(options: ConnectRootLifecycleOptio
       options.createRuntimeAdapterRegistry,
       options.reportDisposalFailure,
     );
-    await mountMandatoryPluginHost(
+    pluginHost = await mountMandatoryPluginHost(
       root,
       options.configPath,
       options.config,
@@ -62,11 +65,27 @@ export async function runConnectRootLifecycle(options: ConnectRootLifecycleOptio
       bindingRuntimeLifecycle,
     );
     disposeSurfaces = surfaces.dispose;
+    coreControl = await startCoreControl(options.configPath, pluginHost);
     await options.waitUntilShutdown();
     return surfaces.result;
   } finally {
     try {
+      await coreControl?.stop();
+    } catch (error) {
+      options.reportDisposalFailure(error);
+    }
+    try {
+      await pluginHost?.retireManagedResources();
+    } catch (error) {
+      options.reportDisposalFailure(error);
+    }
+    try {
       await disposeSurfaces?.();
+    } catch (error) {
+      options.reportDisposalFailure(error);
+    }
+    try {
+      await pluginHost?.retireBindings(Object.keys(options.config.agents));
     } catch (error) {
       options.reportDisposalFailure(error);
     }

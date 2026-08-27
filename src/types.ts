@@ -5,7 +5,7 @@ export const AGENT_TYPE = "clawbot" as const;
 
 export type OutputVisibility = "minimal" | "normal" | "full";
 export type ChatType = "direct" | "group";
-export type ClientHost = "127.0.0.1" | "0.0.0.0";
+export type ClientListenHost = "127.0.0.1" | "0.0.0.0";
 export interface RuntimeModelSelection {
   provider?: string;
   model: string;
@@ -34,8 +34,6 @@ export interface ConnectConfig {
   agents: Record<string, AgentBindingConfig>;
   maxConcurrentTurns?: number;
   maxPendingPerSession?: number;
-  clientHost: ClientHost;
-  clientPort: number;
 }
 
 export interface ActivationCredentials {

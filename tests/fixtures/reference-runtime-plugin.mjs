@@ -79,16 +79,13 @@ class ReferenceExposureProvider {
   defaultChannel = "private";
 
   async activate(activation) {
-    const { configuration, client } = activation;
+    const { configuration } = activation;
     const effects = (globalThis.__connectReferenceExposureEffects ??= []);
     effects.push(`activate:${String(configuration.channel ?? this.defaultChannel)}`);
     globalThis.__connectReferenceExposure = Object.freeze({
       activationKeys: Object.keys(activation).sort(),
       activationFrozen: Object.isFrozen(activation),
       configurationFrozen: Object.isFrozen(configuration),
-      clientKeys: Object.keys(client).sort(),
-      clientFrozen: Object.isFrozen(client),
-      fetch: async (request) => await client.fetch(request),
     });
     return () => {
       effects.push("dispose");

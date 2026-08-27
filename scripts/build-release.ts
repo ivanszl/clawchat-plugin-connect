@@ -55,20 +55,12 @@ export function resolveReleaseTarget(platform: NodeJS.Platform, architecture: st
 
 export function releasePayload(_target: ReleaseTarget): ReleasePayload {
   return {
-    entries: [
-      "clawchat-connect",
-      "clawchat-connect-client",
-      "official-plugins",
-      "skills",
-      "CHANGELOG.md",
-      "LICENSE",
-    ],
+    entries: ["clawchat-connect", "official-plugins", "skills", "CHANGELOG.md", "LICENSE"],
   };
 }
 
 export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
   const connectExecutable = join("dist", target.connectExecutable);
-  const clientDirectory = join("dist", "client");
   const officialPluginsDirectory = join("dist", "official-plugins");
   const pluginTarget = `${target.platform}-${target.architecture}`;
   const outputArchive = join("build", "release", target.archiveName);
@@ -76,7 +68,6 @@ export function releasePhases(target: ReleaseTarget): readonly ReleasePhase[] {
     "sh",
     join("scripts", "package-release-archive.sh"),
     connectExecutable,
-    clientDirectory,
     officialPluginsDirectory,
     outputArchive,
     pluginTarget,

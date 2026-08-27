@@ -11,7 +11,7 @@ import type {
 } from "./types";
 
 interface RouterOptions {
-  clientPort?: RuntimeInteractionPort;
+  clientInteractions?: RuntimeInteractionPort;
   ownerUserId: string;
   ownerConversationId: string | null;
   agentUserId?: string;
@@ -78,8 +78,10 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
       throw new Error("Native delivery confirmation is required for a Runtime Interaction");
     }
     if (context.origin === "client") {
-      if (!this.options.clientPort) throw new Error("Connect Client Runtime Interaction service is unavailable");
-      return await this.options.clientPort.request(request, context);
+      if (!this.options.clientInteractions) {
+        throw new Error("Connect Client Runtime Interaction service is unavailable");
+      }
+      return await this.options.clientInteractions.request(request, context);
     }
     const route = context.clawchat;
     if (!route) {

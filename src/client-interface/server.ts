@@ -5,16 +5,23 @@ import { leadingSkillName } from "../agent/skill-invocation";
 import { bindingOutputVisibility } from "../clawchat/output-visibility";
 import {
   type AddWorkspaceRequest,
+  type BindingPreferenceView,
   BINDING_SCOPE_HEADER,
   type BootstrapView,
   type CancelTurnRequest,
+  type CancelTurnResponse,
   type ChangeSessionBindingRequest,
   CLIENT_API_PREFIX,
+  type ClientErrorView,
+  type ClientEventBatchView,
   type ClientViewEvent,
   type ConfigurePluginRequest,
   type ContinueSessionRequest,
   type CreateSessionRequest,
+  type StartTurnResponse,
   type InstalledPluginView,
+  type ManagePluginRequest,
+  type HostDirectoryListingView,
   MAX_PLUGIN_BUNDLE_BYTES,
   normalizeSessionRef,
   PLUGIN_MANAGER_CONFIG_HEADER,
@@ -22,13 +29,21 @@ import {
   type PluginCapabilityView,
   type PluginDiagnosticStage,
   type PluginDiagnosticView,
+  type SelectPluginVersionRequest,
+  type SlashSuggestionView,
   type SessionCatalogView,
   type SessionMutationRequest,
   type SessionView,
+  type SessionArchiveResponse,
+  type SessionDeleteResponse,
+  type RespondToRuntimeInteractionRequest,
+  type SlashSuggestionListView,
+  type TranscriptPageView,
   type UpdateBindingPreferencesRequest,
   type UpdateSessionPreferencesRequest,
   type UpsertBindingProviderRequest,
   type WorkspaceDirectoryRequest,
+  type WorkspaceView,
 } from "../client-contract";
 import { ConnectConfigMutationCoordinator, getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
@@ -38,6 +53,7 @@ import {
   deriveClientExtensionGraph,
   resolveClientExtensionArtifact,
 } from "../plugin/client-extension";
+import type { RuntimeCapabilityRef } from "../plugin/sdk";
 import type {
   ConfigurePluginOptions,
   ConnectPluginManagement,
@@ -45,21 +61,21 @@ import type {
   PluginUpdateCheck,
   UpsertBindingProviderResult,
 } from "../plugin/host";
-import { RuntimeProviderValidationError } from "../plugin/host";
 import type { OfficialPluginDiscovery } from "../plugin/official-registry";
 import {
   type InstalledPluginLockEntry,
   validatePluginConfiguration,
   verifyConnectPluginIntegrity,
 } from "../plugin/store";
+import { RuntimeProviderValidationError } from "../plugin/runtime-provider-validation-error";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
+import type { AgentBindingConfig, ConnectConfig, RuntimeModelSelection, RuntimeSessionRecord } from "../types";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { RuntimeSlashSelection } from "../runtime/types";
 import { workBuddyCapabilityAvailability, workBuddyCapabilityFailure } from "../runtime/workbuddy-availability";
 import type { BindingRuntimeHandle } from "../service/binding-runtime";
-import type { AgentBindingConfig, ConnectConfig, RuntimeModelSelection } from "../types";
 import {
   HostDirectoryError,
   listHostDirectories,
@@ -73,7 +89,7 @@ import {
 } from "../workspaces/session-continuity";
 import { classifyWorkspaceArtifact } from "../workspaces/workspace-artifact";
 import { WorkspaceCatalog } from "../workspaces/workspaces";
-import { resolveClientAssetsPath, staticResponse } from "./client-assets";
+import { staticResponse } from "./client-assets";
 import {
   ClientRequestError,
   commandError,
@@ -124,7 +140,7 @@ class ClientBindingRequestScope {
   }
 }
 
-export interface ClientInterfaceOptions {
+interface ClientInterfaceOptions {
   config: ConnectConfig;
   configPath: string;
   stateStore: ConnectStateStore;
@@ -135,11 +151,291 @@ export interface ClientInterfaceOptions {
   sessionContinuityModule?: SessionContinuityModule;
   pluginManager?: ConnectPluginManagement;
   runtimes: BindingRuntimeHandle[];
-  assetsPath?: string;
-  hostname?: string;
-  port?: number;
+  assetsPath: string;
+  hostname: string;
+  port: number;
   serverFactory?: ClientHttpServerFactory;
+  /** Exact Managed Web App that owns this server and its Client Extension graph. */
+  managedWebApp: Readonly<RuntimeCapabilityRef>;
 }
+
+export type ConnectClientPresentationQuery =
+  | { readonly kind: "bootstrap"; readonly bindingScope: string | null }
+  | { readonly kind: "session-catalog"; readonly bindingScope: string | null; readonly refresh: boolean }
+  | { readonly kind: "plugin-administration"; readonly bindingScope: null }
+  | { readonly kind: "official-plugins"; readonly bindingScope: null }
+  | { readonly kind: "installed-plugins"; readonly bindingScope: null }
+  | {
+      readonly kind: "host-directories";
+      readonly path: string | null;
+      readonly showHidden: boolean;
+      readonly bindingScope: null;
+    }
+  | { readonly kind: "workspaces"; readonly bindingScope: string | null }
+  | {
+      readonly kind: "slash-suggestions";
+      readonly sessionRef: string;
+      readonly refresh: boolean;
+      readonly bindingScope: string | null;
+    }
+  | {
+      readonly kind: "session";
+      readonly sessionRef: string;
+      readonly refresh: boolean;
+      readonly bindingScope: string | null;
+    }
+  | {
+      readonly kind: "transcript";
+      readonly sessionRef: string;
+      readonly beforeCursor: string | null;
+      readonly limit: number | null;
+      readonly bindingScope: string | null;
+    }
+  | {
+      readonly kind: "turn-submission";
+      readonly sessionRef: string;
+      readonly submissionId: string;
+      readonly bindingScope: string | null;
+    }
+  | {
+      readonly kind: "plugin-artifact";
+      readonly appPluginId: string;
+      readonly appCapabilityId: string;
+      readonly pluginId: string;
+      readonly activationGeneration: number;
+      readonly capabilityId: string;
+      readonly entry: string;
+      readonly bindingScope: string | null;
+    }
+  | {
+      readonly kind: "workspace-file";
+      readonly sessionRef: string;
+      readonly path: string;
+      readonly bindingScope: string | null;
+    }
+  | {
+      readonly kind: "turn-attachment";
+      readonly submissionId: string;
+      readonly index: number;
+      readonly bindingScope: string | null;
+    };
+
+export interface ConnectClientBinaryPresentationView {
+  readonly bytes: Uint8Array;
+  readonly contentType: string;
+  readonly contentLength: number;
+  readonly fileName: string | null;
+  readonly cacheControl: string | null;
+  readonly contentDisposition: string | null;
+  readonly contentSecurityPolicy: string | null;
+  readonly artifactKind: string | null;
+  readonly artifactLanguage: string | null;
+}
+
+export interface ConnectClientRetiredBindingsView {
+  readonly retiredBindingIds: readonly string[];
+}
+
+export type ConnectClientPresentationView =
+  | BootstrapView
+  | SessionCatalogView
+  | PluginAdministrationView
+  | HostDirectoryListingView
+  | readonly WorkspaceView[]
+  | SlashSuggestionListView
+  | SessionView
+  | TranscriptPageView
+  | ClientEventBatchView
+  | ClientErrorView
+  | readonly InstalledPluginView[]
+  | InstalledPluginView
+  | ConnectClientRetiredBindingsView
+  | ConnectClientBinaryPresentationView;
+
+export interface ConnectClientPresentationResult {
+  readonly status: number;
+  readonly view: ConnectClientPresentationView;
+}
+
+export interface ConnectClientOrderedEventQuery {
+  readonly afterCursor: number;
+  readonly bindingScope: string | null;
+}
+export interface ConnectClientOrderedEventSubscription extends AsyncDisposable {
+  readonly events: AsyncIterable<ClientEventBatchView>;
+}
+
+export interface ConnectClientPluginUploadIntent {
+  readonly fileName: string;
+  readonly bytes: Uint8Array;
+  readonly installationConfiguration: Readonly<Record<string, unknown>>;
+  readonly capabilityConfigurations: Readonly<Record<string, unknown>>;
+}
+
+export interface ConnectClientTurnAttachmentIntent {
+  readonly name: string;
+  readonly mime: string;
+  readonly bytes: Uint8Array;
+}
+
+export interface ConnectClientSubmitTurnIntent {
+  readonly sessionRef: string;
+  readonly submissionId: string;
+  readonly prompt: string;
+  readonly selection: Readonly<SlashSuggestionView> | null;
+  readonly attachments: readonly ConnectClientTurnAttachmentIntent[];
+}
+
+export type ConnectClientIntentCommand = { readonly bindingScope: string | null } & (
+  | { readonly kind: "add-workspace"; readonly input: Readonly<AddWorkspaceRequest> }
+  | {
+      readonly kind: "remove-workspace";
+      readonly bindingId: string;
+      readonly workspaceRef: string;
+      readonly input: Readonly<SessionMutationRequest>;
+    }
+  | { readonly kind: "create-session"; readonly input: Readonly<CreateSessionRequest> }
+  | {
+      readonly kind: "change-session-binding";
+      readonly sessionRef: string;
+      readonly input: Readonly<ChangeSessionBindingRequest>;
+    }
+  | {
+      readonly kind: "continue-session";
+      readonly sessionRef: string;
+      readonly input: Readonly<ContinueSessionRequest>;
+    }
+  | {
+      readonly kind: "archive-session" | "unarchive-session" | "delete-session";
+      readonly sessionRef: string;
+      readonly input: Readonly<SessionMutationRequest>;
+    }
+  | {
+      readonly kind: "update-session-preferences";
+      readonly sessionRef: string;
+      readonly input: Readonly<UpdateSessionPreferencesRequest>;
+    }
+  | {
+      readonly kind: "cancel-turn";
+      readonly sessionRef: string;
+      readonly turnId: string;
+      readonly input: Readonly<CancelTurnRequest>;
+    }
+  | {
+      readonly kind: "withdraw-queued-turn";
+      readonly sessionRef: string;
+      readonly turnId: string;
+      readonly requestId: string;
+    }
+  | {
+      readonly kind: "update-binding-preferences";
+      readonly bindingId: string;
+      readonly input: Readonly<UpdateBindingPreferencesRequest>;
+    }
+  | {
+      readonly kind: "upsert-binding-provider";
+      readonly bindingId: string;
+      readonly input: Readonly<UpsertBindingProviderRequest>;
+    }
+  | {
+      readonly kind: "respond-to-runtime-interaction";
+      readonly interactionId: string;
+      readonly input: Readonly<RespondToRuntimeInteractionRequest>;
+    }
+  | { readonly kind: "install-plugin"; readonly input: Readonly<ManagePluginRequest> }
+  | { readonly kind: "upload-plugin"; readonly input: Readonly<ConnectClientPluginUploadIntent> }
+  | { readonly kind: "install-official-plugins"; readonly pluginIds: readonly string[] }
+  | {
+      readonly kind: "update-plugin";
+      readonly pluginId: string;
+      readonly input: Readonly<Partial<ManagePluginRequest>>;
+    }
+  | { readonly kind: "remove-plugin"; readonly pluginId: string; readonly force: boolean }
+  | { readonly kind: "reinstall-plugin"; readonly pluginId: string }
+  | {
+      readonly kind: "configure-plugin";
+      readonly pluginId: string;
+      readonly input: Readonly<ConfigurePluginRequest>;
+    }
+  | { readonly kind: "enable-plugin" | "disable-plugin"; readonly pluginId: string }
+  | {
+      readonly kind: "select-plugin-version";
+      readonly pluginId: string;
+      readonly input: Readonly<SelectPluginVersionRequest>;
+    }
+  | { readonly kind: "submit-turn"; readonly input: Readonly<ConnectClientSubmitTurnIntent> }
+  | { readonly kind: "retry-turn-submission"; readonly sessionRef: string; readonly submissionId: string }
+  | { readonly kind: "discard-turn-submission"; readonly sessionRef: string; readonly submissionId: string }
+  | { readonly kind: "retire-bindings"; readonly bindingIds: readonly string[] }
+);
+export interface ConnectClientWorkspaceRemovalView {
+  readonly bindingId: string;
+  readonly workspaceRef: string;
+  readonly removed: true;
+}
+
+export interface ConnectClientQueuedTurnWithdrawalView {
+  readonly cancelled: boolean;
+  readonly sessionRef: string;
+  readonly turnId: string;
+}
+
+export interface ConnectClientTurnSubmissionDiscardView {
+  readonly submissionId: string;
+  readonly sessionRef: string;
+  readonly discarded: true;
+}
+
+export type ConnectClientIntentView =
+  | ConnectClientPresentationView
+  | WorkspaceView
+  | ConnectClientWorkspaceRemovalView
+  | ConnectClientQueuedTurnWithdrawalView
+  | ConnectClientTurnSubmissionDiscardView
+  | StartTurnResponse
+  | CancelTurnResponse
+  | SessionArchiveResponse
+  | SessionDeleteResponse
+  | BindingPreferenceView;
+
+
+export interface ConnectClientIntentResult {
+  readonly status: number;
+  readonly view: ConnectClientIntentView;
+}
+
+/**
+ * The Connect-owned application seam granted to the optional Client Plugin.
+ * All Core state and Runtime/Plugin implementations remain closure-private.
+ */
+export interface ConnectClientApplicationLifecycle {
+  readonly hostname: "127.0.0.1" | "0.0.0.0";
+  readonly port: number;
+  readonly managedWebApp: Readonly<RuntimeCapabilityRef>;
+}
+
+export interface ConnectClientApplicationPort {
+  initializeApplication(lifecycle: ConnectClientApplicationLifecycle): Promise<void>;
+  disposeApplication(): Promise<void>;
+  queryPresentation(query: ConnectClientPresentationQuery): Promise<ConnectClientPresentationResult>;
+  readOrderedEvents(query: ConnectClientOrderedEventQuery): Promise<ClientEventBatchView>;
+  subscribeOrderedEvents(query: ConnectClientOrderedEventQuery): ConnectClientOrderedEventSubscription;
+  executeIntent(command: ConnectClientIntentCommand): Promise<ConnectClientIntentResult>;
+}
+
+export interface ConnectClientOwnedInterfaceOptions {
+  readonly applicationPort: ConnectClientApplicationPort;
+  readonly assetsPath: string;
+  readonly hostname: "127.0.0.1" | "0.0.0.0";
+  readonly port: number;
+  readonly managedWebApp: Readonly<RuntimeCapabilityRef>;
+  readonly serverFactory?: ClientHttpServerFactory;
+}
+
+export type ConnectClientApplicationServices = Omit<
+  ClientInterfaceOptions,
+  "assetsPath" | "hostname" | "port" | "serverFactory" | "managedWebApp"
+>;
 
 export interface ClientHttpServerRequestContext {
   requestIP(request: Request): { address: string } | null;
@@ -167,21 +463,1099 @@ interface ActiveTurnSubmission {
 
 export interface ClientInterfaceHandle {
   origin: string;
-  fetch?(request: Request): Promise<Response>;
-  fetchPrivateGateway(request: Request): Promise<Response>;
   retireBindings(bindingIds: readonly string[]): Promise<void>;
   stop(): Promise<void>;
 }
+class CoreConnectClientApplicationPort implements ConnectClientApplicationPort {
+  #fetch: ClientHttpServerOptions["fetch"] | null = null;
+  #origin: string | null = null;
+  #retireBindings: ((bindingIds: readonly string[]) => Promise<void>) | null = null;
+  #applicationHandle: ClientInterfaceHandle | null = null;
+  readonly #resolveServices: () => ConnectClientApplicationServices;
 
-export async function startClientInterface(options: ClientInterfaceOptions): Promise<ClientInterfaceHandle> {
-  const hostname = options.hostname ?? options.config.clientHost;
-  const port = options.port ?? options.config.clientPort;
+  constructor(resolveServices: () => ConnectClientApplicationServices) {
+    this.#resolveServices = resolveServices;
+  }
+
+  async initializeApplication(lifecycle: ConnectClientApplicationLifecycle): Promise<void> {
+    if (this.#fetch || this.#applicationHandle) {
+      throw new Error("Connect Client application port is already initialized");
+    }
+    try {
+      const applicationHandle = await startCoreClientInterface(
+        {
+          ...this.#resolveServices(),
+          assetsPath: "",
+          hostname: lifecycle.hostname,
+          port: lifecycle.port,
+          managedWebApp: lifecycle.managedWebApp,
+          serverFactory: () => ({ stop: () => undefined }),
+        },
+        (fetch) => {
+          this.#fetch = fetch;
+          this.#origin = `http://${lifecycle.hostname}:${lifecycle.port}`;
+        },
+      );
+      this.#applicationHandle = applicationHandle;
+      this.#retireBindings = applicationHandle.retireBindings;
+    } catch (error) {
+      this.#fetch = null;
+      this.#origin = null;
+      throw error;
+    }
+  }
+
+  async disposeApplication(): Promise<void> {
+    const applicationHandle = this.#applicationHandle;
+    this.#applicationHandle = null;
+    try {
+      await applicationHandle?.stop();
+    } finally {
+      this.#fetch = null;
+      this.#origin = null;
+      this.#retireBindings = null;
+    }
+  }
+
+  async queryPresentation(query: ConnectClientPresentationQuery): Promise<ConnectClientPresentationResult> {
+    const response = await this.#invoke(presentationQueryPath(query), { bindingScope: queryBindingScope(query) });
+    return { status: response.status, view: await readApplicationView(response) };
+  }
+
+  async readOrderedEvents(query: ConnectClientOrderedEventQuery): Promise<ClientEventBatchView> {
+    const response = await this.#invoke(
+      `${CLIENT_API_PREFIX}/events/batch?after=${encodeURIComponent(String(query.afterCursor))}`,
+      { bindingScope: query.bindingScope },
+    );
+    const view = await readApplicationView(response);
+    if (!isClientEventBatchView(view)) throw new Error("Connect Client event query returned an invalid event batch");
+    return view;
+  }
+
+  subscribeOrderedEvents(query: ConnectClientOrderedEventQuery): ConnectClientOrderedEventSubscription {
+    const controller = new AbortController();
+    const events = this.#orderedEventBatches(query, controller.signal);
+    return {
+      events,
+      async [Symbol.asyncDispose]() {
+        controller.abort();
+      },
+    };
+  }
+
+  async executeIntent(command: ConnectClientIntentCommand): Promise<ConnectClientIntentResult> {
+    if (command.kind === "retire-bindings") {
+      if (!this.#retireBindings) throw new Error("Connect Client application port is not running");
+      await this.#retireBindings(command.bindingIds);
+      return { status: 200, view: { retiredBindingIds: [...command.bindingIds] } };
+    }
+    const request = intentRequest(command);
+    const response = await this.#invoke(request.path, {
+      method: request.method,
+      body: request.body,
+      bindingScope: command.bindingScope,
+    });
+    return { status: response.status, view: await readApplicationView(response) };
+  }
+
+  async *#orderedEventBatches(
+    query: ConnectClientOrderedEventQuery,
+    signal: AbortSignal,
+  ): AsyncGenerator<ClientEventBatchView> {
+    let afterCursor = query.afterCursor;
+    while (!signal.aborted) {
+      const batch = await this.readOrderedEvents({ ...query, afterCursor });
+      if (batch.events.length > 0) {
+        afterCursor = batch.cursor;
+        yield batch;
+      }
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          clearTimeout(timeout);
+          signal.removeEventListener("abort", finish);
+          resolve();
+        };
+        const timeout = setTimeout(finish, 250);
+        signal.addEventListener("abort", finish, { once: true });
+      });
+    }
+  }
+
+  async #invoke(
+    path: string,
+    options: {
+      readonly method?: string;
+      readonly body?: object;
+      readonly bindingScope?: string | null;
+    } = {},
+  ): Promise<Response> {
+    if (!this.#fetch || !this.#origin) {
+      throw new Error("Connect Client application port is not running");
+    }
+    const headers = new Headers();
+    headers.set("host", new URL(this.#origin).host);
+    if (options.bindingScope) headers.set(BINDING_SCOPE_HEADER, options.bindingScope);
+    const form = options.body instanceof FormData ? options.body : null;
+    if (options.body && !form) headers.set("content-type", "application/json");
+    if (options.method && options.method !== "GET") {
+      headers.set("origin", this.#origin);
+      headers.set("sec-fetch-site", "same-origin");
+    }
+    const syntheticRequest = new Request(new URL(path, this.#origin), {
+      method: options.method ?? "GET",
+      headers,
+      ...(options.body ? { body: form ?? JSON.stringify(options.body) } : {}),
+    });
+    return await this.#fetch(syntheticRequest, {
+      requestIP: () => ({ address: "127.0.0.1" }),
+    });
+  }
+}
+
+export function createCoreConnectClientApplicationPort(
+  resolveServices: () => ConnectClientApplicationServices,
+): ConnectClientApplicationPort {
+  return Object.freeze(new CoreConnectClientApplicationPort(resolveServices));
+}
+
+function presentationQueryPath(query: ConnectClientPresentationQuery): string {
+  switch (query.kind) {
+    case "bootstrap":
+      return `${CLIENT_API_PREFIX}/bootstrap`;
+    case "session-catalog":
+      return `${CLIENT_API_PREFIX}/session-catalog${query.refresh ? "?refresh=1" : ""}`;
+    case "plugin-administration":
+      return `${CLIENT_API_PREFIX}/plugins/administration`;
+    case "official-plugins":
+      return `${CLIENT_API_PREFIX}/plugins/official`;
+    case "installed-plugins":
+      return `${CLIENT_API_PREFIX}/plugins`;
+    case "host-directories": {
+      const search = new URLSearchParams();
+      if (query.path !== null) search.set("path", query.path);
+      if (query.showHidden) search.set("showHidden", "1");
+      const suffix = search.size > 0 ? `?${search}` : "";
+      return `${CLIENT_API_PREFIX}/host-directories${suffix}`;
+    }
+    case "workspaces":
+      return `${CLIENT_API_PREFIX}/workspaces`;
+    case "slash-suggestions":
+      return `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(query.sessionRef)}/slash-suggestions${
+        query.refresh ? "?refresh=1" : ""
+      }`;
+    case "session":
+      return `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(query.sessionRef)}${
+        query.refresh ? "?refresh=1" : ""
+      }`;
+    case "transcript": {
+      const search = new URLSearchParams();
+      if (query.beforeCursor !== null) search.set("before", query.beforeCursor);
+      if (query.limit !== null) search.set("limit", String(query.limit));
+      const suffix = search.size > 0 ? `?${search}` : "";
+      return `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(query.sessionRef)}/transcript${suffix}`;
+    }
+    case "turn-submission":
+      return `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(query.sessionRef)}/turn-submissions/${encodeURIComponent(
+        query.submissionId,
+      )}`;
+    case "plugin-artifact":
+      return `${CLIENT_API_PREFIX}/plugin-artifacts/${encodeURIComponent(query.appPluginId)}/${encodeURIComponent(
+        query.appCapabilityId,
+      )}/${encodeURIComponent(query.pluginId)}/${query.activationGeneration}/${encodeURIComponent(
+        query.capabilityId,
+      )}/${query.entry
+        .split("/")
+        .map((segment) => encodeURIComponent(segment))
+        .join("/")}`;
+    case "workspace-file":
+      return `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(
+        query.sessionRef,
+      )}/files?path=${encodeURIComponent(query.path)}`;
+    case "turn-attachment":
+      return `${CLIENT_API_PREFIX}/turn-submissions/${encodeURIComponent(
+        query.submissionId,
+      )}/attachments/${query.index}`;
+  }
+}
+
+function queryBindingScope(query: ConnectClientPresentationQuery): string | null {
+  return "bindingScope" in query ? query.bindingScope : null;
+}
+
+async function readApplicationView(response: Response): Promise<ConnectClientPresentationView> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("json")) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return {
+      bytes,
+      contentType: contentType || "application/octet-stream",
+      contentLength: Number(response.headers.get("content-length") ?? bytes.byteLength),
+      fileName: null,
+      cacheControl: response.headers.get("cache-control"),
+      contentDisposition: response.headers.get("content-disposition"),
+      contentSecurityPolicy: response.headers.get("content-security-policy"),
+      artifactKind: response.headers.get("x-clawchat-artifact-kind"),
+      artifactLanguage: response.headers.get("x-clawchat-artifact-language"),
+    };
+  }
+  const value: unknown = await response.json();
+  if (!value || typeof value !== "object") {
+    throw new Error("Connect Client application returned a non-object presentation");
+  }
+  return value as ConnectClientPresentationView;
+}
+
+function isClientEventBatchView(value: ConnectClientPresentationView): value is ClientEventBatchView {
+  return (
+    "cursor" in value &&
+    typeof value.cursor === "number" &&
+    "events" in value &&
+    Array.isArray(value.events)
+  );
+}
+
+interface ConnectClientIntentHttpRequest {
+  readonly path: string;
+  readonly method: "POST" | "PATCH" | "PUT" | "DELETE";
+  readonly body?: object;
+  readonly bindingScope: string | null;
+}
+
+function intentRequest(command: ConnectClientIntentCommand): ConnectClientIntentHttpRequest {
+  switch (command.kind) {
+    case "add-workspace":
+      return {
+        path: `${CLIENT_API_PREFIX}/workspaces`,
+        method: "POST",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "remove-workspace":
+      return {
+        path: `${CLIENT_API_PREFIX}/workspaces/${encodeURIComponent(command.bindingId)}/${encodeURIComponent(
+          command.workspaceRef,
+        )}`,
+        method: "DELETE",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "create-session":
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions`,
+        method: "POST",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "change-session-binding":
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(command.sessionRef)}/binding`,
+        method: "PATCH",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "continue-session":
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(command.sessionRef)}/continuations`,
+        method: "POST",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "archive-session":
+    case "unarchive-session":
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(command.sessionRef)}/${
+          command.kind === "archive-session" ? "archive" : "unarchive"
+        }`,
+        method: "POST",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "delete-session":
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(command.sessionRef)}`,
+        method: "DELETE",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "update-session-preferences":
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(command.sessionRef)}/preferences`,
+        method: "PATCH",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "cancel-turn":
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(command.sessionRef)}/turns/${encodeURIComponent(
+          command.turnId,
+        )}/cancel`,
+        method: "POST",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "withdraw-queued-turn":
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(
+          command.sessionRef,
+        )}/queued-turns/${encodeURIComponent(command.turnId)}/withdraw`,
+        method: "POST",
+        body: { requestId: command.requestId },
+        bindingScope: null,
+      };
+    case "update-binding-preferences":
+      return {
+        path: `${CLIENT_API_PREFIX}/bindings/${encodeURIComponent(command.bindingId)}/preferences`,
+        method: "PATCH",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "upsert-binding-provider":
+      return {
+        path: `${CLIENT_API_PREFIX}/bindings/${encodeURIComponent(command.bindingId)}/provider`,
+        method: "PUT",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "respond-to-runtime-interaction":
+      return {
+        path: `${CLIENT_API_PREFIX}/runtime-interactions/${encodeURIComponent(command.interactionId)}/respond`,
+        method: "POST",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "install-plugin":
+      return {
+        path: `${CLIENT_API_PREFIX}/plugins`,
+        method: "POST",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "upload-plugin": {
+      const form = new FormData();
+      form.set("bundle", new File([Uint8Array.from(command.input.bytes).buffer], command.input.fileName));
+      form.set("installationConfiguration", JSON.stringify(command.input.installationConfiguration));
+      form.set("capabilityConfigurations", JSON.stringify(command.input.capabilityConfigurations));
+      return {
+        path: `${CLIENT_API_PREFIX}/plugins/upload`,
+        method: "POST",
+        body: form,
+        bindingScope: null,
+      };
+    }
+    case "install-official-plugins":
+      return {
+        path: `${CLIENT_API_PREFIX}/plugins/official/setup`,
+        method: "POST",
+        body: { pluginIds: [...command.pluginIds] },
+        bindingScope: null,
+      };
+    case "update-plugin":
+      return {
+        path: `${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(command.pluginId)}/update`,
+        method: "POST",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "remove-plugin":
+      return {
+        path: `${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(command.pluginId)}${command.force ? "?force=1" : ""}`,
+        method: "DELETE",
+        bindingScope: null,
+      };
+    case "reinstall-plugin":
+    case "enable-plugin":
+    case "disable-plugin":
+      return {
+        path: `${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(command.pluginId)}/${
+          command.kind === "reinstall-plugin"
+            ? "reinstall"
+            : command.kind === "enable-plugin"
+              ? "enable"
+              : "disable"
+        }`,
+        method: "POST",
+        bindingScope: null,
+      };
+    case "configure-plugin":
+      return {
+        path: `${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(command.pluginId)}/configure`,
+        method: "POST",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "select-plugin-version":
+      return {
+        path: `${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(command.pluginId)}/select`,
+        method: "POST",
+        body: command.input,
+        bindingScope: null,
+      };
+    case "submit-turn": {
+      const form = new FormData();
+      form.set("prompt", command.input.prompt);
+      if (command.input.selection) {
+        form.set("selectionKind", command.input.selection.kind);
+        form.set("selectionId", command.input.selection.id);
+        form.set("selectionName", command.input.selection.name);
+      }
+      for (const attachment of command.input.attachments) {
+        form.append(
+          "attachments",
+          new File([Uint8Array.from(attachment.bytes).buffer], attachment.name, { type: attachment.mime }),
+        );
+      }
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(
+          command.input.sessionRef,
+        )}/turn-submissions/${encodeURIComponent(command.input.submissionId)}`,
+        method: "POST",
+        body: form,
+        bindingScope: null,
+      };
+    }
+    case "retry-turn-submission":
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(
+          command.sessionRef,
+        )}/turn-submissions/${encodeURIComponent(command.submissionId)}/retry`,
+        method: "POST",
+        bindingScope: null,
+      };
+    case "discard-turn-submission":
+      return {
+        path: `${CLIENT_API_PREFIX}/sessions/${encodeURIComponent(
+          command.sessionRef,
+        )}/turn-submissions/${encodeURIComponent(command.submissionId)}`,
+        method: "DELETE",
+        bindingScope: null,
+      };
+    case "retire-bindings":
+      throw new Error("Binding retirement is handled directly by the application port");
+  }
+}
+
+export async function startClientInterface(options: ConnectClientOwnedInterfaceOptions): Promise<ClientInterfaceHandle> {
+  const { applicationPort, hostname, port, assetsPath, managedWebApp } = options;
   const origin = `http://${hostname}:${port}`;
-  const assetsPath = options.assetsPath ?? (await resolveClientAssetsPath());
+  const initialization = applicationPort.initializeApplication({ hostname, port, managedWebApp });
+  const serverFactory: ClientHttpServerFactory = options.serverFactory ?? ((serverOptions) => Bun.serve(serverOptions));
+  let server: ClientHttpServerHandle | null = null;
+  try {
+    server = serverFactory({
+      hostname,
+      port,
+      idleTimeout: 0,
+      fetch: async (request, requestServer) =>
+        await handlePluginOwnedRequest({
+          applicationPort,
+          assetsPath,
+          hostname,
+          port,
+          request,
+          requestServer,
+        }),
+    });
+    await initialization;
+  } catch (error) {
+    await initialization.catch(() => undefined);
+    await server?.stop(true);
+    await applicationPort.disposeApplication();
+    throw error;
+  }
+  if (!server) throw new Error("Connect Client listener failed to start");
+  const runningServer = server;
+  let stopped = false;
+  return {
+    origin,
+    async retireBindings(bindingIds) {
+      await applicationPort.executeIntent({ kind: "retire-bindings", bindingIds, bindingScope: null });
+    },
+    async stop() {
+      if (stopped) return;
+      stopped = true;
+      await runningServer.stop(true);
+      await applicationPort.disposeApplication();
+    },
+  };
+}
+
+interface PluginOwnedRequestOptions {
+  readonly applicationPort: ConnectClientApplicationPort;
+  readonly assetsPath: string;
+  readonly hostname: "127.0.0.1" | "0.0.0.0";
+  readonly port: number;
+  readonly request: Request;
+  readonly requestServer?: ClientHttpServerRequestContext;
+}
+
+async function handlePluginOwnedRequest(options: PluginOwnedRequestOptions): Promise<Response> {
+  const { applicationPort, assetsPath, hostname, port, request, requestServer } = options;
+  try {
+    const requestOrigin = allowedRequestOrigin(request, hostname, port);
+    if (!requestOrigin) return errorResponse(400, "invalid-host", "Invalid Host header");
+    const url = new URL(request.url);
+    const administrationPath = isClientAdministrationPath(url.pathname);
+    if (
+      hostname === "0.0.0.0" &&
+      administrationPath &&
+      !isLoopbackAddress(requestServer?.requestIP(request)?.address)
+    ) {
+      return errorResponse(404, "not-found", "Client Interface endpoint was not found");
+    }
+    const bindingScope = request.headers.get(BINDING_SCOPE_HEADER)?.trim() || null;
+    if (administrationPath && bindingScope) {
+      return errorResponse(404, "not-found", "Client Interface endpoint was not found");
+    }
+    if (url.pathname.startsWith(CLIENT_API_PREFIX)) {
+      if (isMutation(request.method)) {
+        const mutationError = await validateMutationRequest(request, requestOrigin);
+        if (mutationError) return mutationError;
+      }
+      return await routeClientApplicationRequest(applicationPort, request, url, bindingScope);
+    }
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return new Response("Method Not Allowed", { status: 405, headers: securityHeaders() });
+    }
+    return await staticResponse(assetsPath, url.pathname, request.method === "HEAD");
+  } catch (error) {
+    if (error instanceof ClientRequestError) {
+      return errorResponse(error.status, error.code, error.message, error.retryable);
+    }
+    const diagnosticRef = randomUUID();
+    console.error(`[client-interface:${diagnosticRef}]`, error);
+    return errorResponse(500, "internal-error", "Connect Client request failed", true, diagnosticRef);
+  }
+}
+
+async function routeClientApplicationRequest(
+  applicationPort: ConnectClientApplicationPort,
+  request: Request,
+  url: URL,
+  bindingScope: string | null,
+): Promise<Response> {
+  const pathname = url.pathname;
+  const method = request.method;
+  const artifact = pathname.match(
+    /^\/client\/v1\/plugin-artifacts\/([^/]+)\/([^/]+)\/([^/]+)\/([1-9]\d*)\/([^/]+)\/(.+)$/u,
+  );
+  if (artifact && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({
+        kind: "plugin-artifact",
+        appPluginId: decodeURIComponent(artifact[1] ?? ""),
+        appCapabilityId: decodeURIComponent(artifact[2] ?? ""),
+        pluginId: decodeURIComponent(artifact[3] ?? ""),
+        activationGeneration: Number(artifact[4]),
+        capabilityId: decodeURIComponent(artifact[5] ?? ""),
+        entry: (artifact[6] ?? "")
+          .split("/")
+          .map((segment) => decodeURIComponent(segment))
+          .join("/"),
+        bindingScope,
+      }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/plugins/administration` && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({ kind: "plugin-administration", bindingScope: null }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/plugins/official` && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({ kind: "official-plugins", bindingScope: null }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/plugins/upload` && method === "POST") {
+    const declaredLength = Number(request.headers.get("content-length") ?? "0");
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_PLUGIN_UPLOAD_BODY_BYTES) {
+      return errorResponse(
+        413,
+        "plugin-upload-too-large",
+        `Plugin Bundle exceeds the ${MAX_PLUGIN_BUNDLE_BYTES} byte upload limit`,
+      );
+    }
+    const form = await readPluginUploadFormData(request);
+    const bundle = form.get("bundle");
+    if (!(bundle instanceof File) || !bundle.name.endsWith(".connect-plugin")) {
+      return errorResponse(400, "invalid-plugin-upload", "bundle must be one .connect-plugin file");
+    }
+    const input: ConnectClientPluginUploadIntent = {
+      fileName: bundle.name,
+      bytes: new Uint8Array(await bundle.arrayBuffer()),
+      installationConfiguration: parsePluginFormConfiguration(
+        form.get("installationConfiguration"),
+        "installationConfiguration",
+      ),
+      capabilityConfigurations: parsePluginFormConfiguration(
+        form.get("capabilityConfigurations"),
+        "capabilityConfigurations",
+      ),
+    };
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({ kind: "upload-plugin", input, bindingScope: null }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/plugins/official/setup` && method === "POST") {
+    const body = await readJsonBody<{ pluginIds?: unknown }>(request);
+    if (!Array.isArray(body.pluginIds) || !body.pluginIds.every((pluginId) => typeof pluginId === "string")) {
+      return errorResponse(400, "invalid-official-plugin-selection", "pluginIds must be an array of Plugin IDs");
+    }
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "install-official-plugins",
+        pluginIds: body.pluginIds,
+        bindingScope: null,
+      }),
+    );
+  }
+  const pluginPath = pathname.match(/^\/client\/v1\/plugins(?:\/([^/]+)(?:\/([^/]+))?)?$/u);
+  if (pluginPath) {
+    if (!pluginPath[1] && method === "GET") {
+      return applicationQueryResponse(
+        await applicationPort.queryPresentation({ kind: "installed-plugins", bindingScope: null }),
+      );
+    }
+    if (!pluginPath[1] && method === "POST") {
+      const input = await readJsonBody<ManagePluginRequest>(request);
+      return applicationIntentResponse(
+        await applicationPort.executeIntent({ kind: "install-plugin", input, bindingScope: null }),
+      );
+    }
+    const pluginId = decodeURIComponent(pluginPath[1] ?? "");
+    const action = pluginPath[2] ? decodeURIComponent(pluginPath[2]) : null;
+    if (method === "DELETE" && action === null) {
+      return applicationIntentResponse(
+        await applicationPort.executeIntent({
+          kind: "remove-plugin",
+          pluginId,
+          force: url.searchParams.get("force") === "1",
+          bindingScope: null,
+        }),
+      );
+    }
+    if (method === "POST" && action === "update") {
+      return applicationIntentResponse(
+        await applicationPort.executeIntent({
+          kind: "update-plugin",
+          pluginId,
+          input: await readJsonBody<Partial<ManagePluginRequest>>(request),
+          bindingScope: null,
+        }),
+      );
+    }
+    if (method === "POST" && action === "reinstall") {
+      return applicationIntentResponse(
+        await applicationPort.executeIntent({ kind: "reinstall-plugin", pluginId, bindingScope: null }),
+      );
+    }
+    if (method === "POST" && action === "configure") {
+      return applicationIntentResponse(
+        await applicationPort.executeIntent({
+          kind: "configure-plugin",
+          pluginId,
+          input: await readJsonBody<ConfigurePluginRequest>(request),
+          bindingScope: null,
+        }),
+      );
+    }
+    if (method === "POST" && (action === "enable" || action === "disable")) {
+      return applicationIntentResponse(
+        await applicationPort.executeIntent({
+          kind: action === "enable" ? "enable-plugin" : "disable-plugin",
+          pluginId,
+          bindingScope: null,
+        }),
+      );
+    }
+    if (method === "POST" && action === "select") {
+      return applicationIntentResponse(
+        await applicationPort.executeIntent({
+          kind: "select-plugin-version",
+          pluginId,
+          input: await readJsonBody<SelectPluginVersionRequest>(request),
+          bindingScope: null,
+        }),
+      );
+    }
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/bootstrap` && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({ kind: "bootstrap", bindingScope }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/session-catalog` && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({
+        kind: "session-catalog",
+        refresh: url.searchParams.get("refresh") === "1",
+        bindingScope,
+      }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/host-directories` && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({
+        kind: "host-directories",
+        path: url.searchParams.get("path"),
+        showHidden: url.searchParams.get("showHidden") === "1",
+        bindingScope: null,
+      }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/workspaces` && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({ kind: "workspaces", bindingScope }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/workspaces` && method === "POST") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "add-workspace",
+        input: await readJsonBody<AddWorkspaceRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/sessions` && method === "POST") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "create-session",
+        input: await readJsonBody<CreateSessionRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  const workspacePath = pathname.match(/^\/client\/v1\/workspaces\/([^/]+)\/([^/]+)$/u);
+  if (workspacePath && method === "DELETE") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "remove-workspace",
+        bindingId: decodeURIComponent(workspacePath[1] ?? ""),
+        workspaceRef: decodeURIComponent(workspacePath[2] ?? ""),
+        input: await readJsonBody<SessionMutationRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/events/batch` && method === "GET") {
+    return jsonResponse(
+      await applicationPort.readOrderedEvents({ afterCursor: eventCursor(request, url), bindingScope }),
+    );
+  }
+  if (pathname === `${CLIENT_API_PREFIX}/events` && method === "GET") {
+    return orderedEventStreamResponse(
+      applicationPort.subscribeOrderedEvents({ afterCursor: eventCursor(request, url), bindingScope }),
+    );
+  }
+  const slash = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/slash-suggestions$/u);
+  if (slash && method === "GET") {
+    const sessionRef = requireSessionRef(slash[1]);
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({
+        kind: "slash-suggestions",
+        sessionRef,
+        refresh: url.searchParams.get("refresh") === "1",
+        bindingScope,
+      }),
+    );
+  }
+  const changeBinding = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/binding$/u);
+  if (changeBinding && method === "PATCH") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "change-session-binding",
+        sessionRef: requireSessionRef(changeBinding[1]),
+        input: await readJsonBody<ChangeSessionBindingRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  const continuation = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/continuations$/u);
+  if (continuation && method === "POST") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "continue-session",
+        sessionRef: requireSessionRef(continuation[1]),
+        input: await readJsonBody<ContinueSessionRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  const transcript = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/transcript$/u);
+  if (transcript && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({
+        kind: "transcript",
+        sessionRef: requireSessionRef(transcript[1]),
+        beforeCursor: url.searchParams.get("before"),
+        limit: url.searchParams.has("limit") ? Number(url.searchParams.get("limit")) : null,
+        bindingScope,
+      }),
+    );
+  }
+  const workspaceFile = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/files$/u);
+  if (workspaceFile && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({
+        kind: "workspace-file",
+        sessionRef: requireSessionRef(workspaceFile[1]),
+        path: url.searchParams.get("path") ?? "",
+        bindingScope,
+      }),
+    );
+  }
+  const sessionAction = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/(archive|unarchive)$/u);
+  if (sessionAction && method === "POST") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: sessionAction[2] === "archive" ? "archive-session" : "unarchive-session",
+        sessionRef: requireSessionRef(sessionAction[1]),
+        input: await readJsonBody<SessionMutationRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  const attachment = pathname.match(/^\/client\/v1\/turn-submissions\/([^/]+)\/attachments\/(\d+)$/u);
+  if (attachment && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({
+        kind: "turn-attachment",
+        submissionId: decodeURIComponent(attachment[1] ?? ""),
+        index: Number(attachment[2]),
+        bindingScope,
+      }),
+    );
+  }
+  const retry = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turn-submissions\/([^/]+)\/retry$/u);
+  if (retry && method === "POST") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "retry-turn-submission",
+        sessionRef: requireSessionRef(retry[1]),
+        submissionId: decodeURIComponent(retry[2] ?? ""),
+        bindingScope,
+      }),
+    );
+  }
+  const submission = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turn-submissions\/([^/]+)$/u);
+  if (submission && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({
+        kind: "turn-submission",
+        sessionRef: requireSessionRef(submission[1]),
+        submissionId: decodeURIComponent(submission[2] ?? ""),
+        bindingScope,
+      }),
+    );
+  }
+  if (submission && method === "DELETE") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "discard-turn-submission",
+        sessionRef: requireSessionRef(submission[1]),
+        submissionId: decodeURIComponent(submission[2] ?? ""),
+        bindingScope,
+      }),
+    );
+  }
+  if (submission && method === "POST") {
+    const form = await request.formData();
+    const prompt = form.get("prompt");
+    if (typeof prompt !== "string") return errorResponse(400, "invalid-prompt", "prompt must be text");
+    const selectionKind = form.get("selectionKind");
+    const selectionId = form.get("selectionId");
+    const selectionName = form.get("selectionName");
+    const selection: SlashSuggestionView | null =
+      typeof selectionKind === "string" &&
+      (selectionKind === "command" || selectionKind === "skill") &&
+      typeof selectionId === "string" &&
+      typeof selectionName === "string"
+        ? { kind: selectionKind, id: selectionId, name: selectionName }
+        : null;
+    const attachments = await Promise.all(
+      form.getAll("attachments").map(async (entry) => {
+        if (!(entry instanceof File)) throw new ClientRequestError(400, "invalid-attachment", "Attachments must be files");
+        return { name: entry.name, mime: entry.type, bytes: new Uint8Array(await entry.arrayBuffer()) };
+      }),
+    );
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "submit-turn",
+        input: {
+          sessionRef: requireSessionRef(submission[1]),
+          submissionId: decodeURIComponent(submission[2] ?? ""),
+          prompt,
+          selection,
+          attachments,
+        },
+        bindingScope,
+      }),
+    );
+  }
+  const interaction = pathname.match(/^\/client\/v1\/runtime-interactions\/([^/]+)\/respond$/u);
+  if (interaction && method === "POST") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "respond-to-runtime-interaction",
+        interactionId: decodeURIComponent(interaction[1] ?? ""),
+        input: await readJsonBody<RespondToRuntimeInteractionRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  const sessionPreferences = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/preferences$/u);
+  if (sessionPreferences && method === "PATCH") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "update-session-preferences",
+        sessionRef: requireSessionRef(sessionPreferences[1]),
+        input: await readJsonBody<UpdateSessionPreferencesRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  const queuedTurn = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/queued-turns\/([^/]+)\/withdraw$/u);
+  if (queuedTurn && method === "POST") {
+    const body = await readJsonBody<{ requestId?: string }>(request);
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "withdraw-queued-turn",
+        sessionRef: requireSessionRef(queuedTurn[1]),
+        turnId: decodeURIComponent(queuedTurn[2] ?? ""),
+        requestId: body.requestId ?? "",
+        bindingScope,
+      }),
+    );
+  }
+  const cancelTurn = pathname.match(/^\/client\/v1\/sessions\/([^/]+)\/turns\/([^/]+)\/cancel$/u);
+  if (cancelTurn && method === "POST") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "cancel-turn",
+        sessionRef: requireSessionRef(cancelTurn[1]),
+        turnId: decodeURIComponent(cancelTurn[2] ?? ""),
+        input: await readJsonBody<CancelTurnRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  const provider = pathname.match(/^\/client\/v1\/bindings\/([^/]+)\/provider$/u);
+  if (provider && method === "PUT") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "upsert-binding-provider",
+        bindingId: decodeURIComponent(provider[1] ?? ""),
+        input: await readJsonBody<UpsertBindingProviderRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  const bindingPreferences = pathname.match(/^\/client\/v1\/bindings\/([^/]+)\/preferences$/u);
+  if (bindingPreferences && method === "PATCH") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "update-binding-preferences",
+        bindingId: decodeURIComponent(bindingPreferences[1] ?? ""),
+        input: await readJsonBody<UpdateBindingPreferencesRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  const session = pathname.match(/^\/client\/v1\/sessions\/([^/]+)$/u);
+  if (session && method === "GET") {
+    return applicationQueryResponse(
+      await applicationPort.queryPresentation({
+        kind: "session",
+        sessionRef: requireSessionRef(session[1]),
+        refresh: url.searchParams.get("refresh") === "1",
+        bindingScope,
+      }),
+    );
+  }
+  if (session && method === "DELETE") {
+    return applicationIntentResponse(
+      await applicationPort.executeIntent({
+        kind: "delete-session",
+        sessionRef: requireSessionRef(session[1]),
+        input: await readJsonBody<SessionMutationRequest>(request),
+        bindingScope,
+      }),
+    );
+  }
+  return errorResponse(404, "not-found", "Client Interface endpoint was not found");
+}
+
+function requireSessionRef(value: string | undefined): string {
+  const sessionRef = normalizeSessionRef(value ?? "");
+  if (!sessionRef) throw new ClientRequestError(400, "invalid-session-ref", "Invalid Session Ref");
+  return sessionRef;
+}
+
+function applicationQueryResponse(result: ConnectClientPresentationResult): Response {
+  return applicationViewResponse(result.status, result.view);
+}
+
+function applicationIntentResponse(result: ConnectClientIntentResult): Response {
+  return applicationViewResponse(result.status, result.view);
+}
+
+function applicationViewResponse(status: number, view: ConnectClientPresentationView | ConnectClientIntentView): Response {
+  if ("bytes" in view && view.bytes instanceof Uint8Array) {
+    return new Response(Uint8Array.from(view.bytes).buffer, {
+      status,
+      headers: securityHeaders({
+        "content-type": view.contentType,
+        "content-length": String(view.contentLength),
+        ...(view.cacheControl ? { "cache-control": view.cacheControl } : {}),
+        ...(view.contentDisposition ? { "content-disposition": view.contentDisposition } : {}),
+        ...(view.contentSecurityPolicy ? { "content-security-policy": view.contentSecurityPolicy } : {}),
+        ...(view.artifactKind ? { "x-clawchat-artifact-kind": view.artifactKind } : {}),
+        ...(view.artifactLanguage ? { "x-clawchat-artifact-language": view.artifactLanguage } : {}),
+      }),
+    });
+  }
+  return jsonResponse(view, status);
+}
+
+function orderedEventStreamResponse(subscription: ConnectClientOrderedEventSubscription): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for await (const batch of subscription.events) {
+          for (const event of batch.events) {
+            controller.enqueue(encoder.encode(`id: ${event.cursor}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
+          }
+        }
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      } finally {
+        await subscription[Symbol.asyncDispose]();
+      }
+    },
+    async cancel() {
+      await subscription[Symbol.asyncDispose]();
+    },
+  });
+  return new Response(stream, {
+    headers: securityHeaders({
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    }),
+  });
+}
+
+async function startCoreClientInterface(
+  options: ClientInterfaceOptions,
+  attachRequestHandler?: (fetch: ClientHttpServerOptions["fetch"]) => void,
+): Promise<ClientInterfaceHandle> {
+  const { hostname, port, assetsPath, managedWebApp } = options;
   const workspaces = options.workspaces ?? new WorkspaceCatalog(options.stateStore);
   const continuityOptions = {
     resolveDefaultWorkspace: async (bindingId: string) => (await workspaces.ensureDefault(bindingId)).workspaceRef,
-    resolveContinuationWorkspace: async (source: import("../types").RuntimeSessionRecord, bindingId: string) => {
+    resolveContinuationWorkspace: async (source: RuntimeSessionRecord, bindingId: string) => {
       if (source.agentId === bindingId && source.workspaceRef) return source.workspaceRef;
       const sourceWorkspace = source.workspaceRef ? await workspaces.get(source.agentId, source.workspaceRef) : null;
       const target = sourceWorkspace
@@ -322,15 +1696,27 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           if (mutationError) return mutationError;
         }
         const clientExtensionArtifactPath = url.pathname.match(
-          /^\/client\/v1\/plugin-artifacts\/([^/]+)\/([1-9]\d*)\/([^/]+)\/(.+)$/u,
+          /^\/client\/v1\/plugin-artifacts\/([^/]+)\/([^/]+)\/([^/]+)\/([1-9]\d*)\/([^/]+)\/(.+)$/u,
         );
         if (clientExtensionArtifactPath && request.method === "GET") {
           const installed = (await options.pluginManager?.listPublishedClientExtensions()) ?? [];
-          const [, encodedPluginId, generation, encodedCapabilityId, encodedEntry] = clientExtensionArtifactPath;
+          const [
+            ,
+            encodedAppPluginId,
+            encodedAppCapabilityId,
+            encodedPluginId,
+            generation,
+            encodedCapabilityId,
+            encodedEntry,
+          ] = clientExtensionArtifactPath;
+          let appPluginId: string;
+          let appCapabilityId: string;
           let pluginId: string;
           let capabilityId: string;
           let artifactEntry: string;
           try {
+            appPluginId = decodeURIComponent(encodedAppPluginId ?? "");
+            appCapabilityId = decodeURIComponent(encodedAppCapabilityId ?? "");
             pluginId = decodeURIComponent(encodedPluginId ?? "");
             capabilityId = decodeURIComponent(encodedCapabilityId ?? "");
             artifactEntry = (encodedEntry ?? "")
@@ -340,8 +1726,15 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           } catch {
             return errorResponse(400, "invalid-client-extension-artifact", "Client Extension artifact path is invalid");
           }
+          if (
+            appPluginId !== managedWebApp.pluginId ||
+            appCapabilityId !== managedWebApp.capabilityId
+          ) {
+            return errorResponse(404, "client-extension-artifact-not-found", "Client Extension artifact was not found");
+          }
           const artifact = resolveClientExtensionArtifact(
             installed,
+            managedWebApp,
             pluginId,
             Number(generation),
             capabilityId,
@@ -556,7 +1949,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
             outputVisibility: bindingScope
               ? bindingOutputVisibility(options.config, bindingScope)
               : options.config.outputVisibility,
-            clientExtensions: deriveClientExtensionGraph(publishedClientExtensions),
+            clientExtensions: deriveClientExtensionGraph(publishedClientExtensions, managedWebApp),
             bindings: await Promise.all(
               Object.entries(options.config.agents)
                 .filter(([bindingId]) => requestScope.includesBinding(bindingId))
@@ -1503,6 +2896,7 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
           if (body.clientExtensionEpoch !== undefined) {
             const clientExtensionGraph = deriveClientExtensionGraph(
               (await options.pluginManager?.listPublishedClientExtensions()) ?? [],
+              managedWebApp,
             );
             try {
               assertCurrentClientExtensionEpoch(clientExtensionGraph, body.clientExtensionEpoch);
@@ -1624,12 +3018,14 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
       return errorResponse(500, "internal-error", "Connect Client request failed", true, diagnosticRef);
     }
   };
+  attachRequestHandler?.(handleRequest);
   const server = serverFactory({
     hostname,
     port,
     idleTimeout: 0,
     fetch: handleRequest,
   });
+  const origin = `http://${hostname}:${server.port ?? port}`;
   try {
     const recoverable = await options.stateStore.listRecoverableTurnOutbox();
     const warming = await Promise.allSettled([
@@ -1648,11 +3044,6 @@ export async function startClientInterface(options: ClientInterfaceOptions): Pro
   }
   return {
     origin,
-    fetch: async (request) => await handleRequest(request),
-    fetchPrivateGateway: async (request) =>
-      await handleRequest(request, {
-        requestIP: () => ({ address: "127.0.0.1" }),
-      }),
     retireBindings: async (bindingIds) => {
       const retiring = new Set(bindingIds);
       for (const bindingId of retiring) retiringBindings.add(bindingId);

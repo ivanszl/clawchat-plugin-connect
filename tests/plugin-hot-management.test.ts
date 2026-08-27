@@ -174,7 +174,6 @@ interface LifecycleBundleOptions {
   includeRuntime?: boolean;
   failAdapterClose?: boolean;
   exposureFailure?: boolean;
-  captureExposureClient?: boolean;
 }
 
 function lifecycleBundle(
@@ -233,7 +232,6 @@ export default {
         ? `context.hostCapabilities.get("exposure-provider").register({
       capabilityId: "exposure",
       async activate(activation) {
-        ${options.captureExposureClient ? `(globalThis.__connectPluginExposureClients ??= []).push(activation.client);` : ""}
         log.push("exposure-activate:${version}:generation-" + activation.activationGeneration);
         ${options.exposureFailure ? `throw new Error("candidate exposure activation failed");` : ""}
         return async () => { log.push("exposure-dispose:${version}"); };
@@ -308,6 +306,119 @@ export default {
     files: { "plugin.mjs": { encoding: "utf8", content: source } },
   };
 }
+
+interface ManagedWebAppBundleOptions {
+  clientExtension?: boolean;
+  gateActivation?: boolean;
+  gateAcquisition?: boolean;
+  failAcquisition?: boolean;
+}
+
+function managedWebAppBundle(
+  pluginId: string,
+  version: string,
+  options: ManagedWebAppBundleOptions = {},
+): ConnectPluginBundleV1 {
+  const source = `
+const log = globalThis.__connectManagedWebAppLog ??= [];
+export default {
+  async activate(context) {
+    ${
+      options.gateActivation
+        ? `const activationGate = globalThis.__connectManagedWebAppActivationGate;
+    activationGate.started();
+    await activationGate.wait;`
+        : ""
+    }
+    context.hostCapabilities.get("managed-web-app-provider").register({
+      capabilityId: "web",
+      instanceKey(instance) {
+        log.push("key:${version}:generation-" + instance.activationGeneration);
+        return instance.bindingId;
+      },
+      async acquire(instance) {
+        log.push("acquire:${version}:generation-" + instance.activationGeneration);
+        ${
+          options.gateAcquisition
+            ? `const gate = globalThis.__connectManagedWebAppAcquisitionGate;
+        gate.started();
+        await gate.wait;`
+            : ""
+        }
+        ${options.failAcquisition ? 'throw new Error("managed web app acquisition failed");' : ""}
+        return {
+          upstream: "http://127.0.0.1:47890",
+          async waitUntilReady() {},
+          health() { return "ready"; },
+          onHealthChange() { return () => {}; },
+          onExit() { return () => {}; },
+          async release() { log.push("release:${version}:generation-" + instance.activationGeneration); }
+        };
+      }
+    });
+  }
+};`.trim();
+  const browserSource = `export default { version: ${JSON.stringify(version)} };`;
+  const capabilities: ConnectPluginBundleV1["manifest"]["capabilities"] = [
+    {
+      id: "web",
+      type: "managed-web-app",
+      interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+      configurationSchema: { type: "object", additionalProperties: false },
+      displayName: `${pluginId} Web`,
+      description: `${pluginId} browser interface`,
+      nativeRuntimeCapabilityIds: [],
+      compatibleRuntimes: [{ pluginId: "test.runtime", capabilityId: "runtime" }],
+    },
+  ];
+  if (options.clientExtension) {
+    capabilities.push({
+      id: "client",
+      type: "client-extension",
+      managedWebApp: { pluginId, capabilityId: "web" },
+      interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+      configurationSchema: { type: "object", additionalProperties: false },
+      browser: {
+        entry: "browser/client.mjs",
+        integrity: `sha256-${createHash("sha256").update(browserSource).digest("base64")}`,
+        styles: [],
+        slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 0 }],
+      },
+    });
+  }
+  return {
+    format: CONNECT_PLUGIN_BUNDLE_FORMAT,
+    manifest: {
+      manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
+      interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
+      pluginId,
+      version,
+      dependencies: [
+        {
+          type: "host",
+          id: "managed-web-app-provider",
+          interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+        },
+      ],
+      installationConfigurationSchema: { type: "object", additionalProperties: false },
+      capabilities,
+      artifacts: [
+        {
+          target: currentConnectPluginTarget(),
+          entry: "plugin.mjs",
+          integrity: `sha256-${createHash("sha256").update(source).digest("base64")}`,
+        },
+      ],
+    },
+    files: {
+      "plugin.mjs": { encoding: "utf8", content: source },
+      ...(options.clientExtension
+        ? { "browser/client.mjs": { encoding: "utf8" as const, content: browserSource } }
+        : {}),
+    },
+  };
+}
+
 function durableStateBundle(
   pluginId: string,
   version: string,
@@ -506,22 +617,18 @@ describe("hot Plugin management service", () => {
         dependencies: [],
         installationConfigurationSchema: { type: "object", additionalProperties: false },
         capabilities: [
-          {
-            id: "client",
-            type: "client-extension",
-            interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-            configurationSchema: {
-              type: "object",
-              additionalProperties: false,
-              properties: { label: { type: "string" } },
-            },
-            browser: {
-              entry: "browser/client.mjs",
-              integrity: browserIntegrity,
-              styles: [],
-              slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 0 }],
-            },
+          { id: "client", type: "client-extension", managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }, interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: { label: { type: "string" } },
           },
+          browser: {
+            entry: "browser/client.mjs",
+            integrity: browserIntegrity,
+            styles: [],
+            slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 0 }],
+          }, },
         ],
         artifacts: [
           {
@@ -548,116 +655,90 @@ describe("hot Plugin management service", () => {
       capabilityConfigurations: { client: { label: "Configured" } },
       runtimeConfigurations: {},
     });
-    expect(deriveClientExtensionGraph([configured]).extensions[0]?.configuration).toEqual({ label: "Configured" });
+    expect(deriveClientExtensionGraph([configured], { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }).extensions[0]?.configuration).toEqual({ label: "Configured" });
     await host.close();
   });
 
-  it("publishes a Client Extension generation only after its server contribution starts", async () => {
+  it("publishes and replaces an exact App-scoped Client Extension with its Managed Web App generation", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-client-extension-publication-"));
+    const configPath = join(directory, "config.json");
     const pluginId = "test.client-extension-publication";
-    const browserSource = "export default { activate() {} };";
-    const hostSource = `
-export default {
-  activate(context) {
-    context.hostCapabilities.get("exposure-provider").register({
-      capabilityId: "exposure",
-      async activate() {
-        const gate = globalThis.__connectClientExtensionPublicationGate;
-        gate.started();
-        await gate.wait;
-        return async () => {};
-      }
+    let releaseActivation: () => void = () => undefined;
+    const activationGate = new Promise<void>((resolve) => {
+      releaseActivation = resolve;
     });
-  }
-};`.trim();
-    const bundle: ConnectPluginBundleV1 = {
-      format: CONNECT_PLUGIN_BUNDLE_FORMAT,
-      manifest: {
-        manifestVersion: CONNECT_PLUGIN_MANIFEST_VERSION,
-        interfaceVersion: CONNECT_PLUGIN_INTERFACE_VERSION,
-        pluginId,
-        version: "1.0.0",
-        dependencies: [
-          {
-            type: "host",
-            id: "exposure-provider",
-            interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
-          },
-        ],
-        installationConfigurationSchema: { type: "object", additionalProperties: false },
-        capabilities: [
-          {
-            id: "client",
-            type: "client-extension",
-            interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-            configurationSchema: { type: "object", additionalProperties: false },
-            browser: {
-              entry: "browser/client.mjs",
-              integrity: `sha256-${createHash("sha256").update(browserSource).digest("base64")}`,
-              styles: [],
-              slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 0 }],
-            },
-          },
-          {
-            id: "exposure",
-            type: "exposure",
-            interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-            configurationSchema: { type: "object", additionalProperties: false },
-          },
-        ],
-        artifacts: [
-          {
-            target: currentConnectPluginTarget(),
-            entry: "plugin.mjs",
-            integrity: `sha256-${createHash("sha256").update(hostSource).digest("base64")}`,
-          },
-        ],
-      },
-      files: {
-        "plugin.mjs": { encoding: "utf8", content: hostSource },
-        "browser/client.mjs": { encoding: "utf8", content: browserSource },
-      },
-    };
-    const sourcePath = await writeBundle(directory, bundle);
-    const host = new ConnectPluginHost(join(directory, "config.json"), new RuntimeAdapterRegistry([]), () => undefined);
-    const unbindClient = await host.bindClientInterface({
-      origin: "http://127.0.0.1:47890",
-      async fetch() {
-        return new Response(null, { status: 204 });
-      },
+    let markActivationStarted: () => void = () => undefined;
+    const activationStarted = new Promise<void>((resolve) => {
+      markActivationStarted = resolve;
     });
-    let releaseStart: () => void = () => undefined;
-    const wait = new Promise<void>((resolve) => {
-      releaseStart = resolve;
+    Reflect.set(globalThis, "__connectManagedWebAppActivationGate", {
+      started: markActivationStarted,
+      wait: activationGate,
     });
-    let markStarted: () => void = () => undefined;
-    const started = new Promise<void>((resolve) => {
-      markStarted = resolve;
-    });
-    Reflect.set(globalThis, "__connectClientExtensionPublicationGate", { started: markStarted, wait });
+    const sourcePath = await writeBundle(
+      directory,
+      managedWebAppBundle(pluginId, "1.0.0", { clientExtension: true, gateActivation: true }),
+    );
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined);
     const installing = installOfficialBundle(host, sourcePath);
-    try {
-      await started;
-      expect((await listInstalledPlugins(join(directory, "config.json")))[0]).toMatchObject({
-        pluginId,
-        status: "active",
-      });
-      expect(await host.listPublishedClientExtensions()).toEqual([]);
-      releaseStart();
-      await installing;
-      expect(await host.listPublishedClientExtensions()).toEqual([
-        expect.objectContaining({ pluginId, activationGeneration: 1 }),
-      ]);
-    } finally {
-      releaseStart();
-      await installing.catch(() => undefined);
-      Reflect.deleteProperty(globalThis, "__connectClientExtensionPublicationGate");
-      unbindClient();
-      await host.close();
-    }
+    const installed = await (async () => {
+      try {
+        await activationStarted;
+        expect(await host.listPublishedClientExtensions()).toEqual([]);
+        expect(host.managedWebApps.select({ pluginId: "test.runtime", capabilityId: "runtime" })).toBeNull();
+        releaseActivation();
+        return await installing;
+      } finally {
+        releaseActivation();
+        await installing.catch(() => undefined);
+        Reflect.deleteProperty(globalThis, "__connectManagedWebAppActivationGate");
+      }
+    })();
+    expect(host.managedWebApps.select({ pluginId: "test.runtime", capabilityId: "runtime" })).toEqual({
+      pluginId,
+      capabilityId: "web",
+      activationGeneration: 1,
+      kind: "compatible",
+      displayName: `${pluginId} Web`,
+      description: `${pluginId} browser interface`,
+    });
+    expect(await host.listPublishedClientExtensions()).toEqual([
+      expect.objectContaining({ pluginId, version: "1.0.0", activationGeneration: 1 }),
+    ]);
+    const app = { pluginId, capabilityId: "web" };
+    expect(deriveClientExtensionGraph([installed], app).extensions).toEqual([
+      expect.objectContaining({ pluginId, capabilityId: "client", version: "1.0.0", activationGeneration: 1 }),
+    ]);
+    expect(
+      deriveClientExtensionGraph([installed], {
+        pluginId: "clawling.web.connect-client",
+        capabilityId: "connect-client",
+      }).extensions,
+    ).toEqual([]);
+
+    await writeFile(
+      sourcePath,
+      `${JSON.stringify(managedWebAppBundle(pluginId, "2.0.0", { clientExtension: true }), null, 2)}\n`,
+    );
+    const updated = await updateOfficialBundle(host, pluginId, sourcePath);
+    expect(host.managedWebApps.select({ pluginId: "test.runtime", capabilityId: "runtime" })).toEqual({
+      pluginId,
+      capabilityId: "web",
+      activationGeneration: 2,
+      kind: "compatible",
+      displayName: `${pluginId} Web`,
+      description: `${pluginId} browser interface`,
+    });
+    expect(await host.listPublishedClientExtensions()).toEqual([
+      expect.objectContaining({ pluginId, version: "2.0.0", activationGeneration: 2 }),
+    ]);
+    expect(deriveClientExtensionGraph([updated], app).extensions).toEqual([
+      expect.objectContaining({ pluginId, capabilityId: "client", version: "2.0.0", activationGeneration: 2 }),
+    ]);
+    await host.close();
   });
 
-  it("updates a Plugin that declares Client Exposure without privileged metadata", async () => {
+  it("updates a Plugin that declares an Exposure without privileged metadata", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-exposure-update-"));
     const pluginId = "test.exposure-update";
     const sourcePath = await writeBundle(directory, hotBundle(pluginId, "1.0.0"));
@@ -767,7 +848,7 @@ export default {
       stateStore: store,
       workspaces: new WorkspaceCatalog(store),
     });
-    await host.bindClientInterface({ origin: "http://127.0.0.1:47890" });
+    await host.activateOptionalSurfaces([]);
     const sourcePath = join(directory, "stateful-exposure.connect-plugin");
     await writeFile(sourcePath, `${JSON.stringify(bindingExposureStateBundle(pluginId, "1.0.0"), null, 2)}\n`);
     await host.install({ source: `local:${sourcePath}` });
@@ -849,83 +930,279 @@ export default {
     await store.close();
   });
 
-  it("rejects an old-generation Client Exposure callback after update commit", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "connect-client-exposure-generation-"));
+  it("fences an in-flight Managed Web App acquisition from the replaced generation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-managed-web-app-generation-"));
     const configPath = join(directory, "config.json");
-    const pluginId = "test.client-exposure-generation";
+    const pluginId = "test.managed-web-app-generation";
     const sourcePath = await writeBundle(
       directory,
-      lifecycleBundle(pluginId, "1.0.0", { exposureFailure: false, captureExposureClient: true }),
+      managedWebAppBundle(pluginId, "1.0.0", { gateAcquisition: true }),
     );
-    Reflect.deleteProperty(globalThis, "__connectPluginExposureClients");
     const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined);
-    let dispatches = 0;
-    const unbindClient = await host.bindClientInterface({
-      origin: "http://127.0.0.1:47823",
-      fetch: async () => {
-        dispatches += 1;
-        return new Response(null, { status: 204 });
-      },
-    });
     await installOfficialBundle(host, sourcePath);
-    const clients = Reflect.get(globalThis, "__connectPluginExposureClients") as Array<{
-      fetch(request: Request): Promise<Response>;
-    }>;
-    const first = clients[0];
-    if (!first) throw new Error("Expected first-generation Client Exposure");
 
-    await writeFile(
-      sourcePath,
-      `${JSON.stringify(
-        lifecycleBundle(pluginId, "2.0.0", { exposureFailure: false, captureExposureClient: true }),
-        null,
-        2,
-      )}\n`,
-    );
-    await updateOfficialBundle(host, pluginId, sourcePath);
-    const second = clients[1];
-    if (!second) throw new Error("Expected second-generation Client Exposure");
-
-    await expect(first.fetch(new Request("https://exposure.example/client/v1/bootstrap"))).rejects.toThrow(
-      "stale Activation Generation 1",
-    );
-    await expect(second.fetch(new Request("https://exposure.example/client/v1/bootstrap"))).resolves.toMatchObject({
-      status: 204,
+    let releaseAcquisition: () => void = () => undefined;
+    const acquisitionGate = new Promise<void>((resolve) => {
+      releaseAcquisition = resolve;
     });
-    expect(dispatches).toBe(1);
+    let markAcquisitionStarted: () => void = () => undefined;
+    const acquisitionStarted = new Promise<void>((resolve) => {
+      markAcquisitionStarted = resolve;
+    });
+    Reflect.set(globalThis, "__connectManagedWebAppAcquisitionGate", {
+      started: markAcquisitionStarted,
+      wait: acquisitionGate,
+    });
+    const request = {
+      bindingId: "managed-binding",
+      runtime: { pluginId: "test.runtime", capabilityId: "runtime" },
+      runtimeConfiguration: {},
+    };
+    const acquiringOldGeneration = host.managedWebApps.acquire(request);
+    await acquisitionStarted;
 
-    unbindClient();
-    await host.close();
-    Reflect.deleteProperty(globalThis, "__connectPluginExposureClients");
+    const originalFence = host.managedWebApps.fence.bind(host.managedWebApps);
+    let markFenced: () => void = () => undefined;
+    const fenced = new Promise<void>((resolve) => {
+      markFenced = resolve;
+    });
+    host.managedWebApps.fence = (reference) => {
+      originalFence(reference);
+      if (reference.pluginId === pluginId && reference.activationGeneration === 1) markFenced();
+    };
+    await writeFile(sourcePath, `${JSON.stringify(managedWebAppBundle(pluginId, "2.0.0"), null, 2)}\n`);
+    const updating = updateOfficialBundle(host, pluginId, sourcePath);
+    try {
+      await fenced;
+      releaseAcquisition();
+      await expect(acquiringOldGeneration).rejects.toThrow(
+        "rejected stale Activation Generation 1",
+      );
+      await updating;
+
+      expect(host.managedWebApps.select(request.runtime)).toEqual({
+        pluginId,
+        capabilityId: "web",
+        activationGeneration: 2,
+        kind: "compatible",
+        displayName: `${pluginId} Web`,
+        description: `${pluginId} browser interface`,
+      });
+      const current = await host.managedWebApps.acquire(request);
+      expect(current).toMatchObject({
+        instanceKey: "managed-binding",
+        upstream: "http://127.0.0.1:47890",
+        selection: {
+          pluginId,
+          capabilityId: "web",
+          activationGeneration: 2,
+          displayName: `${pluginId} Web`,
+          description: `${pluginId} browser interface`,
+        },
+      });
+      await current?.release();
+    } finally {
+      releaseAcquisition();
+      await acquiringOldGeneration.catch(() => undefined);
+      await updating.catch(() => undefined);
+      host.managedWebApps.fence = originalFence;
+      Reflect.deleteProperty(globalThis, "__connectManagedWebAppAcquisitionGate");
+      await host.close();
+    }
   });
 
-  it("keeps the Client Interface bound when delayed Exposure activation fails", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "connect-client-exposure-isolation-"));
+  it("does not retire Managed Web App publications when precommit work fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-managed-web-app-precommit-"));
     const configPath = join(directory, "config.json");
-    const pluginId = "test.client-exposure-isolation";
-    const sourcePath = await writeBundle(directory, lifecycleBundle(pluginId, "1.0.0", { exposureFailure: true }));
+    const pluginId = "test.managed-web-app-precommit";
+    const sourcePath = await writeBundle(directory, managedWebAppBundle(pluginId, "1.0.0"));
     const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined);
     await installOfficialBundle(host, sourcePath);
-    await expect(host.list()).resolves.toEqual([
-      expect.objectContaining({ pluginId, status: "active", activationGeneration: 1 }),
-    ]);
+    const internals = host as unknown as {
+      active: Map<
+        string,
+        {
+          retireManagedWebApp(reference: {
+            pluginId: string;
+            capabilityId: string;
+            activationGeneration: number;
+          }): Promise<void>;
+        }
+      >;
+      commitDurableStateMigrations(candidate: unknown): Promise<void>;
+    };
+    const active = internals.active.get(pluginId);
+    if (!active) throw new Error("Managed Web App fixture was not active");
+    const retire = active.retireManagedWebApp.bind(active);
+    let retirements = 0;
+    active.retireManagedWebApp = async (reference) => {
+      retirements += 1;
+      await retire(reference);
+    };
+    const commitMigrations = internals.commitDurableStateMigrations.bind(host);
+    internals.commitDurableStateMigrations = async () => {
+      throw new Error("precommit migration failed");
+    };
+    await writeFile(sourcePath, `${JSON.stringify(managedWebAppBundle(pluginId, "2.0.0"), null, 2)}\n`);
+    try {
+      await expect(updateOfficialBundle(host, pluginId, sourcePath)).rejects.toThrow(
+        "precommit migration failed",
+      );
+      expect(retirements).toBe(0);
+      expect(host.managedWebApps.select({ pluginId: "test.runtime", capabilityId: "runtime" })).toMatchObject({
+        activationGeneration: 1,
+      });
+    } finally {
+      internals.commitDurableStateMigrations = commitMigrations;
+      await host.close();
+    }
+  });
 
-    const binding = host.bindClientInterface({
-      origin: "http://127.0.0.1:47823",
-      fetch: async () => new Response(null, { status: 204 }),
-    });
-    await expect(binding).resolves.toBeFunction();
-    const unbind = await binding;
-    expect(host.activePluginIds()).toEqual([]);
+  it("keeps postcommit retirement failure visible and cleanup retryable", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-managed-web-app-retirement-failure-"));
+    const configPath = join(directory, "config.json");
+    const pluginId = "test.managed-web-app-retirement-failure";
+    const sourcePath = await writeBundle(directory, managedWebAppBundle(pluginId, "1.0.0"));
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined);
+    await installOfficialBundle(host, sourcePath);
+    const request = {
+      bindingId: "managed-binding",
+      runtime: { pluginId: "test.runtime", capabilityId: "runtime" },
+      runtimeConfiguration: {},
+    };
+    const lease = await host.managedWebApps.acquire(request);
+    if (!lease) throw new Error("Managed Web App fixture did not acquire");
+    const internals = host as unknown as {
+      active: Map<
+        string,
+        {
+          retireManagedWebApp(reference: {
+            pluginId: string;
+            capabilityId: string;
+            activationGeneration: number;
+          }): Promise<void>;
+        }
+      >;
+    };
+    const active = internals.active.get(pluginId);
+    if (!active) throw new Error("Managed Web App fixture was not active");
+    const retire = active.retireManagedWebApp.bind(active);
+    let failRetirement = true;
+    active.retireManagedWebApp = async (reference) => {
+      if (failRetirement) {
+        failRetirement = false;
+        throw new Error("publication retirement failed");
+      }
+      await lease.release();
+      await retire(reference);
+    };
+    await writeFile(sourcePath, `${JSON.stringify(managedWebAppBundle(pluginId, "2.0.0"), null, 2)}\n`);
+    await expect(updateOfficialBundle(host, pluginId, sourcePath)).rejects.toThrow(
+      "publication retirement failed",
+    );
     await expect(host.list()).resolves.toEqual([
-      expect.objectContaining({
+      expect.objectContaining({ pluginId, activationGeneration: 2, status: "error" }),
+    ]);
+    expect(() => lease.health()).toThrow("stale Activation Generation 1");
+    expect(host.managedWebApps.select(request.runtime)).toBeNull();
+    await expect(
+      active.retireManagedWebApp({
         pluginId,
-        status: "error",
-        error: "candidate exposure activation failed",
+        capabilityId: "web",
+        activationGeneration: 1,
       }),
-    ]);
+    ).resolves.toBeUndefined();
+    await host.close();
+  });
 
-    unbind();
+  it("retires the old Managed Web App before stopping it and reconciling the replacement", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-managed-web-app-retirement-order-"));
+    const configPath = join(directory, "config.json");
+    const pluginId = "test.managed-web-app-retirement-order";
+    const sourcePath = await writeBundle(directory, managedWebAppBundle(pluginId, "1.0.0"));
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined);
+    await installOfficialBundle(host, sourcePath);
+    const request = {
+      bindingId: "managed-binding",
+      runtime: { pluginId: "test.runtime", capabilityId: "runtime" },
+      runtimeConfiguration: {},
+    };
+    const lease = await host.managedWebApps.acquire(request);
+    if (!lease) throw new Error("Managed Web App fixture did not acquire");
+    type ActiveFixture = {
+      installed: { activationGeneration: number };
+      retireManagedWebApp(reference: {
+        pluginId: string;
+        capabilityId: string;
+        activationGeneration: number;
+      }): Promise<void>;
+      reconcileManagedWebApps(): Promise<void>;
+    };
+    const hostInternals = host as unknown as { active: Map<string, ActiveFixture> };
+    const active = hostInternals.active;
+    const old = active.get(pluginId);
+    if (!old) throw new Error("Managed Web App fixture was not active");
+    const actions: string[] = [];
+    const retire = old.retireManagedWebApp.bind(old);
+    old.retireManagedWebApp = async (reference) => {
+      actions.push(`retire:${reference.activationGeneration}`);
+      await lease.release();
+      actions.push(`release:${reference.activationGeneration}`);
+      await retire(reference);
+    };
+    const set = active.set.bind(active);
+    active.set = ((key: string, value: ActiveFixture) => {
+      if (key === pluginId && value.installed.activationGeneration === 2) {
+        const reconcile = value.reconcileManagedWebApps.bind(value);
+        value.reconcileManagedWebApps = async () => {
+          actions.push(
+            `reconcile:${host.managedWebApps.select(request.runtime)?.activationGeneration ?? "absent"}`,
+          );
+          await reconcile();
+        };
+      }
+      return set(key, value);
+    }) as typeof active.set;
+    await writeFile(sourcePath, `${JSON.stringify(managedWebAppBundle(pluginId, "2.0.0"), null, 2)}\n`);
+    try {
+      await updateOfficialBundle(host, pluginId, sourcePath);
+      expect(actions).toEqual(["retire:1", "release:1", "reconcile:2"]);
+    } finally {
+      active.set = set;
+      await host.close();
+    }
+  });
+
+  it("isolates a Managed Web App instance activation failure to that acquisition", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-managed-web-app-isolation-"));
+    const configPath = join(directory, "config.json");
+    const pluginId = "test.managed-web-app-isolation";
+    const sourcePath = await writeBundle(
+      directory,
+      managedWebAppBundle(pluginId, "1.0.0", { failAcquisition: true }),
+    );
+    const host = new ConnectPluginHost(configPath, new RuntimeAdapterRegistry([]), () => undefined);
+    await installOfficialBundle(host, sourcePath);
+
+    await expect(
+      host.managedWebApps.acquire({
+        bindingId: "failing-binding",
+        runtime: { pluginId: "test.runtime", capabilityId: "runtime" },
+        runtimeConfiguration: {},
+      }),
+    ).rejects.toThrow("managed web app acquisition failed");
+    expect(host.activePluginIds()).toEqual([pluginId]);
+    expect(host.managedWebApps.select({ pluginId: "test.runtime", capabilityId: "runtime" })).toEqual({
+      pluginId,
+      capabilityId: "web",
+      activationGeneration: 1,
+      kind: "compatible",
+      displayName: `${pluginId} Web`,
+      description: `${pluginId} browser interface`,
+    });
+    await expect(host.list()).resolves.toEqual([
+      expect.objectContaining({ pluginId, version: "1.0.0", activationGeneration: 1, status: "active" }),
+    ]);
     await host.close();
   });
 
@@ -1838,12 +2115,9 @@ export default {
       stateStore: store,
       workspaces: new WorkspaceCatalog(store),
     });
-    const unbindClient = await host.bindClientInterface({
-      origin: "http://127.0.0.1:47823",
-      fetch: async () => new Response(null, { status: 204 }),
-    });
-    Reflect.set(globalThis, "__connectPluginLifecycleLog", []);
+    await host.activateOptionalSurfaces([]);
     const sourcePath = await writeBundle(directory, lifecycleBundle(pluginId, "1.0.0", { exposureFailure: false }));
+    Reflect.set(globalThis, "__connectPluginLifecycleLog", []);
     await installOfficialBundle(host, sourcePath);
     await registry.prepare(dependent);
     await writeFile(sourcePath, `${JSON.stringify(lifecycleBundle(pluginId, "2.0.0", { exposureFailure: true }))}\n`);
@@ -1871,7 +2145,6 @@ export default {
       exposureFailureLog.indexOf("exposure-activate:2.0.0:generation-2"),
     );
 
-    unbindClient();
     await host.close();
     await store.close();
   });

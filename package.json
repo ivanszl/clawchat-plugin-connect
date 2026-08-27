@@ -1,7 +1,7 @@
 {
   "name": "@clawling/clawchat-plugin-connect",
   "version": "0.1.0-beta.8",
-  "description": "Bun-native bridge from ClawChat Agent Bindings to local coding agent runtimes.",
+  "description": "Local ClawChat bridge for Plugin-provided coding runtimes and independently managed Web Apps.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/XMethues/clawchat-plugin-connect.git"
@@ -22,7 +22,6 @@
   },
   "files": [
     "dist/src",
-    "dist/client",
     "dist/official-plugins",
     "src",
     "src/plugin/connect-plugin-manifest.schema.json",
@@ -39,7 +38,7 @@
     "dev": "bun src/bin.ts",
     "dev:web": "vite --config vite.config.ts",
     "preview:web": "bun run build:web && bun tests/fixtures/client-preview-server.ts",
-    "build": "bun run build:service && bun run build:web && bun scripts/build-official-plugins.ts --target darwin-arm64",
+    "build": "bun run build:service && bun scripts/build-official-plugins.ts --target darwin-arm64",
     "build:service": "bun build ./src/bin.ts ./src/index.ts ./src/plugin/build-cli.ts --target=bun --outdir=dist/src --packages=external --sourcemap=linked",
     "build:web": "vite build --config vite.config.ts",
     "build:official-plugins": "bun scripts/build-official-plugins.ts",
@@ -49,7 +48,7 @@
     "prepack": "bun run clean && bun scripts/generate-tool-reference.ts && bun scripts/generate-skills-manifest.ts && bun scripts/verify-liveware-bundle.ts && bun run build",
     "sync:liveware": "bun scripts/sync-liveware-binaries.ts",
     "postinstall": "bun scripts/postinstall.ts",
-    "test": "bun test",
+    "test": "bun test --max-concurrency 4",
     "test:integration:codex": "bun tests/integration/codex-app-server.ts",
     "test:integration:opencode": "bun tests/integration/opencode-server.ts",
     "test:integration:workbuddy-ai-discovery": "bun tests/integration/workbuddy-ai-task-discovery.ts",
@@ -64,7 +63,7 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "lint": "biome lint .",
-    "check:core": "bun run check:generated && biome check . && bun run typecheck && bun test",
+    "check:core": "bun run check:generated && biome check . && bun run typecheck && bun run test",
     "check:release": "bun run check:core && bun test tests/background-service.test.ts tests/build-release.test.ts tests/release-channel.test.ts tests/release-bundle.test.ts && bun scripts/verify-liveware-bundle.ts",
     "check": "bun run check:core",
     "test:integration:workbuddy-cn-discovery": "WORKBUDDY_TEST_PROFILE=workbuddy-cn bun tests/integration/workbuddy-ai-task-discovery.ts",
@@ -99,6 +98,7 @@
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.2.0",
+    "esbuild": "0.28.1",
     "typescript": "6.0.3",
     "vite": "8.1.5"
   },

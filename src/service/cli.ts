@@ -26,7 +26,6 @@ import {
   toolJsonSchema,
   validateToolInput,
 } from "../agent/tool-catalog";
-import { PLUGIN_MANAGER_CONFIG_HEADER } from "../client-contract";
 import {
   defaultConfig,
   defaultConfigPath,
@@ -37,7 +36,12 @@ import {
 } from "../config";
 import { type ConnectStateStore, createStateStore, type ToolRequestRecord } from "../persistence/state";
 import { createAgentBinding } from "../plugin/binding";
-import { validateInstalledRuntimeBinding } from "../plugin/host";
+import { selectManagedWebApp } from "../plugin/managed-web-app-registry";
+import { type ManagedWebAppControlStatus, validateInstalledRuntimeBinding } from "../plugin/host";
+import {
+  CONNECT_CLIENT_MANAGED_WEB_APP_CAPABILITY_ID,
+  CONNECT_CLIENT_PLUGIN_ID,
+} from "../plugin/official/connect-client-manifest";
 import {
   type BundledOfficialPluginEntry,
   discoverOfficialPlugins,
@@ -60,6 +64,11 @@ import {
   type BackgroundServiceAction,
   manageBackgroundService as manageBackgroundServiceDefault,
 } from "./background-service";
+import {
+  CORE_CLIENT_PATH,
+  CORE_CONTROL_CONFIG_HEADER,
+  CORE_CONTROL_ORIGIN,
+} from "./core-control";
 import { startConnectService as startConnectServiceDefault } from "./connect-service";
 import { updateConnect as updateConnectDefault } from "./update";
 import { CONNECT_VERSION } from "./version";
@@ -194,7 +203,12 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
   if (nestedServiceResult !== null) return nestedServiceResult;
   const nestedConfigResult = await maybeRunNestedConfigCommand(argv, io);
   if (nestedConfigResult !== null) return nestedConfigResult;
-  const webResult = await maybeRunWebCommand(argv, io, deps.openUrl ?? openUrlDefault);
+  const webResult = await maybeRunWebCommand(
+    argv,
+    io,
+    deps.openUrl ?? openUrlDefault,
+    deps.pluginManagementFetch ?? fetch,
+  );
   if (webResult !== null) return webResult;
   const updateResult = await maybeRunUpdateCommand(argv, io, deps.updateConnect ?? updateConnectDefault);
   if (updateResult !== null) return updateResult;
@@ -291,20 +305,46 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
     .option("--agent <id>", "Agent id")
     .action(async (options: { config?: string; agent?: string }) => {
       commandRan = true;
-      const config = await loadConfig(options.config);
+      const configPath = resolve(options.config ?? defaultConfigPath());
+      const config = await loadConfig(configPath);
       const agentId = options.agent ?? config.defaultAgent;
-      if (agentId) getAgentBinding(config, agentId);
+      const binding = agentId ? getAgentBinding(config, agentId) : undefined;
       const store = createStateStore({ dbPath: config.stateDbPath });
       const activation = agentId ? await store.getActivation(agentId) : null;
       const status = agentId ? await store.getRuntimeStatus(agentId) : null;
+      const publications = agentId
+        ? (await store.listPluginDurableState("clawling.exposure.liveware"))
+            .filter((snapshot) => snapshot.namespace.instanceId === agentId)
+            .sort(
+              (left, right) =>
+                right.namespace.activationGeneration - left.namespace.activationGeneration,
+            )
+        : [];
       await store.close();
+      const installed = await listInstalledPlugins(configPath);
+      let managedWebApp: ManagedWebAppControlStatus | null = null;
+      if (agentId) {
+        try {
+          const response = await (deps.pluginManagementFetch ?? fetch)(
+            `${CORE_CONTROL_ORIGIN}/core/v1/status?bindingId=${encodeURIComponent(agentId)}`,
+            { headers: { [CORE_CONTROL_CONFIG_HEADER]: configPath } },
+          );
+          if (response.ok) managedWebApp = (await response.json()) as ManagedWebAppControlStatus;
+        } catch {
+          managedWebApp = null;
+        }
+      }
+      const publicationStatus = readPublicationControlStatus(publications[0]?.record.value);
       io.writeStdout(
         formatStatus(
           config,
           agentId,
           activation !== null,
           status,
-          await listInstalledPlugins(resolve(options.config ?? defaultConfigPath())),
+          installed,
+          binding,
+          managedWebApp,
+          publicationStatus,
         ),
       );
     });
@@ -615,18 +655,70 @@ async function maybeRunWebCommand(
   argv: string[],
   io: CliIo,
   openUrl: (url: string) => Promise<void>,
+  fetchTarget: PluginManagementFetch,
 ): Promise<number | null> {
   if (argv[0] !== "web") return null;
-  const configPath = optionValue(argv, "--config");
-  const config = await loadConfig(configPath);
-  const url = `http://127.0.0.1:${config.clientPort}/`;
+  const configPath = resolve(optionValue(argv, "--config") ?? defaultConfigPath());
   try {
-    io.writeStdout(`Connect Client URL: ${url}\n`);
-    if (config.clientHost === "0.0.0.0") {
-      io.writeStdout(
-        `WARNING: LAN Host mode is enabled on 0.0.0.0:${config.clientPort} without authentication. Use http://<this-computer-LAN-IP>:${config.clientPort}/ from trusted devices only.\n`,
+    const installed = (await listInstalledPlugins(configPath)).find(
+      (plugin) =>
+        plugin.pluginId === CONNECT_CLIENT_PLUGIN_ID &&
+        plugin.status === "active" &&
+        plugin.manifest.capabilities.some(
+          (capability) =>
+            capability.type === "managed-web-app" &&
+            capability.id === CONNECT_CLIENT_MANAGED_WEB_APP_CAPABILITY_ID,
+        ),
+    );
+    if (!installed) {
+      throw new Error(
+        "Connect Client is unavailable: install and enable the optional clawling.web.connect-client Plugin",
       );
     }
+    const config = await loadConfig(configPath);
+    const bindingIds = Object.keys(config.agents).sort();
+    if (bindingIds.length === 0) {
+      throw new Error("Connect Client is installed but no Agent Binding can acquire it");
+    }
+    let url: string | undefined;
+    for (const bindingId of bindingIds) {
+      let response: Response;
+      try {
+        response = await fetchTarget(`${CORE_CONTROL_ORIGIN}${CORE_CLIENT_PATH}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            [CORE_CONTROL_CONFIG_HEADER]: configPath,
+          },
+          body: JSON.stringify({ bindingId }),
+        });
+      } catch (error) {
+        throw new Error("Connect service is not running; start it before opening the Connect Client", {
+          cause: error,
+        });
+      }
+      if (response.status === 404) continue;
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => null)) as
+          | { error?: { message?: string } }
+          | null;
+        throw new Error(detail?.error?.message ?? `Connect Client acquisition failed (HTTP ${response.status})`);
+      }
+      const body = (await response.json()) as { origin?: unknown };
+      if (typeof body.origin !== "string") {
+        throw new Error("Connect service returned an invalid Connect Client origin");
+      }
+      const origin = new URL(body.origin);
+      if (origin.protocol !== "http:" || origin.hostname !== "127.0.0.1" || !origin.port) {
+        throw new Error("Connect service returned a non-local Connect Client origin");
+      }
+      url = `${origin.origin}/`;
+      break;
+    }
+    if (!url) {
+      throw new Error("Connect Client is installed but no configured Agent Binding supports it");
+    }
+    io.writeStdout(`Connect Client URL: ${url}\n`);
     if (!argv.includes("--no-open")) await openUrl(url);
     return 0;
   } catch (error) {
@@ -662,15 +754,14 @@ async function maybeRunPluginCommand(
   try {
     const config = await loadConfig(configPath);
     const request = async <T>(path: string, method = "GET", body?: unknown): Promise<T> => {
-      const hostname = config.clientHost === "0.0.0.0" ? "127.0.0.1" : config.clientHost;
-      const origin = `http://${hostname}:${config.clientPort}`;
+      const origin = CORE_CONTROL_ORIGIN;
       let response: Response;
       try {
-        response = await fetchPluginManager(`${origin}/client/v1/plugins${path}`, {
+        response = await fetchPluginManager(`${origin}/core/v1/plugins${path}`, {
           method,
           headers: {
             Origin: origin,
-            [PLUGIN_MANAGER_CONFIG_HEADER]: configPath,
+            [CORE_CONTROL_CONFIG_HEADER]: configPath,
             ...(body === undefined ? {} : { "Content-Type": "application/json" }),
           },
           body: body === undefined ? undefined : JSON.stringify(body),
@@ -914,9 +1005,24 @@ function formatPluginSource(source: InstalledPluginLockEntry["source"]): string 
 
 function formatPluginCapabilities(installed: InstalledPluginLockEntry): string {
   return installed.manifest.capabilities
-    .map((capability) =>
-      capability.type === "runtime" ? `${capability.id} (runtime:${capability.family})` : `${capability.id} (exposure)`,
-    )
+    .map((capability) => {
+      if (capability.type === "runtime") {
+        return `${capability.id} (runtime:${capability.family})`;
+      }
+      if (capability.type === "exposure") return `${capability.id} (exposure)`;
+      if (capability.type === "client-extension") {
+        return `${capability.id} (client-extension for ${capability.managedWebApp.pluginId}/${capability.managedWebApp.capabilityId})`;
+      }
+      const native = capability.nativeRuntimeCapabilityIds.map(
+        (capabilityId) => `${installed.pluginId}/${capabilityId}`,
+      );
+      const compatible = capability.compatibleRuntimes.map(
+        (runtime) => `${runtime.pluginId}/${runtime.capabilityId}`,
+      );
+      return `${capability.id} (managed-web-app:${capability.displayName}; native: ${
+        native.length > 0 ? native.join("|") : "none"
+      }; compatible: ${compatible.length > 0 ? compatible.join("|") : "none"})`;
+    })
     .join(", ");
 }
 
@@ -1222,14 +1328,45 @@ function formatActivation(result: ActivateConnectResult): string {
   ].join("\n")}\n`;
 }
 
+interface PublicationControlStatus {
+  readonly status: string;
+  readonly transition: string | null;
+  readonly diagnostic: string | null;
+}
+
+function readPublicationControlStatus(value: unknown): PublicationControlStatus {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { status: "none", transition: null, diagnostic: null };
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    status: typeof record.status === "string" ? record.status : "none",
+    transition: typeof record.transition === "string" ? record.transition : null,
+    diagnostic:
+      typeof record.diagnostic === "string" ? secretSafeDiagnostic(record.diagnostic) : null,
+  };
+}
+
+function secretSafeDiagnostic(value: string): string {
+  return value
+    .replace(
+      /(authorization|credential|password|secret|token|api[-_ ]?key)\s*[:=]\s*\S+/giu,
+      "$1=[redacted]",
+    )
+    .replace(/https?:\/\/[^/@\s]+:[^/@\s]+@/gu, "http://[redacted]@")
+    .slice(0, 512);
+}
+
 function formatStatus(
   config: ConnectConfig,
   agentId: string | null,
   activated: boolean,
   status: Awaited<ReturnType<ConnectStateStore["getRuntimeStatus"]>>,
   installed: readonly InstalledPluginLockEntry[],
+  binding: AgentBindingConfig | undefined,
+  managedWebApp: ManagedWebAppControlStatus | null,
+  publication: PublicationControlStatus,
 ): string {
-  const binding = agentId ? config.agents[agentId] : undefined;
   return `${[
     "ClawChat Connect status",
     `agent: ${agentId ?? "not selected"}`,
@@ -1245,8 +1382,56 @@ function formatStatus(
     `runtime: ${status?.websocketConnected === true ? "connected" : status?.websocketConnected === false ? "disconnected" : "unknown"}`,
     `running: ${status?.globalRunning ?? 0}`,
     `queued: ${status?.globalQueued ?? 0}`,
+    ...managedWebAppStatusLines(binding, installed, managedWebApp),
+    `publication: ${publication.status}`,
+    ...(publication.transition ? [`publication transition: ${publication.transition}`] : []),
+    ...(publication.diagnostic ? [`publication diagnostic: ${publication.diagnostic}`] : []),
     ...(status?.recentError ? [`recent diagnostic: ${status.recentError}`] : []),
   ].join("\n")}\n`;
+}
+
+function managedWebAppStatusLines(
+  binding: AgentBindingConfig | undefined,
+  installed: readonly InstalledPluginLockEntry[],
+  running: ManagedWebAppControlStatus | null,
+): string[] {
+  if (!binding) return ["managed app: absence (no eligible app)", "app instance: absence"];
+  if (running?.selection) {
+    const selection = running.selection;
+    return [
+      `managed app: ${selection.pluginId}/${selection.capabilityId}@${selection.activationGeneration} (${selection.kind})`,
+      running.instance
+        ? `app instance: ${running.instance.instanceKey} [${running.instance.health}], leases: ${running.instance.leaseCount}`
+        : "app instance: [stopped], leases: 0",
+      ...(running.instance?.diagnostic
+        ? [`app diagnostic: ${secretSafeDiagnostic(running.instance.diagnostic)}`]
+        : []),
+    ];
+  }
+  const selected = selectManagedWebApp(
+    binding.runtime,
+    installed
+      .filter((plugin) => plugin.status === "active")
+      .flatMap((plugin) =>
+        plugin.manifest.capabilities.flatMap((capability) =>
+          capability.type === "managed-web-app"
+            ? [
+                {
+                  pluginId: plugin.pluginId,
+                  capabilityId: capability.id,
+                  activationGeneration: plugin.activationGeneration,
+                  manifest: capability,
+                },
+              ]
+            : [],
+        ),
+      ),
+  );
+  if (!selected) return ["managed app: absence (no eligible app)", "app instance: absence"];
+  return [
+    `managed app: ${selected.pluginId}/${selected.capabilityId}@${selected.activationGeneration} (${selected.kind})`,
+    "app instance: Core control unavailable",
+  ];
 }
 
 function readConfigValue(config: ConnectConfig, key: string): unknown {
@@ -1281,19 +1466,6 @@ function setConfigValue(config: ConnectConfig, key: string, value: string): void
   }
   if (key === "outputVisibility") {
     config.outputVisibility = parseOutputVisibility(value);
-    return;
-  }
-  if (key === "clientPort") {
-    const port = Number(value);
-    if (!Number.isInteger(port) || port < 1_024 || port > 65_535) throw new Error("clientPort must be 1024-65535");
-    config.clientPort = port;
-    return;
-  }
-  if (key === "clientHost") {
-    if (value !== "127.0.0.1" && value !== "0.0.0.0") {
-      throw new Error("clientHost must be one of: 127.0.0.1, 0.0.0.0");
-    }
-    config.clientHost = value;
     return;
   }
   const match = key.match(/^agents\.([^.]+)\.([A-Za-z]+)$/u);

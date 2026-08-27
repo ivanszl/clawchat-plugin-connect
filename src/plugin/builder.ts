@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { assembleAssetDirectories, type AssetDirectoryDescriptor } from "./asset-directory";
 import { CONNECT_PLUGIN_BUNDLE_FORMAT, type ConnectPluginBundleV1, type ConnectPluginManifestV1 } from "./sdk";
 import { connectPluginBundleFileBytes, parseConnectPluginBundle, verifyConnectPluginIntegrity } from "./store";
 
@@ -13,6 +14,7 @@ export interface BuildConnectPluginBundleOptions {
   readonly artifactPath: string;
   readonly artifactEntry: string;
   readonly browserArtifactPaths?: Readonly<Record<string, string>>;
+  readonly assetDirectories?: readonly AssetDirectoryDescriptor[];
 }
 
 export interface WriteConnectPluginBundleOptions extends BuildConnectPluginBundleOptions {
@@ -36,6 +38,10 @@ export async function buildConnectPluginBundle(
     [options.artifactEntry]: { encoding: "base64", content: artifactBytes.toString("base64") },
   };
   const artifactIntegrity = sha256Integrity(artifactBytes);
+  await assembleAssetDirectories(files, options.assetDirectories ?? [], {
+    sourceRoot: process.cwd(),
+    label: "Plugin",
+  });
   for (const capability of options.manifest.capabilities) {
     if (capability.type !== "client-extension") continue;
     for (const artifact of [

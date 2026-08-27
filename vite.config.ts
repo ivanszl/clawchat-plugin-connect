@@ -18,7 +18,8 @@ export default defineConfig({
   build: {
     outDir: "../dist/client",
     emptyOutDir: true,
-    sourcemap: true,
+    sourcemap: false,
+    manifest: "asset-manifest.json",
   },
   server: {
     host: "127.0.0.1",

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   createDeepSeekHarnessRuntimeAdapter,
@@ -5,10 +6,21 @@ import {
   type DeepSeekHarnessRuntimeAdapterBinding,
   type DeepSeekHarnessRuntimeAdapterOptions,
 } from "../../runtime/deepseek-harness-adapter";
+import { canonicalDshHome } from "../../runtime/deepseek-harness-identity";
+import { canonicalExecutableIdentity } from "../../runtime/executable-identity";
+import { type DshExecutableProbe, requireDshExecutable } from "../../runtime/deepseek-harness-process";
+import {
+  canonicalDshWebEnvironmentOverrides,
+  startDshWebApp,
+  type StartDshWebAppOptions,
+} from "../../runtime/deepseek-harness-web-process";
 import { CONNECT_VERSION } from "../../service/version";
 import type {
   ConnectPluginConfiguration,
   ConnectPluginEntry,
+  ConnectPluginManagedWebAppInstance,
+  ConnectPluginManagedWebAppInstanceContext,
+  ConnectPluginManagedWebAppProvider,
   ConnectPluginRuntimeAdapter,
   ConnectPluginRuntimeStartContext,
 } from "../sdk";
@@ -16,6 +28,7 @@ import {
   DEEPSEEK_HARNESS_OFFICIAL_CAPABILITY_ID,
   DEEPSEEK_HARNESS_OFFICIAL_PLUGIN_ID,
   DEEPSEEK_HARNESS_OFFICIAL_RUNTIME_FAMILY,
+  DEEPSEEK_HARNESS_WEB_APP_CAPABILITY_ID,
 } from "./deepseek-harness-manifest";
 
 interface DeepSeekHarnessInstallationConfiguration {
@@ -25,6 +38,13 @@ interface DeepSeekHarnessInstallationConfiguration {
 export interface DeepSeekHarnessOfficialPluginEntryOptions {
   runtimeAdapter?: Partial<DeepSeekHarnessRuntimeAdapterOptions>;
   createAdapter?: (options: DeepSeekHarnessRuntimeAdapterOptions) => DeepSeekHarnessRuntimeAdapter;
+  webApp?: {
+    probeExecutable?: (
+      configuredPath: string | undefined,
+      env: Readonly<Record<string, string>> | undefined,
+    ) => DshExecutableProbe;
+    start?: (options: StartDshWebAppOptions) => Promise<ConnectPluginManagedWebAppInstance>;
+  };
 }
 
 export function createDeepSeekHarnessOfficialPluginEntry(
@@ -52,7 +72,135 @@ export function createDeepSeekHarnessOfficialPluginEntry(
           return bridgeDeepSeekHarnessAdapter(adapter, binding);
         },
       });
+      const activeHomes = new Map<string, { executableIdentity: string; instances: number }>();
+      context.hostCapabilities
+        .get("managed-web-app-provider")
+        .register(deepSeekHarnessWebProvider(installation, options, activeHomes));
     },
+  };
+}
+
+interface DeepSeekHarnessWebScope {
+  readonly key: string;
+  readonly executable: string;
+  readonly executableIdentity: string;
+  readonly home: string;
+  readonly env: Readonly<Record<string, string>>;
+}
+
+function deepSeekHarnessWebProvider(
+  installation: DeepSeekHarnessInstallationConfiguration,
+  options: DeepSeekHarnessOfficialPluginEntryOptions,
+  activeHomes: Map<string, { executableIdentity: string; instances: number }>,
+): ConnectPluginManagedWebAppProvider {
+  const probeExecutable =
+    options.webApp?.probeExecutable ?? options.runtimeAdapter?.probeExecutable ?? requireDshExecutable;
+  const start = options.webApp?.start ?? startDshWebApp;
+  return {
+    capabilityId: DEEPSEEK_HARNESS_WEB_APP_CAPABILITY_ID,
+    instanceKey(context) {
+      return deepSeekHarnessWebScope(installation, context, probeExecutable).key;
+    },
+    async acquire(context) {
+      const scope = deepSeekHarnessWebScope(installation, context, probeExecutable);
+      if (scope.key !== context.instanceKey) {
+        throw new Error("DSH Web executable, Home, or Web configuration changed during acquisition");
+      }
+      const releaseHome = claimDshHome(activeHomes, scope.home, scope.executableIdentity);
+      try {
+        const instance = await start({
+          executable: scope.executable,
+          home: scope.home,
+          env: scope.env,
+        });
+        let released = false;
+        return {
+          upstream: instance.upstream,
+          waitUntilReady: async () => await instance.waitUntilReady(),
+          health: () => instance.health(),
+          onHealthChange: (listener) => instance.onHealthChange(listener),
+          onExit: (listener) => instance.onExit(listener),
+          async release() {
+            if (released) return;
+            released = true;
+            try {
+              await instance.release();
+            } finally {
+              releaseHome();
+            }
+          },
+        };
+      } catch (error) {
+        releaseHome();
+        throw error;
+      }
+    },
+  };
+}
+
+function deepSeekHarnessWebScope(
+  installation: DeepSeekHarnessInstallationConfiguration,
+  context: ConnectPluginManagedWebAppInstanceContext,
+  probeExecutable: (
+    configuredPath: string | undefined,
+    env: Readonly<Record<string, string>> | undefined,
+  ) => DshExecutableProbe,
+): DeepSeekHarnessWebScope {
+  const runtime = context.runtimeConfiguration as Partial<DeepSeekHarnessRuntimeAdapterBinding>;
+  const configuredEnvironment = runtime.env;
+  const configuredExecutable = runtime.executablePathOverride ?? installation.executablePath;
+  const executable = canonicalExecutableIdentity(
+    probeExecutable(configuredExecutable, configuredEnvironment).path,
+    "DeepSeek Harness",
+  );
+  const home = canonicalDshHome(runtime.homePath, configuredEnvironment);
+  const env = canonicalDshWebEnvironmentOverrides(home, configuredEnvironment);
+  return {
+    key: JSON.stringify({
+      executable: executable.identity,
+      home,
+      web: {
+        host: "127.0.0.1",
+        port: 0,
+        openBrowser: false,
+        environment: environmentIdentity(env),
+      },
+    }),
+    executable: executable.path,
+    executableIdentity: executable.identity,
+    home,
+    env,
+  };
+}
+
+function environmentIdentity(environment: Readonly<Record<string, string>>): string {
+  const entries = Object.entries(environment).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0,
+  );
+  return `sha256:${createHash("sha256").update(JSON.stringify(entries)).digest("hex")}`;
+}
+
+function claimDshHome(
+  activeHomes: Map<string, { executableIdentity: string; instances: number }>,
+  home: string,
+  executableIdentity: string,
+): () => void {
+  const active = activeHomes.get(home);
+  if (active && active.executableIdentity !== executableIdentity) {
+    throw new Error(
+      `DSH Web Home ${home} is already active under a different DeepSeek Harness executable identity`,
+    );
+  }
+  if (active) active.instances += 1;
+  else activeHomes.set(home, { executableIdentity, instances: 1 });
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const current = activeHomes.get(home);
+    if (!current || current.executableIdentity !== executableIdentity) return;
+    current.instances -= 1;
+    if (current.instances === 0) activeHomes.delete(home);
   };
 }
 
