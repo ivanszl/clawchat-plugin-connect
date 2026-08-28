@@ -41,7 +41,7 @@ A CLI-only installation is valid. Runtime setup and Agent Binding activation nev
 
 ## Requirements
 
-Current beta archives support macOS on Apple silicon. You need a ClawChat account, an Agent invite code, and at least one supported runtime already installed and authenticated. Connect does not install, upgrade, authenticate, or reconfigure Codex, OpenCode, WorkBuddy, or DeepSeek Harness.
+Current beta archives support macOS on Apple silicon. You need a ClawChat account, an Agent invite code, and at least one supported runtime available and authenticated. DeepSeek Harness does not require a global DSH installation: its official Web Provider and Binding Runtime use an explicitly configured or installed `dsh` when available and otherwise launch `@deepseek-ai/dsh` through the first available supported package launcher (`bunx`, then `npx`, then `pnpm dlx`). The selected launcher may populate its user cache. Connect does not authenticate or reconfigure DSH, and it does not install, upgrade, authenticate, or reconfigure Codex, OpenCode, or WorkBuddy.
 
 ## Quick start
 

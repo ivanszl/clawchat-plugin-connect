@@ -35,18 +35,23 @@ function extensionBundle(version: string, priority: number): ConnectPluginBundle
       dependencies: [],
       installationConfigurationSchema: emptySchema,
       capabilities: [
-        { id: "client", type: "client-extension", managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }, interfaceVersion: "1",
-        configurationSchema: {
-          type: "object",
-          properties: { label: { type: "string" } },
-          additionalProperties: false,
+        {
+          id: "client",
+          type: "client-extension",
+          managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" },
+          interfaceVersion: "1",
+          configurationSchema: {
+            type: "object",
+            properties: { label: { type: "string" } },
+            additionalProperties: false,
+          },
+          browser: {
+            entry: "browser.js",
+            integrity: integrity(browser),
+            styles: [{ entry: "browser.css", integrity: integrity(style) }],
+            slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority }],
+          },
         },
-        browser: {
-          entry: "browser.js",
-          integrity: integrity(browser),
-          styles: [{ entry: "browser.css", integrity: integrity(style) }],
-          slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority }],
-        }, },
       ],
 
       artifacts: [{ target: currentConnectPluginTarget(), entry: "host.js", integrity: integrity(host) }],
@@ -76,7 +81,10 @@ describe("Client Extension graph epochs", () => {
       bundlePath,
       capabilityConfigurations: { client: { label: "Configured" } },
     });
-    const firstGraph = deriveClientExtensionGraph([first], { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" });
+    const firstGraph = deriveClientExtensionGraph([first], {
+      pluginId: "clawling.web.connect-client",
+      capabilityId: "connect-client",
+    });
     expect(firstGraph.extensions).toEqual([
       {
         pluginId: "fixture.client-extension",
@@ -89,8 +97,7 @@ describe("Client Extension graph epochs", () => {
         integrity: browserManifest(extensionBundle("1.0.0", 20)).integrity,
         styles: [
           {
-            href:
-              "/client/v1/plugin-artifacts/clawling.web.connect-client/connect-client/fixture.client-extension/1/client/browser.css",
+            href: "/client/v1/plugin-artifacts/clawling.web.connect-client/connect-client/fixture.client-extension/1/client/browser.css",
             integrity: browserManifest(extensionBundle("1.0.0", 20)).styles[0]?.integrity,
           },
         ],
@@ -110,12 +117,15 @@ describe("Client Extension graph epochs", () => {
     expect(firstGraph.epoch).toBe(firstGraph.hash);
     expect(() => assertCurrentClientExtensionEpoch(firstGraph, firstGraph.epoch)).not.toThrow();
     expect(
-      deriveClientExtensionGraph([
-        {
-          ...first,
-          installationConfiguration: { presentation: "compact" },
-        },
-      ], { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }).hash,
+      deriveClientExtensionGraph(
+        [
+          {
+            ...first,
+            installationConfiguration: { presentation: "compact" },
+          },
+        ],
+        { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" },
+      ).hash,
     ).not.toBe(firstGraph.hash);
 
     const bundle = await readConnectPluginBundle(bundlePath);
@@ -126,7 +136,10 @@ describe("Client Extension graph epochs", () => {
       installationConfiguration: {},
     });
     const second = await commitStagedPlugin(configPath, staged, "update");
-    const secondGraph = deriveClientExtensionGraph([second], { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" });
+    const secondGraph = deriveClientExtensionGraph([second], {
+      pluginId: "clawling.web.connect-client",
+      capabilityId: "connect-client",
+    });
     expect(secondGraph.hash).not.toBe(firstGraph.hash);
     expect(() => assertCurrentClientExtensionEpoch(secondGraph, firstGraph.epoch)).toThrow(
       "stale Client Extension graph epoch",
@@ -134,7 +147,12 @@ describe("Client Extension graph epochs", () => {
 
     const lock = JSON.parse(await readFile(join(directory, "plugins.lock.json"), "utf8"));
     expect(lock.plugins["fixture.client-extension"].activationGeneration).toBe(2);
-    expect(deriveClientExtensionGraph(await listInstalledPlugins(configPath), { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" })).toEqual(secondGraph);
+    expect(
+      deriveClientExtensionGraph(await listInstalledPlugins(configPath), {
+        pluginId: "clawling.web.connect-client",
+        capabilityId: "connect-client",
+      }),
+    ).toEqual(secondGraph);
   });
 
   it("orders slot survivors by priority, Plugin identity, and capability identity", () => {
@@ -175,7 +193,10 @@ describe("Client Extension graph epochs", () => {
         retainedVersions: [],
       },
     ];
-    const graph = deriveClientExtensionGraph(entries, { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" });
+    const graph = deriveClientExtensionGraph(entries, {
+      pluginId: "clawling.web.connect-client",
+      capabilityId: "connect-client",
+    });
     expect(graph.extensions.map((entry) => `${entry.slots[0]?.priority}:${entry.pluginId}`)).toEqual([
       "5:fixture.client-extension",
       "30:fixture.second-extension",

@@ -1,10 +1,10 @@
+import { canonicalExecutableIdentity } from "../../runtime/executable-identity";
 import {
   createOpenCodeRuntimeAdapter,
   type OpenCodeRuntimeAdapter,
   type OpenCodeRuntimeAdapterBinding,
   type OpenCodeRuntimeAdapterOptions,
 } from "../../runtime/opencode-adapter";
-import { canonicalExecutableIdentity } from "../../runtime/executable-identity";
 import { startOpenCodeWebApp } from "../../runtime/opencode-web-process";
 import type {
   ConnectPluginConfiguration,

@@ -1,11 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 import { createHash } from "node:crypto";
 import { buildOfficialPlugin, officialPluginIntegrityReport } from "../scripts/build-official-plugins";
-import type {
-  ConnectPluginContext,
-  ConnectPluginManagedWebAppAcquireContext,
-  ConnectPluginManagedWebAppProvider,
-} from "../src/plugin/sdk";
 import connectClientDescriptor from "../src/plugin/official/connect-client-descriptor";
 import { createConnectClientOfficialPluginEntry } from "../src/plugin/official/connect-client-entry";
 import {
@@ -14,6 +9,11 @@ import {
   CONNECT_CLIENT_PLUGIN_ID,
   CONNECT_CLIENT_SUPPORTED_RUNTIMES,
 } from "../src/plugin/official/connect-client-manifest";
+import type {
+  ConnectPluginContext,
+  ConnectPluginManagedWebAppAcquireContext,
+  ConnectPluginManagedWebAppProvider,
+} from "../src/plugin/sdk";
 
 const activationGeneration = 7;
 const acquireContext: ConnectPluginManagedWebAppAcquireContext = {
@@ -71,8 +71,7 @@ describe("official Connect Client Managed Web App", () => {
     for (const entry of clientEntries) {
       const file = built.bundle.files[entry];
       if (!file) throw new Error(`Connect Client asset is missing: ${entry}`);
-      const bytes =
-        file.encoding === "utf8" ? Buffer.from(file.content, "utf8") : Buffer.from(file.content, "base64");
+      const bytes = file.encoding === "utf8" ? Buffer.from(file.content, "utf8") : Buffer.from(file.content, "base64");
       expect(integrities[entry]).toBe(`sha256-${createHash("sha256").update(bytes).digest("base64")}`);
     }
   });
@@ -94,9 +93,7 @@ describe("official Connect Client Managed Web App", () => {
         }),
       },
     ]);
-    expect(Object.keys(report[0]?.fileIntegrities ?? {}).some((entry) => entry.startsWith("dist/client"))).toBe(
-      false,
-    );
+    expect(Object.keys(report[0]?.fileIntegrities ?? {}).some((entry) => entry.startsWith("dist/client"))).toBe(false);
   });
 
   it("acquires and releases a real loopback upstream through the exact generation facade", async () => {

@@ -236,7 +236,7 @@ export async function installPluginBundle(options: StagePluginBundleOptions): Pr
 export async function commitStagedPlugin(
   configPath: string,
   staged: StagedPlugin,
-  operation: "install" | "update" | "upload-replace" | "select",
+  operation: "install" | "update" | "upload-replace" | "source-replace" | "official-replace" | "select",
 ): Promise<InstalledPluginLockEntry> {
   const paths = pluginInstallationPaths(configPath);
   let committed!: InstalledPluginLockEntry;
@@ -825,9 +825,7 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
         }
         return { pluginId: runtimePluginId, capabilityId };
       });
-      const compatibleIdentities = compatibleRuntimes.map(
-        (runtime) => `${runtime.pluginId}\0${runtime.capabilityId}`,
-      );
+      const compatibleIdentities = compatibleRuntimes.map((runtime) => `${runtime.pluginId}\0${runtime.capabilityId}`);
       if (new Set(compatibleIdentities).size !== compatibleIdentities.length) {
         throw new Error(`Plugin ${pluginId}/${id} declares duplicate compatible Runtime references`);
       }
@@ -898,8 +896,7 @@ function validateManifest(value: Record<string, unknown>): ConnectPluginManifest
   for (const capability of capabilities) {
     if (capability.type !== "client-extension" || capability.managedWebApp.pluginId !== pluginId) continue;
     const target = capabilities.find(
-      (candidate) =>
-        candidate.id === capability.managedWebApp.capabilityId && candidate.type === "managed-web-app",
+      (candidate) => candidate.id === capability.managedWebApp.capabilityId && candidate.type === "managed-web-app",
     );
     if (!target) {
       throw new Error(
@@ -1332,9 +1329,7 @@ function validateCapabilityConfigurations(
   if (!isRecord(value)) throw new Error(`Plugin ${manifest.pluginId} capability configurations must be a JSON object`);
   const capabilities = manifest.capabilities.filter(
     (capability) =>
-      capability.type === "managed-web-app" ||
-      capability.type === "exposure" ||
-      capability.type === "client-extension",
+      capability.type === "managed-web-app" || capability.type === "exposure" || capability.type === "client-extension",
   );
   const declared = new Set(capabilities.map((capability) => capability.id));
   for (const capabilityId of Object.keys(value)) {

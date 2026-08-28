@@ -88,7 +88,10 @@ test("builds the Darwin arm64 official Plugin payload", () => {
     "--target",
     "darwin-arm64",
   ]);
-  expect(packagePhase?.command?.slice(-2)).toEqual(["build/release/clawchat-connect-darwin-arm64.tar.gz", "darwin-arm64"]);
+  expect(packagePhase?.command?.slice(-2)).toEqual([
+    "build/release/clawchat-connect-darwin-arm64.tar.gz",
+    "darwin-arm64",
+  ]);
 });
 
 test("checksums cover the archive and copied support files", async () => {

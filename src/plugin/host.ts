@@ -23,34 +23,24 @@ import {
   type RuntimeAdapterReplacement,
 } from "../runtime/registry";
 import type { ConnectRuntimeAdapter } from "../runtime/types";
+import type { BindingRuntimeHandle } from "../service/binding-runtime";
 import {
   createLivewareControlDependencies,
   type LivewareApp,
   type LivewareControlDependencies,
 } from "../service/liveware-control";
-import type { BindingRuntimeHandle } from "../service/binding-runtime";
 import type { AgentBindingConfig, ConnectConfig } from "../types";
 import type { WorkspaceCatalog } from "../workspaces/workspaces";
 import { agentBindingIdentity, normalizeAgentBinding } from "./binding";
-import { RuntimeProviderValidationError } from "./runtime-provider-validation-error";
 import {
-  ManagedWebAppRegistry,
   type ManagedWebAppLease,
   type ManagedWebAppProviderDefinition,
+  ManagedWebAppRegistry,
   type ManagedWebAppSelection,
 } from "./managed-web-app-registry";
-import type {
-  OfficialLivewareExposureServices,
-  OfficialLivewareManagedDisposer,
-} from "./official/liveware-entry";
-import {
-  CONNECT_CLIENT_MANAGED_WEB_APP_REF,
-  CONNECT_CLIENT_PLUGIN_ID,
-} from "./official/connect-client-manifest";
-import {
-  OFFICIAL_LIVEWARE_CAPABILITY_ID,
-  OFFICIAL_LIVEWARE_PLUGIN_ID,
-} from "./official/liveware-manifest";
+import { CONNECT_CLIENT_MANAGED_WEB_APP_REF, CONNECT_CLIENT_PLUGIN_ID } from "./official/connect-client-manifest";
+import type { OfficialLivewareExposureServices, OfficialLivewareManagedDisposer } from "./official/liveware-entry";
+import { OFFICIAL_LIVEWARE_CAPABILITY_ID, OFFICIAL_LIVEWARE_PLUGIN_ID } from "./official/liveware-manifest";
 import {
   type BundledOfficialPluginEntry,
   discoverOfficialPlugins,
@@ -59,6 +49,7 @@ import {
   type OfficialPluginDiscoveryOptions,
   resolveBundledOfficialPlugin,
 } from "./official-registry";
+import { RuntimeProviderValidationError } from "./runtime-provider-validation-error";
 import type {
   ConnectExposureProviderHostCapability,
   ConnectManagedWebAppProviderHostCapability,
@@ -77,10 +68,10 @@ import {
   type ConnectPluginDurableStateRecord,
   type ConnectPluginManagedWebAppProvider,
   type ConnectPluginRuntimeInstanceContext,
-  type ManagedWebAppHealth,
-  type ManagedWebAppGenerationReference,
   type ConnectPluginRuntimeProvider,
   type ConnectRuntimeProviderHostCapability,
+  type ManagedWebAppGenerationReference,
+  type ManagedWebAppHealth,
   type RuntimeCapabilityRef,
 } from "./sdk";
 import {
@@ -206,9 +197,7 @@ export interface ManagedWebAppControlStatus {
   }> | null;
 }
 
-
 export const MAX_CONCURRENT_PLUGIN_UPDATE_CHECKS = 4;
-
 
 export interface ConnectPluginManagement {
   list(): Promise<InstalledPluginLockEntry[]>;
@@ -221,6 +210,8 @@ export interface ConnectPluginManagement {
     bytes: Uint8Array,
     options?: Omit<ManagePluginOptions, "source">,
   ): Promise<InstalledPluginLockEntry>;
+  replace(pluginId: string, options: ManagePluginOptions): Promise<InstalledPluginLockEntry>;
+
   installOfficial(pluginIds: readonly string[]): Promise<InstalledPluginLockEntry[]>;
   update(pluginId: string, options?: Partial<ManagePluginOptions>): Promise<InstalledPluginLockEntry>;
   reinstall(pluginId: string): Promise<InstalledPluginLockEntry>;
@@ -256,7 +247,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
     this.configMutations = management ? this.operationCoordinator : undefined;
   }
 
-
   async activateOptionalSurfaces(runtimes: readonly BindingRuntimeHandle[]): Promise<void> {
     this.bindingRuntimes = runtimes;
     this.optionalSurfacesReady = true;
@@ -270,6 +260,9 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         await this.markDependentBindingsUnavailable(pluginId, error).catch(() => undefined);
         this.reportActivationFailure(pluginId, error);
       }
+    }
+    for (const activePlugin of this.active.values()) {
+      await activePlugin.reconcileManagedWebApps();
     }
   }
 
@@ -346,17 +339,13 @@ export class ConnectPluginHost implements ConnectPluginManagement {
             instanceKey: snapshot.instanceKey,
             health: snapshot.health,
             diagnostic: snapshot.diagnostic,
-            leaseCount:
-              snapshot.bindingLeases.find((entry) => entry.bindingId === bindingId)?.leaseCount ?? 0,
+            leaseCount: snapshot.bindingLeases.find((entry) => entry.bindingId === bindingId)?.leaseCount ?? 0,
           })
         : null,
     };
   }
 
-  async acquireManagedWebApp(
-    bindingId: string,
-    requested?: RuntimeCapabilityRef,
-  ): Promise<ManagedWebAppLease | null> {
+  async acquireManagedWebApp(bindingId: string, requested?: RuntimeCapabilityRef): Promise<ManagedWebAppLease | null> {
     const binding = this.management?.config.agents[bindingId];
     if (!binding) throw new Error(`Agent Binding ${bindingId} is not configured`);
     return await this.managedWebApps.acquire(
@@ -368,7 +357,6 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       requested,
     );
   }
-
 
   async validateRuntimeBinding(binding: AgentBindingConfig): Promise<void> {
     const installed = await this.requireInstalled(binding.runtime.pluginId);
@@ -487,6 +475,30 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         await removeUnreferencedManagedPluginUploads(this.configPath).catch(() => undefined);
         throw error;
       }
+    });
+  }
+  async replace(pluginId: string, options: CoreManagePluginOptions): Promise<InstalledPluginLockEntry> {
+    return await this.runExclusive(async () => {
+      const installed = await this.requireInstalled(pluginId);
+      const resolved = await resolvePluginSource(options.source, {
+        ...this.sourceOptions,
+        target: options.target ?? installed.target,
+      });
+      const staged = await stagePluginBundle({
+        configPath: this.configPath,
+        source: resolved.source,
+        bundle: resolved.bundle,
+        target: resolved.target,
+        installationConfiguration: options.installationConfiguration ?? installed.installationConfiguration,
+        capabilityConfigurations: options.capabilityConfigurations ?? installed.capabilityConfigurations,
+      });
+      if (staged.entry.pluginId !== pluginId) {
+        await discardStagedPlugin(this.configPath, staged).catch(() => undefined);
+        throw new Error(
+          `Replacement Bundle identity ${staged.entry.pluginId} does not match installed Plugin ${pluginId}`,
+        );
+      }
+      return await this.switchToStaged(staged, "source-replace");
     });
   }
 
@@ -749,7 +761,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         const entry = candidate.entry;
         const resolved = await resolveBundledOfficialPlugin(entry, this.sourceOptions);
         installed.push(
-          await this.installResolved(resolved, {
+          await this.installOfficialResolved(resolved, {
             installationConfiguration: entry.installationConfiguration,
             capabilityConfigurations: entry.capabilityConfigurations,
           }),
@@ -1000,6 +1012,28 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       }
     });
   }
+  private async installOfficialResolved(
+    resolved: ResolvedPluginSource,
+    options: ResolvedPluginInstallOptions,
+  ): Promise<InstalledPluginLockEntry> {
+    return await this.runExclusive(async () => {
+      const staged = await stagePluginBundle({
+        configPath: this.configPath,
+        source: resolved.source,
+        bundle: resolved.bundle,
+        target: resolved.target,
+        installationConfiguration: options.installationConfiguration,
+        capabilityConfigurations: options.capabilityConfigurations,
+      });
+      const alreadyInstalled = (await listInstalledPlugins(this.configPath)).some(
+        (installed) => installed.pluginId === staged.entry.pluginId,
+      );
+      return alreadyInstalled
+        ? await this.switchToStaged(staged, "official-replace")
+        : await this.installStaged(staged);
+    });
+  }
+
   private async installResolved(
     resolved: ResolvedPluginSource,
     options: ResolvedPluginInstallOptions,
@@ -1037,6 +1071,9 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       await candidate.startContributions();
       await candidate.publishRuntime();
       this.active.set(installed.pluginId, candidate.plugin);
+      for (const activePlugin of this.active.values()) {
+        await activePlugin.reconcileManagedWebApps();
+      }
       return installed;
     } catch (error) {
       await candidate?.plugin.dispose().catch(() => undefined);
@@ -1054,7 +1091,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
 
   private async switchToStaged(
     staged: StagedPlugin,
-    operation: "update" | "upload-replace" | "select",
+    operation: "update" | "upload-replace" | "source-replace" | "official-replace" | "select",
   ): Promise<InstalledPluginLockEntry> {
     const existing = await this.requireInstalled(staged.entry.pluginId);
     const oldActive = this.active.get(staged.entry.pluginId);
@@ -1583,9 +1620,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         this.createExposureBindingDurableState(installed, capabilityId, bindingId, durableStateGate),
     });
     const hostCapabilities = Object.freeze({
-      get: (
-        id: "runtime-provider" | "managed-web-app-provider" | "durable-state" | "exposure-provider",
-      ) => {
+      get: (id: "runtime-provider" | "managed-web-app-provider" | "durable-state" | "exposure-provider") => {
         if (!declaredHostCapabilities.has(id)) {
           throw new Error(`Plugin ${installed.pluginId} used undeclared Host Capability ${id}`);
         }
@@ -1626,9 +1661,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
       const declared = installed.manifest.capabilities;
       const providerCapabilities = declared.filter(
         (capability) =>
-          capability.type === "runtime" ||
-          capability.type === "managed-web-app" ||
-          capability.type === "exposure",
+          capability.type === "runtime" || capability.type === "managed-web-app" || capability.type === "exposure",
       );
       if (pending.size !== providerCapabilities.length) {
         throw new Error(
@@ -1690,9 +1723,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
             activationGeneration: installed.activationGeneration,
             manifest: capability,
             installationConfiguration: deepFreeze(structuredClone(installed.installationConfiguration)),
-            configuration: deepFreeze(
-              structuredClone(installed.capabilityConfigurations[capability.id] ?? {}),
-            ),
+            configuration: deepFreeze(structuredClone(installed.capabilityConfigurations[capability.id] ?? {})),
             provider: registration.implementation,
           });
           continue;
@@ -1788,8 +1819,7 @@ export class ConnectPluginHost implements ConnectPluginManagement {
           results.push(
             ...(await Promise.allSettled(
               stagedManagedWebApps.map(
-                async (definition) =>
-                  await this.managedWebApps.remove(managedWebAppReference(definition)),
+                async (definition) => await this.managedWebApps.remove(managedWebAppReference(definition)),
               ),
             )),
           );
@@ -2051,23 +2081,39 @@ export class ConnectPluginHost implements ConnectPluginManagement {
         await assertGeneration();
         const binding = management.config.agents[bindingId];
         if (!binding) throw new Error(`Agent Binding ${bindingId} is not configured`);
-        const lease = await this.managedWebApps.acquire({
-          bindingId,
-          runtime: binding.runtime,
-          runtimeConfiguration: deepFreeze(structuredClone(binding.runtimeConfig)),
-        });
+        let lease: ManagedWebAppLease | null;
+        try {
+          lease = await this.managedWebApps.acquire({
+            bindingId,
+            runtime: binding.runtime,
+            runtimeConfiguration: deepFreeze(structuredClone(binding.runtimeConfig)),
+          });
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          this.reportActivationFailure(
+            installed.pluginId,
+            new Error(`Agent Binding ${bindingId} Managed Web App acquisition failed: ${detail}`),
+          );
+          throw error;
+        }
         if (!lease) return null;
         return Object.freeze({
-          selection: lease.selection,
+          selection: Object.freeze({
+            pluginId: lease.selection.pluginId,
+            capabilityId: lease.selection.capabilityId,
+            activationGeneration: lease.selection.activationGeneration,
+            displayName: lease.selection.displayName,
+            description: lease.selection.description,
+          }),
           instanceKey: lease.instanceKey,
           upstream: lease.upstream,
+          health: () => lease.health(),
           release: async () => await lease.release(),
         });
       },
     };
   }
 }
-
 
 function toPublicationApp(app: LivewareApp) {
   return {
@@ -2076,9 +2122,7 @@ function toPublicationApp(app: LivewareApp) {
     publicUrl: app.publicUrl || null,
   };
 }
-function managedWebAppReference(
-  definition: ManagedWebAppProviderDefinition,
-): ManagedWebAppGenerationReference {
+function managedWebAppReference(definition: ManagedWebAppProviderDefinition): ManagedWebAppGenerationReference {
   return Object.freeze({
     pluginId: definition.pluginId,
     capabilityId: definition.manifest.id,
@@ -2086,9 +2130,7 @@ function managedWebAppReference(
   });
 }
 
-function managedWebAppReferences(
-  installed: InstalledPluginLockEntry,
-): ManagedWebAppGenerationReference[] {
+function managedWebAppReferences(installed: InstalledPluginLockEntry): ManagedWebAppGenerationReference[] {
   return installed.manifest.capabilities
     .filter((capability) => capability.type === "managed-web-app")
     .map((capability) =>

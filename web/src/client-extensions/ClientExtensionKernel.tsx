@@ -18,6 +18,7 @@ import {
   type ClientExtensionView,
   type UpdateBindingPreferencesRequest,
 } from "../../../src/client-contract";
+import { CONNECT_CLIENT_MANAGED_WEB_APP_REF } from "../../../src/plugin/official/connect-client-manifest";
 import {
   CONNECT_CLIENT_EXTENSION_SLOT_CATALOG,
   type ConnectPluginClientExtensionComponent,
@@ -26,7 +27,6 @@ import {
   type ConnectPluginClientExtensionSlotId,
   type ConnectPluginDisposer,
 } from "../../../src/plugin/sdk";
-import { CONNECT_CLIENT_MANAGED_WEB_APP_REF } from "../../../src/plugin/official/connect-client-manifest";
 import { clientFetch, requestId } from "../client-interface/http";
 
 interface SlotContribution {

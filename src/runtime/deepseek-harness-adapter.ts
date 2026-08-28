@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import type { AgentBindingConfig, RuntimeModelSelection, RuntimeWorkspace } from "../types";
+import { canonicalDshHome } from "./deepseek-harness-identity";
 import {
   type DshBridgeClient,
   type DshExecutableProbe,
@@ -9,7 +10,6 @@ import {
   type StartDshBridgeOptions,
   startDshBridge,
 } from "./deepseek-harness-process";
-import { canonicalDshHome } from "./deepseek-harness-identity";
 import type {
   DshBridgeAdmission,
   DshBridgeCatalogCommand,
@@ -235,6 +235,7 @@ async function prepareHarness(
   const executable = (options.probeExecutable ?? requireDshExecutable)(binding.executablePathOverride, binding.env);
   const client = await (options.createBridge ?? startDshBridge)({
     executable: executable.path,
+    ...(executable.executableArguments ? { executableArguments: executable.executableArguments } : {}),
     home,
     ...(binding.profile ? { profile: binding.profile } : {}),
     cwd,

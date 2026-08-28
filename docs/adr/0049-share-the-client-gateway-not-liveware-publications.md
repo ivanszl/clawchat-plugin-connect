@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0065
 ---
 
 # Share the Client Gateway, not Liveware publications

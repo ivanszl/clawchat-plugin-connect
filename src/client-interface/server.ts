@@ -5,8 +5,8 @@ import { leadingSkillName } from "../agent/skill-invocation";
 import { bindingOutputVisibility } from "../clawchat/output-visibility";
 import {
   type AddWorkspaceRequest,
-  type BindingPreferenceView,
   BINDING_SCOPE_HEADER,
+  type BindingPreferenceView,
   type BootstrapView,
   type CancelTurnRequest,
   type CancelTurnResponse,
@@ -18,26 +18,26 @@ import {
   type ConfigurePluginRequest,
   type ContinueSessionRequest,
   type CreateSessionRequest,
-  type StartTurnResponse,
-  type InstalledPluginView,
-  type ManagePluginRequest,
   type HostDirectoryListingView,
+  type InstalledPluginView,
   MAX_PLUGIN_BUNDLE_BYTES,
+  type ManagePluginRequest,
   normalizeSessionRef,
   PLUGIN_MANAGER_CONFIG_HEADER,
   type PluginAdministrationView,
   type PluginCapabilityView,
   type PluginDiagnosticStage,
   type PluginDiagnosticView,
+  type RespondToRuntimeInteractionRequest,
   type SelectPluginVersionRequest,
-  type SlashSuggestionView,
+  type SessionArchiveResponse,
   type SessionCatalogView,
+  type SessionDeleteResponse,
   type SessionMutationRequest,
   type SessionView,
-  type SessionArchiveResponse,
-  type SessionDeleteResponse,
-  type RespondToRuntimeInteractionRequest,
   type SlashSuggestionListView,
+  type SlashSuggestionView,
+  type StartTurnResponse,
   type TranscriptPageView,
   type UpdateBindingPreferencesRequest,
   type UpdateSessionPreferencesRequest,
@@ -53,7 +53,6 @@ import {
   deriveClientExtensionGraph,
   resolveClientExtensionArtifact,
 } from "../plugin/client-extension";
-import type { RuntimeCapabilityRef } from "../plugin/sdk";
 import type {
   ConfigurePluginOptions,
   ConnectPluginManagement,
@@ -62,20 +61,21 @@ import type {
   UpsertBindingProviderResult,
 } from "../plugin/host";
 import type { OfficialPluginDiscovery } from "../plugin/official-registry";
+import { RuntimeProviderValidationError } from "../plugin/runtime-provider-validation-error";
+import type { RuntimeCapabilityRef } from "../plugin/sdk";
 import {
   type InstalledPluginLockEntry,
   validatePluginConfiguration,
   verifyConnectPluginIntegrity,
 } from "../plugin/store";
-import { RuntimeProviderValidationError } from "../plugin/runtime-provider-validation-error";
 import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
-import type { AgentBindingConfig, ConnectConfig, RuntimeModelSelection, RuntimeSessionRecord } from "../types";
 import { requireModel, resolveEffort } from "../runtime/model-selection";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import { RuntimeInteractionCoordinator, RuntimeInteractionError } from "../runtime/runtime-interaction-coordinator";
 import type { RuntimeSlashSelection } from "../runtime/types";
 import { workBuddyCapabilityAvailability, workBuddyCapabilityFailure } from "../runtime/workbuddy-availability";
 import type { BindingRuntimeHandle } from "../service/binding-runtime";
+import type { AgentBindingConfig, ConnectConfig, RuntimeModelSelection, RuntimeSessionRecord } from "../types";
 import {
   HostDirectoryError,
   listHostDirectories,
@@ -398,7 +398,6 @@ export type ConnectClientIntentView =
   | SessionDeleteResponse
   | BindingPreferenceView;
 
-
 export interface ConnectClientIntentResult {
   readonly status: number;
   readonly view: ConnectClientIntentView;
@@ -706,12 +705,7 @@ async function readApplicationView(response: Response): Promise<ConnectClientPre
 }
 
 function isClientEventBatchView(value: ConnectClientPresentationView): value is ClientEventBatchView {
-  return (
-    "cursor" in value &&
-    typeof value.cursor === "number" &&
-    "events" in value &&
-    Array.isArray(value.events)
-  );
+  return "cursor" in value && typeof value.cursor === "number" && "events" in value && Array.isArray(value.events);
 }
 
 interface ConnectClientIntentHttpRequest {
@@ -867,11 +861,7 @@ function intentRequest(command: ConnectClientIntentCommand): ConnectClientIntent
     case "disable-plugin":
       return {
         path: `${CLIENT_API_PREFIX}/plugins/${encodeURIComponent(command.pluginId)}/${
-          command.kind === "reinstall-plugin"
-            ? "reinstall"
-            : command.kind === "enable-plugin"
-              ? "enable"
-              : "disable"
+          command.kind === "reinstall-plugin" ? "reinstall" : command.kind === "enable-plugin" ? "enable" : "disable"
         }`,
         method: "POST",
         bindingScope: null,
@@ -934,7 +924,9 @@ function intentRequest(command: ConnectClientIntentCommand): ConnectClientIntent
   }
 }
 
-export async function startClientInterface(options: ConnectClientOwnedInterfaceOptions): Promise<ClientInterfaceHandle> {
+export async function startClientInterface(
+  options: ConnectClientOwnedInterfaceOptions,
+): Promise<ClientInterfaceHandle> {
   const { applicationPort, hostname, port, assetsPath, managedWebApp } = options;
   const origin = `http://${hostname}:${port}`;
   const initialization = applicationPort.initializeApplication({ hostname, port, managedWebApp });
@@ -1179,9 +1171,7 @@ async function routeClientApplicationRequest(
     }
   }
   if (pathname === `${CLIENT_API_PREFIX}/bootstrap` && method === "GET") {
-    return applicationQueryResponse(
-      await applicationPort.queryPresentation({ kind: "bootstrap", bindingScope }),
-    );
+    return applicationQueryResponse(await applicationPort.queryPresentation({ kind: "bootstrap", bindingScope }));
   }
   if (pathname === `${CLIENT_API_PREFIX}/session-catalog` && method === "GET") {
     return applicationQueryResponse(
@@ -1203,9 +1193,7 @@ async function routeClientApplicationRequest(
     );
   }
   if (pathname === `${CLIENT_API_PREFIX}/workspaces` && method === "GET") {
-    return applicationQueryResponse(
-      await applicationPort.queryPresentation({ kind: "workspaces", bindingScope }),
-    );
+    return applicationQueryResponse(await applicationPort.queryPresentation({ kind: "workspaces", bindingScope }));
   }
   if (pathname === `${CLIENT_API_PREFIX}/workspaces` && method === "POST") {
     return applicationIntentResponse(
@@ -1374,7 +1362,8 @@ async function routeClientApplicationRequest(
         : null;
     const attachments = await Promise.all(
       form.getAll("attachments").map(async (entry) => {
-        if (!(entry instanceof File)) throw new ClientRequestError(400, "invalid-attachment", "Attachments must be files");
+        if (!(entry instanceof File))
+          throw new ClientRequestError(400, "invalid-attachment", "Attachments must be files");
         return { name: entry.name, mime: entry.type, bytes: new Uint8Array(await entry.arrayBuffer()) };
       }),
     );
@@ -1499,7 +1488,10 @@ function applicationIntentResponse(result: ConnectClientIntentResult): Response 
   return applicationViewResponse(result.status, result.view);
 }
 
-function applicationViewResponse(status: number, view: ConnectClientPresentationView | ConnectClientIntentView): Response {
+function applicationViewResponse(
+  status: number,
+  view: ConnectClientPresentationView | ConnectClientIntentView,
+): Response {
   if ("bytes" in view && view.bytes instanceof Uint8Array) {
     return new Response(Uint8Array.from(view.bytes).buffer, {
       status,
@@ -1524,7 +1516,9 @@ function orderedEventStreamResponse(subscription: ConnectClientOrderedEventSubsc
       try {
         for await (const batch of subscription.events) {
           for (const event of batch.events) {
-            controller.enqueue(encoder.encode(`id: ${event.cursor}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
+            controller.enqueue(
+              encoder.encode(`id: ${event.cursor}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`),
+            );
           }
         }
         controller.close();
@@ -1726,10 +1720,7 @@ async function startCoreClientInterface(
           } catch {
             return errorResponse(400, "invalid-client-extension-artifact", "Client Extension artifact path is invalid");
           }
-          if (
-            appPluginId !== managedWebApp.pluginId ||
-            appCapabilityId !== managedWebApp.capabilityId
-          ) {
+          if (appPluginId !== managedWebApp.pluginId || appCapabilityId !== managedWebApp.capabilityId) {
             return errorResponse(404, "client-extension-artifact-not-found", "Client Extension artifact was not found");
           }
           const artifact = resolveClientExtensionArtifact(

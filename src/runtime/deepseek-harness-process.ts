@@ -22,7 +22,8 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 
 export interface DshExecutableProbe {
-  path: string;
+  readonly path: string;
+  readonly executableArguments?: readonly string[];
 }
 
 export interface DshBridgeClient {
@@ -35,6 +36,7 @@ export interface DshBridgeClient {
 
 export interface StartDshBridgeOptions {
   executable: string;
+  executableArguments?: readonly string[];
   home: string;
   profile?: string;
   cwd: string;
@@ -54,13 +56,36 @@ export function requireDshExecutable(
   if (configuredPath !== undefined && !configuredExecutable) {
     throw new Error("Configured DeepSeek Harness executable path must not be empty");
   }
-  const executable = configuredExecutable ?? Bun.which("dsh", { PATH: env?.PATH ?? process.env.PATH });
-  if (!executable) {
-    throw new Error(
-      "DeepSeek Harness executable was not found in PATH; install DSH or configure executablePathOverride",
-    );
+  const path = env?.PATH ?? process.env.PATH;
+  const executable = configuredExecutable ?? Bun.which("dsh", { PATH: path });
+  if (executable) return { path: executable };
+  return requireDshPackageCommand(env);
+}
+
+export function requireDshPackageCommand(env: Readonly<Record<string, string>> | undefined): DshExecutableProbe {
+  const path = env?.PATH ?? process.env.PATH;
+  const bunx = Bun.which("bunx", { PATH: path });
+  if (bunx) {
+    return {
+      path: bunx,
+      executableArguments: ["@deepseek-ai/dsh"],
+    };
   }
-  return { path: executable };
+  const npx = Bun.which("npx", { PATH: path });
+  if (npx) {
+    return {
+      path: npx,
+      executableArguments: ["--yes", "@deepseek-ai/dsh"],
+    };
+  }
+  const pnpm = Bun.which("pnpm", { PATH: path });
+  if (pnpm) {
+    return {
+      path: pnpm,
+      executableArguments: ["dlx", "@deepseek-ai/dsh"],
+    };
+  }
+  throw new Error("DeepSeek Harness package launcher was not found; install Bun, Node.js with npx, or pnpm");
 }
 
 export async function startDshBridge(options: StartDshBridgeOptions): Promise<DshBridgeClient> {
@@ -84,7 +109,12 @@ export async function startDshBridge(options: StartDshBridgeOptions): Promise<Ds
   try {
     child = spawn(
       options.executable,
-      [...(options.profile ? ["--profile", options.profile] : []), "--patch", overlayPath],
+      [
+        ...(options.executableArguments ?? []),
+        ...(options.profile ? ["--profile", options.profile] : []),
+        "--patch",
+        overlayPath,
+      ],
       {
         cwd: options.cwd,
         env: {

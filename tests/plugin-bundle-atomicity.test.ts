@@ -82,9 +82,7 @@ interface ReferenceManagedWebAppFixture {
 }
 
 function referenceManagedWebApp(): ReferenceManagedWebAppFixture {
-  const app = Reflect.get(globalThis, "__connectReferenceManagedWebApp") as
-    | ReferenceManagedWebAppFixture
-    | undefined;
+  const app = Reflect.get(globalThis, "__connectReferenceManagedWebApp") as ReferenceManagedWebAppFixture | undefined;
   if (!app) throw new Error("Reference Managed Web App fixture is not active");
   return app;
 }
@@ -463,14 +461,19 @@ describe("atomic multi-capability Plugin Bundles", () => {
     {
       name: "unsupported-client-extension-slot",
       mutate: (bundle) => {
-        bundle.manifest.capabilities.push({ id: "unsupported-slot", type: "client-extension", managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }, interfaceVersion: "1",
-        configurationSchema: { type: "object", additionalProperties: false },
-        browser: {
-          entry: "client.mjs",
-          integrity: required(bundle.manifest.artifacts[0], "fixture artifact").integrity,
-          styles: [],
-          slots: [{ id: "unknown.slot" as never, interfaceVersion: "1", priority: 10 }],
-        }, });
+        bundle.manifest.capabilities.push({
+          id: "unsupported-slot",
+          type: "client-extension",
+          managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" },
+          interfaceVersion: "1",
+          configurationSchema: { type: "object", additionalProperties: false },
+          browser: {
+            entry: "client.mjs",
+            integrity: required(bundle.manifest.artifacts[0], "fixture artifact").integrity,
+            styles: [],
+            slots: [{ id: "unknown.slot" as never, interfaceVersion: "1", priority: 10 }],
+          },
+        });
       },
       message: "unsupported Client Extension slot unknown.slot",
     },

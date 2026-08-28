@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0065
 ---
 
 # Compose Client Extensions through typed slots

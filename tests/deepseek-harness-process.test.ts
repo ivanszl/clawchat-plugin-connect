@@ -2,12 +2,17 @@ import { describe, expect, it } from "bun:test";
 import { chmod, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { requireDshExecutable, startDshBridge } from "../src/runtime/deepseek-harness-process";
+import {
+  requireDshExecutable,
+  requireDshPackageCommand,
+  startDshBridge,
+} from "../src/runtime/deepseek-harness-process";
 import { parseDshBridgeFrame } from "../src/runtime/deepseek-harness-protocol";
 
 const FAKE_DSH = `#!/usr/bin/env bun
 import { createReadStream, createWriteStream, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+if (process.argv[2] !== "--package-marker") process.exit(5);
 const patchIndex = process.argv.indexOf("--patch");
 const patch = readFileSync(process.argv[patchIndex + 1], "utf8");
 const config = Object.fromEntries(
@@ -47,6 +52,7 @@ describe("DeepSeek Harness Bridge process boundary", () => {
     expect(requireDshExecutable(executable, undefined)).toEqual({ path: executable });
     const client = await startDshBridge({
       executable,
+      executableArguments: ["--package-marker"],
       home: directory,
       cwd: directory,
       bridgePath: bridge,
@@ -82,6 +88,56 @@ describe("DeepSeek Harness Bridge process boundary", () => {
     expect(() =>
       parseDshBridgeFrame('{"type":"interaction","id":"a","sessionId":"s","request":{"kind":"future"}}'),
     ).toThrow("interaction frame is malformed");
+  });
+
+  it("prefers bunx for the official package command and uses it when dsh is not installed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-dsh-bunx-"));
+    const bunx = join(directory, "bunx");
+    const npx = join(directory, "npx");
+    const pnpm = join(directory, "pnpm");
+    await Promise.all([Bun.write(bunx, "#!/bin/sh\n"), Bun.write(npx, "#!/bin/sh\n"), Bun.write(pnpm, "#!/bin/sh\n")]);
+    await Promise.all([chmod(bunx, 0o700), chmod(npx, 0o700), chmod(pnpm, 0o700)]);
+
+    expect(requireDshPackageCommand({ PATH: directory })).toEqual({
+      path: bunx,
+      executableArguments: ["@deepseek-ai/dsh"],
+    });
+    expect(requireDshExecutable(undefined, { PATH: directory })).toEqual({
+      path: bunx,
+      executableArguments: ["@deepseek-ai/dsh"],
+    });
+  });
+
+  it("falls back from bunx to npx", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-dsh-npx-"));
+    const npx = join(directory, "npx");
+    const pnpm = join(directory, "pnpm");
+    await Promise.all([Bun.write(npx, "#!/bin/sh\n"), Bun.write(pnpm, "#!/bin/sh\n")]);
+    await Promise.all([chmod(npx, 0o700), chmod(pnpm, 0o700)]);
+
+    expect(requireDshPackageCommand({ PATH: directory })).toEqual({
+      path: npx,
+      executableArguments: ["--yes", "@deepseek-ai/dsh"],
+    });
+  });
+
+  it("falls back from npx to pnpm dlx", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-dsh-pnpm-"));
+    const pnpm = join(directory, "pnpm");
+    await Bun.write(pnpm, "#!/bin/sh\n");
+    await chmod(pnpm, 0o700);
+
+    expect(requireDshPackageCommand({ PATH: directory })).toEqual({
+      path: pnpm,
+      executableArguments: ["dlx", "@deepseek-ai/dsh"],
+    });
+  });
+
+  it("requires at least one supported package launcher when dsh is not installed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-dsh-no-launcher-"));
+    expect(() => requireDshPackageCommand({ PATH: directory })).toThrow(
+      "DeepSeek Harness package launcher was not found",
+    );
   });
 
   it("rejects an explicitly blank executable override", () => {

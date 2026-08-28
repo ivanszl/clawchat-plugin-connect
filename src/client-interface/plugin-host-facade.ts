@@ -11,7 +11,6 @@ export interface ConnectClientHostFacade {
   readonly applicationPort: ConnectClientApplicationPort;
 }
 
-
 const FACADE_REGISTRY_KEY = Symbol.for("clawchat.connect.client-host-facade.v1");
 
 interface FacadeRegistry {
@@ -30,7 +29,8 @@ function registry(): FacadeRegistry {
 export function registerConnectClientHostFacade(facade: ConnectClientHostFacade): ConnectPluginDisposer {
   const key = facadeKey(facade.scope.managedWebApp, facade.scope.activationGeneration);
   const facades = registry().facades;
-  if (facades.has(key)) throw new Error("Connect Client Host facade is already registered for this Activation Generation");
+  if (facades.has(key))
+    throw new Error("Connect Client Host facade is already registered for this Activation Generation");
   facades.set(key, facade);
   let current = true;
   return () => {

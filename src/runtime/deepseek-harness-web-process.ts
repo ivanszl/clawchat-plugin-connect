@@ -15,15 +15,12 @@ export type DshWebSpawnOptions = LoopbackWebSpawnOptions;
 
 export interface StartDshWebAppOptions {
   readonly executable: string;
+  readonly executableArguments?: readonly string[];
   readonly home: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly readinessTimeoutMs?: number;
   readonly shutdownTimeoutMs?: number;
-  readonly spawnProcess?: (
-    executable: string,
-    args: readonly string[],
-    options: DshWebSpawnOptions,
-  ) => DshWebProcess;
+  readonly spawnProcess?: (executable: string, args: readonly string[], options: DshWebSpawnOptions) => DshWebProcess;
 }
 
 export function canonicalDshWebEnvironmentOverrides(
@@ -33,9 +30,7 @@ export function canonicalDshWebEnvironmentOverrides(
   const overrides: Record<string, string> = { ...env, DSH_HOME: home };
   for (const name of BRIDGE_ENVIRONMENT_NAMES) delete overrides[name];
   return Object.freeze(
-    Object.fromEntries(
-      Object.entries(overrides).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
-    ),
+    Object.fromEntries(Object.entries(overrides).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))),
   );
 }
 
@@ -43,7 +38,7 @@ export async function startDshWebApp(options: StartDshWebAppOptions): Promise<Co
   return await startSupervisedLoopbackWebApp({
     label: "DSH Web",
     executable: options.executable,
-    args: DSH_WEB_ARGUMENTS,
+    args: [...(options.executableArguments ?? []), ...DSH_WEB_ARGUMENTS],
     env: {
       ...process.env,
       ...canonicalDshWebEnvironmentOverrides(options.home, options.env),

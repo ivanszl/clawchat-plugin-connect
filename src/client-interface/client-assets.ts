@@ -76,7 +76,9 @@ export async function verifyClientAssetGraph(
     const entry = relative(assetsRoot, path).split(sep).join("/");
     const integrity = expected.get(entry);
     if (!integrity) throw new Error(`Connect Client asset is not integrity-covered: ${entry}`);
-    const received = `sha256-${createHash("sha256").update(await readFile(path)).digest("base64")}`;
+    const received = `sha256-${createHash("sha256")
+      .update(await readFile(path))
+      .digest("base64")}`;
     if (received !== integrity) throw new Error(`Connect Client asset failed integrity verification: ${entry}`);
   }
 }

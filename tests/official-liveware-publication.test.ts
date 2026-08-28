@@ -23,7 +23,10 @@ import {
   type LivewarePublicationRegistration,
   type LivewarePublicationRegistrationPort,
 } from "../src/plugin/official/liveware-publication";
-import { ConnectBindingLivewarePublicationStateStore } from "../src/plugin/official/liveware-publication-state";
+import {
+  ConnectBindingLivewarePublicationStateStore,
+  resetBindingLivewarePublicationState,
+} from "../src/plugin/official/liveware-publication-state";
 import { retireOfficialLivewarePublications } from "../src/plugin/official/liveware-retirement";
 import type {
   ConnectPluginExposureActivation,
@@ -177,6 +180,46 @@ function selectedManagedWebApp(activationGeneration: number, instanceKey = "mana
 }
 
 describe("official Liveware Binding publication lifecycle", () => {
+  it("resets legacy publication state instead of preserving obsolete remote identities", async () => {
+    const entry = createOfficialLivewarePluginEntry();
+    if (!entry.migrateDurableState) throw new Error("Official Liveware does not expose Durable State migration");
+    const legacy = {
+      bindingId: "legacy-binding",
+      activationGeneration: 3,
+      desired: "private",
+      status: "active",
+      transition: null,
+      correlationKey: "ClawChat Connect · legacy-binding",
+      appId: "app-legacy",
+      publicUrl: "https://app-legacy.apps.clawling.io",
+      registrationId: "app-legacy",
+      diagnostic: null,
+    };
+
+    const schemaTwo = await entry.migrateDurableState({
+      capabilityId: OFFICIAL_LIVEWARE_CAPABILITY_ID,
+      fromSchemaVersion: 1,
+      toSchemaVersion: 2,
+      value: legacy,
+    });
+    const schemaThree = await entry.migrateDurableState({
+      capabilityId: OFFICIAL_LIVEWARE_CAPABILITY_ID,
+      fromSchemaVersion: 2,
+      toSchemaVersion: 3,
+      value: schemaTwo,
+    });
+
+    const livewareCapability = livewareDescriptor.manifest.capabilities.find(
+      (capability) => capability.type === "exposure" && capability.id === OFFICIAL_LIVEWARE_CAPABILITY_ID,
+    );
+    if (livewareCapability?.type !== "exposure") throw new Error("Official Liveware capability is missing");
+    expect(livewareCapability.durableState?.migrations).toEqual([
+      { from: 1, to: 2 },
+      { from: 2, to: 3 },
+    ]);
+    expect(schemaThree).toEqual(resetBindingLivewarePublicationState("legacy-binding", 3));
+  });
+
   it("skips offline retirement when selected Bindings have no publication state", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-liveware-empty-retirement-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
@@ -259,10 +302,7 @@ describe("official Liveware Binding publication lifecycle", () => {
       desired: "retired" as const,
       status: "retiring" as const,
       transition: "delete-app" as const,
-      selectedApp: selectedManagedWebApp(
-        installed.activationGeneration,
-        "managed-web-app:retiring-binding",
-      ),
+      selectedApp: selectedManagedWebApp(installed.activationGeneration, "managed-web-app:retiring-binding"),
       correlationKey: "ClawChat Connect · retiring-binding",
       appId: "app-retiring",
       publicUrl: "https://app-retiring.liveware.example",
@@ -475,6 +515,115 @@ describe("official Liveware Binding publication lifecycle", () => {
     expect(remote.apps).toEqual([]);
     expect(remote.calls.filter((call) => call.startsWith("app:create:"))).toHaveLength(1);
     expect(remote.calls.filter((call) => call.startsWith("app:delete:"))).toEqual(["app:delete:app-1"]);
+  });
+
+  it("deletes every obsolete product App before rebuilding one selected Managed Web App", async () => {
+    const state = new MemoryPublicationStateStore();
+    const remote = new FakePublicationRemote();
+    remote.apps.push(
+      { appId: "legacy-a", name: "ClawChat Connect · legacy-cutover", publicUrl: null },
+      { appId: "legacy-b", name: "ClawChat Connect · legacy-cutover", publicUrl: null },
+    );
+    remote.registrations.push({
+      livewareId: "legacy-a",
+      name: "ClawChat Connect · legacy-cutover",
+      subtitle: "Legacy Client",
+      url: "https://legacy-a.liveware.example",
+    });
+    remote.registrations.push(
+      {
+        livewareId: "legacy-b",
+        name: "ClawChat Connect · legacy-cutover",
+        subtitle: "Legacy Client",
+        url: "https://legacy-b.liveware.example",
+      },
+      {
+        livewareId: "legacy-missing",
+        name: "ClawChat Connect · legacy-cutover",
+        subtitle: "Legacy Client",
+        url: "https://legacy-missing.liveware.example",
+      },
+    );
+    await state.compareAndSwap("legacy-cutover", null, {
+      bindingId: "legacy-cutover",
+      activationGeneration: 1,
+      desired: "private",
+      status: "degraded",
+      transition: "create-app",
+      selectedApp: null,
+      correlationKey: "ClawChat Connect · legacy-cutover",
+      appId: "legacy-a",
+      publicUrl: "https://legacy-a.liveware.example",
+      registrationId: "legacy-a",
+      diagnostic: "legacy duplicate",
+    });
+    const lifecycle = new BindingLivewarePublicationLifecycle({
+      activationGeneration: 1,
+      upstream: "http://127.0.0.1:47890",
+      selectedApp: selectedManagedWebApp(1),
+      state,
+      controlPlane: remote,
+      registrations: remote,
+    });
+
+    await expect(
+      lifecycle.ensurePrivate({ bindingId: "legacy-cutover", deviceId: "device-legacy-cutover" }),
+    ).resolves.toMatchObject({
+      status: "active",
+      correlationKey: "Fixture Web · legacy-cutover",
+      selectedApp: selectedManagedWebApp(1),
+    });
+    expect(remote.calls.filter((call) => call.startsWith("app:delete:"))).toEqual([
+      "app:delete:legacy-a",
+      "app:delete:legacy-b",
+    ]);
+    expect(remote.apps.map((app) => app.name)).toEqual(["Fixture Web · legacy-cutover"]);
+    expect(remote.registrations.map(({ name }) => name)).toEqual(["Fixture Web · legacy-cutover"]);
+  });
+
+  it("removes duplicate current Apps only when Durable State identifies the authoritative App", async () => {
+    const state = new MemoryPublicationStateStore();
+    const remote = new FakePublicationRemote();
+    remote.apps.push(
+      { appId: "duplicate-a", name: "Fixture Web · authoritative", publicUrl: null },
+      { appId: "duplicate-b", name: "Fixture Web · authoritative", publicUrl: null },
+    );
+    remote.registrations.push({
+      livewareId: "duplicate-a",
+      name: "Fixture Web · authoritative",
+      subtitle: "Fixture browser interface",
+      url: "https://duplicate-a.liveware.example",
+    });
+    await state.compareAndSwap("authoritative", null, {
+      bindingId: "authoritative",
+      activationGeneration: 1,
+      desired: "private",
+      status: "degraded",
+      transition: "create-app",
+      selectedApp: selectedManagedWebApp(1),
+      correlationKey: "Fixture Web · authoritative",
+      appId: "duplicate-b",
+      publicUrl: null,
+      registrationId: null,
+      diagnostic: "duplicate recovery",
+    });
+    const lifecycle = new BindingLivewarePublicationLifecycle({
+      activationGeneration: 1,
+      upstream: "http://127.0.0.1:47890",
+      selectedApp: selectedManagedWebApp(1),
+      state,
+      controlPlane: remote,
+      registrations: remote,
+    });
+
+    await expect(
+      lifecycle.ensurePrivate({ bindingId: "authoritative", deviceId: "device-authoritative" }),
+    ).resolves.toMatchObject({
+      status: "active",
+      appId: "duplicate-b",
+    });
+    expect(remote.calls.filter((call) => call.startsWith("app:delete:"))).toEqual(["app:delete:duplicate-a"]);
+    expect(remote.registrations.map(({ livewareId }) => livewareId)).toEqual(["duplicate-b"]);
   });
 
   it("marks duplicate correlation-key matches degraded without creating or mutating a remote resource", async () => {
@@ -830,6 +979,10 @@ describe("official Liveware Binding publication lifecycle", () => {
       { bindingId: "official-a", deviceId: "device-official" },
       { bindingId: "official-b", deviceId: "device-official" },
     ];
+    const leaseHealth: Record<string, "ready" | "error"> = {
+      "official-a": "ready",
+      "official-b": "ready",
+    };
     const officialLiveware: OfficialLivewareExposureServices = {
       async listBindings() {
         return bindingTargets;
@@ -848,6 +1001,7 @@ describe("official Liveware Binding publication lifecycle", () => {
           selection: managedWebAppSelection(activationGeneration),
           instanceKey: selectedApp.instanceKey,
           upstream: "http://127.0.0.1:47889",
+          health: () => leaseHealth[bindingId] ?? "error",
           async release() {
             if (released) return;
             released = true;
@@ -877,14 +1031,12 @@ describe("official Liveware Binding publication lifecycle", () => {
     expect((await state.read("official-b"))?.value.selectedApp).toEqual(
       selectedManagedWebApp(12, "managed-web-app:shared-runtime"),
     );
-    expect(remote.apps.map((app) => app.name)).toEqual([
-      "Fixture Web · official-a",
-      "Fixture Web · official-b",
-    ]);
+    expect(remote.apps.map((app) => app.name)).toEqual(["Fixture Web · official-a", "Fixture Web · official-b"]);
     expect(remote.calls.filter((call) => call.endsWith(":http://127.0.0.1:47889"))).toHaveLength(2);
     const managed = dispose as typeof dispose & {
       retire(): Promise<void>;
       retireBindings(bindingIds: readonly string[]): Promise<void>;
+      reconcileManagedWebApps(): Promise<void>;
     };
     remote.failUnregister = true;
     await expect(managed.retireBindings(["official-a"])).rejects.toThrow("ClawChat unregister failed");
@@ -895,19 +1047,18 @@ describe("official Liveware Binding publication lifecycle", () => {
       diagnostic: "ClawChat unregister failed",
       selectedApp: selectedManagedWebApp(12, "managed-web-app:shared-runtime"),
     });
-    expect(remote.apps.map((app) => app.name)).toEqual([
-      "Fixture Web · official-a",
-      "Fixture Web · official-b",
-    ]);
+    expect(remote.apps.map((app) => app.name)).toEqual(["Fixture Web · official-a", "Fixture Web · official-b"]);
     expect(leaseReleases).toBe(0);
     expect(activeSharedLeases).toBe(2);
     expect(leaseActions).toEqual(["acquire:official-a", "acquire:official-b"]);
+    leaseHealth["official-a"] = "error";
+    await managed.reconcileManagedWebApps();
+    expect(leaseReleases).toBe(0);
     // Exercise the real periodic reconciliation boundary: a durable retirement must remain explicit-retry-only.
     await Bun.sleep(1_100);
+    expect(leaseReleases).toBe(0);
     expect(
-      remote.calls.filter((call) =>
-        call.startsWith("registration:delete:official-a:device-official:"),
-      ),
+      remote.calls.filter((call) => call.startsWith("registration:delete:official-a:device-official:")),
     ).toHaveLength(1);
 
     remote.failUnregister = false;
@@ -986,6 +1137,117 @@ describe("official Liveware Binding publication lifecycle", () => {
     });
     await retire?.();
     expect(leaseReleases).toBe(4);
+  });
+
+  it("reacquires a crashed shared App and rebinds both existing Publications to the same product", async () => {
+    const state = new MemoryPublicationStateStore();
+    const remote = new FakePublicationRemote();
+    let provider: ConnectPluginExposureProvider | undefined;
+    const hostCapabilities = {
+      get(id: "runtime-provider" | "durable-state" | "exposure-provider") {
+        if (id === "exposure-provider") {
+          return {
+            interfaceVersion: "1",
+            register(candidate: ConnectPluginExposureProvider) {
+              provider = candidate;
+            },
+          };
+        }
+        if (id === "durable-state") {
+          return {
+            interfaceVersion: "1",
+            forBinding(capabilityId: string, bindingId: string) {
+              if (capabilityId !== "liveware") throw new Error("unexpected Durable State capability");
+              return {
+                async read() {
+                  const record = await state.read(bindingId);
+                  return record ? { schemaVersion: 3, revision: record.revision, value: record.value } : null;
+                },
+                async compareAndSwap(expectedRevision: number | null, value: Readonly<Record<string, unknown>>) {
+                  const record = await state.compareAndSwap(
+                    bindingId,
+                    expectedRevision,
+                    value as BindingLivewarePublicationState,
+                  );
+                  return { schemaVersion: 3, revision: record.revision, value: record.value };
+                },
+              };
+            },
+          };
+        }
+        throw new Error("unexpected Host Capability");
+      },
+    } as ConnectPluginHostCapabilities;
+    await createOfficialLivewarePluginEntry().activate({
+      activationGeneration: 21,
+      interfaceVersion: "1",
+      installationConfiguration: {},
+      hostCapabilities,
+    });
+
+    let health: "ready" | "error" = "ready";
+    let upstream = "http://127.0.0.1:47889";
+    let acquisitions = 0;
+    let releases = 0;
+    const targets = [
+      { bindingId: "recovery-a", deviceId: "device-recovery" },
+      { bindingId: "recovery-b", deviceId: "device-recovery" },
+    ];
+    const officialLiveware: OfficialLivewareExposureServices = {
+      async listBindings() {
+        return targets;
+      },
+      controlPlane: remote,
+      registrations: remote,
+      async acquireManagedWebApp(_bindingId, activationGeneration) {
+        acquisitions += 1;
+        let released = false;
+        return {
+          selection: managedWebAppSelection(activationGeneration),
+          instanceKey: "managed-web-app:shared-runtime",
+          upstream,
+          health: () => health,
+          async release() {
+            if (released) return;
+            released = true;
+            releases += 1;
+          },
+        };
+      },
+    };
+    const dispose = await provider?.activate({
+      activationGeneration: 21,
+      configuration: { accessPolicy: "private" },
+      officialLiveware,
+    } as ConnectPluginExposureActivation & { officialLiveware: OfficialLivewareExposureServices });
+    const managed = dispose as typeof dispose & {
+      reconcileManagedWebApps(): Promise<void>;
+      retire(): Promise<void>;
+    };
+
+    expect(acquisitions).toBe(2);
+    expect(remote.apps).toHaveLength(2);
+    expect(remote.calls.filter((call) => call.endsWith(":http://127.0.0.1:47889"))).toHaveLength(2);
+
+    health = "error";
+    upstream = "http://127.0.0.1:47890";
+    await managed.reconcileManagedWebApps();
+    expect(releases).toBe(2);
+    expect(acquisitions).toBe(2);
+    expect(remote.apps).toHaveLength(2);
+
+    health = "ready";
+    await managed.reconcileManagedWebApps();
+    expect(acquisitions).toBe(4);
+    expect(remote.apps).toHaveLength(2);
+    expect(remote.registrations).toHaveLength(2);
+    expect(remote.calls.filter((call) => call.endsWith(":http://127.0.0.1:47890"))).toHaveLength(2);
+    await expect(state.read("recovery-a")).resolves.toMatchObject({ value: { status: "active" } });
+    await expect(state.read("recovery-b")).resolves.toMatchObject({ value: { status: "active" } });
+
+    await managed.retire();
+    expect(releases).toBe(4);
+    expect(remote.apps).toHaveLength(0);
   });
 
   it("does not publish Bindings whose Runtime has no selected Managed Web App", async () => {

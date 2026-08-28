@@ -1,6 +1,6 @@
 import { Context } from "cordis";
 import type { PersistenceService } from "../persistence/service";
-import { mountMandatoryPluginHost, type ConnectPluginHost } from "../plugin/host";
+import { type ConnectPluginHost, mountMandatoryPluginHost } from "../plugin/host";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { ConnectConfig } from "../types";
 import { createBindingRuntimeLifecycle } from "./binding-runtime-lifecycle";
@@ -12,7 +12,7 @@ import {
   type ConnectSurfaceResult,
   mountMandatorySurfaceModules,
 } from "./connect-surface-modules";
-import { startCoreControl, type CoreControlHandle } from "./core-control";
+import { type CoreControlHandle, startCoreControl } from "./core-control";
 
 interface ConnectRootLifecycleOptions {
   persistence: PersistenceService;
@@ -65,7 +65,12 @@ export async function runConnectRootLifecycle(options: ConnectRootLifecycleOptio
       bindingRuntimeLifecycle,
     );
     disposeSurfaces = surfaces.dispose;
-    coreControl = await startCoreControl(options.configPath, pluginHost);
+    coreControl = await startCoreControl(
+      options.configPath,
+      pluginHost,
+      undefined,
+      bindingRuntimeLifecycle.retireBindings,
+    );
     await options.waitUntilShutdown();
     return surfaces.result;
   } finally {

@@ -7,13 +7,13 @@ import {
   type DeepSeekHarnessRuntimeAdapterOptions,
 } from "../../runtime/deepseek-harness-adapter";
 import { canonicalDshHome } from "../../runtime/deepseek-harness-identity";
-import { canonicalExecutableIdentity } from "../../runtime/executable-identity";
 import { type DshExecutableProbe, requireDshExecutable } from "../../runtime/deepseek-harness-process";
 import {
   canonicalDshWebEnvironmentOverrides,
-  startDshWebApp,
   type StartDshWebAppOptions,
+  startDshWebApp,
 } from "../../runtime/deepseek-harness-web-process";
+import { canonicalExecutableIdentity } from "../../runtime/executable-identity";
 import { CONNECT_VERSION } from "../../service/version";
 import type {
   ConnectPluginConfiguration,
@@ -83,6 +83,7 @@ export function createDeepSeekHarnessOfficialPluginEntry(
 interface DeepSeekHarnessWebScope {
   readonly key: string;
   readonly executable: string;
+  readonly executableArguments: readonly string[];
   readonly executableIdentity: string;
   readonly home: string;
   readonly env: Readonly<Record<string, string>>;
@@ -93,8 +94,7 @@ function deepSeekHarnessWebProvider(
   options: DeepSeekHarnessOfficialPluginEntryOptions,
   activeHomes: Map<string, { executableIdentity: string; instances: number }>,
 ): ConnectPluginManagedWebAppProvider {
-  const probeExecutable =
-    options.webApp?.probeExecutable ?? options.runtimeAdapter?.probeExecutable ?? requireDshExecutable;
+  const probeExecutable = options.webApp?.probeExecutable ?? requireDshExecutable;
   const start = options.webApp?.start ?? startDshWebApp;
   return {
     capabilityId: DEEPSEEK_HARNESS_WEB_APP_CAPABILITY_ID,
@@ -110,6 +110,7 @@ function deepSeekHarnessWebProvider(
       try {
         const instance = await start({
           executable: scope.executable,
+          executableArguments: scope.executableArguments,
           home: scope.home,
           env: scope.env,
         });
@@ -149,15 +150,15 @@ function deepSeekHarnessWebScope(
   const runtime = context.runtimeConfiguration as Partial<DeepSeekHarnessRuntimeAdapterBinding>;
   const configuredEnvironment = runtime.env;
   const configuredExecutable = runtime.executablePathOverride ?? installation.executablePath;
-  const executable = canonicalExecutableIdentity(
-    probeExecutable(configuredExecutable, configuredEnvironment).path,
-    "DeepSeek Harness",
-  );
+  const probe = probeExecutable(configuredExecutable, configuredEnvironment);
+  const executable = canonicalExecutableIdentity(probe.path, "DeepSeek Harness");
+  const executableArguments = Object.freeze([...(probe.executableArguments ?? [])]);
   const home = canonicalDshHome(runtime.homePath, configuredEnvironment);
   const env = canonicalDshWebEnvironmentOverrides(home, configuredEnvironment);
   return {
     key: JSON.stringify({
       executable: executable.identity,
+      executableArguments,
       home,
       web: {
         host: "127.0.0.1",
@@ -167,6 +168,7 @@ function deepSeekHarnessWebScope(
       },
     }),
     executable: executable.path,
+    executableArguments,
     executableIdentity: executable.identity,
     home,
     env,
@@ -174,9 +176,7 @@ function deepSeekHarnessWebScope(
 }
 
 function environmentIdentity(environment: Readonly<Record<string, string>>): string {
-  const entries = Object.entries(environment).sort(([left], [right]) =>
-    left < right ? -1 : left > right ? 1 : 0,
-  );
+  const entries = Object.entries(environment).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
   return `sha256:${createHash("sha256").update(JSON.stringify(entries)).digest("hex")}`;
 }
 
@@ -187,9 +187,7 @@ function claimDshHome(
 ): () => void {
   const active = activeHomes.get(home);
   if (active && active.executableIdentity !== executableIdentity) {
-    throw new Error(
-      `DSH Web Home ${home} is already active under a different DeepSeek Harness executable identity`,
-    );
+    throw new Error(`DSH Web Home ${home} is already active under a different DeepSeek Harness executable identity`);
   }
   if (active) active.instances += 1;
   else activeHomes.set(home, { executableIdentity, instances: 1 });

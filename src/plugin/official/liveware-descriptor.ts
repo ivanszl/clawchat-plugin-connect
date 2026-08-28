@@ -45,7 +45,10 @@ const descriptor: OfficialPluginDescriptor = {
           schemaVersion: LIVEWARE_PUBLICATION_STATE_SCHEMA_VERSION,
           lifetime: "binding",
           schema: LIVEWARE_DURABLE_STATE_SCHEMA,
-          migrations: [],
+          migrations: [
+            { from: 1, to: 2 },
+            { from: 2, to: 3 },
+          ],
         },
       },
     ],

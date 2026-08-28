@@ -14,7 +14,6 @@ import {
 import { defaultConfig, getAgentBinding, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
-import type { ConnectPluginContext } from "../src/plugin/sdk";
 import {
   commitStagedPlugin,
   listInstalledPlugins,
@@ -27,13 +26,6 @@ import { startBindingRuntime } from "../src/service/binding-runtime";
 import { runConnectCli } from "../src/service/cli";
 import { startConnectService } from "../src/service/connect-service";
 import type { ActivationCredentials } from "../src/types";
-
-const PUBLIC_CONTEXT_KEYS: Array<keyof ConnectPluginContext> = [
-  "activationGeneration",
-  "hostCapabilities",
-  "installationConfiguration",
-  "interfaceVersion",
-];
 
 interface ReferenceExposureFixture {
   readonly activationKeys: string[];
@@ -98,7 +90,6 @@ function activation(agentId: string): ActivationCredentials {
     conversationId: `chat-${agentId}`,
   };
 }
-
 
 async function installOfficialFixture(configPath: string, bundlePath: string) {
   const bundle = await readConnectPluginBundle(bundlePath);
@@ -225,7 +216,6 @@ describe("official multi-capability Plugin platform", () => {
     expect(registry.modesFor(getAgentBinding(config, "trace-beta"))).toEqual(["trace"]);
     await expect(stateStore.getRuntimeStatus("trace-alpha")).resolves.toMatchObject({ websocketConnected: true });
     await expect(stateStore.getRuntimeStatus("trace-beta")).resolves.toMatchObject({ websocketConnected: true });
-
 
     const output: string[] = [];
     await expect(

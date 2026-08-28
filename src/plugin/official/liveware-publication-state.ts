@@ -246,10 +246,7 @@ export function resetBindingLivewarePublicationState(
   };
 }
 
-function selectedAppState(
-  value: unknown,
-  bindingId: string,
-): BindingLivewarePublicationState["selectedApp"] {
+function selectedAppState(value: unknown, bindingId: string): BindingLivewarePublicationState["selectedApp"] {
   if (value === null) return null;
   if (!isRecord(value)) {
     throw new Error(`Binding Liveware Publication ${bindingId} state has no exact selected Managed Web App`);
@@ -278,7 +275,6 @@ function selectedAppState(
     description: requiredText(value.description, "selected Managed Web App description"),
   };
 }
-
 
 function requiredText(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim() || value !== value.trim()) {

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { assembleAssetDirectories, type AssetDirectoryDescriptor } from "./asset-directory";
+import { type AssetDirectoryDescriptor, assembleAssetDirectories } from "./asset-directory";
 import { CONNECT_PLUGIN_BUNDLE_FORMAT, type ConnectPluginBundleV1, type ConnectPluginManifestV1 } from "./sdk";
 import { connectPluginBundleFileBytes, parseConnectPluginBundle, verifyConnectPluginIntegrity } from "./store";
 

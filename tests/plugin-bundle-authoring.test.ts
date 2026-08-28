@@ -149,14 +149,19 @@ describe("public Plugin Bundle authoring", () => {
       ...authorManifest(),
       dependencies: [],
       capabilities: [
-        { id: "client", type: "client-extension", managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }, interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-        configurationSchema: { type: "object", additionalProperties: false },
-        browser: {
-          entry: "browser/client.mjs",
-          integrity: integrity(browser),
-          styles: [{ entry: "browser/client.css", integrity: integrity(style) }],
-          slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 20 }],
-        }, },
+        {
+          id: "client",
+          type: "client-extension",
+          managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" },
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: { type: "object", additionalProperties: false },
+          browser: {
+            entry: "browser/client.mjs",
+            integrity: integrity(browser),
+            styles: [{ entry: "browser/client.css", integrity: integrity(style) }],
+            slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 20 }],
+          },
+        },
       ],
     };
 
@@ -191,14 +196,19 @@ describe("public Plugin Bundle authoring", () => {
       ...authorManifest(),
       dependencies: [],
       capabilities: [
-        { id: "client", type: "client-extension", managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" }, interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
-        configurationSchema: { type: "object", additionalProperties: false },
-        browser: {
-          entry: "browser/client.mjs",
-          integrity: integrity(browser),
-          styles: [{ entry: "browser/client.css", integrity: integrity(style) }],
-          slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 20 }],
-        }, },
+        {
+          id: "client",
+          type: "client-extension",
+          managedWebApp: { pluginId: "clawling.web.connect-client", capabilityId: "connect-client" },
+          interfaceVersion: CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
+          configurationSchema: { type: "object", additionalProperties: false },
+          browser: {
+            entry: "browser/client.mjs",
+            integrity: integrity(browser),
+            styles: [{ entry: "browser/client.css", integrity: integrity(style) }],
+            slots: [{ id: "kernel.root.after", interfaceVersion: "1", priority: 20 }],
+          },
+        },
       ],
     };
     await writeFile(project.manifestPath, JSON.stringify(manifest));
@@ -361,9 +371,7 @@ describe("public Plugin Bundle authoring", () => {
         compatibleRuntimes: [{ pluginId: "example.other", capabilityId: "runtime" }],
       }),
     );
-    const schema = await Bun.file(
-      new URL("../src/plugin/connect-plugin-manifest.schema.json", import.meta.url),
-    ).json();
+    const schema = await Bun.file(new URL("../src/plugin/connect-plugin-manifest.schema.json", import.meta.url)).json();
     expect(new Ajv2020({ strict: true }).compile(schema)(manifest)).toBe(true);
 
     await expect(

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { ManagedWebAppRegistry } from "../src/plugin/managed-web-app-registry";
-import type {
-  ConnectPluginManagedWebAppInstance,
-  ConnectPluginManagedWebAppProvider,
-} from "../src/plugin/sdk";
+import type { ConnectPluginManagedWebAppInstance, ConnectPluginManagedWebAppProvider } from "../src/plugin/sdk";
 
 const runtime = { pluginId: "example.runtime", capabilityId: "runtime" } as const;
 
@@ -163,9 +160,7 @@ describe("Managed Web App cleanup recovery", () => {
     });
     await registry.acquire(request("one"));
 
-    await expect(registry.close()).rejects.toThrow(
-      "Managed Web App Registry could not stop every Instance",
-    );
+    await expect(registry.close()).rejects.toThrow("Managed Web App Registry could not stop every Instance");
     expect(registry.snapshots()).toHaveLength(1);
     await expect(registry.close()).resolves.toBeUndefined();
     expect(releases).toBe(2);

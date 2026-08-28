@@ -274,8 +274,7 @@ export interface ConnectPluginManagedWebAppInstanceContext {
   readonly runtimeConfiguration: ConnectPluginConfiguration;
 }
 
-export interface ConnectPluginManagedWebAppAcquireContext
-  extends ConnectPluginManagedWebAppInstanceContext {
+export interface ConnectPluginManagedWebAppAcquireContext extends ConnectPluginManagedWebAppInstanceContext {
   readonly instanceKey: string;
 }
 
@@ -304,7 +303,6 @@ export interface ConnectDurableStateHostCapability {
   readonly interfaceVersion: typeof CONNECT_HOST_CAPABILITY_INTERFACE_VERSION;
   forBinding(capabilityId: ConnectPluginCapabilityId, bindingId: string): ConnectPluginDurableState;
 }
-
 
 export interface ConnectPluginExposureActivation {
   readonly activationGeneration: number;

@@ -134,12 +134,14 @@ returned candidate, and calls readiness verification again at adoption time.
 | `clawling.runtime.opencode/opencode` | OpenCode | `opencode serve` | agent, provider-qualified model, variant | yes | yes | yes | disabled | retrospective audit required |
 | `clawling.runtime.workbuddy/workbuddy-ai` | WorkBuddy | ACP / CodeBuddy stdio | capability-owned | yes | yes | no | no | retrospective audit required |
 | `clawling.runtime.workbuddy/workbuddy-cn` | WorkBuddy | ACP / CodeBuddy stdio | capability-owned | yes | yes | no | no | retrospective audit required |
-| `clawling.runtime.deepseek-harness/deepseek-harness` | DeepSeek Harness | one native `dsh` process plus paired inherited-pipe Bridge per Binding | model/reasoning, Agent Preset, Permission Preset, Commands, Skills | yes | yes | no | archive only when the Profile supplies Workspace Registry | [complete profile](../.scratch/deepseek-harness-integration/spec.md#runtime-adapter-capability-profile) |
+| `clawling.runtime.deepseek-harness/deepseek-harness` | DeepSeek Harness | one native `dsh` or package-launched `@deepseek-ai/dsh` process plus paired inherited-pipe Bridge per Binding | model/reasoning, Agent Preset, Permission Preset, Commands, Skills | yes | yes | no | archive only when the Profile supplies Workspace Registry | [complete profile](../.scratch/deepseek-harness-integration/spec.md#runtime-adapter-capability-profile) |
 
 Runtime executable compatibility is declared by each official Plugin Bundle. DeepSeek Harness deliberately applies no
 DSH version or internal component-graph allowlist: successful native boot, the paired Bridge protocol, and independently
-reported native capabilities define its active surface. Connect does not automatically install or upgrade any runtime
-executable.
+reported native capabilities define its active surface. Its Binding Runtime and independent Web Provider prefer an explicit
+or installed `dsh` and otherwise execute `@deepseek-ai/dsh` through the first available supported package launcher:
+`bunx`, then `npx`, then `pnpm dlx`. The Web Provider appends only the official `web` arguments. The selected launcher
+owns package resolution and its user cache. Connect does not automatically install or upgrade any other runtime executable.
 
 ## Deferred native capability verification
 

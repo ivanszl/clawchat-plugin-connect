@@ -1,5 +1,5 @@
+import type { ConfigurePluginOptions, ConnectPluginHost, ManagePluginOptions } from "../plugin/host";
 import type { ManagedWebAppLease } from "../plugin/managed-web-app-registry";
-import type { ConnectPluginHost, ConfigurePluginOptions, ManagePluginOptions } from "../plugin/host";
 import { CONNECT_CLIENT_MANAGED_WEB_APP_REF } from "../plugin/official/connect-client-manifest";
 import type { ManagedWebAppGenerationReference } from "../plugin/sdk";
 
@@ -7,6 +7,7 @@ export const CORE_CONTROL_HOST = "127.0.0.1" as const;
 export const CORE_CONTROL_PORT = 47_822 as const;
 export const CORE_CONTROL_ORIGIN = `http://${CORE_CONTROL_HOST}:${CORE_CONTROL_PORT}` as const;
 export const CORE_CONTROL_CONFIG_HEADER = "X-ClawChat-Connect-Core-Config-Path" as const;
+export const CORE_BINDING_RETIRE_PATH = "/core/v1/bindings/retire" as const;
 const CORE_PLUGIN_PATH = "/core/v1/plugins" as const;
 const CORE_STATUS_PATH = "/core/v1/status" as const;
 export const CORE_CLIENT_PATH = "/core/v1/client" as const;
@@ -35,6 +36,7 @@ export async function startCoreControl(
   pluginHost: ConnectPluginHost,
   serverFactory: (options: CoreControlServerFactoryOptions) => CoreControlServerHandle = (options) =>
     Bun.serve(options),
+  retireRuntimeBindings: (bindingIds: readonly string[]) => Promise<void> = async () => undefined,
 ): Promise<CoreControlHandle> {
   const clientLeases = new Map<string, ManagedWebAppLease>();
   const retireClientLeases = async (reference: ManagedWebAppGenerationReference): Promise<void> => {
@@ -46,6 +48,14 @@ export async function startCoreControl(
       ) {
         continue;
       }
+      await lease.release();
+      clientLeases.delete(bindingId);
+    }
+  };
+  const retireBindingClientLeases = async (bindingIds: readonly string[]): Promise<void> => {
+    for (const bindingId of bindingIds) {
+      const lease = clientLeases.get(bindingId);
+      if (!lease) continue;
       await lease.release();
       clientLeases.delete(bindingId);
     }
@@ -66,6 +76,7 @@ export async function startCoreControl(
           url.origin !== CORE_CONTROL_ORIGIN ||
           (url.pathname !== CORE_STATUS_PATH &&
             url.pathname !== CORE_CLIENT_PATH &&
+            url.pathname !== CORE_BINDING_RETIRE_PATH &&
             !url.pathname.startsWith(CORE_PLUGIN_PATH))
         ) {
           return jsonError(404, "Core control endpoint was not found");
@@ -92,19 +103,28 @@ export async function startCoreControl(
           }
           if (!lease) {
             lease =
-              (await pluginHost.acquireManagedWebApp(
-                body.bindingId,
-                CONNECT_CLIENT_MANAGED_WEB_APP_REF,
-              )) ?? undefined;
+              (await pluginHost.acquireManagedWebApp(body.bindingId, CONNECT_CLIENT_MANAGED_WEB_APP_REF)) ?? undefined;
             if (!lease) {
-              return jsonError(
-                404,
-                `No active Connect Client supports Agent Binding ${body.bindingId}`,
-              );
+              return jsonError(404, `No active Connect Client supports Agent Binding ${body.bindingId}`);
             }
             clientLeases.set(body.bindingId, lease);
           }
           return json({ origin: lease.upstream });
+        }
+        if (url.pathname === CORE_BINDING_RETIRE_PATH && request.method === "POST") {
+          const body = await readJson<{ bindingIds?: unknown }>(request);
+          if (
+            !Array.isArray(body.bindingIds) ||
+            body.bindingIds.length === 0 ||
+            body.bindingIds.some((bindingId) => typeof bindingId !== "string" || !bindingId.trim())
+          ) {
+            return jsonError(400, "Binding retirement requires exact Agent Binding identities");
+          }
+          const bindingIds = [...new Set(body.bindingIds as string[])].sort();
+          await pluginHost.retireBindings(bindingIds);
+          await retireBindingClientLeases(bindingIds);
+          await retireRuntimeBindings(bindingIds);
+          return json({ retiredBindingIds: bindingIds });
         }
         return await routePluginRequest(pluginHost, request, url);
       } catch (error) {
@@ -121,9 +141,7 @@ export async function startCoreControl(
           clientLeases.delete(bindingId);
         }),
       );
-      const failures = releases.filter(
-        (result): result is PromiseRejectedResult => result.status === "rejected",
-      );
+      const failures = releases.filter((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failures.length > 0) {
         throw new AggregateError(
           failures.map((failure) => failure.reason),
@@ -136,11 +154,7 @@ export async function startCoreControl(
   };
 }
 
-async function routePluginRequest(
-  host: ConnectPluginHost,
-  request: Request,
-  url: URL,
-): Promise<Response> {
+async function routePluginRequest(host: ConnectPluginHost, request: Request, url: URL): Promise<Response> {
   const suffix = url.pathname.slice(CORE_PLUGIN_PATH.length);
   if (suffix === "" && request.method === "GET") return json(await host.list());
   if (suffix === "" && request.method === "POST") {
@@ -158,10 +172,14 @@ async function routePluginRequest(
   const pluginId = segments[0];
   if (!pluginId || segments.length > 2) return jsonError(404, "Core control endpoint was not found");
   const action = segments[1];
-  if (!action && request.method === "DELETE") return json(await host.remove(pluginId, url.searchParams.get("force") === "1"));
+  if (!action && request.method === "DELETE")
+    return json(await host.remove(pluginId, url.searchParams.get("force") === "1"));
   if (request.method !== "POST" || !action) return jsonError(404, "Core control endpoint was not found");
-  if (action === "update") return json(await host.update(pluginId, await readJson<Partial<ManagePluginOptions>>(request)));
-  if (action === "configure") return json(await host.configure(pluginId, await readJson<ConfigurePluginOptions>(request)));
+  if (action === "update")
+    return json(await host.update(pluginId, await readJson<Partial<ManagePluginOptions>>(request)));
+  if (action === "replace") return json(await host.replace(pluginId, await readJson<ManagePluginOptions>(request)));
+  if (action === "configure")
+    return json(await host.configure(pluginId, await readJson<ConfigurePluginOptions>(request)));
   if (action === "enable") return json(await host.enable(pluginId));
   if (action === "disable") return json(await host.disable(pluginId));
   if (action === "select") {

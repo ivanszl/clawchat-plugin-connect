@@ -36,8 +36,8 @@ import {
 } from "../config";
 import { type ConnectStateStore, createStateStore, type ToolRequestRecord } from "../persistence/state";
 import { createAgentBinding } from "../plugin/binding";
-import { selectManagedWebApp } from "../plugin/managed-web-app-registry";
 import { type ManagedWebAppControlStatus, validateInstalledRuntimeBinding } from "../plugin/host";
+import { selectManagedWebApp } from "../plugin/managed-web-app-registry";
 import {
   CONNECT_CLIENT_MANAGED_WEB_APP_CAPABILITY_ID,
   CONNECT_CLIENT_PLUGIN_ID,
@@ -64,12 +64,8 @@ import {
   type BackgroundServiceAction,
   manageBackgroundService as manageBackgroundServiceDefault,
 } from "./background-service";
-import {
-  CORE_CLIENT_PATH,
-  CORE_CONTROL_CONFIG_HEADER,
-  CORE_CONTROL_ORIGIN,
-} from "./core-control";
 import { startConnectService as startConnectServiceDefault } from "./connect-service";
+import { CORE_CLIENT_PATH, CORE_CONTROL_CONFIG_HEADER, CORE_CONTROL_ORIGIN } from "./core-control";
 import { updateConnect as updateConnectDefault } from "./update";
 import { CONNECT_VERSION } from "./version";
 
@@ -114,6 +110,7 @@ const HELP_TEXT = `${[
   "  owner reset [--yes-reset-owner] [--config <path>]",
   "  plugin install <local-path|npm:package[@version]|github:owner/repo[@release]> [--installation-config-json <object>] [--capability-config-json <object>] [--config <path>]",
   "  plugin update <id> [source] [--installation-config-json <object>] [--capability-config-json <object>] [--config <path>]",
+  "  plugin replace <id> <local-path|npm:package[@version]|github:owner/repo[@release]> [--installation-config-json <object>] [--capability-config-json <object>] [--config <path>]",
   "  plugin setup [--non-interactive --select <id,id>] [--deselect <id,id>] [--config <path>]",
   "  plugin enable|disable <id> [--config <path>]",
   "  plugin remove <id> [--force] [--config <path>]",
@@ -315,10 +312,7 @@ export async function runConnectCli(argv: string[], deps: ConnectCliDeps = {}): 
       const publications = agentId
         ? (await store.listPluginDurableState("clawling.exposure.liveware"))
             .filter((snapshot) => snapshot.namespace.instanceId === agentId)
-            .sort(
-              (left, right) =>
-                right.namespace.activationGeneration - left.namespace.activationGeneration,
-            )
+            .sort((left, right) => right.namespace.activationGeneration - left.namespace.activationGeneration)
         : [];
       await store.close();
       const installed = await listInstalledPlugins(configPath);
@@ -666,8 +660,7 @@ async function maybeRunWebCommand(
         plugin.status === "active" &&
         plugin.manifest.capabilities.some(
           (capability) =>
-            capability.type === "managed-web-app" &&
-            capability.id === CONNECT_CLIENT_MANAGED_WEB_APP_CAPABILITY_ID,
+            capability.type === "managed-web-app" && capability.id === CONNECT_CLIENT_MANAGED_WEB_APP_CAPABILITY_ID,
         ),
     );
     if (!installed) {
@@ -699,9 +692,7 @@ async function maybeRunWebCommand(
       }
       if (response.status === 404) continue;
       if (!response.ok) {
-        const detail = (await response.json().catch(() => null)) as
-          | { error?: { message?: string } }
-          | null;
+        const detail = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
         throw new Error(detail?.error?.message ?? `Connect Client acquisition failed (HTTP ${response.status})`);
       }
       const body = (await response.json()) as { origin?: unknown };
@@ -944,6 +935,18 @@ async function maybeRunPluginCommand(
       io.writeStdout(formatPluginOperation("Updated", managed));
       return 0;
     }
+    if (action === "replace") {
+      const candidate = argv[3];
+      if (!candidate || candidate.startsWith("--")) throw new Error("plugin replace requires a Plugin source");
+      managed = await request(
+        `/${encodeURIComponent(pluginId)}/replace`,
+        "POST",
+        sourceConfiguration(cliPluginSource(candidate)),
+      );
+      io.writeStdout(formatPluginOperation("Replaced", managed));
+      return 0;
+    }
+
     if (action === "enable" || action === "disable") {
       managed = await request(`/${encodeURIComponent(pluginId)}/${action}`, "POST", {});
       io.writeStdout(formatPluginOperation(action === "enable" ? "Enabled" : "Disabled", managed));
@@ -965,7 +968,9 @@ async function maybeRunPluginCommand(
       io.writeStdout(formatPluginOperation("Selected", managed));
       return 0;
     }
-    throw new Error("plugin action must be one of: install, update, setup, enable, disable, remove, select, list");
+    throw new Error(
+      "plugin action must be one of: install, update, replace, setup, enable, disable, remove, select, list",
+    );
   } catch (error) {
     io.writeStderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
@@ -1016,9 +1021,7 @@ function formatPluginCapabilities(installed: InstalledPluginLockEntry): string {
       const native = capability.nativeRuntimeCapabilityIds.map(
         (capabilityId) => `${installed.pluginId}/${capabilityId}`,
       );
-      const compatible = capability.compatibleRuntimes.map(
-        (runtime) => `${runtime.pluginId}/${runtime.capabilityId}`,
-      );
+      const compatible = capability.compatibleRuntimes.map((runtime) => `${runtime.pluginId}/${runtime.capabilityId}`);
       return `${capability.id} (managed-web-app:${capability.displayName}; native: ${
         native.length > 0 ? native.join("|") : "none"
       }; compatible: ${compatible.length > 0 ? compatible.join("|") : "none"})`;
@@ -1342,17 +1345,13 @@ function readPublicationControlStatus(value: unknown): PublicationControlStatus 
   return {
     status: typeof record.status === "string" ? record.status : "none",
     transition: typeof record.transition === "string" ? record.transition : null,
-    diagnostic:
-      typeof record.diagnostic === "string" ? secretSafeDiagnostic(record.diagnostic) : null,
+    diagnostic: typeof record.diagnostic === "string" ? secretSafeDiagnostic(record.diagnostic) : null,
   };
 }
 
 function secretSafeDiagnostic(value: string): string {
   return value
-    .replace(
-      /(authorization|credential|password|secret|token|api[-_ ]?key)\s*[:=]\s*\S+/giu,
-      "$1=[redacted]",
-    )
+    .replace(/(authorization|credential|password|secret|token|api[-_ ]?key)\s*[:=]\s*\S+/giu, "$1=[redacted]")
     .replace(/https?:\/\/[^/@\s]+:[^/@\s]+@/gu, "http://[redacted]@")
     .slice(0, 512);
 }
@@ -1403,9 +1402,7 @@ function managedWebAppStatusLines(
       running.instance
         ? `app instance: ${running.instance.instanceKey} [${running.instance.health}], leases: ${running.instance.leaseCount}`
         : "app instance: [stopped], leases: 0",
-      ...(running.instance?.diagnostic
-        ? [`app diagnostic: ${secretSafeDiagnostic(running.instance.diagnostic)}`]
-        : []),
+      ...(running.instance?.diagnostic ? [`app diagnostic: ${secretSafeDiagnostic(running.instance.diagnostic)}`] : []),
     ];
   }
   const selected = selectManagedWebApp(

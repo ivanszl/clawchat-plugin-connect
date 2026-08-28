@@ -71,7 +71,7 @@ A native contribution always wins over a compatibility contribution. Selection c
 
 Official native Providers:
 
-- the DeepSeek Harness Runtime Bundle contributes a DSH Web Provider that owns a separate `dsh web` process;
+- the DeepSeek Harness Runtime Bundle contributes a DSH Web Provider that owns a separate official `dsh web` product, using the configured or installed `dsh` when available and otherwise launching `@deepseek-ai/dsh web` through the first available supported package launcher (`bunx`, `npx`, or `pnpm dlx`);
 - the OpenCode Runtime Bundle contributes an OpenCode Web Provider that owns a separate `opencode web` process.
 
 Those Web processes are independent of the Binding Runtime processes used for ClawChat execution. They retain upstream authentication, Sessions, Interactions, and presentation.

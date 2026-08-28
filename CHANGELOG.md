@@ -7,7 +7,7 @@ All notable changes to ClawChat Connect are documented in this file.
 ### Added
 
 - Added the official DeepSeek Harness Runtime Plugin with native Session discovery/resume, model and preset options, approvals/questions, Commands, Skills, cancellation, rich input, runtime-owned Profile composition, and capability-gated archive support.
-- Added native Managed Web App contributions to the official DeepSeek Harness and OpenCode Runtime Bundles, supervising independent `dsh web` and `opencode web` products without merging their authentication, Sessions, or Interactions into Connect.
+- Added native Managed Web App contributions to the official DeepSeek Harness and OpenCode Runtime Bundles, supervising independent `dsh web` and `opencode web` products without merging their authentication, Sessions, or Interactions into Connect. The DSH Web Provider uses an explicit or installed `dsh` when available and otherwise launches the published package through the first available supported package launcher (`bunx`, `npx`, or `pnpm dlx`).
 - Added the optional complete `clawling.web.connect-client` Plugin Bundle for exact Codex and WorkBuddy compatibility, including its server entry, complete browser graph, App-scoped extensions, and auxiliary asset integrity manifest.
 - Added native-first exact Managed Web App selection, Provider-owned Instance keys, generation-fenced loopback leases, and CLI-only administration for valid headless Bindings.
 
@@ -33,6 +33,9 @@ All notable changes to ClawChat Connect are documented in this file.
 - Downgraded native `bypassPermissions` Tasks to no approval Interaction capability because they execute without emitting an ACP permission request; Connect does not synthesize one.
 - Kept each ClawChat Binding's signed-in WebSocket and control commands available when WorkBuddy preparation reports an availability error, recovering retryable failures in the background without retrying unsupported capabilities; a later Core retry failure still shuts down only that Binding.
 - Isolated WorkBuddy discovery failures per Binding in the shared Liveware catalog, preserving durable Session entries and stored Transcript reads while disabling adoption, prompt submission, and unsafe actions, and reporting scoped `unsupported`, `unavailable`, or `conflict` slash capability instead of a server error.
+- Made packaged standalone binaries exclude build-only Vite/Rolldown bindings and added a packaged `skills preflight` release gate before archive creation.
+- Added atomic replacement of already-installed official Plugins, including recovery when an old local lock source disappeared, while preserving source immutability for ordinary updates.
+- Migrated legacy Liveware schema-v1 Publications into schema v3, retired obsolete and duplicate Apps through authoritative Binding state, and reconciled newly installed or startup-activated Managed Web Apps into one rebuilt launcher per eligible Binding.
 
 ## [0.1.0-beta.8] - 2026-08-17
 

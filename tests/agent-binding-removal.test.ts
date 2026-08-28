@@ -12,7 +12,7 @@ import { WorkspaceCatalog } from "../src/workspaces/workspaces";
 import { pluginBinding } from "./runtime-adapter-fixture";
 
 describe("Agent Binding removal", () => {
-  it("stops Connect, retires only that Binding's Exposure, and purges its catalog data", async () => {
+  it("retires only the running Binding without stopping survivor Publications or runtimes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-remove-binding-"));
     const configPath = join(directory, "config.json");
     const config = defaultConfig();
@@ -89,24 +89,19 @@ describe("Agent Binding removal", () => {
       actions.push("status");
       return { running: true };
     });
-    const stopService = mock(async () => {
-      actions.push("stop");
-    });
-    const startService = mock(async () => {
-      actions.push("start");
+    const retireRunningBindings = mock(async (bindingIds: readonly string[]) => {
+      for (const bindingId of bindingIds) actions.push(`retire-running:${bindingId}`);
     });
     const retireLivewarePublications = mock(async (bindingIds: readonly string[]) => {
-      for (const bindingId of bindingIds) {
-        actions.push(`retire:${bindingId}`);
-      }
+      for (const bindingId of bindingIds) actions.push(`retire-offline:${bindingId}`);
     });
 
     await removeAgentBinding(
       { agentId: "work", configPath },
-      { store, getServiceStatus, stopService, startService, retireLivewarePublications },
+      { store, getServiceStatus, retireRunningBindings, retireLivewarePublications },
     );
 
-    expect(actions).toEqual(["status", "stop", "retire:work", "start"]);
+    expect(actions).toEqual(["status", "retire-running:work"]);
     await expect(loadConfig(configPath)).resolves.toMatchObject({
       defaultAgent: "personal",
       agents: { personal: pluginBinding() },
@@ -170,14 +165,8 @@ describe("Agent Binding removal", () => {
             actions.push("status");
             return { running: true };
           },
-          stopService: async () => {
-            actions.push("stop");
-          },
-          startService: async () => {
-            actions.push("start");
-          },
-          retireLivewarePublications: async () => {
-            actions.push("retire");
+          retireRunningBindings: async () => {
+            actions.push("retire-running");
             const current = await publicationState.read("work");
             if (!current) throw new Error("expected publication state");
             await publicationState.compareAndSwap("work", current.revision, {
@@ -189,11 +178,14 @@ describe("Agent Binding removal", () => {
             });
             throw new Error("remote App deletion failed");
           },
+          retireLivewarePublications: async () => {
+            actions.push("retire-offline");
+          },
         },
       ),
     ).rejects.toThrow("remote App deletion failed");
 
-    expect(actions).toEqual(["status", "stop", "retire", "start"]);
+    expect(actions).toEqual(["status", "retire-running"]);
     await expect(loadConfig(configPath)).resolves.toMatchObject({
       defaultAgent: "work",
       agents: { work: pluginBinding() },

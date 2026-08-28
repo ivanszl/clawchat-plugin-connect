@@ -22,8 +22,7 @@ export function deriveClientExtensionGraph(
       plugin.manifest.capabilities
         .filter(
           (capability): capability is ConnectPluginClientExtensionCapabilityManifest =>
-            capability.type === "client-extension" &&
-            sameCapabilityRef(capability.managedWebApp, managedWebApp),
+            capability.type === "client-extension" && sameCapabilityRef(capability.managedWebApp, managedWebApp),
         )
         .map((capability): ClientExtensionView => {
           const artifactBase = `${CLIENT_EXTENSION_ARTIFACT_PREFIX}/${encodeURIComponent(managedWebApp.pluginId)}/${encodeURIComponent(managedWebApp.capabilityId)}/${encodeURIComponent(plugin.pluginId)}/${plugin.activationGeneration}/${encodeURIComponent(capability.id)}`;
@@ -57,8 +56,7 @@ export function deriveClientExtensionGraph(
     .filter((plugin) =>
       plugin.manifest.capabilities.some(
         (capability) =>
-          capability.type === "client-extension" &&
-          sameCapabilityRef(capability.managedWebApp, managedWebApp),
+          capability.type === "client-extension" && sameCapabilityRef(capability.managedWebApp, managedWebApp),
       ),
     )
     .map((plugin) => ({
@@ -117,10 +115,7 @@ export function resolveClientExtensionArtifact(
   };
 }
 
-function sameCapabilityRef(
-  left: Readonly<RuntimeCapabilityRef>,
-  right: Readonly<RuntimeCapabilityRef>,
-): boolean {
+function sameCapabilityRef(left: Readonly<RuntimeCapabilityRef>, right: Readonly<RuntimeCapabilityRef>): boolean {
   return left.pluginId === right.pluginId && left.capabilityId === right.capabilityId;
 }
 

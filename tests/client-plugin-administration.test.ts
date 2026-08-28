@@ -23,8 +23,8 @@ import {
   type ConnectPluginManagement,
   type ManagePluginOptions,
 } from "../src/plugin/host";
-import type { OfficialPluginDiscovery } from "../src/plugin/official-registry";
 import { CONNECT_CLIENT_MANAGED_WEB_APP_REF } from "../src/plugin/official/connect-client-manifest";
+import type { OfficialPluginDiscovery } from "../src/plugin/official-registry";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_BUNDLE_FORMAT,

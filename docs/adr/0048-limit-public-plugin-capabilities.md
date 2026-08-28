@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0065
 ---
 
 # Limit public Plugins to Runtime, Client Exposure, and Client Extension capabilities

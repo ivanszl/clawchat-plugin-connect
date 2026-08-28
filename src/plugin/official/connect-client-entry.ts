@@ -1,10 +1,10 @@
 import { fileURLToPath } from "node:url";
-import { startClientInterface } from "../../client-interface/server";
 import { verifyClientAssetGraph } from "../../client-interface/client-assets";
 import {
   type ConnectClientHostFacade,
   requireConnectClientHostFacade,
 } from "../../client-interface/plugin-host-facade";
+import { startClientInterface } from "../../client-interface/server";
 import type {
   ConnectPluginDisposer,
   ConnectPluginEntry,
@@ -96,7 +96,6 @@ function readListenPolicy(configuration: Readonly<Record<string, unknown>>): {
   }
   return Object.freeze({ hostname, port: Number(port) });
 }
-
 
 class ConnectClientManagedWebAppInstance implements ConnectPluginManagedWebAppInstance {
   private releaseOperation: Promise<void> | null = null;

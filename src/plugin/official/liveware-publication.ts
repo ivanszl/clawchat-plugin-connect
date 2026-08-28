@@ -226,8 +226,11 @@ export class BindingLivewarePublicationLifecycle {
       throw new Error(`Binding Liveware Publication ${target.bindingId} has no selected Managed Web App lease`);
     }
     if (record.value.status === "active" && this.reconciled.has(target.bindingId)) return record.value;
-    const rebind = record.value.status === "active";
-    const tunnelMayHaveBeenBound = record.value.appId !== null && record.value.publicUrl === null;
+    let rebind = record.value.status === "active";
+    let tunnelMayHaveBeenBound = record.value.appId !== null && record.value.publicUrl === null;
+    const selectedCorrelationKey = `${this.options.selectedApp.displayName} · ${target.bindingId}`;
+    const previousCorrelationKey =
+      record.value.correlationKey === selectedCorrelationKey ? null : record.value.correlationKey;
 
     record = await this.commit(record, {
       ...record.value,
@@ -246,6 +249,40 @@ export class BindingLivewarePublicationLifecycle {
       throw error;
     }
 
+    if (previousCorrelationKey) {
+      await this.assertAuthority(target.bindingId);
+      const registrations = await this.options.registrations.list(target.bindingId, target.deviceId);
+      await this.assertAuthority(target.bindingId);
+      const obsoleteApps = (await control.listApps()).filter((app) => app.name === previousCorrelationKey);
+      const obsoleteAppIds = new Set(obsoleteApps.map((app) => app.appId));
+      const obsoleteRegistrations = registrations.filter(
+        (registration) => registration.name === previousCorrelationKey || obsoleteAppIds.has(registration.livewareId),
+      );
+      for (const registration of obsoleteRegistrations) {
+        await this.assertAuthority(target.bindingId);
+        await this.options.registrations.unregister(target.bindingId, target.deviceId, registration.livewareId);
+      }
+      for (const app of obsoleteApps) {
+        await this.assertAuthority(target.bindingId);
+        await control.deleteApp(app.appId);
+      }
+      await this.assertAuthority(target.bindingId);
+      const remaining = (await control.listApps()).filter((app) => app.name === previousCorrelationKey);
+      if (remaining.length > 0) {
+        throw new Error(`obsolete Liveware Apps remain for ${target.bindingId}`);
+      }
+      record = await this.commit(record, {
+        ...record.value,
+        selectedApp: this.options.selectedApp,
+        correlationKey: selectedCorrelationKey,
+        appId: null,
+        publicUrl: null,
+        registrationId: null,
+      });
+      rebind = false;
+      tunnelMayHaveBeenBound = false;
+    }
+
     let apps: LivewarePublicationApp[];
     try {
       await this.assertAuthority(target.bindingId);
@@ -255,9 +292,32 @@ export class BindingLivewarePublicationLifecycle {
       await this.assertAuthority(target.bindingId);
       return (await this.degrade(record, `App correlation-key lookup failed: ${errorMessage(error)}`)).value;
     }
-    const matches = apps.filter((app) => app.name === record.value.correlationKey);
-    if (matches.length > 1)
-      return (await this.degrade(record, "multiple owned Apps match the publication correlation key")).value;
+    let matches = apps.filter((app) => app.name === record.value.correlationKey);
+    if (matches.length > 1) {
+      const authoritative = record.value.appId
+        ? matches.find((candidate) => candidate.appId === record.value.appId)
+        : undefined;
+      if (!authoritative) {
+        return (await this.degrade(record, "multiple owned Apps match the publication correlation key")).value;
+      }
+      await this.assertAuthority(target.bindingId);
+      const registrations = await this.options.registrations.list(target.bindingId, target.deviceId);
+      for (const duplicate of matches) {
+        if (duplicate.appId === authoritative.appId) continue;
+        for (const registration of registrations) {
+          if (registration.livewareId !== duplicate.appId) continue;
+          await this.assertAuthority(target.bindingId);
+          await this.options.registrations.unregister(target.bindingId, target.deviceId, duplicate.appId);
+        }
+        await this.assertAuthority(target.bindingId);
+        await control.deleteApp(duplicate.appId);
+      }
+      await this.assertAuthority(target.bindingId);
+      matches = (await control.listApps()).filter((app) => app.name === record.value.correlationKey);
+      if (matches.length !== 1 || matches[0]?.appId !== authoritative.appId) {
+        throw new Error(`duplicate Liveware App cleanup did not preserve ${authoritative.appId}`);
+      }
+    }
     let app = matches[0];
     if (!app) {
       try {
@@ -352,11 +412,7 @@ export class BindingLivewarePublicationLifecycle {
         throw new Error(`stale Liveware publication Activation Generation for ${bindingId}`);
       }
       if (existing.value.activationGeneration === this.options.activationGeneration) {
-        if (
-          this.options.selectedApp &&
-          existing.value.status === "absent" &&
-          existing.value.appId === null
-        ) {
+        if (this.options.selectedApp && existing.value.status === "absent" && existing.value.appId === null) {
           return await this.options.state.compareAndSwap(bindingId, existing.revision, {
             ...existing.value,
             selectedApp: this.options.selectedApp,

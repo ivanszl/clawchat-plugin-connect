@@ -1,10 +1,6 @@
 import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
-import type {
-  ConnectPluginDisposer,
-  ConnectPluginManagedWebAppInstance,
-  ManagedWebAppHealth,
-} from "../plugin/sdk";
+import type { ConnectPluginDisposer, ConnectPluginManagedWebAppInstance, ManagedWebAppHealth } from "../plugin/sdk";
 
 const MAX_OUTPUT_BYTES = 65_536;
 
@@ -98,9 +94,7 @@ class SpawnedLoopbackWebApp implements ConnectPluginManagedWebAppInstance {
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => this.receiveOutput(chunk));
     child.stderr.on("data", (chunk: string) => this.receiveOutput(chunk));
-    child.once("error", (cause) =>
-      this.processFailed(new Error(`${label} process could not be started`, { cause })),
-    );
+    child.once("error", (cause) => this.processFailed(new Error(`${label} process could not be started`, { cause })));
     child.once("exit", (code, signal) => this.processExited(code, signal));
   }
 

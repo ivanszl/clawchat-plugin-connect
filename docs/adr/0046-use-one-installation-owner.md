@@ -10,4 +10,4 @@ Owner Reset keeps the Installation Owner, credentials, and local owner-scoped st
 
 The optional official Liveware Plugin contributes one installation-scoped Client Exposure with a private managed App, tunnel, and Shared Client Gateway. Every activated Binding has its own launcher registration for that App; adding or removing a non-final Binding changes only its registration, while removing the final Binding retires the shared exposure resources. Local Client access and ordinary ClawChat message transport never depend on that Plugin.
 
-ADR-0049 later supersedes only the singleton Liveware App and tunnel topology in the preceding paragraph. This ADR remains authoritative for one Installation Owner, installation-wide Client scope, private access, explicit Owner Reset, and cleanup before credential removal.
+ADR-0049 superseded the singleton Liveware App and tunnel topology in the preceding paragraph; ADR-0065 later supersedes its remaining mandatory Connect Client and Shared Client Gateway clauses. This ADR remains authoritative for one Installation Owner, private owner access, explicit Owner Reset, and cleanup before credential removal.

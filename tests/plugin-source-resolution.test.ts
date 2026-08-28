@@ -97,7 +97,7 @@ function json(value: unknown, status = 200): Response {
 }
 
 describe("Plugin source resolution", () => {
-  it("resolves compatible stable and exact npm/GitHub assets, pins them, and rejects source switching", async () => {
+  it("pins resolved sources, rejects generic switching, and permits privileged official replacement", async () => {
     const target = "source-test-target";
     const pluginId = "test.source-plugin";
     const npmV1 = sourceBundle(pluginId, "1.0.0", target);
@@ -204,6 +204,11 @@ describe("Plugin source resolution", () => {
       await expect(listInstalledPlugins(configPath)).resolves.toEqual([
         expect.objectContaining({ source: expect.objectContaining({ type: "npm", package: "source-plugin" }) }),
       ]);
+      const officialReplacement = await commitStagedPlugin(configPath, switched, "official-replace");
+      expect(officialReplacement).toMatchObject({
+        source: { type: "github", repository: "acme/source-plugin", release: "v1.0.0" },
+        activationGeneration: 2,
+      });
 
       const localPath = join(directory, "local.connect-plugin");
       const localConfigPath = join(directory, "local-config.json");

@@ -1,5 +1,4 @@
 import { fileURLToPath } from "node:url";
-import { build as buildWebAssets } from "vite";
 import type { OfficialPluginDescriptor } from "../../../scripts/build-official-plugins";
 import { CONNECT_VERSION } from "../../service/version";
 import {
@@ -15,8 +14,8 @@ import {
   CONNECT_CLIENT_PLUGIN_ID,
   CONNECT_CLIENT_SUPPORTED_RUNTIMES,
 } from "./connect-client-manifest";
-let preparedBrowserAssets: Promise<unknown> | null = null;
 
+let preparedBrowserAssets: Promise<unknown> | null = null;
 
 const connectClientDescriptor: OfficialPluginDescriptor = {
   manifest: {
@@ -47,10 +46,13 @@ const connectClientDescriptor: OfficialPluginDescriptor = {
   },
   entrypoint: "src/plugin/official/connect-client-entry.ts",
   prepareAssets: async () => {
-    preparedBrowserAssets ??= buildWebAssets({
-      configFile: fileURLToPath(new URL("../../../vite.config.ts", import.meta.url)),
-      configLoader: "runner",
-    });
+    const vitePackage = "vite";
+    preparedBrowserAssets ??= import(vitePackage).then(({ build }) =>
+      build({
+        configFile: fileURLToPath(new URL("../../../vite.config.ts", import.meta.url)),
+        configLoader: "runner",
+      }),
+    );
     await preparedBrowserAssets;
   },
   assetDirectories: [

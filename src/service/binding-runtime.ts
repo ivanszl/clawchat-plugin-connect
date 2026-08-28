@@ -33,8 +33,8 @@ import {
   runtimeInputIdentityContains,
 } from "../runtime/types";
 import {
-  workBuddyCapabilityAvailability,
   type WorkBuddyCapabilityFailure,
+  workBuddyCapabilityAvailability,
   workBuddyCapabilityFailure,
 } from "../runtime/workbuddy-availability";
 import type { ActivationCredentials, ConnectConfig } from "../types";

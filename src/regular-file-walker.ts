@@ -7,10 +7,7 @@ export interface RegularFileWalkDiagnostics {
 }
 
 /** Recursively returns every regular file in stable path order without following symbolic links. */
-export async function walkRegularFiles(
-  root: string,
-  diagnostics: RegularFileWalkDiagnostics,
-): Promise<string[]> {
+export async function walkRegularFiles(root: string, diagnostics: RegularFileWalkDiagnostics): Promise<string[]> {
   const files: string[] = [];
   const visit = async (directory: string): Promise<void> => {
     const entries = await readdir(directory, { withFileTypes: true });

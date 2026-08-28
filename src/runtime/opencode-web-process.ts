@@ -1,5 +1,5 @@
-import type { ConnectPluginManagedWebAppInstance } from "../plugin/sdk";
 import type { CompatibleOpenCodeExecutable } from "../plugin/official/opencode-compatibility";
+import type { ConnectPluginManagedWebAppInstance } from "../plugin/sdk";
 import {
   type LoopbackWebProcess,
   type LoopbackWebSpawnOptions,

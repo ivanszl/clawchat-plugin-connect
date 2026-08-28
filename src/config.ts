@@ -38,7 +38,6 @@ function requireAbsolutePath(value: string, label: string): string {
   return value;
 }
 
-
 export function defaultConfig(): ConnectConfig {
   return {
     baseUrl: DEFAULT_BASE_URL,

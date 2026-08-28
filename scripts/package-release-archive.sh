@@ -41,6 +41,7 @@ cp -R "$official_plugins_directory" "$staging_directory/official-plugins"
 cp -R "$repository_root/skills" "$staging_directory/skills"
 cp "$repository_root/LICENSE" "$repository_root/CHANGELOG.md" "$staging_directory/"
 chmod 755 "$staging_directory/clawchat-connect"
+HOME="$staging_directory/home" "$staging_directory/clawchat-connect" skills preflight >/dev/null
 
 tar -C "$staging_directory" -czf "$archive" \
   clawchat-connect \

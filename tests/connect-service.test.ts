@@ -44,7 +44,6 @@ async function corePluginRequest(configPath: string, path: string, init: Request
   return value;
 }
 
-
 describe("Connect Service", () => {
   it("blocks every downstream module when the mandatory persistence provider fails", async () => {
     const createRuntimeAdapterRegistry = mock(() => new RuntimeAdapterRegistry([]));

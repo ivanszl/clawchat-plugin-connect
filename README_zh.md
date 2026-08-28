@@ -41,7 +41,7 @@ ClawChat Connect 是本机 Core 服务和 Plugin Host。Core 负责 Agent Bindin
 
 ## 要求
 
-当前 beta 归档支持 Apple 芯片 Mac。你需要 ClawChat 账号、Agent 邀请码，以及至少一个已在本机安装并认证的受支持 Runtime。Connect 不会安装、升级、认证或重配置 Codex、OpenCode、WorkBuddy 或 DeepSeek Harness。
+当前 beta 归档支持 Apple 芯片 Mac。你需要 ClawChat 账号、Agent 邀请码，以及至少一个可用且已认证的受支持 Runtime。DeepSeek Harness 不要求全局安装 DSH：官方 Web Provider 和 Binding Runtime 优先使用显式配置或已安装的 `dsh`，否则通过首个可用的受支持包执行器（依次为 `bunx`、`npx`、`pnpm dlx`）启动 `@deepseek-ai/dsh`。选中的包执行器首次运行时可能写入用户缓存。Connect 不负责 DSH 的认证或配置，也不会安装、升级、认证或重配置 Codex、OpenCode 或 WorkBuddy。
 
 ## 快速开始
 

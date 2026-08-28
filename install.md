@@ -74,6 +74,8 @@ clawchat-connect init
 
 Install only the requested Runtime Plugin, then bind its exact capability:
 
+DeepSeek Harness does not require a global DSH installation. Its official Web Provider and Binding Runtime use an explicitly configured or installed `dsh` when available and otherwise launch `@deepseek-ai/dsh` through the first available supported package launcher: `bunx`, then `npx`, then `pnpm dlx`. The selected launcher may populate its user cache on first use.
+
 ```bash
 # Codex
 clawchat-connect plugin setup --non-interactive --select clawling.runtime.codex
@@ -164,6 +166,18 @@ clawchat-connect doctor
 ```
 
 Use explicit Plugin operations to install, enable, disable, update, or remove the affected product. App failure must not stop Runtime turns; Runtime failure must not trigger App reselection; Publication failure must not change either selection or Runtime state.
+
+`plugin update` preserves the installed source identity. If a release-bundled official Plugin was originally locked to a local path that no longer exists, replace it from the installed official registry so the release-pinned Core grant and transactional retirement lifecycle remain intact:
+
+```bash
+clawchat-connect plugin setup --non-interactive --select clawling.runtime.codex,clawling.exposure.liveware
+```
+
+For a deliberate non-official source cutover, use the explicit atomic replacement command while the Service is running:
+
+```bash
+clawchat-connect plugin replace PLUGIN_ID SOURCE
+```
 
 Before changing ownership or deleting credentials, retire managed Liveware resources through the supported Core lifecycle. Do not manually delete remote Apps or tunnels and then assume local retirement state is complete.
 

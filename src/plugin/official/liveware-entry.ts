@@ -3,6 +3,7 @@ import type {
   ConnectPluginEntry,
   ConnectPluginExposureActivation,
   ManagedWebAppGenerationReference,
+  ManagedWebAppHealth,
 } from "../sdk";
 import { OFFICIAL_LIVEWARE_CAPABILITY_ID, type OfficialLivewareAccessPolicy } from "./liveware-manifest";
 import {
@@ -26,6 +27,7 @@ export interface OfficialLivewareManagedWebAppLease {
   >;
   readonly instanceKey: string;
   readonly upstream: string;
+  health(): ManagedWebAppHealth;
   release(): Promise<void>;
 }
 export interface OfficialLivewareManagedDisposer extends ConnectPluginDisposer {
@@ -56,13 +58,19 @@ interface PrivilegedLivewareActivation extends ConnectPluginExposureActivation {
 
 export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
   return {
+    migrateDurableState(migration) {
+      if (migration.capabilityId !== OFFICIAL_LIVEWARE_CAPABILITY_ID) return migration.value;
+      const bindingId = migration.value.bindingId;
+      const activationGeneration = migration.value.activationGeneration;
+      if (typeof bindingId !== "string" || typeof activationGeneration !== "number") {
+        throw new Error("Legacy Binding Liveware Publication state has no exact Binding generation identity");
+      }
+      return resetBindingLivewarePublicationState(bindingId, activationGeneration);
+    },
     migrateDurableStateGeneration(migration) {
       if (migration.capabilityId !== OFFICIAL_LIVEWARE_CAPABILITY_ID) return migration.value;
       try {
-        const publication = validateBindingLivewarePublicationState(
-          migration.value,
-          migration.capabilityInstanceId,
-        );
+        const publication = validateBindingLivewarePublicationState(migration.value, migration.capabilityInstanceId);
         return {
           ...publication,
           activationGeneration: migration.toActivationGeneration,
@@ -76,10 +84,7 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
             : {}),
         };
       } catch {
-        return resetBindingLivewarePublicationState(
-          migration.capabilityInstanceId,
-          migration.toActivationGeneration,
-        );
+        return resetBindingLivewarePublicationState(migration.capabilityInstanceId, migration.toActivationGeneration);
       }
     },
     activate(context) {
@@ -169,13 +174,12 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
             remainingBindings.delete(target.bindingId);
             retiredBindings.add(target.bindingId);
           };
-          const reactivateTarget = async (
-            target: BindingLivewarePublicationTarget,
-          ): Promise<void> => {
-            retiredBindings.delete(target.bindingId);
+          const reactivateTarget = async (target: BindingLivewarePublicationTarget): Promise<void> => {
+            const reactivating = retiredBindings.delete(target.bindingId);
             remainingBindings.add(target.bindingId);
             const publication = await state.read(target.bindingId);
             if (
+              reactivating &&
               publication &&
               (publication.value.desired === "retired" ||
                 publication.value.status === "retiring" ||
@@ -192,6 +196,19 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
             }
             await reconcileTarget(target);
           };
+          const releaseFailedLease = async (target: BindingLivewarePublicationTarget): Promise<boolean> => {
+            const resource = resources.get(target.bindingId);
+            if (!resource?.lease) return false;
+            let health: ManagedWebAppHealth;
+            try {
+              health = resource.lease.health();
+            } catch {
+              health = "error";
+            }
+            if (health !== "error" && health !== "stopped") return false;
+            await releaseResource(target.bindingId);
+            return true;
+          };
           async function reconcileTarget(target: BindingLivewarePublicationTarget): Promise<void> {
             const publication = await state.read(target.bindingId);
             if (
@@ -206,10 +223,29 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
               await retireTarget(target);
               return;
             }
+            if (await releaseFailedLease(target)) return;
             const resource = await ensureResource(target, true);
             if (!resource) return;
-            if (resource.lease) await resource.lifecycle.ensurePrivate(target);
-            else await retireTarget(target);
+            if (!resource.lease) {
+              await retireTarget(target);
+              return;
+            }
+            try {
+              await resource.lifecycle.ensurePrivate(target);
+            } catch (error) {
+              const current = await state.read(target.bindingId).catch(() => null);
+              if (current) {
+                const detail = error instanceof Error ? error.message : String(error);
+                await state
+                  .compareAndSwap(target.bindingId, current.revision, {
+                    ...current.value,
+                    status: "degraded",
+                    diagnostic: `Publication reconciliation failed: ${detail}`,
+                  })
+                  .catch(() => undefined);
+              }
+              throw error;
+            }
           }
           const reconcileBindings = async (): Promise<void> => {
             const listedTargets = await activation.officialLiveware.listBindings();
@@ -287,9 +323,7 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
               },
               reconcileManagedWebApps: async () => {
                 await reconciliation;
-                await Promise.allSettled(
-                  [...targets.values()].map(async (target) => await reactivateTarget(target)),
-                );
+                await Promise.allSettled([...targets.values()].map(async (target) => await reactivateTarget(target)));
               },
             },
           ) satisfies OfficialLivewareManagedDisposer;
@@ -299,7 +333,6 @@ export function createOfficialLivewarePluginEntry(): ConnectPluginEntry {
     },
   };
 }
-
 
 function requirePrivilegedActivation(activation: ConnectPluginExposureActivation): PrivilegedLivewareActivation {
   const privileged = activation as Partial<PrivilegedLivewareActivation>;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { ManagedWebAppRegistry, type ManagedWebAppProviderDefinition } from "../src/plugin/managed-web-app-registry";
+import { type ManagedWebAppProviderDefinition, ManagedWebAppRegistry } from "../src/plugin/managed-web-app-registry";
 import {
   CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
   type ConnectPluginManagedWebAppInstance,
@@ -36,11 +36,13 @@ function definition(options: {
   };
 }
 
-function provider(options: {
-  key?: (runtimeConfiguration: Readonly<Record<string, unknown>>) => string;
-  upstream?: string;
-  acquire?: () => Promise<ConnectPluginManagedWebAppInstance>;
-} = {}): {
+function provider(
+  options: {
+    key?: (runtimeConfiguration: Readonly<Record<string, unknown>>) => string;
+    upstream?: string;
+    acquire?: () => Promise<ConnectPluginManagedWebAppInstance>;
+  } = {},
+): {
   provider: ConnectPluginManagedWebAppProvider;
   acquired: () => number;
   released: () => number;
@@ -107,7 +109,9 @@ describe("ManagedWebAppRegistry", () => {
   it("selects same-Bundle native before exact compatible and reports conflicts or no App", () => {
     const registry = new ManagedWebAppRegistry();
     registry.activate(definition({ pluginId: "client.one", compatible: [runtime], provider: provider().provider }));
-    registry.activate(definition({ pluginId: runtime.pluginId, native: [runtime.capabilityId], provider: provider().provider }));
+    registry.activate(
+      definition({ pluginId: runtime.pluginId, native: [runtime.capabilityId], provider: provider().provider }),
+    );
     expect(registry.select(runtime)).toMatchObject({ pluginId: runtime.pluginId, capabilityId: "web", kind: "native" });
     expect(registry.select({ pluginId: "missing", capabilityId: "runtime" })).toBeNull();
 
@@ -120,7 +124,9 @@ describe("ManagedWebAppRegistry", () => {
   it("single-flights shared keys, isolates different keys, and stops only after each final lease", async () => {
     const fixture = provider({ key: (configuration) => String(configuration.key) });
     const registry = new ManagedWebAppRegistry();
-    registry.activate(definition({ pluginId: runtime.pluginId, native: [runtime.capabilityId], provider: fixture.provider }));
+    registry.activate(
+      definition({ pluginId: runtime.pluginId, native: [runtime.capabilityId], provider: fixture.provider }),
+    );
 
     const [first, second] = await Promise.all([registry.acquire(request("one")), registry.acquire(request("two"))]);
     expect(first?.upstream).toBe(second?.upstream);
@@ -200,7 +206,9 @@ describe("ManagedWebAppRegistry", () => {
 
     const changing = provider();
     const stableRegistry = new ManagedWebAppRegistry();
-    stableRegistry.activate(definition({ pluginId: runtime.pluginId, native: [runtime.capabilityId], provider: changing.provider }));
+    stableRegistry.activate(
+      definition({ pluginId: runtime.pluginId, native: [runtime.capabilityId], provider: changing.provider }),
+    );
     const stableLease = await stableRegistry.acquire(request("one"));
     changing.setUpstream("http://127.0.0.1:4999");
     expect(() => stableLease?.health()).toThrow("upstream changed");
@@ -209,7 +217,14 @@ describe("ManagedWebAppRegistry", () => {
   it("observes App exit independently and rejects every stale-generation lease operation", async () => {
     const fixture = provider();
     const registry = new ManagedWebAppRegistry();
-    registry.activate(definition({ pluginId: runtime.pluginId, generation: 1, native: [runtime.capabilityId], provider: fixture.provider }));
+    registry.activate(
+      definition({
+        pluginId: runtime.pluginId,
+        generation: 1,
+        native: [runtime.capabilityId],
+        provider: fixture.provider,
+      }),
+    );
     const lease = await registry.acquire(request("one"));
     const runtimeHealth = "ready";
     fixture.exit(new Error("provider failed"));
@@ -228,7 +243,14 @@ describe("ManagedWebAppRegistry", () => {
     await expect(registry.remove(generation)).resolves.toBeUndefined();
 
     const next = provider();
-    registry.activate(definition({ pluginId: runtime.pluginId, generation: 2, native: [runtime.capabilityId], provider: next.provider }));
+    registry.activate(
+      definition({
+        pluginId: runtime.pluginId,
+        generation: 2,
+        native: [runtime.capabilityId],
+        provider: next.provider,
+      }),
+    );
     expect(registry.select(runtime)).toMatchObject({ activationGeneration: 2 });
   });
 });

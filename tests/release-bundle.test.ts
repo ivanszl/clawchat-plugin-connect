@@ -15,7 +15,11 @@ const WORKBUDDY_PLUGIN_BUNDLE = "clawling.runtime.workbuddy-0.0.0-test.connect-p
 const CONNECT_CLIENT_PLUGIN_BUNDLE = "clawling.web.connect-client-0.0.0-test.connect-plugin";
 const DARWIN_CORE_PLUGIN_BUNDLES = [...PORTABLE_CORE_PLUGIN_BUNDLES, WORKBUDDY_PLUGIN_BUNDLE] as const;
 
-async function writePluginFixtures(directory: string, bundles: readonly string[], content = "official Plugin Bundle\n") {
+async function writePluginFixtures(
+  directory: string,
+  bundles: readonly string[],
+  content = "official Plugin Bundle\n",
+) {
   await Promise.all(bundles.map(async (name) => await writeFile(join(directory, name), content)));
 }
 
@@ -37,14 +41,7 @@ async function packagePosix(
   target: "darwin-arm64" | "darwin-x64" | "linux-x64",
 ): Promise<number> {
   return await Bun.spawn(
-    [
-      "sh",
-      "scripts/package-release-archive.sh",
-      connectBinary,
-      officialPluginsDirectory,
-      archive,
-      target,
-    ],
+    ["sh", "scripts/package-release-archive.sh", connectBinary, officialPluginsDirectory, archive, target],
     { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
   ).exited;
 }
@@ -57,10 +54,7 @@ async function fixtureRelease(
   const officialPluginsDirectory = join(directory, "official-plugins");
   const archive = join(directory, "release.tar.gz");
   await mkdir(officialPluginsDirectory, { recursive: true });
-  await writeFile(
-    connectBinary,
-    '#!/bin/sh\n[ "${1:-}" = --help ] || [ "${1:-}" = skills ]\n',
-  );
+  await writeFile(connectBinary, '#!/bin/sh\n[ "$' + '{1:-}" = --help ] || [ "$' + '{1:-}" = skills ]\n');
   await chmod(connectBinary, 0o755);
   await writePluginFixtures(officialPluginsDirectory, bundles);
   return { archive, connectBinary, officialPluginsDirectory };
@@ -100,7 +94,12 @@ describe("standalone release bundle", () => {
       JSON.stringify({ files: { "client/index.html": "complete", "client-assets.json": "integrity-covered" } }),
     );
     expect(
-      await packagePosix(withClient.connectBinary, withClient.officialPluginsDirectory, withClient.archive, "darwin-arm64"),
+      await packagePosix(
+        withClient.connectBinary,
+        withClient.officialPluginsDirectory,
+        withClient.archive,
+        "darwin-arm64",
+      ),
     ).toBe(0);
     const includedEntries = await archiveEntries(withClient.archive);
     expect(includedEntries).toContain(`official-plugins/${CONNECT_CLIENT_PLUGIN_BUNDLE}`);
@@ -152,9 +151,7 @@ describe("standalone release bundle", () => {
     ]);
     const asset = "clawchat-connect-darwin-arm64.tar.gz";
     const archive = join(fixtureDirectory, asset);
-    expect(
-      await packagePosix(source.connectBinary, source.officialPluginsDirectory, archive, "darwin-arm64"),
-    ).toBe(0);
+    expect(await packagePosix(source.connectBinary, source.officialPluginsDirectory, archive, "darwin-arm64")).toBe(0);
     await Promise.all([
       writeFile(join(installDirectory, "clawchat-connect-client"), "obsolete browser payload\n"),
       writeFile(join(installDirectory, "liveware"), "obsolete companion\n"),
@@ -167,16 +164,16 @@ describe("standalone release bundle", () => {
         "#!/bin/sh",
         "output=",
         "url=",
-        "while [ \"$#\" -gt 0 ]; do",
-        "  case \"$1\" in",
-        "    --output) output=\"$2\"; shift 2 ;;",
-        "    http*) url=\"$1\"; shift ;;",
+        'while [ "$#" -gt 0 ]; do',
+        '  case "$1" in',
+        '    --output) output="$2"; shift 2 ;;',
+        '    http*) url="$1"; shift ;;',
         "    *) shift ;;",
         "  esac",
         "done",
-        "case \"$url\" in",
-        "  *release-channel/latest-beta.txt) cat \"$CONNECT_INSTALL_FIXTURES/latest-beta.txt\" ;;",
-        "  *) cp \"$CONNECT_INSTALL_FIXTURES/${url##*/}\" \"$output\" ;;",
+        'case "$url" in',
+        '  *release-channel/latest-beta.txt) cat "$CONNECT_INSTALL_FIXTURES/latest-beta.txt" ;;',
+        '  *) cp "$CONNECT_INSTALL_FIXTURES/$' + '{url##*/}" "$output" ;;',
         "esac",
         "",
       ].join("\n"),
@@ -191,7 +188,12 @@ describe("standalone release bundle", () => {
     };
 
     await writeFile(join(fixtureDirectory, "checksums.txt"), `${"0".repeat(64)}  ${asset}\n`);
-    const rejected = Bun.spawn(["sh", "install.sh"], { cwd: process.cwd(), env: environment, stdout: "pipe", stderr: "pipe" });
+    const rejected = Bun.spawn(["sh", "install.sh"], {
+      cwd: process.cwd(),
+      env: environment,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     expect(await rejected.exited).not.toBe(0);
     await expect(readFile(join(installDirectory, "clawchat-connect-client"), "utf8")).resolves.toContain("obsolete");
 
@@ -199,14 +201,19 @@ describe("standalone release bundle", () => {
     const checksum = (await new Response(checksumProcess.stdout).text()).split(/\s+/u)[0];
     expect(await checksumProcess.exited).toBe(0);
     await writeFile(join(fixtureDirectory, "checksums.txt"), `${checksum}  ${asset}\n`);
-    const installed = Bun.spawn(["sh", "install.sh"], { cwd: process.cwd(), env: environment, stdout: "pipe", stderr: "pipe" });
+    const installed = Bun.spawn(["sh", "install.sh"], {
+      cwd: process.cwd(),
+      env: environment,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const [exitCode, stderr] = await Promise.all([installed.exited, new Response(installed.stderr).text()]);
     expect(exitCode, stderr).toBe(0);
     expect(await Bun.file(join(installDirectory, "clawchat-connect-client")).exists()).toBe(false);
     expect(await Bun.file(join(installDirectory, "liveware")).exists()).toBe(false);
-    await expect(readdir(join(installDirectory, "official-plugins")).then((entries) => entries.sort())).resolves.toEqual(
-      [...DARWIN_CORE_PLUGIN_BUNDLES].sort(),
-    );
+    await expect(
+      readdir(join(installDirectory, "official-plugins")).then((entries) => entries.sort()),
+    ).resolves.toEqual([...DARWIN_CORE_PLUGIN_BUNDLES].sort());
   });
 
   it("keeps npm Core free of a browser root and makes Client installation explicit", async () => {

@@ -180,7 +180,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: livewareDescriptor,
     name: "Liveware",
-    artifactIntegrity: "sha256-cU5kH6LM4v46IGuwAqRCUp8+taK9jnAUr4b4u7kCe6w=",
+    artifactIntegrity: "sha256-YeNTOUOowuVbUpFLOi+mKA2FBnknleozhqToyoXckuo=",
     classification: "exposure",
     assetIntegrities: {
       "assets/liveware": {
@@ -487,11 +487,7 @@ function parseAssetIntegrityManifest(bytes: Uint8Array, entry: string): Record<s
   }
   const integrities: Record<string, string> = {};
   for (const [path, integrity] of Object.entries(value)) {
-    if (
-      !path ||
-      typeof integrity !== "string" ||
-      !/^sha256-[A-Za-z0-9+/]{43}=$/u.test(integrity)
-    ) {
+    if (!path || typeof integrity !== "string" || !/^sha256-[A-Za-z0-9+/]{43}=$/u.test(integrity)) {
       throw new Error(`${entry} contains an invalid asset integrity`);
     }
     integrities[path] = integrity;

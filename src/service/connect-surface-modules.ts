@@ -24,7 +24,6 @@ interface ClawChatTransportModule {
   retireBindings(bindingIds: readonly string[]): Promise<void>;
 }
 
-
 interface ToolRequestWorkerModule {
   readonly active: true;
   retireBindings(bindingIds: readonly string[]): Promise<void>;
@@ -78,11 +77,7 @@ export async function mountMandatorySurfaceModules(
   const dispose = async (): Promise<void> => {
     detachRetirement();
     detachRetirement = () => undefined;
-    const order = [
-      "connect-tool-request-workers",
-      "connect-clawchat-transports",
-      "connect-turn-surfaces",
-    ];
+    const order = ["connect-tool-request-workers", "connect-clawchat-transports", "connect-turn-surfaces"];
     for (const name of order) {
       const disposer = disposers.get(name);
       if (!disposer) continue;
@@ -118,7 +113,6 @@ export async function mountMandatorySurfaceModules(
       ctx.provide("connectTurnSurfaces", turnSurfaces);
     },
   } satisfies Plugin;
-
 
   const clawChatTransportPlugin = {
     name: "connect-clawchat-transports",
@@ -235,7 +229,6 @@ export async function mountMandatorySurfaceModules(
       };
     },
   } satisfies Plugin;
-
 
   try {
     await mount(turnSurfacePlugin);

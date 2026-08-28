@@ -1,10 +1,7 @@
 import type { RuntimeCapabilityRef } from "../plugin/sdk";
 import type { BindingRuntimeHandle } from "../service/binding-runtime";
 import type { ConnectClientHostFacade, ConnectClientHostFacadeScope } from "./plugin-host-facade";
-import {
-  createCoreConnectClientApplicationPort,
-  type ConnectClientApplicationServices,
-} from "./server";
+import { type ConnectClientApplicationServices, createCoreConnectClientApplicationPort } from "./server";
 
 export interface ConnectClientCoreServices extends Omit<ConnectClientApplicationServices, "runtimes"> {
   readonly runtimes: () => readonly BindingRuntimeHandle[];
@@ -29,8 +26,6 @@ export function createConnectClientHostFacade(
     })),
   });
 }
-
-
 
 export function connectClientFacadeScope(
   managedWebApp: Readonly<RuntimeCapabilityRef>,

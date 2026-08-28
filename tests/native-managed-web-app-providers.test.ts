@@ -2,9 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  createDeepSeekHarnessOfficialPluginEntry,
-} from "../src/plugin/official/deepseek-harness-entry";
+import { createDeepSeekHarnessOfficialPluginEntry } from "../src/plugin/official/deepseek-harness-entry";
 import {
   DEEPSEEK_HARNESS_OFFICIAL_CAPABILITY_ID,
   DEEPSEEK_HARNESS_OFFICIAL_PLUGIN_ID,
@@ -42,14 +40,21 @@ describe("native Managed Web App providers", () => {
       mkdir(sharedHome),
       mkdir(isolatedHome),
     ]);
-    const starts: string[] = [];
+    const starts: Array<{ executable: string; executableArguments: readonly string[]; home: string }> = [];
     const instances: FakeManagedWebApp[] = [];
     const providers = await activateProviders(
       createDeepSeekHarnessOfficialPluginEntry({
         webApp: {
-          probeExecutable: (configured) => ({ path: configured ?? firstExecutable }),
+          probeExecutable: (configured) => ({
+            path: configured ?? firstExecutable,
+            executableArguments: ["--yes", "@deepseek-ai/dsh"],
+          }),
           async start(options) {
-            starts.push(`${options.executable}:${options.home}`);
+            starts.push({
+              executable: options.executable,
+              executableArguments: options.executableArguments ?? [],
+              home: options.home,
+            });
             const instance = new FakeManagedWebApp(`http://127.0.0.1:${42000 + instances.length}`);
             instances.push(instance);
             return instance;
@@ -124,9 +129,60 @@ describe("native Managed Web App providers", () => {
       "already active under a different DeepSeek Harness executable identity",
     );
     expect(starts).toHaveLength(2);
+    expect(starts[0]).toEqual({
+      executable: await realpath(firstExecutable),
+      executableArguments: ["--yes", "@deepseek-ai/dsh"],
+      home: await realpath(sharedHome),
+    });
     await Promise.all([alphaApp.release(), differentEnvironmentApp.release()]);
     const conflictApp = await web.acquire({ ...conflict, instanceKey: conflictKey });
     await conflictApp.release();
+  });
+
+  it("uses the configured DSH executable for Web before any package launcher", async () => {
+    const root = await mkdtemp(join(tmpdir(), "connect-dsh-web-configured-"));
+    const executable = join(root, "dsh");
+    const home = join(root, "home");
+    await Promise.all([writeFile(executable, "native"), mkdir(home)]);
+    const starts: Array<{
+      executable: string;
+      executableArguments: readonly string[];
+      home: string;
+    }> = [];
+    const providers = await activateProviders(
+      createDeepSeekHarnessOfficialPluginEntry({
+        webApp: {
+          async start(options) {
+            starts.push({
+              executable: options.executable,
+              executableArguments: options.executableArguments ?? [],
+              home: options.home,
+            });
+            return new FakeManagedWebApp("http://127.0.0.1:43101");
+          },
+        },
+      }),
+    );
+    const web = providers.web.get(DEEPSEEK_HARNESS_WEB_APP_CAPABILITY_ID);
+    if (!web) throw new Error("DSH Web provider was not registered");
+    const context = managedContext(
+      DEEPSEEK_HARNESS_OFFICIAL_PLUGIN_ID,
+      DEEPSEEK_HARNESS_WEB_APP_CAPABILITY_ID,
+      DEEPSEEK_HARNESS_OFFICIAL_CAPABILITY_ID,
+      "configured",
+      { executablePathOverride: executable, homePath: home },
+    );
+    const instanceKey = await web.instanceKey(context);
+    const app = await web.acquire({ ...context, instanceKey });
+
+    expect(starts).toEqual([
+      {
+        executable: await realpath(executable),
+        executableArguments: [],
+        home: await realpath(home),
+      },
+    ]);
+    await app.release();
   });
 
   it("canonicalizes symlinks and rejects non-files through one native executable contract", async () => {
@@ -182,9 +238,9 @@ describe("native Managed Web App providers", () => {
     expect(await openCodeWeb.instanceKey(openCodeContext(executableAlias))).toBe(
       await openCodeWeb.instanceKey(openCodeContext(executable)),
     );
-    await expect(
-      Promise.resolve().then(() => dshWeb.instanceKey(dshContext(executableDirectory))),
-    ).rejects.toThrow("DeepSeek Harness executable is not a regular file:");
+    await expect(Promise.resolve().then(() => dshWeb.instanceKey(dshContext(executableDirectory)))).rejects.toThrow(
+      "DeepSeek Harness executable is not a regular file:",
+    );
     await expect(
       Promise.resolve().then(() => openCodeWeb.instanceKey(openCodeContext(executableDirectory))),
     ).rejects.toThrow("OpenCode executable is not a regular file:");

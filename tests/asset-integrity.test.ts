@@ -5,10 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildOfficialPlugin } from "../scripts/build-official-plugins";
 import { verifyClientAssetGraph } from "../src/client-interface/client-assets";
-import {
-  type ConnectPluginAuthorManifestV1,
-  buildConnectPluginBundle,
-} from "../src/plugin/builder";
+import { buildConnectPluginBundle, type ConnectPluginAuthorManifestV1 } from "../src/plugin/builder";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
   CONNECT_PLUGIN_CAPABILITY_INTERFACE_VERSION,
@@ -96,7 +93,7 @@ describe("Plugin asset integrity graphs", () => {
       "client-assets.json",
     ]);
     const integrityFile = bundle.files["client-assets.json"];
-    if (!integrityFile || integrityFile.encoding !== "utf8") {
+    if (integrityFile?.encoding !== "utf8") {
       throw new Error("Generated Client asset integrity manifest is missing");
     }
     const expectedIntegrities = {
@@ -129,19 +126,17 @@ describe("Plugin asset integrity graphs", () => {
       "client-assets.json",
     ]);
     const officialIntegrityFile = official.bundle.files["client-assets.json"];
-    if (!officialIntegrityFile || officialIntegrityFile.encoding !== "utf8") {
+    if (officialIntegrityFile?.encoding !== "utf8") {
       throw new Error("Official Plugin generated Client asset integrity manifest is missing");
     }
     expect(officialIntegrityFile.content).toBe(integrityFile.content);
     await writeFile(fixture.integrityManifestPath, integrityFile.content);
 
-    await expect(
-      verifyClientAssetGraph(fixture.assetsRoot, fixture.integrityManifestPath),
-    ).resolves.toBeUndefined();
+    await expect(verifyClientAssetGraph(fixture.assetsRoot, fixture.integrityManifestPath)).resolves.toBeUndefined();
     await writeFile(join(fixture.assetsRoot, "uncovered.txt"), "uncovered");
-    await expect(
-      verifyClientAssetGraph(fixture.assetsRoot, fixture.integrityManifestPath),
-    ).rejects.toThrow("Connect Client asset graph does not match its integrity manifest");
+    await expect(verifyClientAssetGraph(fixture.assetsRoot, fixture.integrityManifestPath)).rejects.toThrow(
+      "Connect Client asset graph does not match its integrity manifest",
+    );
   });
 
   it("rejects symbolic links through official, public-authoring, and runtime asset paths", async () => {
@@ -188,8 +183,8 @@ describe("Plugin asset integrity graphs", () => {
     ).rejects.toThrow(`Plugin asset directories cannot contain symbolic links: ${linkedPath}`);
 
     await writeFile(fixture.integrityManifestPath, "{}\n");
-    await expect(
-      verifyClientAssetGraph(fixture.assetsRoot, fixture.integrityManifestPath),
-    ).rejects.toThrow(`Connect Client asset graph contains a symbolic link: ${linkedPath}`);
+    await expect(verifyClientAssetGraph(fixture.assetsRoot, fixture.integrityManifestPath)).rejects.toThrow(
+      `Connect Client asset graph contains a symbolic link: ${linkedPath}`,
+    );
   });
 });

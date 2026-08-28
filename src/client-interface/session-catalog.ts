@@ -23,8 +23,8 @@ import type {
   RuntimeThreadDiscoverySnapshot,
 } from "../runtime/types";
 import {
-  workBuddyCapabilityAvailability,
   type WorkBuddyCapabilityFailure,
+  workBuddyCapabilityAvailability,
   workBuddyCapabilityFailure,
 } from "../runtime/workbuddy-availability";
 import { isCodeBuddySessionRuntimeTarget } from "../runtime/workbuddy-runtime-target";

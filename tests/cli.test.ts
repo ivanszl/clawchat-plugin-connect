@@ -14,6 +14,11 @@ import type { NormalizedInboundMessage } from "../src/clawchat/protocol";
 import { defaultConfig, loadConfig, saveConfig, upsertAgentBinding } from "../src/config";
 import { type ConnectStateStore, createStateStore } from "../src/persistence/state";
 import { createAgentBinding } from "../src/plugin/binding";
+import {
+  CONNECT_CLIENT_MANAGED_WEB_APP_CAPABILITY_ID,
+  CONNECT_CLIENT_PLUGIN_ID,
+} from "../src/plugin/official/connect-client-manifest";
+import { ConnectBindingLivewarePublicationStateStore } from "../src/plugin/official/liveware-publication-state";
 import type { ConnectPluginBundleV1 } from "../src/plugin/sdk";
 import {
   CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
@@ -23,19 +28,10 @@ import {
   CONNECT_PLUGIN_MANIFEST_VERSION,
 } from "../src/plugin/sdk";
 import { currentConnectPluginTarget, installPluginBundle, setInstalledPluginStatus } from "../src/plugin/store";
-import {
-  CONNECT_CLIENT_MANAGED_WEB_APP_CAPABILITY_ID,
-  CONNECT_CLIENT_PLUGIN_ID,
-} from "../src/plugin/official/connect-client-manifest";
-import { ConnectBindingLivewarePublicationStateStore } from "../src/plugin/official/liveware-publication-state";
 import type { SelectableRuntimeThread } from "../src/runtime/types";
 import { WorkBuddyDiscoveryError, type WorkBuddyDiscoveryFailureCode } from "../src/runtime/workbuddy-task-discovery";
 import { runConnectCli } from "../src/service/cli";
-import {
-  CORE_CLIENT_PATH,
-  CORE_CONTROL_CONFIG_HEADER,
-  CORE_CONTROL_ORIGIN,
-} from "../src/service/core-control";
+import { CORE_CLIENT_PATH, CORE_CONTROL_CONFIG_HEADER, CORE_CONTROL_ORIGIN } from "../src/service/core-control";
 import { CONNECT_VERSION } from "../src/service/version";
 import type { AgentBindingConfig } from "../src/types";
 import { WorkspaceCatalog } from "../src/workspaces/workspaces";
@@ -246,6 +242,49 @@ describe("runConnectCli", () => {
 
     expect(CONNECT_VERSION).toBe(manifest.version);
     expect(output.stdout).toEqual([`clawchat-connect v${manifest.version}\n`]);
+  });
+
+  it("requests an explicit atomic Plugin source replacement", async () => {
+    const path = await tempConfig();
+    const output = io();
+    await saveConfig(defaultConfig(), path);
+    const replacement = {
+      pluginId: "test.plugin",
+      version: "2.0.0",
+      target: "darwin-arm64",
+      integrity: "sha256-replacement",
+      source: { type: "local", path: "/tmp/replacement.connect-plugin" },
+      status: "active",
+      activationGeneration: 2,
+      installationConfiguration: {},
+      capabilityConfigurations: {},
+      manifest: { capabilities: [] },
+      retainedVersions: [],
+      error: null,
+    };
+    const pluginManagementFetch = mock(async () => Response.json(replacement));
+
+    await expect(
+      runConnectCli(["plugin", "replace", "test.plugin", "/tmp/replacement.connect-plugin", "--config", path], {
+        ...output.deps,
+        pluginManagementFetch,
+      }),
+    ).resolves.toBe(0);
+
+    expect(pluginManagementFetch).toHaveBeenCalledWith(`${CORE_CONTROL_ORIGIN}/core/v1/plugins/test.plugin/replace`, {
+      method: "POST",
+      headers: {
+        Origin: CORE_CONTROL_ORIGIN,
+        [CORE_CONTROL_CONFIG_HEADER]: path,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        source: "local:/tmp/replacement.connect-plugin",
+        installationConfiguration: {},
+        capabilityConfigurations: {},
+      }),
+    });
+    expect(output.stdout.join("")).toContain("Replaced Plugin test.plugin@2.0.0");
   });
 
   it("initializes Plugin-free administration config without unsupported surfaces", async () => {
@@ -505,18 +544,17 @@ describe("runConnectCli", () => {
       Response.json({ bindingId: "desktop", selection: null, instance: null }),
     );
 
-    await expect(
-      runConnectCli(["status", "--config", path], { ...output.deps, pluginManagementFetch }),
-    ).resolves.toBe(0);
+    await expect(runConnectCli(["status", "--config", path], { ...output.deps, pluginManagementFetch })).resolves.toBe(
+      0,
+    );
 
     expect(output.stdout.join("")).toContain(`runtime capability: example (${CLI_PLUGIN_ID}/exact-runtime)`);
     expect(output.stdout.join("")).toContain("recent diagnostic: Runtime temporarily unavailable.");
     expect(output.stdout.join("")).toContain("managed app: absence (no eligible app)");
     expect(output.stdout.join("")).toContain("app instance: absence");
-    expect(pluginManagementFetch).toHaveBeenCalledWith(
-      `${CORE_CONTROL_ORIGIN}/core/v1/status?bindingId=desktop`,
-      { headers: { [CORE_CONTROL_CONFIG_HEADER]: path } },
-    );
+    expect(pluginManagementFetch).toHaveBeenCalledWith(`${CORE_CONTROL_ORIGIN}/core/v1/status?bindingId=desktop`, {
+      headers: { [CORE_CONTROL_CONFIG_HEADER]: path },
+    });
   });
 
   it("prints the exact durable Publication transition with secret-safe diagnostics", async () => {
@@ -534,38 +572,37 @@ describe("runConnectCli", () => {
     await saveConfig(config, path);
     await installCliPlugin(path);
     const store = createStateStore({ dbPath: config.stateDbPath });
-    await new ConnectBindingLivewarePublicationStateStore(
-      store,
-      async () => undefined,
-      3,
-    ).compareAndSwap("desktop", null, {
-      bindingId: "desktop",
-      activationGeneration: 3,
-      desired: "private",
-      status: "degraded",
-      transition: "bind-tunnel",
-      selectedApp: {
-        pluginId: "example.web",
-        capabilityId: "web",
-        activationGeneration: 2,
-        instanceKey: "desktop-web",
-        displayName: "Example Web",
-        description: "Example browser interface",
+    await new ConnectBindingLivewarePublicationStateStore(store, async () => undefined, 3).compareAndSwap(
+      "desktop",
+      null,
+      {
+        bindingId: "desktop",
+        activationGeneration: 3,
+        desired: "private",
+        status: "degraded",
+        transition: "bind-tunnel",
+        selectedApp: {
+          pluginId: "example.web",
+          capabilityId: "web",
+          activationGeneration: 2,
+          instanceKey: "desktop-web",
+          displayName: "Example Web",
+          description: "Example browser interface",
+        },
+        correlationKey: "Example Web · desktop",
+        appId: "app-desktop",
+        publicUrl: null,
+        registrationId: null,
+        diagnostic: "Tunnel failed token=private-value",
       },
-      correlationKey: "Example Web · desktop",
-      appId: "app-desktop",
-      publicUrl: null,
-      registrationId: null,
-      diagnostic: "Tunnel failed token=private-value",
-    });
+    );
     await store.close();
     const output = io();
 
     await expect(
       runConnectCli(["status", "--config", path], {
         ...output.deps,
-        pluginManagementFetch: async () =>
-          Response.json({ bindingId: "desktop", selection: null, instance: null }),
+        pluginManagementFetch: async () => Response.json({ bindingId: "desktop", selection: null, instance: null }),
       }),
     ).resolves.toBe(0);
 

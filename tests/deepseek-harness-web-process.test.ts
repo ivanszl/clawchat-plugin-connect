@@ -4,6 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { requireDshPackageCommand } from "../src/runtime/deepseek-harness-process";
 import { type DshWebProcess, startDshWebApp } from "../src/runtime/deepseek-harness-web-process";
 
 describe("DSH Web process boundary", () => {
@@ -11,7 +12,8 @@ describe("DSH Web process boundary", () => {
     const child = new FakeDshWebProcess();
     let launch: { executable: string; args: readonly string[]; env: NodeJS.ProcessEnv } | undefined;
     const app = await startDshWebApp({
-      executable: "/opt/dsh",
+      executable: "/opt/bunx",
+      executableArguments: ["@deepseek-ai/dsh"],
       home: "/homes/alpha",
       env: {
         TEST_WEB_ENV: "present",
@@ -26,8 +28,8 @@ describe("DSH Web process boundary", () => {
     });
 
     expect(launch).toMatchObject({
-      executable: "/opt/dsh",
-      args: ["web", "--host", "127.0.0.1", "--port", "0", "--no-open"],
+      executable: "/opt/bunx",
+      args: ["@deepseek-ai/dsh", "web", "--host", "127.0.0.1", "--port", "0", "--no-open"],
       env: { DSH_HOME: "/homes/alpha", TEST_WEB_ENV: "present" },
     });
     expect(launch?.args).not.toContain("--patch");
@@ -92,17 +94,19 @@ describe("DSH Web process boundary", () => {
   });
 });
 
-const installedDsh = Bun.which("dsh");
-describe("installed DSH Web smoke", () => {
-  if (!installedDsh) {
-    it.skip("environment-blocked: the DSH executable is absent from PATH", () => {});
+const realDshCommand =
+  process.env.CONNECT_DSH_REAL_SMOKE === "1" ? requireDshPackageCommand({ PATH: process.env.PATH ?? "" }) : null;
+describe("package-launched DSH Web smoke", () => {
+  if (!realDshCommand) {
+    it.skip("environment-blocked: enable CONNECT_DSH_REAL_SMOKE to launch @deepseek-ai/dsh", () => {});
     return;
   }
 
-  it("starts the installed official Web entrypoint on loopback and stops it", async () => {
+  it("starts the official Web entrypoint on loopback and stops it", async () => {
     const home = await mkdtemp(join(tmpdir(), "connect-dsh-web-smoke-"));
     const app = await startDshWebApp({
-      executable: installedDsh,
+      executable: realDshCommand.path,
+      ...(realDshCommand.executableArguments ? { executableArguments: realDshCommand.executableArguments } : {}),
       home,
       readinessTimeoutMs: 10_000,
       shutdownTimeoutMs: 5_000,
@@ -113,7 +117,7 @@ describe("installed DSH Web smoke", () => {
     } finally {
       await app.release();
     }
-  });
+  }, 30_000);
 });
 
 class FakeDshWebProcess extends EventEmitter implements DshWebProcess {

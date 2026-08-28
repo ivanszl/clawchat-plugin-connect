@@ -49,7 +49,9 @@ export interface ManagedWebAppRegistrySnapshot {
   readonly bindingLeases: readonly Readonly<{ bindingId: string; leaseCount: number }>[];
   readonly upstream: string | null;
 }
-interface ActiveProvider extends ManagedWebAppProviderDefinition { active: boolean }
+interface ActiveProvider extends ManagedWebAppProviderDefinition {
+  active: boolean;
+}
 interface InstanceRecord {
   readonly provider: ActiveProvider;
   readonly key: string;
@@ -76,7 +78,8 @@ export class ManagedWebAppRegistry {
     validateDefinition(definition);
     const key = providerIdentity(definition.pluginId, definition.manifest.id);
     const current = this.providers.get(key);
-    if (current?.active) throw new Error(`Managed Web App Provider ${definition.pluginId}/${definition.manifest.id} is already active`);
+    if (current?.active)
+      throw new Error(`Managed Web App Provider ${definition.pluginId}/${definition.manifest.id} is already active`);
     this.providers.set(key, { ...definition, active: true });
   }
 
@@ -199,9 +202,7 @@ export class ManagedWebAppRegistry {
   async close(): Promise<void> {
     for (const provider of this.providers.values()) provider.active = false;
     const records = [...this.instances];
-    const results = await Promise.allSettled(
-      records.map(async ([, record]) => await this.stop(record)),
-    );
+    const results = await Promise.allSettled(records.map(async ([, record]) => await this.stop(record)));
     const failures: unknown[] = [];
     for (const [index, result] of results.entries()) {
       const current = records[index];
@@ -226,21 +227,27 @@ export class ManagedWebAppRegistry {
     instanceKey: string,
   ): InstanceRecord {
     let record!: InstanceRecord;
-    const acquisition = Promise.resolve().then(async () => await provider.provider.acquire(Object.freeze({ ...context, instanceKey }))).then(async (instance) => {
-      record.instance = instance;
-      validateInstance(instance, provider, instanceKey);
-      record.upstream = validateUpstream(instance.upstream);
-      record.health = instance.health();
-      record.disposeHealth = instance.onHealthChange((health) => this.updateHealth(record, health));
-      record.disposeExit = instance.onExit((error) => this.updateHealth(record, error ? "error" : "stopped"));
-      await instance.waitUntilReady();
-      record.upstream = validateUpstream(instance.upstream, record.upstream);
-      const health = instance.health();
-      this.updateHealth(record, health);
-      if (health !== "ready") throw new Error(`Managed Web App ${provider.pluginId}/${provider.manifest.id} instance ${instanceKey} reported ${health} after readiness`);
-      record.diagnostic = null;
-      return instance;
-    }).catch(async (error) => await this.failRecord(record, error));
+    const acquisition = Promise.resolve()
+      .then(async () => await provider.provider.acquire(Object.freeze({ ...context, instanceKey })))
+      .then(async (instance) => {
+        record.instance = instance;
+        validateInstance(instance, provider, instanceKey);
+        record.upstream = validateUpstream(instance.upstream);
+        record.health = instance.health();
+        record.disposeHealth = instance.onHealthChange((health) => this.updateHealth(record, health));
+        record.disposeExit = instance.onExit((error) => this.updateHealth(record, error ? "error" : "stopped"));
+        await instance.waitUntilReady();
+        record.upstream = validateUpstream(instance.upstream, record.upstream);
+        const health = instance.health();
+        this.updateHealth(record, health);
+        if (health !== "ready")
+          throw new Error(
+            `Managed Web App ${provider.pluginId}/${provider.manifest.id} instance ${instanceKey} reported ${health} after readiness`,
+          );
+        record.diagnostic = null;
+        return instance;
+      })
+      .catch(async (error) => await this.failRecord(record, error));
     record = {
       provider,
       selection,
@@ -255,11 +262,22 @@ export class ManagedWebAppRegistry {
     return record;
   }
 
-  private createLease(record: InstanceRecord, token: symbol, selection: ManagedWebAppSelection, instanceKey: string, upstream: string): ManagedWebAppLease {
+  private createLease(
+    record: InstanceRecord,
+    token: symbol,
+    selection: ManagedWebAppSelection,
+    instanceKey: string,
+    upstream: string,
+  ): ManagedWebAppLease {
     let released = false;
     return Object.freeze({
-      selection, instanceKey, upstream,
-      health: () => { this.assertLease(record, token, released); return record.health },
+      selection,
+      instanceKey,
+      upstream,
+      health: () => {
+        this.assertLease(record, token, released);
+        return record.health;
+      },
       onHealthChange: (listener: (health: ManagedWebAppHealth) => void) => {
         this.assertLease(record, token, released);
         record.healthListeners.add(listener);
@@ -300,11 +318,17 @@ export class ManagedWebAppRegistry {
   }
   private assertProviderAuthority(provider: ActiveProvider): void {
     const current = this.providers.get(providerIdentity(provider.pluginId, provider.manifest.id));
-    if (current !== provider || !provider.active || current.activationGeneration !== provider.activationGeneration) throw new Error(`Managed Web App ${provider.pluginId}/${provider.manifest.id} rejected stale Activation Generation ${provider.activationGeneration}`);
+    if (current !== provider || !provider.active || current.activationGeneration !== provider.activationGeneration)
+      throw new Error(
+        `Managed Web App ${provider.pluginId}/${provider.manifest.id} rejected stale Activation Generation ${provider.activationGeneration}`,
+      );
   }
   private requireProvider(selection: ManagedWebAppSelection): ActiveProvider {
     const provider = this.providers.get(providerIdentity(selection.pluginId, selection.capabilityId));
-    if (!provider || provider.activationGeneration !== selection.activationGeneration) throw new Error(`Managed Web App ${selection.pluginId}/${selection.capabilityId} rejected stale Activation Generation ${selection.activationGeneration}`);
+    if (!provider || provider.activationGeneration !== selection.activationGeneration)
+      throw new Error(
+        `Managed Web App ${selection.pluginId}/${selection.capabilityId} rejected stale Activation Generation ${selection.activationGeneration}`,
+      );
     return provider;
   }
   private updateHealth(record: InstanceRecord, health: ManagedWebAppHealth): void {
@@ -354,30 +378,82 @@ export class ManagedWebAppRegistry {
   }
 }
 
-function immutableContext(provider: ActiveProvider, request: ManagedWebAppBindingRequest): ConnectPluginManagedWebAppInstanceContext {
-  return deepFreeze({ activationGeneration: provider.activationGeneration, pluginId: provider.pluginId, capabilityId: provider.manifest.id, bindingId: request.bindingId, runtime: structuredClone(request.runtime), installationConfiguration: structuredClone(provider.installationConfiguration), configuration: structuredClone(provider.configuration), runtimeConfiguration: structuredClone(request.runtimeConfiguration) });
+function immutableContext(
+  provider: ActiveProvider,
+  request: ManagedWebAppBindingRequest,
+): ConnectPluginManagedWebAppInstanceContext {
+  return deepFreeze({
+    activationGeneration: provider.activationGeneration,
+    pluginId: provider.pluginId,
+    capabilityId: provider.manifest.id,
+    bindingId: request.bindingId,
+    runtime: structuredClone(request.runtime),
+    installationConfiguration: structuredClone(provider.installationConfiguration),
+    configuration: structuredClone(provider.configuration),
+    runtimeConfiguration: structuredClone(request.runtimeConfiguration),
+  });
 }
 function validateDefinition(definition: ManagedWebAppProviderDefinition): void {
-  if (!Number.isSafeInteger(definition.activationGeneration) || definition.activationGeneration < 1) throw new Error("Managed Web App Activation Generation must be a positive safe integer");
-  if (definition.provider.capabilityId !== definition.manifest.id) throw new Error(`Managed Web App Provider ${definition.pluginId}/${definition.provider.capabilityId} does not match manifest capability ${definition.manifest.id}`);
+  if (!Number.isSafeInteger(definition.activationGeneration) || definition.activationGeneration < 1)
+    throw new Error("Managed Web App Activation Generation must be a positive safe integer");
+  if (definition.provider.capabilityId !== definition.manifest.id)
+    throw new Error(
+      `Managed Web App Provider ${definition.pluginId}/${definition.provider.capabilityId} does not match manifest capability ${definition.manifest.id}`,
+    );
 }
-function validateInstance(instance: ConnectPluginManagedWebAppInstance, provider: ActiveProvider, instanceKey: string): void {
-  if (!instance || typeof instance !== "object" || typeof instance.waitUntilReady !== "function" || typeof instance.health !== "function" || typeof instance.onHealthChange !== "function" || typeof instance.onExit !== "function" || typeof instance.release !== "function") throw new Error(`Managed Web App ${provider.pluginId}/${provider.manifest.id} instance ${instanceKey} is malformed`);
+function validateInstance(
+  instance: ConnectPluginManagedWebAppInstance,
+  provider: ActiveProvider,
+  instanceKey: string,
+): void {
+  if (
+    !instance ||
+    typeof instance !== "object" ||
+    typeof instance.waitUntilReady !== "function" ||
+    typeof instance.health !== "function" ||
+    typeof instance.onHealthChange !== "function" ||
+    typeof instance.onExit !== "function" ||
+    typeof instance.release !== "function"
+  )
+    throw new Error(
+      `Managed Web App ${provider.pluginId}/${provider.manifest.id} instance ${instanceKey} is malformed`,
+    );
   validateUpstream(instance.upstream);
 }
 function validateUpstream(upstream: string, expected?: string): string {
   let url: URL;
-  try { url = new URL(upstream) } catch (error) { throw new Error("Managed Web App upstream must be a valid loopback HTTP origin", { cause: error }) }
-  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.username || url.password || url.pathname !== "/" || url.search || url.hash || url.origin !== upstream) throw new Error("Managed Web App upstream must be an opaque 127.0.0.1 HTTP origin");
-  if (expected !== undefined && upstream !== expected) throw new Error("Managed Web App upstream changed during an active instance lease");
+  try {
+    url = new URL(upstream);
+  } catch (error) {
+    throw new Error("Managed Web App upstream must be a valid loopback HTTP origin", { cause: error });
+  }
+  if (
+    url.protocol !== "http:" ||
+    url.hostname !== "127.0.0.1" ||
+    !url.port ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash ||
+    url.origin !== upstream
+  )
+    throw new Error("Managed Web App upstream must be an opaque 127.0.0.1 HTTP origin");
+  if (expected !== undefined && upstream !== expected)
+    throw new Error("Managed Web App upstream changed during an active instance lease");
   return upstream;
 }
 function requireInstanceKey(value: unknown): string {
-  if (typeof value !== "string" || !value || value.trim() !== value || value.includes("\0")) throw new Error("Managed Web App Provider instance key must be a non-empty exact string");
+  if (typeof value !== "string" || !value || value.trim() !== value || value.includes("\0"))
+    throw new Error("Managed Web App Provider instance key must be a non-empty exact string");
   return value;
 }
-function providerIdentity(pluginId: string, capabilityId: string): string { return `${pluginId}\0${capabilityId}` }
-function instanceIdentity(provider: ActiveProvider, instanceKey: string): string { return `${provider.pluginId}\0${provider.manifest.id}\0${provider.activationGeneration}\0${instanceKey}` }
+function providerIdentity(pluginId: string, capabilityId: string): string {
+  return `${pluginId}\0${capabilityId}`;
+}
+function instanceIdentity(provider: ActiveProvider, instanceKey: string): string {
+  return `${provider.pluginId}\0${provider.manifest.id}\0${provider.activationGeneration}\0${instanceKey}`;
+}
 function selectionFor(
   candidate: ManagedWebAppSelectionCandidate,
   kind: "native" | "compatible",
@@ -405,8 +481,7 @@ export function selectManagedWebApp(
   if (native[0]) return selectionFor(native[0], "native");
   const compatible = candidates.filter((candidate) =>
     candidate.manifest.compatibleRuntimes.some(
-      (reference) =>
-        reference.pluginId === runtime.pluginId && reference.capabilityId === runtime.capabilityId,
+      (reference) => reference.pluginId === runtime.pluginId && reference.capabilityId === runtime.capabilityId,
     ),
   );
   if (compatible.length > 1) throw ambiguousSelection(runtime, "compatible", compatible);
@@ -420,10 +495,7 @@ function ambiguousSelection(
 ): Error {
   return new Error(
     `Runtime ${runtime.pluginId}/${runtime.capabilityId} has ambiguous ${kind} Managed Web Apps: ${candidates
-      .map(
-        (candidate) =>
-          `${candidate.pluginId}/${candidate.capabilityId}@${candidate.activationGeneration}`,
-      )
+      .map((candidate) => `${candidate.pluginId}/${candidate.capabilityId}@${candidate.activationGeneration}`)
       .sort()
       .join(", ")}`,
   );
@@ -433,8 +505,7 @@ function sameGeneration(
   candidate: ManagedWebAppGenerationReference | ManagedWebAppProviderDefinition,
   reference: ManagedWebAppGenerationReference,
 ): boolean {
-  const capabilityId =
-    "capabilityId" in candidate ? candidate.capabilityId : candidate.manifest.id;
+  const capabilityId = "capabilityId" in candidate ? candidate.capabilityId : candidate.manifest.id;
   return (
     candidate.pluginId === reference.pluginId &&
     capabilityId === reference.capabilityId &&
@@ -447,19 +518,16 @@ function bindingLeaseSnapshots(
   const counts = new Map<string, number>();
   for (const bindingId of leases.values()) counts.set(bindingId, (counts.get(bindingId) ?? 0) + 1);
   return Object.freeze(
-    [...counts].map(([bindingId, leaseCount]) => Object.freeze({ bindingId, leaseCount })).sort(
-      (left, right) => left.bindingId.localeCompare(right.bindingId),
-    ),
+    [...counts]
+      .map(([bindingId, leaseCount]) => Object.freeze({ bindingId, leaseCount }))
+      .sort((left, right) => left.bindingId.localeCompare(right.bindingId)),
   );
 }
 
 function safeDiagnostic(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message
-    .replace(
-      /(authorization|credential|password|secret|token|api[-_ ]?key)\s*[:=]\s*\S+/giu,
-      "$1=[redacted]",
-    )
+    .replace(/(authorization|credential|password|secret|token|api[-_ ]?key)\s*[:=]\s*\S+/giu, "$1=[redacted]")
     .replace(/https?:\/\/[^/@\s]+:[^/@\s]+@/gu, "http://[redacted]@")
     .slice(0, 512);
 }
