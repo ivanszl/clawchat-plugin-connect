@@ -22,6 +22,12 @@ const bridgeSources = Object.fromEntries(
     "src/plugin/official/deepseek-harness-bridge.mjs",
   ]),
 ) as Record<OfficialPluginTarget, string>;
+const questionProviderSources = Object.fromEntries(
+  ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-arm64", "win32-x64"].map((target) => [
+    target,
+    "src/plugin/official/deepseek-harness-question-provider.mjs",
+  ]),
+) as Record<OfficialPluginTarget, string>;
 
 const descriptor: OfficialPluginDescriptor = {
   manifest: {
@@ -62,7 +68,10 @@ const descriptor: OfficialPluginDescriptor = {
       },
     ],
   },
-  assets: [{ entry: "artifacts/deepseek-harness-bridge.mjs", sources: bridgeSources }],
+  assets: [
+    { entry: "artifacts/deepseek-harness-bridge.mjs", sources: bridgeSources },
+    { entry: "artifacts/deepseek-harness-question-provider.mjs", sources: questionProviderSources },
+  ],
   entrypoint: "src/plugin/official/deepseek-harness-entry.ts",
 };
 

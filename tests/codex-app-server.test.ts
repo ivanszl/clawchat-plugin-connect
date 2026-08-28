@@ -115,7 +115,7 @@ describe("Codex app-server stdio client", () => {
       id: 1,
       method: "initialize",
       params: {
-        clientInfo: { name: "clawchat_connect", title: "ClawChat Connect", version: "0.1.0-beta.8" },
+        clientInfo: { name: "clawchat_connect", title: "ClawChat Connect", version: "0.1.0-beta.9" },
         capabilities: { experimentalApi: false, requestAttestation: false },
       },
     });

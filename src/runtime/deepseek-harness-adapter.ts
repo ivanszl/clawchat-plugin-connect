@@ -454,6 +454,7 @@ export class DshActivityProjector {
   private readonly activities = new Map<string, RuntimeActivity>();
   private readonly positions = new Map<string, string>();
   private readonly nextItemByTurn = new Map<number, number>();
+  private readonly latestAssistantByTurn = new Map<number, string>();
   private currentTurn = 0;
 
   constructor(private readonly sessionId: string) {}
@@ -478,13 +479,13 @@ export class DshActivityProjector {
       case "assistant/chunk":
         return this.assistantChunk(event, data, source);
       case "assistant/message":
-        return [this.assistantMessage(event, data, source)];
+        return this.assistantMessage(event, data, source);
       case "tool/call":
         return [this.replace(toolCallActivity(this.sessionId, event, data, source))];
       case "tool/result":
         return [this.toolResult(event, data, source)];
       case "turn/end":
-        return [this.replace(turnEndActivity(this.sessionId, event, data, source))];
+        return this.completeTurn(event, data, source);
       case "command/run":
       case "command/done":
         return [this.replace(commandEventActivity(this.sessionId, event, data, source))];
@@ -521,7 +522,7 @@ export class DshActivityProjector {
       text: `${previous?.text ?? ""}${stringValue(chunk.text)}`,
       state: "streaming",
       source,
-      data: { nativeSeq: event.seq, nativeType: event.type },
+      data: { nativeSeq: event.seq, nativeType: event.type, outputKind: kind },
     };
     this.activities.set(id, activity);
     return [activity];
@@ -531,21 +532,71 @@ export class DshActivityProjector {
     event: DshSessionEvent,
     data: Record<string, unknown>,
     source: "live" | "history",
-  ): RuntimeActivity {
+  ): RuntimeActivity[] {
     const turn = integerValue(data.turn, this.currentTurn);
     const step = integerValue(data.step, 0);
-    const id = `dsh:${this.sessionId}:assistant:${turn}:${step}`;
     const message = objectValue(data.message);
-    return this.replace({
-      id,
-      position: this.positions.get(id) ?? this.position(id, turn),
-      parentId: null,
-      kind: "assistant",
-      text: contentText(message.content),
-      state: "complete",
-      source,
-      data: { nativeSeq: event.seq, nativeType: event.type },
-    });
+    const content = message.content;
+    const activities: RuntimeActivity[] = [];
+    const reasoningId = `dsh:${this.sessionId}:reasoning:${turn}:${step}`;
+    const previousReasoning = this.activities.get(reasoningId);
+    const reasoning = contentTypeText(content, "reasoning") || previousReasoning?.text || "";
+    if (reasoning) {
+      activities.push(
+        this.replace({
+          id: reasoningId,
+          position: previousReasoning?.position ?? this.position(reasoningId, turn),
+          parentId: null,
+          kind: "reasoning",
+          text: reasoning,
+          state: "complete",
+          source,
+          data: { nativeSeq: event.seq, nativeType: event.type, outputKind: "reasoning" },
+        }),
+      );
+    }
+
+    const assistantId = `dsh:${this.sessionId}:assistant:${turn}:${step}`;
+    const previousAssistant = this.activities.get(assistantId);
+    const text = contentTypeText(content, "text") || previousAssistant?.text || "";
+    if (text) {
+      activities.push(
+        this.replace({
+          id: assistantId,
+          position: previousAssistant?.position ?? this.position(assistantId, turn),
+          parentId: null,
+          kind: "assistant",
+          text,
+          state: "complete",
+          source,
+          data: { nativeSeq: event.seq, nativeType: event.type, outputKind: "assistant" },
+        }),
+      );
+      this.latestAssistantByTurn.set(turn, assistantId);
+    }
+    return activities;
+  }
+
+  private completeTurn(
+    event: DshSessionEvent,
+    data: Record<string, unknown>,
+    source: "live" | "history",
+  ): RuntimeActivity[] {
+    const turn = integerValue(data.turn, this.currentTurn);
+    const activities: RuntimeActivity[] = [];
+    const assistantId = this.latestAssistantByTurn.get(turn);
+    const assistant = assistantId ? this.activities.get(assistantId) : undefined;
+    if (assistant?.state === "complete") {
+      activities.push(
+        this.replace({
+          ...assistant,
+          data: { ...assistant.data, outputKind: "final" },
+        }),
+      );
+    }
+    this.latestAssistantByTurn.delete(turn);
+    activities.push(this.replace(turnEndActivity(this.sessionId, event, data, source)));
+    return activities;
   }
 
   private toolResult(
@@ -824,7 +875,11 @@ function messageActivity(
     state: "complete",
     source,
     ...(inputIdentity ? { inputIdentity } : {}),
-    data: { nativeSeq: event.seq, nativeType: event.type },
+    data: {
+      nativeSeq: event.seq,
+      nativeType: event.type,
+      deliveryDisposition: "projection-only",
+    },
   };
 }
 
@@ -869,7 +924,12 @@ function turnEndActivity(
     text: reasonKind === "completed" ? "Turn completed." : `Turn ended: ${reasonKind}`,
     state,
     source,
-    data: { nativeSeq: event.seq, nativeType: event.type, reason: reasonKind },
+    data: {
+      nativeSeq: event.seq,
+      nativeType: event.type,
+      reason: reasonKind,
+      outputKind: reasonKind === "completed" ? "progress" : "final",
+    },
   };
 }
 
@@ -935,6 +995,17 @@ function contentText(value: unknown): string {
       if (block.type === "text" || block.type === "reasoning") return stringValue(block.text);
       if (block.type === "tool-result") return contentText(block.content);
       return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function contentTypeText(value: unknown, type: "reasoning" | "text"): string {
+  if (!Array.isArray(value)) return "";
+  return value
+    .map((entry) => {
+      const block = objectValue(entry);
+      return block.type === type ? stringValue(block.text) : "";
     })
     .filter(Boolean)
     .join("\n");

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
+import { registerQuestionProviderWhenProfileReady } from "./deepseek-harness-question-provider.mjs";
 
 const PROTOCOL_NAME = "clawchat-connect-dsh-bridge";
 const PROTOCOL_MAJOR = 1;
@@ -114,8 +115,7 @@ export async function apply(ctx, config = {}) {
     }
   });
 
-  const userQuestions = ctx.root.get("userQuestions");
-  const offQuestions = registerQuestionProvider(userQuestions, {
+  const questionRegistration = registerQuestionProviderWhenProfileReady(ctx, {
     async ask(request) {
       const sessionId = ownedSessionId(request.agent);
       if (!sessionId) throw bridgeError("interaction-unavailable", "DSH question has no Connect-owned Agent");
@@ -169,11 +169,11 @@ export async function apply(ctx, config = {}) {
     });
   });
 
-  const workspaceRegistry = ctx.get("workspaceRegistry");
-  const agentDefaultModel = ctx.root.get("agentDefaultModel");
-  const attachments = ctx.root.get("attachments");
-  const permissionPresets = ctx.root.get("permissionPresets");
-  const agentPresets = ctx.root.get("agentPresets");
+  let workspaceRegistry;
+  let agentDefaultModel;
+  let attachments;
+  let permissionPresets;
+  let agentPresets;
   const resolveSelection = async (value) => {
     const provider = requestString(value, "provider");
     const model = requestString(value, "model");
@@ -254,36 +254,47 @@ export async function apply(ctx, config = {}) {
       },
     };
   };
-  await send({
-    type: "hello",
-    protocol: {
-      name: PROTOCOL_NAME,
-      major: PROTOCOL_MAJOR,
-      build: requiredString(config.build, "Bridge build"),
-    },
-    home: requiredString(config.home, "DSH Home"),
-    profile: optionalString(config.profile) ?? null,
-    capabilities: {
-      promptQueue: true,
-      promptSteer: true,
-      cancel: true,
-      durableReceipt: true,
-      history: true,
-      approvals: Boolean(ctx.root.get("approval")),
-      questions: Boolean(offQuestions),
-      models: true,
-      presets: Boolean(agentPresets),
-      permissionPresets: Boolean(permissionPresets),
-      skills: Boolean(ctx.root.get("skills") && renderSkillContent),
-      commands: Boolean(ctx.root.get("commands")),
-      imageInput: Boolean(attachments),
-      localProducedFilePresentation: false,
-      portableArtifactOutput: false,
-      archive: Boolean(workspaceRegistry),
-      restore: false,
-      delete: false,
-      crossProcessSessionOwnership: false,
-    },
+  const hello = questionRegistration.ready.then(async (questions) => {
+    if (disposed) return;
+    workspaceRegistry = ctx.get("workspaceRegistry");
+    agentDefaultModel = ctx.root.get("agentDefaultModel");
+    attachments = ctx.root.get("attachments");
+    permissionPresets = ctx.root.get("permissionPresets");
+    agentPresets = ctx.root.get("agentPresets");
+    await send({
+      type: "hello",
+      protocol: {
+        name: PROTOCOL_NAME,
+        major: PROTOCOL_MAJOR,
+        build: requiredString(config.build, "Bridge build"),
+      },
+      home: requiredString(config.home, "DSH Home"),
+      profile: optionalString(config.profile) ?? null,
+      capabilities: {
+        promptQueue: true,
+        promptSteer: true,
+        cancel: true,
+        durableReceipt: true,
+        history: true,
+        approvals: Boolean(ctx.root.get("approval")),
+        questions,
+        models: true,
+        presets: Boolean(agentPresets),
+        permissionPresets: Boolean(permissionPresets),
+        skills: Boolean(ctx.root.get("skills") && renderSkillContent),
+        commands: Boolean(ctx.root.get("commands")),
+        imageInput: Boolean(attachments),
+        localProducedFilePresentation: false,
+        portableArtifactOutput: false,
+        archive: Boolean(workspaceRegistry),
+        restore: false,
+        delete: false,
+        crossProcessSessionOwnership: false,
+      },
+    });
+  });
+  void hello.catch(() => {
+    if (!disposed) process.kill(process.pid, "SIGTERM");
   });
 
   const methods = {
@@ -722,7 +733,8 @@ export async function apply(ctx, config = {}) {
     disposed = true;
     offEvents();
     offApproval();
-    offQuestions?.();
+    await questionRegistration.dispose();
+    await hello.catch(() => undefined);
     const interactionError = bridgeError("interaction-cancelled", "DSH Bridge disposed");
     for (const pending of pendingInteractions.values()) pending.reject(interactionError);
     pendingInteractions.clear();
@@ -745,15 +757,6 @@ async function optionalDshImport(name) {
   }
 }
 
-function registerQuestionProvider(service, provider) {
-  if (!service) return undefined;
-  try {
-    return service.registerProvider(provider);
-  } catch (error) {
-    if (error?.code === "DUPLICATE_PROVIDER") return undefined;
-    throw error;
-  }
-}
 
 
 function ownedHandle(handles, sessionId) {

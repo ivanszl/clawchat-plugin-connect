@@ -4,6 +4,8 @@ All notable changes to ClawChat Connect are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.0-beta.9] - 2026-08-28
+
 ### Added
 
 - Added the official DeepSeek Harness Runtime Plugin with native Session discovery/resume, model and preset options, approvals/questions, Commands, Skills, cancellation, rich input, runtime-owned Profile composition, and capability-gated archive support.

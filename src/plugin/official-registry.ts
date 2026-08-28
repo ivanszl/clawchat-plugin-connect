@@ -105,7 +105,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: codexDescriptor,
     name: "Codex",
-    artifactIntegrity: "sha256-kwKYeSWjku/p9TWj9zJbHr1FjSQAXhqXHWMxCZ643NQ=",
+    artifactIntegrity: "sha256-dyK1QPCBAiiT64eNVWLHaW419gph+86Obggon9f3B1U=",
     classification: "runtime",
     discovery: {
       executableNames: ["codex"],
@@ -121,7 +121,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: opencodeDescriptor,
     name: "OpenCode",
-    artifactIntegrity: "sha256-ST8vEaHd6VgS2DM+yavHOLxYy/ywDjd0A0Ev19osFJo=",
+    artifactIntegrity: "sha256-itXMxXtcad93+z2gleTKno4D/zAqRG6zJG3QykojEzM=",
     discovery: {
       executableNames: ["opencode"],
       versionCommand: {
@@ -136,15 +136,23 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: deepSeekHarnessDescriptor,
     name: "DeepSeek Harness",
-    artifactIntegrity: "sha256-juzBS2DHLZUfcnUhGFCn+t2oSj9CEkELNUmOPy0IS2c=",
+    artifactIntegrity: "sha256-JCBMNVc3uFOaWUOShpWYp5MfR6+hakCRfXrAMXQVYQk=",
     assetIntegrities: {
       "artifacts/deepseek-harness-bridge.mjs": {
-        "darwin-arm64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
-        "darwin-x64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
-        "linux-arm64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
-        "linux-x64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
-        "win32-arm64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
-        "win32-x64": "sha256-RfqN8zWCJqd99/6eW/gVqHKvjrMYyNbeKFnJ9ThAgME=",
+        "darwin-arm64": "sha256-GG91YCOdZ7DtI8Qqwwr3/55v4GefBAvEvPxI2IjdKuo=",
+        "darwin-x64": "sha256-GG91YCOdZ7DtI8Qqwwr3/55v4GefBAvEvPxI2IjdKuo=",
+        "linux-arm64": "sha256-GG91YCOdZ7DtI8Qqwwr3/55v4GefBAvEvPxI2IjdKuo=",
+        "linux-x64": "sha256-GG91YCOdZ7DtI8Qqwwr3/55v4GefBAvEvPxI2IjdKuo=",
+        "win32-arm64": "sha256-GG91YCOdZ7DtI8Qqwwr3/55v4GefBAvEvPxI2IjdKuo=",
+        "win32-x64": "sha256-GG91YCOdZ7DtI8Qqwwr3/55v4GefBAvEvPxI2IjdKuo=",
+      },
+      "artifacts/deepseek-harness-question-provider.mjs": {
+        "darwin-arm64": "sha256-3TYv1Tu1/9wrXnjR+bNDYQxJMYEbAb6Nzk9QEf2ClzQ=",
+        "darwin-x64": "sha256-3TYv1Tu1/9wrXnjR+bNDYQxJMYEbAb6Nzk9QEf2ClzQ=",
+        "linux-arm64": "sha256-3TYv1Tu1/9wrXnjR+bNDYQxJMYEbAb6Nzk9QEf2ClzQ=",
+        "linux-x64": "sha256-3TYv1Tu1/9wrXnjR+bNDYQxJMYEbAb6Nzk9QEf2ClzQ=",
+        "win32-arm64": "sha256-3TYv1Tu1/9wrXnjR+bNDYQxJMYEbAb6Nzk9QEf2ClzQ=",
+        "win32-x64": "sha256-3TYv1Tu1/9wrXnjR+bNDYQxJMYEbAb6Nzk9QEf2ClzQ=",
       },
     },
     classification: "runtime",
@@ -164,23 +172,23 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: connectClientDescriptor,
     name: "Connect Client",
-    artifactIntegrity: "sha256-fndXBTuPduO+ViN2n0WH/sbun47/kgD5jk3ZWTxE72Q=",
+    artifactIntegrity: "sha256-AxHFtxaZkxsfWkRA4RjdXZqxiFhhcOBGE+jQdmcBtYc=",
     classification: "managed-web-app",
     assetIntegrities: {
       "client-assets.json": {
-        "darwin-arm64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
-        "darwin-x64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
-        "linux-arm64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
-        "linux-x64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
-        "win32-arm64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
-        "win32-x64": "sha256-L4QJI/ttGHgV470mM4u45ijR1J5bxn/Yg0g6YFjJMcs=",
+        "darwin-arm64": "sha256-51MyPp1DtMAZfCxP+GHwqgYM62Ljq/VLLP0HZp+fgqc=",
+        "darwin-x64": "sha256-51MyPp1DtMAZfCxP+GHwqgYM62Ljq/VLLP0HZp+fgqc=",
+        "linux-arm64": "sha256-51MyPp1DtMAZfCxP+GHwqgYM62Ljq/VLLP0HZp+fgqc=",
+        "linux-x64": "sha256-51MyPp1DtMAZfCxP+GHwqgYM62Ljq/VLLP0HZp+fgqc=",
+        "win32-arm64": "sha256-51MyPp1DtMAZfCxP+GHwqgYM62Ljq/VLLP0HZp+fgqc=",
+        "win32-x64": "sha256-51MyPp1DtMAZfCxP+GHwqgYM62Ljq/VLLP0HZp+fgqc=",
       },
     },
   },
   {
     descriptor: livewareDescriptor,
     name: "Liveware",
-    artifactIntegrity: "sha256-YeNTOUOowuVbUpFLOi+mKA2FBnknleozhqToyoXckuo=",
+    artifactIntegrity: "sha256-GLAK96GhhlgSioQk8IjSP1EoSw0rzDi02TQ6I0g5aVA=",
     classification: "exposure",
     assetIntegrities: {
       "assets/liveware": {

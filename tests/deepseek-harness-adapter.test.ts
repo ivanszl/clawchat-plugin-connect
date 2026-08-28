@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildOfficialPlugin, discoverOfficialPluginDescriptors } from "../scripts/build-official-plugins";
+import { materializeRuntimeOutput, policyForOutputVisibility } from "../src/clawchat/output-visibility";
 import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { ConnectPluginHost } from "../src/plugin/host";
@@ -17,6 +18,7 @@ import {
 import {
   createDeepSeekHarnessRuntimeAdapter,
   type DeepSeekHarnessRuntimeAdapterBinding,
+  DshActivityProjector,
   projectDshHistory,
 } from "../src/runtime/deepseek-harness-adapter";
 import type { DshBridgeClient } from "../src/runtime/deepseek-harness-process";
@@ -29,6 +31,7 @@ import type {
   DshSessionEvent,
 } from "../src/runtime/deepseek-harness-protocol";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
+import { ClawChatTurnSurface } from "../src/runtime/turn-surface";
 import type { ConnectRuntimePrompt, ConnectRuntimeStartContext } from "../src/runtime/types";
 import type { RuntimeWorkspace } from "../src/types";
 import { WorkspaceCatalog } from "../src/workspaces/workspaces";
@@ -98,14 +101,23 @@ describe("DeepSeek Harness Runtime Adapter", () => {
       artifacts: [{ target, entry: `artifacts/${target}.mjs`, integrity: expect.stringMatching(/^sha256-/u) }],
     });
     expect(Object.keys(built.bundle.files)).toEqual(
-      expect.arrayContaining(["artifacts/deepseek-harness-bridge.mjs", `artifacts/${target}.mjs`]),
+      expect.arrayContaining([
+        "artifacts/deepseek-harness-bridge.mjs",
+        "artifacts/deepseek-harness-question-provider.mjs",
+        `artifacts/${target}.mjs`,
+      ]),
     );
     const bridge = Buffer.from(
       built.bundle.files["artifacts/deepseek-harness-bridge.mjs"]?.content ?? "",
       "base64",
     ).toString("utf8");
+    const questionProvider = Buffer.from(
+      built.bundle.files["artifacts/deepseek-harness-question-provider.mjs"]?.content ?? "",
+      "base64",
+    ).toString("utf8");
     expect(bridge).toContain('export const name = "clawchat-connect-deepseek-harness-bridge"');
     expect(bridge).toContain('ctx.on("session/event"');
+    expect(questionProvider).toContain("ctx.inject({ loader: { await: true } }");
   });
 
   it("qualifies official install, update, disable, enable, and removal through the Plugin Host", async () => {
@@ -196,6 +208,81 @@ describe("DeepSeek Harness Runtime Adapter", () => {
     expect(new Set(snapshot.activities.map((activity) => activity.position)).size).toBe(snapshot.activities.length);
   });
 
+  it("classifies DSH reasoning and terminal text for ClawChat output visibility", async () => {
+    const events = [
+      event(1, "turn/start", { turn: 1 }),
+      event(2, "user/message", {
+        turn: 1,
+        id: "user-output",
+        source: { kind: "user" },
+        content: [{ type: "text", text: "question" }],
+      }),
+      event(3, "assistant/chunk", {
+        turn: 1,
+        step: 1,
+        chunk: { type: "reasoning-delta", text: "private reasoning" },
+      }),
+      event(4, "assistant/chunk", {
+        turn: 1,
+        step: 1,
+        chunk: { type: "text-delta", text: "final answer" },
+      }),
+      event(5, "assistant/message", {
+        turn: 1,
+        step: 1,
+        message: {
+          content: [
+            { type: "reasoning", text: "private reasoning" },
+            { type: "text", text: "final answer" },
+          ],
+        },
+      }),
+      event(6, "turn/end", { turn: 1, reason: { kind: "completed" } }),
+    ];
+    const activities = projectDshHistory("session-output", events).activities;
+    const deliveredText = async (mode: "minimal" | "normal" | "full") => {
+      const replies: string[] = [];
+      const policy = policyForOutputVisibility(mode);
+      const surface = new ClawChatTurnSurface({
+        project: async () => undefined,
+        materialize: (activity) => materializeRuntimeOutput(activity, policy),
+        deliver: async (_activity, reply) => {
+          replies.push(reply.text);
+        },
+      });
+      const projector = new DshActivityProjector(`session-${mode}`);
+      for (const nativeEvent of events) {
+        for (const activity of projector.accept(nativeEvent, "live")) await surface.accept(activity);
+      }
+      await surface.complete();
+      return replies;
+    };
+
+    expect(activities).toEqual([
+      expect.objectContaining({
+        kind: "user",
+        text: "question",
+        data: expect.objectContaining({ deliveryDisposition: "projection-only" }),
+      }),
+      expect.objectContaining({
+        kind: "reasoning",
+        text: "private reasoning",
+        state: "complete",
+        data: expect.objectContaining({ outputKind: "reasoning" }),
+      }),
+      expect.objectContaining({
+        kind: "assistant",
+        text: "final answer",
+        state: "complete",
+        data: expect.objectContaining({ outputKind: "final" }),
+      }),
+      expect.objectContaining({ kind: "turn", text: "Turn completed.", state: "complete" }),
+    ]);
+    expect(await deliveredText("minimal")).toEqual(["final answer"]);
+    expect(await deliveredText("normal")).toEqual(["final answer"]);
+    expect(await deliveredText("full")).toEqual(["private reasoning", "final answer", "Turn completed."]);
+  });
+
   it("creates a native Session, waits for durable admission, streams Events, and reconciles the input", async () => {
     const fixture = await runtimeFixture();
     const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
@@ -232,7 +319,18 @@ describe("DeepSeek Harness Runtime Adapter", () => {
         source: "live",
       }),
       expect.objectContaining({ kind: "assistant", text: "world", state: "streaming" }),
-      expect.objectContaining({ kind: "assistant", text: "world", state: "complete" }),
+      expect.objectContaining({
+        kind: "assistant",
+        text: "world",
+        state: "complete",
+        data: expect.objectContaining({ outputKind: "assistant" }),
+      }),
+      expect.objectContaining({
+        kind: "assistant",
+        text: "world",
+        state: "complete",
+        data: expect.objectContaining({ outputKind: "final" }),
+      }),
       expect.objectContaining({ kind: "turn", state: "complete" }),
     ]);
     const runtimeThreadId = runtimeIds[0] ?? "";

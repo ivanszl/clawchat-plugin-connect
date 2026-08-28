@@ -1,6 +1,6 @@
 {
   "name": "@clawling/clawchat-plugin-connect",
-  "version": "0.1.0-beta.8",
+  "version": "0.1.0-beta.9",
   "description": "Local ClawChat bridge for Plugin-provided coding runtimes and independently managed Web Apps.",
   "repository": {
     "type": "git",

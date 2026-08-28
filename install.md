@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/ma
 Pin a version when required:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh -s -- v0.1.0-beta.8
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh -s -- v0.1.0-beta.9
 ```
 
 The installer resolves `release-channel/latest-beta.txt`, downloads the archive and `checksums.txt`, verifies SHA-256 before extraction, and then stages a transactional replacement. It installs:

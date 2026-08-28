@@ -424,13 +424,13 @@ test("beta workflow validates the exact tag before the Darwin arm64 release", as
   expect(workflow.jobs.release.steps.some(({ name }) => name === "Verify beta version")).toBe(false);
 });
 
-test("version metadata is synchronized at beta.8", async () => {
+test("version metadata is synchronized at beta.9", async () => {
   const pkg = await Bun.file("package.json").json();
   const source = await read("src/service/version.ts");
   const manifest = await Bun.file("skills/manifest.json").json();
-  expect(pkg.version).toBe("0.1.0-beta.8");
-  expect(source).toContain('CONNECT_VERSION = "0.1.0-beta.8"');
-  expect(manifest.connectVersion).toBe("0.1.0-beta.8");
+  expect(pkg.version).toBe("0.1.0-beta.9");
+  expect(source).toContain('CONNECT_VERSION = "0.1.0-beta.9"');
+  expect(manifest.connectVersion).toBe("0.1.0-beta.9");
 });
 
 test("the unversioned shell installer follows beta while Windows requires an explicit historical version", async () => {

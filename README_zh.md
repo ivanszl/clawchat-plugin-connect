@@ -57,7 +57,7 @@ export PATH="$HOME/.local/bin:$PATH"
 当前 beta 指针为 `release-channel/latest-beta.txt`。固定版本：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh -s -- v0.1.0-beta.8
+curl -fsSL https://raw.githubusercontent.com/XMethues/clawchat-plugin-connect/main/install.sh | sh -s -- v0.1.0-beta.9
 ```
 
 ### 初始化并安装 Runtime Plugin
