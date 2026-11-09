@@ -117,7 +117,9 @@ describe("DeepSeek Harness Runtime Adapter", () => {
     ).toString("utf8");
     expect(bridge).toContain('export const name = "clawchat-connect-deepseek-harness-bridge"');
     expect(bridge).toContain('ctx.on("session/event"');
-    expect(questionProvider).toContain("ctx.inject({ loader: { await: true } }");
+    expect(questionProvider).toBe(
+      await Bun.file(new URL("../src/plugin/official/deepseek-harness-question-provider.mjs", import.meta.url)).text(),
+    );
   });
 
   it("qualifies official install, update, disable, enable, and removal through the Plugin Host", async () => {

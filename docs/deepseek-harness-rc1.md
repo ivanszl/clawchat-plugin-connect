@@ -1,0 +1,23 @@
+# DeepSeek Harness rc.1 compatibility
+
+The ClawNest Linux platform build uses DSH `0.2.2-rc.1` and the matching SDK.
+It carries the existing official DSH plugin with these compatibility updates:
+
+- Wait for Cordis loader completion without holding the readiness barrier.
+- Preserve native question providers; Connect handles only owned roots after
+  native `NO_PROVIDER`. Cancellation and other native errors propagate.
+- Use the registry setup callback's explicit Agent, native model current/select,
+  and session seq/eventAt APIs.
+- Read persisted sessions through open/read/close and snapshot headers.
+- Bound failed-child termination and reap processes that ignore SIGTERM.
+
+Bundle entry and bridge asset hashes remain release-pinned and verified. Build
+the plugin after changing its entry dependencies; update the embedded registry
+from the resulting artifact integrity before compiling Core. A platform build
+must retain the generated bundle beside Core and include the managed skills.
+
+`platform/entry.ts` is a Linux container entrypoint: ordinary CLI arguments still
+use the existing CLI. Its platform state operation returns only selected identity
+and availability fields and can establish a new conversation's workspace intent.
+It does not export credentials. The public installer remains Darwin-only; this
+build does not claim to add an official Linux release archive.
