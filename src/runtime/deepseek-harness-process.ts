@@ -124,7 +124,8 @@ export async function startDshBridge(options: StartDshBridgeOptions): Promise<Ds
           CONNECT_DSH_BRIDGE_FD_OUT: "3",
           CONNECT_DSH_BRIDGE_FD_IN: "4",
         },
-        stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
+        // SDK profiles shut down on stdin EOF; keep their host transport alive.
+        stdio: ["pipe", "ignore", "pipe", "pipe", "pipe"],
         windowsHide: true,
       },
     );
@@ -326,6 +327,7 @@ class SpawnedDshBridge implements DshBridgeClient {
       if (this.child.exitCode === null && !this.failure) {
         await this.request("shutdown", {}, this.stopTimeoutMs).catch(() => undefined);
         this.output.end();
+        this.child.stdin?.end();
       }
       if (this.child.exitCode === null && this.child.signalCode === null) {
         try {

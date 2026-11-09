@@ -33,6 +33,9 @@ output.write(JSON.stringify({
     crossProcessSessionOwnership: false,
   },
 }) + "\\n");
+// SDK profiles drain on stdin EOF even though Bridge RPC uses inherited pipes.
+process.stdin.resume();
+process.stdin.on("end", () => process.exit(17));
 const lines = createInterface({ input, crlfDelay: Infinity });
 lines.on("line", (line) => {
   const request = JSON.parse(line);
@@ -66,6 +69,7 @@ describe("DeepSeek Harness Bridge process boundary", () => {
       profile: null,
       protocol: { build: "test-build" },
     });
+    await Bun.sleep(50);
     await expect(client.request("echo", { value: 42 })).resolves.toEqual({ value: 42 });
     await client.close();
     await expect(client.request("echo", {})).rejects.toThrow("closed");
