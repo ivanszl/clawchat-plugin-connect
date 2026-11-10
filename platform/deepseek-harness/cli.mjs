@@ -25,19 +25,21 @@ function initialize(){
  // Verify/repair only the release-managed skills; user skills remain separate.
  connect(['skills','install']);
  syncUpdaterSkill(path.join(releaseRoot,'updater-skill'),path.join(home,'.agents/skills/clawnest-plugin-update'),path.join(state,'updater-skill-files.json'));
- // Refresh only when the release-pinned artifact differs or needs repair.
- const pluginId='clawling.runtime.deepseek-harness';
- const packaged=fs.readdirSync(path.join(releaseRoot,'official-plugins')).find(name=>name.startsWith(pluginId+'-')&&name.endsWith('.connect-plugin'));
- if(!packaged)throw new Error('Release-pinned DSH plugin is missing');
- const bundle=readJSON(path.join(releaseRoot,'official-plugins',packaged));
- const expected=bundle.manifest.artifacts[0].integrity;
- const installed=readJSON(path.join(path.dirname(connectConfig),'plugins.lock.json')).plugins?.[pluginId];
- let actual=null;
- if(installed?.activeArtifact&&fs.existsSync(installed.activeArtifact))actual='sha256-'+createHash('sha256').update(fs.readFileSync(installed.activeArtifact)).digest('base64');
- if(installed?.integrity!==expected||actual!==expected)connect(['plugin','setup','--non-interactive','--select',pluginId]);
+ // Refresh installed release-managed official components, preserving disabled/configured state.
+ const installedPlugins=readJSON(path.join(path.dirname(connectConfig),'plugins.lock.json')).plugins||{};
+ for(const packaged of fs.readdirSync(path.join(releaseRoot,'official-plugins')).filter(name=>name.endsWith('.connect-plugin'))){
+  const bundle=readJSON(path.join(releaseRoot,'official-plugins',packaged));
+  const pluginId=bundle.manifest.pluginId;
+  const installed=installedPlugins[pluginId];
+  if(pluginId!=='clawling.runtime.deepseek-harness'&&!installed)continue;
+  const expected=bundle.manifest.artifacts[0].integrity;
+  let actual=null;
+  if(installed?.activeArtifact&&fs.existsSync(installed.activeArtifact))actual='sha256-'+createHash('sha256').update(fs.readFileSync(installed.activeArtifact)).digest('base64');
+  if(installed?.integrity!==expected||actual!==expected)connect(['plugin','setup','--non-interactive','--select',pluginId]);
+ }
  const config=readJSON(connectConfig);
  const managed=config.agents?.dsh?.runtimeConfig;
- if(managed&&(managed.executablePathOverride==='/opt/clawnest-dsh/runtime/dsh-bridge.sh'||managed.executablePathOverride.startsWith(path.join(home,'.clawnest-integrations/deepseek-harness/releases')+path.sep))){
+ if(managed&&(managed.executablePathOverride==='/opt/clawnest-dsh/runtime/dsh-bridge.sh'||typeof managed.executablePathOverride==='string'&&managed.executablePathOverride.startsWith(path.join(home,'.clawnest-integrations/deepseek-harness/releases')+path.sep))){
   if(managed.executablePathOverride==='/opt/clawnest-dsh/runtime/dsh-bridge.sh'&&managed.profile==='web')managed.profile='sdk';
   managed.executablePathOverride=bridgePath;writeJSON(connectConfig,config);
  }
@@ -96,13 +98,13 @@ async function serve(){
  let core=null;
  function startCore(){
   if(core)return;
-  core=spawn(connectBin,['service','exec','--config',connectConfig],{env:model.env,cwd:workspace,stdio:['ignore','pipe','pipe']});
+  core=spawn(connectBin,['service','exec','--config',connectConfig],{env:{...model.env,CLAWCHAT_PRESERVE_PUBLICATIONS_ON_SHUTDOWN:'1'},cwd:workspace,stdio:['ignore','pipe','pipe']});
   for(const stream of [core.stdout,core.stderr])createInterface({input:stream}).on('line',line=>{
    const text=line.replace(/([?&]token=)[^&\s]+/g,'$1[redacted]');process.stderr.write(text+'\n');
   });
   core.on('exit',()=>void stop(1));core.on('error',()=>void stop(1));
  }
- const startedAt=Date.now();let draining=false;let drainPromise=null;
+ const startedAt=Date.now();let draining=false;let drainPromise=null;let activeBrowserRequests=0;
  const token=process.env.AGENT_MANAGER_TOKEN||process.env.CLAWCLOUD_TOKEN;
  if(!token)throw new Error('Manager authentication is required');
  const sessions=new Map();const mappingPath=path.join(state,'operator-sessions.json');const persisted=readJSON(mappingPath);
@@ -114,17 +116,26 @@ async function serve(){
    const status=safeStatus();const ready=!draining&&(!status.userId||(status.updatedAt>=startedAt&&status.connected&&status.available));
    res.writeHead(200,{'Content-Type':'application/json'});return res.end(JSON.stringify({ready,version:process.env.CLAWNEST_INTEGRATION_VERSION,identity:status.userId,connected:status.connected,draining}));
   }
+  if(req.url==='/integration/resume'&&req.method==='POST'){
+   try{
+    if(drainPromise)await drainPromise.catch(()=>{});
+    if(core?.exitCode===null){const result=await fetch('http://127.0.0.1:47822/core/v1/bindings/resume',{method:'POST',headers:{'X-ClawChat-Connect-Core-Config-Path':connectConfig}});if(!result.ok)throw new Error('Core could not resume');}
+    draining=false;drainPromise=null;
+    res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({resumed:true}));
+   }catch{res.writeHead(503);res.end();}return;
+  }
   if(req.url==='/integration/drain'&&req.method==='POST'){
    draining=true;
    drainPromise??=(async()=>{
-    while([...sessions.values()].some(entry=>entry.running)||greetingRunning)await new Promise(r=>setTimeout(r,50));
-    if(core?.exitCode===null){const result=await fetch('http://127.0.0.1:47822/core/v1/bindings/retire',{method:'POST',headers:{'Content-Type':'application/json','X-ClawChat-Connect-Core-Config-Path':connectConfig},body:JSON.stringify({bindingIds:['dsh']})});if(!result.ok)throw new Error('Core could not quiesce the binding');}
+    while(activeBrowserRequests>0||[...sessions.values()].some(entry=>entry.running)||greetingRunning)await new Promise(r=>setTimeout(r,50));
+    if(core?.exitCode===null){const result=await fetch('http://127.0.0.1:47822/core/v1/bindings/quiesce',{method:'POST',headers:{'Content-Type':'application/json','X-ClawChat-Connect-Core-Config-Path':connectConfig},body:JSON.stringify({bindingIds:['dsh']})});if(!result.ok)throw new Error('Core could not quiesce the binding');}
    })();
    try{await drainPromise;res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({drained:true}));}catch{res.writeHead(503);res.end();}return;
   }
   if(req.url==='/health'){res.writeHead(200,{'Content-Type':'application/json'});return res.end(JSON.stringify({ok:true,connectProcess:core?.exitCode===null}));}
   if(draining){res.writeHead(503);return res.end('Agent is updating; try again shortly.');}
   if(req.method!=='POST'||req.url!=='/v1/chat/completions'){res.writeHead(404);return res.end();}
+  activeBrowserRequests++;
   let conversation,entry;
   try{
    let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>1<<20)throw new Error('request too large');}
@@ -152,7 +163,7 @@ async function serve(){
   }catch{
    if(entry){sessions.delete(conversation);await entry.harness.close().catch(()=>{});}
    if(!res.headersSent){res.writeHead(502,{'Content-Type':'application/json'});res.end(JSON.stringify({error:{message:'DeepSeek Harness turn unavailable'}}));}else res.end('data: '+JSON.stringify({error:{message:'DeepSeek Harness turn unavailable'}})+'\n\n');
-  }finally{if(entry)entry.running=false;}
+  }finally{activeBrowserRequests--;if(entry)entry.running=false;}
  };
  const server=http.createServer((req,res)=>void handleRequest(req,res));
  await new Promise(resolve=>server.listen(18789,'127.0.0.1',resolve));
@@ -160,7 +171,7 @@ async function serve(){
  fs.mkdirSync(path.dirname(controlPath),{recursive:true,mode:0o700});
  if(fs.existsSync(controlPath))fs.unlinkSync(controlPath);
  const controlServer=http.createServer((req,res)=>{
-  if(!['/integration/health','/integration/drain'].includes(req.url)){res.writeHead(404);res.end();return;}
+  if(!['/integration/health','/integration/drain','/integration/resume'].includes(req.url)){res.writeHead(404);res.end();return;}
   void handleRequest(req,res,true);
  });
  await new Promise(resolve=>controlServer.listen(controlPath,resolve));fs.chmodSync(controlPath,0o600);

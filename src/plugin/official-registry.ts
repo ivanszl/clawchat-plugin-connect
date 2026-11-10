@@ -188,7 +188,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: livewareDescriptor,
     name: "Liveware",
-    artifactIntegrity: "sha256-GLAK96GhhlgSioQk8IjSP1EoSw0rzDi02TQ6I0g5aVA=",
+    artifactIntegrity: "sha256-Wmjh5NedB8OFYAfd+2GcUzqrlEqWU16yxU6+RG9Y8Mw=",
     classification: "exposure",
     assetIntegrities: {
       "assets/liveware": {
