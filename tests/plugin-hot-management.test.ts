@@ -23,6 +23,7 @@ import {
   pluginInstallationPaths,
   refreshOfficialPluginBundle,
   revalidateInstalledPlugin,
+  setInstalledPluginStatus,
   stagePluginBundle,
 } from "../src/plugin/store";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
@@ -2498,7 +2499,9 @@ describe("offline official plugin refresh", () => {
     const artifact = changed.manifest.artifacts[0];
     if (!artifact) throw new Error("fixture artifact missing");
     artifact.integrity = `sha256-${createHash("sha256").update(file.content).digest("base64")}`;
+    await setInstalledPluginStatus(configPath, initial.pluginId, "disabled");
     const updated = await refreshOfficialPluginBundle({ ...options, bundle: changed });
+    expect(updated.status).toBe("disabled");
     expect(updated.integrity).not.toBe(initial.integrity);
     expect(updated.activationGeneration).toBe((initial.activationGeneration ?? 0) + 1);
     expect(updated.installationConfiguration).toEqual(initial.installationConfiguration);

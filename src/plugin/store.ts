@@ -251,8 +251,7 @@ export async function refreshOfficialPluginBundle(
       await discardStagedPlugin(options.configPath, staged);
       return existing;
     }
-    if (existing?.status === "disabled") staged.entry.status = "disabled";
-    return await commitStagedPlugin(options.configPath, staged, existing ? "official-replace" : "install");
+    return await commitStagedPlugin(options.configPath, staged, existing ? "official-refresh" : "install");
   } catch (error) {
     await discardStagedPlugin(options.configPath, staged).catch(() => undefined);
     throw error;
@@ -262,7 +261,14 @@ export async function refreshOfficialPluginBundle(
 export async function commitStagedPlugin(
   configPath: string,
   staged: StagedPlugin,
-  operation: "install" | "update" | "upload-replace" | "source-replace" | "official-replace" | "select",
+  operation:
+    | "install"
+    | "update"
+    | "upload-replace"
+    | "source-replace"
+    | "official-replace"
+    | "official-refresh"
+    | "select",
 ): Promise<InstalledPluginLockEntry> {
   const paths = pluginInstallationPaths(configPath);
   let committed!: InstalledPluginLockEntry;
@@ -302,7 +308,7 @@ export async function commitStagedPlugin(
     committed = {
       ...staged.entry,
       activationGeneration,
-      status: "active",
+      status: operation === "official-refresh" && existing?.status === "disabled" ? "disabled" : "active",
       error: null,
       retainedVersions: retained,
     };
