@@ -139,12 +139,12 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
     artifactIntegrity: "sha256-BVc1wEv/K/QDaqLxCONifY2+kavBLDArJy7m6xAFD9k=",
     assetIntegrities: {
       "artifacts/deepseek-harness-bridge.mjs": {
-        "darwin-arm64": "sha256-tpl0De/5X/F29CwijvWdaLXDqImBT3TtzRYs5pFgKE8=",
-        "darwin-x64": "sha256-tpl0De/5X/F29CwijvWdaLXDqImBT3TtzRYs5pFgKE8=",
-        "linux-arm64": "sha256-tpl0De/5X/F29CwijvWdaLXDqImBT3TtzRYs5pFgKE8=",
-        "linux-x64": "sha256-tpl0De/5X/F29CwijvWdaLXDqImBT3TtzRYs5pFgKE8=",
-        "win32-arm64": "sha256-tpl0De/5X/F29CwijvWdaLXDqImBT3TtzRYs5pFgKE8=",
-        "win32-x64": "sha256-tpl0De/5X/F29CwijvWdaLXDqImBT3TtzRYs5pFgKE8=",
+        "darwin-arm64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
+        "darwin-x64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
+        "linux-arm64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
+        "linux-x64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
+        "win32-arm64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
+        "win32-x64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
       },
       "artifacts/deepseek-harness-question-provider.mjs": {
         "darwin-arm64": "sha256-ImK5ZUR++PLAlt8R0UZFvwafYnUpKk+u5toQ5pDBQZA=",
@@ -153,6 +153,14 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
         "linux-x64": "sha256-ImK5ZUR++PLAlt8R0UZFvwafYnUpKk+u5toQ5pDBQZA=",
         "win32-arm64": "sha256-ImK5ZUR++PLAlt8R0UZFvwafYnUpKk+u5toQ5pDBQZA=",
         "win32-x64": "sha256-ImK5ZUR++PLAlt8R0UZFvwafYnUpKk+u5toQ5pDBQZA=",
+      },
+      "artifacts/deepseek-harness-tool-policy.mjs": {
+        "darwin-arm64": "sha256-RScaYs2inRkqjaPBMLiiIG9OjY95uSSbe+yO4nMnJ6A=",
+        "darwin-x64": "sha256-RScaYs2inRkqjaPBMLiiIG9OjY95uSSbe+yO4nMnJ6A=",
+        "linux-arm64": "sha256-RScaYs2inRkqjaPBMLiiIG9OjY95uSSbe+yO4nMnJ6A=",
+        "linux-x64": "sha256-RScaYs2inRkqjaPBMLiiIG9OjY95uSSbe+yO4nMnJ6A=",
+        "win32-arm64": "sha256-RScaYs2inRkqjaPBMLiiIG9OjY95uSSbe+yO4nMnJ6A=",
+        "win32-x64": "sha256-RScaYs2inRkqjaPBMLiiIG9OjY95uSSbe+yO4nMnJ6A=",
       },
     },
     classification: "runtime",

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
+import { registerClawChatApprovalPolicy } from "./deepseek-harness-tool-policy.mjs";
 import { registerQuestionProviderWhenProfileReady } from "./deepseek-harness-question-provider.mjs";
 
 const PROTOCOL_NAME = "clawchat-connect-dsh-bridge";
@@ -86,7 +87,10 @@ export async function apply(ctx, config = {}) {
     return await response;
   };
 
-  const offApproval = ctx.on("approval/request", async (request, next) => {
+  const approvalPolicy = registerClawChatApprovalPolicy(ctx, {
+    owns: agent => Boolean(ownedSessionId(agent)),
+    configPath: process.env.CLAWCHAT_CONNECT_CONFIG,
+    ask: async (request, next) => {
     const sessionId = ownedSessionId(request.agent);
     if (!sessionId) return await next();
     const nativeDecision = await next();
@@ -113,6 +117,7 @@ export async function apply(ctx, config = {}) {
     } catch {
       return request.signal?.aborted ? "cancelled" : "unavailable";
     }
+    },
   });
 
   const questionRegistration = registerQuestionProviderWhenProfileReady(ctx, {
@@ -165,6 +170,7 @@ export async function apply(ctx, config = {}) {
 
   const offEvents = ctx.on("session/event", (session, event) => {
     if (!handles.has(String(session.id))) return;
+    approvalPolicy.observe(handles.get(String(session.id)).agent, event);
     void send({ type: "event", sessionId: String(session.id), event }).catch(() => {
       process.kill(process.pid, "SIGTERM");
     });
@@ -740,7 +746,7 @@ export async function apply(ctx, config = {}) {
     if (disposed) return;
     disposed = true;
     offEvents();
-    offApproval();
+    approvalPolicy.dispose();
     await questionRegistration.dispose();
     await hello.catch(() => undefined);
     const interactionError = bridgeError("interaction-cancelled", "DSH Bridge disposed");

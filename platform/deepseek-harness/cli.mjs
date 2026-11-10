@@ -33,9 +33,14 @@ function initialize(){
   const installed=installedPlugins[pluginId];
   if(pluginId!=='clawling.runtime.deepseek-harness'&&!installed)continue;
   const expected=bundle.manifest.artifacts[0].integrity;
-  let actual=null;
-  if(installed?.activeArtifact&&fs.existsSync(installed.activeArtifact))actual='sha256-'+createHash('sha256').update(fs.readFileSync(installed.activeArtifact)).digest('base64');
-  if(installed?.integrity!==expected||actual!==expected)connect(['plugin','setup','--non-interactive','--select',pluginId]);
+  const directory=installed?.manifestPath?path.dirname(installed.manifestPath):null;
+  const matches=installed?.integrity===expected&&directory&&Object.entries(bundle.files).every(([entry,file])=>{
+   const target=path.resolve(directory,entry);
+   if(!target.startsWith(directory+path.sep)||!fs.existsSync(target))return false;
+   const desired=Buffer.from(file.content,file.encoding==='base64'?'base64':'utf8');
+   return createHash('sha256').update(fs.readFileSync(target)).digest('hex')===createHash('sha256').update(desired).digest('hex');
+  });
+  if(!matches)connect(['plugin','setup','--non-interactive','--select',pluginId]);
  }
  const config=readJSON(connectConfig);
  const managed=config.agents?.dsh?.runtimeConfig;
@@ -98,7 +103,7 @@ async function serve(){
  let core=null;
  function startCore(){
   if(core)return;
-  core=spawn(connectBin,['service','exec','--config',connectConfig],{env:{...model.env,CLAWCHAT_PRESERVE_PUBLICATIONS_ON_SHUTDOWN:'1'},cwd:workspace,stdio:['ignore','pipe','pipe']});
+  core=spawn(connectBin,['service','exec','--config',connectConfig],{env:{...model.env,CLAWCHAT_PRESERVE_PUBLICATIONS_ON_SHUTDOWN:'1',CLAWCHAT_CONNECT_CONFIG:connectConfig},cwd:workspace,stdio:['ignore','pipe','pipe']});
   for(const stream of [core.stdout,core.stderr])createInterface({input:stream}).on('line',line=>{
    const text=line.replace(/([?&]token=)[^&\s]+/g,'$1[redacted]');process.stderr.write(text+'\n');
   });

@@ -25,3 +25,11 @@ Running updates quiesce browser work and the Core binding before Supervisor
 restarts only `dsh-agent`. The owner-only control socket never passes Manager
 credentials into model tools. Image and integration updates retain all existing
 HOME data and canonical identity.
+
+For offline refresh, unchanged durable declarations are copied transactionally to
+the new activation generation before its plugin selection changes. Revision,
+schema, publication intent and diagnostics remain intact; old namespaces stay
+available. A declaration change requires the established running migration
+workflow and is rejected by this offline path. DSH Core processes set the private
+preserve-publications shutdown mode for ordinary restarts and failed candidate
+rollback; explicit binding/plugin retirement remains destructive.
