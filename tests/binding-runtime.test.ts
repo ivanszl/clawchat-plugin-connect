@@ -2940,6 +2940,16 @@ describe("direct ClawChat interaction presentation", () => {
                 signal: controller.signal,
               },
             );
+            yield {
+              id: "question-done",
+              position: "1",
+              parentId: null,
+              kind: "assistant",
+              text: "done",
+              state: "complete",
+              source: "live",
+              data: { outputKind: "final" },
+            };
           },
           cancel: async () => {
             controller.abort();
