@@ -29,3 +29,10 @@ preset to fresh and restored sessions, preserving their identity and history.
 Changing a preset within a running session still uses native DSH controls; its
 next managed restore reapplies the platform startup policy. This does not change
 generic Connect installations, ClawChat authentication or native questions.
+
+DSH inputs carry ClawChat turn identity in native message-source metadata rather
+than the `<clawchat_turn_context>` text envelope. Direct chat reaches the model
+as its original body. Groups retain structured mentions, batch content and
+explicitly read-only background without transport IDs/digests. Native history
+and reconnect reconciliation read the durable metadata and retain compatibility
+with old sessions containing the text envelope.

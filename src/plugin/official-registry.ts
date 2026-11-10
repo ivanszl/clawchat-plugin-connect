@@ -136,15 +136,15 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: deepSeekHarnessDescriptor,
     name: "DeepSeek Harness",
-    artifactIntegrity: "sha256-Cf4fhXCVCC/IWjCozRxcDEzJ91Q6kK9SDRIMdLa87/Q=",
+    artifactIntegrity: "sha256-PnPNzfflNQ7Jw7dLcg6ozZUvEvogYQ/MJ8zdN+X3srs=",
     assetIntegrities: {
       "artifacts/deepseek-harness-bridge.mjs": {
-        "darwin-arm64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
-        "darwin-x64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
-        "linux-arm64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
-        "linux-x64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
-        "win32-arm64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
-        "win32-x64": "sha256-okHzqMzLAZ62aUkTi2JxvrjmvZS2ZxlDTW98d9jai+w=",
+        "darwin-arm64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
+        "darwin-x64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
+        "linux-arm64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
+        "linux-x64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
+        "win32-arm64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
+        "win32-x64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
       },
       "artifacts/deepseek-harness-question-provider.mjs": {
         "darwin-arm64": "sha256-ImK5ZUR++PLAlt8R0UZFvwafYnUpKk+u5toQ5pDBQZA=",

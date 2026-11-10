@@ -419,7 +419,10 @@ export async function apply(ctx, config = {}) {
           { type: "text", text },
           ...imageRefs.map((attachment) => ({ type: "image", attachment })),
         ],
-        source: { kind: "user", connectInputId: inputId },
+        source: { kind: "user", connectInputId: inputId,
+          ...(['client','clawchat'].includes(params.inputOrigin) ? {connectInputOrigin:params.inputOrigin} : {}),
+          ...(optionalString(params.clawchatTurnContext) ? {clawchatTurnContext:params.clawchatTurnContext} : {}),
+        },
       });
       if (params.mode === "steer") handle.agent.steer(message);
       else handle.agent.followup(message);
