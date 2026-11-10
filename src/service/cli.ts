@@ -55,6 +55,7 @@ import {
   installPluginBundle,
   listInstalledPlugins,
   pluginDependents,
+  refreshOfficialPluginBundle,
   validatePluginConfiguration,
 } from "../plugin/store";
 import type { AgentBindingConfig, ConnectConfig, OutputVisibility } from "../types";
@@ -832,7 +833,7 @@ async function maybeRunPluginCommand(
             }
             const resolved = await resolveBundledOfficialPlugin(candidate, sourceOptions);
             installed.push(
-              await installPluginBundle({
+              await refreshOfficialPluginBundle({
                 configPath,
                 source: resolved.source,
                 bundle: resolved.bundle,

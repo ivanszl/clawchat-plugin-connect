@@ -233,6 +233,32 @@ export async function installPluginBundle(options: StagePluginBundleOptions): Pr
   }
 }
 
+// Only call after resolving and verifying a release-pinned official candidate.
+export async function refreshOfficialPluginBundle(
+  options: StagePluginBundleOptions,
+): Promise<InstalledPluginLockEntry> {
+  const existing = (await listInstalledPlugins(options.configPath)).find(
+    (entry) => entry.pluginId === options.bundle.manifest.pluginId,
+  );
+  const staged = await stagePluginBundle({
+    ...options,
+    installationConfiguration: existing?.installationConfiguration ?? options.installationConfiguration,
+    capabilityConfigurations: existing?.capabilityConfigurations ?? options.capabilityConfigurations,
+  });
+  try {
+    if (existing && existing.activeArtifact === staged.entry.activeArtifact) {
+      await revalidateInstalledPlugin(existing);
+      await discardStagedPlugin(options.configPath, staged);
+      return existing;
+    }
+    if (existing?.status === "disabled") staged.entry.status = "disabled";
+    return await commitStagedPlugin(options.configPath, staged, existing ? "official-replace" : "install");
+  } catch (error) {
+    await discardStagedPlugin(options.configPath, staged).catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function commitStagedPlugin(
   configPath: string,
   staged: StagedPlugin,

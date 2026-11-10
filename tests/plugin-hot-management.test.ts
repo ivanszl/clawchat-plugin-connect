@@ -21,6 +21,7 @@ import {
   installPluginBundle,
   managedPluginUploadRoot,
   pluginInstallationPaths,
+  refreshOfficialPluginBundle,
   revalidateInstalledPlugin,
   stagePluginBundle,
 } from "../src/plugin/store";
@@ -2457,5 +2458,51 @@ describe("hot Plugin management service", () => {
       expect(checks[pluginId]).toMatchObject({ status: "available", version: "2.0.0", diagnostic: null });
     }
     await host.close();
+  });
+});
+
+describe("offline official plugin refresh", () => {
+  it("keeps identical installs stable and preserves configuration on replacement", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-offline-refresh-"));
+    const configPath = join(directory, "config.json");
+    await saveConfig(defaultConfig(), configPath);
+    const bundle = hotBundle("official.refresh", "1.0.0");
+    bundle.manifest.installationConfigurationSchema = {
+      type: "object",
+      properties: { preference: { type: "string" } },
+      additionalProperties: false,
+    };
+    const exposure = bundle.manifest.capabilities[1];
+    if (!exposure) throw new Error("fixture exposure missing");
+    exposure.configurationSchema = {
+      type: "object",
+      properties: { model: { type: "string" } },
+      additionalProperties: false,
+    };
+    const options = {
+      configPath,
+      source: { type: "local" as const, path: join(directory, "official.connect-plugin") },
+      bundle,
+    };
+    const initial = await installPluginBundle({
+      ...options,
+      installationConfiguration: { preference: "keep" },
+      capabilityConfigurations: { exposure: { model: "keep" } },
+    });
+    const repeated = await refreshOfficialPluginBundle(options);
+    expect(repeated.activationGeneration).toBe(initial.activationGeneration);
+    const changed = structuredClone(bundle);
+    const file = changed.files["plugin.mjs"];
+    if (file?.encoding !== "utf8") throw new Error("fixture entry is not text");
+    file.content += "\n// updated official release";
+    const artifact = changed.manifest.artifacts[0];
+    if (!artifact) throw new Error("fixture artifact missing");
+    artifact.integrity = `sha256-${createHash("sha256").update(file.content).digest("base64")}`;
+    const updated = await refreshOfficialPluginBundle({ ...options, bundle: changed });
+    expect(updated.integrity).not.toBe(initial.integrity);
+    expect(updated.activationGeneration).toBe((initial.activationGeneration ?? 0) + 1);
+    expect(updated.installationConfiguration).toEqual(initial.installationConfiguration);
+    expect(updated.capabilityConfigurations).toEqual(initial.capabilityConfigurations);
+    expect(updated.retainedVersions).toContainEqual(expect.objectContaining({ integrity: initial.integrity }));
   });
 });
