@@ -1,5 +1,6 @@
 import { expect, it } from "bun:test";
 import { createClawChatApiClient } from "../src/clawchat/api-client";
+
 it("loads the owner app locale from the authenticated Agent owner endpoint", async () => {
   const paths: string[] = [];
   const client = createClawChatApiClient({
