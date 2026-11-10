@@ -835,6 +835,7 @@ async function maybeRunPluginCommand(
             installed.push(
               await refreshOfficialPluginBundle({
                 configPath,
+                stateDbPath: config.stateDbPath,
                 source: resolved.source,
                 bundle: resolved.bundle,
                 target: resolved.target,

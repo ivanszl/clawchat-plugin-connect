@@ -2480,7 +2480,30 @@ describe("offline official plugin refresh", () => {
       properties: { model: { type: "string" } },
       additionalProperties: false,
     };
+    if (exposure.type !== "exposure") throw new Error("fixture exposure missing");
+    exposure.durableState = {
+      schemaVersion: 1,
+      lifetime: "binding",
+      schema: {
+        type: "object",
+        properties: Object.fromEntries(
+          ["desired", "status", "appId", "correlationKey", "transition", "diagnostic"].map((key) => [
+            key,
+            { type: "string" },
+          ]),
+        ),
+        additionalProperties: false,
+      },
+      migrations: [],
+    };
+    bundle.manifest.dependencies.push({
+      type: "host",
+      id: "durable-state",
+      interfaceVersion: CONNECT_HOST_CAPABILITY_INTERFACE_VERSION,
+    });
+    const stateDbPath = join(directory, "state.sqlite");
     const options = {
+      stateDbPath,
       configPath,
       source: { type: "local" as const, path: join(directory, "official.connect-plugin") },
       bundle,
@@ -2490,6 +2513,25 @@ describe("offline official plugin refresh", () => {
       installationConfiguration: { preference: "keep" },
       capabilityConfigurations: { exposure: { model: "keep" } },
     });
+    const state = createStateStore({ dbPath: stateDbPath });
+    const namespace = {
+      pluginId: initial.pluginId,
+      activationGeneration: initial.activationGeneration,
+      capabilityId: "exposure",
+      instanceId: "exposure",
+      lifetime: "binding" as const,
+      scopeKey: "dsh",
+    };
+    const value = {
+      desired: "retired",
+      status: "retiring",
+      appId: "keep-app",
+      correlationKey: "keep-correlation",
+      transition: "unregister-launcher",
+      diagnostic: "keep",
+    };
+    await state.compareAndSwapPluginDurableState(namespace, null, 1, value);
+    const before = await state.listPluginDurableState(initial.pluginId, initial.activationGeneration);
     const repeated = await refreshOfficialPluginBundle(options);
     expect(repeated.activationGeneration).toBe(initial.activationGeneration);
     const changed = structuredClone(bundle);
@@ -2506,6 +2548,29 @@ describe("offline official plugin refresh", () => {
     expect(updated.activationGeneration).toBe((initial.activationGeneration ?? 0) + 1);
     expect(updated.installationConfiguration).toEqual(initial.installationConfiguration);
     expect(updated.capabilityConfigurations).toEqual(initial.capabilityConfigurations);
+    const migrated = await state.listPluginDurableState(updated.pluginId, updated.activationGeneration);
+    expect(migrated).toEqual(
+      before.map((snapshot) => ({
+        ...snapshot,
+        namespace: { ...snapshot.namespace, activationGeneration: updated.activationGeneration },
+      })),
+    );
+    expect(await state.listPluginDurableState(initial.pluginId, initial.activationGeneration)).toEqual(before);
+    const incompatible = structuredClone(changed);
+    const capability = incompatible.manifest.capabilities.find((c) => c.id === "exposure");
+    if (!capability || !("durableState" in capability) || !capability.durableState) throw new Error("missing state");
+    capability.durableState = { ...capability.durableState, schemaVersion: 2, migrations: [{ from: 1, to: 2 }] };
+    const anotherFile = incompatible.files["plugin.mjs"];
+    if (anotherFile?.encoding !== "utf8") throw new Error("missing entry");
+    anotherFile.content += "\n// incompatible declaration";
+    const incompatibleArtifact = incompatible.manifest.artifacts[0];
+    if (!incompatibleArtifact) throw new Error("missing artifact");
+    incompatibleArtifact.integrity = `sha256-${createHash("sha256").update(anotherFile.content).digest("base64")}`;
+    await expect(refreshOfficialPluginBundle({ ...options, bundle: incompatible })).rejects.toThrow(
+      "unchanged Durable State",
+    );
+    expect(await state.listPluginDurableState(updated.pluginId, updated.activationGeneration)).toEqual(migrated);
+    await state.close();
     expect(updated.retainedVersions).toContainEqual(expect.objectContaining({ integrity: initial.integrity }));
   });
 });
