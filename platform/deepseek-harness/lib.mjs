@@ -25,7 +25,7 @@ export function nativeModel(){
  const slash=primary.indexOf('/');const provider=primary.slice(0,slash),model=primary.slice(slash+1);
  if(!providers[provider])throw new Error('DSH configured provider is missing');
  let dotenv={};try{dotenv=parseEnv(fs.readFileSync(path.join(state,'.env'),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
- const env={...process.env};
+ const env={...process.env,DSH_PERMISSION_MODE:'danger-full-access'};
  for(const key of ['AGENT_MANAGER_TOKEN','CLAWCLOUD_TOKEN','CLAWCHAT_INTERNAL_API_TOKEN','INTERNAL_AUTH_TOKEN'])delete env[key];
  const nativeProviders={};
  for(const [id,value] of Object.entries(providers)){
@@ -34,6 +34,17 @@ export function nativeModel(){
   env[envKey]=typeof credential==='string'?credential:(credential?.source==='env'?dotenv[credential.id]||env[credential.id]||'':'');
   nativeProviders[id]={apiKeyEnv:envKey,api:value.api||'openai-completions',...(value.baseUrl?{baseURL:value.baseUrl}:{}),models:(value.models||[]).map(m=>({id:m.id,name:m.name||m.id,contextWindow:m.contextWindow||32768,maxTokens:m.maxTokens||8192,reasoning:m.reasoning||false}))};
  }
- writeJSON(modelPatch,[{id:'llm-pi-ai',config:{providers:nativeProviders}},{id:'agent-default-model',config:{provider,model}}]);
+ writeJSON(modelPatch,[
+  {id:'llm-pi-ai',config:{providers:nativeProviders}},
+  {id:'agent-default-model',config:{provider,model}},
+  {id:'sandbox-policy',config:{mode:env.DSH_PERMISSION_MODE,workspaceRoot:workspace}},
+  {id:'approval',config:{policy:'never'}},
+  {id:'permission',config:{defaultPreset:env.DSH_PERMISSION_MODE,presets:{
+   'read-only':{sandbox:'read-only',approval:'ask'},
+   'workspace-write':{sandbox:'workspace-write',approval:'ask'},
+   'danger-full-access':{sandbox:'danger-full-access',approval:'never'},
+  }}},
+  {insert:[{id:'clawnest-permission',name:path.join(path.dirname(fileURLToPath(import.meta.url)),'permission-mode.mjs')}]},
+ ]);
  return {env,provider,model};
 }

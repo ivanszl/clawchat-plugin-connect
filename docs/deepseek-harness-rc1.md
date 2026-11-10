@@ -21,3 +21,11 @@ use the existing CLI. Its platform state operation returns only selected identit
 and availability fields and can establish a new conversation's workspace intent.
 It does not export credentials. The public installer remains Darwin-only; this
 build does not claim to add an official Linux release archive.
+
+Clawnest-managed ClawChat, Manager/browser chat, initial greetings and native Web
+launch with `danger-full-access` (filesystem sandbox disabled, approval `never`).
+The common generated patch and native permission plugin apply the same startup
+preset to fresh and restored sessions, preserving their identity and history.
+Changing a preset within a running session still uses native DSH controls; its
+next managed restore reapplies the platform startup policy. This does not change
+generic Connect installations, ClawChat authentication or native questions.
