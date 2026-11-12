@@ -2807,6 +2807,193 @@ describe("Binding Runtime Protocol v2 assembly", () => {
     }
   });
 
+  describe("pending Runtime Interaction", () => {
+    async function pendingApprovalHarness(options: { groupReplyAll?: boolean }) {
+      const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-pending-approval-"));
+      const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+      const config = defaultConfig();
+      config.defaultAgent = "codex";
+      config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
+      if (options.groupReplyAll) {
+        await stateStore.replaceGroupSettingsSnapshot("codex", [
+          { conversationId: "chat-group", muted: false, replyMode: "all", batchDelaySeconds: 0, version: 1 },
+        ]);
+      }
+      const prompts: ConnectRuntimePrompt[] = [];
+      const responses: unknown[] = [];
+      const runtimeAdapters = new RuntimeAdapterRegistry([
+        fixedRuntimeAdapter({
+          kind: "codex",
+          modes: ["read-only"],
+          start: async () => ({
+            prompt: async function* (input: ConnectRuntimePrompt) {
+              prompts.push(input);
+              await input.onAccepted?.();
+              if (prompts.length === 1 && input.interactionPort && input.metadata?.sessionRef && input.turnId) {
+                responses.push(
+                  await input.interactionPort.request(
+                    {
+                      kind: "approval",
+                      action: "command",
+                      title: "run",
+                      description: "run a command",
+                      options: [
+                        { id: "approve-once", label: "once" },
+                        { id: "approve-session", label: "session" },
+                        { id: "deny", label: "deny" },
+                      ],
+                    },
+                    {
+                      sessionRef: input.metadata.sessionRef,
+                      turnId: input.turnId,
+                      origin: input.turnOrigin ?? "clawchat",
+                      deliveryConfirmation: Promise.resolve(),
+                    },
+                  ),
+                );
+              }
+              yield* [];
+            },
+            close: mock(async () => undefined),
+          }),
+        }),
+      ]);
+      const transport = new MemoryTransport();
+      const starting = startBindingRuntime({
+        agentId: "codex",
+        activation: {
+          localAgentId: "codex",
+          accessToken: "token",
+          refreshToken: null,
+          serverAgentId: "agt_server",
+          userId: "usr_alice",
+          ownerUserId: "usr_owner",
+          conversationId: "chat-owner",
+        },
+        config,
+        configPath: join(directory, "config.json"),
+        deviceId: "device-local",
+        stateStore,
+        workspaces: new WorkspaceCatalog(stateStore),
+        runtimeAdapters,
+        wsTransport: transport,
+        verifyInstalledSkills: async () => undefined,
+        writeError: () => undefined,
+      });
+      const handle = await completeBindingHandshake(transport, starting, "01JXYZ8K3MNPQRSTVWXYZ0AB");
+      let dseq = 0;
+      const send = (chatId: string, chatType: "direct" | "group", senderId: string, text: string, mention = false) => {
+        dseq += 1;
+        transport.receive({
+          version: "2",
+          event: EVENT.MESSAGE_SEND,
+          trace_id: `trace-${dseq}`,
+          emitted_at: 10 + dseq,
+          dseq,
+          chat_id: chatId,
+          chat_type: chatType,
+          sender: { id: senderId, type: "direct", nick_name: senderId },
+          payload: {
+            message_id: `msg-${dseq}`,
+            message_mode: "normal",
+            message: {
+              body: {
+                fragments: [
+                  ...(mention ? [{ kind: "mention", user_id: "usr_alice", display: "Alice" }] : []),
+                  { kind: "text", text: mention ? ` ${text}` : text },
+                ],
+              },
+              context: { mentions: mention ? [{ user_id: "usr_alice", display: "Alice" }] : [], reply: null },
+              streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+            },
+          },
+        });
+      };
+      const acked = new Set<string>();
+      const outbound = async (chatId: string, textPart: string): Promise<Envelope | undefined> => {
+        for (let attempt = 0; attempt < 1_000; attempt += 1) {
+          for (const event of transport.sent) {
+            if (event.chat_id !== chatId || !event.event.startsWith("message.") || acked.has(event.trace_id)) continue;
+            acked.add(event.trace_id);
+            transport.receive({
+              version: "2",
+              event: EVENT.MESSAGE_ACK,
+              trace_id: event.trace_id,
+              emitted_at: 1000,
+              chat_id: chatId,
+              payload: { message_id: `ack-${event.trace_id}`, accepted_at: 1000 },
+            });
+          }
+          const found = transport.sent.find(
+            (event) => event.chat_id === chatId && JSON.stringify(event.payload).includes(textPart),
+          );
+          if (found) return found;
+          await Bun.sleep(2);
+        }
+        return undefined;
+      };
+      const close = async () => {
+        await handle.close();
+        await runtimeAdapters.close();
+        await stateStore.close();
+      };
+      return { prompts, responses, send, outbound, close, transport };
+    }
+
+    it("answers a plain message with a hint instead of queueing it behind a pending approval", async () => {
+      const harness = await pendingApprovalHarness({});
+      try {
+        harness.send("chat-owner", "direct", "usr_owner", "do the thing");
+        expect(await harness.outbound("chat-owner", "/approve session")).toBeDefined();
+        expect(harness.prompts).toHaveLength(1);
+
+        harness.send("chat-owner", "direct", "usr_owner", "允许");
+        expect(await harness.outbound("chat-owner", "这条消息未被处理")).toBeDefined();
+        await flush();
+        expect(harness.prompts).toHaveLength(1);
+
+        harness.send("chat-owner", "direct", "usr_owner", "/deny");
+        for (let attempt = 0; attempt < 500 && harness.responses.length === 0; attempt += 1) await Bun.sleep(2);
+        expect(harness.responses).toEqual([{ kind: "approval", optionId: "deny" }]);
+
+        harness.send("chat-owner", "direct", "usr_owner", "next message");
+        for (let attempt = 0; attempt < 500 && harness.prompts.length < 2; attempt += 1) await Bun.sleep(2);
+        expect(harness.prompts).toHaveLength(2);
+      } finally {
+        await harness.close();
+      }
+    });
+
+    it("hints for unaddressed text in a policy-eligible group but not in another conversation", async () => {
+      const harness = await pendingApprovalHarness({ groupReplyAll: true });
+      try {
+        harness.send("chat-group", "group", "usr_member", "please run it");
+        expect(await harness.outbound("chat-group", "/approve session")).toBeDefined();
+        expect(harness.prompts).toHaveLength(1);
+
+        harness.send("chat-group", "group", "usr_member", "允许");
+        expect(await harness.outbound("chat-group", "这条消息未被处理")).toBeDefined();
+        await flush();
+        expect(harness.prompts).toHaveLength(1);
+
+        // Another conversation has no pending interaction and gets no hint.
+        harness.send("chat-owner", "direct", "usr_owner", "hello from the owner chat");
+        await Bun.sleep(100);
+        expect(
+          harness.transport.sent.some(
+            (event) => event.chat_id === "chat-owner" && JSON.stringify(event.payload).includes("这条消息未被处理"),
+          ),
+        ).toBe(false);
+
+        harness.send("chat-group", "group", "usr_member", "/deny", true);
+        for (let attempt = 0; attempt < 500 && harness.responses.length === 0; attempt += 1) await Bun.sleep(2);
+        expect(harness.responses).toEqual([{ kind: "approval", optionId: "deny" }]);
+      } finally {
+        await harness.close();
+      }
+    });
+  });
+
   it("routes typed WS events and poison-frame quarantine through the production event seam", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-runtime-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });

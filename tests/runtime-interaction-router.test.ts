@@ -712,7 +712,7 @@ describe("Runtime Interaction surface routing", () => {
     await expect(router.handleMessage(message("owner-1", "/2"))).resolves.toBe(true);
     while (sent.length < 3) await Bun.sleep(0);
     expect(sent[2]).toEqual([expect.objectContaining({ kind: "text", text: expect.stringContaining("请输入备注") })]);
-    await expect(router.handleMessage(message("owner-1", "今天发布"))).resolves.toBe(true);
+    await expect(router.hintPendingInteraction(message("owner-1", "今天发布"), "ABCDEFGH")).resolves.toBe(true);
     await expect(router.handleMessage(message("owner-1", "/answer 今天发布"))).resolves.toBe(true);
     await expect(result).resolves.toEqual({
       kind: "user-input",
@@ -873,7 +873,8 @@ describe("Runtime Interaction pending-message hint", () => {
     const result = router.request(approvalRequest(), directContext());
     while (sent.length === 0) await Bun.sleep(0);
 
-    await expect(router.handleMessage(message("owner-1", "允许"))).resolves.toBe(true);
+    await expect(router.handleMessage(message("owner-1", "允许"))).resolves.toBe(false);
+    await expect(router.hintPendingInteraction(message("owner-1", "允许"), "ABCDEFGH")).resolves.toBe(true);
     const hint = textOf(sent.at(-1));
     expect(hint).toContain("命令审批");
     expect(hint).toContain("/approve 仅此次允许");
@@ -885,21 +886,7 @@ describe("Runtime Interaction pending-message hint", () => {
 
     await expect(router.handleMessage(message("owner-1", "/approve"))).resolves.toBe(true);
     await expect(result).resolves.toEqual({ kind: "approval", optionId: "approve-once" });
-    await expect(router.handleMessage(message("owner-1", "你好"))).resolves.toBe(false);
-  });
-
-  it("lets /cancel and other chat commands through while an approval is pending", async () => {
-    const sent: Fragment[][] = [];
-    const router = newRouter(sent);
-    const result = router.request(approvalRequest(), directContext());
-    while (sent.length === 0) await Bun.sleep(0);
-    const before = sent.length;
-    await expect(router.handleMessage(message("owner-1", "/cancel"))).resolves.toBe(false);
-    await expect(router.handleMessage(message("owner-1", "/status"))).resolves.toBe(false);
-    await expect(router.handleMessage(message("owner-1", "/help"))).resolves.toBe(false);
-    expect(sent.length).toBe(before);
-    await router.close();
-    await expect(result).rejects.toThrow();
+    await expect(router.hintPendingInteraction(message("owner-1", "你好"), "ABCDEFGH")).resolves.toBe(false);
   });
 
   it("hints for a pending question and keeps /answer working", async () => {
@@ -908,7 +895,7 @@ describe("Runtime Interaction pending-message hint", () => {
     const result = router.request(freeTextQuestion(), directContext());
     while (sent.length === 0) await Bun.sleep(0);
 
-    await expect(router.handleMessage(message("owner-1", "今天发布"))).resolves.toBe(true);
+    await expect(router.hintPendingInteraction(message("owner-1", "今天发布"), "ABCDEFGH")).resolves.toBe(true);
     const hint = textOf(sent.at(-1));
     expect(hint).toContain("/answer <答案>");
     expect(hint).toContain("/cancel");
@@ -940,39 +927,43 @@ describe("Runtime Interaction pending-message hint", () => {
       directContext(),
     );
     while (sent.length === 0) await Bun.sleep(0);
-    await expect(router.handleMessage(message("owner-1", "红色"))).resolves.toBe(true);
+    await expect(router.hintPendingInteraction(message("owner-1", "红色"), "ABCDEFGH")).resolves.toBe(true);
     expect(textOf(sent.at(-1))).toContain("/N 选择对应选项");
     await expect(router.handleMessage(message("owner-1", "/1"))).resolves.toBe(true);
     await expect(result).resolves.toEqual({ kind: "user-input", answers: { c: ["红"] } });
   });
 
-  it("uses the @Agent prefix in groups, ignores unaddressed chatter and other conversations", async () => {
+  it("uses the @Agent prefix in groups and only for the receiving Session and conversation", async () => {
     const sent: Fragment[][] = [];
     const router = newRouter(sent);
     const result = router.request(approvalRequest(), groupContext());
     while (sent.length === 0) await Bun.sleep(0);
     const before = sent.length;
 
-    const unaddressed = {
-      ...groupMessage("member-1", "允许"),
-      fragments: [{ kind: "text" as const, text: "允许" }],
-      mentions: [],
-    };
-    await expect(router.handleMessage(unaddressed)).resolves.toBe(false);
+    await expect(router.hintPendingInteraction(groupMessage("member-1", "允许"), "OTHERSES")).resolves.toBe(false);
+    await expect(router.hintPendingInteraction(groupMessage("member-1", "允许"), null)).resolves.toBe(false);
+    await expect(
+      router.hintPendingInteraction({ ...groupMessage("member-1", "允许"), chatId: "other-group" }, "ABCDEFGH"),
+    ).resolves.toBe(false);
     expect(sent.length).toBe(before);
 
-    await expect(router.handleMessage({ ...groupMessage("member-1", "允许"), chatId: "other-group" })).resolves.toBe(
-      false,
-    );
-    expect(sent.length).toBe(before);
-
-    await expect(router.handleMessage(groupMessage("member-1", "允许"))).resolves.toBe(true);
+    await expect(router.hintPendingInteraction(groupMessage("member-1", "允许"), "ABCDEFGH")).resolves.toBe(true);
     const hint = textOf(sent.at(-1));
     expect(hint).toContain("Session ABCDEFGH");
     expect(sent.at(-1)?.some((fragment) => fragment.kind === "mention")).toBe(true);
     expect(hint).toContain(" /approve 仅此次允许");
     await expect(router.handleMessage(groupMessage("member-1", "/deny"))).resolves.toBe(true);
     await expect(result).resolves.toEqual({ kind: "approval", optionId: "deny" });
+  });
+
+  it("ignores non-owner direct senders", async () => {
+    const sent: Fragment[][] = [];
+    const router = newRouter(sent);
+    const result = rejectionOf(router.request(approvalRequest(), directContext()));
+    while (sent.length === 0) await Bun.sleep(0);
+    await expect(router.hintPendingInteraction(message("other-user", "hi"), "ABCDEFGH")).resolves.toBe(false);
+    await router.close();
+    expect(await result).toBeInstanceOf(Error);
   });
 });
 
@@ -1030,6 +1021,52 @@ describe("Runtime approval deadline", () => {
     jest.advanceTimersByTime(APPROVAL_DEADLINE_MS * 2);
     await flush();
     expect(sent.length).toBe(count);
+  });
+
+  it("cancels instead of hanging when the approval has no deny option", async () => {
+    jest.useFakeTimers();
+    const sent: Fragment[][] = [];
+    const router = newRouter(sent);
+    const request = approvalRequest();
+    if (request.kind !== "approval") throw new Error("expected approval");
+    request.options = request.options.filter((option) => option.id !== "deny");
+    const result = rejectionOf(router.request(request, directContext()));
+    await flush();
+    jest.advanceTimersByTime(APPROVAL_DEADLINE_MS);
+    expect(await result).toBeInstanceOf(Error);
+    await flush();
+    expect(textOf(sent.at(-1))).toContain("已自动拒绝");
+  });
+
+  it("rejects the pending request when response validation fails", async () => {
+    const sent: Fragment[][] = [];
+    const router = newRouter(sent);
+    const request = approvalRequest();
+    if (request.kind !== "approval") throw new Error("expected approval");
+    request.options = request.options.filter((option) => option.id !== "deny");
+    const result = router.request(request, directContext());
+    const rejection = rejectionOf(result);
+    while (sent.length === 0) await Bun.sleep(0);
+    await router.handleMessage(message("owner-1", "/deny"));
+    expect(await rejection).toBeInstanceOf(Error);
+  });
+
+  it("tells a response racing the auto-deny that the approval already expired", async () => {
+    jest.useFakeTimers();
+    const sent: Fragment[][] = [];
+    const router = newRouter(sent);
+    let confirm: () => void = () => undefined;
+    const deliveryConfirmation = new Promise<void>((resolve) => {
+      confirm = resolve;
+    });
+    const result = router.request(approvalRequest(), { ...directContext(), deliveryConfirmation });
+    await flush();
+    jest.advanceTimersByTime(APPROVAL_DEADLINE_MS);
+    await flush();
+    await router.handleMessage(message("owner-1", "/approve"));
+    expect(textOf(sent.at(-1))).toContain("已自动拒绝");
+    confirm();
+    await expect(result).resolves.toEqual({ kind: "approval", optionId: "deny" });
   });
 
   it("leaves question deadlines unchanged", async () => {
