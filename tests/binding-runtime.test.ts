@@ -51,6 +51,15 @@ async function flush(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+async function waitFor(predicate: () => boolean, options: { timeoutMs?: number } = {}): Promise<boolean> {
+  const deadline = Date.now() + (options.timeoutMs ?? 10_000);
+  while (!predicate()) {
+    if (Date.now() > deadline) return false;
+    await Bun.sleep(2);
+  }
+  return true;
+}
+
 async function waitForTransport(transport: MemoryTransport): Promise<void> {
   for (let attempt = 0; attempt < 50 && !transport.handlers; attempt += 1) await Bun.sleep(1);
   if (!transport.handlers) throw new Error("Binding transport did not start");
@@ -2911,7 +2920,9 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       };
       const acked = new Set<string>();
       const outbound = async (chatId: string, textPart: string): Promise<Envelope | undefined> => {
-        for (let attempt = 0; attempt < 1_000; attempt += 1) {
+        const find = () =>
+          transport.sent.find((event) => event.chat_id === chatId && JSON.stringify(event.payload).includes(textPart));
+        await waitFor(() => {
           for (const event of transport.sent) {
             if (event.chat_id !== chatId || !event.event.startsWith("message.") || acked.has(event.trace_id)) continue;
             acked.add(event.trace_id);
@@ -2924,13 +2935,9 @@ describe("Binding Runtime Protocol v2 assembly", () => {
               payload: { message_id: `ack-${event.trace_id}`, accepted_at: 1000 },
             });
           }
-          const found = transport.sent.find(
-            (event) => event.chat_id === chatId && JSON.stringify(event.payload).includes(textPart),
-          );
-          if (found) return found;
-          await Bun.sleep(2);
-        }
-        return undefined;
+          return find() !== undefined;
+        });
+        return find();
       };
       const close = async () => {
         await handle.close();
@@ -2953,11 +2960,11 @@ describe("Binding Runtime Protocol v2 assembly", () => {
         expect(harness.prompts).toHaveLength(1);
 
         harness.send("chat-owner", "direct", "usr_owner", "/deny");
-        for (let attempt = 0; attempt < 500 && harness.responses.length === 0; attempt += 1) await Bun.sleep(2);
+        await waitFor(() => harness.responses.length > 0);
         expect(harness.responses).toEqual([{ kind: "approval", optionId: "deny" }]);
 
         harness.send("chat-owner", "direct", "usr_owner", "next message");
-        for (let attempt = 0; attempt < 500 && harness.prompts.length < 2; attempt += 1) await Bun.sleep(2);
+        await waitFor(() => harness.prompts.length >= 2);
         expect(harness.prompts).toHaveLength(2);
       } finally {
         await harness.close();
@@ -2976,18 +2983,19 @@ describe("Binding Runtime Protocol v2 assembly", () => {
         await flush();
         expect(harness.prompts).toHaveLength(1);
 
-        // Another conversation has no pending interaction and gets no hint.
+        // Another conversation has no pending interaction: once the group approval is denied its message runs as an
+        // ordinary turn (proving it was processed), and it never received a hint.
         harness.send("chat-owner", "direct", "usr_owner", "hello from the owner chat");
-        await Bun.sleep(100);
+        harness.send("chat-group", "group", "usr_member", "/deny", true);
+        await waitFor(() => harness.responses.length > 0);
+        expect(harness.responses).toEqual([{ kind: "approval", optionId: "deny" }]);
+        await waitFor(() => harness.prompts.length >= 2);
+        expect(harness.prompts).toHaveLength(2);
         expect(
           harness.transport.sent.some(
             (event) => event.chat_id === "chat-owner" && JSON.stringify(event.payload).includes("这条消息未被处理"),
           ),
         ).toBe(false);
-
-        harness.send("chat-group", "group", "usr_member", "/deny", true);
-        for (let attempt = 0; attempt < 500 && harness.responses.length === 0; attempt += 1) await Bun.sleep(2);
-        expect(harness.responses).toEqual([{ kind: "approval", optionId: "deny" }]);
       } finally {
         await harness.close();
       }
