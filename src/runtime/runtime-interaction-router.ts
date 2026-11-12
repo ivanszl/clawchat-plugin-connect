@@ -10,7 +10,12 @@ import type {
   RuntimeInteractionResponse,
 } from "./types";
 
+/** How long an approval may wait for a human decision before it is denied automatically. */
+export const APPROVAL_DEADLINE_MS = 30 * 60 * 1000;
+
 interface RouterOptions {
+  /** Overrides {@link APPROVAL_DEADLINE_MS}; intended for tests. */
+  approvalDeadlineMs?: number;
   clientInteractions?: RuntimeInteractionPort;
   ownerUserId: string;
   ownerConversationId: string | null;
@@ -68,7 +73,11 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     }
   >();
 
-  constructor(private readonly options: RouterOptions) {}
+  private readonly approvalDeadlineMs: number;
+
+  constructor(private readonly options: RouterOptions) {
+    this.approvalDeadlineMs = options.approvalDeadlineMs ?? APPROVAL_DEADLINE_MS;
+  }
 
   async request(
     request: RuntimeInteractionRequest,
@@ -93,9 +102,11 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
       const onAbort = () => void this.cancel(id, "Runtime request ended");
       context.signal?.addEventListener("abort", onAbort, { once: true });
       const timeout =
-        request.kind === "user-input" && request.autoResolutionMs !== null
-          ? setTimeout(() => void this.cancel(id, "Response deadline expired"), request.autoResolutionMs)
-          : null;
+        request.kind === "approval"
+          ? setTimeout(() => void this.expireApproval(id), this.approvalDeadlineMs)
+          : request.autoResolutionMs !== null
+            ? setTimeout(() => void this.cancel(id, "Response deadline expired"), request.autoResolutionMs)
+            : null;
       this.pending.set(id, {
         id,
         sessionRef: context.sessionRef,
@@ -372,6 +383,29 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     return false;
   }
 
+  /**
+   * A message that would start a Turn while a Runtime Interaction of the receiving Session is pending would queue
+   * behind the blocked Turn and stall the Session. The caller (which knows the message would otherwise start a Turn
+   * and which Session receives it) offers it here first: it is not queued, the sender is told what is pending, and
+   * the message is dropped and must be resent after answering. Returns true when the message was held.
+   */
+  async hintPendingInteraction(
+    message: NormalizedInboundMessage,
+    receivingSessionRef: string | null,
+  ): Promise<boolean> {
+    if (!receivingSessionRef) return false;
+    const pending = [...this.pending.values()].find(
+      (candidate) =>
+        candidate.sessionRef === receivingSessionRef &&
+        candidate.route.chatId === message.chatId &&
+        candidate.route.chatType === message.chatType &&
+        (message.chatType === "group" || message.sender.id === this.options.ownerUserId),
+    );
+    if (!pending) return false;
+    await this.sendForMessage(message, [{ kind: "text", text: pendingInteractionHint(pending, message.chatType) }]);
+    return true;
+  }
+
   async close(): Promise<void> {
     await Promise.all(
       [...this.pending.values()].map(async (pending) => await this.cancel(pending.id, "Connect stopped")),
@@ -389,7 +423,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
       await this.send(pending, [
         {
           kind: "text",
-          text: `${groupSessionPrefix(pending)}${title}\n${description}\n\n${commandPrefix}/approve 仅此次允许\n${commandPrefix}/approve session 本 Session 允许\n${commandPrefix}/deny 拒绝`,
+          text: `${groupSessionPrefix(pending)}${title}\n${description}\n\n${approvalCommandLines(commandPrefix)}`,
         },
       ]);
       return;
@@ -553,6 +587,10 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
   ): Promise<void> {
     try {
       const claimed = await pending.settlement.claim(response, async (validated) => {
+        if (validated.kind === "approval" && pending.timeout) {
+          clearTimeout(pending.timeout);
+          pending.timeout = null;
+        }
         const displayName = responder ? presentationText(responder.displayName, "Participant", 80) : null;
         const decision =
           validated.kind === "approval"
@@ -601,13 +639,14 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
           await this.send(pending, [{ kind: "text", text: acceptedText }]);
         }
       });
-      if (!claimed && pending.route.chatType === "group") {
+      if (!claimed) {
         const kind = pending.request.kind === "approval" ? "approval" : "question";
         const terminal = this.terminalResponses.get(routeResponseKey(pending.route, kind));
         if (terminal) await this.send(pending, [{ kind: "text", text: terminal }]);
       }
-    } catch {
+    } catch (error) {
       this.finishPending(pending);
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
       if (pending.route.chatType === "group") {
         const text = `Session ${pending.sessionRef} failed: Runtime response delivery was not confirmed.`;
         this.recordTerminal(
@@ -621,7 +660,24 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     }
   }
 
-  private async cancel(id: string, reason: string): Promise<void> {
+  private async expireApproval(id: string): Promise<void> {
+    const pending = this.pending.get(id);
+    if (pending?.request.kind !== "approval") return;
+    pending.timeout = null;
+    const minutes = Math.max(1, Math.round(this.approvalDeadlineMs / 60_000));
+    const text = `${groupSessionPrefix(pending)}审批请求已超过 ${minutes} 分钟未处理，已自动拒绝，当前回合将继续。`;
+    if (!pending.request.options.some((option) => option.id === "deny")) {
+      await this.cancel(id, "Response deadline expired", text);
+      return;
+    }
+    // Recorded before awaiting delivery so a response racing the auto-deny learns that it already expired.
+    this.recordTerminal(pending, "approval", text);
+    await this.settle(pending, { kind: "approval", optionId: "deny" });
+    if (pending.settlement.terminalState() !== "resolved") return;
+    await this.send(pending, [{ kind: "text", text }]).catch(() => undefined);
+  }
+
+  private async cancel(id: string, reason: string, notice?: string): Promise<void> {
     const pending = this.pending.get(id);
     if (!pending) return;
     if (!pending.settlement.expire()) return;
@@ -629,9 +685,9 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     if (pending.timeout) clearTimeout(pending.timeout);
     pending.removeAbortListener();
     try {
-      if (pending.route.chatType === "group") {
+      if (notice || pending.route.chatType === "group") {
         const state = /deadline|expired/iu.test(reason) ? "expired" : "cancelled";
-        const text = `Session ${pending.sessionRef} ${state}: ${reason}.`;
+        const text = notice ?? `Session ${pending.sessionRef} ${state}: ${reason}.`;
         this.recordTerminal(pending, pending.request.kind === "approval" ? "approval" : "question", text);
         await this.send(pending, [
           {
@@ -672,6 +728,31 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     if (pending.timeout) clearTimeout(pending.timeout);
     pending.removeAbortListener();
   }
+}
+
+const RESEND_NOTICE = "这条消息未被处理，请在回复后重新发送。";
+
+function approvalCommandLines(prefix: string): string {
+  return `${prefix}/approve 仅此次允许\n${prefix}/approve session 本 Session 允许\n${prefix}/deny 拒绝`;
+}
+
+function pendingInteractionHint(
+  pending: PendingClawChatInteraction,
+  chatType: NormalizedInboundMessage["chatType"],
+): string {
+  const prefix = commandAddressPrefix(chatType);
+  const session = chatType === "group" ? `（Session ${pending.sessionRef}）` : "";
+  const cancel = `${prefix}/cancel 取消当前回合`;
+  if (pending.request.kind === "approval") {
+    const what = pending.request.action === "file-change" ? "文件修改审批" : "命令审批";
+    return `当前有一个${what}${session}正在等待回复，请先回复：\n${approvalCommandLines(prefix)}\n${cancel}\n${RESEND_NOTICE}`;
+  }
+  const question = pending.request.questions[pending.questionIndex];
+  const answers = [
+    ...(question?.options?.length ? [`${prefix}/N 选择对应选项`] : []),
+    ...(!question?.options?.length || question.allowOther ? [`${prefix}/answer <答案> 提交答案`] : []),
+  ];
+  return `当前有一个问题${session}正在等待回答，请先回答：\n${answers.join("\n")}\n${cancel}\n${RESEND_NOTICE}`;
 }
 
 function approvalOptionId(text: string): "approve-once" | "approve-session" | "deny" | null {

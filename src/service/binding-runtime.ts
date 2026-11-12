@@ -867,6 +867,12 @@ async function dispatchInboundMessage(
     await routeCommand();
     return true;
   }
+  // Messages for the receiving Session would queue behind a Turn blocked on a pending Runtime Interaction.
+  const receiving = await params.stateStore.getCurrentRuntimeSession(message.chatId, params.agentId);
+  if (await params.interactionRouter.hintPendingInteraction(message, receiving?.sessionRef ?? null)) {
+    await params.onTurnAccepted();
+    return true;
+  }
   await params.runtime.handleInboundMessage(
     message,
     routeCommand,
