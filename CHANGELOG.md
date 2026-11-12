@@ -4,6 +4,11 @@ All notable changes to ClawChat Connect are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- A pending Runtime approval or question no longer silently stalls its Session. While one is waiting in a ClawChat conversation, an ordinary message from an eligible sender in that conversation is not queued behind the blocked Turn; Connect replies at once with what is pending and how to answer (`/approve`, `/approve session`, `/deny`, `/cancel`, or `/answer`/`/N` for questions). The message is not processed and is not retained, so it must be resent after answering. `/cancel` and other chat commands are unaffected.
+- Runtime approvals now expire after 30 minutes: Connect settles them as `deny`, tells the originating conversation, and lets the Turn continue so queued messages run. Question deadlines are unchanged.
+
 ## [0.1.0-beta.9] - 2026-08-28
 
 ### Added
