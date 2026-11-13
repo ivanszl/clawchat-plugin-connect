@@ -202,8 +202,11 @@ class SpawnedDshBridge implements DshBridgeClient {
     let bridge: SpawnedDshBridge | undefined;
     const lines = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
     lines.on("line", (line) => {
-      if (Buffer.byteLength(line) > DSH_BRIDGE_MAX_FRAME_BYTES) {
-        const error = new Error("DeepSeek Harness Bridge emitted an oversized frame");
+      const lineBytes = Buffer.byteLength(line);
+      if (lineBytes > DSH_BRIDGE_MAX_FRAME_BYTES) {
+        const error = new Error(
+          `DeepSeek Harness Bridge emitted an oversized frame (${lineBytes} bytes; limit ${DSH_BRIDGE_MAX_FRAME_BYTES})`,
+        );
         bridge?.fail(error);
         rejectHello(error);
         child.kill("SIGTERM");
@@ -267,7 +270,7 @@ class SpawnedDshBridge implements DshBridgeClient {
     }
     if (hello.protocol.major !== DSH_BRIDGE_PROTOCOL_MAJOR) {
       throw new Error(
-        `DeepSeek Harness Bridge protocol major ${hello.protocol.major} is incompatible with ${DSH_BRIDGE_PROTOCOL_MAJOR}`,
+        `DeepSeek Harness Bridge protocol major ${hello.protocol.major} is incompatible with ${DSH_BRIDGE_PROTOCOL_MAJOR}; the Runtime Plugin's Adapter and Bridge must come from the same release`,
       );
     }
     bridge = new SpawnedDshBridge(
@@ -287,8 +290,12 @@ class SpawnedDshBridge implements DshBridgeClient {
     const id = `connect-${++this.requestSequence}`;
     const frame: DshBridgeRequest = { type: "request", id, method, params };
     const encoded = `${JSON.stringify(frame)}\n`;
-    if (Buffer.byteLength(encoded) > DSH_BRIDGE_MAX_FRAME_BYTES) {
-      throw new Error(`DeepSeek Harness Bridge request ${method} exceeds the frame limit`);
+    const encodedBytes = Buffer.byteLength(encoded);
+    const limit = Math.min(DSH_BRIDGE_MAX_FRAME_BYTES, this.hello.protocol.maxFrameBytes ?? DSH_BRIDGE_MAX_FRAME_BYTES);
+    if (encodedBytes > limit) {
+      throw new Error(
+        `DeepSeek Harness Bridge request ${method} exceeds the frame limit (${encodedBytes} > ${limit} bytes)`,
+      );
     }
     const reply = new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {

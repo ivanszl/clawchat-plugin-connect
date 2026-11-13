@@ -16,10 +16,12 @@ import type {
   DshBridgeCatalogModel,
   DshBridgeCatalogSkill,
   DshBridgeHistory,
+  DshBridgeHistoryParams,
   DshBridgeInteraction,
   DshBridgePermissionPresetCatalog,
   DshBridgePresetCatalog,
   DshBridgeSessionSummary,
+  DshBridgeTruncation,
   DshSessionEvent,
 } from "./deepseek-harness-protocol";
 import { DshBridgeRemoteError } from "./deepseek-harness-protocol";
@@ -183,12 +185,11 @@ export function createDeepSeekHarnessRuntimeAdapter(
     },
     async verifyThreadReady(binding, runtimeThreadId) {
       const harness = await ensurePrepared(binding);
-      await harness.client.request<DshBridgeHistory>("history", { sessionId: runtimeThreadId });
+      await harness.client.request<DshBridgeHistory>("history", { sessionId: runtimeThreadId, limit: 1 });
     },
     async readActivity(binding, runtimeThreadId) {
       const harness = await ensurePrepared(binding);
-      const history = await harness.client.request<DshBridgeHistory>("history", { sessionId: runtimeThreadId });
-      return projectDshHistory(runtimeThreadId, history.events);
+      return projectDshHistory(runtimeThreadId, await readDshHistory(harness.client, { sessionId: runtimeThreadId }));
     },
     async reconcileInput(binding, runtimeThreadId, candidate) {
       const harness = await ensurePrepared(binding);
@@ -289,9 +290,11 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
         model: dshModelSelection(input.model, input.reasoningEffort),
       });
     }
-    const history = await this.client.request<DshBridgeHistory>("history", { sessionId: runtimeThreadId });
+    // The projector only needs the latest Turn (its Turn number and per-Turn item positions), not the whole Session.
     const projector = new DshActivityProjector(runtimeThreadId);
-    for (const event of history.events) projector.accept(event, "history");
+    for (const event of await readDshHistory(this.client, { sessionId: runtimeThreadId, lastTurnOnly: true })) {
+      projector.accept(event, "history");
+    }
     const queue = new DshActivityQueue();
     this.active = {
       queue,
@@ -462,6 +465,13 @@ export class DshActivityProjector {
   constructor(private readonly sessionId: string) {}
 
   accept(event: DshSessionEvent, source: "live" | "history"): RuntimeActivity[] {
+    const activities = this.project(event, source);
+    if (event.truncated?.truncated === true)
+      for (const activity of activities) markTruncated(activity, event.truncated);
+    return activities;
+  }
+
+  private project(event: DshSessionEvent, source: "live" | "history"): RuntimeActivity[] {
     const data = eventData(event);
     if (Number.isSafeInteger(data.turn)) this.currentTurn = data.turn as number;
     switch (event.type) {
@@ -667,13 +677,33 @@ function interactionDelivery(): {
   return { promise, confirm, fail };
 }
 
+/** Read Session events page by page; no single Bridge frame ever carries the whole Session. */
+async function readDshHistory(
+  client: DshBridgeClient,
+  params: Omit<DshBridgeHistoryParams, "afterSeq">,
+): Promise<DshSessionEvent[]> {
+  const events: DshSessionEvent[] = [];
+  let afterSeq: number | undefined;
+  for (;;) {
+    const page: DshBridgeHistory = await client.request<DshBridgeHistory>("history", {
+      ...params,
+      ...(afterSeq === undefined ? {} : { afterSeq }),
+    });
+    events.push(...page.events);
+    const next = page.nextAfterSeq ?? null;
+    if (next === null || page.events.length === 0) return events;
+    if (afterSeq !== undefined && next <= afterSeq) throw new Error("DeepSeek Harness history cursor did not advance");
+    afterSeq = next;
+  }
+}
+
 async function reconcileDshInput(
   client: DshBridgeClient,
   runtimeThreadId: string,
   candidate: RuntimeInputMessageIdentity,
 ): Promise<RuntimeInputReconciliation> {
-  const history = await client.request<DshBridgeHistory>("history", { sessionId: runtimeThreadId });
-  const identities = history.events.flatMap((event) => {
+  const history = await readDshHistory(client, { sessionId: runtimeThreadId, types: ["user/message"] });
+  const identities = history.flatMap((event) => {
     if (event.type !== "user/message") return [];
     const identity = dshInputIdentity(objectValue(event.data));
     return identity ? [identity] : [];
@@ -1026,6 +1056,27 @@ function unknownActivity(
     state: "complete",
     source,
     data: { nativeSeq: event.seq, nativeType: event.type },
+  };
+}
+
+/**
+ * The Bridge shortened this Event to fit its frame limit. Inline text already carries "[output truncated: N bytes]"
+ * where a string was cut; make sure the user also sees it when only non-text content (an image) or the whole payload
+ * was dropped, and keep the structured details on the Activity.
+ */
+function markTruncated(activity: RuntimeActivity, truncation: DshBridgeTruncation): void {
+  const notice = `[output truncated: ${truncation.originalBytes} bytes]`;
+  const visible = activity.kind === "tool" || activity.kind === "assistant" || activity.kind === "unknown";
+  if (visible && !/\[(?:output truncated|binary omitted): \d+ bytes\]/u.test(activity.text)) {
+    activity.text = activity.text ? `${activity.text}\n${notice}` : notice;
+  }
+  activity.data = {
+    ...(activity.data ?? {}),
+    truncated: {
+      originalBytes: truncation.originalBytes,
+      fields: truncation.fields.length + (truncation.omittedFields ?? 0),
+      placeholder: truncation.placeholder === true,
+    },
   };
 }
 

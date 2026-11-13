@@ -1,8 +1,11 @@
 import type { RuntimeInteractionRequest } from "./types";
 
 export const DSH_BRIDGE_PROTOCOL_NAME = "clawchat-connect-dsh-bridge" as const;
-export const DSH_BRIDGE_PROTOCOL_MAJOR = 1 as const;
-export const DSH_BRIDGE_MAX_FRAME_BYTES = 1_048_576;
+// Major 2: frames may be up to 16 MiB and the Bridge degrades oversized events instead of exiting. A major 1 Bridge
+// (1 MiB limit, kills the process on an oversized event) is refused at the handshake.
+export const DSH_BRIDGE_PROTOCOL_MAJOR = 2 as const;
+// One limit for both ends: the Bridge imports the same module as a sibling Plugin asset.
+export { DSH_BRIDGE_MAX_FRAME_BYTES } from "../plugin/official/deepseek-harness-frame.mjs";
 
 export interface DshBridgeCapabilities {
   promptQueue: boolean;
@@ -28,7 +31,7 @@ export interface DshBridgeCapabilities {
 
 export interface DshBridgeHello {
   type: "hello";
-  protocol: { name: typeof DSH_BRIDGE_PROTOCOL_NAME; major: number; build: string };
+  protocol: { name: typeof DSH_BRIDGE_PROTOCOL_NAME; major: number; build: string; maxFrameBytes?: number };
   home: string;
   profile: string | null;
   capabilities: DshBridgeCapabilities;
@@ -68,11 +71,29 @@ export interface DshSessionHeader {
   agentPreset?: string;
 }
 
+export interface DshBridgeTruncationField {
+  path: string;
+  originalBytes: number;
+  previewBytes: number;
+  kind?: "text" | "binary";
+}
+
+/** Present when the Bridge shortened an event to fit the frame limit; the inline text carries its own marker too. */
+export interface DshBridgeTruncation {
+  truncated: true;
+  placeholder?: boolean;
+  originalBytes: number;
+  fields: DshBridgeTruncationField[];
+  omittedFields?: number;
+  note?: string;
+}
+
 export interface DshSessionEvent {
   seq: number;
   time: number;
   type: string;
   data: unknown;
+  truncated?: DshBridgeTruncation;
 }
 
 export interface DshBridgeSessionSummary {
@@ -138,9 +159,21 @@ export interface DshBridgeAdmission {
   messageId: string;
 }
 
+/** One bounded page of Session events. Follow `nextAfterSeq` (pass it as `afterSeq`) until it is null. */
 export interface DshBridgeHistory {
   header: DshSessionHeader;
   events: DshSessionEvent[];
+  nextAfterSeq: number | null;
+}
+
+export interface DshBridgeHistoryParams {
+  sessionId: string;
+  afterSeq?: number;
+  maxBytes?: number;
+  limit?: number;
+  /** Latest Turn plus Turn-less command events: everything the Activity Projector needs to continue a Turn. */
+  lastTurnOnly?: boolean;
+  types?: string[];
 }
 
 export class DshBridgeRemoteError extends Error {
@@ -205,13 +238,20 @@ export function parseDshBridgeFrame(line: string): DshBridgeFrame {
 }
 
 function parseHello(value: Record<string, unknown>): DshBridgeHello {
-  const protocol = value.protocol as { name?: unknown; major?: unknown; build?: unknown } | null;
+  const protocol = value.protocol as {
+    name?: unknown;
+    major?: unknown;
+    build?: unknown;
+    maxFrameBytes?: unknown;
+  } | null;
   if (
     !protocol ||
     typeof protocol !== "object" ||
     protocol.name !== DSH_BRIDGE_PROTOCOL_NAME ||
     typeof protocol.major !== "number" ||
     typeof protocol.build !== "string" ||
+    (protocol.maxFrameBytes !== undefined &&
+      (!Number.isSafeInteger(protocol.maxFrameBytes) || (protocol.maxFrameBytes as number) <= 0)) ||
     typeof value.home !== "string" ||
     (value.profile !== null && typeof value.profile !== "string") ||
     !isCapabilities(value.capabilities)

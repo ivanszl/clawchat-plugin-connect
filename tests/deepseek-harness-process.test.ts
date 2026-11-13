@@ -7,7 +7,9 @@ import {
   requireDshPackageCommand,
   startDshBridge,
 } from "../src/runtime/deepseek-harness-process";
-import { parseDshBridgeFrame } from "../src/runtime/deepseek-harness-protocol";
+import { DSH_BRIDGE_MAX_FRAME_BYTES, parseDshBridgeFrame } from "../src/runtime/deepseek-harness-protocol";
+
+const FRAME_MODULE = new URL("../src/plugin/official/deepseek-harness-frame.mjs", import.meta.url).href;
 
 const FAKE_DSH = `#!/usr/bin/env bun
 import { createReadStream, createWriteStream, readFileSync } from "node:fs";
@@ -22,7 +24,7 @@ const output = createWriteStream(null, { fd: 3 });
 const input = createReadStream(null, { fd: 4 });
 output.write(JSON.stringify({
   type: "hello",
-  protocol: { name: "clawchat-connect-dsh-bridge", major: 1, build: config.build },
+  protocol: { name: "clawchat-connect-dsh-bridge", major: 2, build: config.build },
   home: config.home,
   profile: config.profile,
   capabilities: {
@@ -43,7 +45,84 @@ lines.on("line", (line) => {
 });
 `;
 
+const FAKE_DSH_BIG = FAKE_DSH.replace(
+  '  output.write(JSON.stringify({ type: "response", id: request.id, ok: true, result: request.params }) + "\\n");',
+  `  if (request.method === "emit-big") {
+    const text = "t".repeat(20 * 1024 * 1024);
+    const frame = { type: "event", sessionId: "s1", event: { seq: 1, time: 1, type: "tool/result", data: { turn: 1, text } } };
+    output.write(encodeBridgeFrame(frame).encoded);
+  }
+  if (request.method === "emit-oversized") output.write("x".repeat(${DSH_BRIDGE_MAX_FRAME_BYTES} + 1) + "\\n");
+  output.write(JSON.stringify({ type: "response", id: request.id, ok: true, result: request.params }) + "\\n");`,
+).replace(
+  'import { createInterface } from "node:readline";',
+  `import { createInterface } from "node:readline";\nimport { encodeBridgeFrame } from ${JSON.stringify(FRAME_MODULE)};`,
+);
+
+async function startFake(source: string, hello?: { major?: number }) {
+  const directory = await mkdtemp(join(tmpdir(), "connect-dsh-frames-"));
+  const executable = join(directory, "dsh");
+  const bridge = join(directory, "bridge.mjs");
+  await Bun.write(
+    executable,
+    hello?.major === undefined ? source : source.replace("major: 2", `major: ${hello.major}`),
+  );
+  await Bun.write(bridge, "export const name = 'fake';\n");
+  await chmod(executable, 0o700);
+  const client = await startDshBridge({
+    executable,
+    executableArguments: ["--package-marker"],
+    home: directory,
+    cwd: directory,
+    bridgePath: bridge,
+    bridgeBuild: "test-build",
+    startTimeoutMs: 5_000,
+    requestTimeoutMs: 10_000,
+    stopTimeoutMs: 1_000,
+  });
+  return { client, directory };
+}
+
 describe("DeepSeek Harness Bridge process boundary", () => {
+  it("refuses a Bridge from an older protocol major with a clear message", async () => {
+    await expect(startFake(FAKE_DSH, { major: 1 })).rejects.toThrow(
+      "DeepSeek Harness Bridge protocol major 1 is incompatible with 2",
+    );
+  });
+
+  it("delivers a degraded oversized event, keeps the Binding Runtime, and bounds Connect requests by the hello limit", async () => {
+    const { client, directory } = await startFake(FAKE_DSH_BIG);
+    try {
+      const events: Array<{ text: string; truncated: unknown }> = [];
+      client.onEvent((frame) => {
+        events.push({ text: (frame.event.data as { text: string }).text, truncated: frame.event.truncated });
+      });
+      await client.request("emit-big", {});
+      expect(events).toHaveLength(1);
+      expect(events[0]?.text).toEndWith("[output truncated: 20971520 bytes]");
+      expect(events[0]?.truncated).toMatchObject({ truncated: true });
+      await expect(client.request("echo", { value: 1 })).resolves.toEqual({ value: 1 });
+      await expect(client.request("echo", { value: "v".repeat(DSH_BRIDGE_MAX_FRAME_BYTES + 1) })).rejects.toThrow(
+        "exceeds the frame limit",
+      );
+      await expect(client.request("echo", { value: 2 })).resolves.toEqual({ value: 2 });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("fails the Binding with the size and limit when the Bridge emits a frame above the limit", async () => {
+    const { client, directory } = await startFake(FAKE_DSH_BIG);
+    try {
+      await expect(client.request("emit-oversized", {})).rejects.toThrow(
+        `emitted an oversized frame (${DSH_BRIDGE_MAX_FRAME_BYTES + 1} bytes; limit ${DSH_BRIDGE_MAX_FRAME_BYTES})`,
+      );
+    } finally {
+      await client.close().catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("locates the CLI without version inspection and exchanges private framed RPC", async () => {
     const directory = await mkdtemp(join(tmpdir(), "connect-dsh-process-"));
     const executable = join(directory, "dsh");

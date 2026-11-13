@@ -136,15 +136,23 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: deepSeekHarnessDescriptor,
     name: "DeepSeek Harness",
-    artifactIntegrity: "sha256-PnPNzfflNQ7Jw7dLcg6ozZUvEvogYQ/MJ8zdN+X3srs=",
+    artifactIntegrity: "sha256-Qd6MhQwFgSbvjqyxRT0ReoDv3rXmrLHN3YrQevVqUIc=",
     assetIntegrities: {
       "artifacts/deepseek-harness-bridge.mjs": {
-        "darwin-arm64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
-        "darwin-x64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
-        "linux-arm64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
-        "linux-x64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
-        "win32-arm64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
-        "win32-x64": "sha256-WVMoH4vsy4xZrnl71O/zoyMWK0cq4JS3pDRi5Y1W+mE=",
+        "darwin-arm64": "sha256-Qx0meFMqjH40d3TK3ICu81EepFSvrfQphLoQE8sOoAU=",
+        "darwin-x64": "sha256-Qx0meFMqjH40d3TK3ICu81EepFSvrfQphLoQE8sOoAU=",
+        "linux-arm64": "sha256-Qx0meFMqjH40d3TK3ICu81EepFSvrfQphLoQE8sOoAU=",
+        "linux-x64": "sha256-Qx0meFMqjH40d3TK3ICu81EepFSvrfQphLoQE8sOoAU=",
+        "win32-arm64": "sha256-Qx0meFMqjH40d3TK3ICu81EepFSvrfQphLoQE8sOoAU=",
+        "win32-x64": "sha256-Qx0meFMqjH40d3TK3ICu81EepFSvrfQphLoQE8sOoAU=",
+      },
+      "artifacts/deepseek-harness-frame.mjs": {
+        "darwin-arm64": "sha256-vyMYpk4zRM5+5CUqRObbImCUipCSl/pSDHDU3b3OqHk=",
+        "darwin-x64": "sha256-vyMYpk4zRM5+5CUqRObbImCUipCSl/pSDHDU3b3OqHk=",
+        "linux-arm64": "sha256-vyMYpk4zRM5+5CUqRObbImCUipCSl/pSDHDU3b3OqHk=",
+        "linux-x64": "sha256-vyMYpk4zRM5+5CUqRObbImCUipCSl/pSDHDU3b3OqHk=",
+        "win32-arm64": "sha256-vyMYpk4zRM5+5CUqRObbImCUipCSl/pSDHDU3b3OqHk=",
+        "win32-x64": "sha256-vyMYpk4zRM5+5CUqRObbImCUipCSl/pSDHDU3b3OqHk=",
       },
       "artifacts/deepseek-harness-question-provider.mjs": {
         "darwin-arm64": "sha256-ImK5ZUR++PLAlt8R0UZFvwafYnUpKk+u5toQ5pDBQZA=",
