@@ -1,8 +1,12 @@
 import type { RuntimeInteractionRequest } from "./types";
 
 export const DSH_BRIDGE_PROTOCOL_NAME = "clawchat-connect-dsh-bridge" as const;
-export const DSH_BRIDGE_PROTOCOL_MAJOR = 1 as const;
-export const DSH_BRIDGE_MAX_FRAME_BYTES = 1_048_576;
+// Major 2: frames may be up to 16 MiB and the Bridge degrades oversized events instead of exiting. A major 1 Bridge
+// (1 MiB limit, kills the process on an oversized event) is refused at the handshake.
+export const DSH_BRIDGE_PROTOCOL_MAJOR = 2 as const;
+// One limit for both ends: Connect enforces it on incoming lines and requests, and hands it to the Bridge through
+// the Bridge's config (`maxFrameBytes`), which echoes it in the hello.
+export const DSH_BRIDGE_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 export interface DshBridgeCapabilities {
   promptQueue: boolean;
@@ -28,7 +32,7 @@ export interface DshBridgeCapabilities {
 
 export interface DshBridgeHello {
   type: "hello";
-  protocol: { name: typeof DSH_BRIDGE_PROTOCOL_NAME; major: number; build: string };
+  protocol: { name: typeof DSH_BRIDGE_PROTOCOL_NAME; major: number; build: string; maxFrameBytes?: number };
   home: string;
   profile: string | null;
   capabilities: DshBridgeCapabilities;
@@ -68,11 +72,33 @@ export interface DshSessionHeader {
   agentPreset?: string;
 }
 
+export interface DshBridgeTruncationField {
+  path: string;
+  originalBytes: number;
+  previewBytes: number;
+  kind?: "text" | "binary";
+  /** The notice the Bridge wrote into the text of this field, verbatim. */
+  notice?: string;
+}
+
+/** Present when the Bridge shortened an event to fit the frame limit; the inline text carries its own marker too. */
+export interface DshBridgeTruncation {
+  truncated: true;
+  placeholder?: boolean;
+  originalBytes: number;
+  /** Whole-event notice for the user, e.g. "[output truncated: N bytes]". Connect shows it, never formats its own. */
+  notice?: string;
+  fields: DshBridgeTruncationField[];
+  omittedFields?: number;
+  note?: string;
+}
+
 export interface DshSessionEvent {
   seq: number;
   time: number;
   type: string;
   data: unknown;
+  truncated?: DshBridgeTruncation;
 }
 
 export interface DshBridgeSessionSummary {
@@ -138,9 +164,27 @@ export interface DshBridgeAdmission {
   messageId: string;
 }
 
+/**
+ * One bounded window of the newest matching Session events (ascending). `complete` is true only when no matching
+ * event was left out; `nextBeforeSeq` (pass it as `beforeSeq`) is set when the byte budget cut the window.
+ */
 export interface DshBridgeHistory {
   header: DshSessionHeader;
   events: DshSessionEvent[];
+  complete: boolean;
+  nextBeforeSeq: number | null;
+}
+
+export interface DshBridgeHistoryParams {
+  sessionId: string;
+  /** Header only: no events. */
+  headerOnly?: boolean;
+  /** Scope to the N latest Turns plus Turn-less command events. */
+  lastTurns?: number;
+  types?: string[];
+  beforeSeq?: number;
+  limit?: number;
+  maxBytes?: number;
 }
 
 export class DshBridgeRemoteError extends Error {
@@ -205,13 +249,20 @@ export function parseDshBridgeFrame(line: string): DshBridgeFrame {
 }
 
 function parseHello(value: Record<string, unknown>): DshBridgeHello {
-  const protocol = value.protocol as { name?: unknown; major?: unknown; build?: unknown } | null;
+  const protocol = value.protocol as {
+    name?: unknown;
+    major?: unknown;
+    build?: unknown;
+    maxFrameBytes?: unknown;
+  } | null;
   if (
     !protocol ||
     typeof protocol !== "object" ||
     protocol.name !== DSH_BRIDGE_PROTOCOL_NAME ||
     typeof protocol.major !== "number" ||
     typeof protocol.build !== "string" ||
+    (protocol.maxFrameBytes !== undefined &&
+      (!Number.isSafeInteger(protocol.maxFrameBytes) || (protocol.maxFrameBytes as number) <= 0)) ||
     typeof value.home !== "string" ||
     (value.profile !== null && typeof value.profile !== "string") ||
     !isCapabilities(value.capabilities)

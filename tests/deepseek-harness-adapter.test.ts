@@ -41,7 +41,7 @@ const target = `${process.platform}-${process.arch}`;
 
 const SUPPORTED_HELLO: DshBridgeHello = {
   type: "hello",
-  protocol: { name: "clawchat-connect-dsh-bridge", major: 1, build: "test" },
+  protocol: { name: "clawchat-connect-dsh-bridge", major: 2, build: "test" },
   home: "",
   profile: "default",
   capabilities: {
@@ -415,6 +415,125 @@ describe("DeepSeek Harness Runtime Adapter", () => {
     expect(client.closeCount).toBe(1);
   });
 
+  it("continues the Turn and tells the user when the Bridge truncated an oversized tool result", async () => {
+    const fixture = await runtimeFixture();
+    const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
+    client.degradedEventsOnPrompt = [
+      event(10, "tool/call", { turn: 1, callId: "call-1", name: "bash", arguments: '{"command":"cat big"}' }),
+      {
+        ...event(11, "tool/result", {
+          turn: 1,
+          message: {
+            source: { callId: "call-1" },
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: "call-1",
+                isError: false,
+                content: [{ type: "text", text: "head of output\n[output truncated: 20971520 bytes]" }],
+              },
+            ],
+          },
+        }),
+        truncated: {
+          truncated: true,
+          originalBytes: 20_971_520,
+          notice: "[output truncated: 20971520 bytes]",
+          fields: [
+            {
+              path: "event.data.message",
+              originalBytes: 20_971_520,
+              previewBytes: 14,
+              kind: "text",
+              notice: "[output truncated: 20971520 bytes]",
+            },
+          ],
+        },
+      },
+      {
+        ...event(12, "tool/result", { turn: 1, message: { source: { callId: "call-2" }, content: [] } }),
+        truncated: {
+          truncated: true,
+          placeholder: true,
+          originalBytes: 30_000_000,
+          notice: "[output truncated: 30000000 bytes]",
+          fields: [],
+        },
+      },
+    ];
+    const adapter = createDeepSeekHarnessRuntimeAdapter({
+      bridgePath: "/connect/deepseek-harness-bridge.mjs",
+      bridgeBuild: "test",
+      probeExecutable: () => ({ path: "/usr/local/bin/dsh" }),
+      createBridge: async () => client,
+    });
+    await adapter.prepare?.(fixture.binding);
+    const session = await adapter.start(fixture.binding, startContext([]));
+    const activities = await Array.fromAsync(session.prompt(prompt(fixture.workspace, { turnId: "connect-input-1" })));
+
+    const truncatedTool = activities.find(
+      (activity) => activity.id.endsWith(":tool:call-1") && activity.state === "complete",
+    );
+    expect(truncatedTool?.text).toBe("head of output\n[output truncated: 20971520 bytes]");
+    expect(truncatedTool?.data).toMatchObject({ truncated: { originalBytes: 20_971_520, placeholder: false } });
+    const placeholder = activities.find((activity) => activity.id.endsWith(":tool:call-2"));
+    expect(placeholder?.text).toBe("[output truncated: 30000000 bytes]");
+    expect(placeholder?.data).toMatchObject({ truncated: { placeholder: true } });
+    expect(activities.at(-2)).toMatchObject({ kind: "assistant", text: "world", state: "complete" });
+    expect(activities.at(-1)).toMatchObject({ kind: "turn", state: "complete" });
+    await session.close();
+    await adapter.close?.();
+  });
+
+  it("reads only bounded history: header-only readiness, latest-Turn seed, partial window, ambiguous bounded miss", async () => {
+    const fixture = await runtimeFixture();
+    const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
+    const adapter = createDeepSeekHarnessRuntimeAdapter({
+      bridgePath: "/connect/deepseek-harness-bridge.mjs",
+      bridgeBuild: "test",
+      probeExecutable: () => ({ path: "/usr/local/bin/dsh" }),
+      createBridge: async () => client,
+    });
+    await adapter.prepare?.(fixture.binding);
+    const ids: string[] = [];
+    const session = await adapter.start(fixture.binding, startContext(ids));
+    await Array.fromAsync(session.prompt(prompt(fixture.workspace, { turnId: "connect-input-1" })));
+    const threadId = ids[0] ?? "";
+    expect(client.requests.filter(({ method }) => method === "history")[0]?.params).toMatchObject({ lastTurns: 1 });
+
+    await adapter.verifyThreadReady?.(fixture.binding, threadId);
+    expect(client.requests.filter(({ method }) => method === "history").at(-1)?.params).toMatchObject({
+      headerOnly: true,
+    });
+
+    const complete = await adapter.readActivity?.(fixture.binding, threadId);
+    expect(complete?.completeness).toBe("complete");
+    client.historyWindowSize = 2;
+    const partial = await adapter.readActivity?.(fixture.binding, threadId);
+    expect(partial?.completeness).toBe("partial");
+    expect(partial?.activities.length).toBeGreaterThan(0);
+
+    // Only one user message exists, so a window of one still covers the Session: absent is exact.
+    client.historyWindowSize = 1;
+    await expect(
+      adapter.reconcileInput?.(fixture.binding, threadId, { messageId: "nope", contentDigest: "sha256:nope" }),
+    ).resolves.toMatchObject({ outcome: "absent", receipts: { complete: true } });
+    // Many user messages and a one-event window: the bounded depth is exhausted, so a miss is ambiguous.
+    const history = client.histories.get(threadId) ?? [];
+    for (let index = 0; index < 20; index += 1) {
+      history.push(
+        event(100 + index, "user/message", { turn: 2, id: `older-${index}`, source: { kind: "user" }, content: [] }),
+      );
+    }
+    const unknown = await adapter.reconcileInput?.(fixture.binding, threadId, {
+      messageId: "nope",
+      contentDigest: "sha256:nope",
+    });
+    expect(unknown).toMatchObject({ outcome: "unknown", receipts: { complete: false } });
+    await session.close();
+    await adapter.close?.();
+  });
+
   it("preserves a Client's valid envelope quotation without inventing a ClawChat receipt", async () => {
     const fixture = await runtimeFixture();
     const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
@@ -683,10 +802,13 @@ class FakeDshBridgeClient implements DshBridgeClient {
     presets: [{ id: "workspace-write", name: "Workspace write", description: "Ask before writes" }],
   };
   interactionResponse: unknown = null;
+  historyWindowSize = Number.POSITIVE_INFINITY;
+  /** Extra native events (already degraded by the Bridge) delivered before the assistant reply. */
+  degradedEventsOnPrompt: DshSessionEvent[] = [];
   private settleInteraction: (() => void) | null = null;
   private readonly listeners = new Set<(event: DshBridgeEvent) => void>();
   private readonly interactionListeners = new Set<(interaction: DshBridgeInteraction) => void>();
-  private readonly histories = new Map<string, DshSessionEvent[]>();
+  readonly histories = new Map<string, DshSessionEvent[]>();
 
   constructor(
     home: string,
@@ -707,9 +829,31 @@ class FakeDshBridgeClient implements DshBridgeClient {
     };
     if (method === "history") {
       const sessionId = values.sessionId ?? "missing";
+      const query = params as {
+        headerOnly?: boolean;
+        beforeSeq?: number;
+        types?: string[];
+        lastTurns?: number;
+      };
+      const all = this.histories.get(sessionId) ?? [];
+      const header = { id: sessionId, createdAt: 1, cwd: this.workspace };
+      if (query.headerOnly) return { header, events: [], complete: all.length === 0, nextBeforeSeq: null } as T;
+      let events = all;
+      if (query.lastTurns) events = events.slice(Math.max(0, events.map((e) => e.type).lastIndexOf("turn/start")));
+      events = events.filter(
+        (item) =>
+          item.seq < (query.beforeSeq ?? Number.POSITIVE_INFINITY) && (!query.types || query.types.includes(item.type)),
+      );
+      const window = events.slice(Math.max(0, events.length - this.historyWindowSize));
+      const cut = events.length > window.length;
       return {
-        header: { id: sessionId, createdAt: 1, cwd: this.workspace },
-        events: this.histories.get(sessionId) ?? [],
+        header,
+        events: window,
+        complete:
+          !cut &&
+          window.length === events.length &&
+          events.length === all.filter((item) => !query.types || query.types.includes(item.type)).length,
+        nextBeforeSeq: cut ? (window[0]?.seq ?? null) : null,
       } as T;
     }
     if (method === "create") {
@@ -754,6 +898,7 @@ class FakeDshBridgeClient implements DshBridgeClient {
         }),
         event(5, "turn/end", { turn: 1, reason: { kind: "completed" } }),
       ];
+      emitted.splice(2, 0, ...this.degradedEventsOnPrompt);
       this.histories.set(sessionId, emitted);
       for (const nativeEvent of emitted) this.emit({ type: "event", sessionId, event: nativeEvent });
       return { inputId, messageId: inputId } as T;

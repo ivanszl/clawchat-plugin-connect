@@ -1,0 +1,181 @@
+// Frame encoding for the DSH Bridge (runs inside DSH): size-bounded frames with explicit truncation markers.
+// The limit is owned by Connect (DSH_BRIDGE_MAX_FRAME_BYTES) and reaches the Bridge through its config.
+// Dependency-free: shipped as a sibling Plugin asset of the Bridge.
+
+const PREVIEW_CAPS = [1_048_576, 262_144, 65_536, 16_384, 4_096, 1_024, 0];
+const UNTOUCHED_STRING_BYTES = 512;
+const BINARY_MIN_BYTES = 8_192;
+const BINARY_PATTERN = /^[A-Za-z0-9+/=_-]+$/u;
+// A long run of base64 alphabet characters is only treated as binary under a key that names binary content,
+// so a legitimate long single-token text output is still previewed instead of dropped.
+const BINARY_KEYS = new Set(["data", "base64", "b64", "bytes", "blob", "image", "imageData", "source"]);
+const MAX_REPORTED_FIELDS = 32;
+const ENVELOPE_KEYS = new Set(["type", "id", "sessionId", "ok"]);
+const TRUNCATION_NOTE =
+  "The Bridge truncated this content to fit the frame limit. The full content remains in the DSH Session log; the Bridge protocol has no paged fetch.";
+
+// The only place that spells the user-visible truncation notices. Connect displays the strings carried in the
+// marker (`notice`, `fields[].notice`) and never formats its own.
+const textNotice = (bytes) => `[output truncated: ${bytes} bytes]`;
+const binaryNotice = (bytes) => `[binary omitted: ${bytes} bytes]`;
+
+function frameTooLarge(message) {
+  return Object.assign(new Error(message), { code: "frame-too-large" });
+}
+
+function byteLength(value) {
+  return Buffer.byteLength(value);
+}
+
+/**
+ * Encode one newline-terminated JSON frame within `limit` bytes.
+ *
+ * Oversized events, ok-responses and interaction frames are degraded: large strings are replaced by a bounded
+ * preview plus an inline "[output truncated: N bytes]" marker, inline binary (base64) is omitted, and a structured
+ * `truncated` marker is added (`event.truncated` for events, `frame.truncated` otherwise). A frame that cannot be
+ * degraded far enough throws `frame-too-large`, except events, which fall back to a minimal placeholder.
+ *
+ * @returns {{ encoded: string, degraded: null | { originalBytes: number, bytes: number, fields: number, placeholder: boolean } }}
+ */
+export function encodeBridgeFrame(frame, limit) {
+  let raw;
+  try {
+    raw = JSON.stringify(frame);
+  } catch (error) {
+    if (frame?.type === "event") return placeholder(frame, 0, limit);
+    throw Object.assign(new Error(`Bridge frame cannot be encoded: ${error?.message ?? error}`), {
+      code: "frame-encode-failed",
+    });
+  }
+  const encoded = `${raw}\n`;
+  const originalBytes = byteLength(encoded);
+  if (originalBytes <= limit) return { encoded, degraded: null };
+  const degradable = frame?.type === "event" || frame?.type === "interaction" || (frame?.type === "response" && frame.ok);
+  if (!degradable) throw frameTooLarge(`Bridge frame exceeds ${limit} bytes (${originalBytes})`);
+
+  for (const cap of PREVIEW_CAPS) {
+    const plain = JSON.parse(raw);
+    const fields = [];
+    for (const key of Object.keys(plain)) {
+      if (!ENVELOPE_KEYS.has(key)) plain[key] = bound(plain[key], cap, key, fields);
+    }
+    if (fields.length === 0) continue;
+    const marker = {
+      truncated: true,
+      originalBytes,
+      notice: textNotice(originalBytes),
+      fields: fields.slice(0, MAX_REPORTED_FIELDS),
+      ...(fields.length > MAX_REPORTED_FIELDS ? { omittedFields: fields.length - MAX_REPORTED_FIELDS } : {}),
+      note: TRUNCATION_NOTE,
+    };
+    if (plain.type === "event" && plain.event && typeof plain.event === "object") plain.event.truncated = marker;
+    else plain.truncated = marker;
+    const candidate = `${JSON.stringify(plain)}\n`;
+    const bytes = byteLength(candidate);
+    if (bytes <= limit) {
+      return { encoded: candidate, degraded: { originalBytes, bytes, fields: fields.length, placeholder: false } };
+    }
+  }
+  if (frame.type === "event") return placeholder(frame, originalBytes, limit);
+  throw frameTooLarge(`Bridge frame exceeds ${limit} bytes (${originalBytes}) even after truncation`);
+}
+
+function bound(value, cap, path, fields) {
+  if (typeof value === "string") {
+    const bytes = byteLength(value);
+    if (bytes <= Math.max(cap, UNTOUCHED_STRING_BYTES)) return value;
+    if (isBinary(value, bytes, path)) {
+      const notice = binaryNotice(bytes);
+      fields.push({ path, originalBytes: bytes, previewBytes: 0, kind: "binary", notice });
+      return notice;
+    }
+    const preview = utf8Prefix(value, cap);
+    const notice = textNotice(bytes);
+    fields.push({ path, originalBytes: bytes, previewBytes: byteLength(preview), kind: "text", notice });
+    return `${preview}\n${notice}`;
+  }
+  if (Array.isArray(value)) return value.map((item, index) => bound(item, cap, `${path}.${index}`, fields));
+  if (value !== null && typeof value === "object") {
+    const result = {};
+    for (const [key, item] of Object.entries(value)) result[key] = bound(item, cap, `${path}.${key}`, fields);
+    return result;
+  }
+  return value;
+}
+
+function isBinary(value, bytes, path) {
+  if (bytes < BINARY_MIN_BYTES) return false;
+  if (value.startsWith("data:")) return true;
+  const key = path.slice(path.lastIndexOf(".") + 1);
+  return BINARY_KEYS.has(key) && BINARY_PATTERN.test(value);
+}
+
+function utf8Prefix(value, cap) {
+  if (cap <= 0) return "";
+  const text = Buffer.from(value, "utf8").subarray(0, cap).toString("utf8");
+  return text.endsWith("�") ? text.slice(0, -1) : text;
+}
+
+function smallScalar(value) {
+  return (
+    value === null ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value)) ||
+    (typeof value === "string" && byteLength(value) <= 256)
+  );
+}
+
+function placeholder(frame, originalBytes, limit) {
+  const event = frame?.event && typeof frame.event === "object" ? frame.event : {};
+  const data = event.data && typeof event.data === "object" && !Array.isArray(event.data) ? event.data : {};
+  const kept = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (smallScalar(value)) kept[key] = value;
+    else if (key === "reason" && value && typeof value === "object") {
+      try {
+        const text = JSON.stringify(value);
+        if (byteLength(text) <= 1_024) kept.reason = value;
+      } catch {}
+    }
+  }
+  if (event.type === "tool/result") {
+    const message = data.message && typeof data.message === "object" ? data.message : {};
+    const first = Array.isArray(message.content) && message.content[0] ? message.content[0] : {};
+    const callId = typeof message.source?.callId === "string" ? message.source.callId : undefined;
+    kept.message = {
+      ...(callId ? { source: { callId } } : {}),
+      content: [
+        {
+          type: "tool-result",
+          ...(typeof first.toolCallId === "string" ? { toolCallId: first.toolCallId } : {}),
+          ...(first.isError === true ? { isError: true } : {}),
+          content: [{ type: "text", text: textNotice(originalBytes) }],
+        },
+      ],
+    };
+  }
+  const result = {
+    type: "event",
+    sessionId: typeof frame?.sessionId === "string" ? frame.sessionId : "",
+    event: {
+      seq: Number.isSafeInteger(event.seq) ? event.seq : 0,
+      time: Number.isFinite(event.time) ? event.time : 0,
+      type: typeof event.type === "string" ? event.type : "unknown",
+      data: kept,
+      truncated: {
+        truncated: true,
+        placeholder: true,
+        originalBytes,
+        notice: textNotice(originalBytes),
+        fields: [],
+        note: TRUNCATION_NOTE,
+      },
+    },
+  };
+  const encoded = `${JSON.stringify(result)}\n`;
+  if (byteLength(encoded) > limit) throw frameTooLarge(`Bridge frame exceeds ${limit} bytes`);
+  return {
+    encoded,
+    degraded: { originalBytes, bytes: byteLength(encoded), fields: 0, placeholder: true },
+  };
+}

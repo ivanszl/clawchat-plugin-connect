@@ -16,10 +16,12 @@ import type {
   DshBridgeCatalogModel,
   DshBridgeCatalogSkill,
   DshBridgeHistory,
+  DshBridgeHistoryParams,
   DshBridgeInteraction,
   DshBridgePermissionPresetCatalog,
   DshBridgePresetCatalog,
   DshBridgeSessionSummary,
+  DshBridgeTruncation,
   DshSessionEvent,
 } from "./deepseek-harness-protocol";
 import { DshBridgeRemoteError } from "./deepseek-harness-protocol";
@@ -30,6 +32,7 @@ import type {
   ConnectRuntimeStartContext,
   RuntimeActivity,
   RuntimeActivitySnapshot,
+  RuntimeInputIdentity,
   RuntimeInputMessageIdentity,
   RuntimeInputReconciliation,
   RuntimeInteractionResponse,
@@ -183,12 +186,25 @@ export function createDeepSeekHarnessRuntimeAdapter(
     },
     async verifyThreadReady(binding, runtimeThreadId) {
       const harness = await ensurePrepared(binding);
-      await harness.client.request<DshBridgeHistory>("history", { sessionId: runtimeThreadId });
+      await harness.client.request<DshBridgeHistory>("history", {
+        sessionId: runtimeThreadId,
+        headerOnly: true,
+      });
     },
     async readActivity(binding, runtimeThreadId) {
       const harness = await ensurePrepared(binding);
-      const history = await harness.client.request<DshBridgeHistory>("history", { sessionId: runtimeThreadId });
-      return projectDshHistory(runtimeThreadId, history.events);
+      // A bounded recent window, never the whole Session: callers must not assume completeness.
+      const recent: DshBridgeHistory = await harness.client.request<DshBridgeHistory>("history", {
+        sessionId: runtimeThreadId,
+        lastTurns: DSH_ACTIVITY_WINDOW_TURNS,
+        maxBytes: DSH_HISTORY_WINDOW_BYTES,
+      });
+      const snapshot = projectDshHistory(runtimeThreadId, recent.events);
+      // RA-09: older Turns are not in the window, so identity of later items is intact but numbering and
+      // cross-Turn correlation are not; say so instead of claiming a complete transcript.
+      return recent.complete
+        ? snapshot
+        : { ...snapshot, completeness: "partial", limitations: ["correlation", "ordering"] };
     },
     async reconcileInput(binding, runtimeThreadId, candidate) {
       const harness = await ensurePrepared(binding);
@@ -289,9 +305,9 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
         model: dshModelSelection(input.model, input.reasoningEffort),
       });
     }
-    const history = await this.client.request<DshBridgeHistory>("history", { sessionId: runtimeThreadId });
+    // The projector only needs the latest Turn (its Turn number and per-Turn item positions), not the whole Session.
     const projector = new DshActivityProjector(runtimeThreadId);
-    for (const event of history.events) projector.accept(event, "history");
+    for (const event of await readDshLatestTurn(this.client, runtimeThreadId)) projector.accept(event, "history");
     const queue = new DshActivityQueue();
     this.active = {
       queue,
@@ -462,6 +478,34 @@ export class DshActivityProjector {
   constructor(private readonly sessionId: string) {}
 
   accept(event: DshSessionEvent, source: "live" | "history"): RuntimeActivity[] {
+    const activities = this.project(event, source);
+    const truncation = event.truncated;
+    if (truncation?.truncated !== true) return activities;
+    // A placeholder assistant message carries no text: without an Activity the user would never learn that the
+    // answer was cut. Reuse the streamed text of that step if there is any, else show the notice alone.
+    if (event.type === "assistant/message" && truncation.placeholder === true && activities.length === 0) {
+      const data = eventData(event);
+      const turn = integerValue(data.turn, this.currentTurn);
+      const id = `dsh:${this.sessionId}:assistant:${turn}:${integerValue(data.step, 0)}`;
+      activities.push(
+        this.replace({
+          id,
+          position: this.positions.get(id) ?? this.position(id, turn),
+          parentId: null,
+          kind: "assistant",
+          text: "",
+          state: "complete",
+          source,
+          data: { nativeSeq: event.seq, nativeType: event.type, outputKind: "assistant" },
+        }),
+      );
+      this.latestAssistantByTurn.set(turn, id);
+    }
+    for (const activity of activities) markTruncated(activity, truncation);
+    return activities;
+  }
+
+  private project(event: DshSessionEvent, source: "live" | "history"): RuntimeActivity[] {
     const data = eventData(event);
     if (Number.isSafeInteger(data.turn)) this.currentTurn = data.turn as number;
     switch (event.type) {
@@ -667,20 +711,76 @@ function interactionDelivery(): {
   return { promise, confirm, fail };
 }
 
+const DSH_ACTIVITY_WINDOW_TURNS = 5;
+/** Per-request event budget; well under the Bridge frame limit. */
+const DSH_HISTORY_WINDOW_BYTES = 2 * 1024 * 1024;
+const DSH_HISTORY_MAX_WINDOWS = 8;
+
+/**
+ * Walk the newest history windows backwards, newest first, for at most DSH_HISTORY_MAX_WINDOWS requests. `visit`
+ * receives each page and returns true to stop early. `complete` is true only when the walk reached the start of the
+ * Session (no matching event was left out), never merely because the depth limit was hit.
+ */
+async function walkDshHistoryBackwards(
+  client: DshBridgeClient,
+  params: Omit<DshBridgeHistoryParams, "beforeSeq" | "maxBytes">,
+  visit: (page: DshBridgeHistory) => boolean | undefined,
+): Promise<{ complete: boolean }> {
+  let beforeSeq: number | undefined;
+  for (let request = 0; request < DSH_HISTORY_MAX_WINDOWS; request++) {
+    const page: DshBridgeHistory = await client.request<DshBridgeHistory>("history", {
+      ...params,
+      maxBytes: DSH_HISTORY_WINDOW_BYTES,
+      ...(beforeSeq === undefined ? {} : { beforeSeq }),
+    });
+    if (visit(page) === true) return { complete: page.complete };
+    const next = page.nextBeforeSeq ?? null;
+    if (next === null || page.events.length === 0 || (beforeSeq !== undefined && next >= beforeSeq)) {
+      return { complete: page.complete };
+    }
+    beforeSeq = next;
+  }
+  return { complete: false };
+}
+
+/**
+ * The events that number and order a new live Turn: the latest Turn plus Turn-less bucket-0 events. Bounded to a
+ * few windows; a pathological Turn larger than that seeds from its newest part (only item numbering is affected).
+ */
+async function readDshLatestTurn(client: DshBridgeClient, sessionId: string): Promise<DshSessionEvent[]> {
+  let events: DshSessionEvent[] = [];
+  await walkDshHistoryBackwards(client, { sessionId, lastTurns: 1 }, (page) => {
+    events = [...page.events, ...events];
+    return undefined;
+  });
+  return events;
+}
+
 async function reconcileDshInput(
   client: DshBridgeClient,
   runtimeThreadId: string,
   candidate: RuntimeInputMessageIdentity,
 ): Promise<RuntimeInputReconciliation> {
-  const history = await client.request<DshBridgeHistory>("history", { sessionId: runtimeThreadId });
-  const identities = history.events.flatMap((event) => {
-    if (event.type !== "user/message") return [];
-    const identity = dshInputIdentity(objectValue(event.data));
-    return identity ? [identity] : [];
-  });
-  const identity = identities.find((value) => runtimeInputIdentityContains(value, candidate));
-  const receipts = { identities, complete: true };
-  return identity ? { outcome: "accepted", identity, receipts } : { outcome: "absent", receipts };
+  // Search user messages from the newest backwards, a bounded number of windows deep.
+  const identities: RuntimeInputIdentity[] = [];
+  let found: RuntimeInputIdentity | undefined;
+  const walk = await walkDshHistoryBackwards(
+    client,
+    { sessionId: runtimeThreadId, types: ["user/message"] },
+    (page) => {
+      for (const event of [...page.events].reverse()) {
+        const identity = dshInputIdentity(objectValue(event.data));
+        if (identity) identities.push(identity);
+      }
+      found = identities.find((value) => runtimeInputIdentityContains(value, candidate));
+      return found !== undefined;
+    },
+  );
+  const receipts = { identities, complete: walk.complete };
+  if (found) return { outcome: "accepted", identity: found, receipts };
+  // A miss that did not cover the whole Session is ambiguous: "unknown" (retry), never "absent", so it cannot
+  // cause a duplicate Turn.
+  return walk.complete ? { outcome: "absent", receipts } : { outcome: "unknown", receipts };
 }
 
 /** Keep transport metadata durable without including its XML envelope in model text. */
@@ -1026,6 +1126,28 @@ function unknownActivity(
     state: "complete",
     source,
     data: { nativeSeq: event.seq, nativeType: event.type },
+  };
+}
+
+/**
+ * The Bridge shortened this Event to fit its frame limit. Inline text already carries "[output truncated: N bytes]"
+ * where a string was cut; make sure the user also sees it when only non-text content (an image) or the whole payload
+ * was dropped, and keep the structured details on the Activity.
+ */
+function markTruncated(activity: RuntimeActivity, truncation: DshBridgeTruncation): void {
+  const notice = truncation.notice;
+  const visible = activity.kind === "tool" || activity.kind === "assistant" || activity.kind === "unknown";
+  const alreadyShown = truncation.fields.some((field) => field.notice && activity.text.includes(field.notice));
+  if (notice && visible && !alreadyShown && !activity.text.includes(notice)) {
+    activity.text = activity.text ? `${activity.text}\n${notice}` : notice;
+  }
+  activity.data = {
+    ...(activity.data ?? {}),
+    truncated: {
+      originalBytes: truncation.originalBytes,
+      fields: truncation.fields.length + (truncation.omittedFields ?? 0),
+      placeholder: truncation.placeholder === true,
+    },
   };
 }
 

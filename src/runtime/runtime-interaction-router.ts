@@ -492,6 +492,11 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     });
   }
 
+  /** Post one plain-text notice in the conversation of an inbound message (replying to it in groups). */
+  async sendNotice(message: NormalizedInboundMessage, text: string): Promise<void> {
+    await this.sendForMessage(message, [{ kind: "text", text }]);
+  }
+
   private async sendForMessage(message: NormalizedInboundMessage, fragments: Fragment[]): Promise<void> {
     await this.options.sendClawChatMessage({
       chatId: message.chatId,
