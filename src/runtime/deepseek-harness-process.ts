@@ -101,6 +101,7 @@ export async function startDshBridge(options: StartDshBridgeOptions): Promise<Ds
       `        build: ${JSON.stringify(options.bridgeBuild)}`,
       `        home: ${JSON.stringify(options.home)}`,
       `        profile: ${JSON.stringify(options.profile ?? null)}`,
+      `        maxFrameBytes: ${DSH_BRIDGE_MAX_FRAME_BYTES}`,
       "",
     ].join("\n"),
   );

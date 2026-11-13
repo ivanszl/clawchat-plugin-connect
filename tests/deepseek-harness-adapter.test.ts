@@ -438,12 +438,27 @@ describe("DeepSeek Harness Runtime Adapter", () => {
         truncated: {
           truncated: true,
           originalBytes: 20_971_520,
-          fields: [{ path: "event.data.message", originalBytes: 20_971_520, previewBytes: 14, kind: "text" }],
+          notice: "[output truncated: 20971520 bytes]",
+          fields: [
+            {
+              path: "event.data.message",
+              originalBytes: 20_971_520,
+              previewBytes: 14,
+              kind: "text",
+              notice: "[output truncated: 20971520 bytes]",
+            },
+          ],
         },
       },
       {
         ...event(12, "tool/result", { turn: 1, message: { source: { callId: "call-2" }, content: [] } }),
-        truncated: { truncated: true, placeholder: true, originalBytes: 30_000_000, fields: [] },
+        truncated: {
+          truncated: true,
+          placeholder: true,
+          originalBytes: 30_000_000,
+          notice: "[output truncated: 30000000 bytes]",
+          fields: [],
+        },
       },
     ];
     const adapter = createDeepSeekHarnessRuntimeAdapter({

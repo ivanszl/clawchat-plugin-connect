@@ -13,7 +13,12 @@ import {
 import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
-import { type ConnectRuntimePrompt, completeRuntimeThreadDiscovery } from "../src/runtime/types";
+import {
+  type ConnectRuntimePrompt,
+  completeRuntimeThreadDiscovery,
+  type RuntimeInputMessageIdentity,
+  type RuntimeInputReconciliation,
+} from "../src/runtime/types";
 import { WorkBuddyDiscoveryError } from "../src/runtime/workbuddy-task-discovery";
 import {
   type BindingProtocolEvent,
@@ -1168,6 +1173,199 @@ describe("Binding Runtime Protocol v2 assembly", () => {
       await runtimeAdapters.close();
       await stateStore.close();
     }
+  });
+
+  describe("bounded `unknown` input recovery", () => {
+    const NOTICE = "无法确认上一条消息是否已处理，请重新发送。";
+
+    async function recoveryFixture(
+      reconcile: (attempt: number, candidate: RuntimeInputMessageIdentity) => RuntimeInputReconciliation,
+    ) {
+      const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-unknown-recovery-"));
+      const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+      const config = defaultConfig();
+      config.defaultAgent = "codex";
+      config.agents = { codex: pluginBinding({}, { displayName: "Alice" }) };
+      const messageEnvelope = (traceId: string, emittedAt: number, dseq?: number): Envelope => ({
+        version: "2",
+        event: EVENT.MESSAGE_SEND,
+        trace_id: traceId,
+        emitted_at: emittedAt,
+        ...(dseq === undefined ? {} : { dseq }),
+        chat_id: "chat-unknown",
+        chat_type: "direct",
+        sender: { id: "usr_bob", type: "direct", nick_name: "Bob" },
+        payload: {
+          message_id: "msg-unknown",
+          message_mode: "normal",
+          message: {
+            body: { fragments: [{ kind: "text", text: "ambiguous input" }] },
+            context: { mentions: [], reply: null },
+            streaming: { status: "static", sequence: 0, mutation_policy: "sealed" },
+          },
+        },
+      });
+      const stored = messageEnvelope("unknown-stored", 1);
+      await stateStore.upsertInboundMessage({
+        agentId: "codex",
+        direction: "inbound",
+        kind: "message",
+        eventType: EVENT.MESSAGE_SEND,
+        traceId: stored.trace_id,
+        chatId: stored.chat_id,
+        messageId: "msg-unknown",
+        text: "ambiguous input",
+        raw: stored,
+      });
+      await stateStore.upsertRuntimeSession({
+        chatId: "chat-unknown",
+        sessionId: "session-unknown",
+        agentId: "codex",
+        runtimeSessionId: "thread-unknown",
+        isCurrent: true,
+        hasMessages: true,
+      });
+      let attempts = 0;
+      const prompts: ConnectRuntimePrompt[] = [];
+      const runtimeAdapters = new RuntimeAdapterRegistry([
+        fixedRuntimeAdapter({
+          kind: "codex",
+          modes: ["read-only"],
+          reconcileInput: async (_binding, _thread, candidate) => reconcile(++attempts, candidate),
+          start: async () => ({
+            prompt: async function* (input) {
+              prompts.push(input);
+              await input.onAccepted?.();
+              yield* [];
+            },
+            close: mock(async () => undefined),
+          }),
+        }),
+      ]);
+      const timers = new Map<number, () => void>();
+      let nextTimer = 0;
+      const clock = { now: 1_000_000 };
+      const transport = new MemoryTransport();
+      const starting = startBindingRuntime({
+        agentId: "codex",
+        activation: {
+          localAgentId: "codex",
+          accessToken: "token",
+          refreshToken: null,
+          serverAgentId: "agt_server",
+          userId: "usr_alice",
+          ownerUserId: "usr_owner",
+          conversationId: "chat-owner",
+        },
+        config,
+        configPath: join(directory, "config.json"),
+        deviceId: "device-local",
+        stateStore,
+        workspaces: new WorkspaceCatalog(stateStore),
+        runtimeAdapters,
+        wsTransport: transport,
+        groupIntakeClock: {
+          now: () => clock.now,
+          setTimer: (callback) => {
+            const id = ++nextTimer;
+            timers.set(id, callback);
+            return id;
+          },
+          clearTimer: (timer) => {
+            timers.delete(timer as number);
+          },
+        },
+        verifyInstalledSkills: async () => undefined,
+        writeError: () => undefined,
+      });
+      const handle = await completeBindingHandshake(transport, starting, "01JXYZ8K3MNPQRSTVWXYZ0AU");
+      const noticesSent = () => transport.sent.filter((event) => JSON.stringify(event).includes(NOTICE)).length;
+      /** Fire the pending retry timer, if any, and let the recovery finish. */
+      const fireRetry = async (advanceMs = 1_000): Promise<boolean> => {
+        const entry = [...timers.entries()][0];
+        if (!entry) return false;
+        timers.delete(entry[0]);
+        clock.now += advanceMs;
+        entry[1]();
+        await Bun.sleep(15);
+        return true;
+      };
+      return {
+        transport,
+        handle,
+        prompts,
+        timers,
+        noticesSent,
+        fireRetry,
+        attempts: () => attempts,
+        messageEnvelope,
+        async close() {
+          await handle.close();
+          await runtimeAdapters.close();
+          await stateStore.close();
+        },
+      };
+    }
+
+    it("stops after 10 consecutive unknown outcomes, tells the conversation once, and accepts a resend", async () => {
+      const fixture = await recoveryFixture(() => ({ outcome: "unknown" }));
+      try {
+        await waitFor(() => fixture.attempts() >= 1 && fixture.timers.size > 0);
+        let fired = 0;
+        while (await fixture.fireRetry()) fired += 1;
+        expect(fixture.attempts()).toBe(10);
+        expect(fired).toBe(9);
+        expect(fixture.timers.size).toBe(0);
+        expect(fixture.noticesSent()).toBe(1);
+        expect(fixture.prompts).toEqual([]);
+
+        fixture.transport.receive(fixture.messageEnvelope("unknown-resend", 9, 1));
+        await waitFor(() => fixture.prompts.length === 1);
+        expect(fixture.prompts[0]?.prompt).toContain("ambiguous input");
+        expect(fixture.noticesSent()).toBe(1);
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it("also gives up five minutes after the first unknown, whichever comes first", async () => {
+      const fixture = await recoveryFixture(() => ({ outcome: "unknown" }));
+      try {
+        await waitFor(() => fixture.attempts() >= 1 && fixture.timers.size > 0);
+        await fixture.fireRetry(5 * 60 * 1000 + 1);
+        expect(fixture.attempts()).toBe(2);
+        expect(fixture.timers.size).toBe(0);
+        expect(fixture.noticesSent()).toBe(1);
+      } finally {
+        await fixture.close();
+      }
+    });
+
+    it("sends no notice when a later attempt resolves the input, and cleans its timers on close", async () => {
+      const fixture = await recoveryFixture((attempt, candidate) =>
+        attempt < 3
+          ? { outcome: "unknown" }
+          : {
+              outcome: "accepted",
+              identity: { origin: "clawchat", anchor: candidate, actionable: [candidate], context: [] },
+            },
+      );
+      try {
+        await waitFor(() => fixture.attempts() >= 1 && fixture.timers.size > 0);
+        while (await fixture.fireRetry()) {}
+        expect(fixture.attempts()).toBe(3);
+        expect(fixture.noticesSent()).toBe(0);
+        expect(fixture.timers.size).toBe(0);
+      } finally {
+        await fixture.close();
+      }
+
+      const pending = await recoveryFixture(() => ({ outcome: "unknown" }));
+      await waitFor(() => pending.attempts() >= 1 && pending.timers.size > 0);
+      await pending.close();
+      expect(pending.timers.size).toBe(0);
+      expect(pending.noticesSent()).toBe(0);
+    });
   });
 
   it("joins group settings recovery before Binding shutdown completes", async () => {

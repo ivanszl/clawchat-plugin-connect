@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { pageHistoryEvents } from "../src/plugin/official/deepseek-harness-frame.mjs";
+import { pageHistoryEvents } from "../src/plugin/official/deepseek-harness-history.mjs";
 import { DshActivityProjector } from "../src/runtime/deepseek-harness-adapter";
 import type { DshSessionEvent } from "../src/runtime/deepseek-harness-protocol";
 
@@ -127,6 +127,26 @@ describe("bounded Turn-start history seed", () => {
     expectEquivalent(history, live);
   });
 
+  it("matches when Turn-less Activity events precede Turn 1 (the reviewed repro) and mix with commands", () => {
+    sequence = 0;
+    const history = [ev("session/model-changed", { model: "m1" }), ...userTurn(1, "a"), ev("turn/start", { turn: 2 })];
+    expectEquivalent(history, [...command("late"), ...liveTurn(2, "b")]);
+
+    sequence = 0;
+    const mixed = [
+      ev("session/title", { title: "ignored" }),
+      ev("session/model-changed", { model: "m1" }),
+      ...command("k0"),
+      ev("session/something-else", {}),
+      ...userTurn(1, "a"),
+      ev("session/model-changed", { model: "m2" }),
+      ...userTurn(2, "b"),
+    ];
+    const live = [...command("k9"), ev("session/model-changed", { model: "m3" }), ...liveTurn(3, "c")];
+    const { tailLength } = expectEquivalent(mixed, live);
+    expect(tailLength).toBeLessThan(mixed.length);
+  });
+
   it("falls back to the whole Session when events carry no Turn numbers", () => {
     sequence = 0;
     const history = [ev("session/title", { title: "x" }), ev("agent/inbox/spliced", {})];
@@ -147,5 +167,42 @@ describe("bounded Turn-start history seed", () => {
     }
     expect(windows.length).toBeGreaterThan(1);
     expect(replay(windows.flat(), live)).toEqual(replay(history, live));
+  });
+});
+
+describe("truncated assistant answers", () => {
+  const placeholder = (data: unknown): DshSessionEvent => ({
+    ...ev("assistant/message", data),
+    truncated: {
+      truncated: true,
+      placeholder: true,
+      originalBytes: 30_000_000,
+      notice: "[output truncated: 30000000 bytes]",
+      fields: [],
+    },
+  });
+
+  it("shows the truncation notice when an assistant message collapsed to a placeholder", () => {
+    sequence = 0;
+    const projector = new DshActivityProjector("s1");
+    const activities = projector.accept(placeholder({ turn: 1, step: 0 }), "live");
+    expect(activities).toHaveLength(1);
+    expect(activities[0]).toMatchObject({
+      kind: "assistant",
+      state: "complete",
+      text: "[output truncated: 30000000 bytes]",
+      data: { truncated: { placeholder: true, originalBytes: 30_000_000 } },
+    });
+  });
+
+  it("keeps the streamed text and appends the notice when text had already arrived", () => {
+    sequence = 0;
+    const projector = new DshActivityProjector("s1");
+    projector.accept(
+      ev("assistant/chunk", { turn: 1, step: 0, chunk: { type: "text-delta", text: "partial" } }),
+      "live",
+    );
+    const [activity] = projector.accept(placeholder({ turn: 1, step: 0 }), "live");
+    expect(activity?.text).toBe("partial\n[output truncated: 30000000 bytes]");
   });
 });

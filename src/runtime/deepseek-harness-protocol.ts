@@ -4,8 +4,9 @@ export const DSH_BRIDGE_PROTOCOL_NAME = "clawchat-connect-dsh-bridge" as const;
 // Major 2: frames may be up to 16 MiB and the Bridge degrades oversized events instead of exiting. A major 1 Bridge
 // (1 MiB limit, kills the process on an oversized event) is refused at the handshake.
 export const DSH_BRIDGE_PROTOCOL_MAJOR = 2 as const;
-// One limit for both ends: the Bridge imports the same module as a sibling Plugin asset.
-export { DSH_BRIDGE_MAX_FRAME_BYTES } from "../plugin/official/deepseek-harness-frame.mjs";
+// One limit for both ends: Connect enforces it on incoming lines and requests, and hands it to the Bridge through
+// the Bridge's config (`maxFrameBytes`), which echoes it in the hello.
+export const DSH_BRIDGE_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 export interface DshBridgeCapabilities {
   promptQueue: boolean;
@@ -76,6 +77,8 @@ export interface DshBridgeTruncationField {
   originalBytes: number;
   previewBytes: number;
   kind?: "text" | "binary";
+  /** The notice the Bridge wrote into the text of this field, verbatim. */
+  notice?: string;
 }
 
 /** Present when the Bridge shortened an event to fit the frame limit; the inline text carries its own marker too. */
@@ -83,6 +86,8 @@ export interface DshBridgeTruncation {
   truncated: true;
   placeholder?: boolean;
   originalBytes: number;
+  /** Whole-event notice for the user, e.g. "[output truncated: N bytes]". Connect shows it, never formats its own. */
+  notice?: string;
   fields: DshBridgeTruncationField[];
   omittedFields?: number;
   note?: string;

@@ -5,11 +5,11 @@ import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { registerClawChatApprovalPolicy } from "./deepseek-harness-tool-policy.mjs";
 import { registerQuestionProviderWhenProfileReady } from "./deepseek-harness-question-provider.mjs";
-import { DSH_BRIDGE_MAX_FRAME_BYTES, encodeBridgeFrame, pageHistoryEvents } from "./deepseek-harness-frame.mjs";
+import { encodeBridgeFrame } from "./deepseek-harness-frame.mjs";
+import { pageHistoryEvents } from "./deepseek-harness-history.mjs";
 
 const PROTOCOL_NAME = "clawchat-connect-dsh-bridge";
 const PROTOCOL_MAJOR = 2;
-const MAX_FRAME_BYTES = DSH_BRIDGE_MAX_FRAME_BYTES;
 const MAX_PENDING_REQUESTS = 128;
 const dshRequire = createRequire(process.argv[1]);
 const [{ contentHasImage, createUserMessage }, { installModelSelection }, skillModule, presetModule] =
@@ -28,6 +28,7 @@ export const name = "clawchat-connect-deepseek-harness-bridge";
 export const inject = ["agents", "agentLoop", "sessions", "sessionPersistence", "llm"];
 
 export async function apply(ctx, config = {}) {
+  const maxFrameBytes = requiredPositiveInteger(config.maxFrameBytes, "Bridge maxFrameBytes");
   const inputStream = createReadStream(null, { fd: inputFd, autoClose: true });
   // Writes go straight to the descriptor at no file offset and loop over partial writes and EAGAIN.
   // fs.WriteStream retries a large write at an offset and fails with ESPIPE ("invalid seek") on a pipe once frames
@@ -72,7 +73,7 @@ export async function apply(ctx, config = {}) {
   const send = (frame) => {
     let encoded;
     try {
-      const result = encodeBridgeFrame(frame, MAX_FRAME_BYTES);
+      const result = encodeBridgeFrame(frame, maxFrameBytes);
       encoded = result.encoded;
       if (result.degraded) {
         logBridge(
@@ -325,7 +326,7 @@ export async function apply(ctx, config = {}) {
         name: PROTOCOL_NAME,
         major: PROTOCOL_MAJOR,
         build: requiredString(config.build, "Bridge build"),
-        maxFrameBytes: MAX_FRAME_BYTES,
+        maxFrameBytes,
       },
       home: requiredString(config.home, "DSH Home"),
       profile: optionalString(config.profile) ?? null,
@@ -675,23 +676,6 @@ export async function apply(ctx, config = {}) {
       return { header, ...pageHistoryEvents(events, params) };
     },
 
-    async reconcile(params) {
-      const sessionId = requestString(params, "sessionId");
-      const inputId = requestString(params, "inputId");
-      const history = await loadHistory(sessionId);
-      // Newest first: the input being reconciled is almost always one of the latest messages.
-      const event = history.events.findLast(
-        (candidate) =>
-          candidate.type === "user/message" &&
-          candidate.data?.source?.kind === "user" &&
-          candidate.data.source.connectInputId === inputId,
-      );
-      return event
-        ? { outcome: "accepted", inputId, messageId: String(event.data.id), eventSeq: event.seq }
-        : { outcome: "absent" };
-    },
-
-
     async archive(params) {
       const sessionId = requestString(params, "sessionId");
       if (!workspaceRegistry) {
@@ -755,8 +739,8 @@ export async function apply(ctx, config = {}) {
 
   lines.on("line", (line) => {
     const lineBytes = Buffer.byteLength(line);
-    if (lineBytes > MAX_FRAME_BYTES) {
-      terminate(`incoming frame of ${lineBytes} bytes exceeds the ${MAX_FRAME_BYTES}-byte limit`);
+    if (lineBytes > maxFrameBytes) {
+      terminate(`incoming frame of ${lineBytes} bytes exceeds the ${maxFrameBytes}-byte limit`);
       return;
     }
     if (pendingRequests >= MAX_PENDING_REQUESTS) {
@@ -859,6 +843,11 @@ function requestString(value, key, allowEmpty = false) {
     throw bridgeError("malformed-request", `${key} must be a ${allowEmpty ? "string" : "non-empty string"}`);
   }
   return result;
+}
+
+function requiredPositiveInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${label} is required`);
+  return value;
 }
 
 function requiredString(value, label) {

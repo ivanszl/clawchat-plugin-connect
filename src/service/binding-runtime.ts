@@ -532,10 +532,19 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   };
 }
 
+/** Consecutive `unknown` reconciliations of one pending input before Connect stops retrying and tells the user. */
+const UNKNOWN_RECOVERY_MAX_ATTEMPTS = 10;
+/** Time since the first `unknown` for one pending input after which Connect stops retrying and tells the user. */
+const UNKNOWN_RECOVERY_MAX_MS = 5 * 60 * 1000;
+const UNKNOWN_RECOVERY_GIVE_UP_NOTICE = "无法确认上一条消息是否已处理，请重新发送。";
+
 class InboundMessageProcessor {
   private readonly pending = new Map<string, Promise<void>>();
   private readonly deferredDuringRecovery = new Map<string, Promise<void>>();
   private readonly unknownRecoveryKeys = new Set<string>();
+  /** Inputs recovery gave up on: skipped by later recoveries until a redelivery or resend is accepted. */
+  private readonly abandonedRecoveryKeys = new Set<string>();
+  private readonly unknownRecoveryProgress = new Map<string, { attempts: number; firstAt: number }>();
   private readonly recoveries = new Map<NormalizedInboundMessage["chatType"], Promise<void>>();
   private readonly recoveryRetryAttempts = new Map<NormalizedInboundMessage["chatType"], number>();
   private readonly recoveryRetryTimers = new Map<NormalizedInboundMessage["chatType"], unknown>();
@@ -554,6 +563,7 @@ class InboundMessageProcessor {
   accept(message: NormalizedInboundMessage): "accepted" {
     if (!this.accepting) throw new Error("inbound message processor is closing");
     const key = inboundHandlingKey(message);
+    this.abandonedRecoveryKeys.delete(key);
     if (this.unknownRecoveryKeys.has(key)) return "accepted";
     const activeRecovery = this.recoveries.get(message.chatType);
     if (activeRecovery) {
@@ -638,16 +648,19 @@ class InboundMessageProcessor {
       const message = normalizeStoredInboundMessage(raw);
       if (!message || message.chatType !== chatType) continue;
       const key = inboundHandlingKey(message);
+      if (this.abandonedRecoveryKeys.has(key)) continue;
       this.unknownRecoveryKeys.add(key);
       if (
         await this.options.stateStore.hasHandledInboundMessage(this.options.agentId, message.messageId, message.raw)
       ) {
         this.unknownRecoveryKeys.delete(key);
+        this.unknownRecoveryProgress.delete(key);
         continue;
       }
       if (!this.accepting) return;
       if (isConnectControlMessage(message.text)) {
         this.unknownRecoveryKeys.delete(key);
+        this.unknownRecoveryProgress.delete(key);
         this.accept(message);
         continue;
       }
@@ -656,14 +669,24 @@ class InboundMessageProcessor {
       if (reconciliation.outcome === "accepted") {
         await this.options.stateStore.markReconciledInboundIdentity(this.options.agentId, reconciliation.identity);
         this.unknownRecoveryKeys.delete(key);
+        this.unknownRecoveryProgress.delete(key);
         continue;
       }
       if (reconciliation.outcome === "unknown") {
+        const now = this.options.groupIntakeClock?.now() ?? Date.now();
+        const progress = this.unknownRecoveryProgress.get(key) ?? { attempts: 0, firstAt: now };
+        progress.attempts += 1;
+        this.unknownRecoveryProgress.set(key, progress);
+        if (progress.attempts >= UNKNOWN_RECOVERY_MAX_ATTEMPTS || now - progress.firstAt >= UNKNOWN_RECOVERY_MAX_MS) {
+          this.giveUpOnUnknown(message, key, progress.attempts, now - progress.firstAt);
+          continue;
+        }
         this.unknownRecoveryKeys.add(key);
         hasUnknown = true;
         continue;
       }
       this.unknownRecoveryKeys.delete(key);
+      this.unknownRecoveryProgress.delete(key);
       this.accept(message);
     }
     if (hasUnknown) this.scheduleRecoveryRetry(chatType);
@@ -676,6 +699,36 @@ class InboundMessageProcessor {
         this.recoveryRetryTimers.delete(chatType);
       }
     }
+  }
+
+  /**
+   * A pending input stayed ambiguous (the Runtime could not prove it was or was not submitted) for too long. Stop
+   * retrying, release its dedup key so a redelivery or a resend is accepted, remember (in memory only) that later
+   * recoveries must not restart the count, and tell the conversation once.
+   */
+  private giveUpOnUnknown(message: NormalizedInboundMessage, key: string, attempts: number, elapsedMs: number): void {
+    this.unknownRecoveryKeys.delete(key);
+    this.unknownRecoveryProgress.delete(key);
+    this.abandonedRecoveryKeys.add(key);
+    this.options.writeError(
+      `${this.options.agentId}: inbound recovery gave up ${JSON.stringify({
+        event: "inbound-recovery-gave-up",
+        agentId: this.options.agentId,
+        chatId: message.chatId,
+        chatType: message.chatType,
+        messageId: message.messageId,
+        attempts,
+        elapsedMs,
+      })}\n`,
+    );
+    // Not awaited: sending may wait for the transport, and recovery (and the resend it unblocks) must not.
+    void this.interactionRouter
+      .sendNotice(message, UNKNOWN_RECOVERY_GIVE_UP_NOTICE)
+      .catch((error) =>
+        this.options.writeError(
+          `${this.options.agentId}: inbound recovery give-up notice failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        ),
+      );
   }
 
   private async reconcileInboundMessage(
@@ -745,6 +798,8 @@ class InboundMessageProcessor {
       else clearTimeout(timer as ReturnType<typeof setTimeout>);
     }
     this.recoveryRetryTimers.clear();
+    this.unknownRecoveryProgress.clear();
+    this.abandonedRecoveryKeys.clear();
     await Promise.allSettled(this.recoveries.values());
     await Promise.allSettled(this.deferredDuringRecovery.values());
     await Promise.allSettled(this.pending.values());

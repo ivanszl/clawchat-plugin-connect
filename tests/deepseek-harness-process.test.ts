@@ -12,7 +12,7 @@ import { DSH_BRIDGE_MAX_FRAME_BYTES, parseDshBridgeFrame } from "../src/runtime/
 const FRAME_MODULE = new URL("../src/plugin/official/deepseek-harness-frame.mjs", import.meta.url).href;
 
 const FAKE_DSH = `#!/usr/bin/env bun
-import { createReadStream, createWriteStream, readFileSync } from "node:fs";
+import { createReadStream, readFileSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 if (process.argv[2] !== "--package-marker") process.exit(5);
 const patchIndex = process.argv.indexOf("--patch");
@@ -20,7 +20,20 @@ const patch = readFileSync(process.argv[patchIndex + 1], "utf8");
 const config = Object.fromEntries(
   [...patch.matchAll(/^\\s+(build|home|profile): (.+)$/gm)].map((match) => [match[1], JSON.parse(match[2])]),
 );
-const output = createWriteStream(null, { fd: 3 });
+// fs.WriteStream fails with ESPIPE on multi-kilobyte pipe writes under Bun; write the descriptor directly.
+const output = {
+  write(text) {
+    const bytes = Buffer.from(text);
+    for (let offset = 0; offset < bytes.length; ) {
+      try {
+        offset += writeSync(3, bytes, offset);
+      } catch (error) {
+        if (error.code !== "EAGAIN") throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2);
+      }
+    }
+  },
+};
 const input = createReadStream(null, { fd: 4 });
 output.write(JSON.stringify({
   type: "hello",
@@ -48,9 +61,9 @@ lines.on("line", (line) => {
 const FAKE_DSH_BIG = FAKE_DSH.replace(
   '  output.write(JSON.stringify({ type: "response", id: request.id, ok: true, result: request.params }) + "\\n");',
   `  if (request.method === "emit-big") {
-    const text = "t".repeat(20 * 1024 * 1024);
+    const text = "t".repeat(1024 * 1024);
     const frame = { type: "event", sessionId: "s1", event: { seq: 1, time: 1, type: "tool/result", data: { turn: 1, text } } };
-    output.write(encodeBridgeFrame(frame).encoded);
+    output.write(encodeBridgeFrame(frame, 64 * 1024).encoded);
   }
   if (request.method === "emit-oversized") output.write("x".repeat(${DSH_BRIDGE_MAX_FRAME_BYTES} + 1) + "\\n");
   output.write(JSON.stringify({ type: "response", id: request.id, ok: true, result: request.params }) + "\\n");`,
@@ -59,13 +72,22 @@ const FAKE_DSH_BIG = FAKE_DSH.replace(
   `import { createInterface } from "node:readline";\nimport { encodeBridgeFrame } from ${JSON.stringify(FRAME_MODULE)};`,
 );
 
-async function startFake(source: string, hello?: { major?: number }) {
+// Bun can close a finished child's inherited-pipe sockets late (after a large frame triggers GC), racing a later
+// child that reused the descriptor numbers. Keeping the clients reachable for the file's lifetime avoids that.
+const retainedClients: unknown[] = [];
+
+async function startFake(source: string, hello?: { major?: number; maxFrameBytes?: number }) {
   const directory = await mkdtemp(join(tmpdir(), "connect-dsh-frames-"));
   const executable = join(directory, "dsh");
   const bridge = join(directory, "bridge.mjs");
   await Bun.write(
     executable,
-    hello?.major === undefined ? source : source.replace("major: 2", `major: ${hello.major}`),
+    source
+      .replace("major: 2", `major: ${hello?.major ?? 2}`)
+      .replace(
+        "build: config.build }",
+        `build: config.build, maxFrameBytes: ${hello?.maxFrameBytes ?? DSH_BRIDGE_MAX_FRAME_BYTES} }`,
+      ),
   );
   await Bun.write(bridge, "export const name = 'fake';\n");
   await chmod(executable, 0o700);
@@ -80,6 +102,7 @@ async function startFake(source: string, hello?: { major?: number }) {
     requestTimeoutMs: 10_000,
     stopTimeoutMs: 1_000,
   });
+  retainedClients.push(client);
   return { client, directory };
 }
 
@@ -91,7 +114,7 @@ describe("DeepSeek Harness Bridge process boundary", () => {
   });
 
   it("delivers a degraded oversized event, keeps the Binding Runtime, and bounds Connect requests by the hello limit", async () => {
-    const { client, directory } = await startFake(FAKE_DSH_BIG);
+    const { client, directory } = await startFake(FAKE_DSH_BIG, { maxFrameBytes: 4_096 });
     try {
       const events: Array<{ text: string; truncated: unknown }> = [];
       client.onEvent((frame) => {
@@ -99,14 +122,13 @@ describe("DeepSeek Harness Bridge process boundary", () => {
       });
       await client.request("emit-big", {});
       expect(events).toHaveLength(1);
-      expect(events[0]?.text).toEndWith("[output truncated: 20971520 bytes]");
+      expect(events[0]?.text).toEndWith("[output truncated: 1048576 bytes]");
       expect(events[0]?.truncated).toMatchObject({ truncated: true });
       await expect(client.request("echo", { value: 1 })).resolves.toEqual({ value: 1 });
-      await expect(client.request("echo", { value: "v".repeat(DSH_BRIDGE_MAX_FRAME_BYTES + 1) })).rejects.toThrow(
-        "exceeds the frame limit",
-      );
+      await expect(client.request("echo", { value: "v".repeat(5_000) })).rejects.toThrow("exceeds the frame limit (");
       await expect(client.request("echo", { value: 2 })).resolves.toEqual({ value: 2 });
     } finally {
+      await client.close().catch(() => undefined);
       await rm(directory, { recursive: true, force: true });
     }
   }, 30_000);

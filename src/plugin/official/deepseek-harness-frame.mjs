@@ -1,7 +1,6 @@
-// Frame sizing shared by the DSH Bridge (runs inside DSH) and the Connect Adapter.
-// This file must stay dependency-free: it is shipped as a sibling Plugin asset of the Bridge.
-
-export const DSH_BRIDGE_MAX_FRAME_BYTES = 16 * 1024 * 1024;
+// Frame encoding for the DSH Bridge (runs inside DSH): size-bounded frames with explicit truncation markers.
+// The limit is owned by Connect (DSH_BRIDGE_MAX_FRAME_BYTES) and reaches the Bridge through its config.
+// Dependency-free: shipped as a sibling Plugin asset of the Bridge.
 
 const PREVIEW_CAPS = [1_048_576, 262_144, 65_536, 16_384, 4_096, 1_024, 0];
 const UNTOUCHED_STRING_BYTES = 512;
@@ -14,6 +13,11 @@ const MAX_REPORTED_FIELDS = 32;
 const ENVELOPE_KEYS = new Set(["type", "id", "sessionId", "ok"]);
 const TRUNCATION_NOTE =
   "The Bridge truncated this content to fit the frame limit. The full content remains in the DSH Session log; the Bridge protocol has no paged fetch.";
+
+// The only place that spells the user-visible truncation notices. Connect displays the strings carried in the
+// marker (`notice`, `fields[].notice`) and never formats its own.
+const textNotice = (bytes) => `[output truncated: ${bytes} bytes]`;
+const binaryNotice = (bytes) => `[binary omitted: ${bytes} bytes]`;
 
 function frameTooLarge(message) {
   return Object.assign(new Error(message), { code: "frame-too-large" });
@@ -33,7 +37,7 @@ function byteLength(value) {
  *
  * @returns {{ encoded: string, degraded: null | { originalBytes: number, bytes: number, fields: number, placeholder: boolean } }}
  */
-export function encodeBridgeFrame(frame, limit = DSH_BRIDGE_MAX_FRAME_BYTES) {
+export function encodeBridgeFrame(frame, limit) {
   let raw;
   try {
     raw = JSON.stringify(frame);
@@ -59,6 +63,7 @@ export function encodeBridgeFrame(frame, limit = DSH_BRIDGE_MAX_FRAME_BYTES) {
     const marker = {
       truncated: true,
       originalBytes,
+      notice: textNotice(originalBytes),
       fields: fields.slice(0, MAX_REPORTED_FIELDS),
       ...(fields.length > MAX_REPORTED_FIELDS ? { omittedFields: fields.length - MAX_REPORTED_FIELDS } : {}),
       note: TRUNCATION_NOTE,
@@ -80,13 +85,14 @@ function bound(value, cap, path, fields) {
     const bytes = byteLength(value);
     if (bytes <= Math.max(cap, UNTOUCHED_STRING_BYTES)) return value;
     if (isBinary(value, bytes, path)) {
-      const text = `[binary omitted: ${bytes} bytes]`;
-      fields.push({ path, originalBytes: bytes, previewBytes: 0, kind: "binary" });
-      return text;
+      const notice = binaryNotice(bytes);
+      fields.push({ path, originalBytes: bytes, previewBytes: 0, kind: "binary", notice });
+      return notice;
     }
-    const preview = preview8(value, cap);
-    fields.push({ path, originalBytes: bytes, previewBytes: byteLength(preview), kind: "text" });
-    return `${preview}\n[output truncated: ${bytes} bytes]`;
+    const preview = utf8Prefix(value, cap);
+    const notice = textNotice(bytes);
+    fields.push({ path, originalBytes: bytes, previewBytes: byteLength(preview), kind: "text", notice });
+    return `${preview}\n${notice}`;
   }
   if (Array.isArray(value)) return value.map((item, index) => bound(item, cap, `${path}.${index}`, fields));
   if (value !== null && typeof value === "object") {
@@ -104,7 +110,7 @@ function isBinary(value, bytes, path) {
   return BINARY_KEYS.has(key) && BINARY_PATTERN.test(value);
 }
 
-function preview8(value, cap) {
+function utf8Prefix(value, cap) {
   if (cap <= 0) return "";
   const text = Buffer.from(value, "utf8").subarray(0, cap).toString("utf8");
   return text.endsWith("�") ? text.slice(0, -1) : text;
@@ -143,7 +149,7 @@ function placeholder(frame, originalBytes, limit) {
           type: "tool-result",
           ...(typeof first.toolCallId === "string" ? { toolCallId: first.toolCallId } : {}),
           ...(first.isError === true ? { isError: true } : {}),
-          content: [{ type: "text", text: `[output truncated: ${originalBytes} bytes]` }],
+          content: [{ type: "text", text: textNotice(originalBytes) }],
         },
       ],
     };
@@ -156,7 +162,14 @@ function placeholder(frame, originalBytes, limit) {
       time: Number.isFinite(event.time) ? event.time : 0,
       type: typeof event.type === "string" ? event.type : "unknown",
       data: kept,
-      truncated: { truncated: true, placeholder: true, originalBytes, fields: [], note: TRUNCATION_NOTE },
+      truncated: {
+        truncated: true,
+        placeholder: true,
+        originalBytes,
+        notice: textNotice(originalBytes),
+        fields: [],
+        note: TRUNCATION_NOTE,
+      },
     },
   };
   const encoded = `${JSON.stringify(result)}\n`;
@@ -165,68 +178,4 @@ function placeholder(frame, originalBytes, limit) {
     encoded,
     degraded: { originalBytes, bytes: byteLength(encoded), fields: 0, placeholder: true },
   };
-}
-
-export const DSH_BRIDGE_HISTORY_PAGE_BYTES = 4 * 1024 * 1024;
-const HISTORY_PAGE_BYTES_CEILING = 8 * 1024 * 1024;
-
-const turnOf = (event) => (Number.isSafeInteger(event?.data?.turn) ? event.data.turn : undefined);
-
-/**
- * Select one bounded window of Session events for the Bridge `history` method. The window is always the newest
- * matching events, so no caller can ask the Bridge for a whole Session in one frame.
- *
- * Params (all optional): `headerOnly` (no events), `lastTurns` (scope: the N latest Turns plus Turn-less command
- * events, which share one position counter in the Activity Projector), `types` (event type allow-list),
- * `beforeSeq` (exclusive cursor: continue to older events), `limit` (max events) and `maxBytes` (encoded budget,
- * default 4 MiB, capped at 8 MiB). A window holds at least one event so a single oversized event still makes
- * progress (it is degraded when the response is encoded). Events come back in ascending order.
- *
- * `complete` is true only when no matching Session event was left out (by the budget or by the `lastTurns`
- * scope). `nextBeforeSeq` is non-null only when the budget cut the window: it is the cursor for the next older
- * window inside the same scope.
- */
-export function pageHistoryEvents(events, params = {}) {
-  if (params.headerOnly === true) return { events: [], complete: events.length === 0, nextBeforeSeq: null };
-  const types = Array.isArray(params.types) ? new Set(params.types.filter((type) => typeof type === "string")) : null;
-  const matches = (event) => !types || types.has(event.type);
-  const beforeSeq = Number.isSafeInteger(params.beforeSeq) ? params.beforeSeq : Number.POSITIVE_INFINITY;
-  let scopeStart = 0;
-  if (Number.isSafeInteger(params.lastTurns) && params.lastTurns > 0) {
-    const turns = [...new Set(events.map(turnOf).filter((turn) => turn !== undefined))].sort((a, b) => a - b);
-    if (turns.length > 0) {
-      const threshold = turns[Math.max(0, turns.length - params.lastTurns)];
-      const first = events.findIndex((event) => (turnOf(event) ?? Number.NEGATIVE_INFINITY) >= threshold);
-      scopeStart = first < 0 ? 0 : first;
-    }
-  }
-  const inScope = (event, index) =>
-    index >= scopeStart || (params.lastTurns > 0 && (event.type === "command/run" || event.type === "command/done"));
-  const budget = Math.min(
-    Number.isSafeInteger(params.maxBytes) && params.maxBytes > 0 ? params.maxBytes : DSH_BRIDGE_HISTORY_PAGE_BYTES,
-    HISTORY_PAGE_BYTES_CEILING,
-  );
-  const limit = Number.isSafeInteger(params.limit) && params.limit > 0 ? params.limit : Number.POSITIVE_INFINITY;
-  const window = [];
-  let used = 0;
-  let leftOut = false;
-  let budgetCut = false;
-  for (let index = events.length - 1; index >= 0; index--) {
-    const event = events[index];
-    if (!(event.seq < beforeSeq) || !matches(event)) continue;
-    if (!inScope(event, index)) {
-      leftOut = true;
-      continue;
-    }
-    const size = byteLength(JSON.stringify(event)) + 1;
-    if (window.length > 0 && (used + size > budget || window.length >= limit)) {
-      leftOut = true;
-      budgetCut = true;
-      break;
-    }
-    window.push(event);
-    used += size;
-  }
-  window.reverse();
-  return { events: window, complete: !leftOut, nextBeforeSeq: budgetCut ? window[0].seq : null };
 }
