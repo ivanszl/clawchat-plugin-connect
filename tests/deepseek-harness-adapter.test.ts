@@ -470,10 +470,9 @@ describe("DeepSeek Harness Runtime Adapter", () => {
     await adapter.close?.();
   });
 
-  it("reads Session history page by page and only the latest Turn when starting a Turn", async () => {
+  it("reads only bounded history: header-only readiness, latest-Turn seed, partial window, ambiguous bounded miss", async () => {
     const fixture = await runtimeFixture();
     const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
-    client.historyPageSize = 2;
     const adapter = createDeepSeekHarnessRuntimeAdapter({
       bridgePath: "/connect/deepseek-harness-bridge.mjs",
       bridgeBuild: "test",
@@ -484,17 +483,38 @@ describe("DeepSeek Harness Runtime Adapter", () => {
     const ids: string[] = [];
     const session = await adapter.start(fixture.binding, startContext(ids));
     await Array.fromAsync(session.prompt(prompt(fixture.workspace, { turnId: "connect-input-1" })));
-    const snapshot = await adapter.readActivity?.(fixture.binding, ids[0] ?? "");
-    // Five native events, two per page: three pages cover the whole Session.
-    expect(snapshot?.completeness).toBe("complete");
-    expect(snapshot?.activities.some((activity) => activity.kind === "assistant" && activity.text === "world")).toBe(
-      true,
-    );
-    const histories = client.requests.filter(({ method }) => method === "history");
-    expect(histories).toHaveLength(4);
-    expect(histories[0]?.params).toMatchObject({ lastTurnOnly: true });
-    const full = histories.filter(({ params }) => !(params as { lastTurnOnly?: boolean }).lastTurnOnly);
-    expect(full.map(({ params }) => (params as { afterSeq?: number }).afterSeq)).toEqual([undefined, 2, 4]);
+    const threadId = ids[0] ?? "";
+    expect(client.requests.filter(({ method }) => method === "history")[0]?.params).toMatchObject({ lastTurns: 1 });
+
+    await adapter.verifyThreadReady?.(fixture.binding, threadId);
+    expect(client.requests.filter(({ method }) => method === "history").at(-1)?.params).toMatchObject({
+      headerOnly: true,
+    });
+
+    const complete = await adapter.readActivity?.(fixture.binding, threadId);
+    expect(complete?.completeness).toBe("complete");
+    client.historyWindowSize = 2;
+    const partial = await adapter.readActivity?.(fixture.binding, threadId);
+    expect(partial?.completeness).toBe("partial");
+    expect(partial?.activities.length).toBeGreaterThan(0);
+
+    // Only one user message exists, so a window of one still covers the Session: absent is exact.
+    client.historyWindowSize = 1;
+    await expect(
+      adapter.reconcileInput?.(fixture.binding, threadId, { messageId: "nope", contentDigest: "sha256:nope" }),
+    ).resolves.toMatchObject({ outcome: "absent", receipts: { complete: true } });
+    // Many user messages and a one-event window: the bounded depth is exhausted, so a miss is ambiguous.
+    const history = client.histories.get(threadId) ?? [];
+    for (let index = 0; index < 20; index += 1) {
+      history.push(
+        event(100 + index, "user/message", { turn: 2, id: `older-${index}`, source: { kind: "user" }, content: [] }),
+      );
+    }
+    const unknown = await adapter.reconcileInput?.(fixture.binding, threadId, {
+      messageId: "nope",
+      contentDigest: "sha256:nope",
+    });
+    expect(unknown).toMatchObject({ outcome: "unknown", receipts: { complete: false } });
     await session.close();
     await adapter.close?.();
   });
@@ -767,13 +787,13 @@ class FakeDshBridgeClient implements DshBridgeClient {
     presets: [{ id: "workspace-write", name: "Workspace write", description: "Ask before writes" }],
   };
   interactionResponse: unknown = null;
-  historyPageSize = Number.POSITIVE_INFINITY;
+  historyWindowSize = Number.POSITIVE_INFINITY;
   /** Extra native events (already degraded by the Bridge) delivered before the assistant reply. */
   degradedEventsOnPrompt: DshSessionEvent[] = [];
   private settleInteraction: (() => void) | null = null;
   private readonly listeners = new Set<(event: DshBridgeEvent) => void>();
   private readonly interactionListeners = new Set<(interaction: DshBridgeInteraction) => void>();
-  private readonly histories = new Map<string, DshSessionEvent[]>();
+  readonly histories = new Map<string, DshSessionEvent[]>();
 
   constructor(
     home: string,
@@ -794,17 +814,31 @@ class FakeDshBridgeClient implements DshBridgeClient {
     };
     if (method === "history") {
       const sessionId = values.sessionId ?? "missing";
-      const paging = params as { afterSeq?: number; types?: string[]; lastTurnOnly?: boolean };
-      let events = this.histories.get(sessionId) ?? [];
-      if (paging.lastTurnOnly) events = events.slice(Math.max(0, events.map((e) => e.type).lastIndexOf("turn/start")));
+      const query = params as {
+        headerOnly?: boolean;
+        beforeSeq?: number;
+        types?: string[];
+        lastTurns?: number;
+      };
+      const all = this.histories.get(sessionId) ?? [];
+      const header = { id: sessionId, createdAt: 1, cwd: this.workspace };
+      if (query.headerOnly) return { header, events: [], complete: all.length === 0, nextBeforeSeq: null } as T;
+      let events = all;
+      if (query.lastTurns) events = events.slice(Math.max(0, events.map((e) => e.type).lastIndexOf("turn/start")));
       events = events.filter(
-        (item) => item.seq > (paging.afterSeq ?? -1) && (!paging.types || paging.types.includes(item.type)),
+        (item) =>
+          item.seq < (query.beforeSeq ?? Number.POSITIVE_INFINITY) && (!query.types || query.types.includes(item.type)),
       );
-      const page = events.slice(0, this.historyPageSize);
+      const window = events.slice(Math.max(0, events.length - this.historyWindowSize));
+      const cut = events.length > window.length;
       return {
-        header: { id: sessionId, createdAt: 1, cwd: this.workspace },
-        events: page,
-        nextAfterSeq: events.length > page.length ? (page.at(-1)?.seq ?? null) : null,
+        header,
+        events: window,
+        complete:
+          !cut &&
+          window.length === events.length &&
+          events.length === all.filter((item) => !query.types || query.types.includes(item.type)).length,
+        nextBeforeSeq: cut ? (window[0]?.seq ?? null) : null,
       } as T;
     }
     if (method === "create") {

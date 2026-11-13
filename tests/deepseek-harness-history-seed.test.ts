@@ -59,7 +59,7 @@ function replay(
 }
 
 function expectEquivalent(history: DshSessionEvent[], live: DshSessionEvent[]) {
-  const tail = pageHistoryEvents(history, { lastTurnOnly: true, maxBytes: 1 << 30 }).events;
+  const tail = pageHistoryEvents(history, { lastTurns: 1, maxBytes: 1 << 30 }).events;
   expect(tail.length).toBeLessThanOrEqual(history.length);
   const full = replay(history, live);
   const bounded = replay(tail, live);
@@ -130,6 +130,22 @@ describe("bounded Turn-start history seed", () => {
   it("falls back to the whole Session when events carry no Turn numbers", () => {
     sequence = 0;
     const history = [ev("session/title", { title: "x" }), ev("agent/inbox/spliced", {})];
-    expect(pageHistoryEvents(history, { lastTurnOnly: true }).events).toEqual(history);
+    expect(pageHistoryEvents(history, { lastTurns: 1 }).events).toEqual(history);
+  });
+
+  it("matches when the seed is read in several budget-limited windows", () => {
+    sequence = 0;
+    const history = [...userTurn(1, "a"), ...userTurn(2, "b"), ...userTurn(3, "c")];
+    const live = liveTurn(4, "d");
+    const windows: DshSessionEvent[][] = [];
+    let beforeSeq: number | undefined;
+    for (;;) {
+      const page = pageHistoryEvents(history, { lastTurns: 1, maxBytes: 600, beforeSeq });
+      windows.unshift(page.events);
+      if (page.nextBeforeSeq === null) break;
+      beforeSeq = page.nextBeforeSeq;
+    }
+    expect(windows.length).toBeGreaterThan(1);
+    expect(replay(windows.flat(), live)).toEqual(replay(history, live));
   });
 });

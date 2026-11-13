@@ -668,7 +668,7 @@ export async function apply(ctx, config = {}) {
       );
     },
 
-    // One bounded page per call; see pageHistoryEvents. Callers follow nextAfterSeq until it is null.
+    // Always one bounded window of the newest events (see pageHistoryEvents); never the whole Session.
     async history(params) {
       const sessionId = requestString(params, "sessionId");
       const { header, events } = await loadHistory(sessionId);
@@ -679,7 +679,8 @@ export async function apply(ctx, config = {}) {
       const sessionId = requestString(params, "sessionId");
       const inputId = requestString(params, "inputId");
       const history = await loadHistory(sessionId);
-      const event = history.events.find(
+      // Newest first: the input being reconciled is almost always one of the latest messages.
+      const event = history.events.findLast(
         (candidate) =>
           candidate.type === "user/message" &&
           candidate.data?.source?.kind === "user" &&

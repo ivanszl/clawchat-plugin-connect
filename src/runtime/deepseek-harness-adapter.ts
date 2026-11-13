@@ -16,7 +16,6 @@ import type {
   DshBridgeCatalogModel,
   DshBridgeCatalogSkill,
   DshBridgeHistory,
-  DshBridgeHistoryParams,
   DshBridgeInteraction,
   DshBridgePermissionPresetCatalog,
   DshBridgePresetCatalog,
@@ -32,6 +31,7 @@ import type {
   ConnectRuntimeStartContext,
   RuntimeActivity,
   RuntimeActivitySnapshot,
+  RuntimeInputIdentity,
   RuntimeInputMessageIdentity,
   RuntimeInputReconciliation,
   RuntimeInteractionResponse,
@@ -185,11 +185,21 @@ export function createDeepSeekHarnessRuntimeAdapter(
     },
     async verifyThreadReady(binding, runtimeThreadId) {
       const harness = await ensurePrepared(binding);
-      await harness.client.request<DshBridgeHistory>("history", { sessionId: runtimeThreadId, limit: 1 });
+      await harness.client.request<DshBridgeHistory>("history", {
+        sessionId: runtimeThreadId,
+        headerOnly: true,
+      });
     },
     async readActivity(binding, runtimeThreadId) {
       const harness = await ensurePrepared(binding);
-      return projectDshHistory(runtimeThreadId, await readDshHistory(harness.client, { sessionId: runtimeThreadId }));
+      // A bounded recent window, never the whole Session: callers must not assume completeness.
+      const window = await harness.client.request<DshBridgeHistory>("history", {
+        sessionId: runtimeThreadId,
+        lastTurns: DSH_ACTIVITY_WINDOW_TURNS,
+        maxBytes: DSH_HISTORY_WINDOW_BYTES,
+      });
+      const snapshot = projectDshHistory(runtimeThreadId, window.events);
+      return window.complete ? snapshot : { ...snapshot, completeness: "partial" };
     },
     async reconcileInput(binding, runtimeThreadId, candidate) {
       const harness = await ensurePrepared(binding);
@@ -292,9 +302,7 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
     }
     // The projector only needs the latest Turn (its Turn number and per-Turn item positions), not the whole Session.
     const projector = new DshActivityProjector(runtimeThreadId);
-    for (const event of await readDshHistory(this.client, { sessionId: runtimeThreadId, lastTurnOnly: true })) {
-      projector.accept(event, "history");
-    }
+    for (const event of await readDshLatestTurn(this.client, runtimeThreadId)) projector.accept(event, "history");
     const queue = new DshActivityQueue();
     this.active = {
       queue,
@@ -677,24 +685,31 @@ function interactionDelivery(): {
   return { promise, confirm, fail };
 }
 
-/** Read Session events page by page; no single Bridge frame ever carries the whole Session. */
-async function readDshHistory(
-  client: DshBridgeClient,
-  params: Omit<DshBridgeHistoryParams, "afterSeq">,
-): Promise<DshSessionEvent[]> {
-  const events: DshSessionEvent[] = [];
-  let afterSeq: number | undefined;
-  for (;;) {
+const DSH_ACTIVITY_WINDOW_TURNS = 5;
+/** Per-request event budget; well under the Bridge frame limit. */
+const DSH_HISTORY_WINDOW_BYTES = 2 * 1024 * 1024;
+const DSH_HISTORY_MAX_WINDOWS = 8;
+
+/**
+ * The events that number and order a new live Turn: the latest Turn plus Turn-less command events. Bounded to a few
+ * windows; a pathological Turn larger than that seeds from its newest part (only item numbering is affected).
+ */
+async function readDshLatestTurn(client: DshBridgeClient, sessionId: string): Promise<DshSessionEvent[]> {
+  let events: DshSessionEvent[] = [];
+  let beforeSeq: number | undefined;
+  for (let window = 0; window < DSH_HISTORY_MAX_WINDOWS; window++) {
     const page: DshBridgeHistory = await client.request<DshBridgeHistory>("history", {
-      ...params,
-      ...(afterSeq === undefined ? {} : { afterSeq }),
+      sessionId,
+      lastTurns: 1,
+      maxBytes: DSH_HISTORY_WINDOW_BYTES,
+      ...(beforeSeq === undefined ? {} : { beforeSeq }),
     });
-    events.push(...page.events);
-    const next = page.nextAfterSeq ?? null;
-    if (next === null || page.events.length === 0) return events;
-    if (afterSeq !== undefined && next <= afterSeq) throw new Error("DeepSeek Harness history cursor did not advance");
-    afterSeq = next;
+    events = [...page.events, ...events];
+    const next = page.nextBeforeSeq ?? null;
+    if (next === null || page.events.length === 0 || (beforeSeq !== undefined && next >= beforeSeq)) break;
+    beforeSeq = next;
   }
+  return events;
 }
 
 async function reconcileDshInput(
@@ -702,15 +717,34 @@ async function reconcileDshInput(
   runtimeThreadId: string,
   candidate: RuntimeInputMessageIdentity,
 ): Promise<RuntimeInputReconciliation> {
-  const history = await readDshHistory(client, { sessionId: runtimeThreadId, types: ["user/message"] });
-  const identities = history.flatMap((event) => {
-    if (event.type !== "user/message") return [];
-    const identity = dshInputIdentity(objectValue(event.data));
-    return identity ? [identity] : [];
-  });
-  const identity = identities.find((value) => runtimeInputIdentityContains(value, candidate));
-  const receipts = { identities, complete: true };
-  return identity ? { outcome: "accepted", identity, receipts } : { outcome: "absent", receipts };
+  // Search user messages from the newest backwards, a bounded number of windows deep.
+  const identities: RuntimeInputIdentity[] = [];
+  let beforeSeq: number | undefined;
+  let complete = false;
+  for (let window = 0; window < DSH_HISTORY_MAX_WINDOWS; window++) {
+    const page: DshBridgeHistory = await client.request<DshBridgeHistory>("history", {
+      sessionId: runtimeThreadId,
+      types: ["user/message"],
+      maxBytes: DSH_HISTORY_WINDOW_BYTES,
+      ...(beforeSeq === undefined ? {} : { beforeSeq }),
+    });
+    for (const event of [...page.events].reverse()) {
+      const identity = dshInputIdentity(objectValue(event.data));
+      if (identity) identities.push(identity);
+    }
+    const identity = identities.find((value) => runtimeInputIdentityContains(value, candidate));
+    if (identity) return { outcome: "accepted", identity, receipts: { identities, complete: page.complete } };
+    const next = page.nextBeforeSeq ?? null;
+    if (page.complete || next === null || page.events.length === 0 || (beforeSeq !== undefined && next >= beforeSeq)) {
+      complete = page.complete;
+      break;
+    }
+    beforeSeq = next;
+  }
+  // A miss that did not cover the whole Session is ambiguous: "unknown" (retry), never "absent", so it cannot
+  // cause a duplicate Turn.
+  const receipts = { identities, complete };
+  return complete ? { outcome: "absent", receipts } : { outcome: "unknown", receipts };
 }
 
 /** Keep transport metadata durable without including its XML envelope in model text. */

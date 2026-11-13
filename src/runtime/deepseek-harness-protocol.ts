@@ -159,21 +159,27 @@ export interface DshBridgeAdmission {
   messageId: string;
 }
 
-/** One bounded page of Session events. Follow `nextAfterSeq` (pass it as `afterSeq`) until it is null. */
+/**
+ * One bounded window of the newest matching Session events (ascending). `complete` is true only when no matching
+ * event was left out; `nextBeforeSeq` (pass it as `beforeSeq`) is set when the byte budget cut the window.
+ */
 export interface DshBridgeHistory {
   header: DshSessionHeader;
   events: DshSessionEvent[];
-  nextAfterSeq: number | null;
+  complete: boolean;
+  nextBeforeSeq: number | null;
 }
 
 export interface DshBridgeHistoryParams {
   sessionId: string;
-  afterSeq?: number;
-  maxBytes?: number;
-  limit?: number;
-  /** Latest Turn plus Turn-less command events: everything the Activity Projector needs to continue a Turn. */
-  lastTurnOnly?: boolean;
+  /** Header only: no events. */
+  headerOnly?: boolean;
+  /** Scope to the N latest Turns plus Turn-less command events. */
+  lastTurns?: number;
   types?: string[];
+  beforeSeq?: number;
+  limit?: number;
+  maxBytes?: number;
 }
 
 export class DshBridgeRemoteError extends Error {

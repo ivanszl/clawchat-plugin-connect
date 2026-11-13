@@ -250,39 +250,39 @@ describe("DeepSeek Harness Bridge frame limit", () => {
     expect(alive(bridge)).toBe(true);
   }, 60_000);
 
-  it("serves a Session larger than the frame limit in bounded pages and still reconciles", async () => {
+  it("serves a Session larger than the frame limit as bounded windows and still reconciles", async () => {
     const bridge = await startBridge();
     // 5000 x ~4 KB = ~20 MB of events: more than one 16 MiB frame, which used to fail every Turn.
     await bridge.command({ cmd: "history-events", count: 5_000, size: 4_000 });
     await bridge.command({ cmd: "history-user", seq: 10_000, inputId: "input-42" });
     await bridge.command({ cmd: "history-turn-start", seq: 10_001 });
-    const seen: number[] = [];
-    let afterSeq: number | undefined;
-    let pages = 0;
-    for (;;) {
-      const response = await bridge.request("history", {
-        sessionId: "s1",
-        ...(afterSeq === undefined ? {} : { afterSeq }),
-      });
-      expect(response.ok).toBe(true);
-      const result = (response as { result: { events: Array<{ seq: number }>; nextAfterSeq: number | null } }).result;
-      expect(Buffer.byteLength(bridge.rawLines.at(-1) ?? "")).toBeLessThan(DSH_BRIDGE_MAX_FRAME_BYTES);
-      seen.push(...result.events.map((event) => event.seq));
-      pages += 1;
-      if (result.nextAfterSeq === null) break;
-      afterSeq = result.nextAfterSeq;
-    }
-    expect(pages).toBeGreaterThan(3);
-    expect(seen).toHaveLength(5_002);
+    const unbounded = await bridge.request("history", { sessionId: "s1" });
+    const window = (
+      unbounded as { result: { events: Array<{ seq: number }>; complete: boolean; nextBeforeSeq: number | null } }
+    ).result;
+    expect(unbounded.ok).toBe(true);
+    expect(Buffer.byteLength(bridge.rawLines.at(-1) ?? "")).toBeLessThan(8 * 1024 * 1024);
+    expect(window.events.at(-1)?.seq).toBe(10_001);
+    expect(window.events.length).toBeLessThan(5_002);
+    expect(window).toMatchObject({ complete: false });
+    expect(window.nextBeforeSeq).toBe(window.events[0]?.seq);
     for (const raw of bridge.rawLines) expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(DSH_BRIDGE_MAX_FRAME_BYTES);
 
-    const tail = await bridge.request("history", { sessionId: "s1", lastTurnOnly: true });
-    expect((tail as { result: { events: unknown[]; nextAfterSeq: unknown } }).result).toMatchObject({
-      events: [{ type: "turn/start" }],
-      nextAfterSeq: null,
+    const older = await bridge.request("history", {
+      sessionId: "s1",
+      beforeSeq: window.nextBeforeSeq,
+      maxBytes: 100_000,
     });
+    expect((older as { result: { events: unknown[] } }).result.events.length).toBeGreaterThan(0);
+    const headerOnly = await bridge.request("history", { sessionId: "s1", headerOnly: true });
+    expect((headerOnly as { result: { events: unknown[]; header: unknown } }).result).toMatchObject({
+      events: [],
+      header: { id: "s1" },
+    });
+    const tail = await bridge.request("history", { sessionId: "s1", lastTurns: 1 });
+    expect((tail as { result: { events: unknown[] } }).result.events).toHaveLength(1);
     const users = await bridge.request("history", { sessionId: "s1", types: ["user/message"] });
-    expect((users as { result: { events: unknown[] } }).result.events).toHaveLength(1);
+    expect((users as { result: { events: unknown[]; complete: boolean } }).result).toMatchObject({ complete: true });
     await expect(bridge.request("reconcile", { sessionId: "s1", inputId: "input-42" })).resolves.toMatchObject({
       ok: true,
       result: { outcome: "accepted", inputId: "input-42" },

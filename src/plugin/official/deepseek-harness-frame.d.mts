@@ -6,13 +6,14 @@ export interface EncodedBridgeFrame {
 export function encodeBridgeFrame(frame: unknown, limit?: number): EncodedBridgeFrame;
 export const DSH_BRIDGE_HISTORY_PAGE_BYTES: number;
 export interface HistoryPageParams {
-  afterSeq?: number;
-  maxBytes?: number;
-  limit?: number;
-  lastTurnOnly?: boolean;
+  headerOnly?: boolean;
+  lastTurns?: number;
   types?: string[];
+  beforeSeq?: number;
+  limit?: number;
+  maxBytes?: number;
 }
 export function pageHistoryEvents<T extends { seq: number; type: string }>(
   events: readonly T[],
   params?: HistoryPageParams,
-): { events: T[]; nextAfterSeq: number | null };
+): { events: T[]; complete: boolean; nextBeforeSeq: number | null };

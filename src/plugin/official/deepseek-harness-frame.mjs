@@ -170,54 +170,63 @@ function placeholder(frame, originalBytes, limit) {
 export const DSH_BRIDGE_HISTORY_PAGE_BYTES = 4 * 1024 * 1024;
 const HISTORY_PAGE_BYTES_CEILING = 8 * 1024 * 1024;
 
+const turnOf = (event) => (Number.isSafeInteger(event?.data?.turn) ? event.data.turn : undefined);
+
 /**
- * Select one bounded page of Session events for the Bridge `history` method.
+ * Select one bounded window of Session events for the Bridge `history` method. The window is always the newest
+ * matching events, so no caller can ask the Bridge for a whole Session in one frame.
  *
- * Params (all optional): `afterSeq` (exclusive cursor), `maxBytes` (encoded budget, default 4 MiB, capped at 8 MiB),
- * `limit` (max events), `lastTurnOnly` (the latest Turn plus Turn-less command events), `types` (event type allow-list).
- * A page always holds at least one event, so a single oversized event still makes progress (it is degraded when the
- * response is encoded). `nextAfterSeq` is the cursor for the next page, or null when the Session is exhausted.
+ * Params (all optional): `headerOnly` (no events), `lastTurns` (scope: the N latest Turns plus Turn-less command
+ * events, which share one position counter in the Activity Projector), `types` (event type allow-list),
+ * `beforeSeq` (exclusive cursor: continue to older events), `limit` (max events) and `maxBytes` (encoded budget,
+ * default 4 MiB, capped at 8 MiB). A window holds at least one event so a single oversized event still makes
+ * progress (it is degraded when the response is encoded). Events come back in ascending order.
+ *
+ * `complete` is true only when no matching Session event was left out (by the budget or by the `lastTurns`
+ * scope). `nextBeforeSeq` is non-null only when the budget cut the window: it is the cursor for the next older
+ * window inside the same scope.
  */
 export function pageHistoryEvents(events, params = {}) {
-  let list = events;
-  if (params.lastTurnOnly === true) {
-    // Start at the first event of the latest Turn (by data.turn), so everything that numbers or orders that Turn's
-    // Activities is kept, including a user message logged before its turn/start. No turn numbers: whole Session.
-    const turnOf = (event) => (Number.isSafeInteger(event?.data?.turn) ? event.data.turn : undefined);
-    let latest;
-    for (let index = list.length - 1; index >= 0 && latest === undefined; index--) latest = turnOf(list[index]);
-    // Command events are Turn-less and share one position counter in the Projector, so they are kept from the whole
-    // Session (they are few and small) to keep command Activity positions identical to a full replay.
-    if (latest !== undefined) {
-      const start = list.findIndex((event) => turnOf(event) === latest);
-      list = list.filter((event, index) => index >= start || event?.type === "command/run" || event?.type === "command/done");
+  if (params.headerOnly === true) return { events: [], complete: events.length === 0, nextBeforeSeq: null };
+  const types = Array.isArray(params.types) ? new Set(params.types.filter((type) => typeof type === "string")) : null;
+  const matches = (event) => !types || types.has(event.type);
+  const beforeSeq = Number.isSafeInteger(params.beforeSeq) ? params.beforeSeq : Number.POSITIVE_INFINITY;
+  let scopeStart = 0;
+  if (Number.isSafeInteger(params.lastTurns) && params.lastTurns > 0) {
+    const turns = [...new Set(events.map(turnOf).filter((turn) => turn !== undefined))].sort((a, b) => a - b);
+    if (turns.length > 0) {
+      const threshold = turns[Math.max(0, turns.length - params.lastTurns)];
+      const first = events.findIndex((event) => (turnOf(event) ?? Number.NEGATIVE_INFINITY) >= threshold);
+      scopeStart = first < 0 ? 0 : first;
     }
   }
-  const afterSeq = Number.isSafeInteger(params.afterSeq) ? params.afterSeq : Number.NEGATIVE_INFINITY;
-  const types = Array.isArray(params.types) ? new Set(params.types.filter((type) => typeof type === "string")) : null;
+  const inScope = (event, index) =>
+    index >= scopeStart || (params.lastTurns > 0 && (event.type === "command/run" || event.type === "command/done"));
   const budget = Math.min(
     Number.isSafeInteger(params.maxBytes) && params.maxBytes > 0 ? params.maxBytes : DSH_BRIDGE_HISTORY_PAGE_BYTES,
     HISTORY_PAGE_BYTES_CEILING,
   );
   const limit = Number.isSafeInteger(params.limit) && params.limit > 0 ? params.limit : Number.POSITIVE_INFINITY;
-  const page = [];
+  const window = [];
   let used = 0;
-  let index = 0;
-  for (; index < list.length; index++) {
-    const event = list[index];
-    if (!(event.seq > afterSeq) || (types && !types.has(event.type))) continue;
+  let leftOut = false;
+  let budgetCut = false;
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index];
+    if (!(event.seq < beforeSeq) || !matches(event)) continue;
+    if (!inScope(event, index)) {
+      leftOut = true;
+      continue;
+    }
     const size = byteLength(JSON.stringify(event)) + 1;
-    if (page.length > 0 && (used + size > budget || page.length >= limit)) break;
-    page.push(event);
-    used += size;
-  }
-  let more = false;
-  for (; index < list.length; index++) {
-    const event = list[index];
-    if (event.seq > afterSeq && (!types || types.has(event.type)) && !page.includes(event)) {
-      more = true;
+    if (window.length > 0 && (used + size > budget || window.length >= limit)) {
+      leftOut = true;
+      budgetCut = true;
       break;
     }
+    window.push(event);
+    used += size;
   }
-  return { events: page, nextAfterSeq: more ? page.at(-1).seq : null };
+  window.reverse();
+  return { events: window, complete: !leftOut, nextBeforeSeq: budgetCut ? window[0].seq : null };
 }
