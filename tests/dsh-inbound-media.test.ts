@@ -1,8 +1,21 @@
 import { describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, readdir, readFile, realpath, symlink, truncate, writeFile } from "node:fs/promises";
+import {
+  lutimes,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  symlink,
+  truncate,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DSH_INBOX_PRUNE_BATCH,
+  DSH_INBOX_RETENTION_MS,
   DSH_MAX_INBOUND_FILE_BYTES,
   DSH_MAX_INBOUND_FILES,
   inboxPathNote,
@@ -109,5 +122,73 @@ describe("DSH inbound media staging", () => {
     expect(limited.staged).toHaveLength(DSH_MAX_INBOUND_FILES);
     expect(limited.dropped).toHaveLength(2);
     expect(limited.dropped[0]?.reason).toContain("more than");
+  });
+
+  describe("retention", () => {
+    const old = (ms = DSH_INBOX_RETENTION_MS + 86_400_000) => new Date(Date.now() - ms);
+    async function aged(inbox: string, name: string, when: Date, files = ["f.txt"]) {
+      const dir = join(inbox, name);
+      await mkdir(dir, { recursive: true });
+      for (const file of files) {
+        await writeFile(join(dir, file), "x");
+        await utimes(join(dir, file), when, when);
+      }
+      await utimes(dir, when, when);
+    }
+    const stage = async (workspace: string, source: string, turn = "current") =>
+      await stageIntoWorkspaceInbox(workspace, turn, [
+        { media: { kind: "file", url: "u", name: "n.txt" }, sourcePath: source },
+      ]);
+
+    it("removes turn directories whose newest entry is older than 30 days and keeps recent or current ones", async () => {
+      const { workspace, source } = await fixture();
+      const inbox = join(workspace, "clawchat-inbox");
+      await aged(inbox, "stale", old());
+      await aged(inbox, "mixed", old(), ["a.txt", "b.txt"]);
+      await utimes(join(inbox, "mixed", "b.txt"), new Date(), new Date());
+      await aged(inbox, "recent", old(DSH_INBOX_RETENTION_MS - 86_400_000));
+      await aged(inbox, "current", old());
+      await stage(workspace, source);
+      expect((await readdir(inbox)).sort()).toEqual(["current", "mixed", "recent"]);
+    });
+
+    it("never follows symlinks and never touches anything outside the inbox", async () => {
+      const { workspace, outside, source } = await fixture();
+      const inbox = join(workspace, "clawchat-inbox");
+      await mkdir(inbox);
+      await writeFile(join(outside, "keep.txt"), "x");
+      await utimes(join(outside, "keep.txt"), old(), old());
+      await utimes(outside, old(), old());
+      await symlink(outside, join(inbox, "linked"));
+      await writeFile(join(inbox, "loose-file"), "x");
+      await utimes(join(inbox, "loose-file"), old(), old());
+      await aged(inbox, "withlink", old());
+      await symlink(outside, join(inbox, "withlink", "escape"));
+      await lutimes(join(inbox, "withlink", "escape"), old(), old());
+      await utimes(join(inbox, "withlink"), old(), old());
+      await stage(workspace, source);
+      expect(await readdir(outside)).toEqual(["keep.txt"]);
+      const left = await readdir(inbox);
+      expect(left).toContain("linked");
+      expect(left).toContain("loose-file");
+      expect(left).not.toContain("withlink");
+    });
+
+    it("does nothing when the inbox itself is not a real directory", async () => {
+      const { workspace, outside, source } = await fixture();
+      await aged(outside, "stale", old());
+      await symlink(outside, join(workspace, "clawchat-inbox"));
+      await expect(stage(workspace, source)).rejects.toThrow("not a plain directory");
+      expect(await readdir(outside)).toEqual(["stale"]);
+    });
+
+    it("caps the work per call and never fails staging on cleanup errors", async () => {
+      const { workspace, source } = await fixture();
+      const inbox = join(workspace, "clawchat-inbox");
+      for (let index = 0; index < DSH_INBOX_PRUNE_BATCH + 5; index += 1) await aged(inbox, `s${index}`, old());
+      const result = await stage(workspace, source);
+      expect(result.staged).toHaveLength(1);
+      expect((await readdir(inbox)).filter((name) => name.startsWith("s"))).toHaveLength(5);
+    });
   });
 });

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
-import { copyFile, lstat, mkdir, realpath, rm, stat } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, realpath, rm, stat } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { isPathWithin } from "../path-containment";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
@@ -11,6 +11,10 @@ export const DSH_INBOX_DIRECTORY = "clawchat-inbox";
 /** Owner decision 2026-11-14: files received from ClawChat are accepted up to 100 MiB each. */
 export const DSH_MAX_INBOUND_FILE_BYTES = MAX_RUNTIME_MEDIA_BYTES;
 export const DSH_MAX_INBOUND_FILES = 10;
+/** Owner decision 2026-11-14: inbox turn directories are kept 30 days after their newest file. */
+export const DSH_INBOX_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+/** Most turn directories examined and removed per staging call. */
+export const DSH_INBOX_PRUNE_BATCH = 50;
 const MAX_NAME_BYTES = 120;
 
 export interface StagedInboxFile {
@@ -94,6 +98,8 @@ export async function stageIntoWorkspaceInbox(
   const real = await realpath(directory);
   if (!isPathWithin(root, real, { allowEqual: false })) throw new Error("DeepSeek Harness inbox escaped the Workspace");
 
+  await pruneExpiredInbox(real, inbox);
+
   const used = new Set<string>();
   for (const [index, { media, sourcePath }] of items.entries()) {
     const label = sanitizeInboxName(media.name, media.kind, media.mime);
@@ -118,6 +124,36 @@ export async function stageIntoWorkspaceInbox(
     }
   }
   return result;
+}
+
+/**
+ * Best-effort retention: removes real turn directories directly under the real inbox whose newest entry is older
+ * than the retention period. Symlinks are never followed or removed, the current turn is skipped, the work per
+ * call is capped, and failures only produce a short warning.
+ */
+async function pruneExpiredInbox(currentDirectory: string, inbox: string, now = Date.now()): Promise<void> {
+  try {
+    const realInbox = await realpath(inbox);
+    const entries = (await readdir(realInbox))
+      .filter((name) => join(realInbox, name) !== currentDirectory)
+      .slice(0, DSH_INBOX_PRUNE_BATCH);
+    for (const name of entries) {
+      const directory = join(realInbox, name);
+      try {
+        const details = await lstat(directory);
+        if (details.isSymbolicLink() || !details.isDirectory()) continue;
+        let newest = details.mtimeMs;
+        for (const child of await readdir(directory)) {
+          newest = Math.max(newest, (await lstat(join(directory, child))).mtimeMs);
+        }
+        if (now - newest > DSH_INBOX_RETENTION_MS) await rm(directory, { recursive: true, force: true });
+      } catch {
+        console.warn("DeepSeek Harness inbox cleanup skipped an entry");
+      }
+    }
+  } catch {
+    console.warn("DeepSeek Harness inbox cleanup failed");
+  }
 }
 
 class DropError extends Error {}
