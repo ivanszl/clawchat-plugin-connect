@@ -74,6 +74,7 @@ export class ConnectRuntime {
   private readonly ownsExecutor: boolean;
   private readonly executor: SessionTurnExecutor;
   private readonly activeTurnSessionChats = new Map<string, string>();
+  private readonly activeClawChatTurnOrigins = new Map<string, { chatId: string; speakerIds: string[] }>();
   private readonly acceptedClientTurnIds = new Map<string, string>();
   private readonly clientTurnTickets = new Map<string, { turn: QueuedClientTurn; ticket: SessionQueueTicket }>();
   private readonly routingTails = new Map<string, Promise<void>>();
@@ -759,6 +760,14 @@ export class ConnectRuntime {
   ): Promise<void> {
     const key = sessionKey(current.chatId, current.sessionId);
     this.activeTurnSessionChats.set(key, current.chatId);
+    this.activeClawChatTurnOrigins.set(key, {
+      chatId: message.chatId,
+      speakerIds: [
+        ...new Set(
+          message.groupBatch ? message.groupBatch.messages.map((entry) => entry.sender.user_id) : [message.sender.id],
+        ),
+      ],
+    });
     await this.recordRuntimeStatus(this.queue.stats());
     // Typing is transient: a disconnect must not fail or cancel the actual turn.
     const sendTyping = (active: boolean) => {
@@ -781,8 +790,17 @@ export class ConnectRuntime {
         sendTyping(false);
       }
       this.activeTurnSessionChats.delete(key);
+      this.activeClawChatTurnOrigins.delete(key);
       await this.recordRuntimeStatus(this.queue.stats());
     }
+  }
+
+  /** Chats and speakers of the ClawChat Turns running right now; used to authorize cross-chat tool calls. */
+  activeClawChatTurns(): Array<{ chatId: string; speakerIds: string[] }> {
+    return [...this.activeClawChatTurnOrigins.values()].map((origin) => ({
+      chatId: origin.chatId,
+      speakerIds: [...origin.speakerIds],
+    }));
   }
 
   private async withRoutingGate<T>(chatId: string, run: () => Promise<T>): Promise<T> {

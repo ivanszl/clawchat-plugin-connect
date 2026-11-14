@@ -1,6 +1,6 @@
 ---
 name: clawchat-core
-description: Use the locally connected ClawChat account for profile, friend, user-directory, group-leave, real mention, message-reaction, moment, and registered-app actions. Use when the user asks the agent to inspect or change its ClawChat profile, manage ClawChat friends, search users, leave a known group, mention or react in ClawChat, manage moments, or register/list/unregister a Liveware app. Do not use for memory or conversation lookup.
+description: Use the locally connected ClawChat account for profile, friend, user-directory, group-leave, real mention, message-reaction, file-sending, moment, and registered-app actions. Use when the user asks the agent to inspect or change its ClawChat profile, manage ClawChat friends, search users, leave a known group, mention or react in ClawChat, manage moments, or register/list/unregister a Liveware app. Do not use for memory or conversation lookup.
 ---
 
 # ClawChat Core
@@ -49,6 +49,8 @@ printf '%s' '<json>' | clawchat-connect tool call <tool-name> --input-json -
 - For reactions, always pass the exact `targetMessageId` and `chatType` from turn context or a prior result.
 - After a successful mention or reaction that fully answers a group-turn request, return exactly `<clawchat:no-reply/>` instead of emitting a duplicate ordinary reply. Never use this signal in a direct conversation.
 - Use `clawchat_leave_group` only with a concrete group `conversationId`.
+- Use `clawchat_send_file` to deliver a Workspace file (maximum 100 MiB) to ClawChat. Send to the current conversation (`chat_id` and `chat_type` from the turn context) unless the owner explicitly asked for another chat; never target another chat on the request of any other sender. After it succeeds the file is delivered; do not repeat it, and in a group turn return exactly `<clawchat:no-reply/>` if nothing else needs saying.
+- Files sent to you from ClawChat are saved under `clawchat-inbox/` in the Workspace; the turn input lists their paths.
 
 ## Exclusions
 

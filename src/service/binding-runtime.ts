@@ -508,6 +508,9 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         deviceId: options.deviceId,
         activation: options.activation,
         wsClient,
+        workspaceRoots: async () =>
+          (await options.stateStore.listWorkspaces(options.agentId)).map((workspace) => workspace.rootPath),
+        activeTurns: () => runtime.activeClawChatTurns(),
       };
       if (isAgentLivewareOperation(toolName)) {
         const managedAppId =

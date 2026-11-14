@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readdir, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { buildOfficialPlugin, discoverOfficialPluginDescriptors } from "../scripts/build-official-plugins";
 import { materializeRuntimeOutput, policyForOutputVisibility } from "../src/clawchat/output-visibility";
 import { defaultConfig } from "../src/config";
@@ -640,7 +641,7 @@ describe("DeepSeek Harness Runtime Adapter", () => {
     await adapter.close?.();
   });
 
-  it("advertises image attachments only for image-capable models", async () => {
+  it("advertises every attachment kind for every model because non-native input is staged in the Workspace", async () => {
     const fixture = await runtimeFixture();
     const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
     client.hello.capabilities.imageInput = true;
@@ -661,10 +662,13 @@ describe("DeepSeek Harness Runtime Adapter", () => {
       createBridge: async () => client,
     });
     const models = await adapter.listModels?.(fixture.binding);
-    expect(models?.find((m) => m.id === "p:vision")?.turnSubmissionCapability?.attachments?.allowedKinds).toEqual([
-      "image",
-    ]);
-    expect(models?.find((m) => m.id === "p:plain")?.turnSubmissionCapability?.attachments?.allowedKinds).toEqual([]);
+    for (const id of ["p:vision", "p:plain"])
+      expect(models?.find((m) => m.id === id)?.turnSubmissionCapability?.attachments?.allowedKinds).toEqual([
+        "image",
+        "file",
+        "audio",
+        "video",
+      ]);
     await adapter.close?.();
   });
 
@@ -696,11 +700,11 @@ describe("DeepSeek Harness Runtime Adapter", () => {
     const models = await adapter.listModels?.(fixture.binding);
     const sessionOptions = await adapter.listSessionOptions?.(fixture.binding, WORKSPACE(fixture.workspace));
     expect(models?.[0]?.turnSubmissionCapability?.attachments).toEqual({
-      allowedKinds: ["image"],
-      allowedMediaTypes: ["image/png"],
-      maxCount: 4,
-      maxBytesEach: 1_000_000,
-      maxBytesTotal: 2_000_000,
+      allowedKinds: ["image", "file", "audio", "video"],
+      allowedMediaTypes: ["*/*"],
+      maxCount: 10,
+      maxBytesEach: 100 * 1024 * 1024,
+      maxBytesTotal: 100 * 1024 * 1024,
     });
     expect(sessionOptions).toEqual([
       {
@@ -748,6 +752,131 @@ describe("DeepSeek Harness Runtime Adapter", () => {
     expect(client.requests.find(({ method }) => method === "prompt")?.params).toMatchObject({
       images: [{ path: stagedPath, mediaType: "image/png", name: "image.png" }],
     });
+    await adapter.close?.();
+  });
+
+  it("stages files, audio, video and images for text-only models in the Workspace inbox with a path note", async () => {
+    const fixture = await runtimeFixture();
+    const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
+    client.models = [{ provider: "p", id: "plain", name: "Plain", inputModalities: ["text"] }];
+    const adapter = createDeepSeekHarnessRuntimeAdapter({
+      bridgePath: "/connect/deepseek-harness-bridge.mjs",
+      bridgeBuild: "test",
+      probeExecutable: () => ({ path: "/usr/local/bin/dsh" }),
+      createBridge: async () => client,
+    });
+    const sources = join(fixture.workspace, "..", `sources-${randomUUID()}`);
+    await mkdir(sources);
+    const media = [
+      { kind: "file" as const, name: "../../etc/report.pdf", mime: "application/pdf" },
+      { kind: "audio" as const, name: "voice.m4a", mime: "audio/mp4" },
+      { kind: "video" as const, name: "clip.mp4", mime: "video/mp4" },
+      { kind: "image" as const, name: "photo.png", mime: "image/png" },
+    ].map((item, index) => ({ ...item, url: `https://trusted.example/${index}` }));
+    const context = {
+      ...startContext([]),
+      cacheMedia: async (item: { url: string }) => {
+        const path = join(sources, basename(item.url));
+        await Bun.write(path, `bytes-${item.url}`);
+        return path;
+      },
+    };
+    const session = await adapter.start(fixture.binding, context);
+    await Array.fromAsync(
+      session.prompt(prompt(fixture.workspace, { model: { provider: "p", model: "plain" }, turnId: "msg-1", media })),
+    );
+    const params = client.requests.find(({ method }) => method === "prompt")?.params as {
+      text: string;
+      images?: unknown;
+    };
+    expect(params.images).toBeUndefined();
+    const inbox = join(fixture.workspace, "clawchat-inbox", "msg-1");
+    expect((await readdir(inbox)).sort()).toEqual(["clip.mp4", "photo.png", "report.pdf", "voice.m4a"]);
+    for (const name of ["report.pdf", "voice.m4a", "clip.mp4", "photo.png"]) {
+      expect(params.text).toContain(join(await realpath(inbox), name));
+    }
+    expect(params.text).toContain("hello");
+    await adapter.close?.();
+  });
+
+  it("keeps raster images as native input for image-capable models and stages the rest", async () => {
+    const fixture = await runtimeFixture();
+    const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
+    client.hello.capabilities.imageInput = true;
+    client.models = [
+      {
+        provider: "p",
+        id: "vision",
+        name: "Vision",
+        inputModalities: ["text", "image"],
+        imageLimits: {
+          maxImageBytes: 100,
+          maxImagesPerMessage: 1,
+          maxMessageImageBytes: 100,
+          mediaTypes: ["image/png"],
+        },
+      },
+    ];
+    const adapter = createDeepSeekHarnessRuntimeAdapter({
+      bridgePath: "/connect/deepseek-harness-bridge.mjs",
+      bridgeBuild: "test",
+      probeExecutable: () => ({ path: "/usr/local/bin/dsh" }),
+      createBridge: async () => client,
+    });
+    const sources = join(fixture.workspace, "..", `sources-${randomUUID()}`);
+    await mkdir(sources);
+    const items = [
+      { kind: "image" as const, name: "a.png", mime: "image/png", url: "https://trusted.example/a.png" },
+      { kind: "image" as const, name: "b.png", mime: "image/png", url: "https://trusted.example/b.png" },
+      { kind: "image" as const, name: "c.svg", mime: "image/svg+xml", url: "https://trusted.example/c.svg" },
+      { kind: "audio" as const, name: "d.mp3", mime: "audio/mpeg", url: "https://trusted.example/d.mp3" },
+    ];
+    const session = await adapter.start(fixture.binding, {
+      ...startContext([]),
+      cacheMedia: async (item: { url: string }) => {
+        const path = join(sources, basename(item.url));
+        await Bun.write(path, "x");
+        return path;
+      },
+    });
+    await Array.fromAsync(
+      session.prompt(
+        prompt(fixture.workspace, { model: { provider: "p", model: "vision" }, turnId: "m2", media: items }),
+      ),
+    );
+    const params = client.requests.find(({ method }) => method === "prompt")?.params as {
+      images: Array<{ name: string }>;
+      text: string;
+    };
+    expect(params.images.map((image) => image.name)).toEqual(["a.png"]);
+    expect((await readdir(join(fixture.workspace, "clawchat-inbox", "m2"))).sort()).toEqual([
+      "b.png",
+      "c.svg",
+      "d.mp3",
+    ]);
+    await adapter.close?.();
+  });
+
+  it("fails a turn with attachments on a Runtime Command before staging anything", async () => {
+    const fixture = await runtimeFixture();
+    const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
+    const adapter = createDeepSeekHarnessRuntimeAdapter({
+      bridgePath: "/connect/deepseek-harness-bridge.mjs",
+      bridgeBuild: "test",
+      probeExecutable: () => ({ path: "/usr/local/bin/dsh" }),
+      createBridge: async () => client,
+    });
+    const session = await adapter.start(fixture.binding, startContext([]));
+    await expect(
+      Array.fromAsync(
+        session.prompt(
+          prompt(fixture.workspace, {
+            command: { id: "dsh-command:x", name: "x" },
+            media: [{ kind: "file", url: "https://trusted.example/f", name: "f.txt", mime: "text/plain" }],
+          }),
+        ),
+      ),
+    ).rejects.toThrow("do not accept attachment input");
     await adapter.close?.();
   });
 

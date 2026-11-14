@@ -927,10 +927,10 @@ describe("runConnectCli", () => {
     });
   });
 
-  it("lists the static 24-entry tool catalog without opening state", async () => {
+  it("lists the static 25-entry tool catalog without opening state", async () => {
     const output = io();
     await expect(runConnectCli(["tool", "list"], output.deps)).resolves.toBe(0);
-    expect(JSON.parse(output.stdout[0] ?? "{}").tools).toHaveLength(24);
+    expect(JSON.parse(output.stdout[0] ?? "{}").tools).toHaveLength(25);
   });
 
   it("describes tools, reads stdin JSON, and honors explicit, runtime, then default Binding precedence", async () => {
