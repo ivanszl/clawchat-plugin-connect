@@ -640,6 +640,34 @@ describe("DeepSeek Harness Runtime Adapter", () => {
     await adapter.close?.();
   });
 
+  it("advertises image attachments only for image-capable models", async () => {
+    const fixture = await runtimeFixture();
+    const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
+    client.hello.capabilities.imageInput = true;
+    client.models = [
+      {
+        provider: "p",
+        id: "vision",
+        name: "Vision",
+        inputModalities: ["text", "image"],
+        imageLimits: { maxImageBytes: 1, maxImagesPerMessage: 1, maxMessageImageBytes: 1, mediaTypes: ["image/png"] },
+      },
+      { provider: "p", id: "plain", name: "Plain", inputModalities: ["text"] },
+    ];
+    const adapter = createDeepSeekHarnessRuntimeAdapter({
+      bridgePath: "/connect/deepseek-harness-bridge.mjs",
+      bridgeBuild: "test",
+      probeExecutable: () => ({ path: "/usr/local/bin/dsh" }),
+      createBridge: async () => client,
+    });
+    const models = await adapter.listModels?.(fixture.binding);
+    expect(models?.find((m) => m.id === "p:vision")?.turnSubmissionCapability?.attachments?.allowedKinds).toEqual([
+      "image",
+    ]);
+    expect(models?.find((m) => m.id === "p:plain")?.turnSubmissionCapability?.attachments?.allowedKinds).toEqual([]);
+    await adapter.close?.();
+  });
+
   it("negotiates image limits, stages raster input, switches the exact model, and applies permission presets", async () => {
     const fixture = await runtimeFixture();
     const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
