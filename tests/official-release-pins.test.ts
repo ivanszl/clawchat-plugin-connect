@@ -2,20 +2,31 @@ import { describe, expect, it } from "bun:test";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildOfficialPlugin } from "../scripts/build-official-plugins";
-import deepSeekHarnessDescriptor from "../src/plugin/official/deepseek-harness-descriptor";
+import { buildOfficialPlugins, discoverOfficialPluginDescriptors } from "../scripts/build-official-plugins";
 import { loadBundledOfficialPlugins, resolveBundledOfficialPlugin } from "../src/plugin/official-registry";
 
 describe("official Plugin release pins", () => {
-  // A rebuilt DSH artifact with an unchanged version must carry a refreshed Core pin;
+  // A rebuilt official artifact with an unchanged version must carry a refreshed Core pin;
   // otherwise `plugin setup` fails with "entry artifact does not match the release-pinned integrity".
-  it("the freshly built DeepSeek Harness Bundle resolves against the embedded registry", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "connect-official-dsh-pin-"));
+  it("every freshly built official Bundle resolves against the embedded registry", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connect-official-pins-"));
     const target = "linux-x64";
-    await buildOfficialPlugin(deepSeekHarnessDescriptor, { target, outputDirectory: directory });
+    const descriptors = await discoverOfficialPluginDescriptors();
+    // The release build runs the in-process Vite build with NODE_ENV=production; `bun test` sets "test", which changes the client assets.
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    const built = await buildOfficialPlugins(descriptors, { target, outputDirectory: directory }).finally(() => {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    });
     const registry = await loadBundledOfficialPlugins({ officialPluginsDirectory: directory, target });
-    const entry = registry.entries.find((candidate) => candidate.pluginId === "clawling.runtime.deepseek-harness");
-    if (!entry) throw new Error("DSH official entry is missing");
-    await expect(resolveBundledOfficialPlugin(entry, { target })).resolves.toBeDefined();
-  });
+    expect(registry.entries.map((entry) => entry.pluginId).sort()).toEqual(
+      built.map((plugin) => plugin.descriptor.manifest.pluginId).sort(),
+    );
+    for (const entry of registry.entries) {
+      const resolved = await resolveBundledOfficialPlugin(entry, { target }).catch((error: unknown) => error);
+      if (resolved instanceof Error) throw new Error(`${entry.pluginId}@${entry.version}: ${resolved.message}`);
+      expect(resolved).toBeDefined();
+    }
+  }, 120_000);
 });

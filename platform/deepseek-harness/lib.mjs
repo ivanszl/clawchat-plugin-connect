@@ -12,6 +12,12 @@ export const releaseRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url
 export const connectBin=path.join(releaseRoot,'clawchat-connect');
 export const bridgePath=path.join(releaseRoot,'runtime/dsh-bridge.sh');
 export const dshBin='/opt/dsh/node_modules/.bin/dsh';
+export function redactConnectOutput(text){return String(text??'').replace(/(:\/\/)[^\s/@]+@/g,'$1[redacted]@').replace(/([?&](?:token|access_token|refresh_token|code|key|secret)=)[^&\s]+/gi,'$1[redacted]').replace(/(bearer\s+)[A-Za-z0-9._~+\/=-]+/gi,'$1[redacted]').replace(/((?:token|secret|password|authorization)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,'$1[redacted]');}
+export function connectFailureMessage(argv,error,limit=2048){
+ const raw=error?.stderr??'';const text=redactConnectOutput(Buffer.isBuffer(raw)?raw.toString('utf8'):raw).trim();
+ const detail=text.length>limit?'...'+text.slice(text.length-limit):text;
+ return 'ClawChat Connect command failed: '+argv.slice(0,2).join('/')+(detail?'\n'+detail:'');
+}
 export function readJSON(file,fallback={}){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch(e){if(e.code==='ENOENT')return fallback;throw e;}}
 export function writeJSON(file,value){
  fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});

@@ -6,14 +6,14 @@ import http from 'node:http';
 import {createInterface} from 'node:readline';
 import {spawn,execFileSync} from 'node:child_process';
 import {randomUUID,createHash,timingSafeEqual} from 'node:crypto';
-import {home,workspace,state,connectConfig,modelPatch,connectBin,dshBin,releaseRoot,bridgePath,readJSON,writeJSON,nativeModel} from './lib.mjs';
+import {home,workspace,state,connectConfig,modelPatch,connectBin,dshBin,releaseRoot,bridgePath,readJSON,writeJSON,nativeModel,connectFailureMessage} from './lib.mjs';
 import {syncUpdaterSkill} from './update-skill.mjs';
 import {greetingOwner,greetingPrompt,reusableGreetingDraft} from './greeting.mjs';
 process.umask(0o077);
 const args=process.argv.slice(2);
 function connect(argv,options={}){
  try{return execFileSync(connectBin,[...argv,'--config',connectConfig],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:60000,...(argv[0]==='agent'&&argv[1]==='add'?{env:nativeModel().env}:{}),...options});}
- catch{throw new Error('ClawChat Connect command failed: '+argv.slice(0,2).join('/'));}
+ catch(error){throw new Error(connectFailureMessage(argv,error));}
 }
 function safeStatus(prepare=false){return JSON.parse(connect(['__clawnest-state',...(prepare?['--prepare-workspace']:[])]));}
 function initialize(){
