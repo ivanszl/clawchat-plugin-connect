@@ -1,14 +1,15 @@
-import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { constants, createReadStream } from "node:fs";
 import { copyFile, lstat, mkdir, realpath, rm, stat } from "node:fs/promises";
-import { extname, isAbsolute, join, relative } from "node:path";
+import { basename, extname, join } from "node:path";
+import { isPathWithin } from "../path-containment";
+import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import type { ConnectRuntimeMedia } from "./types";
 
 /** Directory inside the DSH Workspace that holds files received from ClawChat. */
 export const DSH_INBOX_DIRECTORY = "clawchat-inbox";
 /** Owner decision 2026-11-14: files received from ClawChat are accepted up to 100 MiB each. */
-export const DSH_MAX_INBOUND_FILE_BYTES = 100 * 1024 * 1024;
-export const DSH_MAX_INBOUND_TURN_BYTES = 100 * 1024 * 1024;
+export const DSH_MAX_INBOUND_FILE_BYTES = MAX_RUNTIME_MEDIA_BYTES;
 export const DSH_MAX_INBOUND_FILES = 10;
 const MAX_NAME_BYTES = 120;
 
@@ -63,65 +64,110 @@ function safeSegment(value: string | undefined): string {
   return cleaned.slice(0, 80) || `turn-${randomUUID()}`;
 }
 
-function within(root: string, candidate: string): boolean {
-  const nested = relative(root, candidate);
-  return nested !== "" && !nested.startsWith("..") && !isAbsolute(nested);
+export interface DroppedInboxFile {
+  name: string;
+  reason: string;
+}
+
+export interface InboxStagingResult {
+  staged: StagedInboxFile[];
+  dropped: DroppedInboxFile[];
 }
 
 /**
  * Copies already-downloaded media into `<workspace>/clawchat-inbox/<message-id>/<safe-name>`.
- * The Workspace must be canonical; the inbox directories must be real directories inside it.
+ * One bad attachment is dropped with a reason and never fails the rest. The Workspace must be canonical; the
+ * inbox directories must be real directories inside it.
  */
 export async function stageIntoWorkspaceInbox(
   workspace: string,
   messageId: string | undefined,
   items: ReadonlyArray<{ media: ConnectRuntimeMedia; sourcePath: string }>,
-): Promise<StagedInboxFile[]> {
-  if (items.length === 0) return [];
-  if (items.length > DSH_MAX_INBOUND_FILES) {
-    throw new Error(`DeepSeek Harness accepts at most ${DSH_MAX_INBOUND_FILES} attachments per turn`);
-  }
+): Promise<InboxStagingResult> {
+  const result: InboxStagingResult = { staged: [], dropped: [] };
+  if (items.length === 0) return result;
   const root = await realpath(workspace);
   const inbox = join(root, DSH_INBOX_DIRECTORY);
   const directory = join(inbox, safeSegment(messageId));
   await ensureRealDirectory(root, inbox);
   await ensureRealDirectory(root, directory);
   const real = await realpath(directory);
-  if (!within(root, real)) throw new Error("DeepSeek Harness inbox escaped the Workspace");
+  if (!isPathWithin(root, real, { allowEqual: false })) throw new Error("DeepSeek Harness inbox escaped the Workspace");
 
-  const staged: StagedInboxFile[] = [];
   const used = new Set<string>();
-  let total = 0;
-  try {
-    for (const { media, sourcePath } of items) {
+  for (const [index, { media, sourcePath }] of items.entries()) {
+    const label = sanitizeInboxName(media.name, media.kind, media.mime);
+    if (index >= DSH_MAX_INBOUND_FILES) {
+      result.dropped.push({ name: label, reason: `more than ${DSH_MAX_INBOUND_FILES} attachments in one turn` });
+      continue;
+    }
+    try {
       const details = await stat(sourcePath);
-      if (!details.isFile()) throw new Error(`ClawChat attachment ${media.name ?? media.kind} is not a regular file`);
-      if (details.size > DSH_MAX_INBOUND_FILE_BYTES) {
-        throw new Error(
-          `ClawChat attachment ${media.name ?? media.kind} exceeds the ${DSH_MAX_INBOUND_FILE_BYTES}-byte limit`,
-        );
-      }
-      total += details.size;
-      if (total > DSH_MAX_INBOUND_TURN_BYTES) {
-        throw new Error(`ClawChat attachments exceed the ${DSH_MAX_INBOUND_TURN_BYTES}-byte per-turn limit`);
-      }
-      const name = uniqueName(sanitizeInboxName(media.name, media.kind, media.mime), used);
-      const target = join(real, name);
-      // COPYFILE_EXCL fails on an existing path (including a planted symlink), so nothing is written through one.
-      await copyFile(sourcePath, target, constants.COPYFILE_EXCL);
-      staged.push({
-        path: target,
-        name,
+      if (!details.isFile()) throw new DropError("not a regular file");
+      if (details.size > DSH_MAX_INBOUND_FILE_BYTES) throw new DropError("larger than 100 MiB");
+      const path = await copyIntoInbox(real, sourcePath, label, details.size, used);
+      result.staged.push({
+        path,
+        name: basename(path),
         mime: media.mime ?? "application/octet-stream",
         kind: media.kind,
         size: details.size,
       });
+    } catch (error) {
+      result.dropped.push({ name: label, reason: error instanceof DropError ? error.message : "could not be saved" });
     }
-  } catch (error) {
-    await Promise.all(staged.map(async (file) => await rm(file.path, { force: true }).catch(() => undefined)));
-    throw error;
   }
-  return staged;
+  return result;
+}
+
+class DropError extends Error {}
+
+/** Copies without overwriting, reusing an identical earlier copy (redelivery) or picking a unique suffix. */
+async function copyIntoInbox(
+  directory: string,
+  sourcePath: string,
+  name: string,
+  size: number,
+  used: Set<string>,
+): Promise<string> {
+  const extension = extname(name);
+  const stem = name.slice(0, name.length - extension.length);
+  let sourceDigest: string | undefined;
+  for (let attempt = 1; attempt <= 1_000; attempt += 1) {
+    const candidate = attempt === 1 ? name : `${stem}-${attempt}${extension}`;
+    if (used.has(candidate.toLowerCase())) continue;
+    const target = join(directory, candidate);
+    try {
+      // COPYFILE_EXCL fails on any existing path, including a planted symlink, so nothing is written through one.
+      await copyFile(sourcePath, target, constants.COPYFILE_EXCL);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const existing = await lstat(target).catch(() => null);
+      if (existing?.isFile() && existing.size === size) {
+        sourceDigest ??= await sha256(sourcePath);
+        if ((await sha256(target)) === sourceDigest) {
+          used.add(candidate.toLowerCase());
+          return target;
+        }
+      }
+      continue;
+    }
+    // Re-resolve after the copy: a concurrent swap of the path must not leave a file outside the inbox.
+    const final = await realpath(target).catch(() => null);
+    if (!final || !isPathWithin(directory, final, { allowEqual: false })) {
+      await rm(target, { force: true }).catch(() => undefined);
+      throw new DropError("could not be saved safely");
+    }
+    used.add(candidate.toLowerCase());
+    return final;
+  }
+  throw new DropError("could not be saved");
+}
+
+async function sha256(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
+  return hash.digest("hex");
 }
 
 async function ensureRealDirectory(root: string, path: string): Promise<void> {
@@ -133,24 +179,19 @@ async function ensureRealDirectory(root: string, path: string): Promise<void> {
   } else {
     await mkdir(path, { mode: 0o700 });
   }
-  if (!within(root, await realpath(path))) throw new Error("DeepSeek Harness inbox escaped the Workspace");
-}
-
-function uniqueName(name: string, used: Set<string>): string {
-  let candidate = name;
-  const extension = extname(name);
-  const stem = name.slice(0, name.length - extension.length);
-  for (let index = 2; used.has(candidate.toLowerCase()); index += 1) candidate = `${stem}-${index}${extension}`;
-  used.add(candidate.toLowerCase());
-  return candidate;
+  if (!isPathWithin(root, await realpath(path), { allowEqual: false }))
+    throw new Error("DeepSeek Harness inbox escaped the Workspace");
 }
 
 /** Short note appended to the model input; mirrors the Pi plugin's attachment note (src/media.ts). */
-export function inboxPathNote(files: readonly StagedInboxFile[]): string {
-  if (files.length === 0) return "";
-  const lines = files.map(
-    (file) =>
-      `Attachment ${file.name}: ${file.path} (${file.mime}, ${file.size} bytes). Use an available analysis tool if supported; do not claim to have analyzed it without doing so.`,
-  );
+export function inboxPathNote(files: readonly StagedInboxFile[], dropped: readonly DroppedInboxFile[] = []): string {
+  if (files.length === 0 && dropped.length === 0) return "";
+  const lines = [
+    ...files.map(
+      (file) =>
+        `Attachment ${file.name}: ${file.path} (${file.mime}, ${file.size} bytes). Use an available analysis tool if supported; do not claim to have analyzed it without doing so.`,
+    ),
+    ...dropped.map((file) => `Attachment ${file.name} was not received: ${file.reason}.`),
+  ];
   return `\n\n<clawchat_attachments>\n${lines.join("\n")}\n</clawchat_attachments>`;
 }

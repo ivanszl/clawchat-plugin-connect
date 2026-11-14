@@ -1,16 +1,24 @@
 import { realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute, relative, sep } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { buildTextMessagePayload } from "../clawchat/message-mapper";
 import { EVENT } from "../clawchat/protocol";
 import type { ConnectWsClient } from "../clawchat/ws-client";
+import { isPathWithin } from "../path-containment";
+import { MAX_RUNTIME_MEDIA_BYTES } from "../runtime/media-cache";
 import type { ActivationCredentials, ChatType } from "../types";
-import { type ActiveClawChatTurn, authorizeSendFileTarget } from "./send-file-policy";
+import {
+  type ActiveClawChatTurn,
+  authorizeSendFileTarget,
+  defaultSecretRoots,
+  homeDirectory,
+  type SendFileChatType,
+  sendFileDenyReason,
+} from "./send-file-policy";
 import { getConnectTool, validateToolInput } from "./tool-catalog";
 
 const MAX_AVATAR_BYTES = 20 * 1024 * 1024;
-/** Owner decision 2026-11-14: one file sent with clawchat_send_file may be at most 100 MiB. */
-export const MAX_SEND_FILE_BYTES = 100 * 1024 * 1024;
-const DENIED_PATH_SEGMENTS = new Set([".ssh", ".aws", ".gnupg", ".kube"]);
+/** Owner decision 2026-11-14: one file may be at most 100 MiB, shared with inbound staging. */
+export const MAX_SEND_FILE_BYTES = MAX_RUNTIME_MEDIA_BYTES;
 
 export interface ToolExecutorOptions {
   baseUrl: string;
@@ -22,6 +30,8 @@ export interface ToolExecutorOptions {
   workspaceRoots?: () => Promise<readonly string[]>;
   /** ClawChat Turns running now; used to decide whether another chat may be targeted. */
   activeTurns?: () => readonly ActiveClawChatTurn[];
+  /** Extra directories (Connect home, DSH Home) that are never sendable. */
+  secretRoots?: () => Promise<readonly string[]> | readonly string[];
 }
 
 export class IndeterminateToolExecutionError extends Error {
@@ -107,8 +117,9 @@ async function uploadAvatar(input: Record<string, unknown>, options: ToolExecuto
 
 async function sendFile(input: Record<string, unknown>, options: ToolExecutorOptions): Promise<unknown> {
   const chatId = String(input.chat_id).trim();
-  authorizeSendFileTarget({
+  const authorization = authorizeSendFileTarget({
     chatId,
+    requestedChatType: input.chat_type as SendFileChatType | undefined,
     ownerUserId: options.activation.ownerUserId,
     activeTurns: options.activeTurns?.() ?? [],
   });
@@ -116,7 +127,7 @@ async function sendFile(input: Record<string, unknown>, options: ToolExecutorOpt
   if (!isAbsolute(requested)) throw new Error("path must be absolute");
   const roots = (
     await Promise.all(
-      (await options.workspaceRoots?.())?.map(async (root) => await realpath(root).catch(() => null)) ?? [],
+      ((await options.workspaceRoots?.()) ?? []).map(async (root) => await realpath(root).catch(() => null)),
     )
   ).filter((root): root is string => root !== null);
   if (roots.length === 0) throw new Error("no Workspace is available to send files from");
@@ -124,31 +135,35 @@ async function sendFile(input: Record<string, unknown>, options: ToolExecutorOpt
   const resolved = await realpath(requested).catch(() => {
     throw new Error("file does not exist");
   });
-  if (!roots.some((root) => isWithin(root, resolved))) throw new Error("file is outside the Workspace");
-  if (
-    resolved.split(sep).some((segment) => DENIED_PATH_SEGMENTS.has(segment)) ||
-    /^\.env(\..+)?$/u.test(basename(resolved))
-  )
-    throw new Error("file is in a credential location and is refused");
+  const workspaceRoot = roots.find((root) => isPathWithin(root, resolved, { allowEqual: false }));
+  if (!workspaceRoot) throw new Error("file is outside the Workspace");
+  const secretRoots = await Promise.all(
+    defaultSecretRoots((await options.secretRoots?.()) ?? []).map(
+      async (root) => await realpath(root).catch(() => root),
+    ),
+  );
+  const denied = sendFileDenyReason({
+    resolved,
+    workspaceRoot,
+    secretRoots,
+    restricted: authorization.restricted,
+    home: await realpath(homeDirectory()).catch(() => homeDirectory()),
+  });
+  if (denied) throw new Error(denied);
   const details = await stat(resolved);
   if (!details.isFile()) throw new Error("path is not a regular file");
   if (details.size === 0) throw new Error("file is empty");
   if (details.size > MAX_SEND_FILE_BYTES) throw new Error("file exceeds 100 MiB");
-  const file = Bun.file(resolved);
-  const uploaded = await options.wsClient.uploadMedia(file, { filename: basename(resolved) });
-  const fragment = input.as_document === true ? { ...uploaded, kind: "file" as const } : uploaded;
-  const caption = typeof input.caption === "string" ? input.caption : "";
-  const payload = buildTextMessagePayload(caption);
-  payload.message.body.fragments.push(fragment);
-  const ack = await options.wsClient.sendMessageEnvelope(EVENT.MESSAGE_SEND, chatId, payload, {
-    toType: (input.chat_type ?? "direct") as ChatType,
-  });
+  const ack = await options.wsClient.sendMediaMessage(
+    chatId,
+    [{ file: Bun.file(resolved), filename: basename(resolved) }],
+    {
+      ...(typeof input.caption === "string" ? { text: input.caption } : {}),
+      asDocument: input.as_document === true,
+      toType: authorization.chatType,
+    },
+  );
   return { sent: true, messageId: ack.payload.message_id, name: basename(resolved), size: details.size };
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const nested = relative(root, candidate);
-  return nested === "" || (!nested.startsWith("..") && !isAbsolute(nested));
 }
 
 async function callClawChat(

@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { executeAgentLiveware, isAgentLivewareOperation } from "../agent/agent-liveware";
 import { verifyInstalledSkills } from "../agent/skills";
 import { executeConnectTool } from "../agent/tool-executor";
@@ -511,6 +512,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         workspaceRoots: async () =>
           (await options.stateStore.listWorkspaces(options.agentId)).map((workspace) => workspace.rootPath),
         activeTurns: () => runtime.activeClawChatTurns(),
+        secretRoots: () => [dirname(options.configPath), dirname(options.config.stateDbPath)],
       };
       if (isAgentLivewareOperation(toolName)) {
         const managedAppId =

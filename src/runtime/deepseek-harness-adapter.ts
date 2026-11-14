@@ -27,10 +27,11 @@ import type {
 } from "./deepseek-harness-protocol";
 import { DshBridgeRemoteError } from "./deepseek-harness-protocol";
 import {
+  type DroppedInboxFile,
   DSH_MAX_INBOUND_FILE_BYTES,
   DSH_MAX_INBOUND_FILES,
-  DSH_MAX_INBOUND_TURN_BYTES,
   inboxPathNote,
+  sanitizeInboxName,
   stageIntoWorkspaceInbox,
 } from "./dsh-inbound-media";
 import type {
@@ -307,7 +308,8 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
     if (input.command && (input.media?.length ?? 0) > 0) {
       throw new Error("DeepSeek Harness Runtime Commands do not accept attachment input");
     }
-    const { images, note } = await stageDshAttachments(input, this.context, async () => await this.imageModel(input));
+    if (input.model) this.selectedModel = input.model;
+    const { images, note } = await stageDshAttachments(input, this.context, async () => await this.imageCapableModel());
     const runtimeThreadId = await this.ensureThread(input);
     if (input.model) {
       await this.client.request("selectModel", {
@@ -365,9 +367,8 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
   }
 
   /** Catalog entry of the model this turn will use, or null when it cannot read images. */
-  private async imageModel(input: ConnectRuntimePrompt): Promise<DshBridgeCatalogModel | null> {
+  private async imageCapableModel(): Promise<DshBridgeCatalogModel | null> {
     if (!this.client.hello.capabilities.imageInput) return null;
-    if (input.model) this.selectedModel = input.model;
     const models = await this.client.request<DshBridgeCatalogModel[]>("models", {});
     const selected = this.selectedModel;
     const model = selected
@@ -937,7 +938,7 @@ function runtimeModelOption(model: DshBridgeCatalogModel): RuntimeModelOption {
         allowedMediaTypes: ["*/*"],
         maxCount: DSH_MAX_INBOUND_FILES,
         maxBytesEach: DSH_MAX_INBOUND_FILE_BYTES,
-        maxBytesTotal: DSH_MAX_INBOUND_TURN_BYTES,
+        maxBytesTotal: DSH_MAX_INBOUND_FILE_BYTES,
       },
     },
   };
@@ -1024,18 +1025,30 @@ async function stageDshAttachments(
 ): Promise<DshAttachmentInput> {
   const media = input.media ?? [];
   if (media.length === 0) return { images: [], note: "" };
-  const local: string[] = [];
+  const dropped: DroppedInboxFile[] = [];
+  const downloaded: Array<{ item: ConnectRuntimeMedia; path: string }> = [];
   for (const item of media) {
-    const path = context.cacheMedia ? await context.cacheMedia(item, input.trustedMediaOrigins) : item.stagedPath;
-    if (!path) throw new Error("DeepSeek Harness attachment staging is unavailable");
-    local.push(resolve(path));
+    const label = sanitizeInboxName(item.name, item.kind, item.mime);
+    if (item.size !== undefined && item.size > DSH_MAX_INBOUND_FILE_BYTES) {
+      dropped.push({ name: label, reason: "larger than 100 MiB" });
+      continue;
+    }
+    try {
+      const path = context.cacheMedia ? await context.cacheMedia(item, input.trustedMediaOrigins) : item.stagedPath;
+      if (!path) throw new Error("staging unavailable");
+      downloaded.push({ item, path: resolve(path) });
+    } catch {
+      // The reason is fixed text: download errors can carry signed URLs.
+      dropped.push({ name: label, reason: "download failed" });
+    }
   }
-  const limits = media.some((item) => item.kind === "image") ? ((await imageModel())?.imageLimits ?? null) : null;
+  const limits = downloaded.some(({ item }) => item.kind === "image")
+    ? ((await imageModel())?.imageLimits ?? null)
+    : null;
   const images: DshAttachmentInput["images"] = [];
   const staged: Array<{ media: ConnectRuntimeMedia; sourcePath: string }> = [];
   let imageBytes = 0;
-  for (const [index, item] of media.entries()) {
-    const sourcePath = local[index] as string;
+  for (const { item, path: sourcePath } of downloaded) {
     const mime = item.mime?.toLowerCase();
     const size = limits && item.kind === "image" ? (await stat(sourcePath)).size : 0;
     const native =
@@ -1052,8 +1065,8 @@ async function stageDshAttachments(
       images.push({ path: sourcePath, mediaType: mime, ...(item.name ? { name: basename(item.name) } : {}) });
     } else staged.push({ media: item, sourcePath });
   }
-  const files = await stageIntoWorkspaceInbox(canonicalWorkspace(input.workspace), input.turnId, staged);
-  return { images, note: inboxPathNote(files) };
+  const result = await stageIntoWorkspaceInbox(canonicalWorkspace(input.workspace), input.turnId, staged);
+  return { images, note: inboxPathNote(result.staged, [...dropped, ...result.dropped]) };
 }
 
 function requireSelectionName(id: string, name: string, prefix: string): string {

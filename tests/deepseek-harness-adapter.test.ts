@@ -857,6 +857,52 @@ describe("DeepSeek Harness Runtime Adapter", () => {
     await adapter.close?.();
   });
 
+  it("drops one failing attachment with a note and still runs the turn", async () => {
+    const fixture = await runtimeFixture();
+    const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);
+    const adapter = createDeepSeekHarnessRuntimeAdapter({
+      bridgePath: "/connect/deepseek-harness-bridge.mjs",
+      bridgeBuild: "test",
+      probeExecutable: () => ({ path: "/usr/local/bin/dsh" }),
+      createBridge: async () => client,
+    });
+    const source = join(fixture.workspace, "..", `ok-${randomUUID()}.txt`);
+    await Bun.write(source, "ok");
+    const session = await adapter.start(fixture.binding, {
+      ...startContext([]),
+      cacheMedia: async (item: { url: string }) => {
+        if (item.url.includes("bad")) throw new Error("fetch failed for https://x/y?sig=SECRET");
+        return source;
+      },
+    });
+    await Array.fromAsync(
+      session.prompt(
+        prompt(fixture.workspace, {
+          turnId: "m3",
+          media: [
+            { kind: "file", url: "https://trusted.example/bad", name: "bad.pdf", mime: "application/pdf" },
+            { kind: "file", url: "https://trusted.example/ok", name: "ok.txt", mime: "text/plain" },
+            {
+              kind: "video",
+              url: "https://trusted.example/huge",
+              name: "huge.mp4",
+              mime: "video/mp4",
+              size: 200 * 1024 * 1024,
+            },
+          ],
+        }),
+      ),
+    );
+    const text = String(
+      (client.requests.find(({ method }) => method === "prompt")?.params as { text?: string } | undefined)?.text,
+    );
+    expect(text).toContain("Attachment bad.pdf was not received: download failed");
+    expect(text).toContain("Attachment huge.mp4 was not received: larger than 100 MiB");
+    expect(text).toContain("ok.txt");
+    expect(text).not.toContain("SECRET");
+    await adapter.close?.();
+  });
+
   it("fails a turn with attachments on a Runtime Command before staging anything", async () => {
     const fixture = await runtimeFixture();
     const client = new FakeDshBridgeClient(fixture.home, fixture.workspace);

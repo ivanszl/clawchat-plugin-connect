@@ -1,11 +1,10 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import { mkdir, mkdtemp, realpath, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { authorizeSendFileTarget } from "../src/agent/send-file-policy";
+import { type ActiveClawChatTurn, authorizeSendFileTarget } from "../src/agent/send-file-policy";
 import { getConnectTool, recordToolInput, validateToolInput } from "../src/agent/tool-catalog";
 import { executeConnectTool, MAX_SEND_FILE_BYTES } from "../src/agent/tool-executor";
-import { EVENT } from "../src/clawchat/protocol";
 import type { ConnectWsClient } from "../src/clawchat/ws-client";
 import type { ActivationCredentials } from "../src/types";
 
@@ -19,25 +18,32 @@ const activation: ActivationCredentials = {
   conversationId: "home",
 };
 
-interface SentPayload {
-  message: { body: { fragments: Array<{ kind: string }> } };
-}
+const ownerTurn = (chatId = "chat-o", chatType: "direct" | "group" = "direct"): ActiveClawChatTurn => ({
+  chatId,
+  chatType,
+  speakerIds: ["owner-1"],
+});
+const strangerTurn = (chatId = "chat-s", chatType: "direct" | "group" = "direct"): ActiveClawChatTurn => ({
+  chatId,
+  chatType,
+  speakerIds: ["stranger"],
+});
 
-async function setup(activeTurns: Array<{ chatId: string; speakerIds: string[] }> = []) {
-  const root = await mkdtemp(join(tmpdir(), "send-file-"));
-  const workspace = join(root, "ws");
-  await mkdir(workspace);
+const originalHome = process.env.HOME;
+afterEach(() => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+});
+
+async function setup(activeTurns: ActiveClawChatTurn[] = [ownerTurn()], layout: "workspace" | "home" = "workspace") {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "send-file-")));
+  const workspace = layout === "home" ? root : join(root, "ws");
+  if (layout === "workspace") await mkdir(workspace);
   const outside = join(root, "outside");
-  await mkdir(outside);
-  const uploadMedia = mock(async (_file: Blob, options: { filename?: string }) => ({
-    kind: "image" as const,
-    url: "https://media.example/signed?sig=abc",
-    name: options.filename ?? "x",
-    mime: "image/png",
-  }));
-  const sendMessageEnvelope = mock(async () => ({ payload: { message_id: "out-1" } }));
-  const wsClient = { uploadMedia, sendMessageEnvelope } as unknown as ConnectWsClient;
-  const call = async (input: Record<string, unknown>) =>
+  await mkdir(outside, { recursive: true });
+  const sendMediaMessage = mock(async (..._args: unknown[]) => ({ payload: { message_id: "out-1" } }));
+  const wsClient = { sendMediaMessage } as unknown as ConnectWsClient;
+  const call = async (input: Record<string, unknown>, extra: { secretRoots?: string[] } = {}) =>
     await executeConnectTool("clawchat_send_file", input, {
       baseUrl: "https://example.test",
       deviceId: "d",
@@ -45,8 +51,16 @@ async function setup(activeTurns: Array<{ chatId: string; speakerIds: string[] }
       wsClient,
       workspaceRoots: async () => [workspace],
       activeTurns: () => activeTurns,
+      ...(extra.secretRoots ? { secretRoots: () => extra.secretRoots as string[] } : {}),
     });
-  return { workspace: await realpath(workspace), outside, uploadMedia, sendMessageEnvelope, call };
+  return { root, workspace, outside, sendMediaMessage, call };
+}
+
+async function file(dir: string, name: string, content = "a"): Promise<string> {
+  const path = join(dir, name);
+  await mkdir(join(path, ".."), { recursive: true });
+  await writeFile(path, content);
+  return path;
 }
 
 describe("clawchat_send_file", () => {
@@ -67,39 +81,37 @@ describe("clawchat_send_file", () => {
     expect(recordToolInput(tool as never, { chat_id: "c", path: "/ws/secret/dir/file.txt" }).path).toBe("file.txt");
   });
 
-  it("uploads a Workspace file and sends one media message to the chat", async () => {
-    const t = await setup();
-    const path = join(t.workspace, "pic.png");
-    await writeFile(path, "png");
-    const result = await t.call({ chat_id: "cnv_1", path, caption: "here", chat_type: "group" });
+  it("sends one media message through sendMediaMessage with caption, document flag and known chat type", async () => {
+    const t = await setup([ownerTurn("cnv_g", "group")]);
+    const path = await file(t.workspace, "pic.png", "png");
+    const result = await t.call({ chat_id: "cnv_g", path, caption: "here", as_document: true });
     expect(result).toEqual({ sent: true, messageId: "out-1", name: "pic.png", size: 3 });
-    expect(t.uploadMedia).toHaveBeenCalledTimes(1);
-    const [event, chatId, payload, options] = t.sendMessageEnvelope.mock.calls[0] as unknown as [
+    const [chatId, uploads, options] = t.sendMediaMessage.mock.calls[0] as unknown as [
       string,
-      string,
-      SentPayload,
-      unknown,
+      Array<{ filename: string }>,
+      Record<string, unknown>,
     ];
-    expect(event).toBe(EVENT.MESSAGE_SEND);
-    expect(chatId).toBe("cnv_1");
-    expect(options).toEqual({ toType: "group" });
-    expect(payload.message.body.fragments.map((f) => f.kind)).toEqual(["text", "image"]);
+    expect(chatId).toBe("cnv_g");
+    expect(uploads.map((upload) => upload.filename)).toEqual(["pic.png"]);
+    expect(options).toEqual({ text: "here", asDocument: true, toType: "group" });
     expect(JSON.stringify(result)).not.toContain("signed");
   });
 
-  it("sends as a downloadable file when as_document is set", async () => {
-    const t = await setup();
-    const path = join(t.workspace, "pic.png");
-    await writeFile(path, "png");
-    await t.call({ chat_id: "cnv_1", path, as_document: true });
-    const payload = (t.sendMessageEnvelope.mock.calls[0] as unknown as [string, string, SentPayload])[2];
-    expect(payload.message.body.fragments.at(-1)?.kind).toBe("file");
+  it("derives chat_type from the running turn, falls back to direct, and rejects a mismatch", async () => {
+    const t = await setup([ownerTurn("chat-g", "group")]);
+    const path = await file(t.workspace, "a.txt");
+    await t.call({ chat_id: "chat-g", path });
+    expect((t.sendMediaMessage.mock.calls[0] as unknown as unknown[])[2]).toMatchObject({ toType: "group" });
+    await expect(t.call({ chat_id: "chat-g", path, chat_type: "direct" })).rejects.toThrow("does not match");
+    await t.call({ chat_id: "chat-unknown", path });
+    expect((t.sendMediaMessage.mock.calls[1] as unknown as unknown[])[2]).toMatchObject({ toType: "direct" });
+    await t.call({ chat_id: "chat-unknown", path, chat_type: "group" });
+    expect((t.sendMediaMessage.mock.calls[2] as unknown as unknown[])[2]).toMatchObject({ toType: "group" });
   });
 
   it("confines paths to the Workspace and rejects symlink escapes", async () => {
     const t = await setup();
-    const secret = join(t.outside, "secret.txt");
-    await writeFile(secret, "s");
+    const secret = await file(t.outside, "secret.txt");
     await expect(t.call({ chat_id: "c", path: secret })).rejects.toThrow("outside the Workspace");
     await symlink(secret, join(t.workspace, "link.txt"));
     await expect(t.call({ chat_id: "c", path: join(t.workspace, "link.txt") })).rejects.toThrow(
@@ -112,76 +124,135 @@ describe("clawchat_send_file", () => {
     await expect(t.call({ chat_id: "c", path: join(t.workspace, "../ws/../outside/secret.txt") })).rejects.toThrow(
       "outside the Workspace",
     );
+    await expect(t.call({ chat_id: "c", path: t.workspace })).rejects.toThrow("outside the Workspace");
     await expect(t.call({ chat_id: "c", path: "relative.txt" })).rejects.toThrow("absolute");
     await expect(t.call({ chat_id: "c", path: join(t.workspace, "missing") })).rejects.toThrow("does not exist");
-    expect(t.uploadMedia).not.toHaveBeenCalled();
+    expect(t.sendMediaMessage).not.toHaveBeenCalled();
   });
 
-  it("refuses credential locations, directories and empty files", async () => {
+  it("refuses credential files regardless of workspace, matching case-insensitively", async () => {
     const t = await setup();
-    await mkdir(join(t.workspace, ".ssh"));
-    await writeFile(join(t.workspace, ".ssh", "id_rsa"), "k");
-    await writeFile(join(t.workspace, ".env"), "k");
-    await writeFile(join(t.workspace, "empty"), "");
-    await expect(t.call({ chat_id: "c", path: join(t.workspace, ".ssh", "id_rsa") })).rejects.toThrow("credential");
-    await expect(t.call({ chat_id: "c", path: join(t.workspace, ".env") })).rejects.toThrow("credential");
+    const denied = [
+      ".ssh/id_rsa",
+      ".SSH/config",
+      ".aws/credentials",
+      ".gnupg/pubring.kbx",
+      ".kube/config",
+      ".docker/config.json",
+      ".config/gh/hosts.yml",
+      ".git-credentials",
+      ".netrc",
+      ".npmrc",
+      ".pypirc",
+      "certs/server.PEM",
+      "certs/server.key",
+      "keys/id_ed25519",
+      ".env",
+      ".env.production",
+    ];
+    for (const name of denied) {
+      await expect(t.call({ chat_id: "c", path: await file(t.workspace, name) })).rejects.toThrow("credential");
+    }
+    expect(t.sendMediaMessage).not.toHaveBeenCalled();
     await expect(t.call({ chat_id: "c", path: join(t.workspace, ".ssh") })).rejects.toThrow("credential");
-    await expect(t.call({ chat_id: "c", path: t.workspace })).rejects.toThrow("regular file");
-    await expect(t.call({ chat_id: "c", path: join(t.workspace, "empty") })).rejects.toThrow("empty");
-    expect(t.uploadMedia).not.toHaveBeenCalled();
   });
 
-  it("checks the 100 MiB limit before reading or uploading", async () => {
+  it("refuses the Connect home and DSH state directories even inside the Workspace", async () => {
+    const t = await setup([ownerTurn()], "home");
+    process.env.HOME = t.root;
+    for (const dir of [".clawchat-connect", ".dsh", ".deepseek", ".clawchat-dsh"]) {
+      await expect(t.call({ chat_id: "c", path: await file(t.root, `${dir}/state.db`) })).rejects.toThrow(
+        "state directory",
+      );
+    }
+    const configured = join(t.root, "custom-dsh-home");
+    await expect(
+      t.call({ chat_id: "c", path: await file(configured, "x") }, { secretRoots: [configured] }),
+    ).rejects.toThrow("state directory");
+    expect(t.sendMediaMessage).not.toHaveBeenCalled();
+  });
+
+  it("refuses hidden files and a home-directory Workspace when another sender is speaking", async () => {
+    const t = await setup([strangerTurn("chat-s")]);
+    await expect(t.call({ chat_id: "chat-s", path: await file(t.workspace, ".hidden/notes.txt") })).rejects.toThrow(
+      "hidden",
+    );
+    await expect(t.call({ chat_id: "chat-s", path: await file(t.workspace, ".draft") })).rejects.toThrow("hidden");
+    await t.call({ chat_id: "chat-s", path: await file(t.workspace, "visible.txt") });
+    expect(t.sendMediaMessage).toHaveBeenCalledTimes(1);
+
+    const owner = await setup([ownerTurn("chat-o")]);
+    await owner.call({ chat_id: "chat-o", path: await file(owner.workspace, ".hidden/notes.txt") });
+    expect(owner.sendMediaMessage).toHaveBeenCalledTimes(1);
+
+    const home = await setup([strangerTurn("chat-s")], "home");
+    process.env.HOME = home.root;
+    await expect(home.call({ chat_id: "chat-s", path: await file(home.root, "doc.txt") })).rejects.toThrow(
+      "home directory",
+    );
+    expect(home.sendMediaMessage).not.toHaveBeenCalled();
+  });
+
+  it("refuses directories and empty files, and checks the 100 MiB limit before sending", async () => {
     const t = await setup();
-    const exact = join(t.workspace, "exact.bin");
-    await writeFile(exact, "");
+    await expect(t.call({ chat_id: "c", path: await file(t.workspace, "empty", "") })).rejects.toThrow("empty");
+    await mkdir(join(t.workspace, "dir"));
+    await expect(t.call({ chat_id: "c", path: join(t.workspace, "dir") })).rejects.toThrow("regular file");
+    const exact = await file(t.workspace, "exact.bin", "");
     await truncate(exact, MAX_SEND_FILE_BYTES);
     await t.call({ chat_id: "c", path: exact });
-    expect(t.uploadMedia).toHaveBeenCalledTimes(1);
-    const over = join(t.workspace, "over.bin");
-    await writeFile(over, "");
+    expect(t.sendMediaMessage).toHaveBeenCalledTimes(1);
+    const over = await file(t.workspace, "over.bin", "");
     await truncate(over, MAX_SEND_FILE_BYTES + 1);
     await expect(t.call({ chat_id: "c", path: over })).rejects.toThrow("100 MiB");
-    expect(t.uploadMedia).toHaveBeenCalledTimes(1);
+    expect(t.sendMediaMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("limits a non-owner turn to its own chat and lets the owner reach other chats", async () => {
-    const path = async (t: Awaited<ReturnType<typeof setup>>) => {
-      const file = join(t.workspace, "a.txt");
-      await writeFile(file, "a");
-      return file;
-    };
-    const stranger = await setup([{ chatId: "chat-s", speakerIds: ["stranger"] }]);
-    await expect(stranger.call({ chat_id: "chat-other", path: await path(stranger) })).rejects.toThrow(
-      "Cross-conversation access is not allowed",
+  it("fails closed when no ClawChat turn is running (background call after the turn ended)", async () => {
+    const t = await setup([]);
+    await expect(t.call({ chat_id: "c", path: await file(t.workspace, "a.txt") })).rejects.toThrow(
+      "No ClawChat conversation is active",
     );
-    await stranger.call({ chat_id: "chat-s", path: await path(stranger) });
-    expect(stranger.sendMessageEnvelope).toHaveBeenCalledTimes(1);
-
-    const owner = await setup([{ chatId: "chat-o", speakerIds: ["owner-1"] }]);
-    await owner.call({ chat_id: "chat-other", path: await path(owner) });
-    expect(owner.sendMessageEnvelope).toHaveBeenCalledTimes(1);
-
-    const local = await setup([]);
-    await local.call({ chat_id: "chat-other", path: await path(local) });
-    expect(local.sendMessageEnvelope).toHaveBeenCalledTimes(1);
+    expect(t.sendMediaMessage).not.toHaveBeenCalled();
   });
 
-  it("denies another chat when a non-owner and the owner speak in a group batch", () => {
-    expect(() =>
-      authorizeSendFileTarget({
-        chatId: "other",
-        ownerUserId: "owner-1",
-        activeTurns: [{ chatId: "g", speakerIds: ["owner-1", "friend"] }],
-      }),
-    ).toThrow("Cross-conversation");
-    expect(() =>
-      authorizeSendFileTarget({
-        chatId: "g",
-        ownerUserId: "owner-1",
-        activeTurns: [{ chatId: "g", speakerIds: ["owner-1", "friend"] }],
-      }),
-    ).not.toThrow();
+  it("limits a non-owner turn to its own chat and lets owner-only turns reach other chats", async () => {
+    const stranger = await setup([strangerTurn("chat-s")]);
+    const path = await file(stranger.workspace, "a.txt");
+    await expect(stranger.call({ chat_id: "chat-other", path })).rejects.toThrow("Cross-conversation access");
+    await stranger.call({ chat_id: "chat-s", path });
+    expect(stranger.sendMediaMessage).toHaveBeenCalledTimes(1);
+
+    const owner = await setup([ownerTurn("chat-o")]);
+    await owner.call({ chat_id: "chat-other", path: await file(owner.workspace, "a.txt") });
+    expect(owner.sendMediaMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies a concurrent non-owner turn leaking into another chat, and ambiguous non-owner chats", async () => {
+    const t = await setup([strangerTurn("chat-b"), strangerTurn("chat-d")]);
+    const path = await file(t.workspace, "a.txt");
+    for (const chat_id of ["chat-b", "chat-d", "chat-other"]) {
+      await expect(t.call({ chat_id, path })).rejects.toThrow(/ambiguous|Cross-conversation/u);
+    }
+    await expect(t.call({ chat_id: "chat-b", path })).rejects.toThrow("retry after the other conversation finishes");
+
+    const mixed = await setup([ownerTurn("chat-o"), strangerTurn("chat-b")]);
+    const mixedPath = await file(mixed.workspace, "a.txt");
+    await expect(mixed.call({ chat_id: "chat-o", path: mixedPath })).rejects.toThrow("Cross-conversation");
+    await mixed.call({ chat_id: "chat-b", path: mixedPath });
+    expect(mixed.sendMediaMessage).toHaveBeenCalledTimes(1);
+    expect(t.sendMediaMessage).not.toHaveBeenCalled();
+  });
+
+  it("treats a group batch with a non-owner speaker as restricted", () => {
+    const batch: ActiveClawChatTurn = { chatId: "g", chatType: "group", speakerIds: ["owner-1", "friend"] };
+    expect(() => authorizeSendFileTarget({ chatId: "other", ownerUserId: "owner-1", activeTurns: [batch] })).toThrow(
+      "Cross-conversation",
+    );
+    expect(authorizeSendFileTarget({ chatId: "g", ownerUserId: "owner-1", activeTurns: [batch] })).toEqual({
+      restricted: true,
+      chatType: "group",
+    });
   });
 
   it("fails closed when no Workspace is configured", async () => {
@@ -189,12 +260,13 @@ describe("clawchat_send_file", () => {
     await expect(
       executeConnectTool(
         "clawchat_send_file",
-        { chat_id: "c", path: join(t.workspace, "a") },
+        { chat_id: "chat-o", path: join(t.workspace, "a") },
         {
           baseUrl: "https://example.test",
           deviceId: "d",
           activation,
           wsClient: {} as ConnectWsClient,
+          activeTurns: () => [ownerTurn()],
         },
       ),
     ).rejects.toThrow("no Workspace");
