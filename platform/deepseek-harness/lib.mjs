@@ -17,6 +17,11 @@ export function writeJSON(file,value){
  fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
  const tmp=file+'.'+process.pid+'.tmp';fs.writeFileSync(tmp,JSON.stringify(value,null,2)+'\n',{mode:0o600});fs.renameSync(tmp,file);
 }
+// DSH only understands text and image input; an absent list means text-only.
+export function nativeInput(input){
+ const kept=Array.isArray(input)?['text','image'].filter(k=>input.includes(k)):[];
+ return kept.length?kept:['text'];
+}
 export function nativeModel(){
  const cfg=readJSON(path.join(state,'config.json'));
  const providers=cfg.models?.providers||{};
@@ -32,7 +37,7 @@ export function nativeModel(){
   const envKey='CLAWCHAT_DSH_KEY_'+createHash('sha256').update(id).digest('hex').slice(0,16).toUpperCase();
   const credential=value.apiKey;
   env[envKey]=typeof credential==='string'?credential:(credential?.source==='env'?dotenv[credential.id]||env[credential.id]||'':'');
-  nativeProviders[id]={apiKeyEnv:envKey,api:value.api||'openai-completions',...(value.baseUrl?{baseURL:value.baseUrl}:{}),models:(value.models||[]).map(m=>({id:m.id,name:m.name||m.id,contextWindow:m.contextWindow||32768,maxTokens:m.maxTokens||8192,reasoning:m.reasoning||false}))};
+  nativeProviders[id]={apiKeyEnv:envKey,api:value.api||'openai-completions',...(value.baseUrl?{baseURL:value.baseUrl}:{}),models:(value.models||[]).map(m=>({id:m.id,name:m.name||m.id,contextWindow:m.contextWindow||32768,maxTokens:m.maxTokens||8192,reasoning:m.reasoning||false,input:nativeInput(m.input)}))};
  }
  writeJSON(modelPatch,[
   {id:'llm-pi-ai',config:{providers:nativeProviders}},
