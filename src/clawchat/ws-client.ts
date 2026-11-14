@@ -221,6 +221,8 @@ export class ConnectWsClient extends EventEmitter {
       text?: string;
       event?: "message.send" | "message.reply";
       toType?: ChatType;
+      /** Deliver every upload as a downloadable file even when it is an image, audio or video. */
+      asDocument?: boolean;
     } = {},
   ): Promise<Envelope<MessageAckPayload>> {
     this.assertBusinessSendAllowed(chatId);
@@ -229,7 +231,11 @@ export class ConnectWsClient extends EventEmitter {
       uploads.map(async (upload) => await this.uploadMedia(upload.file, { filename: upload.filename })),
     );
     const payload = buildTextMessagePayload(options.text ?? "");
-    payload.message.body.fragments.push(...mediaFragments);
+    payload.message.body.fragments.push(
+      ...(options.asDocument
+        ? mediaFragments.map((fragment) => ({ ...fragment, kind: "file" as const }))
+        : mediaFragments),
+    );
     return await this.sendMessageEnvelope(options.event ?? EVENT.MESSAGE_SEND, chatId, payload, {
       toType: options.toType,
     });

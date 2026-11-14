@@ -26,6 +26,7 @@ export interface ToolHandlerContext {
   mention(input: Record<string, unknown>): Promise<unknown>;
   react(input: Record<string, unknown>): unknown;
   uploadAvatar(input: Record<string, unknown>): Promise<unknown>;
+  sendFile(input: Record<string, unknown>): Promise<unknown>;
 }
 
 const p = (type: ToolValueType, description: string, extra: Partial<ToolProperty> = {}): ToolProperty => ({
@@ -51,6 +52,11 @@ const websocket = (operation: "mention" | "react"): Pick<ConnectToolDefinition, 
 const fileUpload: Pick<ConnectToolDefinition, "execution" | "handler"> = {
   execution: "file-upload",
   handler: async (input, context) => await context.uploadAvatar(input),
+};
+
+const sendFileUpload: Pick<ConnectToolDefinition, "execution" | "handler"> = {
+  execution: "file-upload",
+  handler: async (input, context) => await context.sendFile(input),
 };
 
 const id = (input: Record<string, unknown>, key: string): string => encodeURIComponent(String(input[key]));
@@ -210,6 +216,34 @@ export const CONNECT_TOOL_CATALOG = [
       remove: p("boolean", "Remove the reaction instead of adding it."),
     },
     ...websocket("react"),
+  },
+  {
+    name: "clawchat_send_file",
+    description:
+      "Send a local Workspace file (image, video, audio, document, archive, any type, maximum 100 MiB) into a ClawChat conversation: the current one by default, or another chat only when the owner asked for it. Pass the conversation id as chat_id (from the ClawChat turn context or a prior tool result) and the file's absolute local path as path. Images go out inline, videos as playable videos, audio as playable voice messages; set as_document=true to send any file as a downloadable file. caption is optional text sent with the file. The file must be inside the Workspace; credential and system locations are refused. After this tool succeeds the file has already been delivered; do not send it again.",
+    timeoutMs: 120_000,
+    properties: {
+      chat_id: p(
+        "string",
+        "ClawChat conversation id (cnv_...) to send the file into; may differ from the current chat.",
+        {
+          required: true,
+        },
+      ),
+      path: p("string", "Absolute path of an existing local file inside the Workspace (maximum 100 MiB).", {
+        required: true,
+        record: "basename",
+      }),
+      chat_type: p("string", "Conversation type from the turn context; defaults to direct.", {
+        enum: ["direct", "group"],
+      }),
+      as_document: p(
+        "boolean",
+        "Send as a downloadable file even when it is an image, video, or audio file. Defaults to false.",
+      ),
+      caption: p("string", "Optional text sent together with the file."),
+    },
+    ...sendFileUpload,
   },
   {
     name: "clawchat_list_moments",

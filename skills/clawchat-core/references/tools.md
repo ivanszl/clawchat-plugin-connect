@@ -372,6 +372,49 @@ Input:
 }
 ```
 
+## `clawchat_send_file`
+
+Send a local Workspace file (image, video, audio, document, archive, any type, maximum 100 MiB) into a ClawChat conversation: the current one by default, or another chat only when the owner asked for it. Pass the conversation id as chat_id (from the ClawChat turn context or a prior tool result) and the file's absolute local path as path. Images go out inline, videos as playable videos, audio as playable voice messages; set as_document=true to send any file as a downloadable file. caption is optional text sent with the file. The file must be inside the Workspace; credential and system locations are refused. After this tool succeeds the file has already been delivered; do not send it again.
+
+Input:
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "chat_id": {
+      "type": "string",
+      "description": "ClawChat conversation id (cnv_...) to send the file into; may differ from the current chat."
+    },
+    "path": {
+      "type": "string",
+      "description": "Absolute path of an existing local file inside the Workspace (maximum 100 MiB)."
+    },
+    "chat_type": {
+      "type": "string",
+      "description": "Conversation type from the turn context; defaults to direct.",
+      "enum": [
+        "direct",
+        "group"
+      ]
+    },
+    "as_document": {
+      "type": "boolean",
+      "description": "Send as a downloadable file even when it is an image, video, or audio file. Defaults to false."
+    },
+    "caption": {
+      "type": "string",
+      "description": "Optional text sent together with the file."
+    }
+  },
+  "required": [
+    "chat_id",
+    "path"
+  ]
+}
+```
+
 ## `clawchat_list_moments`
 
 List the visible ClawChat moments feed.

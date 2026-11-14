@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import type { AgentBindingConfig, RuntimeModelSelection, RuntimeWorkspace } from "../types";
 import { canonicalDshHome } from "./deepseek-harness-identity";
@@ -25,8 +26,17 @@ import type {
   DshSessionEvent,
 } from "./deepseek-harness-protocol";
 import { DshBridgeRemoteError } from "./deepseek-harness-protocol";
+import {
+  type DroppedInboxFile,
+  DSH_MAX_INBOUND_FILE_BYTES,
+  DSH_MAX_INBOUND_FILES,
+  inboxPathNote,
+  sanitizeInboxName,
+  stageIntoWorkspaceInbox,
+} from "./dsh-inbound-media";
 import type {
   ConnectRuntimeAdapter,
+  ConnectRuntimeMedia,
   ConnectRuntimePrompt,
   ConnectRuntimeSession,
   ConnectRuntimeStartContext,
@@ -283,6 +293,7 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
     interactionControllers: Set<AbortController>;
   } | null = null;
   private closed = false;
+  private selectedModel: RuntimeModelSelection | null = null;
 
   constructor(
     private readonly client: DshBridgeClient,
@@ -294,10 +305,11 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
   async *prompt(input: ConnectRuntimePrompt): AsyncIterable<RuntimeActivity> {
     if (this.closed) throw new Error("DeepSeek Harness Runtime Session is closed");
     if (this.active) throw new Error("DeepSeek Harness Runtime Session already has an active turn");
-    const images = await stageDshImages(input, this.context);
-    if (input.command && images.length > 0) {
+    if (input.command && (input.media?.length ?? 0) > 0) {
       throw new Error("DeepSeek Harness Runtime Commands do not accept attachment input");
     }
+    if (input.model) this.selectedModel = input.model;
+    const { images, note } = await stageDshAttachments(input, this.context, async () => await this.imageCapableModel());
     const runtimeThreadId = await this.ensureThread(input);
     if (input.model) {
       await this.client.request("selectModel", {
@@ -330,7 +342,8 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
         await this.executeCommand(input, runtimeThreadId, queue);
       } else {
         const inputId = input.turnId ?? `connect-${randomUUID()}`;
-        const nativeInput = input.turnOrigin === "clawchat" ? dshPromptInput(input.prompt) : { text: input.prompt };
+        const baseInput = input.turnOrigin === "clawchat" ? dshPromptInput(input.prompt) : { text: input.prompt };
+        const nativeInput = note ? { ...baseInput, text: `${baseInput.text}${note}` } : baseInput;
         await this.client.request<DshBridgeAdmission>("prompt", {
           sessionId: runtimeThreadId,
           inputId,
@@ -351,6 +364,17 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
       offInteraction();
       if (this.active?.queue === queue) this.active = null;
     }
+  }
+
+  /** Catalog entry of the model this turn will use, or null when it cannot read images. */
+  private async imageCapableModel(): Promise<DshBridgeCatalogModel | null> {
+    if (!this.client.hello.capabilities.imageInput) return null;
+    const models = await this.client.request<DshBridgeCatalogModel[]>("models", {});
+    const selected = this.selectedModel;
+    const model = selected
+      ? models.find((entry) => entry.provider === selected.provider && entry.id === selected.model)
+      : models.find((entry) => entry.isDefault === true);
+    return model?.inputModalities?.includes("image") && model.imageLimits ? model : null;
   }
 
   async cancel(): Promise<boolean> {
@@ -909,15 +933,12 @@ function runtimeModelOption(model: DshBridgeCatalogModel): RuntimeModelOption {
     turnSubmissionCapability: {
       prompt: { allowed: true, required: true },
       attachments: {
-        allowedKinds: model.imageLimits ? ["image"] : [],
-        allowedMediaTypes: model.imageLimits?.mediaTypes ?? [],
-        ...(model.imageLimits
-          ? {
-              maxCount: model.imageLimits.maxImagesPerMessage,
-              maxBytesEach: model.imageLimits.maxImageBytes,
-              maxBytesTotal: model.imageLimits.maxMessageImageBytes,
-            }
-          : {}),
+        // Images the model cannot read natively, and every other kind, are staged in the Workspace inbox.
+        allowedKinds: ["image", "file", "audio", "video"],
+        allowedMediaTypes: ["*/*"],
+        maxCount: DSH_MAX_INBOUND_FILES,
+        maxBytesEach: DSH_MAX_INBOUND_FILE_BYTES,
+        maxBytesTotal: DSH_MAX_INBOUND_FILE_BYTES,
       },
     },
   };
@@ -985,29 +1006,67 @@ function dshModelSelection(selection: RuntimeModelSelection, reasoningEffort: st
   };
 }
 
-async function stageDshImages(
+const DSH_RASTER_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+interface DshAttachmentInput {
+  images: Array<{ path: string; mediaType: string; name?: string }>;
+  note: string;
+}
+
+/**
+ * Downloads every ClawChat attachment. Raster images that the effective model can read stay native image input;
+ * everything else (files, audio, video, and images for text-only models) is staged in the Workspace inbox and
+ * described to the model by a path note.
+ */
+async function stageDshAttachments(
   input: ConnectRuntimePrompt,
   context: ConnectRuntimeStartContext,
-): Promise<Array<{ path: string; mediaType: string; name?: string }>> {
-  const images = [];
-  for (const media of input.media ?? []) {
-    if (media.kind !== "image") {
-      throw new Error(`DeepSeek Harness does not support ${media.kind} attachment input`);
+  imageModel: () => Promise<DshBridgeCatalogModel | null>,
+): Promise<DshAttachmentInput> {
+  const media = input.media ?? [];
+  if (media.length === 0) return { images: [], note: "" };
+  const dropped: DroppedInboxFile[] = [];
+  const downloaded: Array<{ item: ConnectRuntimeMedia; path: string }> = [];
+  for (const item of media) {
+    const label = sanitizeInboxName(item.name, item.kind, item.mime);
+    if (item.size !== undefined && item.size > DSH_MAX_INBOUND_FILE_BYTES) {
+      dropped.push({ name: label, reason: "larger than 100 MiB" });
+      continue;
     }
-    if (!media.mime || !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(media.mime)) {
-      throw new Error(`DeepSeek Harness does not support image media type ${media.mime ?? "unknown"}`);
+    try {
+      const path = context.cacheMedia ? await context.cacheMedia(item, input.trustedMediaOrigins) : item.stagedPath;
+      if (!path) throw new Error("staging unavailable");
+      downloaded.push({ item, path: resolve(path) });
+    } catch {
+      // The reason is fixed text: download errors can carry signed URLs.
+      dropped.push({ name: label, reason: "download failed" });
     }
-    const stagedPath = context.cacheMedia
-      ? await context.cacheMedia(media, input.trustedMediaOrigins)
-      : media.stagedPath;
-    if (!stagedPath) throw new Error("DeepSeek Harness image staging is unavailable");
-    images.push({
-      path: resolve(stagedPath),
-      mediaType: media.mime,
-      ...(media.name ? { name: basename(media.name) } : {}),
-    });
   }
-  return images;
+  const limits = downloaded.some(({ item }) => item.kind === "image")
+    ? ((await imageModel())?.imageLimits ?? null)
+    : null;
+  const images: DshAttachmentInput["images"] = [];
+  const staged: Array<{ media: ConnectRuntimeMedia; sourcePath: string }> = [];
+  let imageBytes = 0;
+  for (const { item, path: sourcePath } of downloaded) {
+    const mime = item.mime?.toLowerCase();
+    const size = limits && item.kind === "image" ? (await stat(sourcePath)).size : 0;
+    const native =
+      limits !== null &&
+      item.kind === "image" &&
+      mime !== undefined &&
+      DSH_RASTER_IMAGE_TYPES.includes(mime) &&
+      limits.mediaTypes.includes(mime) &&
+      images.length < limits.maxImagesPerMessage &&
+      size <= limits.maxImageBytes &&
+      imageBytes + size <= limits.maxMessageImageBytes;
+    if (native) {
+      imageBytes += size;
+      images.push({ path: sourcePath, mediaType: mime, ...(item.name ? { name: basename(item.name) } : {}) });
+    } else staged.push({ media: item, sourcePath });
+  }
+  const result = await stageIntoWorkspaceInbox(canonicalWorkspace(input.workspace), input.turnId, staged);
+  return { images, note: inboxPathNote(result.staged, [...dropped, ...result.dropped]) };
 }
 
 function requireSelectionName(id: string, name: string, prefix: string): string {

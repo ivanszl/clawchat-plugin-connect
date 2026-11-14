@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { CONNECT_TOOL_CATALOG, getConnectTool, validateToolInput } from "../src/agent/tool-catalog";
 
 describe("Connect Tool Catalog", () => {
-  it("publishes exactly the agreed 24 tool-name entries without memory or conversation lookup", () => {
-    expect(CONNECT_TOOL_CATALOG).toHaveLength(24);
-    expect(new Set(CONNECT_TOOL_CATALOG.map((tool) => tool.name)).size).toBe(24);
+  it("publishes exactly the agreed 25 tool-name entries without memory or conversation lookup", () => {
+    expect(CONNECT_TOOL_CATALOG).toHaveLength(25);
+    expect(new Set(CONNECT_TOOL_CATALOG.map((tool) => tool.name)).size).toBe(25);
     expect(getConnectTool("clawchat_get_conversation")).toBeNull();
     expect(CONNECT_TOOL_CATALOG.some((tool) => tool.name.includes("memory"))).toBe(false);
     expect(

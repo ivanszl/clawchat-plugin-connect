@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { open, realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ActiveClawChatTurn } from "../agent/send-file-policy";
 import { buildReplyTextMessagePayload } from "../clawchat/message-mapper";
 import {
   allowedRuntimeKinds,
@@ -15,6 +16,7 @@ import type { ConnectWsClient } from "../clawchat/ws-client";
 import type { MessageBlockContent } from "../client-contract";
 import type { TranscriptProjection } from "../client-interface/transcript-projection";
 import { defaultConfigPath, getAgentBinding } from "../config";
+import { isPathWithin } from "../path-containment";
 import type { ConnectStateStore } from "../persistence/state";
 import type {
   AgentBindingConfig,
@@ -74,6 +76,7 @@ export class ConnectRuntime {
   private readonly ownsExecutor: boolean;
   private readonly executor: SessionTurnExecutor;
   private readonly activeTurnSessionChats = new Map<string, string>();
+  private readonly activeClawChatTurnOrigins = new Map<string, ActiveClawChatTurn>();
   private readonly acceptedClientTurnIds = new Map<string, string>();
   private readonly clientTurnTickets = new Map<string, { turn: QueuedClientTurn; ticket: SessionQueueTicket }>();
   private readonly routingTails = new Map<string, Promise<void>>();
@@ -759,6 +762,15 @@ export class ConnectRuntime {
   ): Promise<void> {
     const key = sessionKey(current.chatId, current.sessionId);
     this.activeTurnSessionChats.set(key, current.chatId);
+    this.activeClawChatTurnOrigins.set(key, {
+      chatId: message.chatId,
+      chatType: message.chatType,
+      speakerIds: [
+        ...new Set(
+          message.groupBatch ? message.groupBatch.messages.map((entry) => entry.sender.user_id) : [message.sender.id],
+        ),
+      ],
+    });
     await this.recordRuntimeStatus(this.queue.stats());
     // Typing is transient: a disconnect must not fail or cancel the actual turn.
     const sendTyping = (active: boolean) => {
@@ -781,8 +793,17 @@ export class ConnectRuntime {
         sendTyping(false);
       }
       this.activeTurnSessionChats.delete(key);
+      this.activeClawChatTurnOrigins.delete(key);
       await this.recordRuntimeStatus(this.queue.stats());
     }
+  }
+
+  /** Chats and speakers of the ClawChat Turns running right now; used to authorize cross-chat tool calls. */
+  activeClawChatTurns(): ActiveClawChatTurn[] {
+    return [...this.activeClawChatTurnOrigins.values()].map((origin) => ({
+      ...origin,
+      speakerIds: [...origin.speakerIds],
+    }));
   }
 
   private async withRoutingGate<T>(chatId: string, run: () => Promise<T>): Promise<T> {
@@ -948,8 +969,7 @@ async function resolveSafeLocalMediaPath(
 }
 
 function pathIsWithin(candidate: string, root: string): boolean {
-  const nested = relative(root, candidate);
-  return nested === "" || (!nested.startsWith("..") && !isAbsolute(nested));
+  return isPathWithin(root, candidate, { allowEqual: true });
 }
 
 function sessionKey(chatId: string, sessionId: string): string {

@@ -41,6 +41,9 @@ A CLI-only installation is valid. Runtime setup and Agent Binding activation nev
 
 ## Requirements
 
+DeepSeek Harness attachments: files, audio, video and images that the selected model cannot read natively are saved under `<Workspace>/clawchat-inbox/<message-id>/` and the model receives their paths. Each turn directory is removed automatically 30 days after its newest file. `clawchat_send_file` sends a Workspace file (up to 100 MiB) back to ClawChat.
+
+
 Current beta archives support macOS on Apple silicon. You need a ClawChat account, an Agent invite code, and at least one supported runtime available and authenticated. DeepSeek Harness does not require a global DSH installation: its official Web Provider and Binding Runtime use an explicitly configured or installed `dsh` when available and otherwise launch `@deepseek-ai/dsh` through the first available supported package launcher (`bunx`, then `npx`, then `pnpm dlx`). The selected launcher may populate its user cache. Connect does not authenticate or reconfigure DSH, and it does not install, upgrade, authenticate, or reconfigure Codex, OpenCode, or WorkBuddy.
 
 ## Quick start
