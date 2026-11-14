@@ -2,7 +2,7 @@ import {
   type Envelope,
   EVENT,
   type Fragment,
-  isEmptyPayload,
+  isReplayDonePayload,
   isHistoryTransitPayload,
   isMaterializedMessagePayload,
   isMessageAckPayload,
@@ -78,7 +78,8 @@ export function dseqPayloadError(envelope: Envelope): string | null {
   )
     return "invalid history.transit frame";
   if (envelope.event === EVENT.SYNC_MARK && !isSyncMarkPayload(envelope.payload)) return "invalid sync.mark payload";
-  if (envelope.event === EVENT.REPLAY_DONE && !isEmptyPayload(envelope.payload)) return "invalid replay.done payload";
+  if (envelope.event === EVENT.REPLAY_DONE && !isReplayDonePayload(envelope.payload))
+    return "invalid replay.done payload";
   return null;
 }
 

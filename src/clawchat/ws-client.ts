@@ -10,6 +10,7 @@ import {
   type ConnectPayload,
   type ConnState,
   type EmptyPayload,
+  type ReplayDonePayload,
   type Envelope,
   EVENT,
   type Fragment,
@@ -1007,6 +1008,19 @@ export class ConnectWsClient extends EventEmitter {
       if (envelope.event === EVENT.SYNC_MARK) {
         this.ackHighWater = dseq;
         this.scheduleSyncAck();
+        return false;
+      }
+      // Hermes (connection.py replay.done branch) and Pi (connection.ts): a replay.done carrying another
+      // epoch is recorded for ack progress but is neither a replay completion nor an immediate flush.
+      const replayEpoch = (envelope.payload as ReplayDonePayload).ack_epoch;
+      if (replayEpoch !== undefined && replayEpoch !== this.ackEpoch) {
+        this.ackHighWater = dseq;
+        this.scheduleSyncAck();
+        if (this.listenerCount("error") > 0)
+          this.emit(
+            "error",
+            new ProtocolError(`replay.done ack_epoch mismatch; recording dseq=${dseq} without replay completion`),
+          );
         return false;
       }
       return true;

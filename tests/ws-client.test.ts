@@ -1543,7 +1543,7 @@ describe("ConnectWsClient", () => {
       trace_id: "done-malformed",
       emitted_at: 8,
       dseq: 2,
-      payload: { unexpected: true },
+      payload: { ack_epoch: 7 },
     });
     await flush();
 
@@ -1551,6 +1551,158 @@ describe("ConnectWsClient", () => {
     expect(stateStore.quarantineProtocolDelivery).toHaveBeenCalledWith(
       expect.objectContaining({ dseq: 2, error: "invalid replay.done payload" }),
     );
+    client.close();
+  });
+
+  const EPOCH = "01JXYZ8K3MNPQRSTVWXYZ0AB";
+
+  async function replayDoneClient() {
+    const transport = new MemoryTransport();
+    const stateStore = createStore();
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore,
+      transport,
+      traceIdFactory: () => "trace-rd",
+      heartbeat: { enabled: false },
+      reliability: { ackDebounceMs: 1_000, ackResendMs: 0 },
+    });
+    const replayDone = mock();
+    client.on("replay_done", replayDone);
+    await handshake(client, transport, "trace-rd");
+    return { transport, stateStore, client, replayDone };
+  }
+
+  it.each([
+    ["an empty payload", {}],
+    ["ack_epoch only", { ack_epoch: EPOCH }],
+    ["truncation_check only", { truncation_check: "clean" }],
+    ["the server shape (both fields)", { truncation_check: "clean", ack_epoch: EPOCH }],
+    ["unknown extra fields", { truncation_check: "clean", ack_epoch: EPOCH, future_field: 1 }],
+  ])("accepts replay.done with %s, emits replay_done and flushes the ack", async (_name, payload) => {
+    const { transport, stateStore, client, replayDone } = await replayDoneClient();
+    transport.receive({
+      version: "2",
+      event: EVENT.REPLAY_DONE,
+      trace_id: "rd-ok",
+      emitted_at: 5,
+      dseq: 1,
+      payload,
+    } as unknown as Envelope);
+    await flush();
+
+    expect(stateStore.quarantineProtocolDelivery).not.toHaveBeenCalled();
+    expect(stateStore.advanceProtocolDelivery).toHaveBeenCalledWith("test-binding", EPOCH, 1);
+    expect(replayDone).toHaveBeenCalledTimes(1);
+    expect(transport.sent.at(-1)).toMatchObject({ event: EVENT.MESSAGE_SYNC_ACK, payload: { dseq: 1, epoch: EPOCH } });
+    client.close();
+  });
+
+  it("records a mismatching replay.done ack_epoch without completing the replay or flushing", async () => {
+    const { transport, stateStore, client, replayDone } = await replayDoneClient();
+    const errors = mock();
+    client.on("error", errors);
+    transport.receive({
+      version: "2",
+      event: EVENT.REPLAY_DONE,
+      trace_id: "rd-mismatch",
+      emitted_at: 5,
+      dseq: 1,
+      payload: { truncation_check: "clean", ack_epoch: "other-epoch" },
+    });
+    await flush();
+
+    expect(stateStore.quarantineProtocolDelivery).not.toHaveBeenCalled();
+    expect(stateStore.advanceProtocolDelivery).toHaveBeenCalledWith("test-binding", EPOCH, 1);
+    expect(replayDone).not.toHaveBeenCalled();
+    expect(transport.sent.some((e) => e.event === EVENT.MESSAGE_SYNC_ACK)).toBe(false);
+    expect(errors).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("ack_epoch") }));
+    client.close();
+  });
+
+  it.each([
+    ["a non-string ack_epoch", { ack_epoch: 7 }, "invalid replay.done payload"],
+    ["an empty ack_epoch", { ack_epoch: "" }, "invalid replay.done payload"],
+    ["a non-string truncation_check", { truncation_check: { status: "clean" } }, "invalid replay.done payload"],
+    ["a null truncation_check", { truncation_check: null }, "invalid replay.done payload"],
+    ["an array payload", [], "missing payload"],
+    ["a string payload", "clean", "missing payload"],
+    ["a null payload", null, "missing payload"],
+  ])("quarantines replay.done with %s", async (_name, payload, error) => {
+    const { transport, stateStore, client, replayDone } = await replayDoneClient();
+    transport.receive({
+      version: "2",
+      event: EVENT.REPLAY_DONE,
+      trace_id: "rd-bad",
+      emitted_at: 5,
+      dseq: 1,
+      payload,
+    } as unknown as Envelope);
+    await flush();
+
+    expect(stateStore.quarantineProtocolDelivery).toHaveBeenCalledWith(expect.objectContaining({ dseq: 1, error }));
+    expect(replayDone).not.toHaveBeenCalled();
+    client.close();
+  });
+
+  it("emits replay_done and flushes the ack after a reconnect with the server payload", async () => {
+    const transport = new MemoryTransport();
+    const stateStore = createStore();
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore,
+      transport,
+      traceIdFactory: () => "trace-rd-reconnect",
+      heartbeat: { enabled: false },
+      reconnect: { initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+      reliability: { ackDebounceMs: 60_000, ackResendMs: 0 },
+    });
+    const replayDone = mock();
+    client.on("replay_done", replayDone);
+    client.on("error", () => undefined);
+    await handshake(client, transport, "trace-rd-reconnect");
+
+    transport.state = "closed";
+    transport.handlers?.onClose(1006, "network lost");
+    await Bun.sleep(5);
+    transport.receive({
+      version: "2",
+      event: EVENT.CONNECT_CHALLENGE,
+      trace_id: "challenge",
+      emitted_at: 7,
+      payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+    });
+    transport.receive({
+      version: "2",
+      event: EVENT.HELLO_OK,
+      trace_id: "trace-rd-reconnect",
+      emitted_at: 8,
+      payload: {
+        device_id: "device-server",
+        delivery_mode: "device_replay",
+        ack_mode: "dseq",
+        ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AC",
+      },
+    });
+    await flush();
+    transport.receive({
+      version: "2",
+      event: EVENT.REPLAY_DONE,
+      trace_id: "server-control:replay.done:1",
+      emitted_at: 9,
+      dseq: 1,
+      payload: { truncation_check: "clean", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AC" },
+    });
+    await flush();
+
+    expect(stateStore.quarantineProtocolDelivery).not.toHaveBeenCalled();
+    expect(replayDone).toHaveBeenCalledTimes(1);
+    expect(transport.sent.at(-1)).toMatchObject({
+      event: EVENT.MESSAGE_SYNC_ACK,
+      payload: { dseq: 1, epoch: "01JXYZ8K3MNPQRSTVWXYZ0AC" },
+    });
     client.close();
   });
 
