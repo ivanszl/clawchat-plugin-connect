@@ -412,9 +412,23 @@ export function isMessageErrorPayload(value: unknown): value is MessageErrorPayl
   );
 }
 
-export function isEmptyPayload(value: unknown): value is EmptyPayload {
+/**
+ * `replay.done` payload. Legacy connections send `{}`; reliable (dseq) connections send
+ * `{ack_epoch, truncation_check}` (server evidence: `truncation_check:"clean"`, `ack_epoch` equal
+ * to the hello-ok epoch). Both fields are optional and unknown extra fields are tolerated, but
+ * present fields must be well-typed.
+ */
+export interface ReplayDonePayload {
+  ack_epoch?: string;
+  truncation_check?: string;
+}
+
+export function isReplayDonePayload(value: unknown): value is ReplayDonePayload {
   const record = objectRecord(value);
-  return Boolean(record && Object.keys(record).length === 0);
+  if (!record) return false;
+  if (record.ack_epoch !== undefined && (typeof record.ack_epoch !== "string" || !record.ack_epoch)) return false;
+  if (record.truncation_check !== undefined && typeof record.truncation_check !== "string") return false;
+  return true;
 }
 
 export function isSyncMarkPayload(value: unknown): value is SyncMarkPayload {
