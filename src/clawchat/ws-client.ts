@@ -246,7 +246,11 @@ export class ConnectWsClient extends EventEmitter {
     event: "message.send" | "message.reply",
     chatId: string,
     payload: MessagePayload,
-    options: { toType?: ChatType } = {},
+    options: {
+      toType?: ChatType;
+      /** Called when the frame has been handed to the transport, before the acknowledgement arrives. */
+      onHandedOff?: () => void;
+    } = {},
   ): Promise<Envelope<MessageAckPayload>> {
     if (!chatId.trim()) throw new StateError("chatId is required");
     if (this.state !== "connected") throw new StateError("cannot send business traffic before hello-ok");
@@ -296,7 +300,9 @@ export class ConnectWsClient extends EventEmitter {
         clearTimeout(timer);
         this.pendingAcks.delete(traceId);
         reject(error instanceof Error ? error : new Error(String(error)));
+        return;
       }
+      options.onHandedOff?.();
     });
   }
 

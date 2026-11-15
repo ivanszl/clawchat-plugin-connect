@@ -35,6 +35,14 @@ import type { RuntimeWorkspaceChoice } from "../workspaces/workspace-catalog";
 import { synchronizeRuntimeWorkspaces } from "../workspaces/workspace-synchronizer";
 import { WorkspaceCatalog } from "../workspaces/workspaces";
 import type { ConnectExecutionCapabilities } from "./execution-capabilities";
+import {
+  classifyFailure,
+  type LifecycleFailure,
+  LifecycleLog,
+  lifecycleMessageIds,
+  ReplySendError,
+  ShutdownError,
+} from "./lifecycle-log";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
 import { renderClawChatPrompt } from "./prompt-renderer";
@@ -45,6 +53,7 @@ import { ClawChatTurnSurface, ClientTurnSurface, type ConnectTurnSurfaceCapabili
 import type {
   ConnectRuntimeMedia,
   QueuedClientTurn,
+  RuntimeActivity,
   RuntimeInteractionPort,
   RuntimeModelOption,
   RuntimeSlashSelection,
@@ -65,9 +74,17 @@ export interface ConnectRuntimeOptions {
   runtimeInteractions?: RuntimeInteractionPort;
   turnSurfaces?: ConnectTurnSurfaceCapabilities;
   resolveSenderDisplayName?: (senderId: string) => Promise<string | null>;
+  /** Message lifecycle log (O-08); silent when absent. */
+  lifecycle?: LifecycleLog;
+}
+
+/** How a Runtime ended a Turn that returned normally: a failed or cancelled terminal Turn activity. */
+interface TurnOutcome {
+  failure?: LifecycleFailure;
 }
 
 export class ConnectRuntime {
+  private readonly lifecycle: LifecycleLog;
   private readonly typingTurns = new Map<string, number>();
   private readonly runtimeAdapters: RuntimeAdapterRegistry;
   private readonly workspaces: WorkspaceCatalog;
@@ -85,6 +102,7 @@ export class ConnectRuntime {
 
   constructor(private readonly options: ConnectRuntimeOptions) {
     getAgentBinding(options.config, options.agentId);
+    this.lifecycle = options.lifecycle ?? LifecycleLog.silent();
     const execution = options.execution;
     const runtimeAdapters = execution?.runtimeAdapters ?? options.runtimeAdapters;
     if (!runtimeAdapters) throw new Error("Runtime Adapter coordination is required");
@@ -170,6 +188,7 @@ export class ConnectRuntime {
               async () => await this.acceptTurnTarget(current.sessionRef, current.agentId),
               `Session ${current.sessionRef}`,
             );
+            if (ticket.state === "queued") this.lifecycle.queued(lifecycleMessageIds(message), message.chatId, "busy");
             await ticket.completion;
           }
         });
@@ -196,11 +215,15 @@ export class ConnectRuntime {
           async () => await this.acceptTurnTarget(current.sessionRef, current.agentId),
           `Session ${current.sessionRef}`,
         );
+        if (ticket.state === "queued") this.lifecycle.queued(lifecycleMessageIds(message), message.chatId, "busy");
         completion = ticket.completion;
       });
       if (!completion) throw new Error("failed to enqueue Session turn");
       await completion;
     } catch (error) {
+      // An error before the Runtime accepted the input leaves the message pending for a retry: nothing is logged.
+      // Connect shutting the Runtime down is not a failure of the message: no notice, a restart recovers it.
+      if (error instanceof ShutdownError) return;
       await this.sendVisibleFailure(
         message,
         `ClawChat runtime turn failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -514,7 +537,7 @@ export class ConnectRuntime {
     message: NormalizedInboundMessage,
     current: RuntimeSessionRecord,
     onTurnAccepted?: () => Promise<void>,
-  ): Promise<void> {
+  ): Promise<TurnOutcome> {
     const activeAgentId = current.agentId || this.options.agentId;
     const workspace = await this.workspaces.resolveWorkspace(current);
     const model = await this.modelFor(current, activeAgentId, workspace);
@@ -532,7 +555,7 @@ export class ConnectRuntime {
         noReplyProtocol: message.chatType === "group",
         materialize: (event) => materializeRuntimeOutput(event, policy),
         deliver: async (event, reply) => {
-          const delivery = await this.sendReply(message, reply, workspace);
+          const delivery = await this.sendReply(message, reply, { workspace, inTurn: true });
           if (delivery?.media.length) {
             await this.transcriptProjection?.applyRuntimeDelivery(current.sessionRef, event, delivery);
           }
@@ -545,13 +568,14 @@ export class ConnectRuntime {
         },
         materialize: (event) => materializeRuntimeOutput(event, policy),
         deliver: async (event, reply) => {
-          const delivery = await this.sendReply(message, reply, workspace);
+          const delivery = await this.sendReply(message, reply, { workspace, inTurn: true });
           if (delivery?.media.length) {
             await this.transcriptProjection?.applyRuntimeDelivery(current.sessionRef, event, delivery);
           }
         },
       });
     const runtimeInteractions = this.options.runtimeInteractions;
+    let terminal: RuntimeActivity | undefined;
     for await (const event of this.executor.execute(target, {
       prompt: renderClawChatPrompt(message),
       media: runtimeMedia(message),
@@ -594,8 +618,10 @@ export class ConnectRuntime {
       outputPolicy: { mode: policy.mode, allowedKinds: allowedRuntimeKinds(policy) },
     })) {
       await surface.accept(event);
+      if (event.kind === "turn") terminal = event;
     }
     await surface.complete();
+    return { failure: terminalTurnFailure(terminal) };
   }
 
   private async runClientTurn(
@@ -685,25 +711,42 @@ export class ConnectRuntime {
     await this.sendReply(message, { text, requiredControl: false });
   }
 
+  /** `inTurn` marks a reply produced by the Turn (logged as `reply_sent`); failure notices are not. */
   private async sendReply(
     message: NormalizedInboundMessage,
     reply: MaterializedRuntimeReply,
-    workspace?: RuntimeWorkspace,
+    options: { workspace?: RuntimeWorkspace; inTurn?: boolean } = {},
   ): Promise<DeliveredReplyProjection | null> {
+    const { workspace, inTurn = false } = options;
     const route = { chatId: message.chatId, chatType: message.chatType };
     const localMedia = workspace
       ? await resolveLocalReplyMedia(reply.text, this.options.config.stateDbPath, workspace)
       : { text: reply.text, files: [] };
     const payload = buildReplyTextMessagePayload(localMedia.text, message);
-    for (const file of localMedia.files) {
-      payload.message.body.fragments.push(
-        await this.options.wsClient.uploadMedia(Bun.file(file.path), { filename: file.filename }),
-      );
+    try {
+      for (const file of localMedia.files) {
+        payload.message.body.fragments.push(
+          await this.options.wsClient.uploadMedia(Bun.file(file.path), { filename: file.filename }),
+        );
+      }
+      if (payload.message.body.fragments.length === 0) return null;
+      await this.options.wsClient.sendMessageEnvelope(EVENT.MESSAGE_REPLY, route.chatId, payload, {
+        toType: route.chatType,
+        // reply_sent is written when the reply is handed to ClawChat, not when it is acknowledged.
+        ...(inTurn && this.lifecycle.active
+          ? {
+              onHandedOff: () =>
+                this.lifecycle.replySent(message, {
+                  turn: message.messageId,
+                  ...(payload.message_id ? { reply: payload.message_id } : {}),
+                  at: new Date(),
+                }),
+            }
+          : {}),
+      });
+    } catch (error) {
+      throw new ReplySendError(error instanceof Error ? error.message : String(error), { cause: error });
     }
-    if (payload.message.body.fragments.length === 0) return null;
-    await this.options.wsClient.sendMessageEnvelope(EVENT.MESSAGE_REPLY, route.chatId, payload, {
-      toType: route.chatType,
-    });
     return {
       text: localMedia.text,
       media: transcriptMediaFromFragments(payload.message.body.fragments),
@@ -782,8 +825,27 @@ export class ConnectRuntime {
     sendTyping(true);
     const typingHeartbeat = setInterval(() => sendTyping(true), 5_000);
     typingHeartbeat.unref();
+    const ids = lifecycleMessageIds(message);
+    // The Turn starts when the Runtime has accepted the input; before that a failure is retried, not final.
+    let started = false;
+    const markStarted = () => {
+      if (started) return;
+      started = true;
+      this.lifecycle.turnStarted(ids, message.messageId, message.chatId);
+    };
     try {
-      await this.runTurn(message, current, onTurnAccepted);
+      const outcome = await this.runTurn(message, current, async () => {
+        markStarted();
+        await onTurnAccepted?.();
+      });
+      markStarted();
+      if (outcome.failure) this.lifecycle.turnFailed(ids, message.messageId, message.chatId, outcome.failure);
+      else this.lifecycle.turnFinished(ids, message.messageId, message.chatId);
+    } catch (error) {
+      if (started && !(error instanceof ShutdownError)) {
+        this.lifecycle.turnFailed(ids, message.messageId, message.chatId, classifyFailure(error));
+      }
+      throw error;
     } finally {
       clearInterval(typingHeartbeat);
       const remaining = (this.typingTurns.get(message.chatId) ?? 1) - 1;
@@ -835,6 +897,15 @@ export class ConnectRuntime {
       }),
     );
   }
+}
+
+/** A Runtime reports a model error or an abort as a terminal Turn activity, not as a thrown error. */
+function terminalTurnFailure(terminal: RuntimeActivity | undefined): TurnOutcome["failure"] {
+  if (!terminal) return undefined;
+  if (terminal.state === "cancelled") return { reason: "cancelled" };
+  if (terminal.state !== "error") return undefined;
+  const code = terminal.data?.reason;
+  return { reason: "model_error", ...(typeof code === "string" ? { error: code } : {}) };
 }
 
 function runtimeSessionFromTurnTarget(target: TurnTarget): RuntimeSessionRecord {

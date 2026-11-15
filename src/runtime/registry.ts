@@ -148,6 +148,10 @@ export class RuntimeAdapterRegistry {
   familyFor(binding: AgentBindingConfig): string {
     return this.requireDefinition(binding).family;
   }
+  /** The label the Binding's Adapter declares for the message lifecycle log, or undefined when it logs none. */
+  lifecycleLabelFor(binding: AgentBindingConfig): string | undefined {
+    return this.require(binding).lifecycleLabel;
+  }
   hasProvider(binding: AgentBindingConfig): boolean {
     return this.definitions.has(this.providerKey(binding.runtime));
   }

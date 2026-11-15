@@ -423,6 +423,11 @@ export interface ConnectRuntimeSession {
 export interface ConnectRuntimeAdapter {
   readonly kind: string;
   readonly modes: readonly string[];
+  /**
+   * Runtime label written in the message lifecycle log (matrix O-08). An Adapter that declares none does not
+   * produce lifecycle lines; the log is opt-in per Runtime so no line carries a wrong label.
+   */
+  readonly lifecycleLabel?: string;
   readonly lifecycleCapabilities?: RuntimeLifecycleCapabilities;
   prepare?(binding: AgentBindingConfig): Promise<void>;
   modesFor?(binding: AgentBindingConfig, scope?: RuntimeCatalogScope): readonly string[];

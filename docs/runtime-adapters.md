@@ -143,6 +143,42 @@ or installed `dsh` and otherwise execute `@deepseek-ai/dsh` through the first av
 `bunx`, then `npx`, then `pnpm dlx`. The Web Provider appends only the official `web` arguments. The selected launcher
 owns package resolution and its user cache. Connect does not automatically install or upgrade any other runtime executable.
 
+## Message lifecycle log (operator diagnostics)
+
+An Adapter that sets `ConnectRuntimeAdapter.lifecycleLabel` writes the message lifecycle log (capability-matrix item
+O-08, format v1) to the process's stdout: one `clawchat-lifecycle {json}` line per step (`received`, `ignored`,
+`queued`, `turn_started`, `reply_sent`, `turn_finished`, `turn_failed`, `interaction_pending`, `interaction_expired`).
+Fields: `v`, `ts` (UTC, milliseconds), `runtime` (the label), `step`, `msg` (ClawChat message id), `turn` (once a Turn
+exists), `chat`, `reply` (outbound id, only if known when the reply is handed over), `reason` (required on `ignored`,
+`queued`, `turn_failed`, `interaction_expired`) and `error` (class or code only, at most 200 characters, credentials
+redacted). Only the DeepSeek Harness Adapter sets a label today (`dsh`); Adapters without a label write no lifecycle
+lines. Message text, attachment names, prompts, model output and tool arguments are never written.
+
+Reasons, per step (these are the types in `src/runtime/lifecycle-log.ts`, nothing else is written):
+
+| Step | Reasons |
+| --- | --- |
+| `ignored` | `not_addressed`, `not_owner`, `muted`, `oversized`, `empty_message`, `command`, `interaction_response`, `pending_interaction`, `no_turn` |
+| `queued` | `busy` |
+| `turn_failed` | `send_failed`, `model_error`, `timeout`, `cancelled`, `bridge_exit`, `restart`, `recovery_gave_up`, `runtime_error` |
+| `interaction_expired` | `timeout` |
+
+Reading the log:
+
+- Per message id there is exactly one `received` and at most one terminal line (`ignored`, `turn_finished`,
+  `turn_failed`), also across restarts (the record is kept in the state database). A redelivered id and internal retries
+  write nothing, so a message with `received` and no terminal line is still being retried or was cut off: that is the
+  "stuck" signal.
+- `turn_started` is written when the Runtime accepted the input. A failure before that leaves the message pending for
+  recovery and writes nothing.
+- `reply_sent` is written when the reply is handed to ClawChat; `turn_finished` follows the server's acknowledgement. A
+  reply that cannot be handed over or that the server rejects ends the Turn as `turn_failed` `send_failed`.
+- `turn_failed` `bridge_exit` means the Runtime process or its Bridge died or broke protocol while the Turn ran.
+  `restart` marks an unfinished message abandoned at restart (the Runtime had already taken it and Connect will not
+  process it again); an unfinished message that is processed again after a restart writes nothing until its real
+  outcome. `recovery_gave_up` is the bounded recovery giving up on a message.
+- Lines for a Turn that ends because Connect is shutting down may be missing; no failure notice is sent for it.
+
 ## Deferred native capability verification
 
 Keep these items separate from the official capability matrix until each has a stable native API and behavioral

@@ -15,6 +15,7 @@ import {
   type DshBridgeRequest,
   parseDshBridgeFrame,
 } from "./deepseek-harness-protocol";
+import { BridgeExitError, BridgeTimeoutError, ShutdownError } from "./lifecycle-log";
 
 const MAX_STDERR_BYTES = 65_536;
 const DEFAULT_START_TIMEOUT_MS = 30_000;
@@ -31,6 +32,8 @@ export interface DshBridgeClient {
   request<T>(method: string, params: unknown, timeoutMs?: number): Promise<T>;
   onInteraction(listener: (interaction: DshBridgeInteraction) => void): () => void;
   onEvent(listener: (event: DshBridgeEvent) => void): () => void;
+  /** Called once when the Bridge fails or closes; an active Turn must end instead of waiting for events that never come. */
+  onFailure?(listener: (error: Error) => void): () => void;
   close(): Promise<void>;
 }
 
@@ -142,6 +145,7 @@ class SpawnedDshBridge implements DshBridgeClient {
   readonly hello: DshBridgeHello;
   private readonly listeners = new Set<(event: DshBridgeEvent) => void>();
   private readonly interactionListeners = new Set<(interaction: DshBridgeInteraction) => void>();
+  private readonly failureListeners = new Set<(error: Error) => void>();
   private readonly pending = new Map<
     string,
     { resolve(value: unknown): void; reject(error: Error): void; timeout: ReturnType<typeof setTimeout> }
@@ -167,7 +171,7 @@ class SpawnedDshBridge implements DshBridgeClient {
         if (!this.closing) {
           const detail = this.stderr.text.trim();
           this.fail(
-            new Error(
+            new BridgeExitError(
               `DeepSeek Harness process exited unexpectedly (${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`})${
                 detail ? `: ${detail}` : ""
               }`,
@@ -205,7 +209,7 @@ class SpawnedDshBridge implements DshBridgeClient {
     lines.on("line", (line) => {
       const lineBytes = Buffer.byteLength(line);
       if (lineBytes > DSH_BRIDGE_MAX_FRAME_BYTES) {
-        const error = new Error(
+        const error = new BridgeExitError(
           `DeepSeek Harness Bridge emitted an oversized frame (${lineBytes} bytes; limit ${DSH_BRIDGE_MAX_FRAME_BYTES})`,
         );
         bridge?.fail(error);
@@ -217,7 +221,7 @@ class SpawnedDshBridge implements DshBridgeClient {
       try {
         frame = parseDshBridgeFrame(line);
       } catch (cause) {
-        const error = new Error("DeepSeek Harness Bridge emitted a malformed frame", { cause });
+        const error = new BridgeExitError("DeepSeek Harness Bridge emitted a malformed frame", { cause });
         bridge?.fail(error);
         rejectHello(error);
         child.kill("SIGTERM");
@@ -235,7 +239,7 @@ class SpawnedDshBridge implements DshBridgeClient {
       bridge.receive(frame);
     });
     child.once("error", (cause) => {
-      const error = new Error("DeepSeek Harness process could not be started", { cause });
+      const error = new BridgeExitError("DeepSeek Harness process could not be started", { cause });
       bridge?.fail(error);
       rejectHello(error);
     });
@@ -301,7 +305,7 @@ class SpawnedDshBridge implements DshBridgeClient {
     const reply = new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`DeepSeek Harness Bridge request timed out: ${method}`));
+        reject(new BridgeTimeoutError(`DeepSeek Harness Bridge request timed out: ${method}`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timeout });
     });
@@ -328,6 +332,15 @@ class SpawnedDshBridge implements DshBridgeClient {
     return () => this.interactionListeners.delete(listener);
   }
 
+  onFailure(listener: (error: Error) => void): () => void {
+    if (this.failure) {
+      listener(this.failure);
+      return () => undefined;
+    }
+    this.failureListeners.add(listener);
+    return () => this.failureListeners.delete(listener);
+  }
+
   async close(): Promise<void> {
     if (this.closing) return await this.exited;
     this.closing = true;
@@ -346,14 +359,14 @@ class SpawnedDshBridge implements DshBridgeClient {
       }
       await withTimeout(this.exited, this.stopTimeoutMs, "DSH process did not close");
     } finally {
-      this.fail(new Error("DeepSeek Harness Bridge closed"));
+      this.fail(new ShutdownError("DeepSeek Harness Bridge closed"));
       await rm(this.temporaryDirectory, { recursive: true, force: true });
     }
   }
 
   private receive(frame: DshBridgeFrame): void {
     if (frame.type === "hello") {
-      this.fail(new Error("DeepSeek Harness Bridge emitted more than one hello frame"));
+      this.fail(new BridgeExitError("DeepSeek Harness Bridge emitted more than one hello frame"));
       this.child.kill("SIGTERM");
       return;
     }
@@ -374,12 +387,16 @@ class SpawnedDshBridge implements DshBridgeClient {
   }
 
   private fail(error: Error): void {
+    const first = !this.failure;
     this.failure ??= error;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timeout);
       pending.reject(this.failure);
     }
     this.pending.clear();
+    // An admitted Turn waits for Bridge events, not for a request reply: end it with the failure.
+    if (first) for (const listener of [...this.failureListeners]) listener(this.failure);
+    this.failureListeners.clear();
   }
 }
 
