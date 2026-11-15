@@ -136,7 +136,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: deepSeekHarnessDescriptor,
     name: "DeepSeek Harness",
-    artifactIntegrity: "sha256-Uob67nRnckLvKjI8duJ7GbHmlSN0dv9bFTvlUMmq9zQ=",
+    artifactIntegrity: "sha256-KYMNGqKccSm82+bDqQ6JhCZCtv8pjl87wDGX/nvJcsM=",
     assetIntegrities: {
       "artifacts/deepseek-harness-bridge.mjs": {
         "darwin-arm64": "sha256-mu5eyFl9F6eXNWalkvq4JtMZcyke7z38L4UYJg16wfk=",

@@ -207,6 +207,11 @@ export interface ConnectPluginRuntimeStartContext {
  */
 export interface ConnectPluginRuntimeAdapter {
   readonly modes: readonly string[];
+  /**
+   * Runtime label written in the message lifecycle log (matrix O-08). An Adapter that declares none does not
+   * produce lifecycle lines.
+   */
+  readonly lifecycleLabel?: string;
   readonly lifecycleCapabilities?: RuntimeLifecycleCapabilities;
   prepare?(): Promise<void>;
   modesFor?(scope?: RuntimeCatalogScope): readonly string[];

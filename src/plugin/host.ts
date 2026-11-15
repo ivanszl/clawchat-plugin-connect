@@ -2210,6 +2210,7 @@ function bridgeRuntimeProvider(
   const internal: ConnectRuntimeAdapter = {
     kind: family,
     modes: adapter.modes,
+    lifecycleLabel: adapter.lifecycleLabel,
     lifecycleCapabilities: adapter.lifecycleCapabilities,
     prepare: adapter.prepare ? async () => await adapter.prepare?.() : undefined,
     modesFor: adapter.modesFor ? (_binding, scope) => adapter.modesFor?.(scope) ?? adapter.modes : undefined,

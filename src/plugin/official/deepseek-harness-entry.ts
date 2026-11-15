@@ -233,6 +233,7 @@ function bridgeDeepSeekHarnessAdapter(
   const discoverArchivedThreads = adapter.discoverArchivedThreads?.bind(adapter);
   return {
     modes: adapter.modes,
+    lifecycleLabel: adapter.lifecycleLabel,
     lifecycleCapabilities: adapter.lifecycleCapabilities,
     prepare: adapter.prepare ? async () => await adapter.prepare?.(binding) : undefined,
     modesFor: adapter.modesFor ? (scope) => adapter.modesFor?.(binding, scope) ?? adapter.modes : undefined,
