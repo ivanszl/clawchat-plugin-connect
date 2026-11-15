@@ -72,6 +72,12 @@ const FAKE_DSH_BIG = FAKE_DSH.replace(
   `import { createInterface } from "node:readline";\nimport { encodeBridgeFrame } from ${JSON.stringify(FRAME_MODULE)};`,
 );
 
+const FAKE_DSH_EXITS = FAKE_DSH.replace(
+  '  output.write(JSON.stringify({ type: "response", id: request.id, ok: true, result: request.params }) + "\\n");',
+  `  if (request.method === "exit-later") setTimeout(() => process.exit(9), 20);
+  output.write(JSON.stringify({ type: "response", id: request.id, ok: true, result: request.params }) + "\\n");`,
+);
+
 // Bun can close a finished child's inherited-pipe sockets late (after a large frame triggers GC), racing a later
 // child that reused the descriptor numbers. Keeping the clients reachable for the file's lifetime avoids that.
 const retainedClients: unknown[] = [];
@@ -127,6 +133,27 @@ describe("DeepSeek Harness Bridge process boundary", () => {
       await expect(client.request("echo", { value: 1 })).resolves.toEqual({ value: 1 });
       await expect(client.request("echo", { value: "v".repeat(5_000) })).rejects.toThrow("exceeds the frame limit (");
       await expect(client.request("echo", { value: 2 })).resolves.toEqual({ value: 2 });
+    } finally {
+      await client.close().catch(() => undefined);
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("tells an admitted Turn when the Bridge process dies, so it can end instead of waiting forever", async () => {
+    const { client, directory } = await startFake(FAKE_DSH_EXITS);
+    try {
+      const failures: Error[] = [];
+      client.onFailure?.((error) => failures.push(error));
+      await client.request("exit-later", {});
+      const deadline = Date.now() + 5_000;
+      while (failures.length === 0 && Date.now() < deadline) await Bun.sleep(5);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.message).toContain("process exited unexpectedly (code 9)");
+      expect((failures[0] as { lifecycleReason?: string }).lifecycleReason).toBe("bridge_exit");
+      // A listener added after the failure still hears it, once.
+      const late: Error[] = [];
+      client.onFailure?.((error) => late.push(error));
+      expect(late).toHaveLength(1);
     } finally {
       await client.close().catch(() => undefined);
       await rm(directory, { recursive: true, force: true });

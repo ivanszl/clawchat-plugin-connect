@@ -112,6 +112,8 @@ export interface ConnectWsClientOptions {
   reliability?: { ackDebounceMs?: number; ackResendMs?: number };
   protocolEventHandler?: (type: ConnectProtocolEventType, envelope: Envelope) => void | Promise<void>;
   messageHandler?: (message: NormalizedInboundMessage) => MessageHandlingResult | Promise<MessageHandlingResult>;
+  /** Called for a redelivered, already handled inbound message that is dropped before {@link messageHandler}. */
+  onDuplicateDropped?: (message: NormalizedInboundMessage) => void;
   interactionSubmitHandler?: (envelope: Envelope) => boolean | Promise<boolean>;
   capabilities?: {
     chatMetadataEvents?: boolean;
@@ -593,6 +595,7 @@ export class ConnectWsClient extends EventEmitter {
         materialized &&
         (await this.options.stateStore.hasHandledInboundMessage(this.options.agentId, materialized.messageId, envelope))
       ) {
+        this.options.onDuplicateDropped?.(materialized);
         if (materialized && this.options.userId && materialized.sender.id !== this.options.userId)
           this.sendDeliveryReceipt(materialized);
         return;

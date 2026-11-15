@@ -3,7 +3,12 @@ import { executeAgentLiveware, isAgentLivewareOperation } from "../agent/agent-l
 import { verifyInstalledSkills } from "../agent/skills";
 import { executeConnectTool } from "../agent/tool-executor";
 import { type ClawChatApiClient, createClawChatApiClient } from "../clawchat/api-client";
-import { handleChatCommand, isConnectControlMessage, requiresOrderedSessionControl } from "../clawchat/chat-commands";
+import {
+  handleChatCommand,
+  isConnectControlMessage,
+  isOwnerOnlyControlMessage,
+  requiresOrderedSessionControl,
+} from "../clawchat/chat-commands";
 import { type GroupDispatchMode, type GroupIntakeClock, GroupIntakeCoordinator } from "../clawchat/group-intake";
 import { inboundContentDigest } from "../clawchat/inbound-identity";
 import {
@@ -21,6 +26,7 @@ import type { ConnectStateStore } from "../persistence/state";
 import { ConnectBindingLivewarePublicationStateStore } from "../plugin/official/liveware-publication-state";
 import { ConnectRuntime } from "../runtime/connect-runtime";
 import type { ConnectExecutionCapabilities } from "../runtime/execution-capabilities";
+import { type IgnoredReason, LifecycleLog, lifecycleMessageIds } from "../runtime/lifecycle-log";
 import type { RuntimeAdapterRegistry } from "../runtime/registry";
 import type { RuntimeInteractionCoordinator } from "../runtime/runtime-interaction-coordinator";
 import { RuntimeInteractionRouter } from "../runtime/runtime-interaction-router";
@@ -69,6 +75,10 @@ export interface BindingRuntimeOptions {
   runtimePreparationRetryMs?: number;
   verifyInstalledSkills?: () => Promise<void>;
   writeError: (message: string) => void;
+  /** Receives message lifecycle lines (O-08); defaults to container stdout. */
+  writeLifecycle?: (line: string) => void;
+  /** Overrides the 30 minute ClawChat approval deadline; intended for tests. */
+  approvalDeadlineMs?: number;
 }
 
 export type BindingProtocolEventType =
@@ -140,6 +150,14 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       deviceId: options.deviceId,
       token: options.activation.accessToken,
     });
+  const lifecycle = new LifecycleLog({
+    runtime: "dsh",
+    write: options.writeLifecycle,
+    ledger: {
+      claim: async (key) => await options.stateStore.claimProtocolEvent(options.agentId, key),
+      has: async (key) => await options.stateStore.hasProtocolEvent(options.agentId, key),
+    },
+  });
   const senderDisplayNames = new Map<string, Promise<string | null>>();
   const resolveSenderDisplayName = async (senderId: string): Promise<string | null> => {
     const active = senderDisplayNames.get(senderId);
@@ -198,6 +216,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     deviceId: options.deviceId,
     transport: options.wsTransport,
     messageHandler: (message) => inboundMessages.accept(message),
+    onDuplicateDropped: (message) => lifecycle.ignored([message.messageId], message.chatId, "duplicate"),
     interactionSubmitHandler: async (envelope) => await interactionRouter.handleInteractionSubmit(envelope),
     protocolEventHandler: async (type, envelope) => {
       if (type === "notify") {
@@ -223,6 +242,8 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     clientInteractions: runtimeInteractions,
     ownerUserId: options.activation.ownerUserId,
     ownerConversationId: options.activation.conversationId,
+    lifecycle,
+    ...(options.approvalDeadlineMs ? { approvalDeadlineMs: options.approvalDeadlineMs } : {}),
     agentUserId: options.activation.userId,
     agentDisplayName: options.agentId,
     resolveSenderDisplayName,
@@ -270,6 +291,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     runtimeInteractions: interactionRouter,
     turnSurfaces: options.turnSurfaces,
     resolveSenderDisplayName,
+    lifecycle,
   });
   groupIntake = new GroupIntakeCoordinator({
     bindingId: options.agentId,
@@ -278,6 +300,12 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     api: clawChatApi,
     writeError: options.writeError,
     clock: options.groupIntakeClock,
+    onIgnored: (message, outcome) =>
+      lifecycle.ignored(
+        [message.messageId],
+        message.chatId,
+        outcome === "mention-context" || outcome === "policy-discarded" ? "not_addressed" : outcome,
+      ),
     reject: async (message, reason) => {
       await wsClient.sendMessageEnvelope(
         EVENT.MESSAGE_REPLY,
@@ -296,6 +324,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
         sessionContinuity,
         onTurnAccepted,
         groupDispatchMode,
+        lifecycle,
       }),
   });
   void groupIntake
@@ -314,6 +343,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     groupIntake,
     sessionContinuity,
     runtimeAdapters,
+    lifecycle,
   );
   let groupRecoveryAfterSettings: Promise<void> | null = null;
   const recoverGroupMessages = (): Promise<void> => {
@@ -563,11 +593,14 @@ class InboundMessageProcessor {
     private readonly groupIntake: GroupIntakeCoordinator,
     private readonly sessionContinuity: SessionContinuity,
     private readonly runtimeAdapters: RuntimeAdapterRegistry,
+    private readonly lifecycle: LifecycleLog,
   ) {}
 
   accept(message: NormalizedInboundMessage): "accepted" {
     if (!this.accepting) throw new Error("inbound message processor is closing");
     const key = inboundHandlingKey(message);
+    // Idempotent per message id: a redelivery or a recovery re-submit logs nothing new.
+    this.lifecycle.received(message);
     this.abandonedRecoveryKeys.delete(key);
     if (this.unknownRecoveryKeys.has(key)) return "accepted";
     const activeRecovery = this.recoveries.get(message.chatType);
@@ -581,7 +614,12 @@ class InboundMessageProcessor {
             message.messageId,
             message.raw,
           );
-          if (!this.accepting || this.unknownRecoveryKeys.has(key) || handled) return;
+          if (!this.accepting || this.unknownRecoveryKeys.has(key)) return;
+          if (handled) {
+            // Already ended in an earlier run; closes it only if no line was ever written for it.
+            this.lifecycle.ignored([message.messageId], message.chatId, "duplicate");
+            return;
+          }
           this.startProcessing(message, key);
         })
         .catch((error) =>
@@ -616,6 +654,7 @@ class InboundMessageProcessor {
             interactionRouter: this.interactionRouter,
             sessionContinuity: this.sessionContinuity,
             onTurnAccepted: markHandled,
+            lifecycle: this.lifecycle,
           }).then(async (handledWithoutTurn) => {
             if (handledWithoutTurn) await markHandled();
           })
@@ -654,6 +693,10 @@ class InboundMessageProcessor {
       if (!message || message.chatType !== chatType) continue;
       const key = inboundHandlingKey(message);
       if (this.abandonedRecoveryKeys.has(key)) continue;
+      // Unfinished work this process never saw arrive was cut off by a restart; retries after this log nothing.
+      if (!this.lifecycle.seenInProcess(message.messageId)) {
+        this.lifecycle.turnFailed([message.messageId], undefined, message.chatId, { reason: "restart" });
+      }
       this.unknownRecoveryKeys.add(key);
       if (
         await this.options.stateStore.hasHandledInboundMessage(this.options.agentId, message.messageId, message.raw)
@@ -715,6 +758,7 @@ class InboundMessageProcessor {
     this.unknownRecoveryKeys.delete(key);
     this.unknownRecoveryProgress.delete(key);
     this.abandonedRecoveryKeys.add(key);
+    this.lifecycle.turnFailed([message.messageId], undefined, message.chatId, { reason: "recovery_gave_up" });
     this.options.writeError(
       `${this.options.agentId}: inbound recovery gave up ${JSON.stringify({
         event: "inbound-recovery-gave-up",
@@ -846,17 +890,29 @@ function wireQuarantineEvents(wsClient: ConnectWsClient, options: BindingRuntime
   });
 }
 
-async function dispatchInboundMessage(
-  params: BindingRuntimeOptions & {
-    message: NormalizedInboundMessage;
-    wsClient: ConnectWsClient;
-    runtime: ConnectRuntime;
-    interactionRouter: RuntimeInteractionRouter;
-    sessionContinuity: SessionContinuity;
-    onTurnAccepted: () => Promise<void>;
-    groupDispatchMode?: GroupDispatchMode;
-  },
-): Promise<boolean> {
+type DispatchInboundParams = BindingRuntimeOptions & {
+  message: NormalizedInboundMessage;
+  wsClient: ConnectWsClient;
+  runtime: ConnectRuntime;
+  interactionRouter: RuntimeInteractionRouter;
+  sessionContinuity: SessionContinuity;
+  onTurnAccepted: () => Promise<void>;
+  groupDispatchMode?: GroupDispatchMode;
+  lifecycle: LifecycleLog;
+};
+
+async function dispatchInboundMessage(params: DispatchInboundParams): Promise<boolean> {
+  const handledWithoutTurn = await routeInboundMessage(params);
+  // Closes the message when no more specific reason was logged where it was dropped; a no-op otherwise.
+  if (handledWithoutTurn) {
+    params.lifecycle.ignored(lifecycleMessageIds(params.message), params.message.chatId, "no_turn");
+  }
+  return handledWithoutTurn;
+}
+
+async function routeInboundMessage(params: DispatchInboundParams): Promise<boolean> {
+  const ids = lifecycleMessageIds(params.message);
+  const ignore = (reason: IgnoredReason) => params.lifecycle.ignored(ids, params.message.chatId, reason);
   const addressed =
     (params.message.groupBatch
       ? unaddressedGroupMessage(params.message)
@@ -864,7 +920,10 @@ async function dispatchInboundMessage(
     (params.groupDispatchMode === "policy-eligible" && params.message.chatType === "group"
       ? unaddressedGroupMessage(params.message)
       : null);
-  if (!addressed) return true;
+  if (!addressed) {
+    ignore("not_addressed");
+    return true;
+  }
   const message = addressed.message;
   const canRouteCommand = addressed.acceptsCommands || addressed.malformedLineBreakCommand;
   if (
@@ -879,14 +938,20 @@ async function dispatchInboundMessage(
       buildReplyTextMessagePayload("Please include a message, attachment, or use @Agent /help.", message),
       { toType: message.chatType },
     );
+    ignore("empty_message");
     await params.onTurnAccepted();
     return true;
   }
 
   if (await params.interactionRouter.handleMessage(message)) {
+    ignore("interaction_response");
     await params.onTurnAccepted();
     return true;
   }
+  const commandReason = (): IgnoredReason =>
+    isOwnerOnlyControlMessage(message.text) && message.sender.id !== params.activation.ownerUserId
+      ? "not_owner"
+      : "command";
   const routeCommand = async (): Promise<boolean> => {
     if (!canRouteCommand) return false;
     const command = await handleChatCommand({
@@ -907,6 +972,7 @@ async function dispatchInboundMessage(
       listRuntimeWorkspaces: () => params.runtime.listRuntimeWorkspaces(),
     });
     if (!command.handled) return false;
+    ignore(commandReason());
     if (command.text) {
       await params.wsClient.sendMessageEnvelope(
         EVENT.MESSAGE_REPLY,
@@ -925,11 +991,13 @@ async function dispatchInboundMessage(
       (message.sender.id !== params.activation.ownerUserId || !requiresOrderedSessionControl(message.text)))
   ) {
     await routeCommand();
+    ignore(commandReason());
     return true;
   }
   // Messages for the receiving Session would queue behind a Turn blocked on a pending Runtime Interaction.
   const receiving = await params.stateStore.getCurrentRuntimeSession(message.chatId, params.agentId);
   if (await params.interactionRouter.hintPendingInteraction(message, receiving?.sessionRef ?? null)) {
+    ignore("pending_interaction");
     await params.onTurnAccepted();
     return true;
   }

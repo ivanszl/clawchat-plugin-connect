@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { addressInboundMessage, commandAddressPrefix } from "../clawchat/message-mapper";
 import type { Envelope, Fragment, NormalizedInboundMessage, Sender } from "../clawchat/protocol";
+import { LifecycleLog } from "./lifecycle-log";
 import { RuntimeInteractionSettlement } from "./runtime-interaction-settlement";
 import type {
   ClawChatInteractionRoute,
@@ -23,6 +24,8 @@ interface RouterOptions {
   agentDisplayName?: string;
   resolveSenderDisplayName?(senderId: string): Promise<string | null>;
   sendClawChatMessage(delivery: ClawChatInteractionDelivery): Promise<void>;
+  /** Message lifecycle log (O-08); silent when absent. */
+  lifecycle?: LifecycleLog;
 }
 
 export interface ClawChatInteractionDelivery extends ClawChatInteractionRoute {
@@ -33,6 +36,8 @@ export interface ClawChatInteractionDelivery extends ClawChatInteractionRoute {
 interface PendingClawChatInteraction {
   id: string;
   sessionRef: string;
+  turnId: string;
+  expiredLogged?: boolean;
   route: ClawChatInteractionRoute;
   request: RuntimeInteractionRequest;
   answers: Record<string, string[]>;
@@ -74,9 +79,11 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
   >();
 
   private readonly approvalDeadlineMs: number;
+  private readonly lifecycle: LifecycleLog;
 
   constructor(private readonly options: RouterOptions) {
     this.approvalDeadlineMs = options.approvalDeadlineMs ?? APPROVAL_DEADLINE_MS;
+    this.lifecycle = options.lifecycle ?? LifecycleLog.silent();
   }
 
   async request(
@@ -110,6 +117,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
       this.pending.set(id, {
         id,
         sessionRef: context.sessionRef,
+        turnId: context.turnId,
         route,
         request,
         answers: {},
@@ -128,6 +136,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     });
     const pending = this.pending.get(id);
     if (!pending) throw new Error("ClawChat Runtime Interaction was not initialized");
+    if (route.sourceMessageId) this.lifecycle.interactionPending(route.sourceMessageId, context.turnId, route.chatId);
     try {
       await this.present(pending);
     } catch (error) {
@@ -669,6 +678,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     const pending = this.pending.get(id);
     if (pending?.request.kind !== "approval") return;
     pending.timeout = null;
+    this.lifecycleExpired(pending);
     const minutes = Math.max(1, Math.round(this.approvalDeadlineMs / 60_000));
     const text = `${groupSessionPrefix(pending)}审批请求已超过 ${minutes} 分钟未处理，已自动拒绝，当前回合将继续。`;
     if (!pending.request.options.some((option) => option.id === "deny")) {
@@ -686,6 +696,7 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
     const pending = this.pending.get(id);
     if (!pending) return;
     if (!pending.settlement.expire()) return;
+    if (/deadline/iu.test(reason)) this.lifecycleExpired(pending);
     this.pending.delete(id);
     if (pending.timeout) clearTimeout(pending.timeout);
     pending.removeAbortListener();
@@ -703,6 +714,14 @@ export class RuntimeInteractionRouter implements RuntimeInteractionPort {
       }
     } finally {
       pending.reject(new Error(reason));
+    }
+  }
+
+  private lifecycleExpired(pending: PendingClawChatInteraction): void {
+    if (pending.expiredLogged) return;
+    pending.expiredLogged = true;
+    if (pending.route.sourceMessageId) {
+      this.lifecycle.interactionExpired(pending.route.sourceMessageId, pending.turnId, pending.route.chatId);
     }
   }
 

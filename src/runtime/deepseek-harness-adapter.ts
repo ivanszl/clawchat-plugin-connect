@@ -337,6 +337,7 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
         queue.fail(error instanceof Error ? error : new Error(String(error))),
       );
     });
+    const offFailure = this.client.onFailure?.((error) => queue.fail(error));
     try {
       if (input.command) {
         await this.executeCommand(input, runtimeThreadId, queue);
@@ -362,6 +363,7 @@ class DeepSeekHarnessRuntimeSession implements ConnectRuntimeSession {
     } finally {
       off();
       offInteraction();
+      offFailure?.();
       if (this.active?.queue === queue) this.active = null;
     }
   }

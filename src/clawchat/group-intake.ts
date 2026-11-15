@@ -20,6 +20,8 @@ export interface GroupIntakeCoordinatorOptions {
   reject(message: NormalizedInboundMessage, reason: string): Promise<void>;
   writeError(message: string): void;
   clock?: GroupIntakeClock;
+  /** Called when a group message is resolved without a Turn (muted, context only, oversized, discarded). */
+  onIgnored?(message: NormalizedInboundMessage, outcome: Exclude<InboundHandlingOutcome, "runtime">): void;
 }
 
 export type GroupDispatchMode = "addressed-only" | "policy-eligible";
@@ -455,6 +457,7 @@ export class GroupIntakeCoordinator {
       batch.messages.map((message) => ({ messageId: message.messageId, raw: message.raw })),
       outcome,
     );
+    if (outcome !== "runtime") for (const message of batch.messages) this.options.onIgnored?.(message, outcome);
   }
 
   private async withBatchOwnership<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
@@ -527,6 +530,7 @@ export class GroupIntakeCoordinator {
       message.raw,
       outcome,
     );
+    if (outcome !== "runtime") this.options.onIgnored?.(message, outcome);
   }
 
   private async rejectIfOverCapacity(message: NormalizedInboundMessage): Promise<boolean> {

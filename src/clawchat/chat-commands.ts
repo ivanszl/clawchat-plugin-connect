@@ -102,6 +102,12 @@ function helpText(chatType: NormalizedInboundMessage["chatType"]): string {
   ].join("\n");
 }
 
+/** Commands only the Agent Binding owner may run; a non-owner sender is refused. */
+export function isOwnerOnlyControlMessage(text: string): boolean {
+  const [command = ""] = text.trim().split(/\s+/u);
+  return CONTROL_COMMANDS.has(command);
+}
+
 export function isConnectControlMessage(text: string): boolean {
   const [command = ""] = text.trim().split(/\s+/u);
   return (
