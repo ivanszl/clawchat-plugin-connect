@@ -7,21 +7,7 @@ import type { NormalizedInboundMessage } from "../clawchat/protocol";
  */
 export const LIFECYCLE_PREFIX = "clawchat-lifecycle ";
 
-export const LIFECYCLE_STEPS = [
-  "received",
-  "ignored",
-  "queued",
-  "turn_started",
-  "reply_sent",
-  "turn_finished",
-  "turn_failed",
-  "interaction_pending",
-  "interaction_expired",
-] as const;
-export type LifecycleStep = (typeof LIFECYCLE_STEPS)[number];
-
 export const IGNORED_REASONS = [
-  "duplicate",
   "not_addressed",
   "not_owner",
   "muted",
@@ -39,7 +25,6 @@ export const FAILED_REASONS = [
   "timeout",
   "cancelled",
   "bridge_exit",
-  "shutdown",
   "restart",
   "recovery_gave_up",
   "runtime_error",
@@ -92,8 +77,19 @@ class MemoryLedger implements LifecycleLedger {
   }
 }
 
-const FAILED: ReadonlySet<string> = new Set(FAILED_REASONS);
-const REASONS: ReadonlySet<string> = new Set(LIFECYCLE_REASONS);
+/** Unreachable under the types; a line that arrives with an unknown reason is written with its step's fallback. */
+const STEP_REASONS: Record<
+  "ignored" | "queued" | "turn_failed" | "interaction_expired",
+  {
+    allowed: ReadonlySet<string>;
+    fallback: LifecycleReason;
+  }
+> = {
+  ignored: { allowed: new Set(IGNORED_REASONS), fallback: "no_turn" },
+  queued: { allowed: new Set(QUEUED_REASONS), fallback: "busy" },
+  turn_failed: { allowed: new Set(FAILED_REASONS), fallback: "runtime_error" },
+  interaction_expired: { allowed: new Set(EXPIRED_REASONS), fallback: "timeout" },
+};
 const MAX_FIELD_CHARACTERS = 200;
 
 export interface LifecycleMessageRef {
@@ -102,7 +98,8 @@ export interface LifecycleMessageRef {
 }
 
 interface LifecycleLogOptions {
-  runtime?: string;
+  /** Runtime label, or a function resolving it; no label means no lines. Defaults to "dsh". */
+  runtime?: string | (() => string | undefined);
   /** Makes received/terminal lines once-only across restarts. Defaults to process memory. */
   ledger?: LifecycleLedger;
   /** Receives one finished line without a trailing newline. Defaults to container stdout. */
@@ -116,30 +113,53 @@ export function lifecycleMessageIds(message: NormalizedInboundMessage): string[]
   return batch && batch.length > 0 ? batch : [message.messageId];
 }
 
-/** Marks an error with the reason code its Turn failure should be logged under. */
-export function withLifecycleReason<T>(error: T, reason: FailedReason): T {
-  if (error && typeof error === "object" && !("lifecycleReason" in error)) {
-    try {
-      Object.defineProperty(error, "lifecycleReason", { value: reason, enumerable: false });
-    } catch {
-      // A frozen error keeps the generic reason.
-    }
+/** A failure that already knows the reason code its Turn failure is logged under. */
+export class LifecycleError extends Error {
+  readonly reason: FailedReason;
+  constructor(message: string, reason: FailedReason, options?: ErrorOptions) {
+    super(message, options);
+    this.name = new.target.name;
+    this.reason = reason;
   }
-  return error;
+}
+
+/** The Runtime process or its bridge died or broke protocol; the Turn will never finish. */
+export class BridgeExitError extends LifecycleError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, "bridge_exit", options);
+  }
+}
+
+/** A Runtime request did not answer in time. */
+export class BridgeTimeoutError extends LifecycleError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, "timeout", options);
+  }
+}
+
+/** A reply could not be handed to ClawChat or the server rejected it. Carries the original error as `cause`. */
+export class ReplySendError extends LifecycleError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, "send_failed", options);
+  }
+}
+
+/**
+ * Connect itself is shutting the Runtime down. Not a failure of the message: nothing is logged and no failure notice
+ * is sent; a restart recovers the message.
+ */
+export class ShutdownError extends Error {
+  override name = "ShutdownError";
 }
 
 /** Reason code and error class/code for a failure. The error message is never used. */
 export function classifyFailure(error: unknown): LifecycleFailure {
-  const tagged =
-    error && typeof error === "object" ? (error as { lifecycleReason?: unknown }).lifecycleReason : undefined;
-  const name = errorClass(error);
-  if (typeof tagged === "string" && FAILED.has(tagged)) {
-    return { reason: tagged as FailedReason, ...(name ? { error: name } : {}) };
+  if (error instanceof LifecycleError) {
+    const name = errorClass(error.cause) ?? errorClass(error);
+    return { reason: error.reason, ...(name ? { error: name } : {}) };
   }
+  const name = errorClass(error);
   if (name === "AbortError") return { reason: "cancelled", error: name };
-  if (name === "AckTimeoutError") return { reason: "send_failed", error: name };
-  const message = error instanceof Error ? error.message : "";
-  if (/timed out/iu.test(message)) return { reason: "timeout", ...(name ? { error: name } : {}) };
   return { reason: "runtime_error", ...(name ? { error: name } : {}) };
 }
 
@@ -176,7 +196,7 @@ function boundedId(value: string): string {
  * nothing, and no step is written after the terminal line. Calls return at once; lines are written in call order.
  */
 export class LifecycleLog {
-  private readonly runtime: string;
+  private readonly runtime: () => string | undefined;
   private readonly writeLine: (line: string) => void;
   private readonly now: () => Date;
   private readonly ledger: LifecycleLedger;
@@ -185,7 +205,8 @@ export class LifecycleLog {
   private tail: Promise<void> = Promise.resolve();
 
   constructor(options: LifecycleLogOptions = {}) {
-    this.runtime = options.runtime ?? "dsh";
+    const runtime = options.runtime ?? "dsh";
+    this.runtime = typeof runtime === "function" ? runtime : () => runtime;
     this.writeLine =
       options.write ??
       ((line) => {
@@ -197,8 +218,13 @@ export class LifecycleLog {
 
   /** A log that writes nothing, for components constructed without a Binding Runtime around them. */
   static silent(): LifecycleLog {
-    return new LifecycleLog({ write: () => undefined });
+    const log = new LifecycleLog({ write: () => undefined });
+    log.active = false;
+    return log;
   }
+
+  /** False for a silent log, so callers can skip work that only feeds the log. */
+  active = true;
 
   /** True once this process has seen the message id; used to tell a restart's leftovers from in-flight work. */
   seenInProcess(messageId: string): boolean {
@@ -227,9 +253,19 @@ export class LifecycleLog {
     }
   }
 
-  /** `at` is when the reply was handed to ClawChat; the line may be written after the acknowledgement. */
-  replySent(msg: string, chat: string, reply: string | undefined, turn: string | undefined, at: Date): void {
-    this.record(msg, chat, { step: "reply_sent", ...(turn ? { turn } : {}), ...(reply ? { reply } : {}) }, false, at);
+  /** `at` is when the reply was handed to ClawChat; `reply` only when the outbound id is known at that time. */
+  replySent(message: LifecycleMessageRef, fields: { turn?: string; reply?: string; at: Date }): void {
+    this.record(
+      message.messageId,
+      message.chatId,
+      {
+        step: "reply_sent",
+        ...(fields.turn ? { turn: fields.turn } : {}),
+        ...(fields.reply ? { reply: fields.reply } : {}),
+      },
+      false,
+      fields.at,
+    );
   }
 
   turnFinished(ids: readonly string[], turn: string, chat: string): void {
@@ -265,18 +301,25 @@ export class LifecycleLog {
   private record(msg: string, chat: string, fields: LifecycleStepFields, terminal: boolean, at?: Date): void {
     const ts = (at ?? this.now()).toISOString();
     const task = async () => {
+      let label: string | undefined;
+      try {
+        label = this.runtime();
+      } catch {
+        label = undefined;
+      }
+      if (!label) return;
       const receivedKey = `lifecycle:received:${msg}`;
       const terminalKey = `lifecycle:terminal:${msg}`;
       if (fields.step === "received") {
-        if (await this.ledger.claim(receivedKey)) this.write(ts, msg, chat, fields);
+        if (await this.ledger.claim(receivedKey)) this.write(label, ts, msg, chat, fields);
         return;
       }
       // A step for an id whose `received` was never written (older process, replay) gets its received line first.
-      if (await this.ledger.claim(receivedKey)) this.write(ts, msg, chat, { step: "received" });
+      if (await this.ledger.claim(receivedKey)) this.write(label, ts, msg, chat, { step: "received" });
       if (terminal) {
-        if (await this.ledger.claim(terminalKey)) this.write(ts, msg, chat, fields);
+        if (await this.ledger.claim(terminalKey)) this.write(label, ts, msg, chat, fields);
       } else if (!(await this.ledger.has(terminalKey))) {
-        this.write(ts, msg, chat, fields);
+        this.write(label, ts, msg, chat, fields);
       }
     };
     this.tail = this.tail.then(task).catch(() => undefined);
@@ -287,13 +330,23 @@ export class LifecycleLog {
     await this.tail;
   }
 
-  private write(ts: string, msg: string, chat: string, fields: LifecycleStepFields): void {
+  private write(runtime: string, ts: string, msg: string, chat: string, fields: LifecycleStepFields): void {
     const extra = fields as { turn?: string; reply?: string; reason?: LifecycleReason; error?: string };
-    const reason = extra.reason === undefined || REASONS.has(extra.reason) ? extra.reason : "runtime_error";
+    let reason = extra.reason;
+    if (
+      reason !== undefined &&
+      (fields.step === "ignored" ||
+        fields.step === "queued" ||
+        fields.step === "turn_failed" ||
+        fields.step === "interaction_expired")
+    ) {
+      const rule = STEP_REASONS[fields.step];
+      if (!rule.allowed.has(reason)) reason = rule.fallback;
+    }
     const record = {
       v: 1,
       ts,
-      runtime: this.runtime,
+      runtime,
       step: fields.step,
       msg: boundedId(msg),
       ...(extra.reply ? { reply: boundedId(extra.reply) } : {}),

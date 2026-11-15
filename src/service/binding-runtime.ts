@@ -150,8 +150,9 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       deviceId: options.deviceId,
       token: options.activation.accessToken,
     });
+  // Only Runtimes whose Adapter declares a label write lifecycle lines (O-08 is specified per Runtime).
   const lifecycle = new LifecycleLog({
-    runtime: "dsh",
+    runtime: () => runtimeAdapters.lifecycleLabelFor(binding),
     write: options.writeLifecycle,
     ledger: {
       claim: async (key) => await options.stateStore.claimProtocolEvent(options.agentId, key),
@@ -216,7 +217,6 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     deviceId: options.deviceId,
     transport: options.wsTransport,
     messageHandler: (message) => inboundMessages.accept(message),
-    onDuplicateDropped: (message) => lifecycle.ignored([message.messageId], message.chatId, "duplicate"),
     interactionSubmitHandler: async (envelope) => await interactionRouter.handleInteractionSubmit(envelope),
     protocolEventHandler: async (type, envelope) => {
       if (type === "notify") {
@@ -615,11 +615,8 @@ class InboundMessageProcessor {
             message.raw,
           );
           if (!this.accepting || this.unknownRecoveryKeys.has(key)) return;
-          if (handled) {
-            // Already ended in an earlier run; closes it only if no line was ever written for it.
-            this.lifecycle.ignored([message.messageId], message.chatId, "duplicate");
-            return;
-          }
+          // A redelivery of a handled id logs nothing; its earlier lines stand.
+          if (handled) return;
           this.startProcessing(message, key);
         })
         .catch((error) =>
@@ -693,10 +690,6 @@ class InboundMessageProcessor {
       if (!message || message.chatType !== chatType) continue;
       const key = inboundHandlingKey(message);
       if (this.abandonedRecoveryKeys.has(key)) continue;
-      // Unfinished work this process never saw arrive was cut off by a restart; retries after this log nothing.
-      if (!this.lifecycle.seenInProcess(message.messageId)) {
-        this.lifecycle.turnFailed([message.messageId], undefined, message.chatId, { reason: "restart" });
-      }
       this.unknownRecoveryKeys.add(key);
       if (
         await this.options.stateStore.hasHandledInboundMessage(this.options.agentId, message.messageId, message.raw)
@@ -716,6 +709,11 @@ class InboundMessageProcessor {
       if (!this.accepting) return;
       if (reconciliation.outcome === "accepted") {
         await this.options.stateStore.markReconciledInboundIdentity(this.options.agentId, reconciliation.identity);
+        // The Runtime took this input in an earlier run and Connect will not process it again, so its outcome is
+        // lost to the log: it is abandoned at restart. (A message this process is still working on is not.)
+        if (!this.lifecycle.seenInProcess(message.messageId)) {
+          this.lifecycle.turnFailed([message.messageId], undefined, message.chatId, { reason: "restart" });
+        }
         this.unknownRecoveryKeys.delete(key);
         this.unknownRecoveryProgress.delete(key);
         continue;

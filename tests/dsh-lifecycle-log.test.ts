@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { mkdir, mkdtemp, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inboundContentDigest } from "../src/clawchat/inbound-identity";
 import {
   type Envelope,
   EVENT,
@@ -21,13 +22,15 @@ import type {
   DshSessionEvent,
 } from "../src/runtime/deepseek-harness-protocol";
 import {
+  BridgeExitError,
+  BridgeTimeoutError,
   classifyFailure,
   LIFECYCLE_PREFIX,
   LIFECYCLE_REASONS,
-  LIFECYCLE_STEPS,
   LifecycleLog,
+  ReplySendError,
   redactLifecycleError,
-  withLifecycleReason,
+  ShutdownError,
 } from "../src/runtime/lifecycle-log";
 import { RuntimeAdapterRegistry } from "../src/runtime/registry";
 import { type BindingRuntimeHandle, startBindingRuntime } from "../src/service/binding-runtime";
@@ -76,6 +79,8 @@ class ScriptedBridge implements DshBridgeClient {
   readonly hello: DshBridgeHello;
   readonly prompts: string[] = [];
   failNextCreate = false;
+  /** Native history served for resumed sessions (user messages the Runtime already took). */
+  readonly histories = new Map<string, DshSessionEvent[]>();
   script: PromptScript = async (bridge, sessionId) => bridge.completeTurn(sessionId, "done", "completed");
   private readonly listeners = new Set<(event: DshBridgeEvent) => void>();
   private readonly interactionListeners = new Set<(interaction: DshBridgeInteraction) => void>();
@@ -105,9 +110,11 @@ class ScriptedBridge implements DshBridgeClient {
       return { sessionId, header: { id: sessionId, createdAt: 1, cwd } } as T;
     }
     if (method === "history") {
+      const types = (params as { types?: string[] }).types;
+      const events = (this.histories.get(sessionId) ?? []).filter((event) => !types || types.includes(event.type));
       return {
         header: { id: sessionId, createdAt: 1, cwd },
-        events: [],
+        events,
         complete: true,
         nextBeforeSeq: null,
       } as T;
@@ -171,10 +178,15 @@ class ScriptedBridge implements DshBridgeClient {
 
   /** The Bridge process dies: no further event will ever arrive. */
   die(): void {
-    const error = withLifecycleReason(
-      new Error("DeepSeek Harness process exited unexpectedly (code 1)"),
-      "bridge_exit",
-    );
+    this.fail(new BridgeExitError("DeepSeek Harness process exited unexpectedly (code 1)"));
+  }
+
+  /** Connect itself closes the bridge while a Turn is running. */
+  shutdown(): void {
+    this.fail(new ShutdownError("DeepSeek Harness Bridge closed"));
+  }
+
+  private fail(error: Error): void {
     for (const listener of this.failureListeners) listener(error);
     this.failureListeners.clear();
   }
@@ -206,6 +218,7 @@ class MemoryTransport implements Transport {
   handlers: TransportEvents | null = null;
   sent: Envelope[] = [];
   failReplies = false;
+  rejectReplies = false;
   private ackCount = 0;
 
   async connect(_url: string, handlers: TransportEvents): Promise<void> {
@@ -220,6 +233,19 @@ class MemoryTransport implements Transport {
     this.sent.push(envelope);
     if (envelope.event === EVENT.MESSAGE_REPLY) {
       const id = `reply-${++this.ackCount}`;
+      if (this.rejectReplies) {
+        queueMicrotask(() =>
+          this.receive({
+            version: "2",
+            event: EVENT.MESSAGE_ERROR,
+            trace_id: envelope.trace_id,
+            emitted_at: 1,
+            chat_id: envelope.chat_id,
+            payload: { code: "rejected", reason: "not allowed", rejected_at: 1 },
+          } as Envelope),
+        );
+        return;
+      }
       queueMicrotask(() =>
         this.receive({
           version: "2",
@@ -272,7 +298,16 @@ afterEach(async () => {
 });
 
 async function startFixture(
-  options: { approvalDeadlineMs?: number; seedUnhandled?: SendOptions[] } = {},
+  options: {
+    approvalDeadlineMs?: number;
+    seedUnhandled?: SendOptions[];
+    /** Runs after seeding and before the Binding starts. */
+    beforeStart?: (context: {
+      stateStore: ReturnType<typeof createStateStore>;
+      bridge: ScriptedBridge;
+    }) => Promise<void>;
+    unlabelled?: boolean;
+  } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "clawchat-dsh-lifecycle-"));
   const home = join(root, "home");
@@ -313,7 +348,10 @@ async function startFixture(
       homePath: canonicalHome,
     } as ReturnType<typeof pluginBinding>,
   };
-  const runtimeAdapters = new RuntimeAdapterRegistry([fixedRuntimeAdapter(adapter as never)]);
+  await options.beforeStart?.({ stateStore, bridge });
+  const runtimeAdapters = new RuntimeAdapterRegistry([
+    fixedRuntimeAdapter((options.unlabelled ? { ...adapter, lifecycleLabel: undefined } : adapter) as never),
+  ]);
   const transport = new MemoryTransport();
   const lines: string[] = [];
   const errors: string[] = [];
@@ -448,7 +486,7 @@ describe("DSH message lifecycle log (O-08)", () => {
     expect(fixture.records().map(({ ts: _ts, ...rest }) => rest)).toEqual([
       { v: 1, runtime: "dsh", step: "received", msg: "msg-1", chat: "chat-owner" },
       { v: 1, runtime: "dsh", step: "turn_started", msg: "msg-1", turn: "msg-1", chat: "chat-owner" },
-      { v: 1, runtime: "dsh", step: "reply_sent", msg: "msg-1", turn: "msg-1", reply: "reply-1", chat: "chat-owner" },
+      { v: 1, runtime: "dsh", step: "reply_sent", msg: "msg-1", turn: "msg-1", chat: "chat-owner" },
       { v: 1, runtime: "dsh", step: "turn_finished", msg: "msg-1", turn: "msg-1", chat: "chat-owner" },
     ]);
     for (const record of fixture.records()) {
@@ -473,6 +511,30 @@ describe("DSH message lifecycle log (O-08)", () => {
     expect(fixture.bridge.prompts).toEqual(["msg-dup"]);
   });
 
+  it("keeps the real outcome of a turn that is still running when its message id is redelivered", async () => {
+    const fixture = await startFixture();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fixture.bridge.script = async (bridge, sessionId) => {
+      bridge.startTurn(sessionId);
+      await gate;
+      bridge.completeTurn(sessionId, "late answer", "completed");
+    };
+    fixture.send({ id: "msg-run", text: "slow one" });
+    await fixture.waitFor(() => fixture.steps("msg-run").includes("turn_started"));
+    // The input was accepted, so the id is already marked handled: the redelivery takes the early-drop path.
+    await Bun.sleep(30);
+    fixture.send({ id: "msg-run", text: "slow one" });
+    await Bun.sleep(50);
+    release();
+    await fixture.waitFor(finished(fixture, "msg-run"));
+    await Bun.sleep(30);
+
+    expect(fixture.steps("msg-run")).toEqual(["received", "turn_started", "reply_sent", "turn_finished"]);
+  });
+
   it("logs exactly one terminal line for a message whose first attempt failed and a retry later succeeded", async () => {
     const fixture = await startFixture();
     fixture.bridge.failNextCreate = true;
@@ -492,13 +554,53 @@ describe("DSH message lifecycle log (O-08)", () => {
     ).toHaveLength(1);
   });
 
-  it("logs turn_failed restart for unfinished messages left by a previous run, once, and retries stay silent", async () => {
+  it("logs nothing extra for an unfinished message that a restart processes again", async () => {
     const fixture = await startFixture({ seedUnhandled: [{ id: "msg-left", text: "interrupted", chat: "chat-left" }] });
-    await fixture.waitFor(() => fixture.bridge.prompts.includes("msg-left"));
-    await fixture.waitFor(() => fixture.steps("msg-left").length > 0);
-    await Bun.sleep(100);
+    await fixture.waitFor(() => fixture.steps("msg-left").includes("turn_finished"));
+    await Bun.sleep(50);
 
-    expect(fixture.steps("msg-left")).toEqual(["received", "turn_failed:restart"]);
+    expect(fixture.steps("msg-left")).toEqual(["received", "turn_started", "reply_sent", "turn_finished"]);
+  });
+
+  it("logs turn_failed restart for an unfinished message the restart abandons because the Runtime already took it", async () => {
+    const seeded: SendOptions = { id: "msg-taken", text: "already submitted", chat: "chat-taken" };
+    const fixture = await startFixture({
+      seedUnhandled: [seeded],
+      beforeStart: async ({ stateStore, bridge }) => {
+        await stateStore.upsertRuntimeSession({
+          chatId: "chat-taken",
+          sessionId: "session-taken",
+          agentId: "dsh",
+          runtimeSessionId: "thread-taken",
+          isCurrent: true,
+          hasMessages: true,
+        });
+        const raw = envelopeFor(seeded, 1, "seed");
+        const context = JSON.stringify({
+          origin: "clawchat",
+          message_id: seeded.id,
+          content_digest: inboundContentDigest(raw),
+        });
+        bridge.histories.set("thread-taken", [
+          nativeEvent(1, "user/message", {
+            turn: 1,
+            id: seeded.id,
+            source: {
+              kind: "user",
+              connectInputId: seeded.id,
+              connectInputOrigin: "clawchat",
+              clawchatTurnContext: context,
+            },
+            content: [{ type: "text", text: "x" }],
+          }),
+        ]);
+      },
+    });
+    await fixture.waitFor(() => fixture.steps("msg-taken").includes("turn_failed:restart"));
+    await Bun.sleep(50);
+
+    expect(fixture.steps("msg-taken")).toEqual(["received", "turn_failed:restart"]);
+    expect(fixture.bridge.prompts).toEqual([]);
   });
 
   it("hands the reply over before the turn finishes and stamps reply_sent with the send time", async () => {
@@ -508,7 +610,8 @@ describe("DSH message lifecycle log (O-08)", () => {
     const records = fixture.records();
     const reply = records.find((record) => record.step === "reply_sent");
     const done = records.find((record) => record.step === "turn_finished");
-    expect(reply?.reply).toBe("reply-1");
+    expect(reply).toBeDefined();
+    expect(reply).not.toHaveProperty("reply");
     expect(String(reply?.ts) <= String(done?.ts)).toBe(true);
     expect(records.map((record) => record.step)).toEqual(["received", "turn_started", "reply_sent", "turn_finished"]);
   });
@@ -608,18 +711,52 @@ describe("DSH message lifecycle log (O-08)", () => {
     expect(fixture.steps("msg-die").slice(0, 3)).toEqual(["received", "turn_started", "turn_failed:bridge_exit"]);
     expect(fixture.records().find((record) => record.step === "turn_failed")).toMatchObject({
       turn: "msg-die",
-      error: "Error",
+      error: "BridgeExitError",
     });
   });
 
-  it("logs a failed reply send as turn_failed send_failed", async () => {
+  it("logs a reply that cannot be handed to ClawChat as turn_failed send_failed, without a reply_sent", async () => {
     const fixture = await startFixture();
     fixture.transport.failReplies = true;
     fixture.send({ id: "msg-send", text: "answer me" });
     await fixture.waitFor(finished(fixture, "msg-send"));
 
-    expect(fixture.steps("msg-send")).toEqual(["received", "turn_started", "reply_sent", "turn_failed:send_failed"]);
+    expect(fixture.steps("msg-send")).toEqual(["received", "turn_started", "turn_failed:send_failed"]);
     expect(fixture.records().find((record) => record.step === "turn_failed")).toMatchObject({ error: "Error" });
+  });
+
+  it("logs reply_sent at hand-off and turn_failed send_failed when the server rejects the reply", async () => {
+    const fixture = await startFixture();
+    fixture.transport.rejectReplies = true;
+    fixture.send({ id: "msg-reject", text: "answer me" });
+    await fixture.waitFor(finished(fixture, "msg-reject"));
+
+    expect(fixture.steps("msg-reject")).toEqual(["received", "turn_started", "reply_sent", "turn_failed:send_failed"]);
+    expect(fixture.records().find((record) => record.step === "turn_failed")).toMatchObject({
+      error: "MessageSendError",
+    });
+  });
+
+  it("writes nothing and sends no failure notice when Connect itself closes the bridge mid-turn", async () => {
+    const fixture = await startFixture();
+    fixture.bridge.script = async (bridge, sessionId) => {
+      bridge.startTurn(sessionId);
+      bridge.shutdown();
+    };
+    fixture.send({ id: "msg-stop", text: "interrupted by shutdown" });
+    await fixture.waitFor(() => fixture.steps("msg-stop").includes("turn_started"));
+    await Bun.sleep(100);
+
+    expect(fixture.steps("msg-stop")).toEqual(["received", "turn_started"]);
+    expect(fixture.transport.sent.filter((envelope) => envelope.event === EVENT.MESSAGE_REPLY)).toEqual([]);
+  });
+
+  it("writes no lifecycle lines for a Runtime whose Adapter declares no label", async () => {
+    const fixture = await startFixture({ unlabelled: true });
+    fixture.send({ id: "msg-quiet", text: "hello" });
+    await fixture.waitFor(() => fixture.bridge.prompts.includes("msg-quiet"));
+    await Bun.sleep(100);
+    expect(fixture.lines).toEqual([]);
   });
 
   it("logs a cancelled turn as turn_failed cancelled", async () => {
@@ -708,7 +845,6 @@ describe("lifecycle log module", () => {
       'clawchat-lifecycle {"v":1,"ts":"2026-11-15T08:00:00.123Z","runtime":"dsh","step":"turn_started","msg":"m1","turn":"t1","chat":"c1"}',
       'clawchat-lifecycle {"v":1,"ts":"2026-11-15T08:00:00.123Z","runtime":"dsh","step":"turn_finished","msg":"m1","turn":"t1","chat":"c1"}',
     ]);
-    expect(LIFECYCLE_STEPS).toContain("interaction_expired");
     expect(LIFECYCLE_REASONS).toContain("pending_interaction");
   });
 
@@ -750,7 +886,7 @@ describe("lifecycle log module", () => {
     // @ts-expect-error free text is not a reason
     log.turnFailed(["m"], undefined, "c", { reason: "something the user said" });
     // @ts-expect-error queued only takes its own reasons
-    log.queued(["m"], "c", "duplicate");
+    log.queued(["m"], "c", "not_addressed");
     expect(true).toBe(true);
   });
 
@@ -765,9 +901,14 @@ describe("lifecycle log module", () => {
   });
 
   it("classifies failures by tag, abort and timeout, never by message content", () => {
-    expect(classifyFailure(withLifecycleReason(new Error("anything"), "send_failed")).reason).toBe("send_failed");
+    expect(classifyFailure(new ReplySendError("anything", { cause: new TypeError("x") }))).toEqual({
+      reason: "send_failed",
+      error: "TypeError",
+    });
+    expect(classifyFailure(new BridgeTimeoutError("slow"))).toEqual({ reason: "timeout", error: "BridgeTimeoutError" });
+    expect(classifyFailure(new BridgeExitError("gone"))).toEqual({ reason: "bridge_exit", error: "BridgeExitError" });
     expect(classifyFailure(Object.assign(new Error("x"), { name: "AbortError" })).reason).toBe("cancelled");
-    expect(classifyFailure(new Error("request timed out: prompt")).reason).toBe("timeout");
+    expect(classifyFailure(new Error("request timed out: prompt")).reason).toBe("runtime_error");
     expect(classifyFailure(new Error("secret user text")).reason).toBe("runtime_error");
     expect(classifyFailure(new Error("secret user text")).error).toBe("Error");
   });

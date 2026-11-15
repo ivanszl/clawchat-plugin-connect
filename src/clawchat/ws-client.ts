@@ -112,8 +112,6 @@ export interface ConnectWsClientOptions {
   reliability?: { ackDebounceMs?: number; ackResendMs?: number };
   protocolEventHandler?: (type: ConnectProtocolEventType, envelope: Envelope) => void | Promise<void>;
   messageHandler?: (message: NormalizedInboundMessage) => MessageHandlingResult | Promise<MessageHandlingResult>;
-  /** Called for a redelivered, already handled inbound message that is dropped before {@link messageHandler}. */
-  onDuplicateDropped?: (message: NormalizedInboundMessage) => void;
   interactionSubmitHandler?: (envelope: Envelope) => boolean | Promise<boolean>;
   capabilities?: {
     chatMetadataEvents?: boolean;
@@ -248,7 +246,11 @@ export class ConnectWsClient extends EventEmitter {
     event: "message.send" | "message.reply",
     chatId: string,
     payload: MessagePayload,
-    options: { toType?: ChatType } = {},
+    options: {
+      toType?: ChatType;
+      /** Called when the frame has been handed to the transport, before the acknowledgement arrives. */
+      onHandedOff?: () => void;
+    } = {},
   ): Promise<Envelope<MessageAckPayload>> {
     if (!chatId.trim()) throw new StateError("chatId is required");
     if (this.state !== "connected") throw new StateError("cannot send business traffic before hello-ok");
@@ -298,7 +300,9 @@ export class ConnectWsClient extends EventEmitter {
         clearTimeout(timer);
         this.pendingAcks.delete(traceId);
         reject(error instanceof Error ? error : new Error(String(error)));
+        return;
       }
+      options.onHandedOff?.();
     });
   }
 
@@ -595,7 +599,6 @@ export class ConnectWsClient extends EventEmitter {
         materialized &&
         (await this.options.stateStore.hasHandledInboundMessage(this.options.agentId, materialized.messageId, envelope))
       ) {
-        this.options.onDuplicateDropped?.(materialized);
         if (materialized && this.options.userId && materialized.sender.id !== this.options.userId)
           this.sendDeliveryReceipt(materialized);
         return;

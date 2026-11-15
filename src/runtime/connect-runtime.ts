@@ -40,7 +40,8 @@ import {
   type LifecycleFailure,
   LifecycleLog,
   lifecycleMessageIds,
-  withLifecycleReason,
+  ReplySendError,
+  ShutdownError,
 } from "./lifecycle-log";
 import { MAX_RUNTIME_MEDIA_BYTES } from "./media-cache";
 import { resolveModelSelection } from "./model-selection";
@@ -221,6 +222,8 @@ export class ConnectRuntime {
       await completion;
     } catch (error) {
       // An error before the Runtime accepted the input leaves the message pending for a retry: nothing is logged.
+      // Connect shutting the Runtime down is not a failure of the message: no notice, a restart recovers it.
+      if (error instanceof ShutdownError) return;
       await this.sendVisibleFailure(
         message,
         `ClawChat runtime turn failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -552,7 +555,7 @@ export class ConnectRuntime {
         noReplyProtocol: message.chatType === "group",
         materialize: (event) => materializeRuntimeOutput(event, policy),
         deliver: async (event, reply) => {
-          const delivery = await this.sendReply(message, reply, workspace, true);
+          const delivery = await this.sendReply(message, reply, { workspace, inTurn: true });
           if (delivery?.media.length) {
             await this.transcriptProjection?.applyRuntimeDelivery(current.sessionRef, event, delivery);
           }
@@ -565,7 +568,7 @@ export class ConnectRuntime {
         },
         materialize: (event) => materializeRuntimeOutput(event, policy),
         deliver: async (event, reply) => {
-          const delivery = await this.sendReply(message, reply, workspace, true);
+          const delivery = await this.sendReply(message, reply, { workspace, inTurn: true });
           if (delivery?.media.length) {
             await this.transcriptProjection?.applyRuntimeDelivery(current.sessionRef, event, delivery);
           }
@@ -705,22 +708,21 @@ export class ConnectRuntime {
   }
 
   private async sendVisibleFailure(message: NormalizedInboundMessage, text: string): Promise<void> {
-    await this.sendReply(message, { text, requiredControl: false }, undefined, false);
+    await this.sendReply(message, { text, requiredControl: false });
   }
 
+  /** `inTurn` marks a reply produced by the Turn (logged as `reply_sent`); failure notices are not. */
   private async sendReply(
     message: NormalizedInboundMessage,
     reply: MaterializedRuntimeReply,
-    workspace: RuntimeWorkspace | undefined,
-    inTurn: boolean,
+    options: { workspace?: RuntimeWorkspace; inTurn?: boolean } = {},
   ): Promise<DeliveredReplyProjection | null> {
+    const { workspace, inTurn = false } = options;
     const route = { chatId: message.chatId, chatType: message.chatType };
     const localMedia = workspace
       ? await resolveLocalReplyMedia(reply.text, this.options.config.stateDbPath, workspace)
       : { text: reply.text, files: [] };
     const payload = buildReplyTextMessagePayload(localMedia.text, message);
-    let ack: Awaited<ReturnType<ConnectWsClient["sendMessageEnvelope"]>>;
-    const sentAt = new Date();
     try {
       for (const file of localMedia.files) {
         payload.message.body.fragments.push(
@@ -728,22 +730,22 @@ export class ConnectRuntime {
         );
       }
       if (payload.message.body.fragments.length === 0) return null;
-      ack = await this.options.wsClient.sendMessageEnvelope(EVENT.MESSAGE_REPLY, route.chatId, payload, {
+      await this.options.wsClient.sendMessageEnvelope(EVENT.MESSAGE_REPLY, route.chatId, payload, {
         toType: route.chatType,
+        // reply_sent is written when the reply is handed to ClawChat, not when it is acknowledged.
+        ...(inTurn && this.lifecycle.active
+          ? {
+              onHandedOff: () =>
+                this.lifecycle.replySent(message, {
+                  turn: message.messageId,
+                  ...(payload.message_id ? { reply: payload.message_id } : {}),
+                  at: new Date(),
+                }),
+            }
+          : {}),
       });
     } catch (error) {
-      if (inTurn) this.lifecycle.replySent(message.messageId, route.chatId, undefined, message.messageId, sentAt);
-      throw withLifecycleReason(error, "send_failed");
-    }
-    // Failure notices are not part of the Turn's lifecycle.
-    if (inTurn) {
-      this.lifecycle.replySent(
-        message.messageId,
-        route.chatId,
-        typeof ack?.payload?.message_id === "string" ? ack.payload.message_id : undefined,
-        message.messageId,
-        sentAt,
-      );
+      throw new ReplySendError(error instanceof Error ? error.message : String(error), { cause: error });
     }
     return {
       text: localMedia.text,
@@ -840,7 +842,9 @@ export class ConnectRuntime {
       if (outcome.failure) this.lifecycle.turnFailed(ids, message.messageId, message.chatId, outcome.failure);
       else this.lifecycle.turnFinished(ids, message.messageId, message.chatId);
     } catch (error) {
-      if (started) this.lifecycle.turnFailed(ids, message.messageId, message.chatId, classifyFailure(error));
+      if (started && !(error instanceof ShutdownError)) {
+        this.lifecycle.turnFailed(ids, message.messageId, message.chatId, classifyFailure(error));
+      }
       throw error;
     } finally {
       clearInterval(typingHeartbeat);

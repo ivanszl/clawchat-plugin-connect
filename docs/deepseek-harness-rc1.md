@@ -36,3 +36,13 @@ as its original body. Groups retain structured mentions, batch content and
 explicitly read-only background without transport IDs/digests. Native history
 and reconnect reconciliation read the durable metadata and retain compatibility
 with old sessions containing the text envelope.
+
+## Bridge failure while a Turn runs
+
+If the DSH process or its Bridge dies after a prompt was admitted (exit, oversized or malformed frame, second hello),
+the Bridge notifies the active Turn, which ends as failed instead of waiting for events that will never come. Connect
+sends the usual failure notice to the conversation and the Session's queue moves on. The lifecycle log (see
+`docs/runtime-adapters.md`, "Message lifecycle log") records `turn_failed` with reason `bridge_exit`; a Bridge request
+that does not answer within 30 seconds records `timeout`. When Connect itself closes the Bridge (shutdown, Binding
+removal) the Turn ends silently: no failure notice and no lifecycle line; the message is recovered by a restart.
+Bridge stderr is not forwarded to the lifecycle log.

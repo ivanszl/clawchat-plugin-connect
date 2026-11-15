@@ -136,7 +136,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: deepSeekHarnessDescriptor,
     name: "DeepSeek Harness",
-    artifactIntegrity: "sha256-lR1P+6BF6ui/3kK3Oqj5AqOohBFs1C20J43+FhmPTxI=",
+    artifactIntegrity: "sha256-Uob67nRnckLvKjI8duJ7GbHmlSN0dv9bFTvlUMmq9zQ=",
     assetIntegrities: {
       "artifacts/deepseek-harness-bridge.mjs": {
         "darwin-arm64": "sha256-mu5eyFl9F6eXNWalkvq4JtMZcyke7z38L4UYJg16wfk=",
@@ -196,7 +196,7 @@ const BUNDLED_OFFICIAL_PLUGINS: readonly BundledOfficialPluginDefinition[] = [
   {
     descriptor: connectClientDescriptor,
     name: "Connect Client",
-    artifactIntegrity: "sha256-AxHFtxaZkxsfWkRA4RjdXZqxiFhhcOBGE+jQdmcBtYc=",
+    artifactIntegrity: "sha256-Yf3/rCCX4hqmbZFOofK1mPU0CYhtD5rgrrjYtI1ac9M=",
     classification: "managed-web-app",
     assetIntegrities: {
       "client-assets.json": {

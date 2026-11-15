@@ -29,6 +29,10 @@ export class RuntimeInteractionSettlement<Response, Candidate = Response> {
     return true;
   }
 
+  isPending(): boolean {
+    return this.current === "pending";
+  }
+
   terminalState(): RuntimeInteractionTerminalState | null {
     return this.current === "resolved" || this.current === "failed" || this.current === "expired" ? this.current : null;
   }

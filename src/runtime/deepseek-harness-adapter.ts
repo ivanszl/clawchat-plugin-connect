@@ -107,6 +107,7 @@ export function createDeepSeekHarnessRuntimeAdapter(
 
   return {
     kind: "deepseek-harness",
+    lifecycleLabel: "dsh",
     modes: [],
     lifecycleCapabilities,
     async prepare(binding) {

@@ -149,7 +149,7 @@ describe("DeepSeek Harness Bridge process boundary", () => {
       while (failures.length === 0 && Date.now() < deadline) await Bun.sleep(5);
       expect(failures).toHaveLength(1);
       expect(failures[0]?.message).toContain("process exited unexpectedly (code 9)");
-      expect((failures[0] as { lifecycleReason?: string }).lifecycleReason).toBe("bridge_exit");
+      expect(failures[0]?.name).toBe("BridgeExitError");
       // A listener added after the failure still hears it, once.
       const late: Error[] = [];
       client.onFailure?.((error) => late.push(error));
