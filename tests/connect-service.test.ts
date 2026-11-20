@@ -72,6 +72,7 @@ describe("Connect Service", () => {
   it("rejects startup when the release-managed Agent skills do not match", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-connect-service-skills-failure-"));
     const config = serviceConfig(["codex"]);
+    config.stateDbPath = join(directory, "state.sqlite");
     await expect(
       startConnectService(
         {
