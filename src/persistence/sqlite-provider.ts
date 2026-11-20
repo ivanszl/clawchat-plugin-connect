@@ -14,6 +14,7 @@ export const CONNECT_SQLITE_SCHEMA_VERSION = 4;
 
 const REQUIRED_STATE_TABLES = [
   "activations",
+  "activation_refresh_attempts",
   "installation_owner",
   "device_state",
   "workspace_catalog_entries",
@@ -51,6 +52,16 @@ const LEGACY_CONNECT_TABLES = new Set([
 
 const REQUIRED_COLUMNS = {
   activations: ["platform", "local_agent_id", "owner_user_id"],
+  activation_refresh_attempts: [
+    "platform",
+    "local_agent_id",
+    "source_fingerprint",
+    "attempt_id",
+    "source_revision",
+    "source_created",
+    "state",
+    "updated_at",
+  ],
   installation_owner: ["id", "owner_user_id"],
   device_state: ["id", "device_id"],
   workspace_catalog_entries: ["binding_id", "workspace_ref", "root_path", "selectable"],

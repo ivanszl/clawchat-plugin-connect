@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { stat, statfs } from "node:fs/promises";
 import { dirname } from "node:path";
 import { inboundContentDigest, protocolDeliveryContentJson } from "../clawchat/inbound-identity";
@@ -279,6 +279,138 @@ export class ConnectStateStore {
       return installationOwner ? "existing" : "established";
     });
   }
+  async beginActivationRefresh(
+    expected: ActivationCredentials,
+    deviceId: string,
+  ): Promise<{
+    attemptId: string;
+    sourceFingerprint: string;
+  } | null> {
+    const db = await this.requireDb();
+    return db.transaction((run, get) => {
+      const row = get<Record<string, unknown>>(
+        "SELECT * FROM activations WHERE platform = ? AND local_agent_id = ?",
+        PLATFORM_ID,
+        expected.localAgentId,
+      );
+      const owner = get<{ owner_user_id: string }>("SELECT owner_user_id FROM installation_owner WHERE id = 1");
+      const device = get<{ device_id: string }>("SELECT device_id FROM device_state WHERE id = 1");
+      if (
+        this.installationOwnerResetInProgress ||
+        !row ||
+        !expected.refreshToken ||
+        owner?.owner_user_id !== expected.ownerUserId ||
+        device?.device_id !== deviceId ||
+        !refreshSourceMatches(row, expected)
+      )
+        return null;
+      const sourceFingerprint = createHash("sha256")
+        .update(
+          JSON.stringify([
+            expected.localAgentId,
+            expected.accessToken,
+            expected.refreshToken,
+            expected.serverAgentId,
+            expected.userId,
+            expected.ownerUserId,
+            expected.conversationId,
+            deviceId,
+          ]),
+        )
+        .digest("hex");
+      if (
+        get(
+          "SELECT attempt_id FROM activation_refresh_attempts WHERE platform = ? AND local_agent_id = ? AND source_fingerprint = ?",
+          PLATFORM_ID,
+          expected.localAgentId,
+          sourceFingerprint,
+        )
+      )
+        return null;
+      const attemptId = randomUUID();
+      run(
+        "INSERT INTO activation_refresh_attempts(platform,local_agent_id,source_fingerprint,attempt_id,source_revision,source_created,state,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+        PLATFORM_ID,
+        expected.localAgentId,
+        sourceFingerprint,
+        attemptId,
+        numberValue(row.updated_at),
+        numberValue(row.activated_at),
+        "pending",
+        Date.now(),
+      );
+      return { attemptId, sourceFingerprint };
+    });
+  }
+
+  async completeActivationRefresh(
+    expected: ActivationCredentials,
+    deviceId: string,
+    claim: { attemptId: string; sourceFingerprint: string },
+    outcome: "rejected" | "unknown" | { accessToken: string; refreshToken: string },
+  ): Promise<boolean> {
+    const db = await this.requireDb();
+    return db.transaction((run, get) => {
+      const receipt = get<{ source_revision: number; source_created: number; state: string }>(
+        "SELECT source_revision,source_created,state FROM activation_refresh_attempts WHERE platform = ? AND local_agent_id = ? AND source_fingerprint = ? AND attempt_id = ?",
+        PLATFORM_ID,
+        expected.localAgentId,
+        claim.sourceFingerprint,
+        claim.attemptId,
+      );
+      if (receipt?.state !== "pending") return false;
+      const finish = (state: string) =>
+        run(
+          "UPDATE activation_refresh_attempts SET state = ?, updated_at = ? WHERE platform = ? AND local_agent_id = ? AND source_fingerprint = ? AND attempt_id = ?",
+          state,
+          Date.now(),
+          PLATFORM_ID,
+          expected.localAgentId,
+          claim.sourceFingerprint,
+          claim.attemptId,
+        );
+      if (typeof outcome === "string") {
+        finish(outcome);
+        return false;
+      }
+      const row = get<Record<string, unknown>>(
+        "SELECT * FROM activations WHERE platform = ? AND local_agent_id = ?",
+        PLATFORM_ID,
+        expected.localAgentId,
+      );
+      const owner = get<{ owner_user_id: string }>("SELECT owner_user_id FROM installation_owner WHERE id = 1");
+      const device = get<{ device_id: string }>("SELECT device_id FROM device_state WHERE id = 1");
+      if (
+        this.installationOwnerResetInProgress ||
+        !row ||
+        !refreshSourceMatches(row, expected) ||
+        numberValue(row.updated_at) !== receipt.source_revision ||
+        numberValue(row.activated_at) !== receipt.source_created ||
+        owner?.owner_user_id !== expected.ownerUserId ||
+        device?.device_id !== deviceId
+      ) {
+        finish("conflict");
+        return false;
+      }
+      const changed = run(
+        "UPDATE activations SET access_token = ?, refresh_token = ?, updated_at = ? WHERE platform = ? AND local_agent_id = ? AND updated_at = ? AND activated_at = ?",
+        outcome.accessToken,
+        outcome.refreshToken,
+        Math.max(Date.now(), receipt.source_revision + 1),
+        PLATFORM_ID,
+        expected.localAgentId,
+        receipt.source_revision,
+        receipt.source_created,
+      );
+      if (changed.changes !== 1) {
+        finish("conflict");
+        return false;
+      }
+      finish("succeeded");
+      return true;
+    });
+  }
+
   async getActivation(localAgentId: string): Promise<ActivationCredentials | null> {
     const db = await this.requireDb();
     const row = await db.get<Record<string, unknown>>(
@@ -3277,4 +3409,16 @@ function deduplicateStoredSubagent(block: TranscriptBlock, seen: Set<string>): T
     ...block,
     blocks: block.blocks.map(materialize).filter((child): child is EmbeddedTranscriptBlock => child !== null),
   };
+}
+
+function refreshSourceMatches(row: Record<string, unknown>, expected: ActivationCredentials): boolean {
+  return (
+    stringValue(row.local_agent_id) === expected.localAgentId &&
+    stringValue(row.access_token) === expected.accessToken &&
+    nullableString(row.refresh_token) === expected.refreshToken &&
+    nullableString(row.server_agent_id) === expected.serverAgentId &&
+    stringValue(row.user_id) === expected.userId &&
+    stringValue(row.owner_user_id) === expected.ownerUserId &&
+    nullableString(row.conversation_id) === expected.conversationId
+  );
 }

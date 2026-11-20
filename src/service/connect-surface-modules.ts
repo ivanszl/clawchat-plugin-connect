@@ -1,4 +1,5 @@
 import type { Context, Plugin } from "cordis";
+import { startupCredentials } from "../account/startup-credentials";
 import { isAgentLivewareOperation } from "../agent/agent-liveware";
 import { verifyInstalledSkills } from "../agent/skills";
 import { getConnectTool } from "../agent/tool-catalog";
@@ -150,11 +151,18 @@ export async function mountMandatorySurfaceModules(
           ),
       };
       try {
-        for (const { agentId, activation } of activatedBindings) {
+        for (const [index, { agentId, activation }] of activatedBindings.entries()) {
           try {
+            const credentials = await startupCredentials({
+              activation,
+              deviceId,
+              baseUrl: options.config.baseUrl,
+              store: ctx.connectPersistence.state,
+            });
+            activatedBindings[index] = { agentId, activation: credentials };
             const handle = await startRuntime({
               agentId,
-              activation,
+              activation: credentials,
               config: options.config,
               configPath: options.configPath,
               deviceId,

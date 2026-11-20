@@ -36,6 +36,20 @@ Four domains must remain independent:
 
 Failure in one domain does not rewrite another domain. App failure does not stop Runtime turns or cause App reselection. Runtime failure does not stop an independently keyed App. Publication failure changes neither the App selection nor Runtime. A no-App Binding is healthy when its other domains are healthy.
 
+At Service startup, Core refreshes a definitively expired ClawChat access JWT before that Binding's first handshake.
+The existing refresh endpoint receives its persisted device ID and refresh token without an expired bearer. Core checks
+the old and returned subject, Owner, Agent and device claims, then atomically compares the canonical activation and
+its stored revision before replacing only the two tokens. No live transport, message or Runtime Turn is replayed by
+this operation. Opaque and nonexpired tokens keep their existing authentication path.
+
+The additive `activation_refresh_attempts` table stores only attempt metadata and opaque source fingerprints. A pending,
+rejected or indeterminate attempt blocks automatic reuse of that credential pair across process restarts; explicit native
+re-pair supplies a new pair while preserving Binding identity. Transport failure, malformed responses and identity conflicts
+never erase current credentials or trigger another refresh. Receipt deletion follows the existing activation foreign key,
+including Binding deletion and Owner Reset by an older Core. The extension retains schema version4 and old Core readers;
+code rollback keeps current credentials and all business state, never restores a database snapshot. An older Core has no
+startup refresh, so it can use already renewed credentials but cannot recover their later expiry automatically.
+
 Products do not promise Session continuity. Connect Sessions and Runtime Threads support the ClawChat path. DSH Web, OpenCode Web, and the optional Connect Client each retain their own Session and Interaction state. Sharing a Workspace path is not transfer of conversation, tool state, authentication, or reconnect state.
 
 ## Core domain model
