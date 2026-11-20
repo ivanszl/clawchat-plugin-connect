@@ -59,6 +59,8 @@ const REQUIRED_COLUMNS = {
     "attempt_id",
     "source_revision",
     "source_created",
+    "result_fingerprint",
+    "result_revision",
     "state",
     "updated_at",
   ],

@@ -258,6 +258,60 @@ describe("expired startup credential rotation", () => {
     }
   });
 
+  it("reuses only a transactionally completed concurrent refresh without another HTTP call", async () => {
+    const f = await fixture();
+    const fetchImpl = mock(async () => response());
+    try {
+      const current = await startupCredentials({ ...f.options, fetchImpl });
+      expect(await startupCredentials({ ...f.options, fetchImpl })).toEqual(current);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it("fails closed after a completed concurrent refresh when device, owner, reset or revision fences change", async () => {
+    for (const kind of ["device", "owner", "reset", "revision"]) {
+      const f = await fixture(),
+        forbiddenRefresh = mock(async () => response());
+      try {
+        const current = await startupCredentials({ ...f.options, fetchImpl: async () => response() });
+        if (kind === "reset") await f.store.prepareInstallationOwnerReset();
+        else {
+          const db = new Database(f.dbPath);
+          if (kind === "device") db.query("UPDATE device_state SET device_id = ? WHERE id = 1").run("changed-device");
+          else if (kind === "owner")
+            db.query("UPDATE installation_owner SET owner_user_id = ? WHERE id = 1").run("changed-owner");
+          else db.query("UPDATE activations SET updated_at = updated_at + 1 WHERE local_agent_id = ?").run("dsh");
+          db.close();
+        }
+        await expect(startupCredentials({ ...f.options, fetchImpl: forbiddenRefresh })).rejects.toThrow(
+          "pending or already attempted",
+        );
+        expect(forbiddenRefresh).not.toHaveBeenCalled();
+        expect(await f.store.getActivation("dsh")).toEqual(current);
+      } finally {
+        await f.close();
+      }
+    }
+  });
+
+  it("does not treat unrelated fresh credentials as permission to bypass a failed refresh claim", async () => {
+    const f = await fixture(),
+      forbiddenRefresh = mock(async () => response());
+    try {
+      const current = { ...f.activation, accessToken: fresh().access_token, refreshToken: "native-repair-secret" };
+      await f.store.commitActivationForInstallationOwner(current);
+      await expect(startupCredentials({ ...f.options, fetchImpl: forbiddenRefresh })).rejects.toThrow(
+        "pending or already attempted",
+      );
+      expect(forbiddenRefresh).not.toHaveBeenCalled();
+      expect(await f.store.getActivation("dsh")).toEqual(current);
+    } finally {
+      await f.close();
+    }
+  });
+
   it("fences a rotation against source revision, device and Installation Owner changes", async () => {
     for (const kind of ["revision", "device", "owner"]) {
       const f = await fixture();

@@ -51,7 +51,7 @@ export async function startupCredentials(options: {
     throw new Error("Expired ClawChat startup credential cannot be refreshed safely; re-pair this Binding");
   const claim = await store.beginActivationRefresh(activation, deviceId);
   if (!claim) {
-    const current = await store.getActivation(activation.localAgentId);
+    const current = await store.getCompletedActivationRefresh(activation, deviceId);
     const currentClaims = current && claims(current.accessToken);
     if (
       current &&

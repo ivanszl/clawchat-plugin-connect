@@ -36,6 +36,8 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
       attempt_id TEXT NOT NULL,
       source_revision INTEGER NOT NULL,
       source_created INTEGER NOT NULL,
+      result_fingerprint TEXT,
+      result_revision INTEGER,
       state TEXT NOT NULL,
       updated_at INTEGER NOT NULL,
       PRIMARY KEY(platform, local_agent_id, source_fingerprint),

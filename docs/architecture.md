@@ -50,6 +50,11 @@ including Binding deletion and Owner Reset by an older Core. The extension retai
 code rollback keeps current credentials and all business state, never restores a database snapshot. An older Core has no
 startup refresh, so it can use already renewed credentials but cannot recover their later expiry automatically.
 
+A failed refresh claim cannot fall through to an unguarded credential read. Core reuses a concurrently completed rotation
+only inside a canonical-store transaction that rechecks Installation Owner, device and reset fences, requires the original
+attempt's successful receipt, and matches both its result fingerprint and exact committed activation revision. An unrelated
+re-pair or a later revision change closes that stale startup attempt instead of regaining authority through fresh tokens.
+
 Products do not promise Session continuity. Connect Sessions and Runtime Threads support the ClawChat path. DSH Web, OpenCode Web, and the optional Connect Client each retain their own Session and Interaction state. Sharing a Workspace path is not transfer of conversation, tool state, authentication, or reconnect state.
 
 ## Core domain model
