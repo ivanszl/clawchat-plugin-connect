@@ -29,6 +29,20 @@ export async function createStateSchema(db: SqliteDb): Promise<void> {
       owner_user_id TEXT NOT NULL,
       established_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS activation_refresh_attempts(
+      platform TEXT NOT NULL,
+      local_agent_id TEXT NOT NULL,
+      source_fingerprint TEXT NOT NULL,
+      attempt_id TEXT NOT NULL,
+      source_revision INTEGER NOT NULL,
+      source_created INTEGER NOT NULL,
+      result_fingerprint TEXT,
+      result_revision INTEGER,
+      state TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY(platform, local_agent_id, source_fingerprint),
+      FOREIGN KEY(platform, local_agent_id) REFERENCES activations(platform, local_agent_id) ON DELETE CASCADE
+    );
     CREATE TABLE IF NOT EXISTS device_state(
       id INTEGER PRIMARY KEY CHECK(id = 1),
       device_id TEXT NOT NULL,

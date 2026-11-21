@@ -1,6 +1,6 @@
 import type { GroupSettingsRecord } from "../persistence/state";
 import { type ActivationCredentials, AGENT_TYPE, PLATFORM_ID } from "../types";
-export type FetchLike = typeof fetch;
+export type FetchLike = (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>;
 export type ClawChatApiErrorKind = "validation" | "transport" | "api" | "auth";
 export class ClawChatApiError extends Error {
   constructor(
@@ -35,6 +35,7 @@ export function createClawChatApiClient(options: {
   fetchImpl?: FetchLike;
 }): ClawChatApiClient & {
   getAgentOwnerProfile(): Promise<{ id: string | null; nickname: string | null; locale: string | null }>;
+  refreshSession(refreshToken: string): Promise<{ accessToken: string; refreshToken: string }>;
 } {
   const baseUrl = normalizeBaseUrl(options.baseUrl, "baseUrl");
   const deviceId = options.deviceId.trim();
@@ -108,6 +109,71 @@ export function createClawChatApiClient(options: {
     return trimmed;
   }
   return {
+    async refreshSession(refreshToken) {
+      // This endpoint uses the persisted device and refresh token, never an expired bearer.
+      let response: Response;
+      try {
+        response = await fetchImpl(`${baseUrl}/v1/auth/refresh`, {
+          method: "POST",
+          headers: { "x-device-id": deviceId, "content-type": "application/json" },
+          body: JSON.stringify({ refresh_token: requireId(refreshToken, "refresh token") }),
+          signal: AbortSignal.timeout(10_000),
+          redirect: "error",
+        });
+      } catch {
+        throw new ClawChatApiError("transport", "credential refresh outcome is unknown");
+      }
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new ClawChatApiError(
+          response.status >= 400 && response.status < 500 ? "auth" : "transport",
+          "credential refresh failed",
+          { status: response.status },
+        );
+      }
+      let raw: unknown;
+      try {
+        const reader = response.body?.getReader();
+        if (!reader) throw new Error();
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        try {
+          while (true) {
+            const part = await reader.read();
+            if (part.done) break;
+            size += part.value.length;
+            if (size > 65536) throw new Error();
+            chunks.push(part.value);
+          }
+        } finally {
+          await reader.cancel();
+        }
+        raw = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        throw new ClawChatApiError("transport", "credential refresh response is invalid");
+      }
+      const record = raw as Record<string, unknown>;
+      if (!record || typeof record !== "object")
+        throw new ClawChatApiError("transport", "credential refresh response is invalid");
+      if (record.code !== 0 && record.code !== "0")
+        throw new ClawChatApiError(
+          [401, 10003].includes(Number(record.code)) ? "auth" : "transport",
+          "credential refresh failed",
+        );
+      if (!record.data || typeof record.data !== "object")
+        throw new ClawChatApiError("transport", "credential refresh response is invalid");
+      const data = record.data as Record<string, unknown>;
+      if (
+        typeof data.access_token !== "string" ||
+        !data.access_token ||
+        data.access_token.length > 32768 ||
+        typeof data.refresh_token !== "string" ||
+        !data.refresh_token ||
+        data.refresh_token.length > 32768
+      )
+        throw new ClawChatApiError("transport", "credential refresh response is invalid");
+      return { accessToken: data.access_token, refreshToken: data.refresh_token };
+    },
     async agentsConnect(params) {
       const body: Record<string, string> = {
         code: requireId(params.code, "agentsConnect: code"),
