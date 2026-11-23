@@ -197,6 +197,16 @@ export class ConnectWsClient extends EventEmitter {
     this.transition("disconnected");
   }
 
+  reconnectAfterCredentialRefresh(): void {
+    if (this.closing || this.state === "idle") return;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.reconnectAttempts = 0;
+    // Finish the old attempt so its close callbacks and pending ACKs cannot
+    // cross into the connection authenticated with the new token.
+    this.finishTransport(1000, "credential refreshed", { closeSocket: Boolean(this.activeAttempt), retry: true });
+  }
+
   async sendTextMessage(
     chatId: string,
     text: string,
