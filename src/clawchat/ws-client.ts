@@ -130,16 +130,14 @@ type PendingAck = {
 export class ConnectWsClient extends EventEmitter {
   private state: ConnState = "idle";
   private closing = false;
-  private authFailed = false;
+  private activeAttempt: symbol | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  private pongTimer: ReturnType<typeof setTimeout> | null = null;
-  private heartbeatCloseTimer: ReturnType<typeof setTimeout> | null = null;
+  private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private syncAckTimer: ReturnType<typeof setTimeout> | null = null;
   private syncAckResendTimer: ReturnType<typeof setInterval> | null = null;
-  private lastPingTraceId: string | null = null;
   private resolvedDeviceId: string | null = null;
   private connectResolve?: () => void;
   private connectReject?: (error: Error) => void;
@@ -172,10 +170,13 @@ export class ConnectWsClient extends EventEmitter {
     if (this.state !== "idle" && this.state !== "disconnected")
       throw new StateError(`cannot connect from ${this.state}`);
     this.closing = false;
-    this.authFailed = false;
     this.reconnectAttempts = 0;
-    this.resolvedDeviceId = this.options.deviceId ?? (await this.options.stateStore.getDeviceId().catch(() => null));
+    const attempt = Symbol();
+    this.activeAttempt = attempt;
     this.transition("connecting");
+    const deviceId = this.options.deviceId ?? (await this.options.stateStore.getDeviceId().catch(() => null));
+    if (this.activeAttempt !== attempt) throw new StateError("client closed");
+    this.resolvedDeviceId = deviceId;
     const ready = new Promise<void>((resolve, reject) => {
       this.connectResolve = resolve;
       this.connectReject = reject;
@@ -187,6 +188,7 @@ export class ConnectWsClient extends EventEmitter {
   close(): void {
     this.closing = true;
     this.flushSyncAck();
+    this.activeAttempt = null;
     this.clearTimers();
     this.rejectPending(new StateError("client closed"));
     this.connectReject?.(new StateError("client closed"));
@@ -426,14 +428,14 @@ export class ConnectWsClient extends EventEmitter {
   }
 
   private async openTransport(): Promise<void> {
-    const reconnecting = this.reconnectAttempts > 0;
+    const attempt = Symbol();
+    this.activeAttempt = attempt;
     this.startHandshakeTimeout();
     try {
-      await this.transport.connect(this.options.url, this.transportEvents());
+      await this.transport.connect(this.options.url, this.transportEvents(attempt));
     } catch (error) {
-      this.clearHandshakeTimeout();
-      this.failConnect(error instanceof Error ? error : new Error(String(error)));
-      if (reconnecting && !this.reconnectTimer && !this.closing && !this.authFailed) this.scheduleReconnect();
+      if (this.activeAttempt !== attempt) return;
+      this.failHandshake(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -486,29 +488,30 @@ export class ConnectWsClient extends EventEmitter {
     if (this.state !== "connected") throw new StateError("cannot send business traffic before hello-ok");
   }
 
-  private transportEvents(): TransportEvents {
+  private transportEvents(attempt: symbol): TransportEvents {
     return {
       onOpen: () => {
+        if (this.activeAttempt !== attempt) return;
         this.resetReliableConnection();
         this.transition("challenging");
         this.startHandshakeTimeout();
       },
-      onMessage: (data) => this.enqueueRawFrame(data),
-      onClose: (code, reason) => {
-        this.clearHeartbeatCloseTimer();
-        this.clearHandshakeTimeout();
-        this.resetReliableConnection();
-        this.clearHeartbeat();
-        this.rejectPending(new TransportError(`closed ${code}: ${reason}`));
-        this.transition("disconnected");
-        this.emit("close", { code, reason });
-        if (!this.closing && !this.authFailed) this.scheduleReconnect();
+      onMessage: (data) => {
+        if (this.activeAttempt !== attempt) return;
+        if (this.heartbeatTimer) this.armWatchdog();
+        this.enqueueRawFrame(data, attempt);
       },
-      onError: (error) => this.emit("error", error),
+      onClose: (code, reason) => {
+        if (this.activeAttempt !== attempt) return;
+        this.finishTransport(code, reason, { retry: true });
+      },
+      onError: (error) => {
+        if (this.activeAttempt === attempt) this.emit("error", error);
+      },
     };
   }
 
-  private async handleRawFrame(data: string | Buffer): Promise<void> {
+  private async handleRawFrame(data: string | Buffer, attempt: symbol): Promise<void> {
     let envelope: Envelope;
     try {
       envelope = parseEnvelope(data);
@@ -550,6 +553,7 @@ export class ConnectWsClient extends EventEmitter {
       try {
         if (!(await this.recordDseqEnvelope(envelope))) return;
       } catch (error) {
+        if (this.activeAttempt !== attempt) return;
         this.disconnectForProtocolError(
           new ProtocolError(
             `failed to persist dseq ${materializedDseq}: ${error instanceof Error ? error.message : String(error)}`,
@@ -559,9 +563,11 @@ export class ConnectWsClient extends EventEmitter {
         return;
       }
     }
+    if (this.activeAttempt !== attempt) return;
     try {
       await this.dispatchEnvelope(envelope);
     } catch (error) {
+      if (this.activeAttempt !== attempt) return;
       if (materializedDseq !== undefined) {
         this.disconnectForProtocolError(
           new ProtocolError(
@@ -573,7 +579,7 @@ export class ConnectWsClient extends EventEmitter {
       }
       throw error;
     }
-    if (materializedDseq !== undefined) {
+    if (materializedDseq !== undefined && this.activeAttempt === attempt) {
       this.ackHighWater = materializedDseq;
       if (envelope.event === EVENT.REPLAY_DONE) this.flushSyncAck();
       else this.scheduleSyncAck();
@@ -639,7 +645,7 @@ export class ConnectWsClient extends EventEmitter {
         emitted_at: envelope.emitted_at,
         payload: {} as EmptyPayload,
       });
-    if (envelope.event === EVENT.PONG) return await this.handlePong(envelope);
+    if (envelope.event === EVENT.PONG) return this.publishProtocolEvent("unknown", "event", envelope);
     if (envelope.event === EVENT.REPLAY_DONE) {
       await this.publishProtocolEvent("replay_done", "replay_done", envelope);
       return;
@@ -755,9 +761,11 @@ export class ConnectWsClient extends EventEmitter {
     } else await this.publishProtocolEvent("unknown", "event", envelope);
   }
 
-  private enqueueRawFrame(data: string | Buffer): void {
+  private enqueueRawFrame(data: string | Buffer, attempt: symbol): void {
     this.frameQueue = this.frameQueue
-      .then(async () => await this.handleRawFrame(data))
+      .then(async () => {
+        if (this.activeAttempt === attempt) await this.handleRawFrame(data, attempt);
+      })
       .catch((error) => {
         this.emit("error", error instanceof Error ? error : new Error(String(error)));
       });
@@ -795,13 +803,15 @@ export class ConnectWsClient extends EventEmitter {
       return this.failHandshake(new ProtocolError(`unexpected hello-ok while ${this.state}`));
     if (!this.expectedConnectTraceId || envelope.trace_id !== this.expectedConnectTraceId)
       return this.failHandshake(new ProtocolError("hello-ok trace mismatch"));
+    const attempt = this.activeAttempt;
     try {
       await this.options.stateStore.beginProtocolDeliveryEpoch(this.options.agentId, envelope.payload.ack_epoch);
       if (envelope.payload.device_id) await this.options.stateStore.setDeviceId(envelope.payload.device_id);
     } catch (error) {
-      this.failHandshake(error instanceof Error ? error : new Error(String(error)));
+      if (this.activeAttempt === attempt) this.failHandshake(error instanceof Error ? error : new Error(String(error)));
       return;
     }
+    if (this.activeAttempt !== attempt) return;
     this.clearHandshakeTimeout();
     this.ackEpoch = envelope.payload.ack_epoch;
     this.startSyncAckResend();
@@ -824,15 +834,13 @@ export class ConnectWsClient extends EventEmitter {
       this.failHandshake(new ProtocolError("hello-fail trace mismatch"));
       return;
     }
-    this.clearHandshakeTimeout();
+    const error = new AuthError(envelope.payload.reason || "authentication failed");
     if (envelope.payload.reason === "remote auth service unavailable") {
-      this.emit("error", new AuthError(envelope.payload.reason));
-      this.transport.close(1013, envelope.payload.reason);
+      this.finishTransport(1013, envelope.payload.reason, { closeSocket: true, retry: true, error });
       return;
     }
-    this.authFailed = true;
-    this.failConnect(new AuthError(envelope.payload.reason || "authentication failed"));
-    this.transport.close(1008, "authentication failed");
+    this.rejectConnect(error);
+    this.finishTransport(1008, "authentication failed", { closeSocket: true, retry: false, error });
   }
 
   private async handleAck(envelope: Envelope<MessageAckPayload>): Promise<void> {
@@ -876,52 +884,35 @@ export class ConnectWsClient extends EventEmitter {
   }
 
   private startHeartbeat(): void {
-    const cfg = {
-      enabled: true,
-      intervalMs: 30_000,
-      timeoutMs: 10_000,
-      closeGraceMs: 1_000,
-      ...this.options.heartbeat,
-    };
-    if (!cfg.enabled) return;
-    this.clearHeartbeat();
+    if (this.options.heartbeat?.enabled === false) return;
     this.heartbeatTimer = setInterval(() => {
       if (this.transport.state !== "open") return;
-      const traceId = this.traceIdFactory();
-      this.lastPingTraceId = traceId;
-      this.sendEnvelope({
-        version: "2",
-        event: EVENT.PING,
-        trace_id: traceId,
-        emitted_at: Date.now(),
-        payload: {} as EmptyPayload,
-      });
-      if (this.pongTimer) clearTimeout(this.pongTimer);
-      this.pongTimer = setTimeout(() => {
-        this.emit("error", new TransportError(`pong timed out for trace ${traceId}`));
-        this.transport.close(4000, "pong timeout");
-        this.clearHeartbeatCloseTimer();
-        this.heartbeatCloseTimer = setTimeout(() => {
-          this.heartbeatCloseTimer = null;
-          if (this.closing || this.state !== "connected") return;
-          this.resetReliableConnection();
-          this.clearHeartbeat();
-          this.rejectPending(new TransportError("closed 4000: pong timeout"));
-          this.transition("disconnected");
-          this.emit("close", { code: 4000, reason: "pong timeout" });
-          this.scheduleReconnect();
-        }, cfg.closeGraceMs);
-      }, cfg.timeoutMs);
-    }, cfg.intervalMs);
+      try {
+        this.sendEnvelope({
+          version: "2",
+          event: EVENT.PING,
+          trace_id: this.traceIdFactory(),
+          emitted_at: Date.now(),
+          payload: {} as EmptyPayload,
+        });
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        this.finishTransport(4000, "heartbeat send failed", { closeSocket: true, retry: true, error });
+      }
+    }, this.options.heartbeat?.intervalMs ?? 30_000);
+    this.armWatchdog();
   }
 
-  private async handlePong(envelope: Envelope): Promise<void> {
-    if (this.lastPingTraceId && envelope.trace_id === this.lastPingTraceId && this.pongTimer) {
-      clearTimeout(this.pongTimer);
-      this.pongTimer = null;
-      this.lastPingTraceId = null;
-    }
-    await this.publishProtocolEvent("unknown", "event", envelope);
+  private armWatchdog(): void {
+    if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
+    const { intervalMs = 30_000, timeoutMs = intervalMs, closeGraceMs = 0 } = this.options.heartbeat ?? {};
+    this.watchdogTimer = setTimeout(
+      () => {
+        const reason = "heartbeat timed out without inbound traffic";
+        this.finishTransport(4000, reason, { closeSocket: true, retry: true, error: new TransportError(reason) });
+      },
+      intervalMs + timeoutMs + closeGraceMs,
+    );
   }
 
   private sendDeliveryReceipt(message: NormalizedInboundMessage): void {
@@ -991,7 +982,9 @@ export class ConnectWsClient extends EventEmitter {
   }
 
   private async recordDseqEnvelope(envelope: Envelope): Promise<boolean> {
-    if (!this.ackEpoch) {
+    const attempt = this.activeAttempt;
+    const ackEpoch = this.ackEpoch;
+    if (!ackEpoch) {
       this.disconnectForProtocolError(
         new ProtocolError("received dseq before reliable-delivery negotiation"),
         "unexpected dseq",
@@ -1009,7 +1002,8 @@ export class ConnectWsClient extends EventEmitter {
     const validationError = dseqPayloadError(envelope);
     if (validationError) return await this.quarantineDseqEnvelope(envelope, dseq, validationError);
     if (envelope.event === EVENT.SYNC_MARK || envelope.event === EVENT.REPLAY_DONE) {
-      await this.options.stateStore.advanceProtocolDelivery(this.options.agentId, this.ackEpoch, dseq);
+      await this.options.stateStore.advanceProtocolDelivery(this.options.agentId, ackEpoch, dseq);
+      if (this.activeAttempt !== attempt) return false;
       this.lastReadDseq = dseq;
       if (envelope.event === EVENT.SYNC_MARK) {
         this.ackHighWater = dseq;
@@ -1019,7 +1013,7 @@ export class ConnectWsClient extends EventEmitter {
       // Hermes (connection.py replay.done branch) and Pi (connection.ts): a replay.done carrying another
       // epoch is recorded for ack progress but is neither a replay completion nor an immediate flush.
       const replayEpoch = (envelope.payload as ReplayDonePayload).ack_epoch;
-      if (replayEpoch !== undefined && replayEpoch !== this.ackEpoch) {
+      if (replayEpoch !== undefined && replayEpoch !== ackEpoch) {
         this.ackHighWater = dseq;
         this.scheduleSyncAck();
         if (this.listenerCount("error") > 0)
@@ -1035,7 +1029,7 @@ export class ConnectWsClient extends EventEmitter {
     try {
       const result = await this.options.stateStore.recordProtocolDelivery({
         agentId: this.options.agentId,
-        ackEpoch: this.ackEpoch,
+        ackEpoch,
         dseq,
         eventKey: messageId ? `message:${messageId}` : `${envelope.event}:${envelope.trace_id}`,
         eventType: envelope.event,
@@ -1044,10 +1038,12 @@ export class ConnectWsClient extends EventEmitter {
         messageId,
         raw: envelope,
       });
+      if (this.activeAttempt !== attempt) return false;
       this.lastReadDseq = dseq;
       this.emit("delivery_persisted", { envelope, result });
       return true;
     } catch (error) {
+      if (this.activeAttempt !== attempt) return false;
       return await this.quarantineDseqEnvelope(envelope, dseq, error instanceof Error ? error.message : String(error));
     }
   }
@@ -1062,6 +1058,7 @@ export class ConnectWsClient extends EventEmitter {
   }
 
   private async quarantineDseqEnvelope(envelope: Envelope, dseq: number, error: string): Promise<false> {
+    const attempt = this.activeAttempt;
     if (!this.ackEpoch) return false;
     try {
       await this.options.stateStore.quarantineProtocolDelivery({
@@ -1074,6 +1071,7 @@ export class ConnectWsClient extends EventEmitter {
         error,
       });
     } catch (quarantineError) {
+      if (this.activeAttempt !== attempt) return false;
       this.disconnectForProtocolError(
         new ProtocolError(
           `failed to quarantine dseq ${dseq}: ${
@@ -1084,6 +1082,7 @@ export class ConnectWsClient extends EventEmitter {
       );
       return false;
     }
+    if (this.activeAttempt !== attempt) return false;
     this.lastReadDseq = dseq;
     this.ackHighWater = dseq;
     this.scheduleSyncAck();
@@ -1133,15 +1132,37 @@ export class ConnectWsClient extends EventEmitter {
   }
 
   private disconnectForProtocolError(error: ProtocolError, reason: string): void {
-    this.clearTimers();
-    this.resetReliableConnection();
-    this.rejectPending(error);
-    this.transition("disconnected");
-    this.emit("error", error);
-    this.transport.close(1002, reason);
+    this.finishTransport(1002, reason, { closeSocket: true, retry: true, error });
   }
 
-  private scheduleReconnect(): void {
+  private finishTransport(
+    code: number,
+    reason: string,
+    { closeSocket, retry, error }: { closeSocket?: boolean; retry: boolean; error?: Error },
+  ): void {
+    // Own retry scheduling here. Closing the native socket may deliver no event, or a late one.
+    this.activeAttempt = null;
+    this.clearHandshakeTimeout();
+    this.resetReliableConnection();
+    this.clearHeartbeat();
+    this.rejectPending(error ?? new TransportError(`closed ${code}: ${reason}`));
+    if (closeSocket) {
+      try {
+        this.transport.close(code, reason);
+      } catch (cause) {
+        this.emit("error", cause instanceof Error ? cause : new Error(String(cause)));
+      }
+    }
+    this.transition("disconnected");
+    if (error) this.emit("error", error);
+    this.emit("close", { code, reason });
+    if (retry && !this.scheduleReconnect() && !this.activeAttempt)
+      this.rejectConnect(error ?? new TransportError(`closed ${code}: ${reason}`));
+  }
+
+  private scheduleReconnect(): boolean {
+    if (this.closing || this.activeAttempt) return false;
+    if (this.reconnectTimer) return true;
     const cfg = {
       enabled: true,
       initialDelayMs: 500,
@@ -1150,15 +1171,16 @@ export class ConnectWsClient extends EventEmitter {
       jitterRatio: 0.2,
       ...this.options.reconnect,
     };
-    if (!cfg.enabled || this.reconnectAttempts >= cfg.maxRetries) return;
-    const base = Math.min(cfg.maxDelayMs, cfg.initialDelayMs * 2 ** this.reconnectAttempts);
+    if (!cfg.enabled || this.reconnectAttempts >= cfg.maxRetries) return false;
+    const base = Math.min(cfg.maxDelayMs, cfg.initialDelayMs * 2 ** Math.min(this.reconnectAttempts, 1023));
     const jitter = base * cfg.jitterRatio * Math.random();
     this.reconnectAttempts += 1;
-    this.transition("reconnecting");
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.openTransport();
     }, base + jitter);
+    this.transition("reconnecting");
+    return true;
   }
 
   private sendEnvelope(envelope: Envelope): void {
@@ -1166,17 +1188,18 @@ export class ConnectWsClient extends EventEmitter {
     this.transport.send(serializeEnvelope(envelope));
   }
 
-  private failConnect(error: Error): void {
-    this.transition("disconnected");
+  private rejectConnect(error: Error): void {
     this.connectReject?.(error);
     this.clearConnectCallbacks();
-    this.emit("error", error);
   }
 
   private failHandshake(error: Error): void {
-    this.clearHandshakeTimeout();
-    this.failConnect(error);
-    this.transport.close(1002, "protocol handshake error");
+    this.rejectConnect(error);
+    this.finishTransport(1002, "protocol handshake error", {
+      closeSocket: true,
+      retry: this.reconnectAttempts > 0 || this.state === "connected",
+      error,
+    });
   }
 
   private startHandshakeTimeout(): void {
@@ -1202,15 +1225,9 @@ export class ConnectWsClient extends EventEmitter {
 
   private clearHeartbeat(): void {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    if (this.pongTimer) clearTimeout(this.pongTimer);
+    if (this.watchdogTimer) clearTimeout(this.watchdogTimer);
     this.heartbeatTimer = null;
-    this.pongTimer = null;
-    this.lastPingTraceId = null;
-  }
-
-  private clearHeartbeatCloseTimer(): void {
-    if (this.heartbeatCloseTimer) clearTimeout(this.heartbeatCloseTimer);
-    this.heartbeatCloseTimer = null;
+    this.watchdogTimer = null;
   }
 
   private clearTimers(): void {
@@ -1219,7 +1236,6 @@ export class ConnectWsClient extends EventEmitter {
     this.clearHandshakeTimeout();
     this.clearReliabilityTimers();
     this.clearHeartbeat();
-    this.clearHeartbeatCloseTimer();
   }
 
   private transition(next: ConnState): void {

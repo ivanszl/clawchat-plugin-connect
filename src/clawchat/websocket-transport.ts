@@ -16,13 +16,14 @@ export function createWebSocketTransport(
 ): Transport {
   let state: TransportState = "closed";
   let socket: WebSocketLike | null = null;
+  let cancelDial: (() => void) | null = null;
   return {
     get state() {
       return state;
     },
     async connect(url, handlers) {
-      state = "connecting";
       const activeSocket = new WebSocketCtor(url);
+      state = "connecting";
       socket = activeSocket;
       const isCurrent = () => socket === activeSocket;
       await new Promise<void>((resolve, reject) => {
@@ -31,12 +32,15 @@ export function createWebSocketTransport(
         const rejectBeforeOpen = (error: Error) => {
           if (opened || settled) return;
           settled = true;
+          cancelDial = null;
           reject(error);
         };
+        cancelDial = () => rejectBeforeOpen(new TransportError("WebSocket closed before opening"));
         activeSocket.onopen = () => {
           if (!isCurrent()) return;
           opened = true;
           settled = true;
+          cancelDial = null;
           state = "open";
           handlers.onOpen();
           resolve();
@@ -50,8 +54,8 @@ export function createWebSocketTransport(
           state = "closed";
           socket = null;
           const reason = event.reason || "closed";
-          handlers.onClose(event.code, reason);
           rejectBeforeOpen(new TransportError(reason));
+          handlers.onClose(event.code, reason);
         };
         activeSocket.onerror = (event) => {
           if (!isCurrent()) return;
@@ -69,8 +73,18 @@ export function createWebSocketTransport(
       socket.send(data);
     },
     close(code = 1000, reason = "client close") {
-      if (state === "closed") return;
-      socket?.close(code, reason);
+      const activeSocket = socket;
+      if (!activeSocket) return;
+      // Bun may remain in CLOSING without firing onclose while the HTTP upgrade is stalled.
+      // Retire our socket and pending dial before asking the native socket to close.
+      socket = null;
+      state = "closed";
+      cancelDial?.();
+      activeSocket.onopen = null;
+      activeSocket.onmessage = null;
+      activeSocket.onclose = null;
+      activeSocket.onerror = null;
+      activeSocket.close(code, reason);
     },
   };
 }
