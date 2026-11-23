@@ -503,6 +503,8 @@ export class ConnectWsClient extends EventEmitter {
       },
       onClose: (code, reason) => {
         if (this.activeAttempt !== attempt) return;
+        // An initial upgrade failure is handled by the dial rejection with its original error.
+        if (this.state === "connecting") return;
         this.finishTransport(code, reason, { retry: true });
       },
       onError: (error) => {

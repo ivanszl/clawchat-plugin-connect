@@ -332,6 +332,40 @@ describe("ConnectWsClient", () => {
     expect(client.connectionState).toBe("disconnected");
   });
 
+  it("rejects an initial HTTP upgrade failure without retrying", async () => {
+    let requests = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        requests += 1;
+        return new Response(null, { status: 503 });
+      },
+    });
+    const client = createClient({
+      url: `ws://127.0.0.1:${server.port}/ws`,
+      token: "local-test-token",
+      stateStore: createStore(),
+      reconnect: { initialDelayMs: 5, maxDelayMs: 10, jitterRatio: 0 },
+    });
+    client.on("error", () => undefined);
+    try {
+      const result = await Promise.race([
+        client.connect().then(
+          () => "connected",
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        ),
+        Bun.sleep(200).then(() => "test deadline expired"),
+      ]);
+      expect(result).toMatch(/Expected 101 status code|503/i);
+      expect(requests).toBe(1);
+      expect(client.connectionState).toBe("disconnected");
+    } finally {
+      client.close();
+      server.stop(true);
+    }
+  });
+
   it("backs off and recovers when timed-out reconnects emit no close event", async () => {
     const transport = new MemoryTransport();
     const connect = mock(transport.connect.bind(transport));
