@@ -1,5 +1,5 @@
 import type { Context, Plugin } from "cordis";
-import { startupCredentials } from "../account/startup-credentials";
+import { startupCredentials } from "../account/activation-credentials";
 import { isAgentLivewareOperation } from "../agent/agent-liveware";
 import { verifyInstalledSkills } from "../agent/skills";
 import { getConnectTool } from "../agent/tool-catalog";

@@ -1,4 +1,5 @@
 import { dirname } from "node:path";
+import { ActivationRefreshBlocked, refreshActivationCredentials } from "../account/activation-credentials";
 import { executeAgentLiveware, isAgentLivewareOperation } from "../agent/agent-liveware";
 import { verifyInstalledSkills } from "../agent/skills";
 import { executeConnectTool } from "../agent/tool-executor";
@@ -23,6 +24,7 @@ import { ConnectWsClient } from "../clawchat/ws-client";
 import type { TranscriptProjection } from "../client-interface/transcript-projection";
 import { getAgentBinding } from "../config";
 import type { ConnectStateStore } from "../persistence/state";
+import { DEEPSEEK_HARNESS_OFFICIAL_RUNTIME_FAMILY } from "../plugin/official/deepseek-harness-manifest";
 import { ConnectBindingLivewarePublicationStateStore } from "../plugin/official/liveware-publication-state";
 import { ConnectRuntime } from "../runtime/connect-runtime";
 import type { ConnectExecutionCapabilities } from "../runtime/execution-capabilities";
@@ -53,6 +55,8 @@ import {
 import type { WorkspaceCatalog } from "../workspaces/workspaces";
 
 const DEFAULT_RUNTIME_PREPARATION_RETRY_MS = 5_000;
+const CREDENTIAL_REFRESH_INTERVAL_MS = 30_000;
+const CREDENTIAL_REFRESH_AHEAD_MS = 60_000;
 
 export interface BindingRuntimeOptions {
   agentId: string;
@@ -70,6 +74,7 @@ export interface BindingRuntimeOptions {
   turnSurfaces?: ConnectTurnSurfaceCapabilities;
   wsTransport?: Transport;
   clawChatApi?: ClawChatApiClient;
+  credentialRefreshIntervalMs?: number;
   groupIntakeClock?: GroupIntakeClock;
   protocolEventHandlers?: BindingProtocolEventHandlers;
   runtimePreparationRetryMs?: number;
@@ -136,7 +141,9 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   const execution = options.execution;
   const runtimeAdapters = execution?.runtimeAdapters ?? options.runtimeAdapters;
   if (!runtimeAdapters) throw new Error("Runtime Adapter coordination is required");
-  const workBuddyRuntime = runtimeAdapters.familyFor(binding) === "workbuddy";
+  const family = runtimeAdapters.familyFor(binding);
+  const workBuddyRuntime = family === "workbuddy";
+  let activation = options.activation;
   const transcriptProjection = execution?.transcriptProjection ?? options.transcriptProjection;
   const runtimeInteractions = execution?.runtimeInteractions ?? options.runtimeInteractions;
   const runtimeConfig: ConnectConfig = {
@@ -148,7 +155,9 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     createClawChatApiClient({
       baseUrl: options.config.baseUrl,
       deviceId: options.deviceId,
-      token: options.activation.accessToken,
+      get token() {
+        return activation.accessToken;
+      },
     });
   // Only Runtimes whose Adapter declares a label write lifecycle lines (O-08 is specified per Runtime).
   const lifecycle = new LifecycleLog({
@@ -192,6 +201,12 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   let runtimePreparationRetryTimer: ReturnType<typeof setTimeout> | null = null;
   let runtimePreparationRetryTask: Promise<void> | null = null;
   let runtimeClosing = false;
+  let credentialRefreshTimer: ReturnType<typeof setInterval> | undefined;
+  let credentialRefreshTask: Promise<void> | undefined;
+  const stopCredentialRefresh = (): void => {
+    if (credentialRefreshTimer) clearInterval(credentialRefreshTimer);
+    credentialRefreshTimer = undefined;
+  };
   let runtimeShutdown: Promise<void> | null = null;
   const recordRuntimeConnectionStatus = async (
     websocketConnected: boolean,
@@ -210,7 +225,9 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     agentId: options.agentId,
     url: options.config.websocketUrl,
     mediaUploadUrl: options.config.mediaUploadUrl,
-    token: options.activation.accessToken,
+    get token() {
+      return activation.accessToken;
+    },
     userId: options.activation.userId,
     userNickName: options.agentId,
     stateStore: options.stateStore,
@@ -238,6 +255,33 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       historySync: Boolean(options.protocolEventHandlers?.history_transit),
     },
   });
+  const checkCredentialRefresh = (): void => {
+    if (runtimeClosing || credentialRefreshTask) return;
+    credentialRefreshTask = refreshActivationCredentials(
+      {
+        activation,
+        baseUrl: options.config.baseUrl,
+        deviceId: options.deviceId,
+        store: options.stateStore,
+      },
+      CREDENTIAL_REFRESH_AHEAD_MS,
+    )
+      .then((renewed) => {
+        if (runtimeClosing || renewed.accessToken === activation.accessToken) return;
+        activation = renewed;
+        wsClient.reconnectAfterCredentialRefresh();
+      })
+      .catch((error: unknown) => {
+        if (error instanceof ActivationRefreshBlocked) stopCredentialRefresh();
+        if (!runtimeClosing) {
+          const detail = error instanceof ActivationRefreshBlocked ? error.message : "credential check unavailable";
+          options.writeError(`${options.agentId}: ${detail}\n`);
+        }
+      })
+      .finally(() => {
+        credentialRefreshTask = undefined;
+      });
+  };
   interactionRouter = new RuntimeInteractionRouter({
     clientInteractions: runtimeInteractions,
     ownerUserId: options.activation.ownerUserId,
@@ -362,6 +406,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
   };
   const shutdownBinding = (recentError: string | null): Promise<void> => {
     runtimeClosing = true;
+    stopCredentialRefresh();
     if (runtimePreparationRetryTimer) {
       clearTimeout(runtimePreparationRetryTimer);
       runtimePreparationRetryTimer = null;
@@ -377,6 +422,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       await Promise.all([closeInboundProcessing(), groupIntake.close(), ...(preparation ? [preparation] : [])]);
       await interactionRouter.close();
       await runtimeWorkspaceSynchronization;
+      await credentialRefreshTask;
       await runtime.dispose();
       if (recentError) await recordConnectionStatus(options, false, recentError);
       else await recordRuntimeConnectionStatus(false, null);
@@ -516,6 +562,13 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
     if (runtimeStartupUnavailableDetail) {
       if (runtimePreparationRetryable) scheduleRuntimePreparationRetry();
     } else synchronizeRuntimeWorkspaces();
+    if (family === DEEPSEEK_HARNESS_OFFICIAL_RUNTIME_FAMILY) {
+      credentialRefreshTimer = setInterval(
+        checkCredentialRefresh,
+        options.credentialRefreshIntervalMs ?? CREDENTIAL_REFRESH_INTERVAL_MS,
+      );
+      credentialRefreshTimer.unref?.();
+    }
   } catch (error) {
     await shutdownBinding(error instanceof Error ? error.message : String(error));
     throw error;
@@ -537,7 +590,9 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
       const toolOptions = {
         baseUrl: options.config.baseUrl,
         deviceId: options.deviceId,
-        activation: options.activation,
+        get activation() {
+          return activation;
+        },
         wsClient,
         workspaceRoots: async () =>
           (await options.stateStore.listWorkspaces(options.agentId)).map((workspace) => workspace.rootPath),
@@ -549,7 +604,7 @@ export async function startBindingRuntime(options: BindingRuntimeOptions): Promi
           (await new ConnectBindingLivewarePublicationStateStore(options.stateStore).read(options.agentId))?.value
             .appId ?? null;
         return await executeAgentLiveware(toolName, input, {
-          activation: options.activation,
+          activation,
           clawChatBaseUrl: options.config.baseUrl,
           configPath: options.configPath,
           deviceId: options.deviceId,

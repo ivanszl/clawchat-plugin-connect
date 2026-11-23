@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -96,6 +96,139 @@ async function completeBindingHandshake(
 }
 
 describe("Binding Runtime Protocol v2 assembly", () => {
+  it("keeps a DSH Binding running through scheduled credential rotation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "dsh-binding-refresh-"));
+    const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });
+    const transport = new MemoryTransport();
+    const runtimeAdapters = new RuntimeAdapterRegistry([
+      fixedRuntimeAdapter({
+        kind: "deepseek-harness",
+        modes: ["read-only"],
+        start: async () => {
+          throw new Error("refresh must not start a Runtime Session");
+        },
+      }),
+    ]);
+    const makeToken = (expirySeconds: number) => {
+      const header = Buffer.from(JSON.stringify({ alg: "HS256" })).toString("base64url");
+      const claims = Buffer.from(
+        JSON.stringify({
+          sub: "usr_agent",
+          oid: "usr_owner",
+          aid: "agt_local",
+          did: "device-local",
+          exp: expirySeconds,
+        }),
+      ).toString("base64url");
+      return `${header}.${claims}.test`;
+    };
+    const now = Math.floor(Date.now() / 1000);
+    const activation = {
+      localAgentId: "dsh",
+      accessToken: makeToken(now + 45),
+      refreshToken: "old-refresh",
+      serverAgentId: "agt_local",
+      userId: "usr_agent",
+      ownerUserId: "usr_owner",
+      conversationId: "owner-chat",
+    };
+    const renewedToken = makeToken(now + 3600);
+    let refreshCalls = 0;
+    const requests: { path: string; token: string | null }[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const path = new URL(request.url).pathname;
+        const token = request.headers.get("Authorization");
+        if (path === "/v1/auth/refresh") {
+          refreshCalls += 1;
+          expect(token).toBeNull();
+          expect(request.headers.get("x-device-id")).toBe("device-local");
+          expect(await request.json()).toEqual({ refresh_token: "old-refresh" });
+          await Bun.sleep(60);
+          return Response.json({ code: 0, data: { access_token: renewedToken, refresh_token: "new-refresh" } });
+        }
+        requests.push({ path, token });
+        if (path === "/media/upload") {
+          return Response.json({
+            code: 0,
+            data: { kind: "file", name: "proof.txt", url: "https://fixture.invalid/proof.txt", size: 3 },
+          });
+        }
+        return Response.json({ code: 0, data: {} });
+      },
+    });
+    let handle: BindingRuntimeHandle | undefined;
+    try {
+      await stateStore.setDeviceId("device-local");
+      await stateStore.commitActivationForInstallationOwner(activation);
+      const config = defaultConfig();
+      config.defaultAgent = "dsh";
+      config.agents = { dsh: pluginBinding() };
+      config.baseUrl = server.url.origin;
+      config.mediaUploadUrl = new URL("/media/upload", server.url).href;
+      handle = await completeBindingHandshake(
+        transport,
+        startBindingRuntime({
+          agentId: "dsh",
+          activation,
+          config,
+          configPath: join(directory, "config.json"),
+          deviceId: "device-local",
+          stateStore,
+          workspaces: new WorkspaceCatalog(stateStore),
+          runtimeAdapters,
+          wsTransport: transport,
+          credentialRefreshIntervalMs: 10,
+          verifyInstalledSkills: async () => undefined,
+          writeError: () => undefined,
+        }),
+        "before-refresh",
+      );
+      expect(refreshCalls).toBe(0);
+      expect(transport.sent.find((event) => event.event === EVENT.CONNECT)?.payload).toMatchObject({
+        token: activation.accessToken,
+      });
+      const oldHandlers = transport.handlers;
+      expect(await waitFor(() => transport.handlers !== oldHandlers && transport.state === "open")).toBe(true);
+      transport.receive({
+        version: "2",
+        event: EVENT.CONNECT_CHALLENGE,
+        trace_id: "challenge",
+        emitted_at: Date.now(),
+        payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+      });
+      expect(await waitFor(() => transport.sent.filter((event) => event.event === EVENT.CONNECT).length === 2)).toBe(
+        true,
+      );
+      const reconnect = transport.sent.filter((event) => event.event === EVENT.CONNECT).at(-1);
+      if (!reconnect) throw new Error("renewed connect frame was not sent");
+      expect(reconnect.payload).toMatchObject({ token: renewedToken, device_id: "device-local" });
+      transport.receive({
+        version: "2",
+        event: EVENT.HELLO_OK,
+        trace_id: reconnect.trace_id,
+        emitted_at: Date.now(),
+        payload: { device_id: "device-local", ack_mode: "dseq", ack_epoch: "after-refresh" },
+      });
+      const state = await stateStore.getActivation("dsh");
+      expect(state).toMatchObject({ ...activation, accessToken: renewedToken, refreshToken: "new-refresh" });
+      if (!handle.executeTool || !handle.uploadClientMedia) throw new Error("Binding tools are unavailable");
+      await handle.executeTool("clawchat_list_apps", {});
+      await handle.uploadClientMedia(new Blob(["abc"]), "proof.txt");
+      expect(requests).toContainEqual({ path: "/v1/agents/me/apps", token: `Bearer ${renewedToken}` });
+      expect(requests).toContainEqual({ path: "/media/upload", token: `Bearer ${renewedToken}` });
+      expect(refreshCalls).toBe(1);
+    } finally {
+      await handle?.close();
+      server.stop(true);
+      await runtimeAdapters.close();
+      await stateStore.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("rejects Binding startup before opening transport when managed skills do not match", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clawchat-binding-skills-"));
     const stateStore = createStateStore({ dbPath: join(directory, "state.sqlite") });

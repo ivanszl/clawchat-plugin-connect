@@ -3,7 +3,7 @@ import { describe, expect, it, mock } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startupCredentials } from "../src/account/startup-credentials";
+import { startupCredentials } from "../src/account/activation-credentials";
 import { defaultConfig } from "../src/config";
 import { createStateStore } from "../src/persistence/state";
 import { startConnectService } from "../src/service/connect-service";

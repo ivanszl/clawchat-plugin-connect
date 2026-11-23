@@ -39,8 +39,13 @@ Failure in one domain does not rewrite another domain. App failure does not stop
 At Service startup, Core refreshes a definitively expired ClawChat access JWT before that Binding's first handshake.
 The existing refresh endpoint receives its persisted device ID and refresh token without an expired bearer. Core checks
 the old and returned subject, Owner, Agent and device claims, then atomically compares the canonical activation and
-its stored revision before replacing only the two tokens. No live transport, message or Runtime Turn is replayed by
-this operation. Opaque and nonexpired tokens keep their existing authentication path.
+its stored revision before replacing only the two tokens. Opaque and nonexpired tokens keep their existing startup
+authentication path.
+
+During operation, a DeepSeek Harness Binding checks every 30 seconds for an access JWT expiring within 60 seconds.
+A successful rotation updates the credentials used by HTTP tools, Liveware and media uploads, then reconnects ClawChat
+with the new access token over the same device and Binding. Runtime Sessions keep their existing lifecycle. A reconnect
+uses the existing acknowledgement and recovery rules. The refresh path does not replay pending sends or Runtime Turns.
 
 The additive `activation_refresh_attempts` table stores only attempt metadata and opaque source fingerprints. A pending,
 rejected or indeterminate attempt blocks automatic reuse of that credential pair across process restarts; explicit native
@@ -53,7 +58,7 @@ startup refresh, so it can use already renewed credentials but cannot recover th
 A failed refresh claim cannot fall through to an unguarded credential read. Core reuses a concurrently completed rotation
 only inside a canonical-store transaction that rechecks Installation Owner, device and reset fences, requires the original
 attempt's successful receipt, and matches both its result fingerprint and exact committed activation revision. An unrelated
-re-pair or a later revision change closes that stale startup attempt instead of regaining authority through fresh tokens.
+re-pair or a later revision change closes that stale refresh attempt instead of regaining authority through fresh tokens.
 
 Products do not promise Session continuity. Connect Sessions and Runtime Threads support the ClawChat path. DSH Web, OpenCode Web, and the optional Connect Client each retain their own Session and Interaction state. Sharing a Workspace path is not transfer of conversation, tool state, authentication, or reconnect state.
 

@@ -33,22 +33,32 @@ function matches(data: Record<string, unknown>, activation: ActivationCredential
   );
 }
 
-/** Rotate only a definitively expired startup credential. No reconnect, tool, prompt or refresh retry occurs here. */
-export async function startupCredentials(options: {
+interface CredentialRefreshOptions {
   activation: ActivationCredentials;
   deviceId: string;
   baseUrl: string;
   store: ConnectStateStore;
   fetchImpl?: FetchLike;
   now?: () => number;
-}): Promise<ActivationCredentials> {
+}
+
+export class ActivationRefreshBlocked extends Error {}
+
+export async function startupCredentials(options: CredentialRefreshOptions): Promise<ActivationCredentials> {
+  return await refreshActivationCredentials(options, 0);
+}
+
+/** Rotate a due access JWT using the canonical store's single-attempt fence. */
+export async function refreshActivationCredentials(
+  options: CredentialRefreshOptions,
+  refreshAheadMs: number,
+): Promise<ActivationCredentials> {
   const { activation, deviceId, store } = options;
   const now = options.now ?? Date.now;
   const initial = claims(activation.accessToken);
-  // Opaque credentials and live sessions retain their existing authentication behavior.
-  if (!initial || Number(initial.exp) * 1000 > now()) return activation;
+  if (!initial || Number(initial.exp) * 1000 > now() + refreshAheadMs) return activation;
   if (!activation.refreshToken || !matches(initial, activation, deviceId))
-    throw new Error("Expired ClawChat startup credential cannot be refreshed safely; re-pair this Binding");
+    throw new ActivationRefreshBlocked("ClawChat credential cannot be refreshed safely; re-pair this Binding");
   const claim = await store.beginActivationRefresh(activation, deviceId);
   if (!claim) {
     const current = await store.getCompletedActivationRefresh(activation, deviceId);
@@ -62,8 +72,8 @@ export async function startupCredentials(options: {
       Number(currentClaims.exp) * 1000 > now()
     )
       return current;
-    throw new Error(
-      "ClawChat startup refresh is pending or already attempted; re-pair this Binding without replaying it",
+    throw new ActivationRefreshBlocked(
+      "ClawChat credential refresh is pending or already attempted; re-pair this Binding without replaying it",
     );
   }
   let tokens: { accessToken: string; refreshToken: string };
@@ -76,18 +86,27 @@ export async function startupCredentials(options: {
   } catch (error) {
     const rejected = error instanceof ClawChatApiError && error.kind === "auth";
     await store.completeActivationRefresh(activation, deviceId, claim, rejected ? "rejected" : "unknown");
-    throw new Error(
+    throw new ActivationRefreshBlocked(
       rejected
-        ? "ClawChat startup refresh was rejected; re-pair this Binding"
-        : "ClawChat startup refresh outcome is unknown; automatic replay is blocked",
+        ? "ClawChat credential refresh was rejected; re-pair this Binding"
+        : "ClawChat credential refresh outcome is unknown; automatic replay is blocked",
     );
   }
   const renewed = claims(tokens.accessToken);
-  if (!renewed || !matches(renewed, activation, deviceId) || Number(renewed.exp) * 1000 <= now()) {
+  if (
+    !renewed ||
+    !matches(renewed, activation, deviceId) ||
+    Number(renewed.exp) <= Number(initial.exp) ||
+    Number(renewed.exp) * 1000 <= now()
+  ) {
     await store.completeActivationRefresh(activation, deviceId, claim, "unknown");
-    throw new Error("ClawChat startup refresh identity or expiry check failed; credentials were preserved");
+    throw new ActivationRefreshBlocked(
+      "ClawChat credential refresh identity or expiry check failed; credentials were preserved",
+    );
   }
   if (!(await store.completeActivationRefresh(activation, deviceId, claim, tokens)))
-    throw new Error("ClawChat startup refresh lost its Binding revision; current credentials were preserved");
+    throw new ActivationRefreshBlocked(
+      "ClawChat credential refresh lost its Binding revision; current credentials were preserved",
+    );
   return { ...activation, ...tokens };
 }
