@@ -11,6 +11,58 @@ async function tempDir(): Promise<string> {
   return await mkdtemp(join(tmpdir(), "clawchat-connect-"));
 }
 
+it("observes ClawChat message windows and excludes pending sends, control frames and other bindings", async () => {
+  const dir = await tempDir();
+  const store = createStateStore({ dbPath: join(dir, "state.sqlite") });
+  try {
+    const row = { agentId: "dsh", kind: "message" as const };
+    await store.claimMessageOnce({
+      ...row,
+      direction: "inbound",
+      eventType: "message.send",
+      messageId: "received",
+      createdAt: 100,
+    });
+    await store.claimMessageOnce({
+      ...row,
+      direction: "outbound",
+      eventType: "message.reply",
+      messageId: "reply",
+      createdAt: 200,
+    });
+    await store.markMessageAcknowledged({ messageId: "reply", ackedAt: 300 });
+    await store.claimMessageOnce({
+      ...row,
+      direction: "inbound",
+      eventType: "pong",
+      messageId: "heartbeat",
+      createdAt: 400,
+    });
+    await store.claimMessageOnce({
+      ...row,
+      agentId: "other",
+      direction: "inbound",
+      eventType: "message.send",
+      messageId: "unrelated",
+      createdAt: 500,
+    });
+    await store.claimMessageOnce({
+      ...row,
+      direction: "outbound",
+      eventType: "message.created",
+      messageId: "started",
+      createdAt: 600,
+    });
+    expect(await store.hasClawChatMessageActivity("dsh", 100, 101)).toBe(true);
+    expect(await store.hasClawChatMessageActivity("dsh", 101, 300)).toBe(false);
+    expect(await store.hasClawChatMessageActivity("dsh", 300, 301)).toBe(true);
+    expect(await store.hasClawChatMessageActivity("dsh", 301, 600)).toBe(false);
+    expect(await store.hasClawChatMessageActivity("dsh", 600, 601)).toBe(true);
+  } finally {
+    await store.close();
+  }
+});
+
 describe("agent-only config", () => {
   it("writes owner-only JSON config without project or directory config", async () => {
     const dir = await tempDir();

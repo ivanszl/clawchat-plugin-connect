@@ -472,15 +472,31 @@ export class ConnectWsClient extends EventEmitter {
     payload: MessageCreatedPayload | MessageAddPayload | MessageTerminalPayload,
     options: { toType?: ChatType },
   ): void {
+    const traceId = this.traceIdFactory();
     this.sendEnvelope({
       version: "2",
       event,
-      trace_id: this.traceIdFactory(),
+      trace_id: traceId,
       emitted_at: Date.now(),
       chat_id: chatId,
       to: { id: chatId, type: options.toType ?? "direct" },
       payload,
     });
+    if (
+      (event === EVENT.MESSAGE_CREATED || event === EVENT.MESSAGE_DONE) &&
+      process.env.CLAWNEST_RUNTIME_ADAPTER_GROUPS?.split(",").includes("usage")
+    ) {
+      void this.options.stateStore
+        .claimMessageOnce({
+          agentId: this.options.agentId,
+          direction: "outbound",
+          kind: "message",
+          eventType: event,
+          traceId,
+          messageId: traceId,
+        })
+        .catch(() => undefined);
+    }
   }
 
   private assertBusinessSendAllowed(chatId: string): void {

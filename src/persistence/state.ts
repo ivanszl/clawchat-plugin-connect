@@ -1709,6 +1709,31 @@ export class ConnectStateStore {
     return rows.map(sessionLifecycleOperationFromRow);
   }
 
+  async hasClawChatMessageActivity(agentId: string, start: number, end: number): Promise<boolean> {
+    const db = await this.requireDb();
+    return Boolean(
+      await db.get(
+        `SELECT 1 FROM clawchat_messages
+         WHERE platform = ? AND local_agent_id = ? AND kind = 'message' AND (
+           (direction = 'inbound' AND event_type IN ('message.send', 'message.reply', 'message.created', 'message.done')
+             AND created_at >= ? AND created_at < ?)
+           OR (direction = 'outbound' AND event_type IN ('message.send', 'message.reply') AND send_status = 'acknowledged'
+             AND acked_at >= ? AND acked_at < ?)
+           OR (direction = 'outbound' AND event_type IN ('message.created', 'message.done')
+             AND created_at >= ? AND created_at < ?)
+         ) LIMIT 1`,
+        PLATFORM_ID,
+        agentId,
+        start,
+        end,
+        start,
+        end,
+        start,
+        end,
+      ),
+    );
+  }
+
   async claimMessageOnce(input: MessageInput): Promise<boolean> {
     const db = await this.requireDb();
     const result = await db.run(

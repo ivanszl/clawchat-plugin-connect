@@ -52,7 +52,7 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-export function createBrowserChat({ receiptFile, identity, open, draining, scratch = '/dev/shm' }) {
+export function createBrowserChat({ receiptFile, identity, open, draining, usageEvidence, scratch = '/dev/shm' }) {
   const receipts = new Map(Object.entries(readJSON(receiptFile)));
   const active = new Map();
   const answers = new Map();
@@ -116,8 +116,9 @@ export function createBrowserChat({ receiptFile, identity, open, draining, scrat
         }
         const observed = [...receipts.values()].some(row =>
           row.scope === scope && row.accepted_at >= start && row.accepted_at < end);
-        if (!observed) throw new ChatError(503, 'NOT_READY', 'No full runtime usage observation is available');
-        return json(res, 200, { result: { has_usage: true, source: 'browser_chat' } });
+        const source = observed ? 'browser_chat' : usageEvidence?.(start, end, account, inv.context.instance_id);
+        if (!source) throw new ChatError(503, 'NOT_READY', 'No full runtime usage observation is available');
+        return json(res, 200, { result: { has_usage: true, source } });
       }
       if (inv.method !== 'chat.send') {
         if (inv.method === 'chat.stop' && params.turn_id == null) throw invalid('A browser turn ID is required');
