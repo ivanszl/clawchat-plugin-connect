@@ -332,6 +332,166 @@ describe("ConnectWsClient", () => {
     expect(client.connectionState).toBe("disconnected");
   });
 
+  it("rejects an initial HTTP upgrade failure without retrying", async () => {
+    let requests = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch() {
+        requests += 1;
+        return new Response(null, { status: 503 });
+      },
+    });
+    const client = createClient({
+      url: `ws://127.0.0.1:${server.port}/ws`,
+      token: "local-test-token",
+      stateStore: createStore(),
+      reconnect: { initialDelayMs: 5, maxDelayMs: 10, jitterRatio: 0 },
+    });
+    client.on("error", () => undefined);
+    try {
+      const result = await Promise.race([
+        client.connect().then(
+          () => "connected",
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        ),
+        Bun.sleep(200).then(() => "test deadline expired"),
+      ]);
+      expect(result).toMatch(/Expected 101 status code|503/i);
+      expect(requests).toBe(1);
+      expect(client.connectionState).toBe("disconnected");
+    } finally {
+      client.close();
+      server.stop(true);
+    }
+  });
+
+  it("backs off and recovers when timed-out reconnects emit no close event", async () => {
+    const transport = new MemoryTransport();
+    const connect = mock(transport.connect.bind(transport));
+    transport.connect = connect;
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport,
+      traceIdFactory: () => "trace-reconnect-timeout",
+      heartbeat: { enabled: false },
+      handshakeTimeoutMs: 25,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 20, jitterRatio: 0 },
+      reliability: { ackResendMs: 0 },
+    });
+    const error = mock();
+    client.on("error", error);
+    try {
+      await handshake(client, transport, "trace-reconnect-timeout");
+      transport.state = "closed";
+      transport.handlers?.onClose(1006, "Connection ended");
+
+      // First retry upgrades but never receives the application challenge.
+      await Bun.sleep(45);
+      expect(error).toHaveBeenCalledWith(expect.objectContaining({ message: "websocket handshake timed out" }));
+      expect(connect).toHaveBeenCalledTimes(2);
+
+      // No close event is delivered by MemoryTransport.close(). A further retry
+      // must still open, and a close event from the obsolete attempt must be ignored.
+      const obsolete = transport.handlers;
+      await Bun.sleep(20);
+      expect(connect).toHaveBeenCalledTimes(3);
+      obsolete?.onClose(1006, "late close");
+      expect(client.connectionState).toBe("challenging");
+      const recovered = new Promise<void>((resolve) => client.once("connected", resolve));
+      transport.receive({
+        version: "2",
+        event: EVENT.CONNECT_CHALLENGE,
+        trace_id: "challenge",
+        emitted_at: 1,
+        payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+      });
+      transport.receive({
+        version: "2",
+        event: EVENT.HELLO_OK,
+        trace_id: "trace-reconnect-timeout",
+        emitted_at: 2,
+        payload: { ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AB" },
+      });
+      await recovered;
+      expect(client.connectionState).toBe("connected");
+    } finally {
+      client.close();
+    }
+  });
+
+  it("reconnects through stalled WebSocket handshakes after an abnormal close", async () => {
+    let attempts = 0;
+    let dropInitial!: () => void;
+    const server = Bun.serve<number>({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request, server) {
+        const attempt = ++attempts;
+        if (attempt === 2) return new Promise<Response>(() => undefined);
+        if (!server.upgrade(request, { data: attempt })) return new Response(null, { status: 400 });
+      },
+      websocket: {
+        open(socket) {
+          if (socket.data === 3) return;
+          if (socket.data === 1) dropInitial = () => socket.terminate();
+          socket.send(
+            JSON.stringify({
+              version: "2",
+              event: EVENT.CONNECT_CHALLENGE,
+              trace_id: "challenge",
+              emitted_at: 1,
+              payload: { nonce: "Wn9hZ3lJZkN1QXBkUEpYbmNk" },
+            }),
+          );
+        },
+        message(socket, message) {
+          const envelope = parseEnvelope(String(message));
+          if (envelope.event !== EVENT.CONNECT) return;
+          socket.send(
+            JSON.stringify({
+              version: "2",
+              event: EVENT.HELLO_OK,
+              trace_id: envelope.trace_id,
+              emitted_at: 2,
+              payload: { ack_mode: "dseq", ack_epoch: "01JXYZ8K3MNPQRSTVWXYZ0AB" },
+            }),
+          );
+        },
+      },
+    });
+    const client = createClient({
+      url: `ws://127.0.0.1:${server.port}/ws`,
+      token: "local-test-token",
+      stateStore: createStore(),
+      handshakeTimeoutMs: 50,
+      reconnect: { initialDelayMs: 5, maxDelayMs: 20, jitterRatio: 0 },
+      heartbeat: { enabled: false },
+      reliability: { ackResendMs: 0 },
+    });
+    const errors = mock();
+    const closed = mock();
+    client.on("error", errors);
+    client.on("close", closed);
+    try {
+      await client.connect();
+      const recovered = new Promise<boolean>((resolve) => {
+        client.once("connected", () => resolve(true));
+      });
+      dropInitial();
+      expect(await Promise.race([recovered, Bun.sleep(600).then(() => false)])).toBe(true);
+      expect(closed).toHaveBeenCalledWith(expect.objectContaining({ code: 1006 }));
+      expect(errors.mock.calls.filter(([error]) => /handshake timed out/.test(error.message))).toHaveLength(2);
+      expect(attempts).toBe(4);
+      expect(client.connectionState).toBe("connected");
+    } finally {
+      client.close();
+      void server.stop(true);
+    }
+  });
+
   it("fails the handshake when reliable-delivery epoch persistence fails", async () => {
     const transport = new MemoryTransport();
     const store = createStore();
@@ -445,6 +605,37 @@ describe("ConnectWsClient", () => {
     expect(connect).toHaveBeenCalledTimes(2);
     expect(client.connectionState).toBe("challenging");
     client.close();
+  });
+
+  it("keeps the connection while inbound traffic arrives and reconnects when it stops", async () => {
+    const transport = new MemoryTransport();
+    const connect = mock(transport.connect.bind(transport));
+    transport.connect = connect;
+    const client = createClient({
+      url: "ws://example/ws",
+      token: "token",
+      stateStore: createStore(),
+      transport,
+      traceIdFactory: () => "trace-1",
+      heartbeat: { intervalMs: 30 },
+      reconnect: { initialDelayMs: 0, maxDelayMs: 0, jitterRatio: 0 },
+      reliability: { ackResendMs: 0 },
+    });
+    client.on("error", () => undefined);
+    try {
+      await handshake(client, transport);
+      for (let i = 0; i < 4; i++) {
+        await Bun.sleep(15);
+        transport.receive({ version: "2", event: EVENT.PING, trace_id: "server-ping", emitted_at: 1, payload: {} });
+      }
+      expect(connect).toHaveBeenCalledTimes(1);
+      expect(client.connectionState).toBe("connected");
+      expect(transport.sent.some((event) => event.event === EVENT.PONG)).toBe(true);
+      await Bun.sleep(85);
+      expect(connect).toHaveBeenCalledTimes(2);
+    } finally {
+      client.close();
+    }
   });
 
   it("keeps reconnecting when the first reconnect dial fails before opening", async () => {
