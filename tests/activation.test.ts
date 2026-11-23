@@ -99,6 +99,43 @@ describe("activateConnect", () => {
     );
     await store.close();
   });
+  it("rejects a same-owner replacement UID before profile updates or credential writes", async () => {
+    const dir = await tempDir();
+    const config = upsertAgentBinding(defaultConfig(), "codex", pluginBinding());
+    config.stateDbPath = join(dir, "state.sqlite");
+    const store = createStateStore({ dbPath: config.stateDbPath });
+    try {
+      const existing = {
+        localAgentId: "codex",
+        accessToken: "old",
+        refreshToken: "old-refresh",
+        serverAgentId: "agt-old",
+        userId: "usr-old",
+        ownerUserId: "usr-owner",
+        conversationId: "cnv-old",
+      };
+      await store.commitActivationForInstallationOwner(existing);
+      const fetchImpl = mock(async () =>
+        response({
+          code: 0,
+          data: {
+            access_token: "replacement",
+            agent: { id: "agt-different", user_id: "usr-different", owner_id: "usr-owner" },
+          },
+        }),
+      );
+      await expect(
+        activateConnect({ agentId: "codex", code: "NEWCODE", config, store, fetchImpl }),
+      ).rejects.toThrow("re-pair identity contract");
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      await expect(
+        store.commitActivationForInstallationOwner({ ...existing, userId: "usr-different" }),
+      ).resolves.toBe("binding-identity-mismatch");
+      await expect(store.getActivation("codex")).resolves.toMatchObject(existing);
+    } finally {
+      await store.close();
+    }
+  });
   it("rejects a different-owner Agent Binding without changing local state", async () => {
     const dir = await tempDir();
     const config = upsertAgentBinding(defaultConfig(), "personal", pluginBinding());

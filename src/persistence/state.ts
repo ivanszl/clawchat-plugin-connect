@@ -229,17 +229,19 @@ export class ConnectStateStore {
 
   async commitActivationForInstallationOwner(
     input: ActivationCredentials,
-  ): Promise<"established" | "existing" | "binding-owner-mismatch" | "installation-owner-mismatch"> {
+  ): Promise<"established" | "existing" | "binding-owner-mismatch" | "binding-identity-mismatch" | "installation-owner-mismatch"> {
     const now = Date.now();
     const db = await this.requireDb();
     return db.transaction((run, get) => {
-      const existingActivation = get<{ owner_user_id?: string }>(
-        "SELECT owner_user_id FROM activations WHERE platform = ? AND local_agent_id = ?",
+      const existingActivation = get<{ owner_user_id?: string; user_id?: string }>(
+        "SELECT owner_user_id, user_id FROM activations WHERE platform = ? AND local_agent_id = ?",
         PLATFORM_ID,
         input.localAgentId,
       );
       const existingBindingOwner = nullableString(existingActivation?.owner_user_id);
       if (existingBindingOwner && existingBindingOwner !== input.ownerUserId) return "binding-owner-mismatch";
+      const existingBindingUser = nullableString(existingActivation?.user_id);
+      if (existingBindingUser && existingBindingUser !== input.userId) return "binding-identity-mismatch";
 
       const ownerRow = get<{ owner_user_id?: string }>("SELECT owner_user_id FROM installation_owner WHERE id = 1");
       const installationOwner = nullableString(ownerRow?.owner_user_id);
