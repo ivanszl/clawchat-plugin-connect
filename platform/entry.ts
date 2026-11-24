@@ -5,14 +5,20 @@ import { createStateStore } from '../src/persistence/state';
 import { WorkspaceCatalog } from '../src/workspaces/workspaces';
 import { runConnectCli } from '../src/service/cli';
 
-if (!['__clawnest-state','__clawnest-owner'].includes(process.argv[2] ?? '')) {
+if (!['__clawnest-state','__clawnest-owner','__clawnest-usage'].includes(process.argv[2] ?? '')) {
   process.exitCode = await runConnectCli(process.argv.slice(2));
 } else {
   const config = await loadConfig(process.env.CLAWCHAT_CONNECT_CONFIG);
   const store = createStateStore({ dbPath: config.stateDbPath });
   try {
     const activation = await store.getActivation('dsh');
-    if(process.argv[2]==='__clawnest-owner'){
+    if(process.argv[2]==='__clawnest-usage'){
+      const [start,end]=process.argv.slice(3,5).map(Number);
+      if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||end<=start||end-start>31*86400000){
+        throw new Error('Invalid ClawChat usage window');
+      }
+      console.log(JSON.stringify({has_usage: await store.hasClawChatMessageActivity('dsh',start,end)}));
+    } else if(process.argv[2]==='__clawnest-owner'){
       if(!activation?.ownerUserId||!activation.accessToken)throw new Error('ClawChat owner is not activated');
       const api=createClawChatApiClient({baseUrl:config.baseUrl,deviceId:(await store.getDeviceId())!,token:activation.accessToken});
       const owner=await api.getAgentOwnerProfile();

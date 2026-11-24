@@ -229,17 +229,19 @@ export class ConnectStateStore {
 
   async commitActivationForInstallationOwner(
     input: ActivationCredentials,
-  ): Promise<"established" | "existing" | "binding-owner-mismatch" | "installation-owner-mismatch"> {
+  ): Promise<"established" | "existing" | "binding-owner-mismatch" | "binding-identity-mismatch" | "installation-owner-mismatch"> {
     const now = Date.now();
     const db = await this.requireDb();
     return db.transaction((run, get) => {
-      const existingActivation = get<{ owner_user_id?: string }>(
-        "SELECT owner_user_id FROM activations WHERE platform = ? AND local_agent_id = ?",
+      const existingActivation = get<{ owner_user_id?: string; user_id?: string }>(
+        "SELECT owner_user_id, user_id FROM activations WHERE platform = ? AND local_agent_id = ?",
         PLATFORM_ID,
         input.localAgentId,
       );
       const existingBindingOwner = nullableString(existingActivation?.owner_user_id);
       if (existingBindingOwner && existingBindingOwner !== input.ownerUserId) return "binding-owner-mismatch";
+      const existingBindingUser = nullableString(existingActivation?.user_id);
+      if (existingBindingUser && existingBindingUser !== input.userId) return "binding-identity-mismatch";
 
       const ownerRow = get<{ owner_user_id?: string }>("SELECT owner_user_id FROM installation_owner WHERE id = 1");
       const installationOwner = nullableString(ownerRow?.owner_user_id);
@@ -1705,6 +1707,31 @@ export class ConnectStateStore {
       "SELECT * FROM session_lifecycle_operations WHERE state != 'complete' ORDER BY created_at ASC",
     );
     return rows.map(sessionLifecycleOperationFromRow);
+  }
+
+  async hasClawChatMessageActivity(agentId: string, start: number, end: number): Promise<boolean> {
+    const db = await this.requireDb();
+    return Boolean(
+      await db.get(
+        `SELECT 1 FROM clawchat_messages
+         WHERE platform = ? AND local_agent_id = ? AND kind = 'message' AND (
+           (direction = 'inbound' AND event_type IN ('message.send', 'message.reply', 'message.created', 'message.done')
+             AND created_at >= ? AND created_at < ?)
+           OR (direction = 'outbound' AND event_type IN ('message.send', 'message.reply') AND send_status = 'acknowledged'
+             AND acked_at >= ? AND acked_at < ?)
+           OR (direction = 'outbound' AND event_type IN ('message.created', 'message.done')
+             AND created_at >= ? AND created_at < ?)
+         ) LIMIT 1`,
+        PLATFORM_ID,
+        agentId,
+        start,
+        end,
+        start,
+        end,
+        start,
+        end,
+      ),
+    );
   }
 
   async claimMessageOnce(input: MessageInput): Promise<boolean> {

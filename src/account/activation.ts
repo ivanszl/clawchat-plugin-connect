@@ -35,6 +35,9 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
     if (existingActivation && existingActivation.ownerUserId !== result.ownerUserId) {
       throw bindingOwnerMismatch(agentId);
     }
+    if (existingUserId && existingUserId !== result.userId) {
+      throw bindingIdentityMismatch(agentId);
+    }
     const installationOwner = await store.getInstallationOwner();
     if (installationOwner && installationOwner !== result.ownerUserId) {
       throw installationOwnerMismatch(agentId, installationOwner, result.ownerUserId);
@@ -54,6 +57,7 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
     }
     const commit = await store.commitActivationForInstallationOwner(result);
     if (commit === "binding-owner-mismatch") throw bindingOwnerMismatch(agentId);
+    if (commit === "binding-identity-mismatch") throw bindingIdentityMismatch(agentId);
     if (commit === "installation-owner-mismatch") {
       throw installationOwnerMismatch(
         agentId,
@@ -70,6 +74,12 @@ export async function activateConnect(options: ActivateConnectOptions): Promise<
 function bindingOwnerMismatch(agentId: string): Error {
   return new Error(
     `ClawChat re-pair ownership contract was violated for Agent Binding ${agentId}; its existing credentials were preserved`,
+  );
+}
+
+function bindingIdentityMismatch(agentId: string): Error {
+  return new Error(
+    `ClawChat re-pair identity contract was violated for Agent Binding ${agentId}; its existing credentials were preserved`,
   );
 }
 

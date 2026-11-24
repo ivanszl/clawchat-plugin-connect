@@ -7,6 +7,8 @@ import {createInterface} from 'node:readline';
 import {spawn,execFileSync} from 'node:child_process';
 import {randomUUID,createHash,timingSafeEqual} from 'node:crypto';
 import {home,workspace,state,connectConfig,modelPatch,connectBin,dshBin,releaseRoot,bridgePath,readJSON,writeJSON,nativeModel,connectFailureMessage} from './lib.mjs';
+import {createBrowserChat} from './browser-chat.mjs';
+import {hasWebActivity} from './web-activity.mjs';
 import {syncUpdaterSkill} from './update-skill.mjs';
 import {greetingOwner,greetingPrompt,reusableGreetingDraft} from './greeting.mjs';
 process.umask(0o077);
@@ -16,6 +18,21 @@ function connect(argv,options={}){
  catch(error){throw new Error(connectFailureMessage(argv,error));}
 }
 function safeStatus(prepare=false){return JSON.parse(connect(['__clawnest-state',...(prepare?['--prepare-workspace']:[])]));}
+function webUsageScope(account, instance) {
+ if (!instance || !account?.userId || !account?.ownerId) return undefined;
+ return createHash('sha256').update(JSON.stringify([instance, account.userId, account.ownerId])).digest('hex');
+}
+function usageEvidence(start, end, account, instance) {
+ try {
+  const scope = webUsageScope(account, instance);
+  if (scope && hasWebActivity(scope, start, end)) return 'native_webui';
+ } catch {}
+ try {
+  const evidence = JSON.parse(connect(['__clawnest-usage', String(start), String(end)], {timeout:2000}));
+  if (evidence.has_usage === true) return 'clawchat';
+ } catch {}
+ return undefined;
+}
 function initialize(){
  fs.mkdirSync(workspace,{recursive:true,mode:0o700});fs.mkdirSync(state,{recursive:true,mode:0o700});nativeModel();
  if(!fs.existsSync(connectConfig)){
@@ -114,12 +131,25 @@ async function serve(){
  if(!token)throw new Error('Manager authentication is required');
  const sessions=new Map();const mappingPath=path.join(state,'operator-sessions.json');const persisted=readJSON(mappingPath);
  const {DeepSeekHarness}=await import('/opt/dsh/node_modules/@deepseek-ai/dsh-sdk-client/lib/index.js');
+ let browser;
+ if (process.env.CLAWNEST_RUNTIME_ADAPTER_GROUPS?.split(',').some(group => group === 'chat' || group === 'usage')) {
+  try {
+   browser = createBrowserChat({
+    receiptFile: path.join(state, 'browser-turns.json'), identity: safeStatus, draining: () => draining, usageEvidence,
+    open: dshHome => new DeepSeekHarness({
+     dshBin: '/opt/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', profile: 'sdk', patches: [modelPatch],
+     dshHome, cwd: workspace, processCwd: workspace, provider: model.provider, model: model.model, env: model.env,
+     initializeTimeoutMs: 25000, shutdownTimeoutMs: 500, disposeEofGraceMs: 500, disposeGraceMs: 2000,
+    }),
+   });
+  } catch { console.error('DSH browser chat receipts are unavailable'); }
+ }
  const handleRequest=async(req,res,trustedUpdate=false)=>{
   const supplied=(req.headers.authorization||'').replace(/^Bearer /,'');
   if(!trustedUpdate&&(Buffer.byteLength(supplied)!==Buffer.byteLength(token)||!timingSafeEqual(Buffer.from(supplied),Buffer.from(token)))){res.writeHead(401);return res.end('Unauthorized');}
   if(req.url==='/integration/health'){
    const status=safeStatus();const ready=!draining&&(!status.userId||(status.updatedAt>=startedAt&&status.connected&&status.available));
-   res.writeHead(200,{'Content-Type':'application/json'});return res.end(JSON.stringify({ready,version:process.env.CLAWNEST_INTEGRATION_VERSION,identity:status.userId,connected:status.connected,draining}));
+   res.writeHead(200,{'Content-Type':'application/json'});return res.end(JSON.stringify({ready,version:process.env.CLAWNEST_INTEGRATION_VERSION,identity:status.userId,connected:status.connected,draining,...(browser ? {browserChat:true} : {})}));
   }
   if(req.url==='/integration/resume'&&req.method==='POST'){
    try{
@@ -132,7 +162,7 @@ async function serve(){
   if(req.url==='/integration/drain'&&req.method==='POST'){
    draining=true;
    drainPromise??=(async()=>{
-    while(activeBrowserRequests>0||[...sessions.values()].some(entry=>entry.running)||greetingRunning)await new Promise(r=>setTimeout(r,50));
+    while(activeBrowserRequests>0||browser?.active||[...sessions.values()].some(entry=>entry.running)||greetingRunning)await new Promise(r=>setTimeout(r,50));
     if(core?.exitCode===null){const result=await fetch('http://127.0.0.1:47822/core/v1/bindings/quiesce',{method:'POST',headers:{'Content-Type':'application/json','X-ClawChat-Connect-Core-Config-Path':connectConfig},body:JSON.stringify({bindingIds:['dsh']})});if(!result.ok)throw new Error('Core could not quiesce the binding');}
    })();
    try{await drainPromise;res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({drained:true}));}catch{res.writeHead(503);res.end();}return;
@@ -176,6 +206,10 @@ async function serve(){
  fs.mkdirSync(path.dirname(controlPath),{recursive:true,mode:0o700});
  if(fs.existsSync(controlPath))fs.unlinkSync(controlPath);
  const controlServer=http.createServer((req,res)=>{
+  if (browser && req.method === 'POST' && ['/integration/browser-invoke', '/integration/browser-stream'].includes(req.url)) {
+   void browser.invoke(req,res);
+   return;
+  }
   if(!['/integration/health','/integration/drain','/integration/resume'].includes(req.url)){res.writeHead(404);res.end();return;}
   void handleRequest(req,res,true);
  });
@@ -191,7 +225,7 @@ async function serve(){
  },5000);
 
  let stopping=false;
- async function stop(code=0){if(stopping)return;stopping=true;clearInterval(greetingTimer);server.close();controlServer.close();try{fs.unlinkSync(controlPath);}catch{}core?.kill('SIGTERM');await Promise.allSettled([...sessions.values()].map(s=>s.harness.close()));setTimeout(()=>{core?.kill('SIGKILL');process.exit(code);},3000).unref();}
+ async function stop(code=0){if(stopping)return;stopping=true;clearInterval(greetingTimer);browser?.abort();server.close();controlServer.close();try{fs.unlinkSync(controlPath);}catch{}core?.kill('SIGTERM');await Promise.allSettled([...sessions.values()].map(s=>s.harness.close()));setTimeout(()=>{core?.kill('SIGKILL');process.exit(code);},3000).unref();}
  for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>void stop());
  if(process.send)process.on('disconnect',()=>void stop());
 }
@@ -204,7 +238,19 @@ async function main(){
   case 'web':{
    const i=args.indexOf('--public-url');const raw=args[i+1];const url=new URL(raw);const model=nativeModel();
    const host=Object.values(os.networkInterfaces()).flat().find(n=>n?.family==='IPv4'&&!n.internal)?.address||'127.0.0.1';
-   child(dshBin,['web','--patch',modelPatch,'--host',host,'--port','3080','--public-url',url.href,'--trusted-host',url.host,'--no-open'],model.env);break;
+   const patches = ['--patch', modelPatch];
+   if (process.env.CLAWNEST_RUNTIME_ADAPTER_GROUPS?.split(',').includes('usage')) {
+    try {
+     const scope = webUsageScope(safeStatus(), process.env.CLAWNEST_INSTANCE_ID);
+     if (scope) {
+      const activityPatch = path.join(state, 'web-activity.patch.json');
+      writeJSON(activityPatch, [{insert:[{id:'clawnest-web-activity',name:path.join(path.dirname(bridgePath),'web-activity.mjs')}]}]);
+      patches.push('--patch', activityPatch);
+      model.env.CLAWNEST_DSH_WEB_ACTIVITY_SCOPE = scope;
+     }
+    } catch {}
+   }
+   child(dshBin,['web',...patches,'--host',host,'--port','3080','--public-url',url.href,'--trusted-host',url.host,'--no-open'],model.env);break;
   }
   default:throw new Error('Expected init, activate, status, serve or web');
  }
