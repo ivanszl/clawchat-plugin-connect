@@ -11,6 +11,7 @@ import {createBrowserChat} from './browser-chat.mjs';
 import {hasWebActivity} from './web-activity.mjs';
 import {syncUpdaterSkill} from './update-skill.mjs';
 import {greetingOwner,greetingPrompt,reusableGreetingDraft} from './greeting.mjs';
+import {mediaUploadUrlFor,repairMediaUploadUrl} from './media-upload-url.mjs';
 process.umask(0o077);
 const args=process.argv.slice(2);
 function connect(argv,options={}){
@@ -37,7 +38,7 @@ function initialize(){
  fs.mkdirSync(workspace,{recursive:true,mode:0o700});fs.mkdirSync(state,{recursive:true,mode:0o700});nativeModel();
  if(!fs.existsSync(connectConfig)){
   connect(['init']);
-  for(const [key,value] of [['baseUrl',process.env.CLAWCHAT_BASE_URL],['websocketUrl',process.env.CLAWCHAT_WEBSOCKET_URL],['mediaUploadUrl',process.env.CLAWCHAT_MEDIA_URL]])if(value)connect(['config','set',key,value]);
+  for(const [key,value] of [['baseUrl',process.env.CLAWCHAT_BASE_URL],['websocketUrl',process.env.CLAWCHAT_WEBSOCKET_URL],['mediaUploadUrl',mediaUploadUrlFor(process.env.CLAWCHAT_MEDIA_URL)]])if(value)connect(['config','set',key,value]);
  }
  // Verify/repair only the release-managed skills; user skills remain separate.
  connect(['skills','install']);
@@ -60,6 +61,8 @@ function initialize(){
   if(!matches)connect(['plugin','setup','--non-interactive','--select',pluginId]);
  }
  const config=readJSON(connectConfig);
+ // Earlier releases stored the bare CLAWCHAT_MEDIA_URL origin as the upload endpoint; repair it on every start.
+ if(repairMediaUploadUrl(config))writeJSON(connectConfig,config);
  const managed=config.agents?.dsh?.runtimeConfig;
  if(managed&&(managed.executablePathOverride==='/opt/clawnest-dsh/runtime/dsh-bridge.sh'||typeof managed.executablePathOverride==='string'&&managed.executablePathOverride.startsWith(path.join(home,'.clawnest-integrations/deepseek-harness/releases')+path.sep))){
   if(managed.executablePathOverride==='/opt/clawnest-dsh/runtime/dsh-bridge.sh'&&managed.profile==='web')managed.profile='sdk';
