@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readJSON, writeJSON } from './lib.mjs';
+import { notification as liveStream } from './browser-assistant-stream.mjs';
 
 const methods = new Set(['chat.send', 'chat.stop', 'chat.status', 'usage.query']);
 const terminal = new Set(['completed', 'cancelled', 'failed', 'interrupted']);
@@ -230,20 +231,33 @@ export function createBrowserChat({ receiptFile, identity, open, draining, usage
           frame('start', { state: turn.state });
           temp = await mkdtemp(join(scratch, 'clawnest-dsh-browser-'));
           if (!controller.signal.aborted) {
-            harness = open(temp);
+            harness = open(temp, streaming);
             const sessionHandle = harness.session();
+            let visibleAttempt = false;
+            let discardedText = false;
             // Fixed prefix keeps native slash-command routing out of the browser transcript.
             const prompt = 'Conversation transcript (roles are context):\n' + JSON.stringify(messages);
             const answer = await sessionHandle.run(prompt, { onNotification(notification) {
-              const event = notification.params?.event;
-              if (!controller.signal.aborted && notification.method === 'session.event' &&
-                  notification.params.sessionId === sessionHandle.id && event?.type === 'assistant/chunk' &&
-                  event.data?.chunk?.type === 'text-delta' && typeof event.data.chunk.text === 'string') {
-                append(event.data.chunk.text);
+              if (controller.signal.aborted || notification.params?.sessionId !== sessionHandle.id) return;
+              if (streaming && notification.method === liveStream) {
+                const { text: delta, discarded } = notification.params;
+                if (typeof delta === 'string' && delta) {
+                  visibleAttempt = true;
+                  append(delta);
+                } else if (typeof discarded === 'boolean') {
+                  discardedText ||= visibleAttempt && discarded;
+                  visibleAttempt = false;
+                }
+              } else if (!streaming && notification.method === 'session.event') {
+                const { event } = notification.params;
+                if (event?.type === 'assistant/chunk' && event.data?.chunk?.type === 'text-delta' &&
+                    typeof event.data.chunk.text === 'string') append(event.data.chunk.text);
               }
             } });
             if (!controller.signal.aborted) {
-              if (answer.finishReason === 'error' || answer.finishReason == null) throw new Error('Incomplete native turn');
+              if (answer.finishReason === 'error' || answer.finishReason == null || discardedText || visibleAttempt) {
+                throw new Error('Incomplete native turn');
+              }
               if (!text && typeof answer.finalResponse === 'string') append(answer.finalResponse);
             }
           }
