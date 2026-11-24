@@ -8,12 +8,18 @@ import {spawn,execFileSync} from 'node:child_process';
 import {randomUUID,createHash,timingSafeEqual} from 'node:crypto';
 import {home,workspace,state,connectConfig,modelPatch,connectBin,dshBin,releaseRoot,bridgePath,readJSON,writeJSON,nativeModel,connectFailureMessage} from './lib.mjs';
 import {createBrowserChat} from './browser-chat.mjs';
+import {name as browserStreamPlugin} from './browser-assistant-stream.mjs';
 import {hasWebActivity} from './web-activity.mjs';
 import {syncUpdaterSkill} from './update-skill.mjs';
 import {greetingOwner,greetingPrompt,reusableGreetingDraft} from './greeting.mjs';
 import {mediaUploadUrlFor,repairMediaUploadUrl} from './media-upload-url.mjs';
 process.umask(0o077);
 const args=process.argv.slice(2);
+function browserStreamPatch(dshHome) {
+ const patch=path.join(dshHome,'browser-stream.patch.yml');
+ writeJSON(patch,[{insert:[{id:browserStreamPlugin,name:path.join(path.dirname(bridgePath),'browser-assistant-stream.mjs')}]}]);
+ return patch;
+}
 function connect(argv,options={}){
  try{return execFileSync(connectBin,[...argv,'--config',connectConfig],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:60000,...(argv[0]==='agent'&&argv[1]==='add'?{env:nativeModel().env}:{}),...options});}
  catch(error){throw new Error(connectFailureMessage(argv,error));}
@@ -139,8 +145,9 @@ async function serve(){
   try {
    browser = createBrowserChat({
     receiptFile: path.join(state, 'browser-turns.json'), identity: safeStatus, draining: () => draining, usageEvidence,
-    open: dshHome => new DeepSeekHarness({
-     dshBin: '/opt/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', profile: 'sdk', patches: [modelPatch],
+    open: (dshHome, streaming) => new DeepSeekHarness({
+     dshBin: '/opt/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js', profile: 'sdk',
+     patches: streaming ? [modelPatch, browserStreamPatch(dshHome)] : [modelPatch],
      dshHome, cwd: workspace, processCwd: workspace, provider: model.provider, model: model.model, env: model.env,
      initializeTimeoutMs: 25000, shutdownTimeoutMs: 500, disposeEofGraceMs: 500, disposeGraceMs: 2000,
     }),
